@@ -14,7 +14,10 @@
  */
 import dynamic from "next/dynamic";
 
+import WidgetCsvButton from "./WidgetCsvButton";
 import { useSankeyQuery } from "@/lib/reports/useSankeyQuery";
+import { sankeyNodeLabel } from "@/lib/reports/sankey-labels";
+import type { CsvCell } from "@/lib/reports/csv";
 import type {
   CanvasFilters,
   SankeyWidget as SankeyWidgetType,
@@ -37,11 +40,24 @@ interface Props {
   currency?: string;
 }
 
-export default function SankeyWidget({ widget, canvasFilters, editMode: _editMode, currency }: Props) {
+export default function SankeyWidget({ widget, canvasFilters, editMode, currency }: Props) {
   const { data, error, isLoading } = useSankeyQuery(widget, canvasFilters);
 
   const links = data?.links ?? [];
   const hasLinks = links.length > 0;
+
+  // The flow rows the diagram renders, one row per source → target link.
+  // Source/target run through the same hub-label map the chart uses so the CSV
+  // shows "Income" rather than the raw "__hub_income__" sentinel. Value is left
+  // raw-numeric (consistent with every other widget's CSV).
+  const csvDataset = {
+    headers: ["Source", "Target", "Amount"],
+    rows: links.map((l) => [
+      sankeyNodeLabel(l.source),
+      sankeyNodeLabel(l.target),
+      l.value,
+    ]) as CsvCell[][],
+  };
 
   return (
     <div
@@ -56,6 +72,11 @@ export default function SankeyWidget({ widget, canvasFilters, editMode: _editMod
         <div className="text-sm font-semibold text-text-primary">
           {widget.title || "Cash flow"}
         </div>
+        <WidgetCsvButton
+          title={widget.title || "Cash flow"}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       <div className="flex-1">
         {isLoading ? (

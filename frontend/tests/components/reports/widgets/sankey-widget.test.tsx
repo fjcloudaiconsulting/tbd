@@ -1,4 +1,4 @@
-import { renderWithSWR, screen, waitFor } from "../../../utils/render-with-swr";
+import { renderWithSWR, screen, waitFor, fireEvent } from "../../../utils/render-with-swr";
 import { describe, it, expect, vi } from "vitest";
 import React from "react";
 
@@ -29,9 +29,17 @@ vi.mock("@/lib/reports/useSankeyQuery", () => ({
   useSankeyQuery: vi.fn(),
 }));
 
+// Keep the real CSV serializer (so we assert the real output string) but stub
+// the DOM download so jsdom doesn't try to click an <a download>.
+vi.mock("@/lib/reports/csv", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/reports/csv")>();
+  return { ...actual, downloadCsv: vi.fn() };
+});
+
 import SankeyWidget from "@/components/reports/widgets/SankeyWidget";
 import type { SankeyWidget as SankeyWidgetType } from "@/lib/reports/types";
 import { useSankeyQuery } from "@/lib/reports/useSankeyQuery";
+import { downloadCsv } from "@/lib/reports/csv";
 import { CHART_SERIES } from "@/lib/chart-colors";
 
 function makeWidget(overrides: Partial<SankeyWidgetType["config"]> = {}): SankeyWidgetType {
@@ -79,6 +87,76 @@ describe("SankeyWidget", () => {
     // Should not show empty/error states
     expect(screen.queryByTestId("sankey-widget-empty")).toBeNull();
     expect(screen.queryByTestId("sankey-widget-error")).toBeNull();
+  });
+
+  it("offers a CSV export button (enabled) when links are present", async () => {
+    mockUseSankeyQuery.mockReturnValue({
+      data: {
+        links: [
+          { source: "__hub_income__", target: "Food", value: 200 },
+          { source: "__hub_income__", target: "Transport", value: 80 },
+        ],
+        meta: { row_count: 2, truncated: false, query_ms: 4 },
+      },
+      error: undefined,
+      isLoading: false,
+      query: { filters: [], spending_granularity: "category" },
+    });
+
+    renderWithSWR(<SankeyWidget widget={makeWidget()} />);
+
+    const csv = await screen.findByTestId("widget-csv-export");
+    expect(csv).toBeInTheDocument();
+    expect(csv).not.toBeDisabled();
+  });
+
+  it("exports friendly hub labels in the CSV, not raw sentinel ids", async () => {
+    mockUseSankeyQuery.mockReturnValue({
+      data: {
+        links: [{ source: "__hub_income__", target: "Food", value: 200 }],
+        meta: { row_count: 1, truncated: false, query_ms: 2 },
+      },
+      error: undefined,
+      isLoading: false,
+      query: { filters: [], spending_granularity: "category" },
+    });
+
+    renderWithSWR(<SankeyWidget widget={makeWidget()} />);
+    fireEvent.click(await screen.findByTestId("widget-csv-export"));
+
+    expect(downloadCsv).toHaveBeenCalledTimes(1);
+    const csvString = vi.mocked(downloadCsv).mock.calls[0][1];
+    expect(csvString).toContain("Income"); // __hub_income__ mapped to label
+    expect(csvString).not.toContain("__hub_income__");
+    expect(csvString).toContain("Food"); // real category id passes through
+  });
+
+  it("disables the CSV export button in the empty (no-links) state", async () => {
+    mockUseSankeyQuery.mockReturnValue({
+      data: { links: [], meta: { row_count: 0, truncated: false, query_ms: 1 } },
+      error: undefined,
+      isLoading: false,
+      query: { filters: [], spending_granularity: "category" },
+    });
+
+    renderWithSWR(<SankeyWidget widget={makeWidget()} />);
+    expect(await screen.findByTestId("widget-csv-export")).toBeDisabled();
+  });
+
+  it("hides the CSV export button in edit mode", () => {
+    mockUseSankeyQuery.mockReturnValue({
+      data: {
+        links: [{ source: "__hub_income__", target: "Food", value: 200 }],
+        meta: { row_count: 1, truncated: false, query_ms: 2 },
+      },
+      error: undefined,
+      isLoading: false,
+      query: { filters: [], spending_granularity: "category" },
+    });
+
+    renderWithSWR(<SankeyWidget widget={makeWidget()} editMode />);
+
+    expect(screen.queryByTestId("widget-csv-export")).toBeNull();
   });
 
   it("passes converted nodes/links and CHART_SERIES colors to ResponsiveSankey", async () => {

@@ -41,15 +41,12 @@ interface NivoSankeyData {
   links: NivoLink[];
 }
 
-/**
- * Hub/sentinel id → friendly display label mapping.
- * Real category node ids are not present here; their label === id.
- */
-export const HUB_LABELS: Record<string, string> = {
-  __hub_income__: "Income",
-  __hub_savings__: "Savings",
-  __hub_other__: "Other",
-};
+// Hub/sentinel id → friendly display label mapping now lives in a tiny
+// nivo-free module so the CSV export path can reuse it without importing this
+// code-split chart. Re-exported here so existing importers (and tests) keep
+// resolving ``HUB_LABELS`` from this module.
+export { HUB_LABELS } from "@/lib/reports/sankey-labels";
+import { HUB_LABELS } from "@/lib/reports/sankey-labels";
 
 /** Stable color array ref — defeats Nivo's ordinal-scale memo when spread
  *  as a new array each render. */
