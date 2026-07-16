@@ -86,6 +86,13 @@ export function buildQueryAst(
     sourceSupportsDate,
     sourceSupportsStatus,
   );
+  // Opt-in "raw activity" flag — transactions-only. On any other source the
+  // backend ignores it, but we drop it here too so the AST (and its SWR
+  // cache key) stays clean and a stale persisted value can't leak across a
+  // source switch.
+  const include_non_reportable =
+    widget.config.dataset === "transactions" &&
+    !!widgetFilters?.include_non_reportable;
 
   if (widget.type === "kpi") {
     return {
@@ -94,6 +101,7 @@ export function buildQueryAst(
       dimensions: [],
       filters,
       limit: 1,
+      include_non_reportable,
     };
   }
 
@@ -105,6 +113,7 @@ export function buildQueryAst(
       filters,
       sort: widget.config.sort,
       limit: widget.config.limit ?? 10,
+      include_non_reportable,
     };
   }
 
@@ -127,6 +136,7 @@ export function buildQueryAst(
       filters,
       sort: widget.config.sort,
       limit: widget.config.limit ?? 100,
+      include_non_reportable,
     };
   }
 
@@ -138,6 +148,7 @@ export function buildQueryAst(
       filters,
       sort: widget.config.sort,
       limit: widget.config.limit ?? 50,
+      include_non_reportable,
     };
   }
 
@@ -159,6 +170,7 @@ export function buildQueryAst(
     filters,
     sort: widget.config.sort,
     limit: widget.config.limit ?? 50,
+    include_non_reportable,
   };
 }
 
@@ -188,6 +200,9 @@ export function buildSeriesQueryAst(
     "dimensions" in widget.config ? widget.config.dimensions : [];
   const sort = "sort" in widget.config ? widget.config.sort : undefined;
   const limit = "limit" in widget.config ? widget.config.limit : undefined;
+  const include_non_reportable =
+    widget.config.dataset === "transactions" &&
+    !!widgetFilters?.include_non_reportable;
   return {
     dataset: widget.config.dataset,
     measure,
@@ -195,6 +210,7 @@ export function buildSeriesQueryAst(
     filters,
     sort,
     limit: limit ?? 100,
+    include_non_reportable,
   };
 }
 

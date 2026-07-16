@@ -236,6 +236,115 @@ def _sum_by_category_ast() -> ReportsQuery:
     )
 
 
+async def _seed_reportability(factory) -> dict:
+    """Seed one org with a mix of reportable and non-reportable rows on a
+    single category, so a SUM(amount) proves the reportability filter.
+
+    Rows (all EXPENSE on "Mixed"):
+      - R1 reportable                    amount 100
+      - T1/T2 transfer pair (both legs)  amount  40 each
+      - ADJ manual balance adjustment    amount  25
+      - REJ rejected reconciliation row  amount  15
+      - SKP skipped reconciliation row   amount   7
+
+    Default (exclude non-reportable)          -> 100
+    include_non_reportable (transfers + adj)  -> 100 + 40 + 40 + 25 = 205
+    Reverted rows (REJ + SKP) are excluded in BOTH cases.
+    """
+    async with factory() as db:
+        org = Organization(name="Org R", billing_cycle_day=1)
+        db.add(org)
+        await db.commit()
+
+        at = AccountType(org_id=org.id, name="Checking")
+        db.add(at)
+        await db.commit()
+
+        acct = Account(
+            org_id=org.id,
+            account_type_id=at.id,
+            name="R Bank",
+            currency="EUR",
+            balance=Decimal("0"),
+        )
+        cat = Category(org_id=org.id, name="Mixed")
+        db.add_all([acct, cat])
+        await db.commit()
+
+        today = date(2026, 5, 15)
+
+        def _row(amount, **kw):
+            return Transaction(
+                org_id=org.id,
+                account_id=acct.id,
+                category_id=cat.id,
+                description="row",
+                amount=amount,
+                type=TransactionType.EXPENSE,
+                status=TransactionStatus.SETTLED,
+                date=today,
+                settled_date=today,
+                **kw,
+            )
+
+        r1 = _row(Decimal("100"))
+        t1 = _row(Decimal("40"))
+        t2 = _row(Decimal("40"))
+        adj = _row(Decimal("25"), is_manual_adjustment=True)
+        rej = _row(Decimal("15"), reconciliation_state="rejected")
+        skp = _row(Decimal("7"), reconciliation_state="skipped")
+        db.add_all([r1, t1, t2, adj, rej, skp])
+        await db.commit()
+
+        # Wire the transfer pair's self-FKs now that both rows have ids.
+        t1.linked_transaction_id = t2.id
+        t2.linked_transaction_id = t1.id
+        await db.commit()
+
+        return {"org_id": org.id}
+
+
+def _sum_total_ast(*, include_non_reportable: bool = False) -> ReportsQuery:
+    """SUM(amount) with a single category dimension (one bucket here)."""
+    return ReportsQuery(
+        dataset=Dataset.TRANSACTIONS,
+        measure=Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT),
+        dimensions=[Dimension.CATEGORY],
+        filters=[],
+        limit=100,
+        include_non_reportable=include_non_reportable,
+    )
+
+
+@pytest.mark.asyncio
+async def test_reports_exclude_non_reportable_by_default(session_factory):
+    """Default query drops transfer legs, manual adjustments, and reverted
+    reconciliation rows — only the reportable row counts."""
+    ids = await _seed_reportability(session_factory)
+    async with session_factory() as db:
+        rows, _meta = await execute_query(
+            db, _sum_total_ast(include_non_reportable=False), org_id=ids["org_id"]
+        )
+    assert len(rows) == 1
+    assert Decimal(str(rows[0]["value"])) == Decimal("100")
+
+
+@pytest.mark.asyncio
+async def test_include_non_reportable_re_includes_transfers_and_adjustments(
+    session_factory,
+):
+    """The opt-in flag re-includes transfer legs + manual adjustments, but the
+    reverted rows (rejected + skipped) stay excluded: 100 + 40 + 40 + 25 = 205,
+    not 227 (which would add the 15 rejected + 7 skipped)."""
+    ids = await _seed_reportability(session_factory)
+    async with session_factory() as db:
+        rows, _meta = await execute_query(
+            db, _sum_total_ast(include_non_reportable=True), org_id=ids["org_id"]
+        )
+    assert len(rows) == 1
+    assert Decimal(str(rows[0]["value"])) == Decimal("205")
+
+
 # ─── injection + isolation ─────────────────────────────────────────
 
 
