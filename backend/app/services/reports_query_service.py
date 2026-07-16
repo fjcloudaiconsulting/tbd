@@ -46,7 +46,11 @@ from app.schemas.reports_query import (
     ReportsQuery,
     TagMatch,
 )
-from app.services.transaction_filters import effective_period_date_expr
+from app.services.transaction_filters import (
+    effective_period_date_expr,
+    non_reverted_transaction_filter,
+    reportable_transaction_filter,
+)
 
 
 # Mapping: schema Dimension → (column expression factory, key string used
@@ -300,6 +304,20 @@ def compile_ast_to_query(
 
     # 3) Filters. ``org_id`` is the load-bearing WHERE; appended unconditionally.
     stmt = stmt.where(Transaction.org_id == org_id)
+
+    # Reportability. By default Reports exclude transfer legs, manual balance
+    # adjustments, and reverted (skipped/rejected) reconciliation rows, so a
+    # transaction-source report matches Budgets / Forecast / Sankey. The opt-in
+    # ``include_non_reportable`` flag re-includes transfer legs + manual
+    # adjustments; reverted recon rows stay excluded either way (their amount
+    # was reverted from the account balance, so counting them double-counts).
+    # This compiler only ever builds on ``Transaction`` (the transactions
+    # source), so the clause is transactions-scoped by construction.
+    if ast.include_non_reportable:
+        stmt = stmt.where(non_reverted_transaction_filter())
+    else:
+        stmt = stmt.where(reportable_transaction_filter())
+
     for f in ast.filters:
         if f.field is FilterField.TAG_NAME:
             stmt = _apply_tag_filter(stmt, f, org_id)

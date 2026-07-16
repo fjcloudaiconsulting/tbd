@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildQueryAst } from "@/lib/reports/useReportQuery";
+import { buildQueryAst, buildSeriesQueryAst } from "@/lib/reports/useReportQuery";
 import {
   sourceSupportsDateFilter,
   sourceSupportsStatusFilter,
@@ -242,5 +242,40 @@ describe("buildQueryAst — canvas STATUS cascade (Feature 1)", () => {
       sourceSupportsStatusFilter(SOURCES, "recurring"),
     );
     expect(ast.filters.some((f) => f.field === "status")).toBe(false);
+  });
+});
+
+describe("buildQueryAst — include_non_reportable threading", () => {
+  it("threads include_non_reportable=true from a transactions widget's filters", () => {
+    const w = transactionsBarWidget();
+    w.config.filters = { include_non_reportable: true };
+    const ast = buildQueryAst(w, undefined);
+    expect(ast.include_non_reportable).toBe(true);
+  });
+
+  it("defaults to false on a transactions widget without the flag", () => {
+    const ast = buildQueryAst(transactionsBarWidget(), undefined);
+    expect(ast.include_non_reportable).toBe(false);
+  });
+
+  it("is gated to false on a non-transactions widget even if the flag persisted", () => {
+    const w = recurringBarWidget();
+    w.config.filters = { include_non_reportable: true };
+    const ast = buildQueryAst(w, undefined);
+    expect(ast.include_non_reportable).toBe(false);
+  });
+
+  it("buildSeriesQueryAst threads the flag onto each series (multi-series path)", () => {
+    const w = transactionsBarWidget();
+    w.config.filters = { include_non_reportable: true };
+    const ast = buildSeriesQueryAst(w, { agg: "sum", field: "amount" }, undefined);
+    expect(ast.include_non_reportable).toBe(true);
+  });
+
+  it("buildSeriesQueryAst gates the flag to false on a non-transactions widget", () => {
+    const w = recurringBarWidget();
+    w.config.filters = { include_non_reportable: true };
+    const ast = buildSeriesQueryAst(w, { agg: "sum", field: "amount" }, undefined);
+    expect(ast.include_non_reportable).toBe(false);
   });
 });

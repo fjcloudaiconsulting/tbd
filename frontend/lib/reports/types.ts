@@ -106,6 +106,11 @@ export interface ReportsQuery {
   filters: Filter[];
   sort?: SortSpec;
   limit?: number;
+  // Opt-in "raw activity" toggle (transactions dataset only). Omitted /
+  // false = exclude transfer legs + manual adjustments + reverted recon
+  // rows (matches Budgets/Forecast/Sankey). True = re-include transfer legs
+  // + manual adjustments; reverted rows stay excluded server-side.
+  include_non_reportable?: boolean;
 }
 
 export interface QueryMeta {
@@ -195,6 +200,12 @@ export interface WidgetFilters {
   // pruned off the widget when its source can't honor it.
   status?: TxnStatus;
   amount_range?: { min?: number; max?: number };
+  // Opt-in "Include transfers & adjustments". Transactions-only. When true,
+  // this widget's query re-includes transfer legs + manual balance
+  // adjustments (reverted recon rows stay excluded server-side). Default /
+  // undefined = the standard reportable exclusion. Dropped by
+  // ``pruneFiltersToSource`` on a switch to a non-transactions source.
+  include_non_reportable?: boolean;
   tag_names?: string[];
   tag_match?: TagMatch;
 }

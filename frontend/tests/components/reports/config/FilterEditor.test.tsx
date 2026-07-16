@@ -202,6 +202,43 @@ describe("FilterEditor", () => {
     expect(screen.queryByTestId("amount-range-filter")).not.toBeInTheDocument();
   });
 
+  it("offers the 'Include transfers & adjustments' toggle for a transactions widget", async () => {
+    render({}, {}, () => {}, "transactions");
+    await screen.findByTestId("category-picker");
+    expect(
+      screen.getByLabelText("Include transfers and adjustments"),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the 'Include transfers & adjustments' toggle for a non-transactions widget", async () => {
+    render({}, {}, () => {}, "recurring");
+    await screen.findByTestId("category-picker");
+    expect(
+      screen.queryByLabelText("Include transfers and adjustments"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("sets include_non_reportable=true when the toggle is checked", async () => {
+    const calls: WidgetFilters[] = [];
+    render({}, {}, (next) => calls.push(next), "transactions");
+    await screen.findByTestId("category-picker");
+    fireEvent.click(screen.getByLabelText("Include transfers and adjustments"));
+    expect(calls.at(-1)?.include_non_reportable).toBe(true);
+  });
+
+  it("clears include_non_reportable to undefined when unchecked", async () => {
+    const calls: WidgetFilters[] = [];
+    render(
+      { include_non_reportable: true },
+      {},
+      (next) => calls.push(next),
+      "transactions",
+    );
+    await screen.findByTestId("category-picker");
+    fireEvent.click(screen.getByLabelText("Include transfers and adjustments"));
+    expect(calls.at(-1)?.include_non_reportable).toBeUndefined();
+  });
+
   it("sets status on change", async () => {
     const calls: WidgetFilters[] = [];
     render({}, {}, (next) => calls.push(next), "transactions");

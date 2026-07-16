@@ -266,6 +266,14 @@ class ReportsQuery(BaseModel):
     filters: List[Filter] = Field(default_factory=list, max_length=MAX_FILTERS)
     sort: Optional[SortSpec] = None
     limit: conint(ge=1, le=MAX_LIMIT) = DEFAULT_LIMIT
+    # Opt-in "raw activity" toggle for transaction-source widgets. When False
+    # (default) the compiler excludes transfer legs, manual balance adjustments,
+    # and reverted (skipped/rejected) reconciliation rows — matching Budgets /
+    # Forecast / Sankey. When True it re-includes transfer legs + manual
+    # adjustments; reverted recon rows stay excluded regardless (their amount
+    # was reverted from the account balance, so counting them double-counts).
+    # Meaningful only for the transactions dataset; other sources ignore it.
+    include_non_reportable: bool = False
 
 
 class QueryMeta(BaseModel):
