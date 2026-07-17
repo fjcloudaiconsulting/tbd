@@ -1117,3 +1117,45 @@ async def test_create_custom_event_cross_user_account_id_rejected(
     assert res.status_code == 422, res.text
     detail = res.json()["detail"]
     assert detail.get("code") == "event_invalid_reference"
+
+
+# ── AI simulate: audit IP is the resolved client, not the direct peer ────
+
+
+@pytest.mark.asyncio
+async def test_ai_simulate_audits_resolved_client_ip(session_factory, monkeypatch):
+    """The ``ai_enhanced`` path must audit the IP resolved by
+    ``get_client_ip`` — the raw TCP peer is our own ingress, so
+    auditing it would stamp every AI simulation with the proxy's
+    address instead of the real client's.
+
+    Driven through the App Platform branch: with ``PFV_RUNTIME`` set,
+    ``do-connecting-ip`` is authoritative, so the resolved IP differs
+    from TestClient's direct peer ("testclient") and the assertion
+    fails if the handler ever reverts to ``request.client.host``.
+    """
+    monkeypatch.setenv("PFV_RUNTIME", "app_platform")
+    seen: dict = {}
+
+    async def _fake_run_ai_simulation(_db, **kwargs):
+        seen.update(kwargs)
+        return {"engine_name": "ai_enhanced_v1"}
+
+    monkeypatch.setattr(
+        "app.routers.scenarios.run_ai_simulation", _fake_run_ai_simulation
+    )
+
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/scenarios", json=_trip_payload(seeds["account_id"])
+        ).json()
+        res = client.post(
+            f"/api/v1/scenarios/{created['id']}/simulate",
+            json={"engine": "ai_enhanced", "options": {}},
+            headers={"do-connecting-ip": "203.0.113.9"},
+        )
+
+    assert res.status_code == 200, res.text
+    assert seen["ip_address"] == "203.0.113.9"
