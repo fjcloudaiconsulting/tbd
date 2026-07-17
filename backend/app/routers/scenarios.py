@@ -34,6 +34,7 @@ from app.models.category import Category
 from app.models.recurring import RecurringTransaction
 from app.models.scenario import Scenario, ScenarioType
 from app.models.user import User
+from app.rate_limit import get_client_ip
 from app.schemas.scenario import (
     COMPARE_MAX_SCENARIOS,
     CompareRequest,
@@ -295,7 +296,7 @@ async def simulate_scenario(
             options=payload.options,
             smooth_with_regression=payload.smooth_with_regression,
             request_id=getattr(request.state, "request_id", None),
-            ip_address=getattr(request.client, "host", None),
+            ip_address=get_client_ip(request),
         )
         engine_name = result.get("engine_name") or "ai_enhanced"
     else:
