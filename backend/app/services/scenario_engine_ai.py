@@ -171,8 +171,11 @@ async def run_ai_simulation(
     horizon_months: int,
     options: dict[str, Any],
     smooth_with_regression: bool = False,
-    request_id: Optional[str] = None,
-    ip_address: Optional[str] = None,
+    # Pass ``None`` explicitly when there is no request in scope (e.g. a
+    # background job) — ``Optional`` says None is allowed, not that it is
+    # the right value off-request.
+    request_id: Optional[str],
+    ip_address: Optional[str],
 ) -> dict[str, Any]:
     """Run the AI-enhanced projection for ``scenario`` (or analytic
     fallback if AI is gated off / unavailable / errored).
