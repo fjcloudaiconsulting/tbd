@@ -45,11 +45,14 @@ BACKEND_APP = Path(__file__).resolve().parents[1] / "app"
 
 # Request-like identifiers whose ``.client`` read is what we forbid.
 # FastAPI/Starlette hand handlers a ``Request`` as ``request`` (or the
-# terse ``req``) and a websocket as ``websocket`` / ``ws``. A ``.client``
+# terse ``req``) and a websocket as ``websocket`` / ``ws``. ``conn`` /
+# ``connection`` is Starlette's conventional name for ``HTTPConnection``,
+# the shared base of both that also exposes ``.client``. A ``.client``
 # read off any of them is the raw-peer access get_client_ip exists to
-# replace.
+# replace. None of these has a false positive in the tree today; the
+# breadth is a tripwire for future handlers, so it is load-bearing.
 REQUEST_IDENTIFIERS: frozenset[str] = frozenset(
-    {"request", "req", "websocket", "ws"}
+    {"request", "req", "websocket", "ws", "conn", "connection"}
 )
 
 
