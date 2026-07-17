@@ -235,6 +235,8 @@ async def test_ai_simulation_falls_back_when_gate_closed(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -274,6 +276,8 @@ async def test_ai_simulation_falls_back_when_no_routing(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -361,6 +365,8 @@ async def test_ai_simulation_happy_path_applies_deltas(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     assert result["engine_name"] == "analytic_v1+ai_assumptions_v1"
@@ -442,6 +448,8 @@ async def test_ai_simulation_writes_audit_on_success(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
@@ -480,6 +488,8 @@ async def test_ai_simulation_writes_audit_on_fallback(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -519,6 +529,8 @@ async def test_ai_simulation_falls_back_on_dispatch_failed(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -581,6 +593,8 @@ async def test_ai_simulation_falls_back_on_schema_mismatch(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -676,6 +690,8 @@ async def test_ai_simulation_unknown_field_is_skipped(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     # The AI path engaged (engine name reflects it) and only the
@@ -740,6 +756,8 @@ async def test_ai_simulation_falls_back_when_gate_check_raises(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -812,6 +830,8 @@ async def test_ai_simulation_applied_count_zero_returns_baseline_with_audit(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     # engine_name reflects baseline (no AI provenance attached).
@@ -879,6 +899,8 @@ async def test_ai_simulation_does_not_mutate_input_scenario_params(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     # Sanity: the adjustment was actually applied (otherwise the
@@ -959,6 +981,8 @@ async def test_ai_simulation_out_of_bounds_value_is_skipped(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=None,
+            ip_address=None,
         )
 
     # All three were rejected → applied_count == 0 → analytic baseline.
