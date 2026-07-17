@@ -168,6 +168,13 @@ def _make_request(scenario: Scenario) -> SimulationRequest:
     )
 
 
+# Audit context passed at every ``run_ai_simulation`` call site. Real
+# values (not None) so the audit tests can assert they reach the row —
+# a NULL-vs-wrong-value bug is invisible if the tests only pass None.
+_REQUEST_ID = "rid-abc123"
+_IP_ADDRESS = "203.0.113.9"
+
+
 # ── helpers ─────────────────────────────────────────────────────────────
 
 
@@ -181,6 +188,27 @@ async def _count_audit_rows(session_factory, event_type: str) -> int:
                 .where(AuditEvent.event_type == event_type)
             )
         ).scalar_one()
+
+
+async def _assert_audit_context(session_factory, event_type: str) -> None:
+    """Assert the caller's audit context reached the persisted row.
+
+    Guards the failure mode a required-kwarg signature cannot: a caller
+    passing a WRONG value (e.g. the raw proxy peer instead of the
+    resolved client IP) rather than omitting the argument.
+    """
+    from sqlalchemy import select
+    async with session_factory() as db:
+        row = (
+            await db.execute(
+                select(AuditEvent)
+                .where(AuditEvent.event_type == event_type)
+                .order_by(AuditEvent.id)
+                .limit(1)
+            )
+        ).scalar_one()
+    assert row.request_id == _REQUEST_ID
+    assert row.ip_address == _IP_ADDRESS
 
 
 async def _first_audit_detail(session_factory, event_type: str) -> dict | None:
@@ -235,6 +263,8 @@ async def test_ai_simulation_falls_back_when_gate_closed(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -274,6 +304,8 @@ async def test_ai_simulation_falls_back_when_no_routing(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -361,6 +393,8 @@ async def test_ai_simulation_happy_path_applies_deltas(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     assert result["engine_name"] == "analytic_v1+ai_assumptions_v1"
@@ -442,10 +476,13 @@ async def test_ai_simulation_writes_audit_on_success(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
     assert n == 1
+    await _assert_audit_context(session_factory, "plans.scenario.ai_simulate")
 
 
 @pytest.mark.asyncio
@@ -480,12 +517,15 @@ async def test_ai_simulation_writes_audit_on_fallback(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     assert result["engine_name"] == "analytic_v1"
     assert result.get("ai_assumptions") is None
     n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
     assert n == 1
+    await _assert_audit_context(session_factory, "plans.scenario.ai_simulate")
 
 
 @pytest.mark.asyncio
@@ -519,6 +559,8 @@ async def test_ai_simulation_falls_back_on_dispatch_failed(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -581,6 +623,8 @@ async def test_ai_simulation_falls_back_on_schema_mismatch(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -676,6 +720,8 @@ async def test_ai_simulation_unknown_field_is_skipped(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     # The AI path engaged (engine name reflects it) and only the
@@ -740,6 +786,8 @@ async def test_ai_simulation_falls_back_when_gate_check_raises(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     assert result["engine_name"] == "analytic_v1"
@@ -812,6 +860,8 @@ async def test_ai_simulation_applied_count_zero_returns_baseline_with_audit(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     # engine_name reflects baseline (no AI provenance attached).
@@ -879,6 +929,8 @@ async def test_ai_simulation_does_not_mutate_input_scenario_params(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     # Sanity: the adjustment was actually applied (otherwise the
@@ -959,6 +1011,8 @@ async def test_ai_simulation_out_of_bounds_value_is_skipped(
             horizon_months=req.horizon_months,
             options=req.options,
             smooth_with_regression=False,
+            request_id=_REQUEST_ID,
+            ip_address=_IP_ADDRESS,
         )
 
     # All three were rejected → applied_count == 0 → analytic baseline.
