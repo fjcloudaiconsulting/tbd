@@ -171,12 +171,9 @@ async def run_ai_simulation(
     horizon_months: int,
     options: dict[str, Any],
     smooth_with_regression: bool = False,
-    # Audit context is keyword-REQUIRED (no default), matching every
-    # sibling audit-bearing service (ai_caps / ai_consent / ai_categorize
-    # / ai_routing / ai_credential) and ``_record_audit`` below. A default
-    # would let a caller silently drop the audit context and write rows
-    # with a NULL actor IP. Pass ``None`` explicitly when there is no
-    # request in scope (e.g. a background job).
+    # Pass ``None`` explicitly when there is no request in scope (e.g. a
+    # background job) — ``Optional`` says None is allowed, not that it is
+    # the right value off-request.
     request_id: Optional[str],
     ip_address: Optional[str],
 ) -> dict[str, Any]:
