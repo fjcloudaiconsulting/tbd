@@ -189,6 +189,47 @@ async def test_drain_sends_all_pending(session_factory, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_drain_counters_advance_during_send(session_factory, monkeypatch):
+    """Counters must advance DURING the drain, not just jump to the final
+    tally at the end (the drain recomputes ``sent_count`` per row, right
+    after each row's own commit, specifically so ``GET /{id}`` progress
+    polling can distinguish "in progress" from "hung").
+
+    ``send_email``'s side effect opens a FRESH session (mimicking a
+    concurrent poller) and reads ``sent_count`` at the moment each send
+    fires. If counters only updated once at the end of the loop, every
+    recorded observation would be ``0``. With the per-row recompute, the
+    observed sequence is strictly increasing: by the time send #N fires,
+    the previous N-1 rows have already been committed AND recomputed.
+    """
+    observed_sent_counts: list[int] = []
+
+    async def _fake_send(to, subject, body_html, body_text=None):
+        async with session_factory() as poll_db:
+            broadcast = (
+                await poll_db.execute(
+                    select(EmailBroadcast).where(EmailBroadcast.id == broadcast_id)
+                )
+            ).scalar_one()
+            observed_sent_counts.append(broadcast.sent_count)
+        return True
+
+    monkeypatch.setattr(
+        broadcast_service, "send_email", AsyncMock(side_effect=_fake_send)
+    )
+    broadcast_id, _users, _recips = await _seed(
+        session_factory, [{}, {}, {}]
+    )
+
+    await broadcast_service._drain(session_factory, broadcast_id)
+
+    assert observed_sent_counts == [0, 1, 2]
+    b = await _get_broadcast(session_factory, broadcast_id)
+    assert b.sent_count == 3
+    assert b.status == BroadcastStatus.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_drain_skips_lapsed_user(session_factory, monkeypatch):
     monkeypatch.setattr(
         broadcast_service, "send_email", AsyncMock(return_value=True)

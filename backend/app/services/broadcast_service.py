@@ -24,7 +24,7 @@ import html
 from collections.abc import Sequence
 
 import structlog
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
@@ -429,6 +429,10 @@ async def _run_drain_loop(
                 set_sent_at=False,
             ):
                 await db.commit()
+                # Recompute live so GET /{id} progress polling advances during
+                # the drain instead of jumping straight to the final tally.
+                await _recompute_broadcast_counters(db, broadcast_id)
+                await db.commit()
             else:
                 await db.rollback()
             continue
@@ -460,6 +464,12 @@ async def _run_drain_loop(
             error=send_error,
             set_sent_at=sent_ok,
         ):
+            await db.commit()
+            # Recompute live so GET /{id} progress polling advances during the
+            # drain instead of jumping straight to the final tally (counters
+            # are cheap to recompute at these audience sizes, and pacing gives
+            # ample headroom between rows).
+            await _recompute_broadcast_counters(db, broadcast_id)
             await db.commit()
         else:
             await db.rollback()
