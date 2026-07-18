@@ -1,7 +1,12 @@
 # Admin email broadcast (MVP) — design
 
 Date: 2026-07-18
-Status: approved, pending implementation
+Status: approved-with-rulings (architect, 2026-07-18), pending implementation
+
+> **Architect rulings are LOCKED at the bottom of this doc and OVERRIDE any
+> conflicting text above.** Read "Architect rulings" before implementing. The
+> body sections below have been amended to match; the ruling list is the
+> authoritative source if anything diverges.
 
 ## Motivation
 
@@ -38,8 +43,9 @@ This is a deliberately tight MVP. The apology should go out today.
 
 ## Audience
 
-`segment` is an enum column so the model can grow, but the MVP ships exactly one
-value: `active_verified`. Resolution query:
+`segment` is a validated `String` column (Ruling 4) so the model can grow
+ALTER-free, but the MVP ships and validates exactly one value: `active_verified`.
+Resolution query:
 
 ```sql
 SELECT id, email, first_name
@@ -60,9 +66,13 @@ Two new tables. Integer PKs, MySQL enums via
 - `subject` `String(200)`, not null
 - `body_template` `Text`, not null — the authored body, may contain the literal
   token `{first_name}`. Stored raw; rendered per recipient at send time.
-- `segment` `Enum(BroadcastSegment)` — `active_verified` only for now
-- `status` `Enum(BroadcastStatus)` — `draft` | `sending` | `completed` |
-  `failed`
+- `segment` **`String(32)`** with app-level validation (Ruling 4) — NOT a DB
+  enum. This is the "designed to grow" axis; a validated string keeps future
+  values ALTER-free and dodges the MySQL-ENUM-ALTER landmine. v1 validation
+  accepts exactly `active_verified` (Ruling 10).
+- `status` `Enum(BroadcastStatus, name="broadcast_status", values_callable=...)`
+  — `draft` | `sending` | `completed` | `failed` (closed set → native enum, per
+  `announcement.py`)
 - `created_by_user_id` FK → users, `ON DELETE SET NULL` (mirrors announcements)
 - `total_recipients` `Integer`, nullable (populated at send-materialization)
 - `sent_count` / `failed_count` / `skipped_count` `Integer`, default 0
@@ -83,13 +93,20 @@ content stays canonical.
   materialization time, so we know exactly who we targeted even if the user
   later changes email or is deleted
 - `first_name` `String(100)`, nullable — snapshot for rendering
-- `status` `Enum(RecipientStatus)` — `pending` | `sent` | `failed` | `skipped`
+- `status` `Enum(RecipientStatus, name="broadcast_recipient_status",
+  values_callable=...)` — `pending` | `sent` | `failed` | `skipped` (closed set)
 - `error` `Text`, nullable
 - `attempts` `Integer`, default 0
 - `sent_at` `DateTime`, nullable
-- Unique constraint `(broadcast_id, user_id)` — the idempotency guarantee. The
-  drain only ever sends to `pending` rows, so a resume or re-trigger cannot
-  double-send.
+- Unique constraint `(broadcast_id, user_id)` — dedupes materialization INSERTs.
+- Index `(broadcast_id, status)` (Ruling 6) — serves the drain's
+  `WHERE broadcast_id=? AND status='pending'` select.
+
+Idempotency is NOT the unique constraint alone (it only stops duplicate
+INSERTs). The no-double-send guarantee is the per-row atomic claim in the drain
+(Ruling 3): each recipient is advanced with
+`UPDATE ... SET status='sent'/'failed' WHERE id=:rid AND status='pending'` and
+the send proceeds only if that claim's `rowcount == 1`.
 
 ## API
 
@@ -97,8 +114,13 @@ Router `/api/v1/admin/broadcasts`, every endpoint gated by the same
 `require_superadmin` dependency as `admin_announcements` (403 if
 `is_superadmin` is false). Every write emits an audit event via
 `audit_service.record_audit_event` with `event_type` `broadcast.*`,
-`target_org_id=None` (platform-level), `ip_address=get_client_ip(request)`
-(never the raw peer — see reference_audit_client_ip_single_helper).
+`target_org_id=None` (platform-level, Ruling 8), `ip_address=get_client_ip(request)`
+(never the raw peer — see reference_audit_client_ip_single_helper, #552 guard).
+
+Audit `detail` carries NO recipient PII (Ruling 13): only `broadcast_id`,
+`segment`, counts (`total_recipients`/`sent`/`failed`/`skipped`), and at most the
+subject — never recipient email addresses, never the rendered body. Mirrors the
+`_audit_detail` announcement pattern (which logs `title_length`, not the title).
 
 - `POST /` — create a draft from `{subject, body_template, segment}`. Response
   includes a live `recipient_count` preview for the segment (a `COUNT(*)`, no
@@ -141,35 +163,57 @@ a deliberate env change.
 
 ## Send execution
 
-A background task (launched with the app's existing session_factory, not the
-request session) drains the broadcast:
+The drain is a **tracked** asyncio task, NOT a bare `create_task` (Ruling 1):
+- Launched only AFTER the materialization transaction commits (Ruling 2), so the
+  drain's independent session can see the `pending` rows.
+- Held by a strong reference in a module-level `set[asyncio.Task]` (or
+  `app.state`) so the GC cannot collect it mid-flight.
+- `task.add_done_callback(...)` logs any exception via structlog and discards
+  the task from the set — failures are observed, never silently swallowed.
+- Runs on its own session from the injected `session_factory` (Ruling 2), never
+  the request session.
+- The whole drain body is wrapped so an unhandled error sets the broadcast
+  `status` sensibly and logs, rather than dying silently.
 
-1. Select `pending` recipients for the broadcast, ordered by `id`.
-2. For each: re-check the user is **still** active + verified. If not, mark
-   `skipped` (they deactivated/unverified between materialization and send) and
-   continue.
-3. Render `Hi {first_name},` / `Hi there,` into the body template, wrap in the
-   shared HTML + text shell, call the existing
-   `email_service.send_email(to=snapshot_email, subject, body_html, body_text)`.
-4. Mark the row `sent` or `failed` (with `error`), bump `attempts` and the
-   broadcast's counters.
-5. Sleep `BROADCAST_PACING_SECONDS` (env, default 1.0) between sends to avoid
-   spam-filter tripping.
+In-process active-drain registry (Ruling 3): a module-level `set[int]` of
+broadcast ids with a live drain. A `send`/`resume` for an id already draining is
+an idempotent no-op / 409. Safe because `instance_count: 1`.
 
-One recipient's failure never halts the batch (each send is try/excepted). When
-no `pending` rows remain, set `status = completed` (even if some `failed` —
-`failed_count` records them; a `resume` can retry). Real sends happen only in
+Drain loop, per `pending` recipient (ordered by `id`):
+1. Re-check the user is **still** active + verified (Ruling 9). If not,
+   atomically claim → `skipped` and continue.
+2. Render the greeting: `Hi {first_name},` / `Hi there,`. `first_name` is
+   user-controlled, so **`html.escape(first_name)`** before HTML interpolation
+   (Ruling 11); the plain-text part stays raw. Substitute with
+   `body.replace("{first_name}", value)`, **never `str.format()`** (Ruling 11),
+   so stray braces in operator copy can't raise `KeyError` or open a
+   format-string vector. Wrap in the shared HTML + text shell.
+3. **Atomic claim** (Ruling 3):
+   `UPDATE ... WHERE id=:rid AND status='pending'`; proceed only if
+   `rowcount == 1` (else another drain already took it — skip).
+4. `email_service.send_email(to=snapshot_email, subject, body_html, body_text)`.
+   Key off its **return bool** (Ruling 12): falsy → mark `failed` with `error`;
+   still `try/except` defensively. Bump `attempts` and the broadcast counters.
+5. Sleep `BROADCAST_PACING_SECONDS` (env, default 1.0) between sends.
+
+One recipient's failure never halts the batch. When no `pending` rows remain,
+set `status = completed` (even with some `failed`). Real sends happen only in
 prod; in dev `send_email` logs `email_sent_dev` and returns True, so the whole
-flow is exercisable locally without touching Mailgun.
+flow is exercisable locally without touching Mailgun. Note: a prod `send_email`
+True means "Mailgun accepted for queued delivery", NOT delivered.
 
-Concurrency guard: the `draft → sending` transition is atomic (a conditional
-UPDATE on status), so two concurrent `send`/`resume` calls cannot both start a
-drain. A recipient row is only ever advanced out of `pending` by the single
-active drain.
+Concurrency guard (Ruling 3): the `draft → sending` transition is
+`UPDATE email_broadcasts SET status='sending', started_at=NOW()
+WHERE id=:id AND status='draft'` with a `rowcount == 1` check (else 409
+`broadcast_not_draft`). Combined with the per-row atomic claim and the
+in-process registry, a double-send is impossible even if the in-process guard is
+ever bypassed by a future multi-instance change.
 
 Restart behavior: a crash mid-drain leaves rows `pending` and the broadcast
-`sending`. `POST /{id}/resume` continues from there. (Automatic
-scheduler-driven resume is the deferred hardening path; not in this MVP.)
+`sending`. `POST /{id}/resume` continues, retrying only rows with
+`attempts < BROADCAST_MAX_ATTEMPTS` (env, default 3, Ruling 12) so a permanently
+bad recipient is not hammered on every resume. (Automatic scheduler-driven
+resume and Mailgun bounce/complaint webhooks are deferred follow-ups.)
 
 ## Email content — broadcast #1 (the apology)
 
@@ -204,6 +248,13 @@ No em-dashes in customer copy (project convention). The "data was never at risk"
 line is accurate for a DNS/availability incident; it is contingent on the
 operator confirming the outage was connectivity-only with no data impact.
 
+Compliance boundary lock (Ruling 10): no-unsubscribe is acceptable for THIS
+transactional outage notice only. Any broadcast that (a) adds a new `segment`
+value, (b) carries promotional / re-engagement / marketing content, or (c) is
+recurring MUST ship an unsubscribe + suppression mechanism first. Enforced by
+keeping `active_verified` the ONLY accepted `segment` value in v1 validation, so
+a marketing send cannot reuse this path without new code passing review.
+
 ## Safety rails (summary)
 
 Real customer email is irreversible, so the rails are the feature:
@@ -233,13 +284,29 @@ Real customer email is irreversible, so the rails are the feature:
   failure marks that row `failed` and the drain still completes the rest;
   `skipped` for a user who lapsed post-materialization.
 - Audit: each write emits the expected `broadcast.*` event with
-  `target_org_id=None` and a resolved (non-raw) ip.
+  `target_org_id=None` and a resolved (non-raw) ip; `detail` contains NO
+  recipient email address (Ruling 13/14c).
+- Concurrency (Ruling 14a): two `send` (or two `resume`) calls yield exactly one
+  drain; assert `send_email` call count equals the distinct pending recipients.
+- Attempts cap (Ruling 14b): a row at `BROADCAST_MAX_ATTEMPTS` is not retried by
+  `resume`.
+- HTML escape (Ruling 14d): a `first_name` containing `<`/`&` is escaped in the
+  HTML body (raw in text).
+- Drain-raises path (Ruling 14e): an unhandled drain error is observed via the
+  done-callback (logged, task not silently dropped), and the broadcast status
+  reflects it.
 - `send_email` is mocked throughout; no real Mailgun calls in tests.
 
 ## Rollout
 
 1. **PR 1 — backend** (this spec): model + migration, router, send engine, safety
-   rails, audit, tests. On merge + deploy, trigger broadcast #1 today via
+   rails, audit, tests. **Migration is a merge gate on real MySQL** (Ruling 5):
+   the reviewer runs it up/down on an isolated `-p team-*` MySQL stack and
+   confirms the two `status` ENUM columns store lowercase values, because SQLite
+   CI green does not prove MySQL enum DDL. New settings `BROADCAST_MAX_RECIPIENTS`
+   (10000), `BROADCAST_PACING_SECONDS` (1.0), `BROADCAST_MAX_ATTEMPTS` (3) are
+   declared pydantic-settings style in `config.py` (Ruling 15). On merge +
+   deploy, trigger broadcast #1 today via
    authenticated superadmin API calls: `POST /` (create), `POST /{id}/dry-run`
    (verify it lands in your inbox), then `POST /{id}/send` with the typed
    subject + count confirm. I hand over the exact commands.
@@ -258,3 +325,66 @@ before the operator merges; `main` needs the operator's human approval.
 - Unsubscribe-preference surface (required before any non-transactional /
   marketing broadcast).
 - Open/click analytics.
+
+## Architect rulings (LOCKED 2026-07-18)
+
+Verdict: **APPROVED-WITH-RULINGS.** Fold 1-14 verbatim; 15 is advisory. These
+override any conflicting text above.
+
+1. **Drain = tracked task with a done-callback, NOT a bare `create_task`; NOT
+   the scheduler.** Strong ref in a module-level `set` (or `app.state`);
+   `add_done_callback` logs exceptions + discards; own session from
+   `session_factory`; whole body wrapped so an unhandled error sets status +
+   logs. Manual `resume` accepted for MVP (per-recipient log makes loss
+   recoverable).
+2. **Launch the drain AFTER the materialization transaction commits; pass the
+   app `session_factory` (via `get_session_factory`), not the request `db`** —
+   else the drain's session can't see the uncommitted rows and no-ops.
+3. **Status flag alone is insufficient — add a per-instance active-drain guard
+   AND a per-row atomic claim.** (a) `send`: `UPDATE ... SET status='sending',
+   started_at=NOW() WHERE id=:id AND status='draft'`, check `rowcount==1` else
+   409. (b) In-process `set[int]` of draining ids → second `resume`/`send` is
+   no-op/409 (safe on `instance_count:1`). (c) Each recipient claimed with
+   `... WHERE id=:rid AND status='pending'`, send only if `rowcount==1`.
+4. **`segment` → `String(32)` app-validated; `status` + `recipient.status` →
+   native `Enum(values_callable=..., name=...)`.** Growth axis (`segment`) must
+   not be a DB enum (ALTER-ENUM landmine: SQLite CI green, prod 500). Closed sets
+   stay native enums for DB integrity + parity with `announcement.py`.
+5. **Migration verified on real MySQL (isolated `-p team-*` stack), up/down,
+   lowercase values stored — a merge gate, not a nicety.** SQLite green != MySQL
+   green for enum DDL.
+6. **Keep `UNIQUE(broadcast_id, user_id)`, `broadcast_id` CASCADE, `user_id` SET
+   NULL; ADD index `(broadcast_id, status)`.** Snapshotting email/first_name is
+   required. NULL-dedup caveat accepted (materialization is one-shot).
+7. **Typed subject+count confirm rail and hard cap KEPT as-is** — do not weaken.
+   Count recomputed inside the send transaction is load-bearing.
+8. **Cross-org `target_org_id=None` in audit APPROVED** (matches
+   `admin_announcements`). `ip_address=get_client_ip(request)`, never raw peer.
+9. **Segment re-check at send time and `skipped` status KEPT** — cheap
+   correctness.
+10. **No-unsubscribe acceptable for THIS transactional notice only; boundary
+    locked.** New segment value, promotional/re-engagement content, or recurring
+    send → unsubscribe + suppression required first. Keep `active_verified` the
+    only accepted segment in v1 validation.
+11. **Escape user-controlled values before HTML interpolation; substitute with
+    `.replace`, not `.format()`.** `html.escape(first_name)` for the HTML body
+    (text stays raw). `_render_html` inserts paragraphs verbatim, so this is the
+    real injection surface.
+12. **Mailgun semantics: key off `send_email`'s return bool; add attempts cap.**
+    Falsy return → `failed` (still try/except). `resume` retries only
+    `attempts < BROADCAST_MAX_ATTEMPTS` (env, default 3). Bounce/complaint
+    webhooks DEFERRED (named follow-up; `active_verified` already filters dead
+    addresses).
+13. **No recipient PII in audit `detail`** — `broadcast_id`, `segment`, counts,
+    at most subject; never emails, never body. Mirror `_audit_detail`.
+14. **Tests add:** (a) concurrency → one drain, `send_email` count == distinct
+    pending; (b) attempts cap not retried; (c) audit detail has no email; (d)
+    HTML-escape a `<`/`&` first_name; (e) drain-raise observed via done-callback.
+    Ruling 5 MySQL check is a manual gate, not a CI test. `send_email` mocked
+    throughout.
+15. **(Advisory)** pacing×cap worst case ≈ 2.7h single-task runtime; a deploy
+    kills it mid-drain (recoverable via `resume`). Non-issue at today's audience;
+    operator confirms the recomputed count is small before the first send and
+    does not raise the cap without accepting longer unbroken runtimes. Declare
+    `BROADCAST_MAX_RECIPIENTS`, `BROADCAST_PACING_SECONDS`, `BROADCAST_MAX_ATTEMPTS`
+    in `config.py`.
