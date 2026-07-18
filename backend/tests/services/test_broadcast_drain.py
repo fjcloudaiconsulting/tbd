@@ -89,7 +89,8 @@ async def _seed(session_factory, recipients, *, subject="Hi", body="Hi {first_na
     PENDING recipient row per user.
 
     ``recipients`` is a list of dicts with keys: ``first_name`` (str|None),
-    ``is_active`` (bool), ``email_verified`` (bool), optional ``attempts``.
+    ``is_active`` (bool), ``email_verified`` (bool), optional ``attempts``,
+    optional ``status`` (a ``RecipientStatus``, default ``PENDING``).
     Returns ``(broadcast_id, [user_ids], [recipient_ids])``.
     """
     async with session_factory() as db:
@@ -129,7 +130,7 @@ async def _seed(session_factory, recipients, *, subject="Hi", body="Hi {first_na
                 user_id=user.id,
                 email=user.email,
                 first_name=user.first_name,
-                status=RecipientStatus.PENDING,
+                status=spec.get("status", RecipientStatus.PENDING),
                 attempts=spec.get("attempts", 0),
             )
             recipient_rows.append(r)
@@ -291,6 +292,141 @@ async def test_resume_skips_rows_at_attempts_cap(session_factory, monkeypatch):
     assert b.sent_count == 1
     # A pending (capped) row remains, so the broadcast stays SENDING.
     assert b.status == BroadcastStatus.SENDING
+
+
+@pytest.mark.asyncio
+async def test_launch_resume_twice_runs_single_drain(session_factory, monkeypatch):
+    """Two concurrent ``launch_resume`` for the same id → exactly one drain runs;
+    the shared registry blocks the second, so send_email is called once per
+    distinct retryable recipient (no double-send on the resume path)."""
+    monkeypatch.setattr(
+        broadcast_service, "send_email", AsyncMock(return_value=True)
+    )
+    max_attempts = broadcast_service.settings.broadcast_max_attempts
+    # Three retryable rows (interrupted PENDING + FAILED below cap) and one
+    # FAILED-at-cap row that must NOT be re-listed.
+    broadcast_id, _users, _recips = await _seed(
+        session_factory,
+        [
+            {"status": RecipientStatus.PENDING, "attempts": 1},
+            {"status": RecipientStatus.FAILED, "attempts": 1},
+            {"status": RecipientStatus.FAILED, "attempts": max_attempts - 1},
+            {"status": RecipientStatus.FAILED, "attempts": max_attempts},
+        ],
+    )
+
+    broadcast_service.launch_resume(session_factory, broadcast_id)
+    # Second launch for the same id must be an idempotent no-op (registry).
+    broadcast_service.launch_resume(session_factory, broadcast_id)
+
+    tasks = list(broadcast_service._DRAIN_TASKS)
+    assert len(tasks) == 1
+    await asyncio.gather(*tasks)
+    await asyncio.sleep(0)  # let the done-callback flush
+
+    # Exactly one send per distinct retryable recipient (the capped row is not
+    # re-attempted).
+    assert broadcast_service.send_email.await_count == 3
+    statuses = await _recipient_statuses(session_factory, broadcast_id)
+    assert statuses["user0@x.io"] == RecipientStatus.SENT
+    assert statuses["user1@x.io"] == RecipientStatus.SENT
+    assert statuses["user2@x.io"] == RecipientStatus.SENT
+    assert statuses["user3@x.io"] == RecipientStatus.FAILED  # capped, untouched
+    b = await _get_broadcast(session_factory, broadcast_id)
+    assert b.sent_count == 3
+    assert b.failed_count == 1
+    # No pending rows remain (the capped row is FAILED), so the broadcast is done.
+    assert b.status == BroadcastStatus.COMPLETED
+    assert broadcast_id not in broadcast_service._ACTIVE_DRAINS
+
+
+@pytest.mark.asyncio
+async def test_resume_retries_failed_below_cap(session_factory, monkeypatch):
+    """A ``failed`` row still below the cap IS retried by resume; on success it
+    becomes ``sent`` and the recomputed counters stay consistent (no double
+    count of the row that flipped failed→sent)."""
+    monkeypatch.setattr(
+        broadcast_service, "send_email", AsyncMock(return_value=True)
+    )
+    # user0: previously FAILED once (below cap) → must be retried.
+    # user1: never attempted (PENDING) → sent normally.
+    broadcast_id, _users, _recips = await _seed(
+        session_factory,
+        [
+            {"status": RecipientStatus.FAILED, "attempts": 1},
+            {"status": RecipientStatus.PENDING, "attempts": 0},
+        ],
+    )
+
+    await broadcast_service.resume_pending(session_factory, broadcast_id)
+
+    statuses = await _recipient_statuses(session_factory, broadcast_id)
+    assert statuses["user0@x.io"] == RecipientStatus.SENT
+    assert statuses["user1@x.io"] == RecipientStatus.SENT
+    assert broadcast_service.send_email.await_count == 2
+    b = await _get_broadcast(session_factory, broadcast_id)
+    # Recomputed from rows: both SENT, nothing left failed.
+    assert b.sent_count == 2
+    assert b.failed_count == 0
+    assert b.skipped_count == 0
+    assert b.status == BroadcastStatus.COMPLETED
+    # The retried row's attempts advanced.
+    async with session_factory() as db:
+        attempts = (
+            await db.execute(
+                select(EmailBroadcastRecipient.attempts).where(
+                    EmailBroadcastRecipient.email == "user0@x.io"
+                )
+            )
+        ).scalar_one()
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_retry_failed_at_cap(session_factory, monkeypatch):
+    """A ``failed`` row already at the attempts cap is NOT re-attempted."""
+    monkeypatch.setattr(
+        broadcast_service, "send_email", AsyncMock(return_value=True)
+    )
+    max_attempts = broadcast_service.settings.broadcast_max_attempts
+    broadcast_id, _users, _recips = await _seed(
+        session_factory,
+        [{"status": RecipientStatus.FAILED, "attempts": max_attempts}],
+    )
+
+    await broadcast_service.resume_pending(session_factory, broadcast_id)
+
+    statuses = await _recipient_statuses(session_factory, broadcast_id)
+    assert statuses["user0@x.io"] == RecipientStatus.FAILED  # untouched
+    # send_email was never called: the capped row is left alone.
+    assert broadcast_service.send_email.await_count == 0
+    b = await _get_broadcast(session_factory, broadcast_id)
+    assert b.failed_count == 1
+    assert b.sent_count == 0
+    # No pending rows remain, so the broadcast is considered done.
+    assert b.status == BroadcastStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_resume_resumes_interrupted_pending(session_factory, monkeypatch):
+    """An interrupted ``pending`` row (below cap) is resumed and sent."""
+    monkeypatch.setattr(
+        broadcast_service, "send_email", AsyncMock(return_value=True)
+    )
+    # Crash left the row pending after one prior attempt (still below cap).
+    broadcast_id, _users, _recips = await _seed(
+        session_factory,
+        [{"status": RecipientStatus.PENDING, "attempts": 1}],
+    )
+
+    await broadcast_service.resume_pending(session_factory, broadcast_id)
+
+    statuses = await _recipient_statuses(session_factory, broadcast_id)
+    assert statuses["user0@x.io"] == RecipientStatus.SENT
+    assert broadcast_service.send_email.await_count == 1
+    b = await _get_broadcast(session_factory, broadcast_id)
+    assert b.sent_count == 1
+    assert b.status == BroadcastStatus.COMPLETED
 
 
 @pytest.mark.asyncio
