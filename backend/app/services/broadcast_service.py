@@ -11,6 +11,12 @@ This module grows across Tasks 2-4 of the implementation plan.
   admin-authored ``body_template``.
 - ``materialize_recipients`` (Task 3) — snapshots the segment into
   ``EmailBroadcastRecipient`` rows at send time.
+- ``build_batch_bodies`` / ``build_recipient_variables`` (2026-07-19
+  batch-sending revision, MA1/MA2) — the Mailgun batch-send primitives:
+  translate ``body_template`` into ``%recipient.*%``-tokenized HTML/text
+  and build the per-recipient ``recipient-variables`` map. ``render_email``
+  is unchanged and stays the dry-run renderer AND the batch-parity oracle
+  (MA3).
 
 ``active_verified`` is, per Ruling 10, the only segment v1 accepts —
 any other value is an app-level ``ValueError`` before it ever reaches
@@ -21,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import re
 from collections.abc import Sequence
 
 import structlog
@@ -36,7 +43,7 @@ from app.models.email_broadcast import (
     RecipientStatus,
 )
 from app.models.user import User
-from app.services.email_service import send_email
+from app.services.email_service import send_batch
 
 logger = structlog.get_logger()
 
@@ -122,6 +129,134 @@ def render_email(body_template: str, first_name: str | None) -> tuple[str, str]:
     return html_out, text
 
 
+# ─── Batch-sending primitives (2026-07-19 revision, MA1/MA2) ───
+#
+# Mailgun batch sending substitutes ``recipient-variables`` across the WHOLE
+# payload (not just inside a designated placeholder), so a stray literal
+# ``%`` anywhere in operator copy, the shared shell, or the footer is a
+# hazard: Mailgun would either leave it alone (harmless) or, if it happens
+# to match ``%recipient.<key>%`` for a key we didn't populate, drop the
+# token silently. ``_assert_only_known_tokens`` is the send-time guard
+# (MA1): it raises before anything reaches Mailgun.
+
+_RECIPIENT_TOKEN_RE = re.compile(r"%recipient\.\w+%")
+_KNOWN_RECIPIENT_TOKENS = frozenset(
+    {"%recipient.first_name_html%", "%recipient.first_name_text%"}
+)
+
+
+def _assert_only_known_tokens(payload: str) -> None:
+    """Raise ``ValueError`` if ``payload`` carries any ``%...%`` sequence
+    other than the two known Mailgun recipient tokens (MA1).
+
+    Two checks: (1) every ``%recipient.<word>%``-shaped match must be one
+    of the two known tokens — an unexpected one (a typo, or a future
+    variable we didn't populate) is refused outright; (2) after removing
+    the known-token matches, no bare ``%`` may remain — that would be a
+    stray operator ``%`` (e.g. "50% off") that Mailgun's substitution pass
+    could otherwise mishandle.
+    """
+    for match in _RECIPIENT_TOKEN_RE.finditer(payload):
+        token = match.group(0)
+        if token not in _KNOWN_RECIPIENT_TOKENS:
+            raise ValueError(
+                "broadcast body contains an unexpected Mailgun recipient "
+                f"token {token!r}; only {sorted(_KNOWN_RECIPIENT_TOKENS)} "
+                "are populated in recipient-variables"
+            )
+    stray = _RECIPIENT_TOKEN_RE.sub("", payload)
+    if "%" in stray:
+        raise ValueError(
+            "broadcast body contains a stray '%' character; Mailgun batch "
+            "sending substitutes recipient-variables across the whole "
+            "payload, so a literal '%' in operator copy is a hazard — "
+            "rephrase or escape it before sending"
+        )
+
+
+# Public alias: the router's send gate validates the SUBJECT with the same
+# MA1 guard the drain applies, so the operator gets a synchronous 422 instead
+# of a background drain failure.
+assert_only_known_tokens = _assert_only_known_tokens
+
+
+def build_batch_bodies(body_template: str) -> tuple[str, str]:
+    """Build the ``(html, text)`` bodies for ONE Mailgun batch-sending call
+    (MA1), carrying Mailgun recipient tokens instead of a rendered name.
+
+    The operator still authors with the literal ``{first_name}`` token
+    (same ``body_template`` as ``render_email``). Here we translate it:
+    ``%recipient.first_name_html%`` in the HTML part (Mailgun substitutes
+    the per-recipient, already-escaped value at send time — see
+    ``build_recipient_variables``), ``%recipient.first_name_text%`` in the
+    text part. Both parts are wrapped in the SAME shell + footer as
+    ``render_email`` so a dry-run (``render_email``) and a real batch send
+    are byte-for-byte comparable once Mailgun's substitution is simulated
+    (MA3).
+
+    Raises ``ValueError`` (via ``_assert_only_known_tokens``) if the
+    resulting payload carries any stray ``%`` or an unrecognized
+    ``%recipient.*%`` token — this MUST run before the body ever reaches
+    Mailgun (MA1).
+    """
+    # HTML path: escape the whole body template as literal text FIRST (this
+    # is the single html.escape call the revision calls out as "static,
+    # shared across the batch" — no per-recipient escaping happens here),
+    # then substitute in the HTML recipient token.
+    body_html_escaped = html.escape(body_template)
+    body_html_tokenized = body_html_escaped.replace(
+        "{first_name}", "%recipient.first_name_html%"
+    )
+    html_out = (
+        "<html><body>"
+        f"<p>{body_html_tokenized}</p>"
+        "<hr>"
+        f"<p>{_FOOTER_TEXT}</p>"
+        "</body></html>"
+    )
+
+    # Text path: raw body template, text recipient token, plain footer.
+    body_text_tokenized = body_template.replace(
+        "{first_name}", "%recipient.first_name_text%"
+    )
+    text_out = f"{body_text_tokenized}\n\n{_FOOTER_TEXT}"
+
+    _assert_only_known_tokens(html_out)
+    _assert_only_known_tokens(text_out)
+
+    return html_out, text_out
+
+
+def build_recipient_variables(recipients) -> dict[str, dict[str, str]]:
+    """Build the Mailgun ``recipient-variables`` map for a batch (MA2).
+
+    ``recipients`` is an iterable of either ``(email, first_name)`` tuples
+    or objects carrying ``.email`` / ``.first_name`` attributes (e.g.
+    ``EmailBroadcastRecipient`` rows). Returns
+    ``{email: {"first_name_html": ..., "first_name_text": ...}}`` keyed by
+    the EXACT snapshot email string, so the same value is usable both as a
+    ``to_list`` entry and as this map's key.
+
+    The "there" fallback for a missing ``first_name`` is applied HERE, in
+    the map — never baked into the ``%recipient.*%`` token itself — so
+    ``first_name_html`` is the HTML-escaped value (Mailgun substitutes it
+    raw into ``build_batch_bodies``' already-escaped shell) and
+    ``first_name_text`` stays the raw value.
+    """
+    variables: dict[str, dict[str, str]] = {}
+    for recipient in recipients:
+        if isinstance(recipient, tuple):
+            email, first_name = recipient
+        else:
+            email, first_name = recipient.email, recipient.first_name
+        name = first_name or "there"
+        variables[email] = {
+            "first_name_html": html.escape(name),
+            "first_name_text": name,
+        }
+    return variables
+
+
 async def materialize_recipients(db: AsyncSession, broadcast: EmailBroadcast) -> int:
     """Snapshot the broadcast's segment into ``PENDING`` recipient rows.
 
@@ -145,34 +280,40 @@ async def materialize_recipients(db: AsyncSession, broadcast: EmailBroadcast) ->
     return len(rows)
 
 
-# ─── Send-drain engine (Task 4, spec §"Send execution") ───
+# ─── Send-drain engine (Mailgun BATCH sending — 2026-07-19 revision, R1-R5) ───
 #
-# Atomic-claim design (Ruling 3). There is no per-row "sending" marker in
-# ``RecipientStatus``, so a recipient cannot be moved out of ``pending``
-# *before* its send outcome is known. Two guards give the no-double-send
-# guarantee instead:
+# The drain now iterates BATCHES, not rows: each iteration SELECTs up to
+# ``min(broadcast_batch_size, 1000)`` eligible rows ORDER BY id, re-checks the
+# segment per row, then hands the survivors to ONE ``send_batch`` Mailgun call
+# with a ``recipient-variables`` map. ``sent`` is repurposed (R1, Model A, no
+# enum change / no migration) to mean **"accepted by Mailgun for delivery"**
+# (the per-batch 2xx), NOT "delivered" — true per-recipient delivery status only
+# arrives via the deferred bounce/complaint webhooks. UI/response copy MUST
+# label ``sent_count`` as "Queued" / "Accepted for delivery".
 #
-#   1. PRIMARY mutual-exclusion — the in-process ``_ACTIVE_DRAINS`` registry
-#      (Ruling 3b). ``instance_count: 1`` in prod means at most one event loop
-#      ever runs a drain for a given broadcast id. BOTH the send path
-#      (``launch_drain``) and the resume path (``launch_resume``) go through the
-#      SAME registry via ``_launch``, so a second concurrent launch for the same
-#      id — send-vs-send, resume-vs-resume, or send-vs-resume — is an idempotent
-#      no-op. This is what actually prevents a recipient being sent twice.
-#   2. BACKSTOP double-count guard — every row-finalizing UPDATE is a
-#      compare-and-swap on the ``(status, attempts)`` the drain last read, and
-#      proceeds only when ``rowcount == 1`` (Ruling 3c). Even if the process
-#      guard were ever bypassed (e.g. a future multi-instance change), only the
-#      drain that wins the CAS advances the row, and the broadcast counters are
-#      recomputed from the authoritative row states (never bumped
-#      incrementally), so counts can never be inflated or drift under retry.
+# Claim-BEFORE-send (R2). Each batch is claimed to ``sent`` (``attempts+1``,
+# ``sent_at=NOW()``) in ONE UPDATE and COMMITTED *before* the Mailgun call; a
+# non-2xx result reverts exactly that batch ``sent → failed`` with an error.
+# This favours the never-double-send invariant, which is what matters for real
+# customer email. The accepted residual (documented per R2): a crash between the
+# claim commit and a successful Mailgun receipt leaves an in-flight batch marked
+# ``sent`` but possibly undelivered — it is NOT retried by ``resume``.
+# Reconciliation, if ever needed, is via the per-batch ``broadcast_batch_sent`` /
+# ``broadcast_batch_failed`` log (MA5).
 #
-# The known residual window is bypass-only: if two drains somehow ran the same
-# id concurrently, both could call ``send_email`` before either won the CAS. On
-# a single instance that window does not exist, and the CAS + recompute keep the
-# counters correct regardless. We favour never-double-count and rely on the
-# registry for never-double-send, which is sound under the locked
-# ``instance_count: 1`` deployment.
+# Why no per-row compare-and-swap is needed (R2): two guards make the SELECT set
+# equal to the claim set on this deployment —
+#   1. the in-process ``_ACTIVE_DRAINS`` registry (below) — ``instance_count: 1``
+#      means at most one event loop ever drains a given broadcast id, and BOTH
+#      ``launch_drain`` and ``launch_resume`` share that registry, so a second
+#      concurrent launch (send-vs-send, resume-vs-resume, send-vs-resume) is an
+#      idempotent no-op; and
+#   2. the ``draft → sending`` CAS in the router (Ruling 3a) gates entry.
+# Because only one drain touches an id at a time, the rows this drain SELECTed
+# are exactly the rows it claims — no other writer can advance them underneath
+# it — so the claim UPDATE is guarded only by the batch's id set + the expected
+# status(es), and the broadcast counters are recomputed from the authoritative
+# row states (never bumped incrementally) so retries can never inflate them.
 
 # Broadcast ids with a live in-process drain (Ruling 3b). A second launch for
 # an id already draining is a no-op.
@@ -231,7 +372,7 @@ def launch_drain(
     No-op if a drain for this id is already live in this process (Ruling 3b).
     Callers MUST launch this only AFTER the materialization transaction has
     committed (Ruling 2), so the drain's own session sees the ``pending`` rows.
-    Only sends ``pending`` recipients; retries are the resume path's job.
+    Only batches ``pending`` recipients; retries are the resume path's job.
     """
     _launch(session_factory, broadcast_id, _drain)
 
@@ -263,46 +404,6 @@ async def _user_still_targetable(db: AsyncSession, user_id: int | None) -> bool:
         )
     )
     return result.scalar_one_or_none() is not None
-
-
-async def _claim_recipient(
-    db: AsyncSession,
-    recipient_id: int,
-    new_status: RecipientStatus,
-    *,
-    expected_status: RecipientStatus,
-    expected_attempts: int,
-    error: str | None,
-    set_sent_at: bool,
-) -> bool:
-    """Atomically move a recipient into ``new_status`` and bump ``attempts``.
-
-    Compare-and-swap on ``(status, attempts)`` (Ruling 3c): the UPDATE only
-    lands when the row is STILL exactly as this drain last read it, so it works
-    for the fresh-send path (``expected_status='pending'``) AND the resume-retry
-    path (``expected_status='failed'`` for a below-cap row). Returns True only
-    when it claimed the row (``rowcount == 1``). A False return means another
-    drain (or a concurrent resume) already advanced this row, so the caller must
-    not act on it — the CAS is the backstop that keeps a double-send from ever
-    double-counting even if the process registry were bypassed.
-    """
-    values: dict = {
-        "status": new_status,
-        "attempts": expected_attempts + 1,
-        "error": error,
-    }
-    if set_sent_at:
-        values["sent_at"] = func.now()
-    result = await db.execute(
-        update(EmailBroadcastRecipient)
-        .where(
-            EmailBroadcastRecipient.id == recipient_id,
-            EmailBroadcastRecipient.status == expected_status,
-            EmailBroadcastRecipient.attempts == expected_attempts,
-        )
-        .values(**values)
-    )
-    return (result.rowcount or 0) == 1
 
 
 async def _recompute_broadcast_counters(
@@ -343,11 +444,21 @@ async def _recompute_broadcast_counters(
 async def _run_drain_loop(
     db: AsyncSession, broadcast_id: int, *, only_retryable: bool
 ) -> None:
-    """Drain every eligible ``pending`` recipient of ``broadcast_id``.
+    """Drain ``broadcast_id`` in Mailgun batches (R2 — claim-before-send).
 
-    Commits per row so progress is durable across a crash. One recipient's
-    send failure never halts the batch (Ruling 12): a falsy/raising
-    ``send_email`` marks that row ``failed`` and the loop continues.
+    Per batch: SELECT the next ``min(broadcast_batch_size, 1000)`` eligible rows
+    ORDER BY id, segment-re-check each (a lapsed user is claimed ``skipped`` and
+    EXCLUDED), CLAIM the surviving set to ``sent`` in ONE UPDATE and COMMIT, THEN
+    make ONE ``send_batch`` Mailgun call; a non-2xx result reverts exactly that
+    batch ``sent → failed``. One batch's failure never halts the drain (R3): the
+    loop moves on. Pacing (``broadcast_pacing_seconds``) is applied BETWEEN
+    batches, never after the last. When no eligible rows remain the broadcast is
+    ``completed`` (even with some ``failed``/``skipped``).
+
+    Because a single instance drains an id at a time (the ``_ACTIVE_DRAINS``
+    registry + the ``draft → sending`` CAS), the SELECT set equals the claim
+    set, so no per-row compare-and-swap is needed — the claim is guarded only by
+    the batch's id set and the expected status(es).
     """
     broadcast = (
         await db.execute(
@@ -355,133 +466,192 @@ async def _run_drain_loop(
         )
     ).scalar_one()
     subject = broadcast.subject
-    body_template = broadcast.body_template
 
+    # Tokenized bodies are STATIC across the whole drain (MA1): build ONCE. A
+    # stray ``%`` or unknown ``%recipient.*%`` token raises here and propagates
+    # to the wrapper (status=FAILED), before anything reaches Mailgun.
+    body_html_tokens, body_text_tokens = build_batch_bodies(broadcast.body_template)
+    # The SUBJECT is part of the same Mailgun payload, and recipient-variable
+    # substitution runs across the WHOLE payload — subject included. So the
+    # MA1 guard has to cover it too, not just the bodies: a subject like
+    # "50% off" or one carrying an unpopulated ``%recipient.X%`` is exactly
+    # the same hazard as it would be in the body.
+    _assert_only_known_tokens(subject)
+
+    batch_size = min(settings.broadcast_batch_size, 1000)
     max_attempts = settings.broadcast_max_attempts
+
     if only_retryable:
-        # ``resume`` re-lists interrupted ``pending`` rows AND ``failed`` rows,
-        # but only those still below the attempts cap (Ruling 12) — so a row
-        # that keeps failing eventually reaches ``max_attempts`` and is left
-        # alone rather than hammered on every resume. The cap applies to both
-        # statuses (a ``pending`` row already at the cap is not retried either).
+        # ``resume`` re-batches interrupted ``pending`` rows AND ``failed`` rows,
+        # but only those still below the attempts cap (Ruling 12 / R3) — so a
+        # row that keeps failing eventually reaches ``max_attempts`` and is left
+        # alone rather than re-batched on every resume.
+        expected_statuses = [RecipientStatus.PENDING, RecipientStatus.FAILED]
         eligible = and_(
-            EmailBroadcastRecipient.status.in_(
-                [RecipientStatus.PENDING, RecipientStatus.FAILED]
-            ),
+            EmailBroadcastRecipient.status.in_(expected_statuses),
             EmailBroadcastRecipient.attempts < max_attempts,
         )
     else:
-        # Fresh send: only ever touch ``pending`` rows. Retries are resume-only.
+        # Fresh send: only ever batch ``pending`` rows. Retries are resume-only.
+        expected_statuses = [RecipientStatus.PENDING]
         eligible = EmailBroadcastRecipient.status == RecipientStatus.PENDING
-    conditions = [
-        EmailBroadcastRecipient.broadcast_id == broadcast_id,
-        eligible,
-    ]
-    target_ids = [
-        row[0]
-        for row in (
-            await db.execute(
-                select(EmailBroadcastRecipient.id)
-                .where(*conditions)
-                .order_by(EmailBroadcastRecipient.id)
-            )
-        ).all()
-    ]
 
-    def _is_eligible(status: RecipientStatus, attempts: int) -> bool:
-        if only_retryable:
-            return (
-                status in (RecipientStatus.PENDING, RecipientStatus.FAILED)
-                and attempts < max_attempts
-            )
-        return status == RecipientStatus.PENDING
+    # Rows already handled in THIS drain run (survivors sent, or skipped). A
+    # ``failed``-reverted row re-enters the resume eligibility set, so we exclude
+    # seen ids to keep ``attempts`` batch-coarse (R3): at most one attempt per
+    # row per resume run, which also guarantees the loop terminates.
+    seen_ids: set[int] = set()
+    did_send = False
 
-    for recipient_id in target_ids:
-        # Re-read the row's current snapshot; another drain (or a prior
-        # partial run) may have advanced it since we listed the ids.
-        row = (
+    while True:
+        conditions = [
+            EmailBroadcastRecipient.broadcast_id == broadcast_id,
+            eligible,
+        ]
+        if seen_ids:
+            conditions.append(EmailBroadcastRecipient.id.notin_(seen_ids))
+        rows = (
             await db.execute(
                 select(
-                    EmailBroadcastRecipient.status,
-                    EmailBroadcastRecipient.attempts,
+                    EmailBroadcastRecipient.id,
                     EmailBroadcastRecipient.user_id,
                     EmailBroadcastRecipient.email,
                     EmailBroadcastRecipient.first_name,
-                ).where(EmailBroadcastRecipient.id == recipient_id)
+                    EmailBroadcastRecipient.status,
+                )
+                .where(*conditions)
+                .order_by(EmailBroadcastRecipient.id)
+                .limit(batch_size)
             )
-        ).first()
-        if row is None:
-            continue
-        status, attempts, user_id, email, first_name = row
-        if not _is_eligible(status, attempts):
-            continue
+        ).all()
+        if not rows:
+            break
 
-        # (1) Segment re-check at send time (Ruling 9): skip a user who lapsed
-        # (deactivated / unverified) after materialization.
-        if not await _user_still_targetable(db, user_id):
-            if await _claim_recipient(
-                db,
-                recipient_id,
-                RecipientStatus.SKIPPED,
-                expected_status=status,
-                expected_attempts=attempts,
-                error="user no longer active and verified",
-                set_sent_at=False,
-            ):
+        # (1) Segment re-check each row (Ruling 9). A lapsed user is claimed
+        # ``skipped`` individually and EXCLUDED from the batch; survivors go on.
+        survivors: list[tuple[int, str, str | None]] = []
+        skipped_any = False
+        for rid, user_id, email, first_name, status in rows:
+            seen_ids.add(rid)
+            if await _user_still_targetable(db, user_id):
+                survivors.append((rid, email, first_name))
+            else:
+                await db.execute(
+                    update(EmailBroadcastRecipient)
+                    .where(
+                        EmailBroadcastRecipient.id == rid,
+                        EmailBroadcastRecipient.status == status,
+                    )
+                    .values(
+                        status=RecipientStatus.SKIPPED,
+                        error="user no longer active and verified",
+                    )
+                )
                 await db.commit()
-                # Recompute live so GET /{id} progress polling advances during
-                # the drain instead of jumping straight to the final tally.
+                skipped_any = True
+
+        if not survivors:
+            # A batch of only-lapsed rows: recompute so progress polling reflects
+            # the new ``skipped`` tally, then move to the next batch. No pacing —
+            # no Mailgun call happened.
+            if skipped_any:
                 await _recompute_broadcast_counters(db, broadcast_id)
                 await db.commit()
-            else:
-                await db.rollback()
             continue
 
-        # (2) Render per-recipient (escaped for HTML, Ruling 11). A render
-        # error is NOT swallowed per-row: it propagates to the drain-level
-        # wrapper which sets status=FAILED and re-raises for the done-callback.
-        body_html, body_text = render_email(body_template, first_name)
+        # (2) Pace BETWEEN batches (never before the first send, never after the
+        # last — the loop exits via the empty-SELECT break above).
+        if did_send:
+            await asyncio.sleep(settings.broadcast_pacing_seconds)
 
-        # (3) Send. Key SENT/FAILED off the return bool (Ruling 12); still
-        # try/except defensively so a raising send_email fails just this row.
-        try:
-            sent_ok = await send_email(email, subject, body_html, body_text)
-            send_error = None if sent_ok else "send_email returned a falsy result"
-        except Exception as exc:  # noqa: BLE001 - one row's failure must not halt the batch
-            sent_ok = False
-            send_error = f"send_email raised: {exc}"
+        survivor_ids = [rid for rid, _email, _name in survivors]
+        to_list = [email for _rid, email, _name in survivors]
+        recipient_variables = build_recipient_variables(
+            [(email, first_name) for _rid, email, first_name in survivors]
+        )
+        # (MA2) Every ``to`` address must have a complete, key-matched vars entry
+        # under the EXACT same snapshot email string. A real ``raise``, not a
+        # bare ``assert`` — asserts are stripped under ``python -O``, and this
+        # is the guard standing between us and Mailgun exposing every address
+        # in the ``To`` header. ``send_batch`` re-checks it independently.
+        if set(recipient_variables.keys()) != set(to_list):
+            raise ValueError(
+                "recipient-variables key set does not match the batch to-list "
+                f"({len(recipient_variables)} vars vs {len(to_list)} addresses)"
+            )
 
-        outcome = RecipientStatus.SENT if sent_ok else RecipientStatus.FAILED
-        # (4) Atomic claim (Ruling 3c): CAS on the (status, attempts) we read,
-        # so a concurrent finalize loses. ``attempts`` is bumped on every
-        # attempt, so a row that keeps failing marches toward the cap.
-        if await _claim_recipient(
-            db,
-            recipient_id,
-            outcome,
-            expected_status=status,
-            expected_attempts=attempts,
-            error=send_error,
-            set_sent_at=sent_ok,
-        ):
-            await db.commit()
-            # Recompute live so GET /{id} progress polling advances during the
-            # drain instead of jumping straight to the final tally (counters
-            # are cheap to recompute at these audience sizes, and pacing gives
-            # ample headroom between rows).
-            await _recompute_broadcast_counters(db, broadcast_id)
-            await db.commit()
-        else:
+        # (3) CLAIM the whole survivor set BEFORE the send (R2). ONE UPDATE,
+        # committed first, so a crash mid-call never re-sends this batch.
+        claim_result = await db.execute(
+            update(EmailBroadcastRecipient)
+            .where(
+                EmailBroadcastRecipient.broadcast_id == broadcast_id,
+                EmailBroadcastRecipient.id.in_(survivor_ids),
+                EmailBroadcastRecipient.status.in_(expected_statuses),
+            )
+            .values(
+                status=RecipientStatus.SENT,
+                attempts=EmailBroadcastRecipient.attempts + 1,
+                sent_at=func.now(),
+            )
+        )
+        # The claim MUST cover exactly the set we are about to hand Mailgun.
+        # Single-instance drains make that the normal case, but if the counts
+        # disagree then some row moved underneath us and this batch's ``to``
+        # list no longer equals the set we own — sending it would mail someone
+        # we did not claim (the double-send hazard R2 exists to prevent).
+        # Roll the partial claim back and skip the batch entirely; the rows
+        # stay eligible, so a resume picks them up cleanly.
+        claimed = claim_result.rowcount or 0
+        if claimed != len(survivor_ids):
             await db.rollback()
+            logger.error(
+                "broadcast_batch_claim_mismatch",
+                broadcast_id=broadcast_id,
+                expected=len(survivor_ids),
+                actual=claimed,
+            )
+            continue
+        await db.commit()
 
-        # (5) Pace between sends (env ``broadcast_pacing_seconds``).
-        await asyncio.sleep(settings.broadcast_pacing_seconds)
+        # (4) ONE Mailgun batch call. ``send_batch`` returns a bool and never
+        # raises (it catches internally, MA4); a defensive guard stays anyway.
+        try:
+            ok = await send_batch(
+                to_list,
+                subject,
+                body_html_tokens,
+                body_text_tokens,
+                recipient_variables,
+            )
+            batch_error = None if ok else "send_batch returned a falsy result"
+        except Exception as exc:  # noqa: BLE001 - one batch's failure must not halt the drain
+            ok = False
+            batch_error = f"send_batch raised: {exc}"
+        did_send = True
 
-    # Recompute counters from the authoritative row states (see helper) and read
-    # back how many rows are still ``pending``. When none remain, the broadcast
-    # is done (even with some ``failed``/``skipped``). Rows still pending (e.g. a
-    # resume that left a ``pending`` row already at the attempts cap) keep the
-    # broadcast in ``sending``.
+        # (5) Non-2xx → revert THIS batch ``sent → failed`` with the error, so a
+        # later resume (while ``attempts < max``) re-batches it.
+        if not ok:
+            await db.execute(
+                update(EmailBroadcastRecipient)
+                .where(
+                    EmailBroadcastRecipient.broadcast_id == broadcast_id,
+                    EmailBroadcastRecipient.id.in_(survivor_ids),
+                    EmailBroadcastRecipient.status == RecipientStatus.SENT,
+                )
+                .values(status=RecipientStatus.FAILED, error=batch_error)
+            )
+            await db.commit()
+
+        # Recompute live so GET /{id} progress polling advances per batch.
+        await _recompute_broadcast_counters(db, broadcast_id)
+        await db.commit()
+
+    # Recompute counters from the authoritative row states and read back how many
+    # rows are still ``pending``. When none remain, the broadcast is done (even
+    # with some ``failed``/``skipped``). Rows still pending (e.g. a resume that
+    # left a ``pending`` row already at the attempts cap) keep it in ``sending``.
     remaining_pending = await _recompute_broadcast_counters(db, broadcast_id)
     await db.commit()
     if remaining_pending == 0:

@@ -27,6 +27,7 @@ Security stance (audited L5.6):
 from __future__ import annotations
 
 import html
+import json
 import urllib.parse
 
 import httpx
@@ -212,6 +213,112 @@ async def send_email(
         # surfaces the response status / reason but not our payload.
         await logger.aerror(
             "email_send_failed", to=to, subject=subject, error=str(exc)
+        )
+        return False
+
+
+async def send_batch(
+    to_list: list[str],
+    subject: str,
+    body_html: str,
+    body_text: str,
+    recipient_variables: dict,
+) -> bool:
+    """Send ONE Mailgun batch-sending call covering every address in
+    ``to_list`` (spec ``2026-07-18-admin-email-broadcast-design.md``, "Batch
+    sending revision" MA4). Mailgun fans this out into one individualized
+    message per recipient, substituting ``recipient_variables`` into the
+    ``%recipient.*%`` tokens in ``body_html``/``body_text``.
+
+    Dev mode (no ``mailgun_api_key``): logs ``broadcast_batch_sent`` with
+    ONLY ``count=len(to_list)`` and ``subject``, sends nothing, returns True.
+
+    Prod: mirrors ``send_email``'s HTTP shape, but ``to`` carries every
+    address (httpx repeats a list-valued form field) and
+    ``recipient-variables`` is sent as a JSON string — Mailgun's
+    single-value-per-form-key model. Returns True only on a 2xx response;
+    any exception (including a raised non-2xx status) is caught and
+    returns False so one bad batch never crashes the caller.
+
+    PII bound (MA5): logging here NEVER includes ``to_list``,
+    ``recipient_variables``, or the rendered bodies — only the batch size,
+    subject, and status/error. The address list and per-recipient names
+    live in the request payload only.
+
+    Recipient-variables precondition (MA2), enforced HERE and not only in
+    the caller: this is the one function that can trigger Mailgun's
+    all-addresses-in-the-``To``-header leak. Mailgun only individualizes a
+    multi-address ``to`` when ``recipient-variables`` carries an entry for
+    EVERY address; a missing or mismatched map makes every recipient see
+    every other address. So for ``len(to_list) > 1`` the map's key set must
+    equal ``to_list`` exactly — otherwise NOTHING is sent, a PII-bounded
+    ``broadcast_batch_failed`` is logged (counts + reason only, never
+    addresses), and the call returns ``False`` (same falsy contract the
+    drain already treats as a failed batch, so the rows revert
+    ``sent → failed`` and a resume can retry them).
+
+    A SINGLE-address ``to`` is deliberately allowed without a map entry:
+    there is no cross-recipient leak possible with one address, and the
+    dry-run/one-off paths rely on it. Tokens simply stay unsubstituted in
+    that case, which the drain's own MA2 key-match prevents anyway.
+    """
+    if len(to_list) > 1 and set(recipient_variables or {}) != set(to_list):
+        await logger.aerror(
+            "broadcast_batch_failed",
+            count=len(to_list),
+            subject=subject,
+            variables_count=len(recipient_variables or {}),
+            error=(
+                "recipient-variables key set does not match the to-list; "
+                "refusing to send a multi-address batch that Mailgun would "
+                "deliver with every address exposed in the To header"
+            ),
+        )
+        return False
+
+    if not settings.mailgun_api_key:
+        await logger.ainfo(
+            "broadcast_batch_sent", count=len(to_list), subject=subject
+        )
+        return True
+
+    # Production: send via Mailgun HTTP API.
+    api_host = (
+        "api.eu.mailgun.net"
+        if settings.mailgun_region.lower().strip() == "eu"
+        else "api.mailgun.net"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            response = await client.post(
+                f"https://{api_host}/v3/{settings.mailgun_domain}/messages",
+                auth=("api", settings.mailgun_api_key),
+                data={
+                    "from": settings.email_from,
+                    "to": to_list,
+                    "subject": subject,
+                    "html": body_html,
+                    "text": body_text,
+                    "recipient-variables": json.dumps(recipient_variables),
+                },
+            )
+            response.raise_for_status()
+            await logger.ainfo(
+                "broadcast_batch_sent",
+                count=len(to_list),
+                subject=subject,
+                status=response.status_code,
+            )
+            return True
+    except Exception as exc:
+        # Never log to_list / recipient_variables / bodies (MA5) — only the
+        # count, subject, and the exception's str() (httpx surfaces status /
+        # reason there, not our request payload).
+        await logger.aerror(
+            "broadcast_batch_failed",
+            count=len(to_list),
+            subject=subject,
+            error=str(exc),
         )
         return False
 

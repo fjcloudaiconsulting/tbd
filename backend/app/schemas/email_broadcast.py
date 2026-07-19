@@ -56,9 +56,22 @@ class BroadcastResponse(BaseModel):
     status: BroadcastStatus
     created_by_user_id: Optional[int] = None
     total_recipients: Optional[int] = None
-    sent_count: int
-    failed_count: int
-    skipped_count: int
+    # Batch-sending model (architect Ruling R1, 2026-07-19): a broadcast
+    # sends via Mailgun batch calls, which report only per-batch acceptance.
+    # ``sent_count`` therefore means "accepted by the mail provider for
+    # delivery" — NOT confirmed delivered (true delivered/bounced status
+    # needs the deferred Mailgun webhooks). The UI MUST label this "Queued"
+    # or "Accepted for delivery", never "Delivered" or bare "Sent".
+    sent_count: int = Field(
+        description="Recipients accepted by the mail provider for delivery "
+        "(NOT confirmed delivered). Label as 'Queued' / 'Accepted', not 'Delivered'.",
+    )
+    failed_count: int = Field(
+        description="Recipients in batches the mail provider rejected (non-2xx).",
+    )
+    skipped_count: int = Field(
+        description="Targeted users who lapsed (inactive/unverified) before send.",
+    )
     dry_run_sent_at: Optional[datetime] = None
     confirmed_at: Optional[datetime] = None
     created_at: datetime

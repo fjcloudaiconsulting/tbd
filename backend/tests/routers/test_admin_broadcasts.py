@@ -12,10 +12,10 @@ Pins the architect-locked invariants for this layer:
   send on the same broadcast is refused with 409.
 - Audit ``detail`` never carries a recipient email address (Ruling 13).
 
-``send_email`` is mocked at both call sites: the router's own dry-run path
-(``app.routers.admin_broadcasts.send_email``) and the drain engine's
-(``app.services.broadcast_service.send_email``), so no real Mailgun call
-happens anywhere in this file. The drain launched by ``POST /{id}/send``
+The two send paths are mocked so no real Mailgun call happens anywhere in this
+file: the router's own dry-run path (``app.routers.admin_broadcasts.send_email``,
+single recipient) and the drain engine's Mailgun batch call
+(``app.services.broadcast_service.send_batch``, one call per batch). The drain launched by ``POST /{id}/send``
 runs on a bare ``asyncio.create_task`` (Ruling 1) rather than FastAPI's
 ``BackgroundTasks``, so ``TestClient`` does not block for it to finish —
 tests poll ``GET /{id}`` until the broadcast reaches a terminal status.
@@ -112,13 +112,15 @@ def _clean_registries():
 
 @pytest.fixture(autouse=True)
 def _mock_send_email(monkeypatch):
-    """Mock ``send_email`` at BOTH call sites: the router's dry-run path and
-    the drain engine's fresh-send path. Returns the drain-side mock (the one
-    tests usually want to assert on) with ``return_value=True``."""
+    """Mock the two send paths: the router's dry-run ``send_email`` (single
+    recipient = the calling superadmin) and the drain engine's ``send_batch``
+    (Mailgun batch sending, 2026-07-19 revision). Returns both mocks with
+    ``return_value=True``; ``drain`` is the ``send_batch`` mock (one call per
+    batch, NOT per recipient)."""
     dry_run_mock = AsyncMock(return_value=True)
     drain_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(admin_broadcasts_module, "send_email", dry_run_mock)
-    monkeypatch.setattr(broadcast_service, "send_email", drain_mock)
+    monkeypatch.setattr(broadcast_service, "send_batch", drain_mock)
     return {"dry_run": dry_run_mock, "drain": drain_mock}
 
 
@@ -387,6 +389,63 @@ async def test_send_over_cap_returns_422(session_factory, monkeypatch):
     assert res.json()["detail"]["code"] == "recipient_cap_exceeded"
 
 
+@pytest.mark.parametrize(
+    ("subject", "body"),
+    [
+        pytest.param(
+            "Hi there",
+            "Hi {first_name}, enjoy 50% off this week.",
+            id="stray_percent_in_body",
+        ),
+        pytest.param(
+            "Enjoy 50% off",
+            "Hi {first_name}, welcome back.",
+            id="stray_percent_in_subject",
+        ),
+        pytest.param(
+            "Hi there",
+            "Hi {first_name}, %recipient.bogus%",
+            id="unknown_recipient_token",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_send_with_hazardous_template_returns_422(
+    session_factory, subject, body
+):
+    """The MA1 token guard runs at the SEND GATE, synchronously.
+
+    Before this, a stray ``%`` sailed through create/preview/dry-run, ``POST
+    /send`` returned 200 with status ``sending``, and only then did the
+    background drain raise and flip the broadcast to ``failed`` — the
+    operator saw a success followed by an unexplained failure. Now the
+    request itself fails and the broadcast stays ``draft``, so the copy can
+    be fixed and re-sent.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        draft = _create_draft(client, subject=subject, body=body)
+        # Create + dry-run both still succeed; the gate is the send call.
+        assert client.post(
+            f"/api/v1/admin/broadcasts/{draft['id']}/dry-run"
+        ).status_code == 200
+
+        res = client.post(
+            f"/api/v1/admin/broadcasts/{draft['id']}/send",
+            json={
+                "confirm_subject": draft["subject"],
+                "confirm_recipient_count": draft["recipient_count"],
+            },
+        )
+        assert res.status_code == 422, res.text
+        assert res.json()["detail"]["code"] == "invalid_template_token"
+
+        # Nothing was materialized or claimed: still a draft.
+        after = client.get(f"/api/v1/admin/broadcasts/{draft['id']}").json()
+        assert after["status"] == "draft"
+
+
 # ── happy path + idempotency + audit ─────────────────────────────────────
 
 
@@ -442,7 +501,11 @@ async def test_dry_run_then_send_drains_all_recipients(session_factory, _mock_se
             )
         ).scalars().all()
     assert rows and all(s == RecipientStatus.SENT for s in rows)
-    assert _mock_send_email["drain"].await_count == 3
+    # Batch sending: the 3 recipients go out in ONE Mailgun batch call, not one
+    # call per recipient. That single call's ``to_list`` covers all three.
+    assert _mock_send_email["drain"].await_count == 1
+    batch_to_list = _mock_send_email["drain"].await_args_list[0].args[0]
+    assert len(batch_to_list) == 3
 
 
 @pytest.mark.asyncio

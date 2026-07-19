@@ -13,7 +13,7 @@ the business transaction). Per Ruling 13, audit ``detail`` carries NO
 recipient PII — only ``broadcast_id``, ``segment``, counts, and (at most)
 the subject. Never a recipient email address, never the rendered body.
 
-The ``POST /{id}/send`` gate is the safety-critical path (spec §API): five
+The ``POST /{id}/send`` gate is the safety-critical path (spec §API): six
 checks, in order, each with a machine-readable ``code`` so the frontend can
 render the right message. On pass, materialization + the ``draft->sending``
 CAS + ``confirmed_at`` all happen in ONE transaction, which is committed
@@ -44,6 +44,8 @@ from app.schemas.email_broadcast import (
 )
 from app.services import audit_service
 from app.services.broadcast_service import (
+    assert_only_known_tokens,
+    build_batch_bodies,
     count_segment,
     launch_drain,
     launch_resume,
@@ -285,6 +287,9 @@ async def send_broadcast(
        count (else 422 ``confirm_count_mismatch``)
     5. the recomputed count is within ``broadcast_max_recipients`` (else 422
        ``recipient_cap_exceeded``)
+    6. the subject + body survive the MA1 Mailgun-token guard (else 422
+       ``invalid_template_token``) — checked here so a stray ``%`` fails the
+       request synchronously instead of failing the background drain
 
     On pass, in one transaction: materialize recipients, set
     ``total_recipients``, flip ``draft -> sending`` via a conditional
@@ -333,6 +338,22 @@ async def send_broadcast(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"code": "recipient_cap_exceeded"},
+        )
+
+    # (6) Template must survive the MA1 Mailgun-token guard BEFORE we
+    # materialize or claim anything. The drain builds the tokenized bodies
+    # itself and raises on a stray ``%`` / unknown ``%recipient.X%``, but it
+    # does so in the background — the operator would get a 200 with status
+    # ``sending`` and only later see the broadcast flip to ``failed``. Doing
+    # the identical check synchronously here fails fast with a 422 and leaves
+    # the broadcast in ``draft``, so the copy can just be fixed and re-sent.
+    try:
+        build_batch_bodies(row.body_template)
+        assert_only_known_tokens(row.subject)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "invalid_template_token"},
         )
 
     # All checks passed: materialize + CAS + stamp confirmed_at, one txn.
