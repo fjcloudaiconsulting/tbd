@@ -225,19 +225,21 @@ Body template:
 
 > Hi {first_name},
 >
-> Yesterday a DNS change on our side made The Better Decision unreachable for a
-> while. That was our mistake, and I'm sorry for the disruption.
+> On Friday, July 17, a DNS change on our side made The Better Decision
+> unreachable. The outage lasted more than 12 hours, and it was fully resolved
+> in the early hours of Saturday, July 18. That was our mistake, and I'm sorry
+> for the disruption and for how long it took to fix.
 >
-> It is fully resolved. The app is back up and running normally, and your
-> account and data were never at risk. This was a connectivity problem, so
-> nothing in your account was touched or lost.
+> Your account and your data were never at risk. This was a connectivity
+> problem, so nothing in your account was touched or lost.
+>
+> Everything is back to normal now. If anything still looks off to you, just
+> reply to this email and I will look into it right away.
 >
 > Thank you for your patience, and for trusting us with something as personal as
-> your money. If anything still looks off to you, just reply to this email and I
-> will look into it right away.
+> your money.
 >
 > Warmly,
-> Flamarion
 > The Better Decision
 
 Footer (appended by the shell, not part of the authored body):
@@ -388,3 +390,131 @@ override any conflicting text above.
     does not raise the cap without accepting longer unbroken runtimes. Declare
     `BROADCAST_MAX_RECIPIENTS`, `BROADCAST_PACING_SECONDS`, `BROADCAST_MAX_ATTEMPTS`
     in `config.py`.
+
+## Batch-sending revision (2026-07-19) — APPROVED-WITH-RULINGS (architect)
+
+Operator direction: send via **Mailgun batch sending** (Mailgun best practices,
+https://documentation.mailgun.com/docs/mailgun/user-manual/sending-messages/batch-sending),
+not the per-recipient one-by-one loop shipped in #553. This revision OVERRIDES
+the "Send execution" section and Rulings 1/11/12 where they conflict. #553 is
+merged + deployed but has never sent (no UI, no broadcast created), so the send
+core can be refactored freely; the tables/router/gating stay.
+
+### New send model
+- Resolve active+verified recipients, chunk into batches of `BROADCAST_BATCH_SIZE`
+  (default 1000, hard-capped at Mailgun's 1000/call limit).
+- Per batch: ONE Mailgun API call with `to` = the batch's addresses AND
+  `recipient-variables` (a JSON map `{email: {..per-recipient vars..}}`). Mailgun
+  sends an individualized message to each recipient and manages delivery cadence.
+  **Recipient-variables are mandatory** — without them Mailgun exposes all
+  addresses in the `to` header (privacy breach).
+- `email_service` gains a `send_batch(to_list, subject, body_html, body_text,
+  recipient_variables) -> bool` (single-recipient `send_email` stays for
+  transactional mail). Dev mode logs batch size, sends nothing.
+- Optional pacing `BROADCAST_PACING_SECONDS` now applies BETWEEN batches, not
+  between recipients. For a sub-1000 audience this is a single call, no pacing.
+
+### Personalization + escaping (Ruling 11 rework)
+- Body uses Mailgun tokens: `%recipient.first_name_html%` in the HTML part,
+  `%recipient.first_name_text%` in the text part. The operator still authors with
+  `{first_name}`; at send we translate `{first_name}` → the HTML token in the
+  HTML body and → the TEXT token in the text body.
+- The operator's body content is `html.escape`-d ONCE (static, shared across the
+  batch). Per recipient, the variables map carries
+  `first_name_html = html.escape(first_name or "there")` and
+  `first_name_text = first_name or "there"` (raw). Mailgun substitutes raw, so
+  the HTML escaping must be pre-applied by us — the two-variable split is how we
+  keep escaped-in-HTML + raw-in-text with Mailgun's single-value-per-key model.
+
+### OPEN QUESTIONS FOR THE ARCHITECT
+1. **Per-recipient status model.** A batch call returns ONE per-batch result
+   ("queued"), not per-recipient outcomes; true per-recipient delivered/bounced/
+   complained status only arrives via Mailgun webhooks/events (DEFERRED). So the
+   DB can only record "accepted-for-delivery by Mailgun", not "delivered".
+   Options: (A) repurpose the existing `sent` recipient status to mean "accepted
+   by Mailgun" (UI labels it "Queued") — NO enum change, avoids the
+   ALTER-ENUM-on-MySQL landmine; (B) add a `queued` enum value via a
+   MySQL-verified `ALTER`. Recommend (A). Rule.
+2. **Batch idempotency / crash safety.** Claim-before-send (mark the batch's rows
+   `sent/queued` in one UPDATE, then call Mailgun, mark `failed` on API error)
+   favors NEVER-double-send but risks a lost batch if we crash between claim and
+   a successful Mailgun receipt. Claim-after-send favors never-lost but risks
+   double-send on crash. For an apology, which way? (Batches are ≤1000 and this
+   audience is ~1 batch, so the window is tiny either way.) Rule.
+3. **Resume semantics** under batching: resume re-sends batches containing
+   `pending` (and `failed`-below-cap) rows; `attempts` bumps per batch. The
+   `_ACTIVE_DRAINS` registry + tracked-task lifecycle (Ruling 1) is retained —
+   confirm the tracked-task drain now iterates BATCHES, not rows, and that the
+   `draft→sending` CAS + registry are still the double-run guard. Confirm.
+4. **Counters:** with model (A), `sent_count` means "accepted by Mailgun";
+   `failed_count` = batches that errored (per-recipient); `skipped_count` =
+   lapsed users filtered at claim. Acceptable, or require rename? Rule.
+5. **The confirm rails, cap, dry-run, audit-no-PII, superadmin gate are
+   UNCHANGED** — confirm they carry over intact.
+
+### Deferred (unchanged): Mailgun bounce/complaint webhooks for real
+per-recipient delivery status; unsubscribe/suppression (still required before any
+non-transactional broadcast).
+
+### Architect rulings on the batch revision (LOCKED 2026-07-19)
+
+Verdict: APPROVED-WITH-RULINGS. R1-R5 override the "Send execution" section and
+Rulings 1/11/12 where they conflict; MA1-MA7 are mandatory additions. Tables,
+router gate, materialization, tracked-task lifecycle, `_ACTIVE_DRAINS` registry,
+and `draft→sending` CAS all carry over. **No new migration** (model A).
+
+- **R1 — Model A, no enum change.** Repurpose `sent` = "accepted by Mailgun for
+  delivery" (per-batch 2xx). NOT "delivered" (that needs the deferred webhooks).
+  UI/response MUST label `sent_count` as "Queued" / "Accepted for delivery",
+  never "Delivered" or bare "Sent"; `BroadcastResponse` field description says so.
+  No `ALTER ENUM`, no migration — that is the point.
+- **R2 — Claim-BEFORE-send, per batch.** Per batch in the drain: SELECT next
+  ≤`BROADCAST_BATCH_SIZE` eligible rows by id (fresh: `pending`; resume:
+  `pending`+`failed` with `attempts<max`); segment re-check each (lapsed →
+  claim `SKIPPED`, exclude); claim the surviving set in ONE update
+  `SET status='sent', attempts=attempts+1, sent_at=NOW() WHERE broadcast_id=:id
+  AND id IN (:ids) AND status=<expected>`, build `to`+vars from exactly that set,
+  **commit**, THEN `send_batch`; 2xx → keep `sent`, recompute counters, commit,
+  pace; non-2xx → revert that batch `sent→failed` with error, commit, pace.
+  Single-instance + registry mean the SELECT set == claim set, so no per-row CAS
+  needed. Accepted residual (document in code): a crash mid-call leaves an
+  in-flight batch `sent` but maybe undelivered, not retried by resume;
+  reconcilable via the per-batch log (MA5). Never-double-send is the invariant.
+- **R3 — Resume iterates BATCHES.** Tracked-task lifecycle + registry retained as
+  the double-run guard. `attempts` is batch-coarse (one transient 5xx costs one
+  attempt for up to 1000 rows at once); `MAX_ATTEMPTS=3` is fine. Counters stay
+  recompute-from-rows.
+- **R4 — Keep DB column names**, relabel at presentation (R1). `_recompute_*`
+  unchanged. `failed_count`=recipients in non-2xx batches, `skipped_count`=lapsed.
+- **R5 — Rails/cap/dry-run/audit/gate unchanged.** Dry-run keeps `send_email`
+  (single recipient = the superadmin, no recipient-variables, exercises the real
+  prod path). See MA3.
+- **MA1 — `%`-collision guard.** Translate: `html.escape(body)` then
+  `.replace("{first_name}","%recipient.first_name_html%")` for HTML;
+  `.replace("{first_name}","%recipient.first_name_text%")` on raw body for text.
+  Mailgun substitutes recipient-vars over the WHOLE payload, so a stray literal
+  `%…%` in copy/footer/shell is a hazard. Assert the outgoing payload contains
+  only the two expected tokens (or escape stray `%`). Send-time assertion + test.
+- **MA2 — Complete, key-matched vars map.** Every `to` address has BOTH
+  `first_name_html` and `first_name_text` (fallback "there" in the map, never in
+  the token). Same snapshot email string for `to` and the map key. Assert
+  `set(map.keys()) == set(to_list)` before sending.
+- **MA3 — Dry-run/batch byte-parity.** `render_email` stays as the single-recipient
+  renderer (dry-run) AND the parity oracle. Tests: for a normal name, null→"there",
+  and a `<`/`&` name, assert Mailgun-substituted html/text (simulate substitution)
+  == `render_email(...)` html/text.
+- **MA4 — `send_batch(to_list, subject, body_html, body_text, recipient_variables)
+  -> bool`.** `raise_for_status()` → False on any non-2xx/exception, True on 2xx.
+  No per-recipient parsing (none exists at call time). `recipient-variables` sent
+  as `json.dumps(map)` string; `to=to_list` (repeated field); same httpx `data=`
+  mechanism as `send_email`.
+- **MA5 — PII-bounded batch logging.** `send_batch` logs batch size + subject +
+  status ONLY, never the address list / vars / body. Emit `broadcast_batch_sent`
+  / `broadcast_batch_failed` (the reconciliation signal R2's residual relies on).
+- **MA6 — `BROADCAST_BATCH_SIZE`** new setting, default 1000, hard-capped at 1000
+  (Mailgun limit), in `config.py`. `BROADCAST_PACING_SECONDS` now paces BETWEEN
+  batches; sub-1000 audience = one call, no pacing.
+- **MA7 — Materialization / `total_recipients` UNCHANGED.** Snapshot rows feed
+  both `to` and the vars map. No model/constraint/index/migration change.
+- **Minor (ops):** ensure `settings.email_from` Reply-To is a monitored mailbox
+  (the copy says "just reply to this email").
