@@ -174,6 +174,12 @@ def _assert_only_known_tokens(payload: str) -> None:
         )
 
 
+# Public alias: the router's send gate validates the SUBJECT with the same
+# MA1 guard the drain applies, so the operator gets a synchronous 422 instead
+# of a background drain failure.
+assert_only_known_tokens = _assert_only_known_tokens
+
+
 def build_batch_bodies(body_template: str) -> tuple[str, str]:
     """Build the ``(html, text)`` bodies for ONE Mailgun batch-sending call
     (MA1), carrying Mailgun recipient tokens instead of a rendered name.
@@ -465,6 +471,12 @@ async def _run_drain_loop(
     # stray ``%`` or unknown ``%recipient.*%`` token raises here and propagates
     # to the wrapper (status=FAILED), before anything reaches Mailgun.
     body_html_tokens, body_text_tokens = build_batch_bodies(broadcast.body_template)
+    # The SUBJECT is part of the same Mailgun payload, and recipient-variable
+    # substitution runs across the WHOLE payload — subject included. So the
+    # MA1 guard has to cover it too, not just the bodies: a subject like
+    # "50% off" or one carrying an unpopulated ``%recipient.X%`` is exactly
+    # the same hazard as it would be in the body.
+    _assert_only_known_tokens(subject)
 
     batch_size = min(settings.broadcast_batch_size, 1000)
     max_attempts = settings.broadcast_max_attempts
@@ -558,12 +570,19 @@ async def _run_drain_loop(
             [(email, first_name) for _rid, email, first_name in survivors]
         )
         # (MA2) Every ``to`` address must have a complete, key-matched vars entry
-        # under the EXACT same snapshot email string.
-        assert set(recipient_variables.keys()) == set(to_list)
+        # under the EXACT same snapshot email string. A real ``raise``, not a
+        # bare ``assert`` — asserts are stripped under ``python -O``, and this
+        # is the guard standing between us and Mailgun exposing every address
+        # in the ``To`` header. ``send_batch`` re-checks it independently.
+        if set(recipient_variables.keys()) != set(to_list):
+            raise ValueError(
+                "recipient-variables key set does not match the batch to-list "
+                f"({len(recipient_variables)} vars vs {len(to_list)} addresses)"
+            )
 
         # (3) CLAIM the whole survivor set BEFORE the send (R2). ONE UPDATE,
         # committed first, so a crash mid-call never re-sends this batch.
-        await db.execute(
+        claim_result = await db.execute(
             update(EmailBroadcastRecipient)
             .where(
                 EmailBroadcastRecipient.broadcast_id == broadcast_id,
@@ -576,6 +595,23 @@ async def _run_drain_loop(
                 sent_at=func.now(),
             )
         )
+        # The claim MUST cover exactly the set we are about to hand Mailgun.
+        # Single-instance drains make that the normal case, but if the counts
+        # disagree then some row moved underneath us and this batch's ``to``
+        # list no longer equals the set we own — sending it would mail someone
+        # we did not claim (the double-send hazard R2 exists to prevent).
+        # Roll the partial claim back and skip the batch entirely; the rows
+        # stay eligible, so a resume picks them up cleanly.
+        claimed = claim_result.rowcount or 0
+        if claimed != len(survivor_ids):
+            await db.rollback()
+            logger.error(
+                "broadcast_batch_claim_mismatch",
+                broadcast_id=broadcast_id,
+                expected=len(survivor_ids),
+                actual=claimed,
+            )
+            continue
         await db.commit()
 
         # (4) ONE Mailgun batch call. ``send_batch`` returns a bool and never

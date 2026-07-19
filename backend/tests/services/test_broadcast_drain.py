@@ -442,6 +442,98 @@ async def test_claim_before_send(session_factory, monkeypatch):
     assert b.status == BroadcastStatus.COMPLETED
 
 
+@pytest.mark.parametrize(
+    "subject",
+    [
+        pytest.param("Enjoy 50% off this week", id="stray_percent"),
+        pytest.param("Hi %recipient.bogus%", id="unknown_recipient_token"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_drain_rejects_hazardous_subject_before_sending(
+    session_factory, monkeypatch, subject
+):
+    """MA1 covers the SUBJECT too, not just the bodies.
+
+    Mailgun substitutes recipient-variables across the whole payload, subject
+    included, so a stray ``%`` or an unpopulated ``%recipient.X%`` there is
+    the same hazard it is in the body. The drain must refuse before any
+    Mailgun call happens.
+    """
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
+    broadcast_id, _users, _recips = await _seed(
+        session_factory, [{}, {}], subject=subject
+    )
+
+    with pytest.raises(ValueError):
+        await broadcast_service._drain(session_factory, broadcast_id)
+
+    assert send_mock.await_count == 0
+    # Nothing was claimed: every row is still pending and retryable.
+    statuses = await _recipient_statuses(session_factory, broadcast_id)
+    assert all(s == RecipientStatus.PENDING for s in statuses.values())
+    b = await _get_broadcast(session_factory, broadcast_id)
+    assert b.status == BroadcastStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_drain_skips_batch_when_claim_rowcount_short(
+    session_factory, monkeypatch
+):
+    """R2 safety net: if the claim UPDATE does not cover every survivor, the
+    batch is rolled back and SKIPPED rather than sent.
+
+    Simulated by advancing one row's status out of the expected set between
+    the SELECT and the claim — the claim's ``status IN (expected)`` predicate
+    then matches one row fewer than we are about to hand Mailgun, which is
+    exactly the 'send to someone we did not claim' hazard.
+    """
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
+    fake_logger = Mock()
+    monkeypatch.setattr(broadcast_service, "logger", fake_logger)
+
+    broadcast_id, _users, recipient_ids = await _seed(session_factory, [{}, {}])
+
+    # Slip a status change in between the SELECT and the claim UPDATE by
+    # hooking the segment re-check, which runs in that exact window.
+    real_check = broadcast_service._user_still_targetable
+    advanced = False
+
+    async def _advance_then_check(db, user_id):
+        nonlocal advanced
+        result = await real_check(db, user_id)
+        if not advanced:
+            advanced = True
+            async with session_factory() as other:
+                await other.execute(
+                    update(EmailBroadcastRecipient)
+                    .where(EmailBroadcastRecipient.id == recipient_ids[0])
+                    .values(status=RecipientStatus.SENT)
+                )
+                await other.commit()
+        return result
+
+    monkeypatch.setattr(
+        broadcast_service, "_user_still_targetable", _advance_then_check
+    )
+
+    await broadcast_service._drain(session_factory, broadcast_id)
+
+    # The short claim means the batch is never handed to Mailgun.
+    assert send_mock.await_count == 0
+    logged = [c for c in fake_logger.error.call_args_list
+              if c.args and c.args[0] == "broadcast_batch_claim_mismatch"]
+    assert len(logged) == 1
+    assert logged[0].kwargs["expected"] == 2
+    assert logged[0].kwargs["actual"] == 1
+    # The un-advanced row stayed pending (claim rolled back), so a resume can
+    # still pick it up.
+    statuses = await _recipient_statuses(session_factory, broadcast_id)
+    assert statuses["user1@x.io"] == RecipientStatus.PENDING
+
+
 @pytest.mark.asyncio
 async def test_drain_raise_observed_by_done_callback(session_factory, monkeypatch):
     monkeypatch.setattr(

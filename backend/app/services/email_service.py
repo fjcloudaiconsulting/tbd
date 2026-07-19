@@ -244,7 +244,38 @@ async def send_batch(
     ``recipient_variables``, or the rendered bodies — only the batch size,
     subject, and status/error. The address list and per-recipient names
     live in the request payload only.
+
+    Recipient-variables precondition (MA2), enforced HERE and not only in
+    the caller: this is the one function that can trigger Mailgun's
+    all-addresses-in-the-``To``-header leak. Mailgun only individualizes a
+    multi-address ``to`` when ``recipient-variables`` carries an entry for
+    EVERY address; a missing or mismatched map makes every recipient see
+    every other address. So for ``len(to_list) > 1`` the map's key set must
+    equal ``to_list`` exactly — otherwise NOTHING is sent, a PII-bounded
+    ``broadcast_batch_failed`` is logged (counts + reason only, never
+    addresses), and the call returns ``False`` (same falsy contract the
+    drain already treats as a failed batch, so the rows revert
+    ``sent → failed`` and a resume can retry them).
+
+    A SINGLE-address ``to`` is deliberately allowed without a map entry:
+    there is no cross-recipient leak possible with one address, and the
+    dry-run/one-off paths rely on it. Tokens simply stay unsubstituted in
+    that case, which the drain's own MA2 key-match prevents anyway.
     """
+    if len(to_list) > 1 and set(recipient_variables or {}) != set(to_list):
+        await logger.aerror(
+            "broadcast_batch_failed",
+            count=len(to_list),
+            subject=subject,
+            variables_count=len(recipient_variables or {}),
+            error=(
+                "recipient-variables key set does not match the to-list; "
+                "refusing to send a multi-address batch that Mailgun would "
+                "deliver with every address exposed in the To header"
+            ),
+        )
+        return False
+
     if not settings.mailgun_api_key:
         await logger.ainfo(
             "broadcast_batch_sent", count=len(to_list), subject=subject

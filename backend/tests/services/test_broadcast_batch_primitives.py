@@ -143,7 +143,13 @@ async def test_send_batch_dev_mode_returns_true_without_httpx(monkeypatch):
         "Subject line",
         "<p>html</p>",
         "text",
-        {"alice@x.io": {"first_name_html": "Alice", "first_name_text": "Alice"}},
+        {
+            # BOTH addresses must be present: a multi-address batch with a
+            # partial vars map is now refused outright (Mailgun would expose
+            # every address in the To header).
+            "alice@x.io": {"first_name_html": "Alice", "first_name_text": "Alice"},
+            "bob@x.io": {"first_name_html": "Bob", "first_name_text": "Bob"},
+        },
     )
 
     assert result is True
@@ -285,6 +291,98 @@ async def test_send_batch_prod_mode_logs_status_on_success_and_error_on_failure(
     assert "alice@x.io" not in caplog.text
 
 
+# ─── send_batch: the MA2 recipient-variables precondition ───
+#
+# ``send_batch`` is the single function that can trigger Mailgun's
+# all-addresses-in-the-To-header leak, so it enforces the key-match itself
+# rather than trusting the drain to have done it. Refusal = no HTTP POST at
+# all, a PII-bounded ``broadcast_batch_failed`` log, and ``False``.
+
+
+@pytest.mark.parametrize(
+    "recipient_variables",
+    [
+        pytest.param({}, id="empty_map"),
+        pytest.param(None, id="none_map"),
+        pytest.param(
+            {"alice@x.io": {"first_name_html": "Alice", "first_name_text": "Alice"}},
+            id="partial_map",
+        ),
+        pytest.param(
+            {
+                "alice@x.io": {"first_name_html": "A", "first_name_text": "A"},
+                "someone-else@x.io": {"first_name_html": "S", "first_name_text": "S"},
+            },
+            id="mismatched_keys",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_send_batch_multi_address_bad_vars_never_posts(
+    monkeypatch, recipient_variables
+):
+    monkeypatch.setattr(email_service.settings, "mailgun_api_key", "key-123")
+    monkeypatch.setattr(email_service.settings, "mailgun_domain", "mg.example.com")
+    captured = _install_transport(monkeypatch, _fail_if_called)
+
+    result = await email_service.send_batch(
+        ["alice@x.io", "bob@x.io"],
+        "Subject",
+        "<p>html</p>",
+        "text",
+        recipient_variables,
+    )
+
+    assert result is False
+    # The decisive assertion: no HTTP request was ever issued.
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_send_batch_bad_vars_logs_counts_without_addresses(
+    monkeypatch, caplog, _structlog_via_stdlib
+):
+    monkeypatch.setattr(email_service.settings, "mailgun_api_key", "key-123")
+    _install_transport(monkeypatch, _fail_if_called)
+
+    with caplog.at_level(logging.INFO, logger="app.services.email_service"):
+        await email_service.send_batch(
+            ["alice@x.io", "bob@x.io"], "Subject", "<p>html</p>", "text", {}
+        )
+
+    events = [
+        e
+        for e in _collect_structlog_events(caplog)
+        if e.get("event") == "broadcast_batch_failed"
+    ]
+    assert len(events) == 1
+    assert events[0]["count"] == 2
+    assert events[0]["variables_count"] == 0
+    # PII bound (MA5): counts and a reason, never an address.
+    assert "alice@x.io" not in caplog.text
+    assert "bob@x.io" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_send_batch_single_address_allowed_without_vars(monkeypatch):
+    """A one-address ``to`` has no cross-recipient leak to prevent, so an
+    empty vars map is explicitly still allowed (documented semantic)."""
+    monkeypatch.setattr(email_service.settings, "mailgun_api_key", "key-123")
+    monkeypatch.setattr(email_service.settings, "mailgun_domain", "mg.example.com")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "abc"})
+
+    captured = _install_transport(monkeypatch, handler)
+
+    result = await email_service.send_batch(
+        ["alice@x.io"], "Subject", "<p>html</p>", "text", {}
+    )
+
+    assert result is True
+    assert len(captured) == 1
+
+
 # ─── build_batch_bodies ───
 
 
@@ -387,13 +485,26 @@ def test_build_recipient_variables_accepts_object_shape():
 
 def _simulate_mailgun_substitution(html_tokenized: str, text_tokenized: str, name: str | None) -> tuple[str, str]:
     """Simulate what Mailgun does to ``build_batch_bodies``' output for one
-    recipient: substitute the two known tokens with the SAME values
-    ``build_recipient_variables`` would have put in the vars map."""
-    resolved = name or "there"
+    recipient.
+
+    The substituted values come from an ACTUAL ``build_recipient_variables``
+    call, never re-derived here. That is the whole point of the parity test:
+    if the production escaping/fallback rules in
+    ``build_recipient_variables`` ever drift away from ``render_email``, this
+    must fail. Hand-rolling ``name or "there"`` + ``html.escape`` locally
+    would silently keep passing through exactly that drift, since the test
+    would then be comparing two independent reimplementations of the same
+    rule rather than the real one.
+    """
+    variables = build_recipient_variables([("recipient@x.io", name)])[
+        "recipient@x.io"
+    ]
     html_out = html_tokenized.replace(
-        "%recipient.first_name_html%", __import__("html").escape(resolved)
+        "%recipient.first_name_html%", variables["first_name_html"]
     )
-    text_out = text_tokenized.replace("%recipient.first_name_text%", resolved)
+    text_out = text_tokenized.replace(
+        "%recipient.first_name_text%", variables["first_name_text"]
+    )
     return html_out, text_out
 
 
