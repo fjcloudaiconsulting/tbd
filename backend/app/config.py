@@ -300,9 +300,14 @@ class Settings(BaseSettings):
     # ``broadcast_max_attempts``: ``resume`` only retries recipient rows
     # with ``attempts`` below this, so a permanently bad address isn't
     # hammered on every resume.
+    # ``broadcast_batch_size``: recipients per Mailgun batch-sending call
+    # (2026-07-19 batch-sending revision, MA6). Hard-capped at 1000
+    # (Mailgun's per-call limit) where the value is consumed by the drain,
+    # not here — this default is already at the cap.
     broadcast_max_recipients: int = 10000
     broadcast_pacing_seconds: float = 1.0
     broadcast_max_attempts: int = 3
+    broadcast_batch_size: int = 1000
 
     @field_validator("session_lifetime_days")
     @classmethod
