@@ -1,27 +1,35 @@
-"""Tests for the send-drain engine (Task 4, spec
-``2026-07-18-admin-email-broadcast-design.md``).
+"""Tests for the Mailgun BATCH send-drain engine (2026-07-19 batch revision,
+spec ``2026-07-18-admin-email-broadcast-design.md`` R1-R5 / MA1-MA7).
 
-Covers, with ``send_email`` mocked and pacing monkeypatched to 0:
-- a fresh drain sends every ``pending`` recipient, marks them ``sent`` and
-  bumps the broadcast counters + ``status=completed``;
-- a user who lapsed (deactivated) after materialization is ``skipped``
-  (Ruling 9), the rest still ``sent``;
-- one ``send_email`` returning False marks that row ``failed`` while the rest
-  ``sent`` and the drain still completes (Ruling 12);
-- concurrency (Ruling 14a): ``launch_drain`` twice for the same id runs one
-  drain, so ``send_email`` is called exactly once per distinct pending row —
-  the in-process registry blocks the second launch;
-- attempts cap (Ruling 14b): ``resume_pending`` does not retry a ``pending``
-  row already at ``broadcast_max_attempts``;
-- HTML escape (Ruling 14d): a ``first_name`` containing ``<``/``&`` is escaped
-  in the HTML arg passed to ``send_email``;
+The drain now iterates BATCHES, not rows: each batch is claimed to ``sent``
+BEFORE one ``send_batch`` Mailgun call (R2, claim-before-send), and a non-2xx
+result reverts exactly that batch ``sent → failed``. ``send_batch`` is mocked
+throughout (``app.services.broadcast_service.send_batch``); no real Mailgun.
+
+Covers, with pacing monkeypatched to 0:
+- single batch: every ``pending`` → ``sent``, ``send_batch`` called ONCE, its
+  ``to_list`` == all recipient emails, ``recipient_variables`` keys == ``to_list``,
+  counters + ``status=completed``;
+- multi-batch: ``broadcast_batch_size`` = 2 with 5 recipients → ``send_batch``
+  called 3 times, pacing awaited BETWEEN batches, all ``sent``;
+- failed batch: one batch's ``send_batch`` returns False → those rows ``failed``,
+  the rest ``sent``, drain still ``completed``; a later ``resume`` re-batches the
+  failed rows (below the attempts cap) and, on success, they become ``sent``;
+- lapsed user (Ruling 9): a user flipped inactive post-materialization is
+  ``skipped`` and EXCLUDED from ``send_batch``'s ``to_list``;
+- concurrency (Ruling 14a): ``launch_drain`` twice for the same id runs ONE
+  drain — the distinct addresses across every ``send_batch`` call equal the
+  distinct pending recipients (the in-process registry blocks the 2nd launch);
+- attempts cap (Ruling 14b): a ``failed`` row at ``broadcast_max_attempts`` is
+  not re-batched by ``resume``;
+- claim-before-send (R2): rows are already ``sent`` in the DB by the time
+  ``send_batch`` is invoked (the mock inspects the DB mid-call);
 - drain-raise observed (Ruling 14e): an unhandled drain error is logged by the
   done-callback, the task is removed from ``_DRAIN_TASKS`` and the broadcast
   ``status`` is ``failed``.
 
-Uses an in-memory aiosqlite engine (same fixture pattern as the other
-broadcast service tests) so no running MySQL / docker-compose stack is
-required.
+Uses an in-memory aiosqlite engine (same fixture pattern as the other broadcast
+service tests) so no running MySQL / docker-compose stack is required.
 """
 from __future__ import annotations
 
@@ -70,7 +78,7 @@ async def session_factory():
 
 @pytest.fixture(autouse=True)
 def _fast_pacing(monkeypatch):
-    """No real sleeping between sends."""
+    """No real sleeping between batches."""
     monkeypatch.setattr(broadcast_service.settings, "broadcast_pacing_seconds", 0)
 
 
@@ -86,7 +94,7 @@ def _clean_registries():
 
 async def _seed(session_factory, recipients, *, subject="Hi", body="Hi {first_name},"):
     """Create an Org, one User per recipient spec, a SENDING broadcast, and a
-    PENDING recipient row per user.
+    recipient row per user.
 
     ``recipients`` is a list of dicts with keys: ``first_name`` (str|None),
     ``is_active`` (bool), ``email_verified`` (bool), optional ``attempts``,
@@ -167,77 +175,120 @@ async def _recipient_statuses(session_factory, broadcast_id):
 
 
 @pytest.mark.asyncio
-async def test_drain_sends_all_pending(session_factory, monkeypatch):
-    monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(return_value=True)
-    )
-    broadcast_id, _users, _recips = await _seed(
-        session_factory, [{}, {}, {}]
-    )
+async def test_drain_single_batch_sends_all_pending(session_factory, monkeypatch):
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
+    broadcast_id, _users, _recips = await _seed(session_factory, [{}, {}, {}])
 
     await broadcast_service._drain(session_factory, broadcast_id)
 
     statuses = await _recipient_statuses(session_factory, broadcast_id)
     assert all(s == RecipientStatus.SENT for s in statuses.values())
+
+    # One Mailgun batch call covering all three recipients.
+    assert send_mock.await_count == 1
+    call = send_mock.await_args
+    to_list = call.args[0]
+    recipient_variables = call.args[4]
+    assert set(to_list) == {"user0@x.io", "user1@x.io", "user2@x.io"}
+    # MA2: the recipient-variables map keys exactly match ``to_list``.
+    assert set(recipient_variables.keys()) == set(to_list)
+    # Body tokens (not a per-recipient render) are passed through.
+    assert "%recipient.first_name_html%" in call.args[2]
+    assert "%recipient.first_name_text%" in call.args[3]
+
     b = await _get_broadcast(session_factory, broadcast_id)
     assert b.sent_count == 3
     assert b.failed_count == 0
     assert b.skipped_count == 0
     assert b.status == BroadcastStatus.COMPLETED
     assert b.completed_at is not None
-    assert broadcast_service.send_email.await_count == 3
 
 
 @pytest.mark.asyncio
-async def test_drain_counters_advance_during_send(session_factory, monkeypatch):
-    """Counters must advance DURING the drain, not just jump to the final
-    tally at the end (the drain recomputes ``sent_count`` per row, right
-    after each row's own commit, specifically so ``GET /{id}`` progress
-    polling can distinguish "in progress" from "hung").
+async def test_drain_multi_batch_paces_between_batches(session_factory, monkeypatch):
+    """``broadcast_batch_size`` = 2 with 5 recipients → 3 batches, ``send_batch``
+    called 3 times, and pacing awaited BETWEEN batches (2 sleeps, never after the
+    last)."""
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
+    monkeypatch.setattr(broadcast_service.settings, "broadcast_batch_size", 2)
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(broadcast_service.asyncio, "sleep", sleep_mock)
 
-    ``send_email``'s side effect opens a FRESH session (mimicking a
-    concurrent poller) and reads ``sent_count`` at the moment each send
-    fires. If counters only updated once at the end of the loop, every
-    recorded observation would be ``0``. With the per-row recompute, the
-    observed sequence is strictly increasing: by the time send #N fires,
-    the previous N-1 rows have already been committed AND recomputed.
-    """
-    observed_sent_counts: list[int] = []
-
-    async def _fake_send(to, subject, body_html, body_text=None):
-        async with session_factory() as poll_db:
-            broadcast = (
-                await poll_db.execute(
-                    select(EmailBroadcast).where(EmailBroadcast.id == broadcast_id)
-                )
-            ).scalar_one()
-            observed_sent_counts.append(broadcast.sent_count)
-        return True
-
-    monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(side_effect=_fake_send)
-    )
     broadcast_id, _users, _recips = await _seed(
-        session_factory, [{}, {}, {}]
+        session_factory, [{}, {}, {}, {}, {}]
     )
 
     await broadcast_service._drain(session_factory, broadcast_id)
 
-    assert observed_sent_counts == [0, 1, 2]
+    # Three batches: [0,1] [2,3] [4].
+    assert send_mock.await_count == 3
+    batch_sizes = [len(c.args[0]) for c in send_mock.await_args_list]
+    assert batch_sizes == [2, 2, 1]
+    # Pacing awaited strictly BETWEEN batches: 3 batches → 2 sleeps.
+    assert sleep_mock.await_count == 2
+
+    statuses = await _recipient_statuses(session_factory, broadcast_id)
+    assert all(s == RecipientStatus.SENT for s in statuses.values())
     b = await _get_broadcast(session_factory, broadcast_id)
-    assert b.sent_count == 3
+    assert b.sent_count == 5
     assert b.status == BroadcastStatus.COMPLETED
 
 
 @pytest.mark.asyncio
-async def test_drain_skips_lapsed_user(session_factory, monkeypatch):
+async def test_drain_failed_batch_then_resume(session_factory, monkeypatch):
+    """A batch whose ``send_batch`` returns False marks those rows ``failed``
+    while the rest are ``sent`` and the drain still completes; a later ``resume``
+    re-batches the failed rows (below cap) and, on success, they become
+    ``sent``."""
+    monkeypatch.setattr(broadcast_service.settings, "broadcast_batch_size", 2)
+
+    async def _fail_first_batch(to_list, *_a, **_k):
+        # Batch [user0, user1] fails; batch [user2] succeeds.
+        return "user0@x.io" not in to_list
+
     monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(return_value=True)
+        broadcast_service, "send_batch", AsyncMock(side_effect=_fail_first_batch)
     )
+    broadcast_id, _users, _recips = await _seed(session_factory, [{}, {}, {}])
+
+    await broadcast_service._drain(session_factory, broadcast_id)
+
+    statuses = await _recipient_statuses(session_factory, broadcast_id)
+    assert statuses["user0@x.io"] == RecipientStatus.FAILED
+    assert statuses["user1@x.io"] == RecipientStatus.FAILED
+    assert statuses["user2@x.io"] == RecipientStatus.SENT
+    b = await _get_broadcast(session_factory, broadcast_id)
+    assert b.sent_count == 1
+    assert b.failed_count == 2
+    # A failed batch never halts the drain; no pending rows remain → completed.
+    assert b.status == BroadcastStatus.COMPLETED
+
+    # Resume: the two failed rows (attempts=1, below cap) are re-batched and now
+    # succeed.
+    resume_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(broadcast_service, "send_batch", resume_mock)
+
+    await broadcast_service.resume_pending(session_factory, broadcast_id)
+
+    statuses = await _recipient_statuses(session_factory, broadcast_id)
+    assert all(s == RecipientStatus.SENT for s in statuses.values())
+    # Only the failed pair was re-batched (user2 already sent, not re-listed).
+    assert resume_mock.await_count == 1
+    assert set(resume_mock.await_args.args[0]) == {"user0@x.io", "user1@x.io"}
+    b = await _get_broadcast(session_factory, broadcast_id)
+    assert b.sent_count == 3
+    assert b.failed_count == 0
+    assert b.status == BroadcastStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_drain_skips_lapsed_user_excluded_from_batch(session_factory, monkeypatch):
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
     # user index 1 is deactivated AFTER materialization (row still PENDING).
-    broadcast_id, user_ids, _recips = await _seed(
-        session_factory, [{}, {}, {}]
-    )
+    broadcast_id, user_ids, _recips = await _seed(session_factory, [{}, {}, {}])
     async with session_factory() as db:
         await db.execute(
             update(User).where(User.id == user_ids[1]).values(is_active=False)
@@ -250,44 +301,28 @@ async def test_drain_skips_lapsed_user(session_factory, monkeypatch):
     assert statuses["user1@x.io"] == RecipientStatus.SKIPPED
     assert statuses["user0@x.io"] == RecipientStatus.SENT
     assert statuses["user2@x.io"] == RecipientStatus.SENT
+
+    # The lapsed user is EXCLUDED from the batch's ``to_list`` and vars map.
+    assert send_mock.await_count == 1
+    to_list = send_mock.await_args.args[0]
+    recipient_variables = send_mock.await_args.args[4]
+    assert "user1@x.io" not in to_list
+    assert set(to_list) == {"user0@x.io", "user2@x.io"}
+    assert set(recipient_variables.keys()) == set(to_list)
+
     b = await _get_broadcast(session_factory, broadcast_id)
     assert b.sent_count == 2
     assert b.skipped_count == 1
-    assert b.status == BroadcastStatus.COMPLETED
-    # send_email was never called for the skipped user.
-    assert broadcast_service.send_email.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_drain_marks_failed_on_send_false(session_factory, monkeypatch):
-    async def _fake_send(to, subject, body_html, body_text=None):
-        return to != "user1@x.io"
-
-    monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(side_effect=_fake_send)
-    )
-    broadcast_id, _users, _recips = await _seed(
-        session_factory, [{}, {}, {}]
-    )
-
-    await broadcast_service._drain(session_factory, broadcast_id)
-
-    statuses = await _recipient_statuses(session_factory, broadcast_id)
-    assert statuses["user1@x.io"] == RecipientStatus.FAILED
-    assert statuses["user0@x.io"] == RecipientStatus.SENT
-    assert statuses["user2@x.io"] == RecipientStatus.SENT
-    b = await _get_broadcast(session_factory, broadcast_id)
-    assert b.sent_count == 2
-    assert b.failed_count == 1
-    # One recipient's failure never halts the batch; drain still completes.
     assert b.status == BroadcastStatus.COMPLETED
 
 
 @pytest.mark.asyncio
 async def test_launch_drain_twice_runs_single_drain(session_factory, monkeypatch):
-    monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(return_value=True)
-    )
+    """``launch_drain`` twice for the same id → one drain; the distinct addresses
+    across every ``send_batch`` call equal the distinct pending recipients (the
+    registry blocks the 2nd launch, so no address is sent twice)."""
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
     broadcast_id, _users, _recips = await _seed(
         session_factory, [{}, {}, {}, {}]
     )
@@ -301,8 +336,16 @@ async def test_launch_drain_twice_runs_single_drain(session_factory, monkeypatch
     await asyncio.gather(*tasks)
     await asyncio.sleep(0)  # let the done-callback flush
 
-    # Exactly one send per distinct pending recipient (no double-send).
-    assert broadcast_service.send_email.await_count == 4
+    # Every distinct address appears exactly once across all batch calls.
+    all_addresses = [addr for c in send_mock.await_args_list for addr in c.args[0]]
+    assert sorted(all_addresses) == [
+        "user0@x.io",
+        "user1@x.io",
+        "user2@x.io",
+        "user3@x.io",
+    ]
+    assert len(all_addresses) == len(set(all_addresses))  # no double-send
+
     b = await _get_broadcast(session_factory, broadcast_id)
     assert b.sent_count == 4
     assert b.status == BroadcastStatus.COMPLETED
@@ -311,13 +354,44 @@ async def test_launch_drain_twice_runs_single_drain(session_factory, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_resume_skips_rows_at_attempts_cap(session_factory, monkeypatch):
-    monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(return_value=True)
-    )
+async def test_resume_does_not_rebatch_failed_at_cap(session_factory, monkeypatch):
+    """A ``failed`` row already at ``broadcast_max_attempts`` is not re-batched
+    by ``resume``."""
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
     max_attempts = broadcast_service.settings.broadcast_max_attempts
-    # user0 pending at the cap (must NOT be retried); user1 pending, retryable.
-    broadcast_id, _users, recip_ids = await _seed(
+    # user0 FAILED at the cap (must NOT be re-batched); user1 FAILED below cap.
+    broadcast_id, _users, _recips = await _seed(
+        session_factory,
+        [
+            {"status": RecipientStatus.FAILED, "attempts": max_attempts},
+            {"status": RecipientStatus.FAILED, "attempts": 1},
+        ],
+    )
+
+    await broadcast_service.resume_pending(session_factory, broadcast_id)
+
+    statuses = await _recipient_statuses(session_factory, broadcast_id)
+    assert statuses["user0@x.io"] == RecipientStatus.FAILED  # capped, untouched
+    assert statuses["user1@x.io"] == RecipientStatus.SENT
+    # Only the below-cap row was batched.
+    assert send_mock.await_count == 1
+    assert set(send_mock.await_args.args[0]) == {"user1@x.io"}
+    b = await _get_broadcast(session_factory, broadcast_id)
+    assert b.sent_count == 1
+    assert b.failed_count == 1
+    # No pending rows remain (capped row is FAILED), so the broadcast is done.
+    assert b.status == BroadcastStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_resume_leaves_pending_at_cap_and_stays_sending(session_factory, monkeypatch):
+    """A ``pending`` row already at the cap is not re-batched and keeps the
+    broadcast in ``sending`` (there is still an un-sent recipient)."""
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
+    max_attempts = broadcast_service.settings.broadcast_max_attempts
+    broadcast_id, _users, _recips = await _seed(
         session_factory,
         [{"attempts": max_attempts}, {"attempts": 0}],
     )
@@ -325,10 +399,9 @@ async def test_resume_skips_rows_at_attempts_cap(session_factory, monkeypatch):
     await broadcast_service.resume_pending(session_factory, broadcast_id)
 
     statuses = await _recipient_statuses(session_factory, broadcast_id)
-    assert statuses["user0@x.io"] == RecipientStatus.PENDING  # untouched
+    assert statuses["user0@x.io"] == RecipientStatus.PENDING  # capped, untouched
     assert statuses["user1@x.io"] == RecipientStatus.SENT
-    # Only the retryable row was sent.
-    assert broadcast_service.send_email.await_count == 1
+    assert send_mock.await_count == 1
     b = await _get_broadcast(session_factory, broadcast_id)
     assert b.sent_count == 1
     # A pending (capped) row remains, so the broadcast stays SENDING.
@@ -336,172 +409,51 @@ async def test_resume_skips_rows_at_attempts_cap(session_factory, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_launch_resume_twice_runs_single_drain(session_factory, monkeypatch):
-    """Two concurrent ``launch_resume`` for the same id → exactly one drain runs;
-    the shared registry blocks the second, so send_email is called once per
-    distinct retryable recipient (no double-send on the resume path)."""
-    monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(return_value=True)
-    )
-    max_attempts = broadcast_service.settings.broadcast_max_attempts
-    # Three retryable rows (interrupted PENDING + FAILED below cap) and one
-    # FAILED-at-cap row that must NOT be re-listed.
-    broadcast_id, _users, _recips = await _seed(
-        session_factory,
-        [
-            {"status": RecipientStatus.PENDING, "attempts": 1},
-            {"status": RecipientStatus.FAILED, "attempts": 1},
-            {"status": RecipientStatus.FAILED, "attempts": max_attempts - 1},
-            {"status": RecipientStatus.FAILED, "attempts": max_attempts},
-        ],
-    )
+async def test_claim_before_send(session_factory, monkeypatch):
+    """R2: the whole survivor set is claimed ``sent`` and COMMITTED before the
+    Mailgun call — so a poller (here, the ``send_batch`` mock itself) opening a
+    fresh session mid-call already sees the rows as ``sent``."""
+    broadcast_id, _users, _recips = await _seed(session_factory, [{}, {}, {}])
 
-    broadcast_service.launch_resume(session_factory, broadcast_id)
-    # Second launch for the same id must be an idempotent no-op (registry).
-    broadcast_service.launch_resume(session_factory, broadcast_id)
+    observed: list[RecipientStatus] = []
 
-    tasks = list(broadcast_service._DRAIN_TASKS)
-    assert len(tasks) == 1
-    await asyncio.gather(*tasks)
-    await asyncio.sleep(0)  # let the done-callback flush
-
-    # Exactly one send per distinct retryable recipient (the capped row is not
-    # re-attempted).
-    assert broadcast_service.send_email.await_count == 3
-    statuses = await _recipient_statuses(session_factory, broadcast_id)
-    assert statuses["user0@x.io"] == RecipientStatus.SENT
-    assert statuses["user1@x.io"] == RecipientStatus.SENT
-    assert statuses["user2@x.io"] == RecipientStatus.SENT
-    assert statuses["user3@x.io"] == RecipientStatus.FAILED  # capped, untouched
-    b = await _get_broadcast(session_factory, broadcast_id)
-    assert b.sent_count == 3
-    assert b.failed_count == 1
-    # No pending rows remain (the capped row is FAILED), so the broadcast is done.
-    assert b.status == BroadcastStatus.COMPLETED
-    assert broadcast_id not in broadcast_service._ACTIVE_DRAINS
-
-
-@pytest.mark.asyncio
-async def test_resume_retries_failed_below_cap(session_factory, monkeypatch):
-    """A ``failed`` row still below the cap IS retried by resume; on success it
-    becomes ``sent`` and the recomputed counters stay consistent (no double
-    count of the row that flipped failed→sent)."""
-    monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(return_value=True)
-    )
-    # user0: previously FAILED once (below cap) → must be retried.
-    # user1: never attempted (PENDING) → sent normally.
-    broadcast_id, _users, _recips = await _seed(
-        session_factory,
-        [
-            {"status": RecipientStatus.FAILED, "attempts": 1},
-            {"status": RecipientStatus.PENDING, "attempts": 0},
-        ],
-    )
-
-    await broadcast_service.resume_pending(session_factory, broadcast_id)
-
-    statuses = await _recipient_statuses(session_factory, broadcast_id)
-    assert statuses["user0@x.io"] == RecipientStatus.SENT
-    assert statuses["user1@x.io"] == RecipientStatus.SENT
-    assert broadcast_service.send_email.await_count == 2
-    b = await _get_broadcast(session_factory, broadcast_id)
-    # Recomputed from rows: both SENT, nothing left failed.
-    assert b.sent_count == 2
-    assert b.failed_count == 0
-    assert b.skipped_count == 0
-    assert b.status == BroadcastStatus.COMPLETED
-    # The retried row's attempts advanced.
-    async with session_factory() as db:
-        attempts = (
-            await db.execute(
-                select(EmailBroadcastRecipient.attempts).where(
-                    EmailBroadcastRecipient.email == "user0@x.io"
+    async def _inspect(to_list, *_a, **_k):
+        async with session_factory() as poll_db:
+            rows = (
+                await poll_db.execute(
+                    select(EmailBroadcastRecipient.status).where(
+                        EmailBroadcastRecipient.broadcast_id == broadcast_id
+                    )
                 )
-            )
-        ).scalar_one()
-    assert attempts == 2
+            ).scalars().all()
+        observed.extend(rows)
+        return True
 
-
-@pytest.mark.asyncio
-async def test_resume_does_not_retry_failed_at_cap(session_factory, monkeypatch):
-    """A ``failed`` row already at the attempts cap is NOT re-attempted."""
     monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(return_value=True)
-    )
-    max_attempts = broadcast_service.settings.broadcast_max_attempts
-    broadcast_id, _users, _recips = await _seed(
-        session_factory,
-        [{"status": RecipientStatus.FAILED, "attempts": max_attempts}],
-    )
-
-    await broadcast_service.resume_pending(session_factory, broadcast_id)
-
-    statuses = await _recipient_statuses(session_factory, broadcast_id)
-    assert statuses["user0@x.io"] == RecipientStatus.FAILED  # untouched
-    # send_email was never called: the capped row is left alone.
-    assert broadcast_service.send_email.await_count == 0
-    b = await _get_broadcast(session_factory, broadcast_id)
-    assert b.failed_count == 1
-    assert b.sent_count == 0
-    # No pending rows remain, so the broadcast is considered done.
-    assert b.status == BroadcastStatus.COMPLETED
-
-
-@pytest.mark.asyncio
-async def test_resume_resumes_interrupted_pending(session_factory, monkeypatch):
-    """An interrupted ``pending`` row (below cap) is resumed and sent."""
-    monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(return_value=True)
-    )
-    # Crash left the row pending after one prior attempt (still below cap).
-    broadcast_id, _users, _recips = await _seed(
-        session_factory,
-        [{"status": RecipientStatus.PENDING, "attempts": 1}],
-    )
-
-    await broadcast_service.resume_pending(session_factory, broadcast_id)
-
-    statuses = await _recipient_statuses(session_factory, broadcast_id)
-    assert statuses["user0@x.io"] == RecipientStatus.SENT
-    assert broadcast_service.send_email.await_count == 1
-    b = await _get_broadcast(session_factory, broadcast_id)
-    assert b.sent_count == 1
-    assert b.status == BroadcastStatus.COMPLETED
-
-
-@pytest.mark.asyncio
-async def test_drain_html_escapes_first_name(session_factory, monkeypatch):
-    send_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(broadcast_service, "send_email", send_mock)
-    broadcast_id, _users, _recips = await _seed(
-        session_factory, [{"first_name": "<x>&"}]
+        broadcast_service, "send_batch", AsyncMock(side_effect=_inspect)
     )
 
     await broadcast_service._drain(session_factory, broadcast_id)
 
-    assert send_mock.await_count == 1
-    call = send_mock.await_args_list[0]
-    # send_email(to, subject, body_html, body_text)
-    body_html = call.args[2]
-    body_text = call.args[3]
-    assert "&lt;x&gt;" in body_html
-    assert "<x>" not in body_html
-    # The plain-text part keeps the raw name.
-    assert "<x>&" in body_text
+    # Every row was already ``sent`` at the instant ``send_batch`` was invoked.
+    assert observed == [RecipientStatus.SENT] * 3
+    b = await _get_broadcast(session_factory, broadcast_id)
+    assert b.sent_count == 3
+    assert b.status == BroadcastStatus.COMPLETED
 
 
 @pytest.mark.asyncio
 async def test_drain_raise_observed_by_done_callback(session_factory, monkeypatch):
     monkeypatch.setattr(
-        broadcast_service, "send_email", AsyncMock(return_value=True)
+        broadcast_service, "send_batch", AsyncMock(return_value=True)
     )
-    # Force an unhandled drain error: render happens outside the per-row send
-    # try/except, so a raising render_email crashes the whole drain.
+    # Force an unhandled drain error: body tokenization happens once, up front,
+    # outside any per-batch guard, so a raising build_batch_bodies crashes the
+    # whole drain and the wrapper flips status=FAILED + re-raises.
     def _boom(*_a, **_k):
-        raise RuntimeError("render exploded")
+        raise RuntimeError("tokenize exploded")
 
-    monkeypatch.setattr(broadcast_service, "render_email", _boom)
+    monkeypatch.setattr(broadcast_service, "build_batch_bodies", _boom)
     fake_logger = Mock()
     monkeypatch.setattr(broadcast_service, "logger", fake_logger)
 
@@ -509,7 +461,7 @@ async def test_drain_raise_observed_by_done_callback(session_factory, monkeypatc
 
     broadcast_service.launch_drain(session_factory, broadcast_id)
     task = next(iter(broadcast_service._DRAIN_TASKS))
-    with pytest.raises(RuntimeError, match="render exploded"):
+    with pytest.raises(RuntimeError, match="tokenize exploded"):
         await task
     await asyncio.sleep(0)  # let the done-callback run
 
