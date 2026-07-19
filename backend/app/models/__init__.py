@@ -58,6 +58,12 @@ from app.models.org_ai_caps import (  # noqa: F401
 from app.models.org_ai_consent import OrgAIConsent  # noqa: F401
 from app.models.ai_usage_ledger import AIUsageLedger  # noqa: F401
 from app.models.rate_limit_override import RateLimitOverride  # noqa: F401
+from app.models.email_broadcast import (  # noqa: F401
+    BroadcastStatus,
+    RecipientStatus,
+    EmailBroadcast,
+    EmailBroadcastRecipient,
+)
 
 __all__ = [
     "Base",
@@ -125,4 +131,8 @@ __all__ = [
     "DashboardLayout",
     "Scenario",
     "ScenarioType",
+    "BroadcastStatus",
+    "RecipientStatus",
+    "EmailBroadcast",
+    "EmailBroadcastRecipient",
 ]
