@@ -11,6 +11,12 @@ This module grows across Tasks 2-4 of the implementation plan.
   admin-authored ``body_template``.
 - ``materialize_recipients`` (Task 3) — snapshots the segment into
   ``EmailBroadcastRecipient`` rows at send time.
+- ``build_batch_bodies`` / ``build_recipient_variables`` (2026-07-19
+  batch-sending revision, MA1/MA2) — the Mailgun batch-send primitives:
+  translate ``body_template`` into ``%recipient.*%``-tokenized HTML/text
+  and build the per-recipient ``recipient-variables`` map. ``render_email``
+  is unchanged and stays the dry-run renderer AND the batch-parity oracle
+  (MA3).
 
 ``active_verified`` is, per Ruling 10, the only segment v1 accepts —
 any other value is an app-level ``ValueError`` before it ever reaches
@@ -21,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import re
 from collections.abc import Sequence
 
 import structlog
@@ -120,6 +127,128 @@ def render_email(body_template: str, first_name: str | None) -> tuple[str, str]:
         "</body></html>"
     )
     return html_out, text
+
+
+# ─── Batch-sending primitives (2026-07-19 revision, MA1/MA2) ───
+#
+# Mailgun batch sending substitutes ``recipient-variables`` across the WHOLE
+# payload (not just inside a designated placeholder), so a stray literal
+# ``%`` anywhere in operator copy, the shared shell, or the footer is a
+# hazard: Mailgun would either leave it alone (harmless) or, if it happens
+# to match ``%recipient.<key>%`` for a key we didn't populate, drop the
+# token silently. ``_assert_only_known_tokens`` is the send-time guard
+# (MA1): it raises before anything reaches Mailgun.
+
+_RECIPIENT_TOKEN_RE = re.compile(r"%recipient\.\w+%")
+_KNOWN_RECIPIENT_TOKENS = frozenset(
+    {"%recipient.first_name_html%", "%recipient.first_name_text%"}
+)
+
+
+def _assert_only_known_tokens(payload: str) -> None:
+    """Raise ``ValueError`` if ``payload`` carries any ``%...%`` sequence
+    other than the two known Mailgun recipient tokens (MA1).
+
+    Two checks: (1) every ``%recipient.<word>%``-shaped match must be one
+    of the two known tokens — an unexpected one (a typo, or a future
+    variable we didn't populate) is refused outright; (2) after removing
+    the known-token matches, no bare ``%`` may remain — that would be a
+    stray operator ``%`` (e.g. "50% off") that Mailgun's substitution pass
+    could otherwise mishandle.
+    """
+    for match in _RECIPIENT_TOKEN_RE.finditer(payload):
+        token = match.group(0)
+        if token not in _KNOWN_RECIPIENT_TOKENS:
+            raise ValueError(
+                "broadcast body contains an unexpected Mailgun recipient "
+                f"token {token!r}; only {sorted(_KNOWN_RECIPIENT_TOKENS)} "
+                "are populated in recipient-variables"
+            )
+    stray = _RECIPIENT_TOKEN_RE.sub("", payload)
+    if "%" in stray:
+        raise ValueError(
+            "broadcast body contains a stray '%' character; Mailgun batch "
+            "sending substitutes recipient-variables across the whole "
+            "payload, so a literal '%' in operator copy is a hazard — "
+            "rephrase or escape it before sending"
+        )
+
+
+def build_batch_bodies(body_template: str) -> tuple[str, str]:
+    """Build the ``(html, text)`` bodies for ONE Mailgun batch-sending call
+    (MA1), carrying Mailgun recipient tokens instead of a rendered name.
+
+    The operator still authors with the literal ``{first_name}`` token
+    (same ``body_template`` as ``render_email``). Here we translate it:
+    ``%recipient.first_name_html%`` in the HTML part (Mailgun substitutes
+    the per-recipient, already-escaped value at send time — see
+    ``build_recipient_variables``), ``%recipient.first_name_text%`` in the
+    text part. Both parts are wrapped in the SAME shell + footer as
+    ``render_email`` so a dry-run (``render_email``) and a real batch send
+    are byte-for-byte comparable once Mailgun's substitution is simulated
+    (MA3).
+
+    Raises ``ValueError`` (via ``_assert_only_known_tokens``) if the
+    resulting payload carries any stray ``%`` or an unrecognized
+    ``%recipient.*%`` token — this MUST run before the body ever reaches
+    Mailgun (MA1).
+    """
+    # HTML path: escape the whole body template as literal text FIRST (this
+    # is the single html.escape call the revision calls out as "static,
+    # shared across the batch" — no per-recipient escaping happens here),
+    # then substitute in the HTML recipient token.
+    body_html_escaped = html.escape(body_template)
+    body_html_tokenized = body_html_escaped.replace(
+        "{first_name}", "%recipient.first_name_html%"
+    )
+    html_out = (
+        "<html><body>"
+        f"<p>{body_html_tokenized}</p>"
+        "<hr>"
+        f"<p>{_FOOTER_TEXT}</p>"
+        "</body></html>"
+    )
+
+    # Text path: raw body template, text recipient token, plain footer.
+    body_text_tokenized = body_template.replace(
+        "{first_name}", "%recipient.first_name_text%"
+    )
+    text_out = f"{body_text_tokenized}\n\n{_FOOTER_TEXT}"
+
+    _assert_only_known_tokens(html_out)
+    _assert_only_known_tokens(text_out)
+
+    return html_out, text_out
+
+
+def build_recipient_variables(recipients) -> dict[str, dict[str, str]]:
+    """Build the Mailgun ``recipient-variables`` map for a batch (MA2).
+
+    ``recipients`` is an iterable of either ``(email, first_name)`` tuples
+    or objects carrying ``.email`` / ``.first_name`` attributes (e.g.
+    ``EmailBroadcastRecipient`` rows). Returns
+    ``{email: {"first_name_html": ..., "first_name_text": ...}}`` keyed by
+    the EXACT snapshot email string, so the same value is usable both as a
+    ``to_list`` entry and as this map's key.
+
+    The "there" fallback for a missing ``first_name`` is applied HERE, in
+    the map — never baked into the ``%recipient.*%`` token itself — so
+    ``first_name_html`` is the HTML-escaped value (Mailgun substitutes it
+    raw into ``build_batch_bodies``' already-escaped shell) and
+    ``first_name_text`` stays the raw value.
+    """
+    variables: dict[str, dict[str, str]] = {}
+    for recipient in recipients:
+        if isinstance(recipient, tuple):
+            email, first_name = recipient
+        else:
+            email, first_name = recipient.email, recipient.first_name
+        name = first_name or "there"
+        variables[email] = {
+            "first_name_html": html.escape(name),
+            "first_name_text": name,
+        }
+    return variables
 
 
 async def materialize_recipients(db: AsyncSession, broadcast: EmailBroadcast) -> int:

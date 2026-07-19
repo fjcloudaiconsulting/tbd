@@ -27,6 +27,7 @@ Security stance (audited L5.6):
 from __future__ import annotations
 
 import html
+import json
 import urllib.parse
 
 import httpx
@@ -212,6 +213,81 @@ async def send_email(
         # surfaces the response status / reason but not our payload.
         await logger.aerror(
             "email_send_failed", to=to, subject=subject, error=str(exc)
+        )
+        return False
+
+
+async def send_batch(
+    to_list: list[str],
+    subject: str,
+    body_html: str,
+    body_text: str,
+    recipient_variables: dict,
+) -> bool:
+    """Send ONE Mailgun batch-sending call covering every address in
+    ``to_list`` (spec ``2026-07-18-admin-email-broadcast-design.md``, "Batch
+    sending revision" MA4). Mailgun fans this out into one individualized
+    message per recipient, substituting ``recipient_variables`` into the
+    ``%recipient.*%`` tokens in ``body_html``/``body_text``.
+
+    Dev mode (no ``mailgun_api_key``): logs ``broadcast_batch_sent`` with
+    ONLY ``count=len(to_list)`` and ``subject``, sends nothing, returns True.
+
+    Prod: mirrors ``send_email``'s HTTP shape, but ``to`` carries every
+    address (httpx repeats a list-valued form field) and
+    ``recipient-variables`` is sent as a JSON string — Mailgun's
+    single-value-per-form-key model. Returns True only on a 2xx response;
+    any exception (including a raised non-2xx status) is caught and
+    returns False so one bad batch never crashes the caller.
+
+    PII bound (MA5): logging here NEVER includes ``to_list``,
+    ``recipient_variables``, or the rendered bodies — only the batch size,
+    subject, and status/error. The address list and per-recipient names
+    live in the request payload only.
+    """
+    if not settings.mailgun_api_key:
+        await logger.ainfo(
+            "broadcast_batch_sent", count=len(to_list), subject=subject
+        )
+        return True
+
+    # Production: send via Mailgun HTTP API.
+    api_host = (
+        "api.eu.mailgun.net"
+        if settings.mailgun_region.lower().strip() == "eu"
+        else "api.mailgun.net"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            response = await client.post(
+                f"https://{api_host}/v3/{settings.mailgun_domain}/messages",
+                auth=("api", settings.mailgun_api_key),
+                data={
+                    "from": settings.email_from,
+                    "to": to_list,
+                    "subject": subject,
+                    "html": body_html,
+                    "text": body_text,
+                    "recipient-variables": json.dumps(recipient_variables),
+                },
+            )
+            response.raise_for_status()
+            await logger.ainfo(
+                "broadcast_batch_sent",
+                count=len(to_list),
+                subject=subject,
+                status=response.status_code,
+            )
+            return True
+    except Exception as exc:
+        # Never log to_list / recipient_variables / bodies (MA5) — only the
+        # count, subject, and the exception's str() (httpx surfaces status /
+        # reason there, not our request payload).
+        await logger.aerror(
+            "broadcast_batch_failed",
+            count=len(to_list),
+            subject=subject,
+            error=str(exc),
         )
         return False
 
