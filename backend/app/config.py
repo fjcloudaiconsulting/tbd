@@ -292,6 +292,18 @@ class Settings(BaseSettings):
     ofx_parse_timeout_s: float = 10.0
     ofx_max_rows: int = 10_000
 
+    # Superadmin email broadcast (spec 2026-07-18).
+    # ``broadcast_max_recipients``: hard backstop cap — POST /{id}/send
+    # refuses a recomputed segment count above this outright, guarding
+    # against a segment-query bug blasting far more people than plausible.
+    # ``broadcast_pacing_seconds``: sleep between sends in the drain loop.
+    # ``broadcast_max_attempts``: ``resume`` only retries recipient rows
+    # with ``attempts`` below this, so a permanently bad address isn't
+    # hammered on every resume.
+    broadcast_max_recipients: int = 10000
+    broadcast_pacing_seconds: float = 1.0
+    broadcast_max_attempts: int = 3
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:
