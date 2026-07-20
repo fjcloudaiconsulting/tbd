@@ -7,6 +7,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
 import AnnouncementsLayout from "@/components/AnnouncementsLayout";
+import BroadcastDetail from "@/components/broadcasts/BroadcastDetail";
 import Spinner from "@/components/ui/Spinner";
 import { createBroadcast, listBroadcasts } from "@/lib/broadcasts";
 import { extractErrorMessage } from "@/lib/api";
@@ -16,6 +17,7 @@ import {
   badgeInfo,
   badgeNeutral,
   badgeSuccess,
+  btnLink,
   btnPrimary,
   card,
   cardHeader,
@@ -49,6 +51,13 @@ export default function SystemBroadcastsPage() {
 
   const [formSubject, setFormSubject] = useState("");
   const [formBody, setFormBody] = useState("");
+
+  const [selected, setSelected] = useState<Broadcast | null>(null);
+
+  const handleBroadcastUpdate = useCallback((updated: Broadcast) => {
+    setSelected(updated);
+    setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
+  }, []);
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -163,13 +172,16 @@ export default function SystemBroadcastsPage() {
                   <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                     Queued
                   </th>
+                  <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {items.length === 0 && (
                   <tr>
                     <td
-                      colSpan={4}
+                      colSpan={5}
                       className="px-4 py-6 text-center text-text-muted"
                       data-testid="broadcast-empty"
                     >
@@ -205,6 +217,15 @@ export default function SystemBroadcastsPage() {
                     >
                       Queued {row.sent_count}
                     </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        onClick={() => setSelected(row)}
+                        className={btnLink}
+                        data-testid={`broadcast-view-${row.id}`}
+                      >
+                        View
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -212,6 +233,12 @@ export default function SystemBroadcastsPage() {
           </div>
         )}
       </div>
+
+      {selected && (
+        <div className="mt-6">
+          <BroadcastDetail broadcast={selected} onBroadcastUpdate={handleBroadcastUpdate} />
+        </div>
+      )}
     </AnnouncementsLayout>
   );
 }
