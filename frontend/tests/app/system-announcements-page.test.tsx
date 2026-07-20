@@ -2,40 +2,26 @@ import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import SystemAnnouncementsPage from "@/app/system/announcements/page";
-import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 
-const replaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => "/system/announcements",
 }));
 
-vi.mock("@/components/AppShell", () => ({
+// The superadmin guard + AppShell chrome now live in AnnouncementsLayout
+// (tested separately in tests/components/announcements-layout.test.tsx).
+// The page itself is pure content, so pass children straight through.
+vi.mock("@/components/AnnouncementsLayout", () => ({
   default: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="app-shell">{children}</div>
+    <div data-testid="announcements-layout">{children}</div>
   ),
-}));
-
-vi.mock("@/components/auth/AuthProvider", () => ({
-  useAuth: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
   return { ...actual, apiFetch: vi.fn() };
 });
-
-const SUPERADMIN = {
-  id: 1, username: "root", email: "root@platform.io",
-  first_name: null, last_name: null, phone: null, avatar_url: null,
-  email_verified: true, role: "owner" as const, org_id: 1, org_name: "Platform",
-  billing_cycle_day: 1, is_superadmin: true, is_active: true,
-  mfa_enabled: false, subscription_status: null, subscription_plan: null,
-  trial_end: null,
-};
-
-const NON_SUPERADMIN = { ...SUPERADMIN, id: 2, is_superadmin: false };
 
 const SAMPLE_ROW = {
   id: 7,
@@ -62,59 +48,12 @@ const annEnvelope = (items: unknown[]) =>
 
 describe("/system/announcements page", () => {
   const apiFetchMock = vi.mocked(apiFetch);
-  const useAuthMock = vi.mocked(useAuth);
 
   beforeEach(() => {
     apiFetchMock.mockReset();
-    replaceMock.mockReset();
-  });
-
-  function setSuperadmin() {
-    useAuthMock.mockReturnValue({
-      user: SUPERADMIN as never,
-      loading: false,
-      needsSetup: false,
-      login: vi.fn(),
-      register: vi.fn(),
-      logout: vi.fn(),
-      refreshMe: vi.fn(),
-    } as never);
-  }
-
-  it("redirects a non-superadmin user to /dashboard", async () => {
-    useAuthMock.mockReturnValue({
-      user: NON_SUPERADMIN as never,
-      loading: false,
-      needsSetup: false,
-      login: vi.fn(),
-      register: vi.fn(),
-      logout: vi.fn(),
-      refreshMe: vi.fn(),
-    } as never);
-    render(<SystemAnnouncementsPage />);
-    await waitFor(() => {
-      expect(replaceMock).toHaveBeenCalledWith("/dashboard");
-    });
-  });
-
-  it("redirects an unauthenticated visitor to /login", async () => {
-    useAuthMock.mockReturnValue({
-      user: null,
-      loading: false,
-      needsSetup: false,
-      login: vi.fn(),
-      register: vi.fn(),
-      logout: vi.fn(),
-      refreshMe: vi.fn(),
-    } as never);
-    render(<SystemAnnouncementsPage />);
-    await waitFor(() => {
-      expect(replaceMock).toHaveBeenCalledWith("/login");
-    });
   });
 
   it("lists existing rows for a superadmin", async () => {
-    setSuperadmin();
     apiFetchMock.mockImplementation(((url: string) => {
       if (isAnnouncementsGet(url)) return annEnvelope([SAMPLE_ROW]);
       return Promise.resolve(undefined);
@@ -125,7 +64,6 @@ describe("/system/announcements page", () => {
   });
 
   it("POSTs the form payload when creating a new announcement", async () => {
-    setSuperadmin();
     apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
       if (isAnnouncementsGet(url, options)) {
         return annEnvelope([]);
@@ -166,7 +104,6 @@ describe("/system/announcements page", () => {
   });
 
   it("pre-fills the form when editing", async () => {
-    setSuperadmin();
     apiFetchMock.mockResolvedValueOnce({
       items: [SAMPLE_ROW],
       total: 1,
