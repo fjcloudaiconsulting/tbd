@@ -32,7 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
-from app.models.email_broadcast import BroadcastStatus, EmailBroadcast
+from app.models.email_broadcast import (
+    BroadcastStatus,
+    EmailBroadcast,
+    EmailBroadcastRecipient,
+)
 from app.models.user import User
 from app.rate_limit import get_client_ip
 from app.schemas.common import ListEnvelope
@@ -41,12 +45,15 @@ from app.schemas.email_broadcast import (
     BroadcastResponse,
     BroadcastSendRequest,
     PreviewResponse,
+    RecipientResponse,
 )
 from app.services import audit_service
 from app.services.broadcast_service import (
     assert_only_known_tokens,
     build_batch_bodies,
     count_segment,
+    delivery_counts,
+    delivery_counts_for_broadcasts,
     launch_drain,
     launch_resume,
     materialize_recipients,
@@ -110,19 +117,31 @@ async def _get_broadcast_or_404(db: AsyncSession, broadcast_id: int) -> EmailBro
     return row
 
 
-async def _to_response(db: AsyncSession, row: EmailBroadcast) -> BroadcastResponse:
-    """Build the response shape, filling in the live ``recipient_count``.
+async def _to_response(
+    db: AsyncSession,
+    row: EmailBroadcast,
+    counts: Optional[dict] = None,
+) -> BroadcastResponse:
+    """Build the response shape, filling in the live ``recipient_count`` plus
+    the four derived Mailgun delivery counts (Ruling W9).
 
     While DRAFT the segment count can still shift, so we show a live
     ``count_segment`` preview; once materialized (``total_recipients`` set),
     that snapshot is the count that actually matters.
+
+    ``counts`` lets a caller pass a precomputed
+    ``delivery_counts_for_broadcasts`` bucket (the LIST endpoint, avoiding
+    N+1); when omitted, a single-broadcast ``delivery_counts`` query runs.
     """
     if row.total_recipients is not None:
         recipient_count = row.total_recipients
     else:
         recipient_count = await count_segment(db, row.segment)
+    if counts is None:
+        counts = await delivery_counts(db, row.id)
     data = BroadcastResponse.model_validate(row).model_dump()
     data["recipient_count"] = recipient_count
+    data.update(counts)
     return BroadcastResponse(**data)
 
 
@@ -196,7 +215,47 @@ async def list_broadcasts(
         .offset(offset)
     )
     rows = list(result.scalars().all())
-    items = [await _to_response(db, row) for row in rows]
+    # ONE grouped query for the whole page's delivery counts (Ruling W9),
+    # never N per-row queries.
+    counts_by_id = await delivery_counts_for_broadcasts(db, [row.id for row in rows])
+    items = [
+        await _to_response(db, row, counts_by_id.get(row.id))
+        for row in rows
+    ]
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get(
+    "/{broadcast_id}/recipients", response_model=ListEnvelope[RecipientResponse]
+)
+async def list_broadcast_recipients(
+    broadcast_id: int,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _current_user: User = Depends(require_superadmin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-recipient rows for one broadcast, incl. ``delivery_status``
+    (Ruling W9) — so an operator can see WHICH addresses bounced/complained
+    and clean up dead accounts. Superadmin-gated (Ruling W10); the address
+    already lives on the recipient row, so this adds no new PII sink."""
+    await _get_broadcast_or_404(db, broadcast_id)
+    total = (
+        await db.scalar(
+            select(func.count())
+            .select_from(EmailBroadcastRecipient)
+            .where(EmailBroadcastRecipient.broadcast_id == broadcast_id)
+        )
+    ) or 0
+    result = await db.execute(
+        select(EmailBroadcastRecipient)
+        .where(EmailBroadcastRecipient.broadcast_id == broadcast_id)
+        .order_by(EmailBroadcastRecipient.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = list(result.scalars().all())
+    items = [RecipientResponse.model_validate(row) for row in rows]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 

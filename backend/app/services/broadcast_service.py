@@ -433,6 +433,82 @@ async def _user_still_targetable(db: AsyncSession, user_id: int | None) -> bool:
     return result.scalar_one_or_none() is not None
 
 
+async def delivery_counts(db: AsyncSession, broadcast_id: int) -> dict[str, int]:
+    """Compute-on-read delivery counts for one broadcast (Ruling W9).
+
+    ``GROUP BY delivery_status`` over the recipient rows, mirroring
+    ``_recompute_broadcast_counters``. Never stored on ``email_broadcasts``
+    and never bumped by the webhook — always derived fresh here. NULL /
+    absent ``delivery_status`` values (no webhook event yet) contribute 0 to
+    every bucket. ``bounced_permanent`` maps to ``bounced_count`` and
+    ``bounced_temporary`` maps to ``soft_bounced_count``.
+    """
+    counts = dict(
+        (
+            await db.execute(
+                select(
+                    EmailBroadcastRecipient.delivery_status, func.count()
+                )
+                .where(EmailBroadcastRecipient.broadcast_id == broadcast_id)
+                .group_by(EmailBroadcastRecipient.delivery_status)
+            )
+        ).all()
+    )
+    return {
+        "delivered_count": counts.get("delivered", 0),
+        "bounced_count": counts.get("bounced_permanent", 0),
+        "soft_bounced_count": counts.get("bounced_temporary", 0),
+        "complained_count": counts.get("complained", 0),
+    }
+
+
+_EMPTY_DELIVERY_COUNTS: dict[str, int] = {
+    "delivered_count": 0,
+    "bounced_count": 0,
+    "soft_bounced_count": 0,
+    "complained_count": 0,
+}
+
+
+async def delivery_counts_for_broadcasts(
+    db: AsyncSession, broadcast_ids: Sequence[int]
+) -> dict[int, dict[str, int]]:
+    """Batched sibling of ``delivery_counts`` for the LIST endpoint (Ruling
+    W9): ONE ``GROUP BY broadcast_id, delivery_status`` query across every
+    id in ``broadcast_ids``, instead of one query per row (N+1). Ids with no
+    recipient rows at all (a still-draft broadcast) are absent from the
+    result and the caller should fall back to the all-zero shape.
+    """
+    if not broadcast_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(
+                EmailBroadcastRecipient.broadcast_id,
+                EmailBroadcastRecipient.delivery_status,
+                func.count(),
+            )
+            .where(EmailBroadcastRecipient.broadcast_id.in_(broadcast_ids))
+            .group_by(
+                EmailBroadcastRecipient.broadcast_id,
+                EmailBroadcastRecipient.delivery_status,
+            )
+        )
+    ).all()
+    result: dict[int, dict[str, int]] = {}
+    for broadcast_id, delivery_status, count in rows:
+        bucket = result.setdefault(broadcast_id, dict(_EMPTY_DELIVERY_COUNTS))
+        if delivery_status == "delivered":
+            bucket["delivered_count"] = count
+        elif delivery_status == "bounced_permanent":
+            bucket["bounced_count"] = count
+        elif delivery_status == "bounced_temporary":
+            bucket["soft_bounced_count"] = count
+        elif delivery_status == "complained":
+            bucket["complained_count"] = count
+    return result
+
+
 async def _recompute_broadcast_counters(
     db: AsyncSession, broadcast_id: int
 ) -> int:
