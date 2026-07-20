@@ -1035,3 +1035,71 @@ async def founder_count_cache_set(n: int) -> None:
     if client is None:
         return
     await client.set(_FOUNDER_COUNT_KEY, str(n), ex=_FOUNDER_COUNT_TTL_S)
+
+
+# ── Mailgun webhook replay-token dedup (fail-OPEN) ──────────────────────
+#
+# Spec 2026-07-20 (Mailgun delivery webhooks), Config + operator runbook.
+# Each signed Mailgun event carries a one-time ``token`` inside its
+# ``signature`` object. We record the token with a short TTL so a replayed
+# request (same token, still fresh under the signature freshness window)
+# is detected and dropped. This is DEFENSE IN DEPTH on top of the HMAC +
+# timestamp-freshness check in ``services/mailgun_webhook.verify_signature``.
+#
+# CRITICAL: this helper FAILS OPEN. The security boundary is the signature
+# verification, which needs NO Redis. Token-replay dedup is DoS / hygiene
+# only, so a Redis outage must NOT reject legitimate signed events. On ANY
+# Redis error (or Redis being unconfigured in dev) we treat the token as
+# first-sight and return True. Do NOT reuse the auth ``require_client``
+# fail-CLOSED pattern here — that is for the actual security boundary.
+
+_WEBHOOK_TOKEN_KEY = "webhook:mailgun:token:{token}"
+
+
+async def mark_webhook_token_seen(token: str, ttl_s: int) -> bool:
+    """Record a Mailgun webhook token, returning whether it is first-sight.
+
+    ``SET webhook:mailgun:token:{token} 1 NX EX ttl_s``.
+
+    Returns:
+      * ``True`` — the key was NEWLY set (first sight); the caller should
+        process the event. Also returned when Redis is unconfigured (dev)
+        or on ANY Redis error — FAIL OPEN.
+      * ``False`` — the key already existed (replay); the caller should
+        200-drop the event.
+
+    Fail-open rationale: signature verification is the security boundary
+    and needs no Redis. This dedup is DoS hygiene only; a Redis blip must
+    not start rejecting valid signed events.
+    """
+    client = get_client()
+    if client is None:
+        # Dev / no-Redis: dedup disabled → treat every token as first sight.
+        return True
+    try:
+        # SET key 1 NX EX ttl — atomic claim-with-TTL in one round trip.
+        # Truthy on first claim, falsy (None) when the key already exists.
+        # The ``_normalize_transport_errors`` wrapper translates uvloop
+        # closed-transport RuntimeError into RedisConnectionError (a
+        # RedisError subclass) so the broad except below catches it.
+        newly_set = await _webhook_token_set(client, token, ttl_s)
+        return bool(newly_set)
+    except RedisError as exc:
+        logger.warning(
+            "webhook.mailgun.token_seen.fail_open",
+            error_class=type(exc).__name__,
+        )
+        return True
+
+
+@_normalize_transport_errors
+async def _webhook_token_set(client, token: str, ttl_s: int):
+    """Inner SET NX EX call, wrapped by the transport-error decorator.
+
+    Split out so the public helper can catch the normalized ``RedisError``
+    and fail-open without losing the uvloop / closed-transport translation
+    the decorator provides.
+    """
+    return await client.set(
+        _WEBHOOK_TOKEN_KEY.format(token=token), "1", nx=True, ex=ttl_s
+    )
