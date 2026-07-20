@@ -150,6 +150,7 @@ async def test_send_batch_dev_mode_returns_true_without_httpx(monkeypatch):
             "alice@x.io": {"first_name_html": "Alice", "first_name_text": "Alice"},
             "bob@x.io": {"first_name_html": "Bob", "first_name_text": "Bob"},
         },
+        broadcast_id=42,
     )
 
     assert result is True
@@ -170,6 +171,7 @@ async def test_send_batch_dev_mode_logs_count_and_subject_only(
             "<p>html</p>",
             "text",
             {addr: {"first_name_html": "there", "first_name_text": "there"} for addr in to_list},
+            broadcast_id=42,
         )
 
     events = [e for e in _collect_structlog_events(caplog) if e.get("event") == "broadcast_batch_sent"]
@@ -219,6 +221,38 @@ async def test_send_batch_prod_mode_request_shape(monkeypatch):
             "alice@x.io": {"first_name_html": "Alice", "first_name_text": "Alice"},
             "bob@x.io": {"first_name_html": "there", "first_name_text": "there"},
         },
+        broadcast_id=42,
+    )
+
+    assert result is True
+    assert len(captured) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_batch_prod_mode_tags_v_broadcast_id_as_string(monkeypatch):
+    """W4: ``send_batch`` must add ``v:broadcast_id`` to the Mailgun ``data``
+    dict as a STRING (Mailgun message-level user-variables are echoed to
+    every recipient's webhook events under ``event-data.user-variables`` as
+    strings), so the webhook handler's ``int(...)`` parse-back has something
+    to work with."""
+    monkeypatch.setattr(email_service.settings, "mailgun_api_key", "key-123")
+    monkeypatch.setattr(email_service.settings, "mailgun_domain", "mg.example.com")
+    monkeypatch.setattr(email_service.settings, "mailgun_region", "eu")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        form = parse_qs(request.content.decode("utf-8"))
+        assert form["v:broadcast_id"] == ["42"]
+        return httpx.Response(200, json={"id": "abc", "message": "Queued"})
+
+    captured = _install_transport(monkeypatch, handler)
+
+    result = await email_service.send_batch(
+        ["alice@x.io"],
+        "Subject line",
+        "<p>html</p>",
+        "text",
+        {"alice@x.io": {"first_name_html": "Alice", "first_name_text": "Alice"}},
+        broadcast_id=42,
     )
 
     assert result is True
@@ -242,6 +276,7 @@ async def test_send_batch_prod_mode_non_2xx_returns_false(monkeypatch):
         "<p>html</p>",
         "text",
         {"alice@x.io": {"first_name_html": "there", "first_name_text": "there"}},
+        broadcast_id=42,
     )
 
     assert result is False
@@ -266,6 +301,7 @@ async def test_send_batch_prod_mode_logs_status_on_success_and_error_on_failure(
             "<p>html</p>",
             "text",
             {"alice@x.io": {"first_name_html": "there", "first_name_text": "there"}},
+            broadcast_id=42,
         )
     ok_events = [e for e in _collect_structlog_events(caplog) if e.get("event") == "broadcast_batch_sent"]
     assert len(ok_events) == 1
@@ -284,6 +320,7 @@ async def test_send_batch_prod_mode_logs_status_on_success_and_error_on_failure(
             "<p>html</p>",
             "text",
             {"alice@x.io": {"first_name_html": "there", "first_name_text": "there"}},
+            broadcast_id=42,
         )
     fail_events = [e for e in _collect_structlog_events(caplog) if e.get("event") == "broadcast_batch_failed"]
     assert len(fail_events) == 1
@@ -331,6 +368,7 @@ async def test_send_batch_multi_address_bad_vars_never_posts(
         "<p>html</p>",
         "text",
         recipient_variables,
+        broadcast_id=42,
     )
 
     assert result is False
@@ -347,7 +385,7 @@ async def test_send_batch_bad_vars_logs_counts_without_addresses(
 
     with caplog.at_level(logging.INFO, logger="app.services.email_service"):
         await email_service.send_batch(
-            ["alice@x.io", "bob@x.io"], "Subject", "<p>html</p>", "text", {}
+            ["alice@x.io", "bob@x.io"], "Subject", "<p>html</p>", "text", {}, broadcast_id=42
         )
 
     events = [
@@ -376,7 +414,7 @@ async def test_send_batch_single_address_allowed_without_vars(monkeypatch):
     captured = _install_transport(monkeypatch, handler)
 
     result = await email_service.send_batch(
-        ["alice@x.io"], "Subject", "<p>html</p>", "text", {}
+        ["alice@x.io"], "Subject", "<p>html</p>", "text", {}, broadcast_id=42
     )
 
     assert result is True

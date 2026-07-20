@@ -309,6 +309,18 @@ class Settings(BaseSettings):
     broadcast_max_attempts: int = 3
     broadcast_batch_size: int = 1000
 
+    # Mailgun delivery webhooks (spec 2026-07-20).
+    # ``mailgun_webhook_signing_key``: the domain's HTTP webhook signing key
+    # (distinct from ``mailgun_api_key``), used to HMAC-verify inbound
+    # POST /api/v1/webhooks/mailgun events. Empty (the default) means the
+    # endpoint FAILS CLOSED — every request is rejected with 404 and no
+    # delivery status is ever recorded (Ruling W1).
+    # ``mailgun_webhook_timestamp_tolerance_s``: freshness window for the
+    # signature's ``timestamp`` field; requests older (or newer) than this
+    # many seconds are rejected as stale, mitigating replay.
+    mailgun_webhook_signing_key: str = ""
+    mailgun_webhook_timestamp_tolerance_s: int = 900
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:

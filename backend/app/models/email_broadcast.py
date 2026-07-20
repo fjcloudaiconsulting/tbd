@@ -140,10 +140,20 @@ class EmailBroadcastRecipient(Base):
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Mailgun delivery webhooks (spec 2026-07-20). App-validated growth axis —
+    # NOT a DB enum, same discipline as ``segment`` (Ruling W8, avoids the
+    # MySQL enum-ALTER landmine). Values: delivered / bounced_permanent /
+    # bounced_temporary / complained. NULL until the first webhook event
+    # arrives; applied under a sticky precedence rule (see mailgun_webhook.py).
+    delivery_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    delivery_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (
         # Dedupes materialization INSERTs (one row per user per broadcast).
         UniqueConstraint("broadcast_id", "user_id", name="uq_broadcast_recipient"),
         # Serves the drain's WHERE broadcast_id=? AND status='pending' select.
         Index("ix_broadcast_recipient_status", "broadcast_id", "status"),
+        # Serves the webhook's correlation lookup: WHERE broadcast_id=? AND
+        # lower(email)=lower(?) (Ruling W7).
+        Index("ix_broadcast_recipient_email", "broadcast_id", "email"),
     )

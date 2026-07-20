@@ -27,6 +27,7 @@ import json
 import os
 import tempfile
 import time
+from datetime import datetime
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
 
@@ -46,6 +47,7 @@ from app.models import Base
 from app.models.audit_event import AuditEvent
 from app.models.email_broadcast import (
     SEGMENT_ACTIVE_VERIFIED,
+    EmailBroadcast,
     EmailBroadcastRecipient,
     RecipientStatus,
 )
@@ -561,3 +563,106 @@ async def test_audit_events_carry_no_recipient_email(session_factory):
         for addr in recipient_emails:
             assert addr not in blob
         assert ev.target_org_id is None
+
+
+# ── delivery counts + recipients endpoint (Task 5, W9) ───────────────────
+
+
+async def _seed_broadcast_with_mixed_delivery_status(factory) -> int:
+    """Seed one broadcast + 6 recipient rows directly (no real send), with
+    mixed ``delivery_status``: two delivered, one bounced_permanent, one
+    bounced_temporary, one complained, one NULL (no webhook event yet)."""
+    async with factory() as db:
+        broadcast = EmailBroadcast(
+            subject="Delivery status test",
+            body_template="Hi {first_name},",
+            segment=SEGMENT_ACTIVE_VERIFIED,
+            total_recipients=6,
+        )
+        db.add(broadcast)
+        await db.commit()
+        await db.refresh(broadcast)
+
+        statuses = [
+            "delivered",
+            "delivered",
+            "bounced_permanent",
+            "bounced_temporary",
+            "complained",
+            None,
+        ]
+        for i, delivery_status in enumerate(statuses):
+            db.add(
+                EmailBroadcastRecipient(
+                    broadcast_id=broadcast.id,
+                    email=f"recip{i}@customer.io",
+                    first_name=f"Recip{i}",
+                    status=RecipientStatus.SENT,
+                    delivery_status=delivery_status,
+                    delivery_updated_at=(
+                        None if delivery_status is None else datetime(2026, 7, 20)
+                    ),
+                )
+            )
+        await db.commit()
+        return broadcast.id
+
+
+@pytest.mark.asyncio
+async def test_get_broadcast_returns_delivery_counts(session_factory):
+    await _seed(session_factory)
+    broadcast_id = await _seed_broadcast_with_mixed_delivery_status(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(f"/api/v1/admin/broadcasts/{broadcast_id}")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["delivered_count"] == 2
+    assert body["bounced_count"] == 1
+    assert body["soft_bounced_count"] == 1
+    assert body["complained_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_broadcasts_returns_delivery_counts(session_factory):
+    """The LIST endpoint must also carry the derived counts, via the single
+    grouped query (no N+1)."""
+    await _seed(session_factory)
+    broadcast_id = await _seed_broadcast_with_mixed_delivery_status(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/admin/broadcasts")
+    assert res.status_code == 200
+    items = {item["id"]: item for item in res.json()["items"]}
+    assert items[broadcast_id]["delivered_count"] == 2
+    assert items[broadcast_id]["bounced_count"] == 1
+    assert items[broadcast_id]["soft_bounced_count"] == 1
+    assert items[broadcast_id]["complained_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_recipients_endpoint_requires_superadmin(session_factory):
+    await _seed(session_factory)
+    broadcast_id = await _seed_broadcast_with_mixed_delivery_status(session_factory)
+    app = _make_app(session_factory, _plain_user_resolver())
+    with TestClient(app) as client:
+        res = client.get(f"/api/v1/admin/broadcasts/{broadcast_id}/recipients")
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_recipients_endpoint_returns_rows_with_delivery_status(session_factory):
+    await _seed(session_factory)
+    broadcast_id = await _seed_broadcast_with_mixed_delivery_status(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(f"/api/v1/admin/broadcasts/{broadcast_id}/recipients")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 6
+    by_email = {item["email"]: item for item in body["items"]}
+    assert by_email["recip0@customer.io"]["delivery_status"] == "delivered"
+    assert by_email["recip2@customer.io"]["delivery_status"] == "bounced_permanent"
+    assert by_email["recip3@customer.io"]["delivery_status"] == "bounced_temporary"
+    assert by_email["recip4@customer.io"]["delivery_status"] == "complained"
+    assert by_email["recip5@customer.io"]["delivery_status"] is None
