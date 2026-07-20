@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import structlog
@@ -123,7 +123,9 @@ async def _apply_delivery_status(
                 row.delivery_status = new_status
                 # Event occurrence time (naive UTC, matching the codebase's
                 # datetime convention), distinct from the signature timestamp.
-                row.delivery_updated_at = datetime.utcfromtimestamp(event_ts)
+                row.delivery_updated_at = datetime.fromtimestamp(
+                    event_ts, timezone.utc
+                ).replace(tzinfo=None)
                 changed = True
 
         if changed:

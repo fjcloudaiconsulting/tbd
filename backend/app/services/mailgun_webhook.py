@@ -69,13 +69,19 @@ def verify_signature(
         # Past OR future beyond the skew window — replay-mitigation
         # freshness gate (W1).
         return VERIFY_STALE
+    # A crafted body can make ``signature`` any JSON type; a non-str would
+    # raise TypeError in compare_digest below and surface as a 500 on this
+    # public endpoint (W2 says unauth input must be 4xx, never 5xx). Reject
+    # it as a bad signature here.
+    if not isinstance(signature, str):
+        return VERIFY_BAD_SIGNATURE
     expected = hmac.new(
         signing_key.encode(),
         f"{timestamp}{token}".encode(),
         hashlib.sha256,
     ).hexdigest()
     # Constant-time compare (W1) — MUST NOT use ``==``.
-    if hmac.compare_digest(expected, signature or ""):
+    if hmac.compare_digest(expected, signature):
         return VERIFY_OK
     return VERIFY_BAD_SIGNATURE
 

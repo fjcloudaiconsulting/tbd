@@ -253,3 +253,23 @@ async def test_mark_webhook_token_seen_first_then_replay(monkeypatch):
     second = await redis_client.mark_webhook_token_seen("tok-dup", ttl_s=1200)
     assert first is True
     assert second is False
+
+
+def test_non_string_signature_is_bad_signature_not_error():
+    """A crafted body can set ``signature`` to a non-string (int/list/dict).
+    That must return bad_signature, never raise (which would 500 the public
+    endpoint — W2 forbids a 5xx on unauth input). Regression for the review
+    finding."""
+    ts = str(int(_NOW))
+    for bad in (12345, ["x"], {"x": 1}, True):
+        assert (
+            mailgun_webhook.verify_signature(
+                ts,
+                "tok",
+                bad,
+                signing_key="k",
+                tolerance_s=900,
+                now_ts=int(_NOW),
+            )
+            == VERIFY_BAD_SIGNATURE
+        )
