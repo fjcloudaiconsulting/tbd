@@ -475,12 +475,17 @@ async def delivery_counts_for_broadcasts(
 ) -> dict[int, dict[str, int]]:
     """Batched sibling of ``delivery_counts`` for the LIST endpoint (Ruling
     W9): ONE ``GROUP BY broadcast_id, delivery_status`` query across every
-    id in ``broadcast_ids``, instead of one query per row (N+1). Ids with no
-    recipient rows at all (a still-draft broadcast) are absent from the
-    result and the caller should fall back to the all-zero shape.
+    id in ``broadcast_ids``, instead of one query per row (N+1). Every
+    requested id is present in the result — ids with no recipient rows (a
+    still-draft broadcast) map to the all-zero shape — so the caller never
+    needs a per-row fallback (which would reintroduce the N+1 for a page of
+    drafts).
     """
     if not broadcast_ids:
         return {}
+    result: dict[int, dict[str, int]] = {
+        bid: dict(_EMPTY_DELIVERY_COUNTS) for bid in broadcast_ids
+    }
     rows = (
         await db.execute(
             select(
@@ -495,7 +500,6 @@ async def delivery_counts_for_broadcasts(
             )
         )
     ).all()
-    result: dict[int, dict[str, int]] = {}
     for broadcast_id, delivery_status, count in rows:
         bucket = result.setdefault(broadcast_id, dict(_EMPTY_DELIVERY_COUNTS))
         if delivery_status == "delivered":
