@@ -78,3 +78,53 @@ def verify_signature(
     if hmac.compare_digest(expected, signature or ""):
         return VERIFY_OK
     return VERIFY_BAD_SIGNATURE
+
+
+# ── Event → delivery_status mapping + sticky precedence (W5/W6) ─────────
+#
+# Modern Mailgun webhooks POST ONE event per request. The router maps the
+# raw ``event`` (+ ``severity`` for ``failed``) to one of the four
+# delivery outcomes, or ``None`` to signal "ignore this event" (200-drop).
+
+# Hard cap on the request body this public route will buffer. Mailgun's
+# ``event-data`` can carry full message headers, so 16 KiB (the CSP sink's
+# cap) would truncate legitimate events; 256 KiB is generous headroom
+# while still bounding memory on this unauthenticated route (W3).
+_MAX_BODY_BYTES = 256 * 1024  # 256 KiB
+
+# Sticky precedence lattice (W6). Apply a new status ONLY when its rank is
+# strictly greater than the current row's rank, so terminal-negative
+# outcomes (complained / permanent bounce) survive a late or duplicate
+# ``delivered`` redelivery, while a real ``delivered`` still overrides an
+# earlier soft (temporary) bounce. NULL (no status yet) ranks lowest.
+DELIVERY_RANK: dict[str | None, int] = {
+    None: 0,
+    "bounced_temporary": 1,
+    "delivered": 2,
+    "bounced_permanent": 3,
+    "complained": 4,
+}
+
+
+def map_event(event: str, severity: str | None) -> str | None:
+    """Map a Mailgun ``event`` (+ ``severity``) to a delivery status.
+
+    Returns one of ``delivered`` / ``bounced_permanent`` /
+    ``bounced_temporary`` / ``complained``, or ``None`` for any event we
+    do not record (opened / clicked / unsubscribed / unknown → the router
+    200-drops).
+
+    ``failed`` with a missing or unknown severity is treated as a
+    PERMANENT bounce (W5): surface it as actionable rather than silently
+    downgrading to a soft bounce. The raw severity is logged by the caller.
+    """
+    if event == "delivered":
+        return "delivered"
+    if event == "failed":
+        # temporary → soft bounce; permanent / missing / unknown → hard.
+        if severity == "temporary":
+            return "bounced_temporary"
+        return "bounced_permanent"
+    if event == "complained":
+        return "complained"
+    return None
