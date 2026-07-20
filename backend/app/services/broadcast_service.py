@@ -53,6 +53,33 @@ logger = structlog.get_logger()
 _FOOTER_TEXT = "You're receiving this because you have a The Better Decision account."
 
 
+def _html_paragraphs(escaped_text: str) -> str:
+    """Render already-HTML-escaped text into paragraph markup.
+
+    ``body_template`` is authored as plain text with blank lines between
+    paragraphs (``\\n\\n``) and occasional single newlines. HTML collapses
+    all newlines to whitespace, so without this the whole body renders as
+    one run-on block. Here: blank-line-separated blocks become
+    ``<p>...</p>``; single newlines inside a block become ``<br>``.
+
+    Input MUST already be ``html.escape``-d — this only adds ``<p>``/``<br>``
+    tags, it never escapes. Kept as a shared helper so ``render_email``
+    (dry-run) and ``build_batch_bodies`` (real send) paragraph-format
+    identically, preserving MA3 byte-parity: the Mailgun token and the
+    substituted name are both newline-free inline text, so paragraph
+    boundaries are identical whether the name is substituted before or after
+    this runs.
+    """
+    blocks = re.split(r"\n[ \t]*\n", escaped_text)
+    out = []
+    for block in blocks:
+        block = block.strip("\n")
+        if not block.strip():
+            continue
+        out.append("<p>" + block.replace("\n", "<br>") + "</p>")
+    return "".join(out)
+
+
 def _require_known_segment(segment: str) -> None:
     if segment != SEGMENT_ACTIVE_VERIFIED:
         raise ValueError(f"unknown broadcast segment: {segment!r}")
@@ -121,7 +148,7 @@ def render_email(body_template: str, first_name: str | None) -> tuple[str, str]:
     body_html = html.escape(body_template).replace("{first_name}", name_safe)
     html_out = (
         "<html><body>"
-        f"<p>{body_html}</p>"
+        f"{_html_paragraphs(body_html)}"
         "<hr>"
         f"<p>{_FOOTER_TEXT}</p>"
         "</body></html>"
@@ -209,7 +236,7 @@ def build_batch_bodies(body_template: str) -> tuple[str, str]:
     )
     html_out = (
         "<html><body>"
-        f"<p>{body_html_tokenized}</p>"
+        f"{_html_paragraphs(body_html_tokenized)}"
         "<hr>"
         f"<p>{_FOOTER_TEXT}</p>"
         "</body></html>"

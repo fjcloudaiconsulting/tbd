@@ -32,7 +32,48 @@ from app.models.email_broadcast import (
 )
 from app.models.user import Organization, Role, User
 from app.security import hash_password
-from app.services.broadcast_service import materialize_recipients, render_email
+from app.services.broadcast_service import (
+    build_batch_bodies,
+    build_recipient_variables,
+    materialize_recipients,
+    render_email,
+)
+
+
+def _simulate_mailgun(body_with_tokens: str, first_name):
+    """Substitute Mailgun's %recipient.*% tokens the way the batch send
+    relies on Mailgun doing at delivery time, using the SAME vars builder
+    the drain uses (so the parity check can't drift from real behaviour)."""
+    variables = build_recipient_variables([("x@example.com", first_name)])["x@example.com"]
+    return body_with_tokens.replace(
+        "%recipient.first_name_html%", variables["first_name_html"]
+    ).replace("%recipient.first_name_text%", variables["first_name_text"])
+
+
+def test_render_email_formats_paragraphs_and_line_breaks():
+    """A blank line starts a new <p>; a single newline becomes <br>.
+    Regression for the run-on-block bug in the first dry-run."""
+    body = "Hi {first_name},\n\nFirst paragraph.\n\nSign off,\nThe Team"
+    html_out, text_out = render_email(body, "Alex")
+    # greeting, para 1, sign-off, plus the footer = 4 <p> blocks
+    assert html_out.count("<p>") == 4
+    assert "<p>Hi Alex,</p>" in html_out
+    assert "<p>First paragraph.</p>" in html_out
+    assert "<p>Sign off,<br>The Team</p>" in html_out
+    # NOT a single run-on paragraph
+    assert "First paragraph.\n\nSign off" not in html_out
+    # text part keeps the raw newlines
+    assert "First paragraph.\n\nSign off,\nThe Team" in text_out
+
+
+def test_batch_bodies_match_render_email_with_paragraphs():
+    """MA3 byte-parity holds for a multi-paragraph body: the batch HTML,
+    once Mailgun substitutes the recipient token, equals render_email."""
+    body = "Hi {first_name},\n\nLine one.\n\nLine two.\nStill two."
+    html_tokens, text_tokens = build_batch_bodies(body)
+    for name in ("Alex", None, "A<b>&"):
+        assert _simulate_mailgun(html_tokens, name) == render_email(body, name)[0]
+        assert _simulate_mailgun(text_tokens, name) == render_email(body, name)[1]
 
 
 def test_render_email_escapes_name_and_body_for_html():
