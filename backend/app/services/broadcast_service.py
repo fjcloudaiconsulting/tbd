@@ -650,6 +650,7 @@ async def _run_drain_loop(
                 body_html_tokens,
                 body_text_tokens,
                 recipient_variables,
+                broadcast_id,
             )
             batch_error = None if ok else "send_batch returned a falsy result"
         except Exception as exc:  # noqa: BLE001 - one batch's failure must not halt the drain
