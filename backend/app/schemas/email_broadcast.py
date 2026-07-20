@@ -23,7 +23,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.email_broadcast import BroadcastStatus
+from app.models.email_broadcast import BroadcastStatus, RecipientStatus
 
 SUBJECT_MIN_LENGTH = 1
 SUBJECT_MAX_LENGTH = 200
@@ -78,6 +78,32 @@ class BroadcastResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     recipient_count: Optional[int] = None
+    # Derived, compute-on-read Mailgun delivery counts (Ruling W9) — NEVER
+    # stored columns, NEVER bumped by the webhook. Filled in by the router
+    # from ``broadcast_service.delivery_counts`` /
+    # ``delivery_counts_for_broadcasts``. Default 0 so a still-draft
+    # broadcast (no recipient rows yet) reports zeros rather than nulls.
+    delivered_count: int = 0
+    bounced_count: int = 0
+    soft_bounced_count: int = 0
+    complained_count: int = 0
+
+
+class RecipientResponse(BaseModel):
+    """Read shape for one ``EmailBroadcastRecipient`` row, returned by
+    ``GET /{broadcast_id}/recipients`` (Ruling W9). Superadmin-gated and
+    operationally necessary (Ruling W10) so an operator can see WHICH
+    addresses bounced/complained and clean up dead accounts."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    first_name: Optional[str] = None
+    status: RecipientStatus
+    delivery_status: Optional[str] = None
+    delivery_updated_at: Optional[datetime] = None
+    sent_at: Optional[datetime] = None
 
 
 class BroadcastSendRequest(BaseModel):

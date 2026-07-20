@@ -21,7 +21,7 @@ from app import redis_client
 from app.database import engine
 from app.logging import setup_logging
 from app.rate_limit import limiter
-from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_broadcasts, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, auth, budgets, categories, dashboard, feedback, forecast, forecast_plans, import_router, notifications, onboarding, org_data, org_members, orgs, plans, public_stats, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users
+from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_broadcasts, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, auth, budgets, categories, dashboard, feedback, forecast, forecast_plans, import_router, notifications, onboarding, org_data, org_members, orgs, plans, public_stats, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users, webhooks
 from app.routers import scheduler as scheduler_router
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.import_ofx_service import init_ofx_executor, shutdown_ofx_executor
@@ -535,6 +535,7 @@ app.include_router(admin_rate_limit_overrides.router)
 app.include_router(security.router)
 app.include_router(public_stats.router)
 app.include_router(scheduler_router.router)
+app.include_router(webhooks.router)
 
 
 @app.get("/health")

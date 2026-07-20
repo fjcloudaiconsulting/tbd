@@ -223,6 +223,7 @@ async def send_batch(
     body_html: str,
     body_text: str,
     recipient_variables: dict,
+    broadcast_id: int,
 ) -> bool:
     """Send ONE Mailgun batch-sending call covering every address in
     ``to_list`` (spec ``2026-07-18-admin-email-broadcast-design.md``, "Batch
@@ -261,6 +262,14 @@ async def send_batch(
     there is no cross-recipient leak possible with one address, and the
     dry-run/one-off paths rely on it. Tokens simply stay unsubstituted in
     that case, which the drain's own MA2 key-match prevents anyway.
+
+    ``broadcast_id`` (W4, spec ``2026-07-20-mailgun-delivery-webhooks-design.md``)
+    is sent as the Mailgun message-level user-variable ``v:broadcast_id``
+    (stringified). Mailgun echoes message-level ``v:`` variables back on
+    every recipient's delivery webhook event under
+    ``event-data.user-variables`` as strings, which is the sole correlation
+    carrier the webhook handler uses to find the recipient row (recipient
+    variables are NOT echoed).
     """
     if len(to_list) > 1 and set(recipient_variables or {}) != set(to_list):
         await logger.aerror(
@@ -300,6 +309,7 @@ async def send_batch(
                     "html": body_html,
                     "text": body_text,
                     "recipient-variables": json.dumps(recipient_variables),
+                    "v:broadcast_id": str(broadcast_id),
                 },
             )
             response.raise_for_status()
