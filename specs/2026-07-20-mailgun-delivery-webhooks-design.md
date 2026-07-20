@@ -220,3 +220,25 @@ One PR: migration + model columns/index, config, `send_batch` `v:broadcast_id`
 a MySQL merge gate. On merge + deploy, the operator registers the Mailgun
 webhook + signing key; until then the endpoint fails closed (404) and no
 delivery status is recorded (send behaviour unchanged).
+
+## Abuse / DoS posture (operator question, 2026-07-20)
+
+Decision: ship the app-layer controls as designed; do NOT add IP or reverse-DNS
+allowlisting.
+- **The per-domain HMAC signing key IS the origin/domain allowlist.** Mailgun's
+  webhook signing key is scoped to a single sending domain; verification accepts
+  ONLY events signed by our domain's key. This is a cryptographic domain
+  restriction, stronger and more precise than any network-level filter, and
+  cannot be spoofed by another domain/source.
+- **No IP allowlist**: Mailgun egress IPs drift and are not a stable contract;
+  an app-level allowlist silently drops real events on rotation and we sit behind
+  DO ingress anyway.
+- **No reverse-DNS/FCrDNS check**: fragile (Mailgun doesn't guarantee rDNS on
+  egress), adds a per-request DNS lookup (latency + its own DoS amplifier).
+- **Forged-flood cost is ~one HMAC**: cheap-reject ordering (content-length
+  precheck → body cap → parse → HMAC verify → DB LAST) means unsigned junk is
+  rejected before any DB work; `300/min` per-IP limit is a secondary net.
+- **Volumetric DDoS is an INFRA follow-up, not app code** (protects every route):
+  the app currently sits directly behind DO App Platform ingress (Cloudflare is
+  CAPTCHA-only, not a proxy in front). If volumetric attacks become a concern,
+  put the app behind a WAF/proxy. Tracked in the roadmap, out of scope here.
