@@ -210,7 +210,7 @@ export default function SystemApiTokensPage() {
               a password change</span> and{" "}
               <span className="font-semibold text-text-primary">signing out
               everywhere</span> (global session invalidation). The only things
-              that kill a token are revoking it or letting it expire — reach for
+              that kill a token are revoking it or letting it expire. Reach for
               Revoke here during an incident, not the session controls.
             </p>
             <p>

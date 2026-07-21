@@ -37,11 +37,11 @@ export default function RevealOncePanel({ result, onDone }: Props) {
       data-testid="reveal-panel"
     >
       <h2 className="text-sm font-semibold text-text-primary">
-        Token created — copy it now
+        Token created, copy it now
       </h2>
       <p className="mt-1 text-sm text-warning">
         This is the only time this token is shown. You won&apos;t see this token
-        again — store it somewhere safe before you close this.
+        again, so store it somewhere safe before you close this.
       </p>
 
       <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">

@@ -56,8 +56,8 @@ export default function UsageHelp() {
             </li>
             <li>
               Optional-auth and public endpoints (for example{" "}
-              <code>/auth/status</code>) do not recognize PATs — they resolve as
-              anonymous. Point automation at the main authenticated API.
+              <code>/auth/status</code>) do not recognize PATs, so they resolve
+              as anonymous. Point automation at the main authenticated API.
             </li>
             <li>
               Tokens are independent of your password. Rotate before expiry by
