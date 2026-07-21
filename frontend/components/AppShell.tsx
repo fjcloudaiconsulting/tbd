@@ -15,6 +15,7 @@ import {
   FileText,
   Gauge,
   HelpCircle,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   Megaphone,
@@ -24,6 +25,7 @@ import {
   Settings,
   Shield,
   Tag,
+  ToggleLeft,
   Users,
   Wallet,
   X,
@@ -229,6 +231,28 @@ const systemItems: readonly SystemNavItem[] = [
     // permission without touching this file.
     permission: "announcements.manage",
     icon: <Megaphone {...NAV_ICON_PROPS} />,
+  },
+  {
+    href: "/system/features",
+    label: "Feature Flags",
+    // Superadmin-only surface — the backend gates /admin/features on
+    // is_superadmin, not a named permission. hasPlatformPermission
+    // short-circuits true on is_superadmin, so this key resolves for
+    // superadmins today and is ready for a future "features.manage"
+    // permission without touching this file. Mirrors the hub card's
+    // superadminOnly gate so plain admins never see a link that would 403.
+    permission: "features.manage",
+    icon: <ToggleLeft {...NAV_ICON_PROPS} />,
+  },
+  {
+    href: "/system/api-tokens",
+    label: "API Tokens",
+    // Superadmin-only surface (PAT management, spec
+    // specs/2026-07-21-superadmin-api-tokens-design.md). Same
+    // is_superadmin short-circuit as Feature Flags above; ready for a
+    // future "api_tokens.manage" permission without touching this file.
+    permission: "api_tokens.manage",
+    icon: <KeyRound {...NAV_ICON_PROPS} />,
   },
 ];
 

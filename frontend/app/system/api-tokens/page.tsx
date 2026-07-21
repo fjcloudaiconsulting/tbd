@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import AppShell from "@/components/AppShell";
+import SystemLayout from "@/components/SystemLayout";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { isSuperadmin } from "@/lib/auth";
 import { ApiResponseError, extractErrorMessage } from "@/lib/api";
@@ -80,12 +80,12 @@ export default function SystemApiTokensPage() {
 
   if (loading) {
     return (
-      <AppShell>
+      <SystemLayout current="API Tokens">
         <h1 className={pageTitle}>API tokens</h1>
         <div className="flex justify-center py-12">
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
         </div>
-      </AppShell>
+      </SystemLayout>
     );
   }
 
@@ -156,7 +156,7 @@ export default function SystemApiTokensPage() {
         };
 
   return (
-    <AppShell>
+    <SystemLayout current="API Tokens">
       <h1 className={pageTitle}>API tokens</h1>
       <p className="mt-1 mb-6 max-w-2xl text-sm text-text-secondary">
         Personal access tokens let automation and scripts call the API with a
@@ -254,6 +254,6 @@ export default function SystemApiTokensPage() {
         onConfirm={handleRevokeConfirm}
         onCancel={() => setRevokeIntent(null)}
       />
-    </AppShell>
+    </SystemLayout>
   );
 }
