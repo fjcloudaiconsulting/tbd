@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import structlog
 
 from app.auth.org_permissions import require_org_owner
+from app.auth.pat import require_interactive_session
 from app.database import get_db
 from app.deps import get_session_factory
 from app.models.notification import NotificationCategory
@@ -32,7 +33,11 @@ def _request_id() -> str | None:
     return structlog.contextvars.get_contextvars().get("request_id")
 
 
-@router.post("/reset", response_model=OrgDataResetResponse)
+@router.post(
+    "/reset",
+    response_model=OrgDataResetResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def reset_org_data(
     body: OrgDataResetRequest,
     request: Request,

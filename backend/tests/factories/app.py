@@ -35,7 +35,7 @@ import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import Union
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
@@ -135,7 +135,13 @@ def _make_current_user_resolver(
     """
     if isinstance(current_user, User):
 
-        async def override_current_user() -> User:
+        async def override_current_user(request: Request) -> User:
+            # An overridden ``current_user`` stands in for an authenticated
+            # INTERACTIVE session (there is no PAT in these tests), so stamp
+            # the same provenance the real JWT branch of ``get_current_user``
+            # sets. Without it, ``require_interactive_session`` (spec §7) would
+            # 403 every session-authed test that hits a carve-out route.
+            request.state.auth_method = "jwt"
             return current_user
 
         return override_current_user
@@ -155,7 +161,11 @@ def _make_current_user_resolver(
     except (TypeError, ValueError):  # builtins / un-introspectable callables
         wants_factory = False
 
-    async def override_current_user() -> User:
+    async def override_current_user(request: Request) -> User:
+        # See the ``User``-instance branch above: an overridden current_user is
+        # an interactive session, so stamp ``auth_method="jwt"`` to match the
+        # real ``get_current_user`` and satisfy ``require_interactive_session``.
+        request.state.auth_method = "jwt"
         result = current_user(session_factory) if wants_factory else current_user()
         if inspect.isawaitable(result):
             result = await result

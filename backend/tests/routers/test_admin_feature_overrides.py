@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
@@ -64,7 +64,8 @@ def make_app(session_factory, current_user_resolver):
         async with session_factory() as session:
             yield session
 
-    async def override_current_user() -> User:
+    async def override_current_user(request: Request) -> User:
+        request.state.auth_method = "jwt"  # interactive-session guard (spec §7)
         return await current_user_resolver(session_factory)
 
     def override_session_factory():

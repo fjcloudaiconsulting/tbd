@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import structlog
 
+from app.auth.pat import require_interactive_session
 from app.auth.permissions import ALL_PERMISSIONS, require_permission
 from app.database import get_db
 from app.deps import get_session_factory
@@ -131,6 +132,7 @@ async def get_role(
     "/api/v1/admin/roles",
     response_model=RoleDetailResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def create_role(
     body: RoleCreate,
@@ -188,6 +190,7 @@ async def create_role(
 @router.patch(
     "/api/v1/admin/roles/{role_id}",
     response_model=RoleDetailResponse,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def update_role(
     role_id: int,
@@ -295,6 +298,7 @@ async def update_role(
 @router.delete(
     "/api/v1/admin/roles/{role_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def delete_role(
     role_id: int,

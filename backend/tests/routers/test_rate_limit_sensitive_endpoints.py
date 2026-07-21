@@ -20,7 +20,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -119,8 +119,10 @@ def _make_app(
         # The test rebinds get_current_user to a fresh User from the
         # SAME session the handler will use (per-request dep cache).
         async def override_current_user(
+            request: Request,
             db: AsyncSession = Depends(get_db),
         ) -> User:
+            request.state.auth_method = "jwt"  # interactive-session guard (spec §7)
             return await current_user_resolver(db)
 
         app.dependency_overrides[get_current_user] = override_current_user

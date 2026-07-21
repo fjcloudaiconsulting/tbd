@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import structlog
 
 from app.auth.feature_catalog import ALL_FEATURE_KEYS
+from app.auth.pat import require_interactive_session
 from app.auth.permissions import require_permission
 from app.config import settings
 from app.database import get_db
@@ -228,7 +229,10 @@ async def update_org_subscription(
     return {"before": before, "after": after}
 
 
-@router.delete("/{org_id}")
+@router.delete(
+    "/{org_id}",
+    dependencies=[Depends(require_interactive_session)],
+)
 async def delete_org(
     org_id: int,
     body: OrgDeleteRequest,
@@ -390,7 +394,10 @@ async def _override_to_response(row: OrgFeatureOverride, db: AsyncSession) -> di
     }
 
 
-@router.post("/feature-overrides/sweep-expired")
+@router.post(
+    "/feature-overrides/sweep-expired",
+    dependencies=[Depends(require_interactive_session)],
+)
 async def sweep_expired_feature_overrides(
     request: Request,
     user: User = Depends(require_permission("orgs.manage")),
@@ -550,6 +557,7 @@ async def sweep_expired_feature_overrides(
 @router.put(
     "/{org_id}/feature-overrides/{feature_key}",
     response_model=OrgFeatureOverrideResponse,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def set_feature_override(
     org_id: int,
@@ -650,6 +658,7 @@ async def set_feature_override(
 @router.delete(
     "/{org_id}/feature-overrides/{feature_key}",
     status_code=204,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def revoke_feature_override(
     org_id: int,
@@ -844,6 +853,7 @@ async def list_org_members(
 @router.patch(
     "/{org_id}/members/{user_id}",
     response_model=AdminMemberResponse,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def update_org_member(
     org_id: int,
