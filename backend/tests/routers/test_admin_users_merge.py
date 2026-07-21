@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -52,7 +52,8 @@ def _make_app(session_factory, actor_user_id: int) -> FastAPI:
     async def override_session_factory():
         return session_factory
 
-    async def override_current_user() -> User:
+    async def override_current_user(request: Request) -> User:
+        request.state.auth_method = "jwt"  # interactive-session guard (spec §7)
         # Resolve the actor with a SEPARATE session so the user object
         # is not tied to the request session's connection. Otherwise a
         # rollback on the request session collides with the independent
@@ -277,8 +278,10 @@ def _make_app_shared_session(session_factory, actor_user_id: int) -> FastAPI:
         return session_factory
 
     async def override_current_user(
+        request: Request,
         db: AsyncSession = Depends(get_db),
     ) -> User:
+        request.state.auth_method = "jwt"  # interactive-session guard (spec §7)
         # Pull the actor through the same session FastAPI will pass to
         # the route as ``db``. FastAPI caches sub-dependency results
         # per request by callable identity — depending on ``get_db``

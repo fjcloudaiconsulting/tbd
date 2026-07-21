@@ -64,6 +64,7 @@ from app.models.email_broadcast import (  # noqa: F401
     EmailBroadcast,
     EmailBroadcastRecipient,
 )
+from app.models.api_token import ApiToken  # noqa: F401
 
 __all__ = [
     "Base",
@@ -135,4 +136,5 @@ __all__ = [
     "RecipientStatus",
     "EmailBroadcast",
     "EmailBroadcastRecipient",
+    "ApiToken",
 ]

@@ -7,6 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.pat import require_interactive_session
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.user import User
@@ -73,7 +74,11 @@ def _user_response(user: User) -> UserResponse:
     )
 
 
-@router.put("/me", response_model=UserResponse)
+@router.put(
+    "/me",
+    response_model=UserResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 @limiter.limit("5/hour")
 async def update_profile(
     request: Request,
@@ -308,7 +313,11 @@ async def update_profile(
     return user_response
 
 
-@router.post("/me/password", status_code=204)
+@router.post(
+    "/me/password",
+    status_code=204,
+    dependencies=[Depends(require_interactive_session)],
+)
 @limiter.limit("5/hour")
 async def change_password(
     request: Request,

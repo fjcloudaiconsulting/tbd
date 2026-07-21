@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.org_permissions import require_org_admin
+from app.auth.pat import require_interactive_session
 from app.config import settings as app_settings
 from sqlalchemy import select
 
@@ -69,6 +70,7 @@ def _invitation_unavailable() -> HTTPException:
     "/invitations",
     response_model=InvitationResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def create_invitation(
     body: InvitationCreateRequest,
@@ -283,7 +285,11 @@ async def list_members(
     }
 
 
-@router.delete("/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/members/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def remove_member(
     user_id: int,
     current_user: User = Depends(require_org_admin),

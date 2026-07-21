@@ -134,6 +134,23 @@ def user_mfa_disabled() -> tuple[str, str, Optional[str]]:
     return (title, body, "/settings/security")
 
 
+def api_token_created(*, name: str, prefix: str) -> tuple[str, str, Optional[str]]:
+    """Copy for ``api_token.created`` (security category).
+
+    Self-target, force-on. A superadmin PAT was just minted with the acting
+    superadmin as owner. Fires email + in-app so an attacker-minted token is
+    immediately visible to the human (SEC-R6a). The prefix identifies which
+    token without revealing the secret.
+    """
+    title = "API token created"
+    body = (
+        f'A new API token "{name}" ({prefix}...) was created on your account. '
+        "If you did not create this, revoke it immediately from the API tokens "
+        "page."
+    )
+    return (title, body, "/system/api-tokens")
+
+
 def user_email_changed(*, new_email: str) -> tuple[str, str, Optional[str]]:
     """Copy for ``user.email.changed`` (security category).
 
