@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 import AppShell from "@/components/AppShell";
+import SystemBreadcrumb from "@/components/system/SystemBreadcrumb";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { isSuperadmin } from "@/lib/auth";
 import { pageTitle } from "@/lib/styles";
@@ -53,6 +54,7 @@ export default function AnnouncementsLayout({
 
   return (
     <AppShell>
+      <SystemBreadcrumb current="Announcements" />
       <h1 className={pageTitle}>Announcements</h1>
       <nav className="mb-6 flex gap-0 overflow-x-auto border-b border-border -mx-4 px-4 sm:mx-0 sm:px-0">
         {tabs.map((tab) => (

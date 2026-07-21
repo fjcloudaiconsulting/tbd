@@ -203,7 +203,12 @@ describe("/system/plans page — Features section + Duplicate", () => {
 
     render(<SystemPlansPage />);
 
-    expect(await screen.findByText("Plan Management")).toBeInTheDocument();
+    // Target the page heading specifically: the SystemLayout breadcrumb
+    // leaf also renders the text "Plan Catalog", so a bare findByText is
+    // ambiguous.
+    expect(
+      await screen.findByRole("heading", { name: "Plan Catalog" }),
+    ).toBeInTheDocument();
     expect(replaceMock).not.toHaveBeenCalled();
     const planFetches = apiFetchMock.mock.calls.filter(([url]) =>
       isPlansAll(url),

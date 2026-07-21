@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import AppShell from "@/components/AppShell";
+import SystemLayout from "@/components/SystemLayout";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import DuplicatePlanModal from "@/components/system/DuplicatePlanModal";
 import Pagination from "@/components/ui/Pagination";
@@ -236,9 +236,9 @@ export default function SystemPlansPage() {
   if (loading || !canManagePlans) return null;
 
   return (
-    <AppShell>
+    <SystemLayout current="Plan Catalog">
       <div className="flex flex-col gap-2 mb-8 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className={pageTitle + " mb-0"}>Plan Management</h1>
+        <h1 className={pageTitle + " mb-0"}>Plan Catalog</h1>
         <button onClick={openCreate} className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}>+ New Plan</button>
       </div>
 
@@ -454,6 +454,6 @@ export default function SystemPlansPage() {
           }}
         />
       )}
-    </AppShell>
+    </SystemLayout>
   );
 }
