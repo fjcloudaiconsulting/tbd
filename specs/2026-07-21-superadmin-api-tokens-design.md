@@ -156,7 +156,7 @@ All three gated by the superadmin permission dependency **and** `require_interac
 ### `POST /revoke-all` — panic button (SEC-R6c)
 - Revokes all of the caller's active tokens in one call; surfaced in the UI next to "sign out everywhere". Audit `api_token.revoked_all` with a count.
 
-**Audit attribution (SEC-R10 / ARC-R12):** any audit event produced by a **PAT-authed** request records `api_token_id` (threaded via `request.state`) so a leaked token's actions are forensically separable from the human's.
+**Audit attribution (SEC-R10 / ARC-R12):** the auth path binds `api_token_id` into `request.state` and the per-request **structlog** context, so a leaked token's actions are forensically separable from the human's via a `request_id`↔log join (both the `audit_events` row and the JSON log for a request carry `request_id`; the log additionally carries `api_token_id`). **v1 impl note:** `api_token_id` is NOT written as a dedicated `audit_events` column/detail on arbitrary PAT-authed endpoints — attribution is by `request_id` correlation. Adding `api_token_id` directly onto the audit row for one-hop separability is a tracked follow-up (§12).
 
 ---
 
@@ -188,7 +188,7 @@ All three gated by the superadmin permission dependency **and** `require_interac
 | `api_token.revoked_all` | panic button | detail: count |
 | `api_token.auth_rejected` | a **known** token used after revoke/expiry | **audit row only for known-but-dead tokens**; unknown `pat_<garbage>` logs via **structlog only** to avoid an audit-flood DoS (ARC-R12) |
 
-All PAT-authed actions carry `api_token_id` in audit detail (§8).
+PAT-authed actions are attributable via `request_id`↔structlog correlation (`api_token_id` is in the per-request log, not yet a dedicated audit column — see §8 attribution note and §12 follow-up).
 
 ---
 
@@ -200,6 +200,9 @@ All PAT-authed actions carry `api_token_id` in audit detail (§8).
 4. **Per-token rate-limit counter** — standalone fail-open Redis counter (own env knob, explicitly *not* in the override catalogue), if abuse throttling beyond the mint limit is ever needed.
 5. **Optional SalesForce-style coupling** — a per-deployment toggle to make password rotation also revoke PATs (v1 default stays GitHub-style independent).
 6. **Optional IP allowlist per token** — further shrink a leaked token's usefulness.
+7. **SSO-only step-up minting (v1 gap).** v1 mint requires a password (or, for SSO users, a fresh SSO `stepup_token`); the UI only collects password + TOTP, so an SSO-only superadmin with no password **cannot mint through the UI** (backend fails closed with 401). The modal states this honestly. Follow-up: wire `/auth/sso-stepup/initiate`→`callback` into the mint modal (persist pending mint params across the OAuth redirect, resume on return). The primary operator is password-set, so v1 ships without this.
+8. **Direct `api_token_id` audit attribution.** v1 attributes PAT-authed actions via `request_id`↔structlog correlation (§8/§11). Follow-up: add `api_token_id` to the audit row (shared helper reading `request.state`) for one-hop separability without a log join.
+9. **Reminder copy for a token that expired before reminders were enabled** — currently climbs stages 1→2 emitting pre-expiry copy before reaching "has expired" (edge-only). Follow-up: short-circuit an already-expired token straight to the expiry-stage message.
 
 ---
 
