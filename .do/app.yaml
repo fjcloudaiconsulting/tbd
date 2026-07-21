@@ -183,6 +183,16 @@ services:
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: EV[1:zlwc+YhAw3a8Ii8g/YAsE1M6ogOEQvcS:2LPx2QSfINnwZFbw75yD3w50oqU0Yi/TqqPL93heBSV2caaKtbkzSf/vm6sV4kv0N5LsCh1EslyxwcIc3epXo/nL]
+      # PAT hashing pepper - REQUIRED IN PRODUCTION (config.py refuses to boot
+      # if unset when APP_ENV=production, added in #558). Distinct from
+      # JWT_SECRET_KEY and used directly (not jwt-derived) so a JWT rotation
+      # can't brick automation tokens. MUST also be bound to the migrate
+      # PRE_DEPLOY job below (config.py instantiates Settings() at import,
+      # same reason JWT_SECRET_KEY is duplicated there). Set via doctl 2026-07-21.
+      - key: API_TOKEN_HMAC_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:WGBHVdlYh8/0EM4VwWT8PJmV7sXGaXIZ:eWsvKQvsQGJWFe2phPpd3udVOhIwvP5k0t9DA5/i/NqI8MVPNpcw358nObylSaKExY7fdrD5ppVmE2AuKGcLKOpiz830v4tdLtr7ZqFJ+l3uB8+5Ae3P7I2bWXp8fqS6yqKU0bvT]
       - key: GOOGLE_CLIENT_ID
         scope: RUN_AND_BUILD_TIME
         type: SECRET
@@ -391,3 +401,11 @@ jobs:
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: EV[1:yu+iyIxbSwoJpe7aEGuEBSJ8judQo26F:Ogb2sdGetlKniX5UaHeObIhPiYej4c4W1fccXr1By5mIGy1LI4dn8R6NPR1CGfnUAo5fslDt7qV48MNdMnGwk1A9qlp8GxCcKD2fdYcm7f8=]
+      # PAT pepper - bound here too because scripts/migrate.py imports
+      # app.config, which instantiates Settings() and enforces
+      # API_TOKEN_HMAC_KEY in prod. Without this the PRE_DEPLOY migrate job
+      # crashes on import (the 2026-07-21 deploy-break after #558 merged).
+      - key: API_TOKEN_HMAC_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:QbMeX+y5ipvdH0qqmPFlLDvDap35QyZ9:bafkDl/TuhtatKftAPATyyFAQ32W3QnfW8uwDqukh97twQGJNOrhzwOOZdX3uwy2sp4Upt+4ujbVLkUXXzy8We48MxuWhlpE/LglgV47HhrsJ8SYXlxvgFWDtK4BvFpPTjGPy3ba]
