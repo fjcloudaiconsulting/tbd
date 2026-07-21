@@ -56,28 +56,58 @@ def _aware(dt: datetime.datetime) -> datetime.datetime:
 
 
 def _parse_flag(value: str | None) -> bool:
-    """The global enable flag is on only for an explicit truthy value."""
+    """Strict on/off parse, matching ``feature_gate._parse_onoff``: only the
+    literal ``"on"`` (case/whitespace-insensitive) is truthy; anything else
+    (``"off"``, absent, or a stray value) is off."""
     if value is None:
         return False
-    return value.strip().lower() in {"on", "true", "1", "yes"}
+    return value.strip().lower() == "on"
 
 
-def _reminder_copy(days_remaining: int, next_stage: int, token_name: str) -> tuple[str, str]:
-    """Return (title, body) for a fired reminder. No em-dashes (copy rule)."""
+def _reminder_copy(days_remaining: float, next_stage: int, token_name: str) -> tuple[str, str]:
+    """Return (title, body) for a fired reminder. No em-dashes (copy rule).
+
+    ``days_remaining`` is the token's actual (possibly fractional) time to
+    expiry at fire time, not a fixed per-stage bucket label. A token minted
+    with e.g. a 7-day expiry that fires stage 1 says "about 7 days", not a
+    hardcoded "14 days" — the stage only picks *which threshold* was crossed,
+    it does not describe the real remaining time.
+    """
     if next_stage >= FULLY_REMINDED_STAGE:
-        title = "An API token has expired"
-        body = (
-            f'Your API token "{token_name}" has expired and can no longer be '
-            "used. Create a new token if you still need programmatic access."
-        )
+        if days_remaining > 0:
+            # Threshold crossed (stage 3 fires at <= 0 days) but the clock
+            # hasn't ticked past expiry yet this run.
+            title = "An API token expires today"
+            body = (
+                f'Your API token "{token_name}" expires today. Rotate it now '
+                "to avoid an interruption to any automation that uses it."
+            )
+        else:
+            title = "An API token has expired"
+            body = (
+                f'Your API token "{token_name}" has expired and can no longer '
+                "be used. Create a new token if you still need programmatic "
+                "access."
+            )
+        return title, body
+
+    # Pre-expiry stage: show the real remaining time. Round to the nearest
+    # whole day for display; never show negative or "0 days" (if it rounds
+    # to 0 but hasn't expired, say "less than a day").
+    whole_days = round(days_remaining)
+    if whole_days < 1:
+        window = "less than a day"
+    elif whole_days == 1:
+        window = "1 day"
     else:
-        window = "14 days" if next_stage == 1 else "3 days"
-        title = f"An API token expires in {window}"
-        body = (
-            f'Your API token "{token_name}" expires in about {window}. Rotate '
-            "it before then to avoid an interruption to any automation that "
-            "uses it."
-        )
+        window = f"{whole_days} days"
+
+    title = f"An API token expires in about {window}"
+    body = (
+        f'Your API token "{token_name}" expires in about {window}. Rotate '
+        "it before then to avoid an interruption to any automation that "
+        "uses it."
+    )
     return title, body
 
 
@@ -145,7 +175,7 @@ async def _process_token(session_factory, token_id: int, now: datetime.datetime)
                 return False
 
             title, body = _reminder_copy(
-                days_remaining=int(days_remaining),
+                days_remaining=days_remaining,
                 next_stage=next_stage,
                 token_name=token.name,
             )

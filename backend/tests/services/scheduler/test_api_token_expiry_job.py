@@ -138,6 +138,15 @@ async def _inapp_count(session_factory) -> int:
         ).scalar_one()
 
 
+async def _last_notification(session_factory) -> Notification:
+    async with session_factory() as db:
+        return (
+            await db.execute(
+                select(Notification).order_by(Notification.id.desc()).limit(1)
+            )
+        ).scalar_one()
+
+
 @pytest.fixture
 def sent_emails(monkeypatch):
     box: list[str] = []
@@ -234,6 +243,83 @@ async def test_full_progression_across_ticks(session_factory, superadmin, sent_e
     assert await _stage(session_factory, tid) == 3
     assert len(sent_emails) == 3
     assert await _inapp_count(session_factory) == 3
+
+
+# ── copy tests ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_stage1_copy_reflects_real_remaining_days_not_14d_bucket(
+    session_factory, superadmin, sent_emails
+):
+    """A token minted with a ~7-day expiry fires stage 1 (crosses the 14d
+    threshold immediately) but the copy must say ~7 days, not the hardcoded
+    "14 days" stage-window label (the review finding this fix addresses).
+    """
+    await _enable_flag(session_factory)
+    tid = await _mk_token(
+        session_factory, owner_id=superadmin, expires_at=NOW + datetime.timedelta(days=7)
+    )
+
+    await job.run_api_token_expiry_reminders(session_factory, now=NOW)
+
+    assert await _stage(session_factory, tid) == 1
+    note = await _last_notification(session_factory)
+    assert "7 days" in note.body
+    assert "14" not in note.body
+    assert "14" not in note.title
+
+
+@pytest.mark.asyncio
+async def test_stage1_copy_singular_day(session_factory, superadmin, sent_emails):
+    """Exactly 1 day remaining renders singular ("1 day"), not "1 days"."""
+    await _enable_flag(session_factory)
+    tid = await _mk_token(
+        session_factory, owner_id=superadmin, expires_at=NOW + datetime.timedelta(days=1)
+    )
+
+    await job.run_api_token_expiry_reminders(session_factory, now=NOW)
+
+    assert await _stage(session_factory, tid) == 1
+    note = await _last_notification(session_factory)
+    assert "1 day" in note.body
+    assert "1 days" not in note.body
+
+
+@pytest.mark.asyncio
+async def test_stage1_copy_sub_day_says_less_than_a_day(
+    session_factory, superadmin, sent_emails
+):
+    """A few hours from expiry (rounds to 0 whole days) never shows "0 days"
+    or a negative count for a pre-expiry stage."""
+    await _enable_flag(session_factory)
+    tid = await _mk_token(
+        session_factory, owner_id=superadmin, expires_at=NOW + datetime.timedelta(hours=6)
+    )
+
+    await job.run_api_token_expiry_reminders(session_factory, now=NOW)
+
+    assert await _stage(session_factory, tid) == 1
+    note = await _last_notification(session_factory)
+    assert "less than a day" in note.body
+    assert "0 day" not in note.body
+
+
+@pytest.mark.asyncio
+async def test_expiry_stage_copy_says_expired(session_factory, superadmin, sent_emails):
+    await _enable_flag(session_factory)
+    tid = await _mk_token(
+        session_factory,
+        owner_id=superadmin,
+        expires_at=NOW - datetime.timedelta(hours=1),
+        reminder_stage=2,
+    )
+
+    await job.run_api_token_expiry_reminders(session_factory, now=NOW)
+
+    assert await _stage(session_factory, tid) == 3
+    note = await _last_notification(session_factory)
+    assert "has expired" in note.body
 
 
 # ── skip tests ─────────────────────────────────────────────────────────────────
