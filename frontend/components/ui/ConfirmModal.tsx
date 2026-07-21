@@ -10,6 +10,10 @@ interface Props {
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: "default" | "warning" | "danger";
+  // Optional in-flight state for async confirm actions: disables both
+  // buttons and swaps the confirm label for a busy label. Additive-only —
+  // omitting it preserves every existing caller's behavior exactly.
+  submitting?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -27,6 +31,7 @@ export default function ConfirmModal({
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   variant = "default",
+  submitting = false,
   onConfirm,
   onCancel,
 }: Props) {
@@ -91,11 +96,21 @@ export default function ConfirmModal({
         <h3 id="confirm-modal-title" className="text-lg font-semibold text-text-primary">{title}</h3>
         <p className="mt-2 whitespace-pre-line text-sm text-text-secondary">{message}</p>
         <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
-          <button ref={cancelRef} onClick={onCancel} className={`${btnSecondary} w-full sm:w-auto min-h-[44px]`}>
+          <button
+            ref={cancelRef}
+            onClick={onCancel}
+            disabled={submitting}
+            className={`${btnSecondary} w-full sm:w-auto min-h-[44px]`}
+          >
             {cancelLabel}
           </button>
-          <button ref={confirmRef} onClick={onConfirm} className={`${variantClasses[variant]} w-full sm:w-auto min-h-[44px]`}>
-            {confirmLabel}
+          <button
+            ref={confirmRef}
+            onClick={onConfirm}
+            disabled={submitting}
+            className={`${variantClasses[variant]} w-full sm:w-auto min-h-[44px]`}
+          >
+            {submitting ? "Working…" : confirmLabel}
           </button>
         </div>
       </div>

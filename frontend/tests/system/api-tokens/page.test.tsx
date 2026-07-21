@@ -192,23 +192,80 @@ describe("/system/api-tokens page", () => {
     expect(screen.queryByTestId("reveal-panel")).not.toBeInTheDocument();
   });
 
-  it("revokes a single token after confirmation", async () => {
+  it("revokes a single token after confirmation via the shared ConfirmModal", async () => {
     revokeMock.mockResolvedValue({ ok: true, id: 1 });
     renderWithSWR(<SystemApiTokensPage />);
     await screen.findByText("broadcast cron");
 
     fireEvent.click(screen.getByTestId("api-token-revoke-1"));
-    fireEvent.click(await screen.findByTestId("revoke-confirm-submit"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/revoke token/i);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Revoke token" }));
     await waitFor(() => expect(revokeMock).toHaveBeenCalledWith(1));
   });
 
-  it("revokes all tokens from the panic button", async () => {
+  it("does not revoke a single token when the confirm modal is cancelled", async () => {
+    renderWithSWR(<SystemApiTokensPage />);
+    await screen.findByText("broadcast cron");
+
+    fireEvent.click(screen.getByTestId("api-token-revoke-1"));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(revokeMock).not.toHaveBeenCalled();
+  });
+
+  it("revokes all tokens from the panic button via the shared ConfirmModal", async () => {
     revokeAllMock.mockResolvedValue({ revoked: 3 });
     renderWithSWR(<SystemApiTokensPage />);
     await screen.findByText("broadcast cron");
 
     fireEvent.click(screen.getByTestId("revoke-all-button"));
-    fireEvent.click(await screen.findByTestId("revoke-confirm-submit"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/revoke all tokens/i);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Revoke all" }));
     await waitFor(() => expect(revokeAllMock).toHaveBeenCalled());
+  });
+
+  it("does not revoke all tokens when the confirm modal is cancelled", async () => {
+    renderWithSWR(<SystemApiTokensPage />);
+    await screen.findByText("broadcast cron");
+
+    fireEvent.click(screen.getByTestId("revoke-all-button"));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(revokeAllMock).not.toHaveBeenCalled();
+  });
+
+  it("disables revoke-all when there are no active tokens", async () => {
+    listMock.mockResolvedValue({
+      items: [{ ...TOKEN, id: 2, status: "revoked" }],
+      total: 1,
+      limit: 1,
+      offset: 0,
+    });
+    renderWithSWR(<SystemApiTokensPage />);
+    await screen.findByText("broadcast cron");
+
+    expect(screen.getByTestId("revoke-all-button")).toBeDisabled();
+  });
+
+  it("enables revoke-all when at least one token is active", async () => {
+    listMock.mockResolvedValue({
+      items: [
+        { ...TOKEN, id: 2, name: "dead cron", status: "revoked" },
+        { ...TOKEN, id: 3, name: "live cron", status: "active" },
+      ],
+      total: 2,
+      limit: 2,
+      offset: 0,
+    });
+    renderWithSWR(<SystemApiTokensPage />);
+    await screen.findByText("live cron");
+
+    expect(screen.getByTestId("revoke-all-button")).not.toBeDisabled();
   });
 });

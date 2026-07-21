@@ -27,19 +27,19 @@ import {
   pageTitle,
 } from "@/lib/styles";
 
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import MintTokenForm, {
   type MintFormValues,
 } from "@/components/system/api-tokens/MintTokenForm";
 import RevealOncePanel from "@/components/system/api-tokens/RevealOncePanel";
-import RevokeConfirm from "@/components/system/api-tokens/RevokeConfirm";
 import StepUpModal, {
   type StepUpProof,
 } from "@/components/system/api-tokens/StepUpModal";
 import TokenList from "@/components/system/api-tokens/TokenList";
 import UsageHelp from "@/components/system/api-tokens/UsageHelp";
 
-// Discriminated revoke intent so a single RevokeConfirm instance drives both
-// the per-row revoke and the panic button.
+// Discriminated revoke intent so a single shared ConfirmModal instance
+// drives both the per-row revoke and the panic button.
 type RevokeIntent =
   | { kind: "single"; token: ApiToken }
   | { kind: "all" };
@@ -224,7 +224,7 @@ export default function SystemApiTokensPage() {
             onClick={() => setRevokeIntent({ kind: "all" })}
             className={`${btnDangerSolid} w-full sm:w-auto`}
             data-testid="revoke-all-button"
-            disabled={tokens.length === 0}
+            disabled={!tokens.some((t) => t.status === "active")}
           >
             Revoke all tokens
           </button>
@@ -244,11 +244,12 @@ export default function SystemApiTokensPage() {
         }}
       />
 
-      <RevokeConfirm
+      <ConfirmModal
         open={revokeIntent !== null}
         title={revokeCopy.title}
         message={revokeCopy.message}
         confirmLabel={revokeCopy.confirmLabel}
+        variant="danger"
         submitting={revoking}
         onConfirm={handleRevokeConfirm}
         onCancel={() => setRevokeIntent(null)}
