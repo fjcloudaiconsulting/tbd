@@ -1,6 +1,6 @@
 # Superadmin Personal Access Tokens (PAT) — v1 Design Spec
 
-**Status:** Design, architect + security signed off (both APPROVE-WITH-RULINGS, 2026-07-21). Ready for implementation-plan.
+**Status:** Design signed off — architect + security design review (both APPROVE-WITH-RULINGS) and a final spec-level security re-review (APPROVE-WITH-CHANGES), all folded, 2026-07-21. Implementation-ready.
 **Scope:** v1 = superadmin-only. Data model deliberately supports a future per-user PAT phase without a rewrite.
 **Author context:** Motivated by 15-minute JWT access tokens being unusable for curl/automation (surfaced during the 2026-07-20 outage-apology send).
 
@@ -37,7 +37,9 @@ A v1 PAT authenticates **as the minting superadmin** and is therefore effectivel
 
 - **Token string:** `pat_` + `secrets.token_urlsafe(32)` (256-bit entropy). The `pat_` prefix is a stable, publishable secret-scanning signature.
 - **At rest:** store `HMAC-SHA256(secret)` (hex) as the **unique-indexed lookup key**. Never store plaintext.
-- **Pepper key — dedicated & decoupled (SEC-R1, the P1 landmine):** the HMAC key is a **new config value `API_TOKEN_HMAC_KEY`**, used *directly* (single-purpose, NOT via `derive_hmac_key`, which recomputes from `jwt_secret_key` at call time). A verify-only `API_TOKEN_HMAC_KEY_PREV` supports two-deploy key rotation (mint under new, verify under new-or-prev) so a pepper rotation drains gracefully instead of 401-ing the whole automation fleet — exactly the failure mode the MFA_RECOVERY_HMAC_KEY decouple exists to prevent. In non-prod, an unset `API_TOKEN_HMAC_KEY` may fall back to `derive_hmac_key("api_token")` for dev convenience; **production must set it** (startup validation).
+- **Pepper key — dedicated & decoupled (SEC-R1, the P1 landmine):** the HMAC key is a **new config value `API_TOKEN_HMAC_KEY`**, used *directly* (single-purpose, NOT via `derive_hmac_key`, which recomputes from `jwt_secret_key` at call time). A verify-only `API_TOKEN_HMAC_KEY_PREV` supports two-deploy key rotation (mint under new, verify under new-or-prev) so a pepper rotation drains gracefully instead of 401-ing the whole automation fleet — exactly the failure mode the MFA_RECOVERY_HMAC_KEY decouple exists to prevent.
+- **Validation — explicit prod gate, NOT the optional MFA validator (SEC re-review Finding 1):** the MFA_RECOVERY_HMAC_KEY validator is fully optional (empty → no-op) and has no prod-required branch; mirroring it verbatim would let an unset `API_TOKEN_HMAC_KEY` silently fall back to the jwt-derived pepper **in production**, reintroducing the exact coupling SEC-R1 forbids. Instead use a `model_validator(mode="after")` that: (a) when a value is present, enforces `len ≥ 32` and `!= jwt_secret_key` (reuse the MFA idiom for these two checks); **and (b) raises when `app_env == "production" and not api_token_hmac_key`** (the established prod idiom `app_settings.app_env == "production"`, cf. `main.py:267`). The `derive_hmac_key` dev fallback is reachable **only** off-prod.
+- **Implementer note (SEC re-review Finding 5):** `derive_hmac_key`'s signature is `purpose: bytes` (`security.py:16`), so the dev fallback is `derive_hmac_key(b"api_token")` (returns bytes). The primary path must `.encode()` the configured string: `hmac.new(settings.api_token_hmac_key.encode(), secret.encode(), sha256)`. The two paths intentionally produce different key material; don't miswire the fallback.
 - **Hash choice justification (SEC-R8):** a fast deterministic keyed hash is correct here *because* the secret is 256-bit random — there is nothing to slow-hash against, and bcrypt/argon2 would add latency to every API call. The pepper makes a DB-only dump useless (attacker lacks the key). Lookup is by full digest against a unique index; no `secrets.compare_digest` is separately required because the attacker cannot produce a digest without the secret. **Never** fetch-by-prefix-then-compare-in-Python; if that ever changes, use `secrets.compare_digest`.
 - **Display:** store `token_prefix` = `pat_` + first 6–8 chars of the secret (identify, not guess). Plaintext is returned in the mint response **once** and never again.
 
@@ -107,11 +109,13 @@ get_current_user(request, credentials, db, session_factory):
 
 **Rejection responses (SEC-R8):** one generic `401 "Invalid or expired token"` for unknown/revoked/expired/inactive/not-superadmin alike — no oracle distinguishing the states in the HTTP body. The true reason goes to the audit/log path (§8), not the response.
 
+**Optional-auth endpoints (SEC re-review Finding 6 — accepted for v1):** `get_current_user_optional` (deps.py:79) gets **no** `pat_` branch in v1, so a PAT sent to an optional-auth route (e.g. `/auth/status`) resolves to anonymous rather than authenticated. This is acceptable — PATs target the main authenticated API and fail *toward less access* — but the UI usage help should note that optional-auth/public endpoints don't recognize PATs, to pre-empt "my token doesn't work on X" confusion.
+
 ---
 
 ## 7. Interactive-session-only surface (the carve-outs)
 
-A single dependency **`require_interactive_session`** (in `app/auth/pat.py` or `app/auth/permissions.py`) raises `403` when `request.state.auth_method != "jwt"` (fail-closed: anything not explicitly a session is denied). It is added to every route in the following categories, and an **enumeration test** asserts PAT → 403 for each.
+A single dependency **`require_interactive_session`** (in `app/auth/pat.py` or `app/auth/permissions.py`) raises `403` when the request was not authenticated by an interactive session. **Ordering (SEC re-review Finding 2):** it must declare `Depends(get_current_user)` in its own signature so the `request.state.auth_method` stamp is guaranteed to run first (FastAPI does not order sibling dependencies; `get_current_user` is request-cached, so this is free). It reads state defensively — `getattr(request.state, "auth_method", None) != "jwt"` → deny — so an unset value stays fail-closed. It is added to every route in the following categories, and an **enumeration test** asserts PAT → 403 for each.
 
 **A. Token management** (prevents token-mints-successor-token — SEC-R2 / ARC-R5):
 - `POST/GET/DELETE /api/v1/system/api-tokens*`
@@ -136,8 +140,8 @@ All three gated by the superadmin permission dependency **and** `require_interac
 ### `POST /` — mint
 - **Step-up, reconciled (SEC-R4 + ARC-R1) — no new ceremony, mirror `users.py`:**
   - `password_set` superadmin → require `current_password` in body, verified inline via `verify_password`.
-  - SSO superadmin (`password_set=False`) → require a fresh SSO `stepup_token` (constant-time compare + expiry), per the `users.py` idiom.
-  - **Additionally**, if the operator has MFA enabled (`totp_secret` non-null) → require a fresh TOTP `code`, verified via `verify_totp(decrypt_secret(user.totp_secret), code)` (the `auth.py` pattern). **Do not** require MFA for operators without it. Live re-verification = zero replay window.
+  - SSO superadmin (`password_set=False`) → require a fresh SSO `stepup_token` (constant-time compare + expiry), per the `users.py` idiom, and **consume it on success** (null `stepup_token`/`stepup_token_expires_at`, matching `users.py:173-174`) so it can't be replayed across mint + another sensitive action within its window (SEC re-review Finding 4).
+  - **Additionally**, if `user.mfa_enabled` (the canonical flag, `user.py:99` — NOT `totp_secret` non-null, which is set mid-enrollment before confirmation, SEC re-review Finding 3) → require a fresh TOTP `code`, verified via `verify_totp(decrypt_secret(user.totp_secret), code)` (the `auth.py` pattern). **Do not** require MFA for operators without it. Live re-verification = zero replay window.
 - **Body:** `name`, `scope` (`read`|`write`), `expires_in_days` (validated `1 ≤ n ≤ API_TOKEN_MAX_EXPIRY_DAYS`, default `API_TOKEN_DEFAULT_EXPIRY_DAYS`); cap enforced **server-side**, never trust the client (SEC-R7).
 - **Response:** the plaintext token **once** + metadata. `Cache-Control: no-store` (SEC-R5). The plaintext appears **only** in this response body — never in logs, structlog fields, or the audit row.
 - **Rate limit (ARC-R2):** `@limiter.limit(...)` (e.g. `"10/hour"`), registered in the catalogue as `api_tokens.mint`. This is the only expensive/sensitive path; no per-token counter in v1.
@@ -203,7 +207,7 @@ All PAT-authed actions carry `api_token_id` in audit detail (§8).
 
 | Var | Default | Notes |
 |---|---|---|
-| `API_TOKEN_HMAC_KEY` | (unset → dev-only fallback to `derive_hmac_key("api_token")`) | **Required in prod.** Validated `≥ 32` chars and `!= jwt_secret_key` (mirror the MFA_RECOVERY_HMAC_KEY validator). |
+| `API_TOKEN_HMAC_KEY` | unset → dev-only fallback to `derive_hmac_key(b"api_token")` | **Required in prod, enforced by an explicit `model_validator`** that raises when `app_env == "production" and not set` (do NOT just mirror the optional MFA validator — §3 Finding 1). When present: validated `≥ 32` chars and `!= jwt_secret_key`. |
 | `API_TOKEN_HMAC_KEY_PREV` | unset | Verify-only fallback for graceful pepper rotation. |
 | `API_TOKEN_DEFAULT_EXPIRY_DAYS` | `30` | Mint default. |
 | `API_TOKEN_MAX_EXPIRY_DAYS` | `90` | Server-side hard cap. |
@@ -230,3 +234,5 @@ All PAT-authed actions carry `api_token_id` in audit detail (§8).
 **Security review — APPROVE-WITH-RULINGS:** R1 §3 (dedicated pepper) · R2 §7 (interactive-only surface, positive enforcement) · R3 §5 (central fail-closed scope, honest framing) + §7C (Tier-0 carve-out) · R4 §8 (fresh action-bound step-up) · R5 §8/§9 (reveal-once transport) · R6 §2/§9 (compensating controls for password-independence) · R7 §8/§13 (30d default cap) · R8 §3/§6 (generic 401, hash choice) · R9 §8 (throttled `last_used_at`) · R10 §8/§11 (per-token audit attribution; limiter is abuse-cap).
 
 **Architecture review — APPROVE-WITH-RULINGS:** R1 §8 (step-up mirrors `users.py`) · R2 §8 (rate-limit mint only, not per-token catalogue) · R3 §6 (`authenticate_pat` helper, branch in `get_current_user`) · R4 §5 (scope in auth path, not middleware) · R5 §7 (`request.state` + `require_interactive_session`) · R6 §4 (String scope, no MySQL ENUM) · R7 §4 (naive-UTC + `_aware`) · R8 §4 (model/migration registration + real-MySQL verify) · R9 §4 (`ON DELETE SET NULL` + snapshot) · R10 §10 (platform-level reminder job) · R11 §4/§8 (`last_used` throttle + `get_client_ip`) · R12 §11 (`auth_rejected` flood guard).
+
+**Spec-level security re-review — APPROVE-WITH-CHANGES (all folded):** F1 §3/§13 (explicit prod-required validator, not the optional MFA one — the load-bearing fix) · F2 §7 (`require_interactive_session` takes `Depends(get_current_user)` for ordering, defensive `getattr`) · F3 §8 (MFA trigger = `user.mfa_enabled`, not `totp_secret` non-null) · F4 §8 (consume SSO `stepup_token` on mint) · F5 §3 (`derive_hmac_key(b"...")` bytes + `.encode()` primary path) · F6 §6 (optional-auth endpoints don't recognize PATs in v1 — accepted, fails toward less access). One implementer wiring note carried forward: the platform reminder job must be invoked from `run_one_tick` (loop.py:25) under the existing `scheduler:tick:lock`, since it can't join the per-org `REGISTRY`.
