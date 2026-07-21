@@ -28,8 +28,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.deps import get_current_user
+from app.models.api_token import ApiToken
 from app.models.user import User
 from app.rate_limit import get_client_ip
+from app.services import audit_service
 from app.services.api_token_service import lookup_token, maybe_stamp_last_used
 
 logger = structlog.stdlib.get_logger(__name__)
@@ -46,6 +48,42 @@ def _generic_401() -> HTTPException:
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired token",
     )
+
+
+async def _record_auth_rejected(
+    session_factory: async_sessionmaker[AsyncSession],
+    request: Request,
+    row: ApiToken,
+    reason: str,
+) -> None:
+    """Write an ``api_token.auth_rejected`` audit row for a KNOWN-but-dead
+    token (revoked / expired), spec §11 / ARC-R12.
+
+    Only ever called with a resolved ``ApiToken`` row — unknown ``pat_``
+    garbage stays structlog-only to avoid an audit-flood DoS. Best-effort:
+    ``record_audit_event`` already opens its own session and swallows write
+    failures, so an audit-write problem can never break the auth rejection.
+    Detail carries the token id / prefix / reason — NEVER a secret.
+    """
+    try:
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="api_token.auth_rejected",
+            actor_user_id=row.created_by_user_id,
+            actor_email=row.created_by_email,
+            target_org_id=None,
+            target_org_name=None,
+            request_id=structlog.contextvars.get_contextvars().get("request_id"),
+            ip_address=get_client_ip(request),
+            outcome="failure",
+            detail={
+                "api_token_id": row.id,
+                "prefix": row.token_prefix,
+                "reason": reason,
+            },
+        )
+    except Exception:  # noqa: BLE001 — an audit failure must never break auth
+        logger.warning("pat.auth_rejected_audit_failed", api_token_id=row.id)
 
 
 def _aware(dt: datetime) -> datetime:
@@ -79,12 +117,17 @@ async def authenticate_pat(
         logger.info("pat.auth_rejected", reason="unknown")
         raise _generic_401()
 
-    # 3. Revoked / expired (naive-UTC normalized).
+    # 3. Revoked / expired (naive-UTC normalized). These are KNOWN-but-dead
+    # tokens (a resolved row), so — unlike unknown garbage — they also get an
+    # ``api_token.auth_rejected`` audit row (spec §11): a leaked token still
+    # being used after revoke/expiry is exactly the signal an operator wants.
     if row.revoked_at is not None:
         logger.info("pat.auth_rejected", reason="revoked", api_token_id=row.id)
+        await _record_auth_rejected(session_factory, request, row, "revoked")
         raise _generic_401()
     if _aware(row.expires_at) <= now:
         logger.info("pat.auth_rejected", reason="expired", api_token_id=row.id)
+        await _record_auth_rejected(session_factory, request, row, "expired")
         raise _generic_401()
 
     # 4. Owner gone (ON DELETE SET NULL) → fails to authenticate.

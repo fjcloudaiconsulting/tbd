@@ -122,6 +122,17 @@ def _make_client(factory) -> TestClient:
     async def interactive_only(user: User = Depends(require_interactive_session)):
         return {"id": user.id}
 
+    # A route that accepts an UNMAPPED method (OPTIONS) through the real auth
+    # dependency, so the fail-closed scope branch in authenticate_pat is
+    # actually reached (a bare app 405s OPTIONS before deps run otherwise).
+    @app.api_route(
+        "/anymethod",
+        methods=["GET", "OPTIONS"],
+        dependencies=[Depends(require_permission("orgs.view"))],
+    )
+    async def anymethod():
+        return {"ok": True}
+
     return TestClient(app)
 
 
@@ -337,3 +348,102 @@ async def test_last_used_stamp_written(factory, superadmin):
         row = await s.scalar(select(ApiToken).where(ApiToken.id == tid))
     assert row.last_used_at is not None
     assert row.last_used_ip is not None
+
+
+async def test_last_used_not_written_twice_within_throttle(factory, superadmin):
+    """The throttle no-ops a second stamp inside the window (spec §8 / SEC-R9):
+    the first request stamps ``last_used_at``; the second must NOT rewrite it."""
+    token, tid = await _mint_row(factory, superadmin)
+    with _make_client(factory) as client:
+        assert client.get("/orgs", headers=_h(token)).status_code == 200
+        async with factory() as s:
+            first = await s.scalar(select(ApiToken).where(ApiToken.id == tid))
+            first_stamp = first.last_used_at
+        assert first_stamp is not None
+        # Second call, well within the default 300s throttle window.
+        assert client.get("/orgs", headers=_h(token)).status_code == 200
+    async with factory() as s:
+        row = await s.scalar(select(ApiToken).where(ApiToken.id == tid))
+    # Unchanged — the throttle short-circuited the write.
+    assert row.last_used_at == first_stamp
+
+
+# ── Unmapped method → fail-closed deny (spec §5) ────────────────────────────
+
+
+async def test_unmapped_method_denied(factory, superadmin):
+    """An unmapped HTTP method (OPTIONS) with a valid PAT is denied 403 —
+    the scope branch is fail-closed, never falls through to allow."""
+    token, _ = await _mint_row(factory, superadmin, scope="write")
+    with _make_client(factory) as client:
+        r = client.options("/anymethod", headers=_h(token))
+    assert r.status_code == 403
+    assert r.json()["detail"] == "Token scope insufficient"
+
+
+# ── Dead-token check precedes scope: 401, never a scope 403 (SEC-R8) ────────
+
+
+async def test_revoked_write_token_on_post_is_401_not_403(factory, superadmin):
+    """A revoked WRITE token on a POST must return the generic 401 (dead
+    token), NOT a 403 — scope must never become a validity oracle that tells
+    an attacker their dead token was otherwise write-capable."""
+    token, _ = await _mint_row(factory, superadmin, scope="write", revoked_at=_now())
+    with _make_client(factory) as client:
+        r = client.post("/orgs", headers=_h(token))
+    assert r.status_code == 401
+    assert r.json()["detail"] == "Invalid or expired token"
+
+
+async def test_expired_write_token_on_post_is_401_not_403(factory, superadmin):
+    """Same for an expired write token: the expiry (401) is decided before the
+    scope check (403) ever runs."""
+    token, _ = await _mint_row(
+        factory, superadmin, scope="write", expires_at=_now() - timedelta(seconds=1)
+    )
+    with _make_client(factory) as client:
+        r = client.post("/orgs", headers=_h(token))
+    assert r.status_code == 401
+    assert r.json()["detail"] == "Invalid or expired token"
+
+
+# ── Known-but-dead token writes an api_token.auth_rejected audit row (§11) ──
+
+
+async def test_known_dead_token_writes_auth_rejected_audit(factory, superadmin):
+    from app.models.audit_event import AuditEvent
+
+    token, tid = await _mint_row(factory, superadmin, revoked_at=_now())
+    with _make_client(factory) as client:
+        assert client.get("/orgs", headers=_h(token)).status_code == 401
+    async with factory() as s:
+        rows = (
+            await s.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "api_token.auth_rejected"
+                )
+            )
+        ).scalars().all()
+    assert rows and rows[0].detail["api_token_id"] == tid
+    assert rows[0].detail["reason"] == "revoked"
+
+
+async def test_unknown_token_writes_no_audit_row(factory, superadmin):
+    """Unknown ``pat_`` garbage stays structlog-only — no audit row, to avoid
+    an audit-flood DoS (ARC-R12)."""
+    from app.models.audit_event import AuditEvent
+
+    with _make_client(factory) as client:
+        assert (
+            client.get("/orgs", headers={"Authorization": "Bearer pat_nope"}).status_code
+            == 401
+        )
+    async with factory() as s:
+        rows = (
+            await s.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "api_token.auth_rejected"
+                )
+            )
+        ).scalars().all()
+    assert rows == []
