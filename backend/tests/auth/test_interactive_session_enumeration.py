@@ -52,6 +52,8 @@ from app.routers.admin_users import router as admin_users_router
 from app.routers.api_tokens import router as api_tokens_router
 from app.routers.auth import router as auth_router
 from app.routers.org_data import router as org_data_router
+from app.routers.org_members import router as org_members_router
+from app.routers.orgs import router as orgs_router
 from app.routers.users import router as users_router
 
 
@@ -94,6 +96,10 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/admin/broadcasts/1/send"),     # send_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/resume"),   # resume_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/dry-run"),  # dry_run_broadcast (sends real email)
+    # ── Follow-up: 3 more routes (Task-5 review, defense-in-depth) ──────────
+    ("PATCH", "/api/v1/orgs/1/rename"),              # rename_org_endpoint
+    ("POST", "/api/v1/orgs/invitations"),            # create_invitation (grants a role)
+    ("DELETE", "/api/v1/orgs/members/1"),            # remove_member
 ]
 
 
@@ -158,6 +164,8 @@ def app(factory):
             admin_features_router,
             admin_broadcasts_router,
             org_data_router,
+            orgs_router,
+            org_members_router,
         ],
         override_session_factory=True,
     )
