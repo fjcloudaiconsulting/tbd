@@ -31,10 +31,11 @@ from datetime import datetime
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
-from sqlalchemy import event, select
+from sqlalchemy import event, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -47,6 +48,7 @@ from app.models import Base
 from app.models.audit_event import AuditEvent
 from app.models.email_broadcast import (
     SEGMENT_ACTIVE_VERIFIED,
+    BroadcastStatus,
     EmailBroadcast,
     EmailBroadcastRecipient,
     RecipientStatus,
@@ -666,3 +668,142 @@ async def test_recipients_endpoint_returns_rows_with_delivery_status(session_fac
     assert by_email["recip3@customer.io"]["delivery_status"] == "bounced_temporary"
     assert by_email["recip4@customer.io"]["delivery_status"] == "complained"
     assert by_email["recip5@customer.io"]["delivery_status"] is None
+
+
+# ── CAS-before-materialize + dry-run draft guard (R2, Task 1 Minors) ─────
+
+
+async def _seed_broadcast_with_status(
+    factory, status: BroadcastStatus, **extra
+) -> int:
+    """Seed a single broadcast directly at a given lifecycle ``status``, no
+    real send — for tests that only care about the guard at that status."""
+    async with factory() as db:
+        broadcast = EmailBroadcast(
+            subject="Already moving",
+            body_template="Hi {first_name}, welcome back.",
+            segment=SEGMENT_ACTIVE_VERIFIED,
+            status=status,
+            **extra,
+        )
+        db.add(broadcast)
+        await db.commit()
+        await db.refresh(broadcast)
+        return broadcast.id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_send_returns_one_200_one_409_no_duplicate_materialize(
+    session_factory, _mock_send_email, monkeypatch
+):
+    """Two ``POST /{id}/send`` requests race on the same draft.
+
+    ``count_segment`` (check 4, the last ``await`` before the mutation
+    phase) is gated with an ``asyncio.Barrier(2)`` so both requests are
+    genuinely in-flight — past every read-only check and about to enter the
+    mutation phase — at the same instant. Exactly one must win the
+    draft->sending CAS (200) and the other must lose it cleanly (409
+    ``broadcast_not_draft``), and the recipients table must hold exactly one
+    materialized set (== the segment count), never two (R2: before this fix,
+    the loser's ``materialize_recipients`` ran BEFORE the CAS could catch
+    it, so both requests could insert conflicting rows and the loser's
+    unique-constraint violation surfaced as an unhandled 500).
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+
+    with TestClient(app) as client:
+        draft = _create_draft(client)
+        assert (
+            client.post(f"/api/v1/admin/broadcasts/{draft['id']}/dry-run").status_code
+            == 200
+        )
+
+    barrier = asyncio.Barrier(2)
+
+    async def gated_count_segment(db, segment):
+        result = await broadcast_service.count_segment(db, segment)
+        # Wait until BOTH concurrent requests have reached this point
+        # before either is allowed to proceed into checks 5/6 and the
+        # mutation phase — guarantees genuine overlap, not just interleaved
+        # scheduling luck.
+        await barrier.wait()
+        return result
+
+    monkeypatch.setattr(admin_broadcasts_module, "count_segment", gated_count_segment)
+
+    payload = {
+        "confirm_subject": draft["subject"],
+        "confirm_recipient_count": draft["recipient_count"],
+    }
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async def _send():
+            return await ac.post(
+                f"/api/v1/admin/broadcasts/{draft['id']}/send", json=payload
+            )
+
+        res_a, res_b = await asyncio.gather(_send(), _send())
+
+    statuses = sorted([res_a.status_code, res_b.status_code])
+    assert statuses == [200, 409], (res_a.text, res_b.text)
+    loser = res_a if res_a.status_code == 409 else res_b
+    assert loser.json()["detail"]["code"] == "broadcast_not_draft"
+
+    # Exactly one materialized set — never doubled.
+    async with session_factory() as db:
+        recipient_count = (
+            await db.scalar(
+                select(func.count())
+                .select_from(EmailBroadcastRecipient)
+                .where(EmailBroadcastRecipient.broadcast_id == draft["id"])
+            )
+        ) or 0
+        broadcast = await db.get(EmailBroadcast, draft["id"])
+    assert recipient_count == draft["recipient_count"]
+    assert broadcast.total_recipients == draft["recipient_count"]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_on_non_draft_returns_409(session_factory):
+    await _seed(session_factory)
+    broadcast_id = await _seed_broadcast_with_status(
+        session_factory, BroadcastStatus.SENDING
+    )
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.post(f"/api/v1/admin/broadcasts/{broadcast_id}/dry-run")
+    assert res.status_code == 409
+    assert res.json()["detail"]["code"] == "broadcast_not_draft"
+
+
+@pytest.mark.asyncio
+async def test_preview_happy_path_returns_subject_html_text(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        draft = _create_draft(client)
+        res = client.get(f"/api/v1/admin/broadcasts/{draft['id']}/preview")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["subject"] == draft["subject"]
+    assert "Alex" in body["html"]
+    assert "Alex" in body["text"]
+
+
+@pytest.mark.asyncio
+async def test_list_broadcasts_happy_path_returns_populated_envelope(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        first = _create_draft(client, subject="First")
+        second = _create_draft(client, subject="Second")
+        res = client.get("/api/v1/admin/broadcasts")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] >= 2
+    assert body["limit"] == 50
+    assert body["offset"] == 0
+    ids = {item["id"] for item in body["items"]}
+    assert first["id"] in ids
+    assert second["id"] in ids
