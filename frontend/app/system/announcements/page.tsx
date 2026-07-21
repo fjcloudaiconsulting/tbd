@@ -1,16 +1,13 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 
-import AppShell from "@/components/AppShell";
+import AnnouncementsLayout from "@/components/AnnouncementsLayout";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import Pagination from "@/components/ui/Pagination";
 import SortableHeader from "@/components/ui/SortableHeader";
 import { useTableState } from "@/lib/hooks/use-table-state";
-import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { isSuperadmin } from "@/lib/auth";
 import type { ListEnvelope } from "@/lib/types";
 import {
   btnPrimary,
@@ -21,7 +18,6 @@ import {
   error as errorCls,
   input,
   label,
-  pageTitle,
   success as successCls,
 } from "@/lib/styles";
 
@@ -96,8 +92,6 @@ function fromDatetimeLocal(value: string): string | null {
 }
 
 export default function SystemAnnouncementsPage() {
-  const { user, loading } = useAuth();
-  const router = useRouter();
   const [items, setItems] = useState<Announcement[]>([]);
   const [total, setTotal] = useState(0);
   const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } =
@@ -124,20 +118,6 @@ export default function SystemAnnouncementsPage() {
   // so a mount-time reference is sufficient for the status badges.
   const [nowMs] = useState(() => Date.now());
 
-  const canManage = !!user && isSuperadmin(user);
-
-  useEffect(() => {
-    if (loading) return;
-    if (!user) {
-      router.replace("/login");
-      return;
-    }
-    if (!canManage) {
-      router.replace("/dashboard");
-      return;
-    }
-  }, [loading, user, canManage, router]);
-
   const loadItems = useCallback(async () => {
     try {
       const params = new URLSearchParams({
@@ -158,8 +138,8 @@ export default function SystemAnnouncementsPage() {
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetch: loadItems() writes the announcements page + total into state when sort/page/pageSize change
-    if (canManage) void loadItems();
-  }, [canManage, loadItems]);
+    void loadItems();
+  }, [loadItems]);
 
   const handleSort = useCallback(
     (field: string) => {
@@ -245,12 +225,9 @@ export default function SystemAnnouncementsPage() {
     }
   }
 
-  if (loading || !canManage) return null;
-
   return (
-    <AppShell>
-      <div className="flex flex-col gap-2 mb-8 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className={pageTitle + " mb-0"}>Announcements</h1>
+    <AnnouncementsLayout activeTab="/system/announcements">
+      <div className="flex justify-end mb-8">
         <button
           onClick={openCreate}
           className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}
@@ -489,6 +466,6 @@ export default function SystemAnnouncementsPage() {
         }}
         onCancel={() => setConfirmDelete(null)}
       />
-    </AppShell>
+    </AnnouncementsLayout>
   );
 }

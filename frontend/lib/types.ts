@@ -849,3 +849,56 @@ export interface RateLimitOverrideListResponse {
 export interface AIFeatureState { entitled: boolean; configured: boolean }
 export interface AIStatus { categorize: AIFeatureState; forecast: AIFeatureState; budget: AIFeatureState }
 
+// ── Email broadcasts (superadmin admin UI) ──────────────────────────────────
+//
+// Mirrors backend/app/schemas/email_broadcast.py. `Broadcast` mirrors
+// `BroadcastResponse`, `BroadcastRecipient` mirrors `RecipientResponse`,
+// `BroadcastPreview` mirrors `PreviewResponse`.
+
+export type BroadcastStatus = "draft" | "sending" | "completed" | "failed";
+
+export interface Broadcast {
+  id: number;
+  subject: string;
+  body_template: string;
+  segment: string;
+  status: BroadcastStatus;
+  created_by_user_id: number | null;
+  total_recipients: number | null;
+  // Recipients accepted by the mail provider for delivery (NOT confirmed
+  // delivered). Label as "Queued" / "Accepted", never "Delivered" (Ruling R1
+  // / R3 — batch-sending model, true delivery status needs the webhook).
+  sent_count: number;
+  failed_count: number;
+  skipped_count: number;
+  dry_run_sent_at: string | null;
+  confirmed_at: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  // Live segment count while draft, else the materialized total_recipients.
+  recipient_count: number | null;
+  // Derived, compute-on-read Mailgun delivery counts (Ruling W9) — only
+  // populate once the delivery webhook is configured.
+  delivered_count: number;
+  bounced_count: number;
+  soft_bounced_count: number;
+  complained_count: number;
+}
+
+export interface BroadcastRecipient {
+  id: number;
+  email: string;
+  first_name: string | null;
+  status: string;
+  delivery_status: string | null;
+  delivery_updated_at: string | null;
+  sent_at: string | null;
+}
+
+export interface BroadcastPreview {
+  subject: string;
+  html: string;
+  text: string;
+}
+

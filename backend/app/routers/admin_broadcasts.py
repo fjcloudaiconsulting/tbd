@@ -294,11 +294,23 @@ async def dry_run_broadcast(
 ):
     """Render and send the email to the calling superadmin's own address
     only. Stamps ``dry_run_sent_at`` (the mandatory pre-send gate). Audit
-    ``broadcast.dry_run``."""
+    ``broadcast.dry_run``.
+
+    Guarded to ``draft`` only: a broadcast that has already moved past
+    draft (``sending``/``completed``/``failed``) must not be re-rendered
+    and re-sent to the operator's own inbox, and dry-running it wouldn't
+    mean anything post-send anyway.
+    """
     actor_user_id = current_user.id
     actor_email = current_user.email
 
     row = await _get_broadcast_or_404(db, broadcast_id)
+
+    if row.status != BroadcastStatus.DRAFT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "broadcast_not_draft"},
+        )
 
     html_out, text_out = render_email(row.body_template, current_user.first_name)
     await send_email(current_user.email, row.subject, html_out, text_out)
@@ -350,12 +362,16 @@ async def send_broadcast(
        ``invalid_template_token``) — checked here so a stray ``%`` fails the
        request synchronously instead of failing the background drain
 
-    On pass, in one transaction: materialize recipients, set
-    ``total_recipients``, flip ``draft -> sending`` via a conditional
-    ``UPDATE`` checked for ``rowcount == 1``, stamp ``confirmed_at``, commit.
-    Only THEN is ``launch_drain`` called (Ruling 2) — after commit, so the
-    drain's own session can see the newly materialized ``pending`` rows.
-    Audit ``broadcast.send``.
+    On pass, in one transaction: FIRST flip ``draft -> sending`` via a
+    conditional ``UPDATE`` checked for ``rowcount == 1`` (Ruling 2,
+    CAS-before-materialize) — a concurrent double-send loses this race and
+    409s here, before touching the recipients table at all, so it can never
+    double-``materialize_recipients`` into the ``(broadcast_id, user_id)``
+    unique constraint (the old order's IntegrityError-turned-500). Only the
+    winner proceeds to materialize recipients (which sets
+    ``total_recipients``), stamp ``confirmed_at``, and commit. Only THEN is
+    ``launch_drain`` called — after commit, so the drain's own session can
+    see the newly materialized ``pending`` rows. Audit ``broadcast.send``.
     """
     actor_user_id = current_user.id
     actor_email = current_user.email
@@ -415,9 +431,11 @@ async def send_broadcast(
             detail={"code": "invalid_template_token"},
         )
 
-    # All checks passed: materialize + CAS + stamp confirmed_at, one txn.
-    await materialize_recipients(db, row)
-
+    # All checks passed. CAS the row draft -> sending FIRST (Ruling 2): only
+    # the winner of a concurrent race ever proceeds to materialize. The
+    # loser 409s here, before any recipient row is inserted, so a
+    # concurrent double-send can never double-materialize into the
+    # recipients table's (broadcast_id, user_id) unique constraint.
     result = await db.execute(
         update(EmailBroadcast)
         .where(
@@ -428,13 +446,18 @@ async def send_broadcast(
     )
     if (result.rowcount or 0) != 1:
         # Another concurrent send won the race between our status check
-        # above and this CAS. Roll back and report the same 409 as a
-        # stale/duplicate send attempt (Ruling 3a).
+        # above and this CAS. Roll back (nothing else has been touched
+        # yet) and report the same 409 as a stale/duplicate send attempt
+        # (Ruling 3a).
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "broadcast_not_draft"},
         )
+
+    # Only the CAS winner reaches here: materialize + stamp confirmed_at,
+    # same transaction as the CAS, then commit.
+    await materialize_recipients(db, row)
 
     await db.execute(
         update(EmailBroadcast)
