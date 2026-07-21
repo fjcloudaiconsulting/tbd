@@ -172,6 +172,17 @@ services:
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: EV[1:YrGhlsSeOARimCuO/Ws+dktoGW5NdFGD:wlcljc+wVhxlddlau+C6+r6EKYHgeVJPgd/i8rQS+gh+scfsqz5g8D1b+TJHwR6CvhbXKGeasrpgUJa/r/rsF48w]
+      # Mailgun HTTP webhook signing key — distinct from MAILGUN_API_KEY. HMAC-
+      # verifies inbound POST /api/v1/webhooks/mailgun delivery events. Unset =
+      # endpoint fails closed (404) and no delivery status is recorded, so this
+      # MUST stay here as an EV[] blob: .do/app.yaml is the authoritative spec on
+      # every deploy, and an empty/missing value would strip the console-set
+      # secret on the next push (see reference_do_spec_sync.md). Set via the DO
+      # console 2026-07-21; blob pulled with `doctl apps spec get`.
+      - key: MAILGUN_WEBHOOK_SIGNING_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:zlwc+YhAw3a8Ii8g/YAsE1M6ogOEQvcS:2LPx2QSfINnwZFbw75yD3w50oqU0Yi/TqqPL93heBSV2caaKtbkzSf/vm6sV4kv0N5LsCh1EslyxwcIc3epXo/nL]
       - key: GOOGLE_CLIENT_ID
         scope: RUN_AND_BUILD_TIME
         type: SECRET
