@@ -5,8 +5,17 @@
 // password-set superadmin, and/or a fresh TOTP `mfa_code` when MFA is on.
 // The backend re-verifies against the live user row and rejects a bad/missing
 // proof with a generic 401 — this modal just gathers the inputs.
+//
+// SSO operators (`passwordRequired === false`, i.e. `password_set === false`)
+// are a known v1 gap: the backend's step-up path for them requires a fresh
+// `stepup_token` (spec §8) that nothing in this UI obtains, so any submit for
+// that account shape is unconditionally rejected with a 401 regardless of
+// MFA state. Rather than let the operator click a doomed "Verify & mint",
+// this modal is honest about the gap and points them at setting a password
+// instead of collecting proofs it cannot use.
 
 import { FormEvent, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 
 import { btnPrimary, btnSecondary, input, label } from "@/lib/styles";
 
@@ -50,8 +59,9 @@ export default function StepUpModal({
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (!passwordRequired) return; // no honest proof to send — see banner note above
     const proof: StepUpProof = {};
-    if (passwordRequired) proof.current_password = password;
+    proof.current_password = password;
     if (mfaRequired) proof.mfa_code = mfaCode;
     onSubmit(proof);
   }
@@ -77,47 +87,63 @@ export default function StepUpModal({
         </p>
 
         <form onSubmit={handleSubmit} className="mt-4 grid grid-cols-1 gap-4">
-          {passwordRequired && (
-            <div>
-              <label htmlFor="stepup-password-input" className={label}>
-                Current password
-              </label>
-              <input
-                ref={firstFieldRef}
-                id="stepup-password-input"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className={input}
-                autoComplete="current-password"
-                data-testid="stepup-password"
-              />
-            </div>
-          )}
+          {passwordRequired ? (
+            <>
+              <div>
+                <label htmlFor="stepup-password-input" className={label}>
+                  Current password
+                </label>
+                <input
+                  ref={firstFieldRef}
+                  id="stepup-password-input"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className={input}
+                  autoComplete="current-password"
+                  data-testid="stepup-password"
+                />
+              </div>
 
-          {mfaRequired && (
-            <div>
-              <label htmlFor="stepup-mfa-input" className={label}>
-                Authenticator code
-              </label>
-              <input
-                ref={passwordRequired ? undefined : firstFieldRef}
-                id="stepup-mfa-input"
-                inputMode="numeric"
-                value={mfaCode}
-                onChange={(e) => setMfaCode(e.target.value)}
-                className={input}
-                autoComplete="one-time-code"
-                data-testid="stepup-mfa"
-              />
+              {mfaRequired && (
+                <div>
+                  <label htmlFor="stepup-mfa-input" className={label}>
+                    Authenticator code
+                  </label>
+                  <input
+                    id="stepup-mfa-input"
+                    inputMode="numeric"
+                    value={mfaCode}
+                    onChange={(e) => setMfaCode(e.target.value)}
+                    className={input}
+                    autoComplete="one-time-code"
+                    data-testid="stepup-mfa"
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            // Known v1 gap: an SSO account (no password set) has no way to
+            // supply the fresh `stepup_token` the backend requires here, so
+            // any mint attempt would 401 unconditionally. Say so plainly
+            // instead of collecting proofs that can't work.
+            <div
+              className="rounded-md border border-border bg-surface-raised p-4 text-sm text-text-secondary"
+              data-testid="stepup-no-password-note"
+            >
+              <p>
+                Creating API tokens in this version requires a password on
+                your account. Set one in Security settings, then come back
+                to mint a token.
+              </p>
+              <Link
+                href="/settings/security"
+                className="mt-2 inline-block text-accent hover:underline"
+                data-testid="stepup-set-password-link"
+              >
+                Go to Security settings
+              </Link>
             </div>
-          )}
-
-          {!passwordRequired && !mfaRequired && (
-            <p className="text-sm text-text-secondary" data-testid="stepup-sso-note">
-              Your account signs in with Google. Complete the Google
-              verification prompt to continue.
-            </p>
           )}
 
           {errorMessage && (
@@ -133,16 +159,18 @@ export default function StepUpModal({
               className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
               data-testid="stepup-cancel"
             >
-              Cancel
+              {passwordRequired ? "Cancel" : "Close"}
             </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}
-              data-testid="stepup-submit"
-            >
-              {submitting ? "Verifying…" : "Verify & mint"}
-            </button>
+            {passwordRequired && (
+              <button
+                type="submit"
+                disabled={submitting}
+                className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}
+                data-testid="stepup-submit"
+              >
+                {submitting ? "Verifying…" : "Verify & mint"}
+              </button>
+            )}
           </div>
         </form>
       </div>

@@ -42,7 +42,7 @@ logger = structlog.get_logger(__name__)
 
 FLAG_KEY = "api_token_expiry_reminders_enabled"
 EVENT_TYPE = "api_token.expiry_reminder"
-LINK_URL = "/admin/api-tokens"
+LINK_URL = "/system/api-tokens"
 FULLY_REMINDED_STAGE = 3
 
 # Days-remaining threshold that unlocks each *next* stage. A token at stage

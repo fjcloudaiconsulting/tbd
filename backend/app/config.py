@@ -399,6 +399,24 @@ class Settings(BaseSettings):
                 )
         elif self.app_env == "production":
             raise ValueError("API_TOKEN_HMAC_KEY is required in production")
+
+        # ``api_token_hmac_key_prev`` is verify-only (rotation aid) so it has
+        # no prod-required branch — only validate when present, but apply the
+        # SAME two checks as the primary key so a weak or accidentally-jwt-
+        # reused PREV value can't quietly widen the accepted-token surface.
+        prev_key = self.api_token_hmac_key_prev
+        if prev_key:
+            if len(prev_key) < 32:
+                raise ValueError(
+                    "API_TOKEN_HMAC_KEY_PREV must be at least 32 characters"
+                )
+            if prev_key == self.jwt_secret_key:
+                raise ValueError(
+                    "API_TOKEN_HMAC_KEY_PREV must differ from JWT_SECRET_KEY — "
+                    "reusing the JWT secret re-couples PAT hashing to it and "
+                    "defeats the decoupling. Generate a distinct secret via: "
+                    "python -c 'import secrets; print(secrets.token_urlsafe(64))'"
+                )
         return self
 
     @property

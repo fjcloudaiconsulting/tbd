@@ -159,6 +159,19 @@ def sent_emails(monkeypatch):
     return box
 
 
+@pytest.fixture
+def sent_email_links(monkeypatch):
+    """Like ``sent_emails`` but captures the ``link_url`` kwarg for assertion."""
+    box: list[str | None] = []
+
+    async def _fake_email(to, *, title, body, link_url=None):
+        box.append(link_url)
+        return True
+
+    monkeypatch.setattr(job, "send_notification_email", _fake_email)
+    return box
+
+
 # ── threshold tests ───────────────────────────────────────────────────────────
 
 
@@ -320,6 +333,25 @@ async def test_expiry_stage_copy_says_expired(session_factory, superadmin, sent_
     assert await _stage(session_factory, tid) == 3
     note = await _last_notification(session_factory)
     assert "has expired" in note.body
+
+
+@pytest.mark.asyncio
+async def test_reminder_link_points_at_real_system_page(
+    session_factory, superadmin, sent_email_links
+):
+    """The reminder must deep-link to the real superadmin page
+    (``/system/api-tokens``), not the 404'ing ``/admin/api-tokens``."""
+    await _enable_flag(session_factory)
+    tid = await _mk_token(
+        session_factory, owner_id=superadmin, expires_at=NOW + datetime.timedelta(days=14)
+    )
+
+    await job.run_api_token_expiry_reminders(session_factory, now=NOW)
+
+    assert await _stage(session_factory, tid) == 1
+    note = await _last_notification(session_factory)
+    assert note.link_url == "/system/api-tokens"
+    assert sent_email_links == ["/system/api-tokens"]
 
 
 # ── skip tests ─────────────────────────────────────────────────────────────────

@@ -101,4 +101,71 @@ describe("StepUpModal", () => {
     fireEvent.click(screen.getByTestId("stepup-cancel"));
     expect(onCancel).toHaveBeenCalled();
   });
+
+  // SSO accounts (password_set === false) have no way to supply the
+  // backend's required fresh `stepup_token` from this modal, so any submit
+  // for them is unconditionally rejected with a 401. The modal must be
+  // honest about that instead of collecting doomed proofs.
+  it("shows an honest no-password message instead of a doomed submit when passwordRequired is false", () => {
+    const onSubmit = vi.fn();
+    render(
+      <StepUpModal
+        open
+        passwordRequired={false}
+        mfaRequired={false}
+        submitting={false}
+        errorMessage={null}
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("stepup-no-password-note")).toHaveTextContent(
+      /requires a password on your account/i,
+    );
+    expect(
+      screen.getByTestId("stepup-set-password-link"),
+    ).toHaveAttribute("href", "/settings/security");
+
+    // No mint-confirm action is offered at all.
+    expect(screen.queryByTestId("stepup-submit")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stepup-password")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stepup-mfa")).not.toBeInTheDocument();
+
+    // Nothing to submit, so onSubmit is never called.
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("shows the honest no-password message even when MFA is also enabled (still no proof the modal can supply)", () => {
+    render(
+      <StepUpModal
+        open
+        passwordRequired={false}
+        mfaRequired
+        submitting={false}
+        errorMessage={null}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("stepup-no-password-note")).toBeInTheDocument();
+    expect(screen.queryByTestId("stepup-submit")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stepup-mfa")).not.toBeInTheDocument();
+  });
+
+  it("Cancel button reads Close (not Cancel) when there's nothing to submit", () => {
+    render(
+      <StepUpModal
+        open
+        passwordRequired={false}
+        mfaRequired={false}
+        submitting={false}
+        errorMessage={null}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("stepup-cancel")).toHaveTextContent("Close");
+  });
 });
