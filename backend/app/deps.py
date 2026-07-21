@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import structlog
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -26,10 +26,22 @@ bearer_optional = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> User:
+    # Superadmin PAT seam (spec §6): a ``pat_``-prefixed bearer authenticates
+    # through the dedicated, security-audited path so the JWT body below stays
+    # textually identical. Lazy import breaks the deps<->pat import cycle
+    # (pat.py imports get_current_user for require_interactive_session).
+    if credentials.credentials.startswith("pat_"):
+        from app.auth.pat import authenticate_pat
+
+        return await authenticate_pat(
+            request, credentials.credentials, db, session_factory
+        )
+
     payload = decode_token(credentials.credentials)
     if payload is None or payload.get("type") != "access":
         raise HTTPException(
@@ -56,6 +68,10 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session has been invalidated",
             )
+
+    # Mark auth provenance for the interactive-only guard (spec §7) and audit
+    # attribution: an interactive JWT session, as opposed to a PAT.
+    request.state.auth_method = "jwt"
 
     # L4.9: bind authenticated context onto structlog's request-scoped
     # contextvars (request_id was already bound by RequestContextMiddleware

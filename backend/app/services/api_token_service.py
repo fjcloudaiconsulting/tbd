@@ -12,9 +12,17 @@ they are re-issued or expire.
 import hashlib
 import hmac
 import secrets
+from datetime import datetime, timezone
+
+import structlog
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
+from app.models.api_token import ApiToken
 from app.security import derive_hmac_key
+
+logger = structlog.stdlib.get_logger(__name__)
 
 
 def _primary_key() -> bytes:
@@ -46,3 +54,52 @@ def token_hash_candidates(plaintext: str) -> list[str]:
 def generate_token() -> tuple[str, str, str]:
     full = "pat_" + secrets.token_urlsafe(32)
     return full, hash_api_token(full), full[:14]
+
+
+async def lookup_token(db: AsyncSession, plaintext: str) -> ApiToken | None:
+    """Resolve the ``ApiToken`` row for a raw ``pat_`` secret, or ``None``.
+
+    Looks up by the full HMAC digest against the unique index (spec §3 —
+    never fetch-by-prefix-then-compare). ``token_hash_candidates`` yields the
+    primary hash plus the verify-only ``_PREV`` hash, so tokens minted before
+    a pepper rotation keep resolving. Matching a full keyed digest against a
+    unique column means an attacker cannot produce a digest without the
+    secret, so no separate constant-time compare is required.
+    """
+    candidates = token_hash_candidates(plaintext)
+    result = await db.execute(
+        select(ApiToken).where(ApiToken.token_hash.in_(candidates))
+    )
+    return result.scalar_one_or_none()
+
+
+async def maybe_stamp_last_used(
+    session_factory: async_sessionmaker[AsyncSession],
+    token_id: int,
+    current: datetime | None,
+    client_ip: str | None,
+) -> None:
+    """Stamp ``last_used_at = now`` / ``last_used_ip`` for ``token_id`` when the
+    stored value is stale (``None`` or older than the throttle window). No-op
+    when fresh — a PAT hammering the API must not write a row per request.
+
+    Best-effort, exactly like ``maybe_stamp_last_active``: opens its own
+    INDEPENDENT session and swallows any error so a failed stamp can never
+    break the authenticated request that triggered it. ``client_ip`` MUST come
+    from ``rate_limit.get_client_ip`` (never raw ``request.client``).
+    """
+    now = datetime.now(timezone.utc)
+    if current is not None:
+        cur = current if current.tzinfo else current.replace(tzinfo=timezone.utc)
+        if (now - cur).total_seconds() < settings.api_token_last_used_throttle_seconds:
+            return
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                update(ApiToken)
+                .where(ApiToken.id == token_id)
+                .values(last_used_at=now, last_used_ip=client_ip)
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 — never break auth on a stamp failure
+        logger.warning("api_token.last_used_stamp_failed", api_token_id=token_id)

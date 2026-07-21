@@ -80,6 +80,17 @@ def make_credentials() -> HTTPAuthorizationCredentials:
     return HTTPAuthorizationCredentials(scheme="Bearer", credentials="signed-token")
 
 
+def make_request():
+    """Minimal stand-in for the ``Request`` now taken by ``get_current_user``.
+
+    The JWT branch only writes ``request.state.auth_method``; a namespace with
+    a mutable ``state`` is enough for these direct-call unit tests.
+    """
+    from types import SimpleNamespace
+
+    return SimpleNamespace(state=SimpleNamespace())
+
+
 @pytest.mark.asyncio
 async def test_get_current_user_returns_user_for_valid_access_token_without_iat(
     monkeypatch,
@@ -97,7 +108,7 @@ async def test_get_current_user_returns_user_for_valid_access_token_without_iat(
         lambda _token: {"sub": "1", "type": "access"},
     )
 
-    resolved = await get_current_user(make_credentials(), db)
+    resolved = await get_current_user(make_request(), make_credentials(), db)
 
     assert resolved is user
 
@@ -111,7 +122,7 @@ async def test_get_current_user_rejects_non_access_tokens(monkeypatch) -> None:
     )
 
     with pytest.raises(HTTPException, match="Invalid or expired token") as exc:
-        await get_current_user(make_credentials(), FakeAsyncSession(make_user()))
+        await get_current_user(make_request(), make_credentials(), FakeAsyncSession(make_user()))
 
     assert exc.value.status_code == 401
 
@@ -126,6 +137,7 @@ async def test_get_current_user_rejects_inactive_users(monkeypatch) -> None:
 
     with pytest.raises(HTTPException, match="User not found or inactive") as exc:
         await get_current_user(
+            make_request(),
             make_credentials(),
             FakeAsyncSession(make_user(is_active=False)),
         )
@@ -145,7 +157,7 @@ async def test_get_current_user_rejects_tokens_issued_before_cutoff(monkeypatch)
     monkeypatch.setattr(deps_module, "token_cutoff", lambda _user: cutoff)
 
     with pytest.raises(HTTPException, match="Session has been invalidated") as exc:
-        await get_current_user(make_credentials(), FakeAsyncSession(make_user()))
+        await get_current_user(make_request(), make_credentials(), FakeAsyncSession(make_user()))
 
     assert exc.value.status_code == 401
 
@@ -191,7 +203,7 @@ async def test_get_current_user_stamps_last_active_via_independent_factory(
 
     async with factory() as db:
         resolved = await get_current_user(
-            make_credentials(), db, session_factory=factory
+            make_request(), make_credentials(), db, session_factory=factory
         )
         assert resolved.id == uid
 
@@ -216,6 +228,6 @@ async def test_get_current_user_swallows_stamp_failure(monkeypatch) -> None:
 
     # Stamp blows up internally but is swallowed → auth still succeeds.
     resolved = await get_current_user(
-        make_credentials(), db, session_factory=_BoomFactory()
+        make_request(), make_credentials(), db, session_factory=_BoomFactory()
     )
     assert resolved is user

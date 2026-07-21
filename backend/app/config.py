@@ -335,6 +335,10 @@ class Settings(BaseSettings):
     api_token_hmac_key_prev: str | None = None
     api_token_default_expiry_days: int = 30
     api_token_max_expiry_days: int = 90
+    # Throttle window for the per-request ``last_used_at`` / ``last_used_ip``
+    # stamp (spec §8): a PAT hitting the API in a tight loop must not write a
+    # row on every request. Mirrors ``last_active_stamp_throttle_seconds``.
+    api_token_last_used_throttle_seconds: int = 300
 
     @field_validator("session_lifetime_days")
     @classmethod
