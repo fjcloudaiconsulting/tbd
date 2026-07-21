@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import AppShell from "@/components/AppShell";
+import SystemLayout from "@/components/SystemLayout";
 import FeatureFlagsCard from "@/components/system/FeatureFlagsCard";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { pageTitle } from "@/lib/styles";
@@ -29,7 +29,7 @@ export default function SystemFeaturesPage() {
   if (loading || !user?.is_superadmin) return null;
 
   return (
-    <AppShell>
+    <SystemLayout current="Feature Flags">
       <h1 className={pageTitle}>Feature Flags</h1>
       <p className="mt-1 mb-6 text-sm text-text-secondary">
         Set the global default for each gated feature. Per-org overrides are
@@ -37,6 +37,6 @@ export default function SystemFeaturesPage() {
       </p>
 
       <FeatureFlagsCard />
-    </AppShell>
+    </SystemLayout>
   );
 }

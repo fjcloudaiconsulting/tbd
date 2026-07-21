@@ -36,6 +36,13 @@ const SECTIONS: readonly SystemSection[] = [
     permission: "plans.manage",
   },
   {
+    href: "/system/announcements",
+    title: "Announcements",
+    description:
+      "Publish in-app announcement banners and send email broadcasts to members. Schedule, target by severity, and review delivery status.",
+    superadminOnly: true,
+  },
+  {
     href: "/system/features",
     title: "Feature Flags",
     description:
