@@ -12,7 +12,7 @@ they are re-issued or expire.
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
 from sqlalchemy import select, update
@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.models.api_token import ApiToken
+from app.models.user import User
 from app.security import derive_hmac_key
 
 logger = structlog.stdlib.get_logger(__name__)
@@ -71,6 +72,118 @@ async def lookup_token(db: AsyncSession, plaintext: str) -> ApiToken | None:
         select(ApiToken).where(ApiToken.token_hash.in_(candidates))
     )
     return result.scalar_one_or_none()
+
+
+def _naive_utc_now() -> datetime:
+    """Wall-clock now as naive UTC, matching how the columns are stored
+    (spec §4 / ARC-R7 — every ``ApiToken`` datetime is ``sa.DateTime()``,
+    no ``timezone=True``)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def token_status(row: ApiToken, *, now: datetime | None = None) -> str:
+    """Derive the display status of a token row (spec §8 GET).
+
+    Precedence: ``revoked`` (explicit action) beats ``expired`` (time),
+    which beats ``active``. ``now`` is naive-UTC; defaults to wall clock.
+    """
+    if row.revoked_at is not None:
+        return "revoked"
+    ref = now if now is not None else _naive_utc_now()
+    exp = row.expires_at
+    exp = exp.replace(tzinfo=None) if exp.tzinfo else exp
+    if exp <= ref:
+        return "expired"
+    return "active"
+
+
+async def mint(
+    db: AsyncSession,
+    *,
+    user: User,
+    name: str,
+    scope: str,
+    expires_in_days: int,
+) -> tuple[str, ApiToken]:
+    """Generate, persist, and return a new PAT for ``user``.
+
+    Returns ``(plaintext, row)`` where ``plaintext`` is the reveal-once
+    secret — the ONLY moment it exists outside the caller's memory. Only the
+    HMAC ``token_hash`` and a non-secret ``token_prefix`` are stored (spec §3).
+    The expiry cap is assumed already validated by the schema + router; this
+    function trusts ``expires_in_days`` as bounded.
+    """
+    plaintext, token_hash, prefix = generate_token()
+    expires_at = _naive_utc_now() + timedelta(days=expires_in_days)
+    row = ApiToken(
+        token_hash=token_hash,
+        token_prefix=prefix,
+        name=name,
+        scope=scope,
+        created_by_user_id=user.id,
+        created_by_email=user.email,
+        expires_at=expires_at,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return plaintext, row
+
+
+async def list_for(db: AsyncSession, user: User) -> list[ApiToken]:
+    """All tokens minted by ``user``, newest first (spec §8 GET).
+
+    Owner-scoped: v1 tokens are all superadmin-owned, and scoping the list to
+    the caller keeps the surface aligned with ``revoke`` / ``revoke_all`` and
+    forward-compatible with the deferred per-user phase.
+    """
+    result = await db.execute(
+        select(ApiToken)
+        .where(ApiToken.created_by_user_id == user.id)
+        .order_by(ApiToken.created_at.desc(), ApiToken.id.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def revoke(db: AsyncSession, token_id: int, user: User) -> ApiToken | None:
+    """Soft-revoke a single token owned by ``user`` (spec §8 DELETE).
+
+    Returns the row on success, or ``None`` when no active, caller-owned
+    token with ``token_id`` exists (already-revoked or foreign tokens both
+    resolve to ``None`` so the router can 404 without an ownership oracle).
+    Instant effect — every auth hits the DB (``authenticate_pat`` step 3).
+    """
+    result = await db.execute(
+        select(ApiToken).where(
+            ApiToken.id == token_id,
+            ApiToken.created_by_user_id == user.id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None or row.revoked_at is not None:
+        return None
+    row.revoked_at = _naive_utc_now()
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def revoke_all(db: AsyncSession, user: User) -> int:
+    """Panic button (spec §8) — revoke every active token owned by ``user``.
+
+    Returns the number of tokens revoked by this call (already-revoked rows
+    are not re-stamped and not counted).
+    """
+    result = await db.execute(
+        update(ApiToken)
+        .where(
+            ApiToken.created_by_user_id == user.id,
+            ApiToken.revoked_at.is_(None),
+        )
+        .values(revoked_at=_naive_utc_now())
+    )
+    await db.commit()
+    return result.rowcount or 0
 
 
 async def maybe_stamp_last_used(
