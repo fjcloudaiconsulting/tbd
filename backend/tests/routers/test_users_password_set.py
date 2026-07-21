@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -75,8 +75,10 @@ def _make_app(session_factory, user_id: int):
     # Depends on `get_db` so FastAPI's per-request dependency cache
     # hands the same AsyncSession to this override and to the route.
     async def override_current_user(
+        request: Request,
         db: AsyncSession = _Depends(get_db),
     ) -> User:
+        request.state.auth_method = "jwt"  # interactive-session guard (spec §7)
         user = await db.get(User, user_id)
         assert user is not None
         await db.refresh(user, ["organization"])

@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.database import get_db
+from app.auth.pat import require_interactive_session
 from app.deps import get_current_user, get_session_factory
 from app.models.email_broadcast import (
     BroadcastStatus,
@@ -284,7 +285,11 @@ async def preview_broadcast(
     return PreviewResponse(subject=row.subject, html=html_out, text=text_out)
 
 
-@router.post("/{broadcast_id}/dry-run", response_model=BroadcastResponse)
+@router.post(
+    "/{broadcast_id}/dry-run",
+    response_model=BroadcastResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def dry_run_broadcast(
     broadcast_id: int,
     request: Request,
@@ -340,7 +345,11 @@ async def dry_run_broadcast(
     return await _to_response(db, row)
 
 
-@router.post("/{broadcast_id}/send", response_model=BroadcastResponse)
+@router.post(
+    "/{broadcast_id}/send",
+    response_model=BroadcastResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def send_broadcast(
     broadcast_id: int,
     body: BroadcastSendRequest,
@@ -492,7 +501,11 @@ async def send_broadcast(
     return await _to_response(db, row)
 
 
-@router.post("/{broadcast_id}/resume", response_model=BroadcastResponse)
+@router.post(
+    "/{broadcast_id}/resume",
+    response_model=BroadcastResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def resume_broadcast(
     broadcast_id: int,
     request: Request,

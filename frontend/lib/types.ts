@@ -902,3 +902,53 @@ export interface BroadcastPreview {
   text: string;
 }
 
+
+// ---------------------------------------------------------------------------
+// Superadmin Personal Access Tokens (PATs) — spec
+// `specs/2026-07-21-superadmin-api-tokens-design.md`. Mirrors the backend
+// schemas in `backend/app/schemas/api_token.py`. The plaintext token appears
+// in exactly ONE place across the whole system: `MintTokenResponse.token`,
+// returned once by `POST /api/v1/system/api-tokens`. Every other shape here is
+// metadata-only.
+// ---------------------------------------------------------------------------
+
+export type ApiTokenScope = "read" | "write";
+
+export type ApiTokenStatus = "active" | "expired" | "revoked";
+
+// Metadata-only list/detail row (`ApiTokenOut`). NEVER carries the secret.
+export interface ApiToken {
+  id: number;
+  name: string;
+  // `pat_` + first 6-8 chars of the secret — a display hint, not the secret.
+  prefix: string;
+  scope: string;
+  created_at: string;
+  expires_at: string;
+  last_used_at: string | null;
+  status: ApiTokenStatus;
+}
+
+// Body for `POST /api/v1/system/api-tokens` — mint. The step-up proofs are all
+// optional at the type layer; which one the backend requires depends on the
+// operator's auth shape (password-set vs SSO, MFA-enabled or not).
+export interface MintTokenRequest {
+  name: string;
+  scope: ApiTokenScope;
+  expires_in_days: number;
+  current_password?: string;
+  stepup_token?: string;
+  mfa_code?: string;
+}
+
+// Reveal-once mint response. `token` is the ONLY place the plaintext ever
+// appears; the response also carries `Cache-Control: no-store`.
+export interface MintTokenResponse {
+  token: string;
+  id: number;
+  name: string;
+  prefix: string;
+  scope: string;
+  created_at: string;
+  expires_at: string;
+}

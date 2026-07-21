@@ -51,6 +51,8 @@ from __future__ import annotations
 OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # accounts router
     "accounts.adjust_balance",
+    # api-tokens router (superadmin PAT mint)
+    "api_tokens.mint",
     # auth router (post-auth resend, requires get_current_user)
     "auth.resend_verification",
     # feedback router

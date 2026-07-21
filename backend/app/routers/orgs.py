@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.org_permissions import require_org_owner
+from app.auth.pat import require_interactive_session
 from app.database import get_db
 from app.deps import get_session_factory
 from app.models.notification import NotificationCategory
@@ -43,7 +44,11 @@ def _request_id() -> str | None:
     return structlog.contextvars.get_contextvars().get("request_id")
 
 
-@router.patch("/{org_id}/rename", response_model=OrgResponse)
+@router.patch(
+    "/{org_id}/rename",
+    response_model=OrgResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 @limiter.limit("10/hour")
 async def rename_org_endpoint(
     org_id: int,

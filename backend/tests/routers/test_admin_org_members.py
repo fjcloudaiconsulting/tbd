@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
@@ -67,7 +67,8 @@ def _make_app(session_factory, resolver):
         async with session_factory() as session:
             yield session
 
-    async def override_current_user() -> User:
+    async def override_current_user(request: Request) -> User:
+        request.state.auth_method = "jwt"  # interactive-session guard (spec §7)
         return await resolver(session_factory)
 
     def override_get_session_factory():

@@ -14,6 +14,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
+from app.auth.pat import require_interactive_session
 from app.deps import get_current_user, get_current_user_optional, get_session_factory
 from app.services.feature_gate import Feature, resolve_feature
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
@@ -2304,7 +2305,11 @@ async def _record_session_reuse_detected(
     )
 
 
-@router.post("/mfa/setup", response_model=MfaSetupResponse)
+@router.post(
+    "/mfa/setup",
+    response_model=MfaSetupResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def mfa_setup(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -2327,7 +2332,11 @@ async def mfa_setup(
     return MfaSetupResponse(qr_code=qr_code, secret=secret, uri=uri)
 
 
-@router.post("/mfa/enable", response_model=MfaEnableResponse)
+@router.post(
+    "/mfa/enable",
+    response_model=MfaEnableResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def mfa_enable(
     body: MfaEnableRequest,
     request: Request,
@@ -2405,7 +2414,10 @@ async def mfa_enable(
     return MfaEnableResponse(recovery_codes=codes)
 
 
-@router.post("/mfa/disable")
+@router.post(
+    "/mfa/disable",
+    dependencies=[Depends(require_interactive_session)],
+)
 async def mfa_disable(
     body: MfaDisableRequest,
     request: Request,
@@ -2479,7 +2491,11 @@ async def mfa_disable(
     return {"detail": "MFA disabled"}
 
 
-@router.post("/mfa/recovery-codes", response_model=MfaEnableResponse)
+@router.post(
+    "/mfa/recovery-codes",
+    response_model=MfaEnableResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def mfa_regenerate_codes(
     body: MfaRegenerateRequest,
     request: Request,

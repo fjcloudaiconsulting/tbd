@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
@@ -61,7 +61,8 @@ def _make_app(session_factory, actor_user_id: int) -> FastAPI:
     async def override_session_factory():
         return session_factory
 
-    async def override_current_user() -> User:
+    async def override_current_user(request: Request) -> User:
+        request.state.auth_method = "jwt"  # interactive-session guard (spec §7)
         # Resolve the actor with a SEPARATE session so the user object
         # is not tied to the request session's connection. Otherwise a
         # rollback on the request session collides with the independent

@@ -27,6 +27,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
+from app.auth.pat import require_interactive_session
 from app.deps import get_current_user, get_session_factory
 from app.models.settings import OrgSetting
 from app.models.system_setting import SystemSetting
@@ -145,7 +146,10 @@ async def list_global_features(
     return result
 
 
-@router.put("/features/{feature}")
+@router.put(
+    "/features/{feature}",
+    dependencies=[Depends(require_interactive_session)],
+)
 async def set_global_feature(
     feature: str,
     body: FeatureValueBody,
@@ -233,7 +237,10 @@ async def list_org_features(
     return result
 
 
-@router.put("/orgs/{org_id}/features/{feature}")
+@router.put(
+    "/orgs/{org_id}/features/{feature}",
+    dependencies=[Depends(require_interactive_session)],
+)
 async def set_org_feature(
     org_id: int,
     feature: str,

@@ -299,7 +299,10 @@ async def test_get_current_user_binds_authenticated_context(monkeypatch) -> None
         lambda _t: {"sub": "7", "type": "access"},
     )
 
+    from types import SimpleNamespace
+
     resolved = await get_current_user(
+        SimpleNamespace(state=SimpleNamespace()),
         HTTPAuthorizationCredentials(scheme="Bearer", credentials="signed-token"),
         _FakeAsyncSession(user),
     )

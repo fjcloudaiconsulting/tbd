@@ -42,6 +42,13 @@ const SECTIONS: readonly SystemSection[] = [
       "Globally enable or disable gated features (Reports, Plans). Per-org overrides are managed from each organization.",
     superadminOnly: true,
   },
+  {
+    href: "/system/api-tokens",
+    title: "API Tokens",
+    description:
+      "Mint, list, and revoke long-lived personal access tokens for calling the API from automation and scripts. Reveal-once, scoped, and expiry-capped.",
+    superadminOnly: true,
+  },
 ];
 
 export default function SystemHubPage() {

@@ -40,7 +40,7 @@ import pytest
 import pytest_asyncio
 from cryptography.fernet import Fernet
 from fastapi import Depends as _Depends
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -198,8 +198,10 @@ def _make_app(session_factory, user_id: int, *, router):
             yield session
 
     async def override_current_user(
+        request: Request,
         db: AsyncSession = _Depends(get_db),
     ) -> User:
+        request.state.auth_method = "jwt"  # interactive-session guard (spec §7)
         user = await db.get(User, user_id)
         assert user is not None
         await db.refresh(user, ["organization"])

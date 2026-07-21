@@ -37,6 +37,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.pat import require_interactive_session
 from app.auth.permissions import require_permission
 from app.database import get_db
 from app.deps import get_session_factory
@@ -117,6 +118,7 @@ def _request_id() -> str | None:
     "/merge",
     response_model=UserMergeResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def merge_users(
     request: Request,
@@ -389,7 +391,11 @@ async def get_user_detail(
 # frontend can branch without parsing English.
 
 
-@router.delete("/{user_id}", status_code=status.HTTP_200_OK)
+@router.delete(
+    "/{user_id}",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def delete_user(
     user_id: int,
     request: Request,
