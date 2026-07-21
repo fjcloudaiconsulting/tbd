@@ -6,6 +6,7 @@ import datetime
 import structlog
 
 from app import redis_client
+from app.services.scheduler.jobs.api_token_expiry import run_api_token_expiry_reminders
 from app.services.scheduler.runner import run_all_due
 
 logger = structlog.get_logger(__name__)
@@ -28,6 +29,11 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
         return False
     await logger.ainfo("scheduler.tick.start")
     await run_all_due(today, max_orgs=max_orgs)
+    # Platform-level PAT expiry reminders run once per tick under this same lock.
+    # They are NOT part of the per-org registry (PAT tokens have no org
+    # dimension) and are gated on their own global SystemSetting flag inside the
+    # job. A tz-aware ``now`` drives the day-granularity threshold math.
+    await run_api_token_expiry_reminders(now=datetime.datetime.now(datetime.timezone.utc))
     await logger.ainfo("scheduler.tick.complete")
     return True
 
