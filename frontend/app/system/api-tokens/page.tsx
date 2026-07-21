@@ -81,7 +81,7 @@ export default function SystemApiTokensPage() {
   if (loading) {
     return (
       <SystemLayout current="API Tokens">
-        <h1 className={pageTitle}>API tokens</h1>
+        <h1 className={pageTitle}>API Tokens</h1>
         <div className="flex justify-center py-12">
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
         </div>
@@ -157,7 +157,7 @@ export default function SystemApiTokensPage() {
 
   return (
     <SystemLayout current="API Tokens">
-      <h1 className={pageTitle}>API tokens</h1>
+      <h1 className={pageTitle}>API Tokens</h1>
       <p className="mt-1 mb-6 max-w-2xl text-sm text-text-secondary">
         Personal access tokens let automation and scripts call the API with a
         long-lived <code>Bearer</code> credential instead of a short-lived

@@ -238,7 +238,7 @@ export default function SystemPlansPage() {
   return (
     <SystemLayout current="Plan Catalog">
       <div className="flex flex-col gap-2 mb-8 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className={pageTitle + " mb-0"}>Plan Management</h1>
+        <h1 className={pageTitle + " mb-0"}>Plan Catalog</h1>
         <button onClick={openCreate} className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}>+ New Plan</button>
       </div>
 
