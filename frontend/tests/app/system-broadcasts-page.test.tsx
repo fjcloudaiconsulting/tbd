@@ -492,17 +492,39 @@ describe("/system/announcements/broadcasts page", () => {
   });
 
   describe("delete draft", () => {
-    it("offers Delete only on draft rows, never on sent/completed ones", async () => {
-      await renderWithItems([DRAFT_BROADCAST, SAMPLE_BROADCAST, COMPLETED_BROADCAST]);
+    it("offers Delete only on draft rows, never on sending/completed/failed ones", async () => {
+      await renderWithItems([
+        DRAFT_BROADCAST,
+        SAMPLE_BROADCAST, // sending
+        COMPLETED_BROADCAST,
+        FAILED_BROADCAST,
+      ]);
       expect(
         screen.getByTestId(`broadcast-delete-${DRAFT_BROADCAST.id}`),
       ).toBeInTheDocument();
-      expect(
-        screen.queryByTestId(`broadcast-delete-${SAMPLE_BROADCAST.id}`),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.queryByTestId(`broadcast-delete-${COMPLETED_BROADCAST.id}`),
-      ).not.toBeInTheDocument();
+      for (const nonDraft of [
+        SAMPLE_BROADCAST,
+        COMPLETED_BROADCAST,
+        FAILED_BROADCAST,
+      ]) {
+        expect(
+          screen.queryByTestId(`broadcast-delete-${nonDraft.id}`),
+        ).not.toBeInTheDocument();
+      }
+    });
+
+    it("closes the detail panel when the currently-open draft is deleted", async () => {
+      await renderWithItems([DRAFT_BROADCAST]);
+      await openDetail(DRAFT_BROADCAST.id);
+      deleteBroadcastMock.mockResolvedValue(undefined);
+
+      fireEvent.click(screen.getByTestId(`broadcast-delete-${DRAFT_BROADCAST.id}`));
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Delete draft" }));
+
+      await waitFor(() =>
+        expect(screen.queryByTestId("broadcast-detail")).not.toBeInTheDocument(),
+      );
     });
 
     it("deletes the draft after confirming and drops its row", async () => {

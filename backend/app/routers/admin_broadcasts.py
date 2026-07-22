@@ -26,7 +26,7 @@ from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
@@ -306,7 +306,27 @@ async def delete_broadcast(
     # materialized recipients, so nothing cascades in practice; the FK is
     # ON DELETE CASCADE regardless).
     detail = _audit_detail(row)
-    await db.delete(row)
+
+    # Race-closing delete (Ruling 2, mirrors send_broadcast's CAS): a
+    # concurrent send could flip this row draft -> sending between the check
+    # above and here, materialize recipients, and start real emails. Scoping
+    # the DELETE to status='draft' and branching on rowcount guarantees a
+    # now-sending broadcast (with real send history) is never erased — the
+    # unconditional delete would have wiped it and its recipients.
+    result = await db.execute(
+        delete(EmailBroadcast).where(
+            EmailBroadcast.id == broadcast_id,
+            EmailBroadcast.status == BroadcastStatus.DRAFT,
+        )
+    )
+    if (result.rowcount or 0) != 1:
+        # Lost the race to a concurrent send (or the row was already deleted).
+        # Nothing was removed; report the same 409 as the check above.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "broadcast_not_draft"},
+        )
     await db.commit()
 
     await audit_service.record_audit_event(

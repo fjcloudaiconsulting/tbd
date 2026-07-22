@@ -269,6 +269,7 @@ export default function SystemBroadcastsPage() {
                           <button
                             onClick={() => setDeleteTarget(row)}
                             className={btnDanger}
+                            aria-label={`Delete "${row.subject}"`}
                             data-testid={`broadcast-delete-${row.id}`}
                           >
                             Delete
