@@ -23,7 +23,8 @@ Excluded from reportable aggregates:
 Future-proofed to grow additional reasons (voided, refunded) without
 renaming call sites.
 """
-from sqlalchemy import and_, func
+from sqlalchemy import and_, exists, func, or_
+from sqlalchemy.orm import aliased
 
 from app.models.transaction import Transaction
 
@@ -32,6 +33,11 @@ from app.models.transaction import Transaction
 # reportable aggregates AND whose balance has been reverted at the
 # state transition. Keep in sync with ``reconciliation_service``.
 _RECON_EXCLUDED_STATES: tuple[str, ...] = ("skipped", "rejected")
+
+# Self-join alias for ``balance_contribution_filter()``'s reciprocity
+# check. Defined once at module level so the correlated EXISTS subquery
+# below can reference it.
+_bcf_partner = aliased(Transaction)
 
 
 def reportable_transaction_filter():
@@ -65,6 +71,54 @@ def non_reverted_transaction_filter():
     no longer contains them.
     """
     return Transaction.reconciliation_state.notin_(_RECON_EXCLUDED_STATES)
+
+
+def balance_contribution_filter():
+    """SQL clause: rows that make up the incrementally-maintained
+    ``accounts.balance`` value -- i.e. the set the Slice-3 CC forecast
+    ledger reconstruction must replay to get B_k right. By construction,
+    ``sum(signed(rows passing this filter)) == account.balance -
+    account.opening_balance`` for settled rows.
+
+    ARCHITECT CORRECTION (Slice 3 fix): a flat-column predicate (e.g.
+    ``import_batch_id IS NULL OR linked_transaction_id IS NULL``) is NOT
+    sufficient. A genuine transfer leg that happens to be import-paired
+    and a reconcile-MATCHED duplicate are byte-identical across every
+    flat column -- both can carry ``import_batch_id`` set,
+    ``linked_transaction_id`` set, and ``reconciliation_state='accepted'``.
+    Filtering on those columns alone over-excludes real transfer legs.
+
+    The actual discriminator is the *direction* of the partner link:
+
+    - ``_link_pair`` (real transfers, including import-time pairing of
+      two legs of one transfer) sets ``linked_transaction_id``
+      BIDIRECTIONALLY -- each leg points at the other, so the partner's
+      own ``linked_transaction_id`` points back. These rows contribute
+      to balance and must be KEPT.
+    - ``_apply_match`` (reconciliation match) sets ``linked_transaction_id``
+      ONE-WAY onto the imported/duplicate row only (see
+      ``reconciliation_service.py``) -- the canonical row it matched
+      against is NOT linked back. Matching flips the row non-reportable
+      and reverts its balance contribution
+      (``_apply_balance_for_transition``), so these rows must be DROPPED
+      to avoid double-counting the canonical charge they duplicate.
+
+    So: keep a linked row only if its partner links back to it
+    (reciprocal); an unlinked row always contributes. SKIPPED / REJECTED
+    rows are still reverted-and-excluded via the state clause.
+    """
+    return and_(
+        Transaction.reconciliation_state.notin_(_RECON_EXCLUDED_STATES),
+        or_(
+            Transaction.linked_transaction_id.is_(None),
+            exists().where(
+                and_(
+                    _bcf_partner.id == Transaction.linked_transaction_id,
+                    _bcf_partner.linked_transaction_id == Transaction.id,
+                )
+            ),
+        ),
+    )
 
 
 def effective_period_date_expr():

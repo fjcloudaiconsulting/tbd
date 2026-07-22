@@ -21,6 +21,15 @@ class AccountBalanceForecastTotal(BaseModel):
     expected_month_end_balance: Decimal
 
 
+class CcPaymentLine(BaseModel):
+    """A synthesized credit-card payment on the per-account forecast line
+    (provenance source="credit_card_payment"). ``amount`` is the projected
+    outflow on ``date`` (the resolved cycle due date)."""
+
+    amount: Decimal
+    date: datetime.date
+
+
 class AccountBalanceForecastRow(BaseModel):
     account_id: int
     account_name: str
@@ -30,6 +39,7 @@ class AccountBalanceForecastRow(BaseModel):
     balance: Decimal
     pending_delta: Decimal
     expected_month_end_balance: Decimal
+    cc_payments: list[CcPaymentLine] = []
 
 
 class AccountBalanceForecastResponse(BaseModel):

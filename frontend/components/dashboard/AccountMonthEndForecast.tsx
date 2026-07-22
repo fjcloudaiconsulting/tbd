@@ -19,6 +19,8 @@ export interface AccountMonthEndForecastRow {
   balance: string;
   pending_delta: string;
   expected_month_end_balance: string;
+  // Slice 3: synthesized credit-card payment(s) projected in this period.
+  cc_payments?: { amount: string; date: string }[];
 }
 
 export interface AccountMonthEndForecastResponse {
@@ -188,6 +190,15 @@ export default function AccountMonthEndForecast({
                       {pendingMagnitude} pending
                     </p>
                   )}
+                  {(row.cc_payments ?? []).map((p, i) => (
+                    <p
+                      key={`${p.date}-${i}`}
+                      className="text-[10px] tabular-nums text-text-muted"
+                    >
+                      Payment {pendingCurrencySymbol}
+                      {formatAmount(p.amount)} on {p.date}
+                    </p>
+                  ))}
                 </div>
               </div>
             );
