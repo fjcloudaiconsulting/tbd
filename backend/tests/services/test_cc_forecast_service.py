@@ -160,11 +160,34 @@ def test_synth_two_due_dates_s_prev_prevents_double_bill():
     assert pays == [(date(2026, 5, 1), Decimal("1000.00"))]
 
 
+def test_synth_two_due_dates_with_new_charges_bills_only_the_delta():
+    """S_prev must NOT zero out a legitimate second payment when the second
+    cycle accrues NEW charges. Cycle 1 owes 1000 (pays 1000, S_prev=1000);
+    cycle 2's balance-at-close is 1400 (a 400 charge landed after cycle 1's
+    close), so its outflow is 1400-1000 = 400, not 0 and not 1400."""
+    acct = _FakeAccount(close_day=25, payment_strategy="full_balance")
+    ledger = [
+        (date(2026, 3, 10), Decimal("-1000.00")),  # owed at both closes
+        (date(2026, 5, 10), Decimal("-400.00")),    # new charge after Apr-25 close
+    ]
+    pays = svc.synthesize_account_cc_payments(
+        acct, p_start=date(2026, 5, 1), p_end=date(2026, 6, 30),
+        opening_balance=Decimal("0.00"), ledger=ledger, credits=[], per_cycle_amounts={},
+    )
+    assert pays == [(date(2026, 5, 1), Decimal("1000.00")), (date(2026, 6, 1), Decimal("400.00"))]
+
+
 def test_synth_consumed_credit_attributed_to_one_cycle():
+    # relative_month=2: Apr-25 close -> due Jun 1 (window (Apr25, Jun1]);
+    # May-25 close -> due Jul 1 (window (May25, Jul1]). The two windows OVERLAP
+    # on (May25, Jun1]. A credit dated May 28 sits INSIDE that overlap, so it is
+    # a candidate for BOTH cycles; the consumed-set must attribute it to the
+    # earliest owning cycle only. Without that guard cycle 2 would re-net 200
+    # (yielding outflow 0, dropped) and the assertion below would fail.
     acct = _FakeAccount(close_day=25, payment_day=1, payment_day_relative_month=2,
                         payment_strategy="full_balance")
     ledger = [(date(2026, 3, 10), Decimal("-1000.00"))]
-    credits = [(7, date(2026, 5, 3), Decimal("200.00"))]
+    credits = [(7, date(2026, 5, 28), Decimal("200.00"))]
     pays = svc.synthesize_account_cc_payments(
         acct, p_start=date(2026, 6, 1), p_end=date(2026, 7, 31),
         opening_balance=Decimal("0.00"), ledger=ledger, credits=credits, per_cycle_amounts={},
