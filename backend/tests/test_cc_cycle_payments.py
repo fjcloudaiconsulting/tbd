@@ -7,11 +7,12 @@ SQLAlchemy 2.0 async over in-memory aiosqlite with FK enforcement ON.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import date
 from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
@@ -28,6 +29,7 @@ from app.models.user import Role, User
 from app.routers.accounts import router as accounts_router
 from app.routers.cc_cycle_payments import router as cc_cycle_payments_router
 from app.security import hash_password
+from app.services import cc_cycle_payment_service as svc
 
 
 @pytest_asyncio.fixture
@@ -207,3 +209,89 @@ def test_cc_cycle_payment_roundtrips(session_factory, worlds):
     assert row.period_anchor_month == 8
     assert row.amount == Decimal("125.00")
     assert row.created_at is not None
+
+
+class _FakeAccount:
+    """Minimal stand-in exposing the three resolver columns."""
+
+    def __init__(self, *, close_day=None, payment_day=None, payment_day_relative_month=None):
+        self.close_day = close_day
+        self.payment_day = payment_day
+        self.payment_day_relative_month = payment_day_relative_month
+
+
+def test_upcoming_cycles_returns_three_distinct_forward_cycles():
+    acct = _FakeAccount(close_day=15)
+    today = date(2026, 7, 22)  # after the 15th -> current cycle closes Aug 15
+    cycles = svc.upcoming_cycles(acct, today=today)
+    assert len(cycles) == 3
+    anchors = [(c.period_end_inclusive.year, c.period_end_inclusive.month) for c in cycles]
+    assert anchors == [(2026, 8), (2026, 9), (2026, 10)]
+    for c in cycles:
+        assert c.period_end_inclusive < c.payment_date  # close before due
+
+
+def test_resolve_anchor_cycle_maps_close_month():
+    acct = _FakeAccount(close_day=15)
+    cycle = svc.resolve_anchor_cycle(acct, year=2026, month=9)
+    assert cycle.period_end_inclusive == date(2026, 9, 15)
+
+
+def test_resolve_anchor_cycle_non_cc_raises():
+    with pytest.raises(ValueError):
+        svc.resolve_anchor_cycle(_FakeAccount(close_day=None), year=2026, month=9)
+
+
+def test_validate_rejects_non_cc_422():
+    acct = _FakeAccount(close_day=None)
+    with pytest.raises(HTTPException) as exc:
+        svc.validate_cycle_payment(
+            account=acct, account_slug="checking",
+            year=2026, month=9, today=date(2026, 7, 22),
+            amount=Decimal("50.00"),
+        )
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.parametrize("bad_amount", [Decimal("0"), Decimal("-1")])
+def test_validate_rejects_non_positive_amount_422(bad_amount):
+    acct = _FakeAccount(close_day=15)
+    with pytest.raises(HTTPException) as exc:
+        svc.validate_cycle_payment(
+            account=acct, account_slug="credit_card",
+            year=2026, month=9, today=date(2026, 7, 22),
+            amount=bad_amount,
+        )
+    assert exc.value.status_code == 422
+
+
+def test_validate_rejects_past_anchor_409():
+    acct = _FakeAccount(close_day=15)
+    with pytest.raises(HTTPException) as exc:
+        svc.validate_cycle_payment(
+            account=acct, account_slug="credit_card",
+            year=2026, month=6, today=date(2026, 7, 22),
+            amount=Decimal("50.00"),
+        )
+    assert exc.value.status_code == 409
+
+
+def test_validate_accepts_current_and_future_anchor():
+    acct = _FakeAccount(close_day=15)
+    today = date(2026, 7, 22)  # current close month = Aug 2026
+    svc.validate_cycle_payment(
+        account=acct, account_slug="credit_card",
+        year=2026, month=8, today=today, amount=Decimal("50.00"),
+    )
+    svc.validate_cycle_payment(
+        account=acct, account_slug="credit_card",
+        year=2027, month=1, today=today, amount=Decimal("50.00"),
+    )
+
+
+def test_validate_delete_path_skips_amount_check():
+    acct = _FakeAccount(close_day=15)
+    svc.validate_cycle_payment(
+        account=acct, account_slug="credit_card",
+        year=2026, month=8, today=date(2026, 7, 22), amount=None,
+    )
