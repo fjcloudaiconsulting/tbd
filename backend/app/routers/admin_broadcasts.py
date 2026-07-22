@@ -26,7 +26,7 @@ from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
@@ -269,6 +269,81 @@ async def get_broadcast(
     """Status + counts, for progress polling."""
     row = await _get_broadcast_or_404(db, broadcast_id)
     return await _to_response(db, row)
+
+
+@router.delete(
+    "/{broadcast_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_interactive_session)],
+)
+async def delete_broadcast(
+    broadcast_id: int,
+    request: Request,
+    current_user: User = Depends(require_superadmin),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """Delete a DRAFT broadcast. Guarded draft-only: anything past draft
+    (``sending``/``completed``/``failed``) returns 409 ``broadcast_not_draft``
+    so a broadcast that carries real send history and materialized recipients
+    can never be erased. An unattended draft can be sent unintentionally later
+    and cause real harm; letting the operator clear stale drafts removes that
+    footgun. Interactive-session gated (a PAT must never delete broadcasts,
+    same posture as dry-run/send). Audit ``broadcast.delete``.
+    """
+    actor_user_id = current_user.id
+    actor_email = current_user.email
+
+    row = await _get_broadcast_or_404(db, broadcast_id)
+
+    if row.status != BroadcastStatus.DRAFT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "broadcast_not_draft"},
+        )
+
+    # Snapshot the audit detail before the row is gone (a draft has no
+    # materialized recipients, so nothing cascades in practice; the FK is
+    # ON DELETE CASCADE regardless).
+    detail = _audit_detail(row)
+
+    # Race-closing delete (Ruling 2, mirrors send_broadcast's CAS): a
+    # concurrent send could flip this row draft -> sending between the check
+    # above and here, materialize recipients, and start real emails. Scoping
+    # the DELETE to status='draft' and branching on rowcount guarantees a
+    # now-sending broadcast (with real send history) is never erased — the
+    # unconditional delete would have wiped it and its recipients.
+    result = await db.execute(
+        delete(EmailBroadcast).where(
+            EmailBroadcast.id == broadcast_id,
+            EmailBroadcast.status == BroadcastStatus.DRAFT,
+        )
+    )
+    if (result.rowcount or 0) != 1:
+        # Lost the race to a concurrent send (or the row was already deleted).
+        # Nothing was removed; report the same 409 as the check above.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "broadcast_not_draft"},
+        )
+    await db.commit()
+
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="broadcast.delete",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=None,
+        target_org_name=None,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=detail,
+    )
+
+    await logger.ainfo("broadcast.delete", broadcast_id=broadcast_id)
+    return None
 
 
 @router.get("/{broadcast_id}/preview", response_model=PreviewResponse)
