@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import SystemBroadcastsPage from "@/app/system/announcements/broadcasts/page";
 import {
   createBroadcast,
+  deleteBroadcast,
   dryRunBroadcast,
   getBroadcast,
   listBroadcasts,
@@ -54,6 +55,7 @@ vi.mock("@/lib/broadcasts", async () => {
     sendBroadcast: vi.fn(),
     resumeBroadcast: vi.fn(),
     listRecipients: vi.fn(),
+    deleteBroadcast: vi.fn(),
   };
 });
 
@@ -65,6 +67,7 @@ const dryRunBroadcastMock = vi.mocked(dryRunBroadcast);
 const sendBroadcastMock = vi.mocked(sendBroadcast);
 const resumeBroadcastMock = vi.mocked(resumeBroadcast);
 const listRecipientsMock = vi.mocked(listRecipients);
+const deleteBroadcastMock = vi.mocked(deleteBroadcast);
 
 const SAMPLE_BROADCAST: Broadcast = {
   id: 7,
@@ -160,6 +163,7 @@ describe("/system/announcements/broadcasts page", () => {
     sendBroadcastMock.mockReset();
     resumeBroadcastMock.mockReset();
     listRecipientsMock.mockReset();
+    deleteBroadcastMock.mockReset();
   });
 
   it("renders inside AnnouncementsLayout with the broadcasts tab active", async () => {
@@ -484,6 +488,72 @@ describe("/system/announcements/broadcasts page", () => {
       expect(rows[0]).toHaveTextContent("a@example.com");
       expect(rows[0]).toHaveTextContent("delivered");
       expect(rows[1]).toHaveTextContent("b@example.com");
+    });
+  });
+
+  describe("delete draft", () => {
+    it("offers Delete only on draft rows, never on sent/completed ones", async () => {
+      await renderWithItems([DRAFT_BROADCAST, SAMPLE_BROADCAST, COMPLETED_BROADCAST]);
+      expect(
+        screen.getByTestId(`broadcast-delete-${DRAFT_BROADCAST.id}`),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId(`broadcast-delete-${SAMPLE_BROADCAST.id}`),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId(`broadcast-delete-${COMPLETED_BROADCAST.id}`),
+      ).not.toBeInTheDocument();
+    });
+
+    it("deletes the draft after confirming and drops its row", async () => {
+      await renderWithItems([DRAFT_BROADCAST]);
+      deleteBroadcastMock.mockResolvedValue(undefined);
+
+      fireEvent.click(screen.getByTestId(`broadcast-delete-${DRAFT_BROADCAST.id}`));
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Delete draft" }));
+
+      await waitFor(() =>
+        expect(deleteBroadcastMock).toHaveBeenCalledWith(DRAFT_BROADCAST.id),
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId("broadcast-row-item")).not.toBeInTheDocument(),
+      );
+    });
+
+    it("does not delete when the confirm modal is cancelled", async () => {
+      await renderWithItems([DRAFT_BROADCAST]);
+
+      fireEvent.click(screen.getByTestId(`broadcast-delete-${DRAFT_BROADCAST.id}`));
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(deleteBroadcastMock).not.toHaveBeenCalled();
+      expect(screen.getByTestId("broadcast-row-item")).toBeInTheDocument();
+    });
+
+    it("surfaces the coded copy and refreshes if the draft is no longer a draft (409)", async () => {
+      await renderWithItems([DRAFT_BROADCAST]);
+      deleteBroadcastMock.mockRejectedValue(
+        new ApiResponseError(409, "conflict", undefined, {
+          code: "broadcast_not_draft",
+        }),
+      );
+      // The refresh after a 409 reloads the list (now showing it sending).
+      listBroadcastsMock.mockResolvedValue({
+        items: [{ ...DRAFT_BROADCAST, status: "sending" }],
+        total: 1,
+        limit: 25,
+        offset: 0,
+      });
+
+      fireEvent.click(screen.getByTestId(`broadcast-delete-${DRAFT_BROADCAST.id}`));
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Delete draft" }));
+
+      await screen.findByText(/no longer a draft/i);
+      await waitFor(() => expect(listBroadcastsMock).toHaveBeenCalledTimes(2));
     });
   });
 });

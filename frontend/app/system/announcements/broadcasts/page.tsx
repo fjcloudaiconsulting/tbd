@@ -8,8 +8,15 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 
 import AnnouncementsLayout from "@/components/AnnouncementsLayout";
 import BroadcastDetail from "@/components/broadcasts/BroadcastDetail";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import Spinner from "@/components/ui/Spinner";
-import { createBroadcast, listBroadcasts } from "@/lib/broadcasts";
+import {
+  BROADCAST_ERROR_COPY,
+  broadcastErrorCode,
+  createBroadcast,
+  deleteBroadcast,
+  listBroadcasts,
+} from "@/lib/broadcasts";
 import { extractErrorMessage } from "@/lib/api";
 import type { Broadcast, BroadcastStatus } from "@/lib/types";
 import {
@@ -17,6 +24,7 @@ import {
   badgeInfo,
   badgeNeutral,
   badgeSuccess,
+  btnDanger,
   btnLink,
   btnPrimary,
   card,
@@ -54,10 +62,41 @@ export default function SystemBroadcastsPage() {
 
   const [selected, setSelected] = useState<Broadcast | null>(null);
 
+  // Draft-only delete: the row Delete button stages a target here; the
+  // ConfirmModal drives the actual call so a single click can't erase a draft.
+  const [deleteTarget, setDeleteTarget] = useState<Broadcast | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
   const handleBroadcastUpdate = useCallback((updated: Broadcast) => {
     setSelected(updated);
     setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
   }, []);
+
+  async function handleDeleteConfirmed() {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setError("");
+    setDeleting(true);
+    try {
+      await deleteBroadcast(target.id);
+      setItems((prev) => prev.filter((it) => it.id !== target.id));
+      // Close the detail panel if it was showing the now-deleted draft.
+      setSelected((cur) => (cur?.id === target.id ? null : cur));
+      setDeleteTarget(null);
+    } catch (err) {
+      // A stale tab may hit 409 broadcast_not_draft (someone sent it since
+      // the list loaded) — surface the coded copy; refresh so the row's
+      // real status shows and the Delete button drops off.
+      const code = broadcastErrorCode(err);
+      setError(
+        (code && BROADCAST_ERROR_COPY[code]) || extractErrorMessage(err),
+      );
+      setDeleteTarget(null);
+      void loadItems();
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -218,13 +257,24 @@ export default function SystemBroadcastsPage() {
                       Queued {row.sent_count}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => setSelected(row)}
-                        className={btnLink}
-                        data-testid={`broadcast-view-${row.id}`}
-                      >
-                        View
-                      </button>
+                      <div className="flex items-center justify-end gap-4">
+                        <button
+                          onClick={() => setSelected(row)}
+                          className={btnLink}
+                          data-testid={`broadcast-view-${row.id}`}
+                        >
+                          View
+                        </button>
+                        {row.status === "draft" && (
+                          <button
+                            onClick={() => setDeleteTarget(row)}
+                            className={btnDanger}
+                            data-testid={`broadcast-delete-${row.id}`}
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -239,6 +289,21 @@ export default function SystemBroadcastsPage() {
           <BroadcastDetail broadcast={selected} onBroadcastUpdate={handleBroadcastUpdate} />
         </div>
       )}
+
+      <ConfirmModal
+        open={deleteTarget !== null}
+        variant="danger"
+        title="Delete draft?"
+        message={
+          deleteTarget
+            ? `"${deleteTarget.subject}" will be permanently deleted. This can't be undone. Only drafts can be deleted; a broadcast that has been sent is never removed.`
+            : ""
+        }
+        confirmLabel="Delete draft"
+        submitting={deleting}
+        onConfirm={handleDeleteConfirmed}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </AnnouncementsLayout>
   );
 }
