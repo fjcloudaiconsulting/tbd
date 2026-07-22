@@ -23,7 +23,7 @@ Excluded from reportable aggregates:
 Future-proofed to grow additional reasons (voided, refunded) without
 renaming call sites.
 """
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, or_
 
 from app.models.transaction import Transaction
 
@@ -65,6 +65,44 @@ def non_reverted_transaction_filter():
     no longer contains them.
     """
     return Transaction.reconciliation_state.notin_(_RECON_EXCLUDED_STATES)
+
+
+def balance_contribution_filter():
+    """SQL clause: rows that make up the incrementally-maintained
+    ``accounts.balance`` value -- i.e. the set the Slice-3 CC forecast
+    ledger reconstruction must replay to get B_k right.
+
+    ``non_reverted_transaction_filter()`` alone is NOT this set: it only
+    drops SKIPPED / REJECTED rows. A reconcile-MATCHED imported duplicate
+    (``status=settled``, ``reconciliation_state`` accepted/matched,
+    ``import_batch_id`` set, ``linked_transaction_id`` pointing at the
+    canonical row it matched) is *not* skipped/rejected, so
+    ``non_reverted_transaction_filter()`` still includes it -- but its
+    balance contribution WAS reverted at match time, because matching
+    flips it non-reportable and ``_apply_balance_for_transition`` fires
+    ``revert_balance`` on that True -> False reportability diff (see
+    ``reconciliation_service._apply_balance_for_transition``). Including
+    such a row here would double-count the canonical charge it duplicates.
+
+    Among imported rows (``import_batch_id IS NOT NULL``), non-reportable
+    is equivalent to "linked" (``linked_transaction_id IS NOT NULL``): the
+    only way an imported row goes non-reportable post-import is a
+    reconciliation match, which sets the link. So requiring
+    ``import_batch_id IS NULL OR linked_transaction_id IS NULL`` drops
+    exactly the reverted matched duplicates while keeping:
+      - transfer legs / manual adjustments / manual entries
+        (``import_batch_id IS NULL`` -- always kept, they DO contribute
+        to balance),
+      - imported-but-unlinked reportable rows (``linked_transaction_id
+        IS NULL`` -- kept, never reverted).
+    """
+    return and_(
+        non_reverted_transaction_filter(),
+        or_(
+            Transaction.import_batch_id.is_(None),
+            Transaction.linked_transaction_id.is_(None),
+        ),
+    )
 
 
 def effective_period_date_expr():

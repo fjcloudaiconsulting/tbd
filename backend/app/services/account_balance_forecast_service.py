@@ -35,8 +35,8 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.services import cc_forecast_service
 from app.services.billing_service import resolve_period
 from app.services.transaction_filters import (
+    balance_contribution_filter,
     effective_period_date_expr,
-    non_reverted_transaction_filter,
 )
 
 
@@ -141,7 +141,7 @@ async def compute_account_balance_forecast(
             select(Transaction.account_id, eff_date.label("eff"), signed.label("signed"))
             .where(Transaction.org_id == org_id,
                    Transaction.account_id.in_(cc_ids),
-                   non_reverted_transaction_filter())
+                   balance_contribution_filter())
         )).all()
         ledger_by_account: dict[int, list[tuple]] = {}
         for aid, eff, s in ledger_rows:
@@ -153,7 +153,7 @@ async def compute_account_balance_forecast(
                    Transaction.account_id.in_(cc_ids),
                    Transaction.linked_transaction_id.is_not(None),
                    Transaction.type == TransactionType.INCOME,
-                   non_reverted_transaction_filter())
+                   balance_contribution_filter())
         )).all()
         credits_by_account: dict[int, list[tuple]] = {}
         for cid, aid, eff, amt in credit_rows:

@@ -25,8 +25,12 @@ from app.models import (
     Account,
     AccountType,
     Category,
+    ImportBatch,
+    ImportBatchStatus,
+    ImportSourceFormat,
     Organization,
     Transaction,
+    User,
 )
 from app.models.account import PaymentStrategy
 from app.models.base import Base
@@ -664,6 +668,145 @@ async def test_cc_synth_two_due_dates_s_prev(db_session: AsyncSession):
     result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
     cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
     assert cc_row["cc_payments"] == [{"amount": "1000.00", "date": "2026-05-01"}]
+
+
+# ---------- Slice 3 fix: reconcile-matched reverted duplicates excluded ----------
+
+
+async def _make_import_batch(db: AsyncSession, seed: dict, account_id: int) -> ImportBatch:
+    """A minimal ``ImportBatch`` + owning user, enough to attach a
+    reconcile-matched imported duplicate row to via ``import_batch_id``."""
+    user = User(
+        username="importer",
+        email="importer@example.com",
+        password_hash="x",
+        org_id=seed["org_id"],
+        is_superadmin=False,
+    )
+    db.add(user)
+    await db.flush()
+    batch = ImportBatch(
+        org_id=seed["org_id"],
+        account_id=account_id,
+        source_format=ImportSourceFormat.CSV,
+        file_name="dup.csv",
+        created_by_user_id=user.id,
+        status=ImportBatchStatus.OPEN,
+    )
+    db.add(batch)
+    await db.flush()
+    return batch
+
+
+async def test_cc_synth_excludes_reconcile_matched_reverted_duplicate_ledger(
+    db_session: AsyncSession,
+):
+    """Money-moving regression: a reconcile-MATCHED imported duplicate of a
+    settled CC charge has its balance contribution REVERTED at match time
+    (``reconciliation_service._apply_balance_for_transition``), but
+    ``non_reverted_transaction_filter()`` only excludes skipped/rejected
+    rows -- so a naive ledger query double-counts the canonical charge via
+    the duplicate, doubling B_k's owed amount and the projected CC payment.
+
+    The duplicate here: status=settled, reconciliation_state=matched,
+    import_batch_id set, linked_transaction_id pointing at the canonical
+    charge -- and its amount is NOT reflected in ``cc.balance`` (reverted).
+    Fixed code must reconstruct B_k from -500 (the canonical charge only),
+    yielding an outflow of 500.00, not 1000.00.
+    """
+    seed = await _seed_cc(db_session)
+    cc, source = seed["cc"], seed["source"]
+
+    canonical = _charge(seed, cc, amount="500.00", on=datetime.date(2026, 4, 10))
+    db_session.add(canonical)
+    await db_session.flush()
+
+    batch = await _make_import_batch(db_session, seed, cc.id)
+    duplicate = _new_tx(
+        org_id=seed["org_id"],
+        account_id=cc.id,
+        category_id=seed["cat_expense"],
+        amount=Decimal("500.00"),
+        type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED,
+        date=datetime.date(2026, 4, 10),
+        settled_date=datetime.date(2026, 4, 10),
+        is_imported=True,
+        import_batch_id=batch.id,
+        reconciliation_state="matched",
+        linked_transaction_id=canonical.id,
+    )
+    db_session.add(duplicate)
+    # Balance reflects ONLY the canonical charge -- the duplicate's
+    # contribution was reverted when it was matched.
+    cc.balance = Decimal("-500.00")
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START
+    )
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == [{"amount": "500.00", "date": "2026-05-01"}]
+
+
+async def test_cc_synth_excludes_reconcile_matched_reverted_duplicate_credit(
+    db_session: AsyncSession,
+):
+    """Symmetric credits-side (P_k) coverage. Built on the same fixture as
+    ``test_cc_synth_real_payment_nets_once``: a real CC payment-in transfer
+    leg pair (300.00) nets against the 1000.00 charge for an expected
+    outflow of 700.00. A reconcile-MATCHED imported duplicate of the
+    payment-in leg (import_batch_id set, linked_transaction_id pointing at
+    the canonical transfer leg, reverted balance contribution) must not be
+    counted a second time in P_k -- without the fix it is, halving the
+    outflow to 400.00.
+    """
+    seed = await _seed_cc(db_session)
+    cc, source = seed["cc"], seed["source"]
+    db_session.add(_charge(seed, cc, amount="1000.00", on=datetime.date(2026, 4, 10)))
+    src_leg = _new_tx(
+        org_id=seed["org_id"], account_id=source.id, category_id=seed["cat_transfer"],
+        amount=Decimal("300.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 28),
+        settled_date=datetime.date(2026, 4, 28),
+    )
+    cc_leg = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_transfer"],
+        amount=Decimal("300.00"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 28),
+        settled_date=datetime.date(2026, 4, 28),
+    )
+    db_session.add_all([src_leg, cc_leg])
+    await db_session.flush()
+    src_leg.linked_transaction_id = cc_leg.id
+    cc_leg.linked_transaction_id = src_leg.id
+
+    batch = await _make_import_batch(db_session, seed, cc.id)
+    dup_credit = _new_tx(
+        org_id=seed["org_id"],
+        account_id=cc.id,
+        category_id=seed["cat_transfer"],
+        amount=Decimal("300.00"),
+        type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED,
+        date=datetime.date(2026, 4, 28),
+        settled_date=datetime.date(2026, 4, 28),
+        is_imported=True,
+        import_batch_id=batch.id,
+        reconciliation_state="matched",
+        linked_transaction_id=cc_leg.id,
+    )
+    db_session.add(dup_credit)
+
+    cc.balance = Decimal("-700.00")
+    source.balance = source.balance - Decimal("300.00")
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START
+    )
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == [{"amount": "700.00", "date": "2026-05-01"}]
 
 
 # ---------- Slice 3, Task 3: response-model provenance round-trip ----------

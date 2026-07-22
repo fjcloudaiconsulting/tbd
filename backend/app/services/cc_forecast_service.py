@@ -73,7 +73,10 @@ def balance_at_close(
 
     ``ledger`` is (eff_date, signed_amount) pairs (income +, expense -,
     transfer legs included) for this CC only; the caller filters to
-    non-reverted rows so the reconstruction matches the stored balance.
+    ``balance_contribution_filter()`` (transaction_filters.py) so the
+    reconstruction matches the stored balance -- including dropping
+    reconcile-matched imported duplicates whose contribution was reverted
+    at match time.
     """
     total = Decimal(str(opening_balance))
     for eff, signed in ledger:
