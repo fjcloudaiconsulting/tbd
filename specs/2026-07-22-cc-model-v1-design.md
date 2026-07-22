@@ -44,7 +44,7 @@ class PaymentStrategy(str, enum.Enum):
     CUSTOM_PER_PERIOD = "custom_per_period"
 ```
 
-Migration passes raw value tuples (`sa.Enum(*_STRATEGIES, name="account_payment_strategy")`), NOT the Python enum, so it doesn't import app models (matches shipped idiom in `045_reconciliation_state.py`). **Verify with `alembic upgrade head` against a MySQL container before merge — SQLite CI cannot catch native-ENUM DDL drift.**
+Migration passes raw value tuples (`sa.Enum(*_STRATEGIES, name="account_payment_strategy")`), NOT the Python enum, so it doesn't import app models (matches shipped idiom in `045_reconciliation_state.py`). This is an `add_column` with a native enum on an *existing* table (behaviorally identical DDL to a `create_table` enum column). **Verify with `alembic upgrade head` against a MySQL container before merge — SQLite CI cannot catch native-ENUM DDL drift.**
 
 ### Migration 074 (`074_cc_cycle_payments`, down_revision `073_credit_card_model_v1`)
 
@@ -68,7 +68,7 @@ op.create_table(
 
 - **Anchor = the cycle's CLOSE month** (same anchoring as the D7 override proposal). A Jan-25 close paid Feb-1 stores under `(account, 2026, 1)`.
 - **No `org_id` column** — org isolation is enforced at the router by loading the parent account under `current_user.org_id` (universal `accounts.py` pattern). `ON DELETE CASCADE` because a payment row is meaningless without its account.
-- New model `CcCyclePayment` in `backend/app/models/cc_cycle_payment.py`. Must join both `wipe_org_data` and `reset_org_data` before its parent account (org-delete cascade FK audit rule) — though CASCADE via `account_id` makes it automatic; confirm during implementation.
+- New model `CcCyclePayment` in `backend/app/models/cc_cycle_payment.py`. Add explicit org-scoped deletes to BOTH `wipe_org_data` and `reset_org_data`, positioned before the `accounts` delete. `ON DELETE CASCADE` prevents a 1451 failure, but codebase convention deletes cascade tables explicitly anyway (e.g. `transaction_tags`) for defense-in-depth, dialect-independent SQLite tests, and an accurate `counts['cc_cycle_payments']`. GOTCHA: the reset path's `_batch_delete_by_pk` helper filters on `model.org_id`, which this table LACKS — use a subquery-scoped delete: `delete(CcCyclePayment).where(account_id.in_(select(Account.id).where(Account.org_id == org_id)))`.
 
 ## Validation — `backend/app/services/credit_card_service.py`
 
@@ -105,12 +105,14 @@ account.apr = None
 account.payment_strategy = None
 account.fixed_payment_amount = None
 ```
-Regression test required (same bug class as the one HIGH finding on #565). `cc_cycle_payments` rows are NOT cleared on type change — they CASCADE on account delete, and a card that leaves CC simply stops being read by the forecast; a later revert reuses them. (Confirm this is acceptable during review; alternative is to delete them on leave-CC.)
+Regression test required (same bug class as the one HIGH finding on #565).
+
+**Both reviewers ruled: DELETE the account's `cc_cycle_payments` rows in this same atomic type-change path** (not keep dormant). They are money-bearing rows anchored to a `close_day` that is being cleared, so keeping them orphans money data no UI can surface and risks resurrecting stale forward-looking amounts on a later revert (anchors may no longer map to real cycles). `ON DELETE CASCADE` covers account *deletion* only, not type change, so this delete is explicit. Emit `account.cycle_payment.deleted` audit events for the removed rows.
 
 ### New router — `cc_cycle_payments.py` (or a section of `accounts.py`)
 - `GET  /api/v1/accounts/{account_id}/cycle-payments` — collection feeding the UI mini-list; returns upcoming N cycles with `{year, month, close_date, due_date, amount|null}` (dates from the shipped resolver so the FE never re-derives cycle math).
 - `POST` / `PUT` / `DELETE /api/v1/accounts/{account_id}/cycle-payments/{year}/{month}` — body `{ "amount": Decimal }`.
-- Org-scoped + **owner/admin only** (`_is_admin_user`). `{year}/{month}` = the close-month anchor.
+- Org-scoped. **GET** = normal org-scoped account read (any org member who can see the account; account reads are not admin-gated). **POST/PUT/DELETE** = **owner/admin only** (`_is_admin_user`; money-bearing, mirrors opening-balance). `{year}/{month}` = the close-month anchor.
 
 ## Forecast integration — `account_balance_forecast_service.py`
 
@@ -122,31 +124,43 @@ Representation: an **ephemeral in-memory delta** with provenance `source="credit
 Walk cycles across the open-period horizon `[p_start, p_end]` via `resolve_cycle_for_account`; for each cycle whose `payment_date` falls in the horizon, synthesize one outflow on that `payment_date`. Thread `S_prev` (sum of earlier synthesized outflows this horizon) so a horizon spanning two due dates doesn't double-bill.
 
 ### Amount resolution (unified, all four strategies)
+
+Two steps: (1) a per-strategy **target** payment, then (2) a **clamp + net** applied uniformly to ALL strategies. (Architect review caught that netting real/prior payments only for `full_balance` double-counts the other three.)
+
 ```python
-def resolve_cc_payment_amount(*, account, cycle, balance_at_close, recorded_post_close_credits,
-                              prior_synth_credit, per_cycle_amounts) -> Decimal:
+def cc_target_payment(account, cycle, outstanding_at_close, per_cycle_amounts) -> Decimal:
     s = account.payment_strategy or "full_balance"           # NULL-at-rest default
     if s == "full_balance":
-        return max(Decimal("0"),
-                   -balance_at_close - recorded_post_close_credits - prior_synth_credit)
+        return outstanding_at_close                          # pay everything owed at close
     if s == "fixed_amount":
-        return account.fixed_payment_amount or Decimal("0")   # literal
-    # minimum_only + custom_per_period: same per-cycle store lookup
+        return account.fixed_payment_amount or Decimal("0")  # literal
+    # minimum_only + custom_per_period: per-cycle store lookup (close-month anchor)
     anchor = (account.id, cycle.period_end_inclusive.year, cycle.period_end_inclusive.month)
-    return per_cycle_amounts.get(anchor, Decimal("0"))        # unset => project nothing
+    return per_cycle_amounts.get(anchor, Decimal("0"))       # unset => 0 => project nothing
+
+# uniform clamp + net, applied to the target for EVERY strategy:
+outstanding_at_close = max(Decimal("0"), -B_k)
+target  = cc_target_payment(account, cycle, outstanding_at_close, per_cycle_amounts)
+capped  = min(target, outstanding_at_close)                  # never pay a card into credit
+outflow = max(Decimal("0"), capped - P_k_owned - S_prev)     # net real + already-synthesized payments
+S_prev += outflow
 ```
 
-- `balance_at_close` (`B_k`) = `account.balance` + Σ pending deltas with `eff_date <= close_date` (`eff_date = coalesce(settled_date, date)`; signed income+/expense−; transfer legs included). Owed is stored NEGATIVE (`balance = opening_balance + Σ settled(income−expense)`), so `-B_k` is the positive outstanding magnitude and includes carried debt automatically — this IS the carried-balance semantic.
-- `recorded_post_close_credits` (`P_k`) = Σ CC payment-in credits (transfer legs, `linked_transaction_id` not null, income) with `eff_date` in `(close_date, payment_date]` — so a real payment recorded before the due date reduces (never double-counts) the synthesized amount.
-- Apply as two deltas: `source.expected -= amount`, `cc.expected += amount` (source asset drops; CC liability moves toward zero). Batch-fetch `per_cycle_amounts` once (avoid per-cycle queries).
-- Statement window for `B_k`/`P_k` uses `effective_period_date_expr()` (cash-basis, inclusive close per D2).
+- **`B_k` = the CC balance AS OF CLOSE, not the current balance** (review BLOCKER fix). `account.balance` already contains *all* settled rows, including charges that settle AFTER the close date (next cycle's spend), so using it over-bills any grace-period cycle (close in the past, due later this period — the common case). Compute `B_k` from its own two windows, NOT the existing `[p_start, p_end]` `pending_by_account` aggregate:
+  `B_k = opening_balance + Σ settled(eff_date <= close_date) + Σ pending(eff_date <= close_date)`
+  (`eff_date = coalesce(settled_date, date)`, cash-basis, inclusive close per D2; signed income+/expense−; transfer legs included). Owed is stored NEGATIVE, so `outstanding_at_close = -B_k` is the positive magnitude and includes carried debt automatically (the carried-balance semantic).
+- **`P_k_owned`** = Σ real CC payment-in credits (transfer legs, `linked_transaction_id` not null, income) in `(close_date, payment_date]`, each credit attributed to EXACTLY ONE owning cycle (earliest window it falls in), tracked via a consumed-credit accumulator threaded like `S_prev`. This prevents (a) double-counting a real payment against the synth for every strategy, and (b) the overlapping-window double-net when `payment_day_relative_month >= 2` (default `=1` never overlaps).
+- Apply as two deltas: `source.expected -= outflow`, `cc.expected += outflow` (source asset drops; CC liability moves toward zero). Batch-fetch `per_cycle_amounts` once.
+- **Clamp rationale:** `capped = min(target, outstanding_at_close)` means no strategy pays a card into credit (a fixed/stored amount larger than the balance pays only what's owed). Owner-flag: if a user wants a fixed autopay that overshoots into credit, drop the clamp for `fixed_amount` only; default clamps.
 
 ### Edge cases
 - `payment_source_account_id` NULL → no synthesis (user models manually).
+- **Source currency != CC currency → no synthesis** (review gap: no FX engine in V1; the two deltas would cross currency buckets and desync the per-currency `totals` rollup, which is derived from balance+pending, not per-account `expected`). Same no-op as NULL source. Payment-source validation does NOT enforce same-currency, so this forecast guard is required.
 - Source account inactive → the projection only iterates active accounts; treat as no-op (do not resurrect an inactive source).
-- Card in credit (`B_k >= 0`) → `outflow = 0`.
-- `minimum_only`/`custom` with no stored amount for the anchor → project nothing; UI shows quiet "amount not set".
+- Card in credit / nothing owed (`outstanding_at_close == 0`) → `outflow = 0`.
+- `minimum_only`/`custom` with no stored amount for the anchor → `target = 0` → no outflow; UI shows quiet "amount not set".
 - Horizon shorter than one cycle / zero due-dates in horizon → no outflow.
+- Grace-period cycle (close in the past, due in the horizon) → handled correctly by the as-of-close `B_k`; this is the case the BLOCKER fix targets.
 
 ## UX / display (design-token-clean, no em-dashes, quiet-by-default)
 
@@ -178,7 +192,7 @@ Optional labeled input only (`APR (%)`). No gauge, no "high-APR" warning, no com
 
 ## Audit
 - New CC metadata fields on create/PUT: **no new audit events** (matches the `payment_source_account_id` precedent — only opening-balance and type-change are audited today). Optionally extend the existing `account.type_changed` detail with `credit_limit_cleared` etc. keys for the leave-CC clear (optional polish).
-- Per-cycle payment writes ARE money-bearing → emit `account.cycle_payment.created` / `.updated` / `.deleted` via `audit_service.record_audit_event` (actor snapshot, `target_org_id`, `detail={account_id, year, month, amount}`, old+new on update), fired post-commit (mirrors `account.opening_balance.update`).
+- Per-cycle payment writes ARE money-bearing → emit `account.cycle_payment.created` / `.updated` / `.deleted` via `audit_service.record_audit_event` (actor snapshot, `target_org_id`, `detail={account_id, year, month, amount}`, old+new on update), fired post-commit (mirrors `account.opening_balance.update`). `.deleted` is also emitted for the bulk leave-CC removal above.
 
 ## Out of scope (reaffirmed)
 Interest accrual, computed minimum payment, statement-closing transaction generation, cron of any kind, frozen statement snapshots, per-CC cycle date-overrides UI (Slice 3, still unbuilt — this store does not depend on it), dashboard CC tile, utilization threshold coloring.
@@ -186,16 +200,25 @@ Interest accrual, computed minimum payment, statement-closing transaction genera
 ## Sequencing / PRs
 Per the architect small-PR principle, candidate slices (may bundle if review stays small):
 1. **073 schema + validation + form fields + utilization subline** (fields & display; `credit_limit`/`apr`/`payment_strategy`/`fixed_payment_amount`, leave-CC cascade, `credit_card_service`).
-2. **074 store + endpoint + audit + "Upcoming payments" UI** (per-cycle amounts).
+2. **074 store + endpoint + audit + "Upcoming payments" UI** (per-cycle amounts; also wires the leave-CC delete of `cc_cycle_payments` and the org-wipe/reset deletes, since the table exists as of this slice).
 3. **Forecast integration** in `account_balance_forecast_service` (carried-balance synthesis, unified resolver, provenance).
 
 Each PR: auto-dispatch the review team, fold ALL findings before merge; `main` needs 1 human review (agent reviews are not GitHub approvals). No AI attribution in commits/PRs.
 
+## Resolved by architect review (2026-07-22, two independent reviewers)
+- **Leave-CC → DELETE `cc_cycle_payments`** (both reviewers), with `account.cycle_payment.deleted` audit events. Not kept dormant.
+- **`B_k` = balance as of close** (forecast BLOCKER): exclude settled activity after the close date; own two-window query, not the `[p_start, p_end]` aggregate.
+- **Clamp + net uniformly** across all four strategies (`min(target, outstanding)`, minus real `P_k_owned` and `S_prev`) — the original resolver double-counted for `fixed`/`min`/`custom`.
+- **`P_k_owned`** attributes each real payment credit to one owning cycle (fixes the `payment_day_relative_month >= 2` overlap double-net).
+- **Cross-currency source → skip synthesis** (no FX in V1; would desync per-currency totals).
+- **GET cycle-payments = normal org read**; only mutations admin-gated.
+- **Org-wipe:** explicit `cc_cycle_payments` deletes in both wipe/reset (subquery-scoped; `_batch_delete_by_pk` won't work — no `org_id` column).
+- **Alembic:** confirmed 072 is the sole head (the hash migration `8e83c1dbe51b` is linearly embedded, not a fork). 073→074 chain safe.
+
 ## Open flags for the owner (call out at review)
 1. `cc_cycle_overrides` (Slice 3, date-overrides UI) is still unbuilt; this store is independent of it, but the CC "detail page" that would host both sections does not exist — the per-cycle UI lives inline in the edit block instead.
-2. Confirm leave-CC does NOT delete `cc_cycle_payments` rows (they persist, unread, and CASCADE on account delete). Alternative: delete on leave-CC.
-3. Run `alembic heads` to confirm 072 is the sole head before adding 073/074.
-4. Deferred: utilization threshold coloring (incl. whether over-limit earns `badgeError`); "high-APR" hint.
+2. Clamp on `fixed_amount`: default clamps a fixed autopay to what's owed (no paying a card into credit). If you want a fixed autopay to overshoot into credit, say so and we drop the clamp for `fixed_amount` only.
+3. Deferred: utilization threshold coloring (incl. whether over-limit earns `badgeError`); "high-APR" hint.
 
 ## Cross-references
 - `specs/credit-card-model-upgrade.md` (2026-05-15) — the field-level source spec this ships.
