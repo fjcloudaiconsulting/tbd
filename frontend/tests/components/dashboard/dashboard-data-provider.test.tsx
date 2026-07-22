@@ -1605,7 +1605,8 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
     expect(screen.getByTestId("page-size").textContent).toBe("50");
     await waitFor(() => {
       const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0] as string);
-      expect(calls.some((u) => u.includes("limit=50"))).toBe(true);
+      // `limit=50&` (not a bare `limit=50`) so it can't false-match limit=500.
+      expect(calls.some((u) => u.includes("limit=50&"))).toBe(true);
     });
   });
 
