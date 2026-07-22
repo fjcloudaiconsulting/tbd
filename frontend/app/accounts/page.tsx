@@ -9,7 +9,7 @@ import Spinner from "@/components/ui/Spinner";
 import Pagination from "@/components/ui/Pagination";
 import SortableHeader from "@/components/ui/SortableHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { apiFetch, extractErrorMessage, ApiResponseError } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount } from "@/lib/format";
@@ -20,10 +20,10 @@ import {
   type SortDir,
 } from "@/lib/hooks/use-table-state";
 import { SORT_KEY_ACCOUNTS } from "@/lib/hooks/persisted-keys";
-import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { input, label, btnPrimary, btnLink, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { useAccounts, ACCOUNTS_KEY } from "@/lib/hooks/use-accounts";
-import type { Account, AccountType, Transaction } from "@/lib/types";
+import type { Account, AccountType, Transaction, UpcomingCyclePayment } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import OverflowMenu, { type OverflowMenuItem } from "@/components/ui/OverflowMenu";
 import AdjustBalanceModal from "@/components/accounts/AdjustBalanceModal";
@@ -137,6 +137,10 @@ export default function AccountsPage() {
   const [editAcctApr, setEditAcctApr] = useState("");
   const [editAcctPaymentStrategy, setEditAcctPaymentStrategy] = useState("");
   const [editAcctFixedPayment, setEditAcctFixedPayment] = useState("");
+  // Credit Card Model V1 (Slice 2) — upcoming per-cycle payments for the
+  // edited CC. Populated only for minimum_only / custom_per_period.
+  const [upcomingCycles, setUpcomingCycles] = useState<UpcomingCyclePayment[]>([]);
+  const [cycleDrafts, setCycleDrafts] = useState<Record<string, string>>({});
   // Confirm modal state for type change (spec § 5.3). Holds the
   // pre-resolved old/new type labels + the change-effect copy so the
   // modal message can be a plain string (ConfirmModal does not take
@@ -428,6 +432,37 @@ export default function AccountsPage() {
   const editingTypeSlug =
     accountTypes.find((t) => t.id === editAcctTypeId)?.slug ?? null;
 
+  // Fetch the upcoming-payments collection when a CC row is being edited
+  // under a per-cycle strategy. Backend supplies the cycle windows.
+  useEffect(() => {
+    const perCycle =
+      editAcctPaymentStrategy === "minimum_only" ||
+      editAcctPaymentStrategy === "custom_per_period";
+    if (editAcctId == null || editingTypeSlug !== "credit_card" || !perCycle) {
+      setUpcomingCycles([]);
+      setCycleDrafts({});
+      return;
+    }
+    let cancelled = false;
+    apiFetch<UpcomingCyclePayment[]>(`/api/v1/accounts/${editAcctId}/cycle-payments`)
+      .then((rows) => {
+        if (cancelled) return;
+        setUpcomingCycles(rows);
+        setCycleDrafts(
+          Object.fromEntries(rows.map((r) => [`${r.year}-${r.month}`, r.amount ?? ""])),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setUpcomingCycles([]);
+          setCycleDrafts({});
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editAcctId, editingTypeSlug, editAcctPaymentStrategy]);
+
   // Common PUT body builder for the save action. Pulled out so the
   // confirm-modal "Change type" handler can re-use it without
   // duplicating the JSON shape.
@@ -474,6 +509,36 @@ export default function AccountsPage() {
     setEditAcctTypeId("");
     setPendingTypeChange(null);
     await refreshAll();
+  }
+
+  // Persist one cycle amount. Empty -> DELETE, else PUT. Re-fetches so the
+  // Clear affordance and stored amounts stay in sync.
+  async function persistCycleAmount(year: number, month: number, raw: string) {
+    if (editAcctId == null) return;
+    const value = raw.trim();
+    const path = `/api/v1/accounts/${editAcctId}/cycle-payments/${year}/${month}`;
+    try {
+      if (value === "") {
+        // Swallow only the benign "already absent" 404 (clearing a cycle
+        // that was never saved, or a double-clear race). Any other
+        // failure (500, network) must reach the outer catch below so
+        // the user sees setError(...) instead of a silently-eaten error.
+        await apiFetch(path, { method: "DELETE" }).catch((e) => {
+          if (!(e instanceof ApiResponseError && e.status === 404)) throw e;
+        });
+      } else {
+        await apiFetch(path, { method: "PUT", body: JSON.stringify({ amount: value }) });
+      }
+      const rows = await apiFetch<UpcomingCyclePayment[]>(
+        `/api/v1/accounts/${editAcctId}/cycle-payments`,
+      );
+      setUpcomingCycles(rows);
+      setCycleDrafts(
+        Object.fromEntries(rows.map((r) => [`${r.year}-${r.month}`, r.amount ?? ""])),
+      );
+    } catch (e) {
+      setError(extractErrorMessage(e));
+    }
   }
 
   async function handleSaveAcct() {
@@ -1036,6 +1101,74 @@ export default function AccountsPage() {
                         <input id={`edit-acct-fixed-payment-${a.id}`} type="number" step="0.01" min={0} value={editAcctFixedPayment} onChange={(e) => setEditAcctFixedPayment(e.target.value)} className={`w-full text-sm ${input}`} />
                       </div>
                     )}
+                    {/* Credit Card Model V1 (Slice 2) — inline "Upcoming
+                        payments" mini-list. Gated to the per-cycle
+                        strategies; cycle windows come from the backend
+                        (FE never re-derives). Persist on blur/Enter via
+                        PUT; empty clears via DELETE. Middle dot separator,
+                        no em-dash; muted design tokens only. */}
+                    {editingTypeSlug === "credit_card" &&
+                      (editAcctPaymentStrategy === "minimum_only" ||
+                        editAcctPaymentStrategy === "custom_per_period") && (
+                        <div className="w-full">
+                          <div className={label}>Upcoming payments</div>
+                          <p className="mb-2 text-xs text-text-muted">
+                            Enter what you plan to pay each cycle. We use it in your forecast.
+                          </p>
+                          {upcomingCycles.length === 0 ? (
+                            <p className="text-xs text-text-muted">
+                              No upcoming cycles yet. Set a bill close day first.
+                            </p>
+                          ) : (
+                            <ul className="flex flex-col gap-2">
+                              {upcomingCycles.map((c) => {
+                                const key = `${c.year}-${c.month}`;
+                                const monthKey = `${c.year}-${String(c.month).padStart(2, "0")}`;
+                                return (
+                                  <li
+                                    key={key}
+                                    className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3"
+                                  >
+                                    <span className="text-xs tabular-nums text-text-muted sm:w-56">
+                                      Closes {c.close_date} · due {c.due_date}
+                                    </span>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      min={0}
+                                      aria-label={`Planned payment for ${monthKey}`}
+                                      value={cycleDrafts[key] ?? ""}
+                                      placeholder="amount not set"
+                                      onChange={(e) =>
+                                        setCycleDrafts((d) => ({ ...d, [key]: e.target.value }))
+                                      }
+                                      onBlur={() =>
+                                        persistCycleAmount(c.year, c.month, cycleDrafts[key] ?? "")
+                                      }
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.preventDefault();
+                                          persistCycleAmount(c.year, c.month, cycleDrafts[key] ?? "");
+                                        }
+                                      }}
+                                      className={`w-full text-sm sm:w-32 ${input}`}
+                                    />
+                                    {c.amount != null && (
+                                      <button
+                                        type="button"
+                                        className={btnLink}
+                                        onClick={() => persistCycleAmount(c.year, c.month, "")}
+                                      >
+                                        Clear
+                                      </button>
+                                    )}
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </div>
+                      )}
                     {/* L3.2 Wave 2A — opening balance edit row. Two
                         compact fields, audit-logged on the backend. */}
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
