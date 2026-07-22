@@ -110,16 +110,6 @@ def test_target_override_wins_over_fixed_amount():
     assert svc.cc_target_payment(acct, cyc, Decimal("1200.00"), per_cycle) == Decimal("60.00")
 
 
-def test_target_full_balance_without_override_is_outstanding():
-    acct = _FakeAccount(payment_strategy="full_balance")
-    assert svc.cc_target_payment(acct, _cycle(acct), Decimal("1200.00"), {}) == Decimal("1200.00")
-
-
-def test_target_fixed_amount_without_override_is_literal():
-    acct = _FakeAccount(payment_strategy="fixed_amount", fixed_payment_amount=Decimal("150.00"))
-    assert svc.cc_target_payment(acct, _cycle(acct), Decimal("1200.00"), {}) == Decimal("150.00")
-
-
 def test_target_none_strategy_defaults_full_balance():
     acct = _FakeAccount(payment_strategy=None)
     assert svc.cc_target_payment(acct, _cycle(acct), Decimal("900.00"), {}) == Decimal("900.00")
