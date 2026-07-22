@@ -62,6 +62,16 @@ class Account(Base):
     close_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     payment_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     payment_day_relative_month: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Payment Source Foundation (specs/payment-source-account-foundation.md).
+    # The account a liability's bill is paid FROM (self-referential FK to
+    # accounts.id). Nullable; set only on liability accounts (credit_card,
+    # and loan once that type lands). Source must be a checking/savings/cash
+    # account in the same org, active, and not the target itself — enforced in
+    # payment_source_service, not at the schema level. ``ON DELETE SET NULL``
+    # (migration 072) clears the pointer when the source account is deleted.
+    payment_source_account_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True
+    )
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # User-stated opening balance for the account. Migration 041 sets
     # this to 0 for every existing account (canonical backfill, see

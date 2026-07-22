@@ -372,6 +372,11 @@ async def apply_type_change_in_session(
         account.close_day = None
         account.payment_day = None
         account.payment_day_relative_month = None
+        # Payment Source Foundation: a "paid from" pointer only makes sense
+        # on a liability. Clear it on leaving CC so an asset account can't
+        # retain an orphaned pointer (which the CC-only picker could never
+        # surface to clear). Mirrors the close_day leave-CC cascade above.
+        account.payment_source_account_id = None
 
     result = TypeChangeResult(
         account_id=account_id,

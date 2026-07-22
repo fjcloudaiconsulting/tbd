@@ -103,6 +103,12 @@ export interface Account {
   // ISO-8601 yyyy-mm-dd. Set to today on existing rows by the
   // migration; user-editable in the account-edit form.
   opening_balance_date?: string | null;
+  // Payment Source Foundation — the account this liability's bill is paid
+  // FROM. Null for asset accounts and any liability with no source set.
+  // The "Paid from" picker surfaces it on credit_card accounts (and loan
+  // once that type lands); the source must be a checking/savings/cash
+  // account in the same org.
+  payment_source_account_id?: number | null;
 }
 
 export interface Category {
