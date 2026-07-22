@@ -415,4 +415,36 @@ describe("describeWidgetFilters", () => {
       "categories",
     ]);
   });
+
+  it("shows an 'Incl. transfers' chip only when include_non_reportable is on", () => {
+    const on = describeWidgetFilters(
+      bar({ include_non_reportable: true }),
+      {},
+      NO_LOOKUPS,
+      NOW,
+    );
+    expect(on.find((c) => c.key === "transfers")?.label).toBe("Incl. transfers");
+
+    // Default (flag off / absent) emits no transfers chip.
+    expect(
+      describeWidgetFilters(bar({}), {}, NO_LOOKUPS, NOW).find(
+        (c) => c.key === "transfers",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("never emits the transfers chip on a non-transactions source", () => {
+    // include_non_reportable is a transactions-only query mode; useReportQuery
+    // drops it on every other source, so the chip must not claim it either.
+    const base = bar({ include_non_reportable: true });
+    const acctWidget = {
+      ...base,
+      config: { ...base.config, dataset: "accounts" as const },
+    };
+    expect(
+      describeWidgetFilters(acctWidget, {}, NO_LOOKUPS, NOW).find(
+        (c) => c.key === "transfers",
+      ),
+    ).toBeUndefined();
+  });
 });

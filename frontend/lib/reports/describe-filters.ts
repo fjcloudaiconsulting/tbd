@@ -36,7 +36,8 @@ export interface FilterChip {
     | "amount"
     | "tags"
     | "accounts"
-    | "categories";
+    | "categories"
+    | "transfers";
   /** Human, truncated label, e.g. "Groceries +2". */
   label: string;
   /**
@@ -151,6 +152,19 @@ export function describeWidgetFilters(
         "categories",
       ),
     });
+  }
+
+  // ── transfers & adjustments (include_non_reportable) ──────────
+  // The "Include transfers & adjustments" opt-in is a transactions-only
+  // query mode (reports exclude non-reportables by default, #548). Gate the
+  // chip on ``dataset === "transactions"`` exactly like ``useReportQuery``
+  // drops the flag on every other source, so the chip never claims a mode
+  // the widget doesn't actually run. Only shown when the toggle is ON.
+  if (
+    widget.config.dataset === "transactions" &&
+    widgetFilters.include_non_reportable
+  ) {
+    chips.push({ key: "transfers", label: "Incl. transfers" });
   }
 
   return chips;
