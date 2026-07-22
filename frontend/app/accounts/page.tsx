@@ -132,6 +132,11 @@ export default function AccountsPage() {
   // Payment Source Foundation — "Paid from" pointer during inline edit.
   // "" = none. Only surfaced/sent for credit_card accounts.
   const [editAcctPaymentSource, setEditAcctPaymentSource] = useState<number | "">("");
+  // Credit Card Model V1 (Slice 1) — CC-only edit fields. "" = unset.
+  const [editAcctCreditLimit, setEditAcctCreditLimit] = useState("");
+  const [editAcctApr, setEditAcctApr] = useState("");
+  const [editAcctPaymentStrategy, setEditAcctPaymentStrategy] = useState("");
+  const [editAcctFixedPayment, setEditAcctFixedPayment] = useState("");
   // Confirm modal state for type change (spec § 5.3). Holds the
   // pre-resolved old/new type labels + the change-effect copy so the
   // modal message can be a plain string (ConfirmModal does not take
@@ -159,6 +164,11 @@ export default function AccountsPage() {
   // Payment Source Foundation — "Paid from" pointer on the create form.
   // "" = none. Only surfaced/sent for credit_card accounts.
   const [acctPaymentSource, setAcctPaymentSource] = useState<number | "">("");
+  // Credit Card Model V1 (Slice 1) — CC-only create fields. "" = unset.
+  const [acctCreditLimit, setAcctCreditLimit] = useState("");
+  const [acctApr, setAcctApr] = useState("");
+  const [acctPaymentStrategy, setAcctPaymentStrategy] = useState("");
+  const [acctFixedPayment, setAcctFixedPayment] = useState("");
   const selectedType = accountTypes.find((t) => t.id === acctTypeId) ?? null;
 
   const [error, setError] = useState("");
@@ -361,15 +371,28 @@ export default function AccountsPage() {
           close_day: isCC && acctCloseDay ? Number(acctCloseDay) : null,
           opening_balance: acctOpeningBalance || "0.00",
           opening_balance_date: acctOpeningBalanceDate || null,
-          // Only send the paid-from pointer for CC accounts; "" clears to null.
+          // Only send the paid-from pointer and CC model fields for CC
+          // accounts; "" clears to null.
           ...(isCC
-            ? { payment_source_account_id: acctPaymentSource === "" ? null : acctPaymentSource }
+            ? {
+                payment_source_account_id:
+                  acctPaymentSource === "" ? null : acctPaymentSource,
+                credit_limit: acctCreditLimit === "" ? null : acctCreditLimit,
+                apr: acctApr === "" ? null : acctApr,
+                payment_strategy:
+                  acctPaymentStrategy === "" ? null : acctPaymentStrategy,
+                fixed_payment_amount:
+                  acctPaymentStrategy === "fixed_amount" && acctFixedPayment !== ""
+                    ? acctFixedPayment
+                    : null,
+              }
             : {}),
         }),
       });
       setAcctName(""); setAcctTypeId(""); setAcctCloseDay("");
       setAcctOpeningBalance("0.00"); setAcctOpeningBalanceDate(todayIso);
       setAcctPaymentSource("");
+      setAcctCreditLimit(""); setAcctApr(""); setAcctPaymentStrategy(""); setAcctFixedPayment("");
       setShowAccountForm(false);
       await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
@@ -392,6 +415,10 @@ export default function AccountsPage() {
     setEditAcctOpeningBalance(String(a.opening_balance ?? "0.00"));
     setEditAcctOpeningBalanceDate(a.opening_balance_date ?? "");
     setEditAcctPaymentSource(a.payment_source_account_id ?? "");
+    setEditAcctCreditLimit(a.credit_limit != null ? String(a.credit_limit) : "");
+    setEditAcctApr(a.apr != null ? String(a.apr) : "");
+    setEditAcctPaymentStrategy(a.payment_strategy ?? "");
+    setEditAcctFixedPayment(a.fixed_payment_amount != null ? String(a.fixed_payment_amount) : "");
   }
 
   // Resolve the currently-selected edit type so render gates (close-day
@@ -424,6 +451,14 @@ export default function AccountsPage() {
       // so the server never sees a stray value on an asset account.
       body.payment_source_account_id =
         editAcctPaymentSource === "" ? null : editAcctPaymentSource;
+      body.credit_limit = editAcctCreditLimit === "" ? null : editAcctCreditLimit;
+      body.apr = editAcctApr === "" ? null : editAcctApr;
+      body.payment_strategy =
+        editAcctPaymentStrategy === "" ? null : editAcctPaymentStrategy;
+      body.fixed_payment_amount =
+        editAcctPaymentStrategy === "fixed_amount" && editAcctFixedPayment !== ""
+          ? editAcctFixedPayment
+          : null;
     }
     // Always send account_type_id so the cascade and audit logic on
     // the backend trigger. The handler is idempotent when the value
@@ -739,6 +774,21 @@ export default function AccountsPage() {
                       <input id="acct-close" type="number" required min={1} max={28} value={acctCloseDay} onChange={(e) => setAcctCloseDay(e.target.value)} className={`w-24 ${input}`} placeholder="15" />
                     </div>
                   )}
+                  {/* Credit Card Model V1 (Slice 1) — credit_limit + apr,
+                      credit-card-only. Server validation is the source of
+                      truth; these are UX hints. */}
+                  {selectedType?.slug === "credit_card" && (
+                    <div>
+                      <label htmlFor="acct-credit-limit" className={label}>Credit limit</label>
+                      <input id="acct-credit-limit" type="number" step="0.01" min={0} value={acctCreditLimit} onChange={(e) => setAcctCreditLimit(e.target.value)} className={`w-40 ${input}`} placeholder="2000.00" />
+                    </div>
+                  )}
+                  {selectedType?.slug === "credit_card" && (
+                    <div>
+                      <label htmlFor="acct-apr" className={label}>APR (%)</label>
+                      <input id="acct-apr" type="number" step="0.01" min={0} max={100} value={acctApr} onChange={(e) => setAcctApr(e.target.value)} className={`w-28 ${input}`} placeholder="19.99" />
+                    </div>
+                  )}
                   {/* Payment Source Foundation — "Paid from" picker,
                       credit-card-only. Lists same-org checking/savings/cash
                       accounts; "(none)" clears it. Server validation
@@ -759,6 +809,36 @@ export default function AccountsPage() {
                           </option>
                         ))}
                       </select>
+                    </div>
+                  )}
+                  {/* Credit Card Model V1 (Slice 1) — payment strategy,
+                      credit-card-only. Null (unset) resolves to
+                      full_balance server-side. Fixed payment amount is
+                      only relevant (and shown) under fixed_amount. */}
+                  {selectedType?.slug === "credit_card" && (
+                    <div>
+                      <label htmlFor="acct-payment-strategy" className={label}>Payment strategy</label>
+                      <select
+                        id="acct-payment-strategy"
+                        value={acctPaymentStrategy}
+                        onChange={(e) => {
+                          setAcctPaymentStrategy(e.target.value);
+                          if (e.target.value !== "fixed_amount") setAcctFixedPayment("");
+                        }}
+                        className={input}
+                      >
+                        <option value="">(default: pay full balance)</option>
+                        <option value="full_balance">Pay full balance</option>
+                        <option value="minimum_only">Minimum only</option>
+                        <option value="fixed_amount">Fixed amount</option>
+                        <option value="custom_per_period">Custom per period</option>
+                      </select>
+                    </div>
+                  )}
+                  {selectedType?.slug === "credit_card" && acctPaymentStrategy === "fixed_amount" && (
+                    <div>
+                      <label htmlFor="acct-fixed-payment" className={label}>Fixed payment amount</label>
+                      <input id="acct-fixed-payment" type="number" step="0.01" min={0} value={acctFixedPayment} onChange={(e) => setAcctFixedPayment(e.target.value)} className={`w-40 ${input}`} placeholder="100.00" />
                     </div>
                   )}
                   {/* L3.2 Wave 2A — opening balance + date. Optional;
@@ -872,6 +952,10 @@ export default function AccountsPage() {
                             // only sends it on CC, but clearing local state
                             // keeps the picker from flashing a stale value.
                             setEditAcctPaymentSource("");
+                            setEditAcctCreditLimit("");
+                            setEditAcctApr("");
+                            setEditAcctPaymentStrategy("");
+                            setEditAcctFixedPayment("");
                           }
                         }}
                         className={`w-full text-sm sm:w-44 ${input}`}
@@ -909,6 +993,47 @@ export default function AccountsPage() {
                             </option>
                           ))}
                         </select>
+                      </div>
+                    )}
+                    {/* Credit Card Model V1 (Slice 1) — credit_limit,
+                        apr, payment_strategy + conditional fixed_payment,
+                        credit-card-only. */}
+                    {editingTypeSlug === "credit_card" && (
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
+                        <div className="w-full sm:w-40">
+                          <label htmlFor={`edit-acct-credit-limit-${a.id}`} className={label}>Credit limit</label>
+                          <input id={`edit-acct-credit-limit-${a.id}`} type="number" step="0.01" min={0} value={editAcctCreditLimit} onChange={(e) => setEditAcctCreditLimit(e.target.value)} className={`w-full text-sm ${input}`} />
+                        </div>
+                        <div className="w-full sm:w-28">
+                          <label htmlFor={`edit-acct-apr-${a.id}`} className={label}>APR (%)</label>
+                          <input id={`edit-acct-apr-${a.id}`} type="number" step="0.01" min={0} max={100} value={editAcctApr} onChange={(e) => setEditAcctApr(e.target.value)} className={`w-full text-sm ${input}`} />
+                        </div>
+                      </div>
+                    )}
+                    {editingTypeSlug === "credit_card" && (
+                      <div className="w-full sm:w-72">
+                        <label htmlFor={`edit-acct-payment-strategy-${a.id}`} className={label}>Payment strategy</label>
+                        <select
+                          id={`edit-acct-payment-strategy-${a.id}`}
+                          value={editAcctPaymentStrategy}
+                          onChange={(e) => {
+                            setEditAcctPaymentStrategy(e.target.value);
+                            if (e.target.value !== "fixed_amount") setEditAcctFixedPayment("");
+                          }}
+                          className={`w-full text-sm ${input}`}
+                        >
+                          <option value="">(default: pay full balance)</option>
+                          <option value="full_balance">Pay full balance</option>
+                          <option value="minimum_only">Minimum only</option>
+                          <option value="fixed_amount">Fixed amount</option>
+                          <option value="custom_per_period">Custom per period</option>
+                        </select>
+                      </div>
+                    )}
+                    {editingTypeSlug === "credit_card" && editAcctPaymentStrategy === "fixed_amount" && (
+                      <div className="w-full sm:w-40">
+                        <label htmlFor={`edit-acct-fixed-payment-${a.id}`} className={label}>Fixed payment amount</label>
+                        <input id={`edit-acct-fixed-payment-${a.id}`} type="number" step="0.01" min={0} value={editAcctFixedPayment} onChange={(e) => setEditAcctFixedPayment(e.target.value)} className={`w-full text-sm ${input}`} />
                       </div>
                     )}
                     {/* L3.2 Wave 2A — opening balance edit row. Two
