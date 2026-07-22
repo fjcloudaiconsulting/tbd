@@ -34,6 +34,7 @@ from app.models.billing import BillingPeriod
 from app.models.category import CategoryType
 from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.transaction import TransactionStatus, TransactionType
+from app.schemas.forecast import AccountBalanceForecastResponse
 from app.services.account_balance_forecast_service import (
     compute_account_balance_forecast,
 )
@@ -663,3 +664,34 @@ async def test_cc_synth_two_due_dates_s_prev(db_session: AsyncSession):
     result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
     cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
     assert cc_row["cc_payments"] == [{"amount": "1000.00", "date": "2026-05-01"}]
+
+
+# ---------- Slice 3, Task 3: response-model provenance round-trip ----------
+
+
+async def test_account_balance_forecast_response_preserves_cc_payments(
+    db_session: AsyncSession,
+):
+    """The /api/v1/forecast/account-balances response_model must not
+    silently strip the synthesized cc_payments provenance off the
+    per-account row (Credit Card Model V1, Slice 3, Task 3)."""
+    seed = await _seed_cc(db_session)
+    cc, source = seed["cc"], seed["source"]
+    db_session.add(_charge(seed, cc, amount="500.00", on=datetime.date(2026, 4, 10)))
+    cc.balance = Decimal("-500.00")
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START
+    )
+
+    response = AccountBalanceForecastResponse(**result)
+
+    cc_row = next(a for a in response.accounts if a.account_id == cc.id)
+    assert len(cc_row.cc_payments) == 1
+    payment = cc_row.cc_payments[0]
+    assert payment.amount == Decimal("500.00")
+    assert payment.date == datetime.date(2026, 5, 1)
+
+    source_row = next(a for a in response.accounts if a.account_id == source.id)
+    assert source_row.cc_payments == []
