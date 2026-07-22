@@ -16,7 +16,6 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -32,8 +31,6 @@ from app.rate_limit import get_client_ip
 from app.routers.accounts import _is_admin_user, _request_id
 from app.services import audit_service
 from app.services import cc_cycle_payment_service as cycle_svc
-
-logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["cc-cycle-payments"])
 

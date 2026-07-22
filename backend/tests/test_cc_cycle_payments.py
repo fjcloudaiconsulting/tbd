@@ -22,7 +22,6 @@ from sqlalchemy.pool import StaticPool
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Account, AccountType, Organization
-from app.models.account import PaymentStrategy
 from app.models.base import Base
 from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.user import Role, User
