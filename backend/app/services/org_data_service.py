@@ -28,6 +28,7 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category
 from app.models.category_rule import CategoryRule
+from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem
 from app.models.import_batch import ImportBatch
 from app.models.recurring import RecurringTransaction
@@ -147,6 +148,20 @@ async def wipe_org_data(
     # CASCADE. Must be wiped before accounts to avoid IntegrityError 1451.
     counts["import_batches"] = (
         await db.execute(delete(ImportBatch).where(ImportBatch.org_id == org_id))
+    ).rowcount or 0
+
+    # cc_cycle_payments.account_id FKs accounts.id ON DELETE CASCADE, but
+    # codebase convention deletes cascade children explicitly (accurate
+    # counts + dialect-independent SQLite tests). No org_id column, so scope
+    # by the org's account ids. Credit Card Model V1, Slice 2.
+    counts["cc_cycle_payments"] = (
+        await db.execute(
+            delete(CcCyclePayment).where(
+                CcCyclePayment.account_id.in_(
+                    select(Account.id).where(Account.org_id == org_id)
+                )
+            )
+        )
     ).rowcount or 0
 
     counts["accounts"] = (
@@ -296,6 +311,19 @@ async def reset_org_data(
     counts["import_batches"] = await _batch_delete_by_pk(
         db, ImportBatch, org_id, "import_batches", batch_size
     )
+    # cc_cycle_payments has no org_id column, so _batch_delete_by_pk cannot
+    # scope it. Use a single subquery-scoped delete before the accounts wipe.
+    # Credit Card Model V1, Slice 2.
+    counts["cc_cycle_payments"] = (
+        await db.execute(
+            delete(CcCyclePayment).where(
+                CcCyclePayment.account_id.in_(
+                    select(Account.id).where(Account.org_id == org_id)
+                )
+            )
+        )
+    ).rowcount or 0
+
     counts["accounts"] = await _batch_delete_by_pk(
         db, Account, org_id, "accounts", batch_size
     )

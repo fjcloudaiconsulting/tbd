@@ -4,7 +4,7 @@
 // payment_strategy, fixed_payment_amount. Mirrors the mocking pattern in
 // accounts-payment-source.test.tsx (harness copied verbatim below).
 
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithSWR } from "../utils/render-with-swr";
 
 import AccountsPage from "@/app/accounts/page";
@@ -104,6 +104,16 @@ function mockApi(accounts = [CHECKING, SAVINGS, INVESTMENT, CC]) {
     if (path.startsWith("/api/v1/transactions")) {
       return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
     }
+    if (path.match(/\/api\/v1\/accounts\/\d+\/cycle-payments$/)) {
+      return Promise.resolve([
+        { year: 2026, month: 8, close_date: "2026-08-15", due_date: "2026-09-01", amount: null },
+        { year: 2026, month: 9, close_date: "2026-09-15", due_date: "2026-10-01", amount: "120.00" },
+        { year: 2026, month: 10, close_date: "2026-10-15", due_date: "2026-11-01", amount: null },
+      ]);
+    }
+    if (path.match(/\/api\/v1\/accounts\/\d+\/cycle-payments\/\d+\/\d+$/)) {
+      return Promise.resolve({});
+    }
     return Promise.resolve([]);
   });
 }
@@ -125,7 +135,17 @@ beforeEach(() => {
 
 async function openEditRow(accountId: number) {
   const row = await screen.findByTestId(`account-row-${accountId}`);
-  fireEvent.click(within(row).getByRole("button", { name: /^Edit / }));
+  // Entering edit mode on a CC row (Task 6) fires the gated
+  // upcoming-cycle-payments fetch. Flush it inside `act` here so its
+  // setState settles before the test continues, instead of resolving
+  // later and tripping "not wrapped in act(...)" warnings (Task 7 review
+  // finding #2). Harmless no-op for non-CC rows, which never start that
+  // fetch.
+  await act(async () => {
+    fireEvent.click(within(row).getByRole("button", { name: /^Edit / }));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 describe("CC Model — form fields", () => {
@@ -225,5 +245,60 @@ describe("CC Model — utilization subline", () => {
     const row = await screen.findByTestId("account-row-11");
     expect(within(row).queryByText(/of limit/)).toBeNull();
     expect(within(row).queryByText(/full limit available/)).toBeNull();
+  });
+});
+
+describe("CC Model — upcoming payments mini-list", () => {
+  test("shows the section only under a per-cycle strategy", async () => {
+    mockApi();
+    renderWithSWR(<AccountsPage />);
+    await openEditRow(11); // CC seeded with payment_strategy=minimum_only
+    expect(await screen.findByText(/Upcoming payments/i)).toBeTruthy();
+    expect(
+      screen.getByText(/Enter what you plan to pay each cycle\. We use it in your forecast\./i),
+    ).toBeTruthy();
+    expect(screen.getByText(/Closes 2026-08-15 · due 2026-09-01/)).toBeTruthy();
+  });
+
+  test("hides the section for full_balance", async () => {
+    mockApi();
+    renderWithSWR(<AccountsPage />);
+    await openEditRow(11);
+    fireEvent.change(await screen.findByLabelText(/Payment strategy/i), {
+      target: { value: "full_balance" },
+    });
+    expect(screen.queryByText(/Upcoming payments/i)).toBeNull();
+  });
+
+  test("empty amount persists via DELETE, filled via PUT", async () => {
+    mockApi();
+    renderWithSWR(<AccountsPage />);
+    await openEditRow(11);
+    const firstInput = await screen.findByLabelText(/Planned payment for 2026-08/i);
+    fireEvent.change(firstInput, { target: { value: "90" } });
+    fireEvent.blur(firstInput);
+    await waitFor(() => {
+      const put = vi.mocked(apiFetch).mock.calls.find(
+        ([p, init]) =>
+          p === "/api/v1/accounts/11/cycle-payments/2026/8" && init?.method === "PUT",
+      );
+      expect(put).toBeTruthy();
+      expect(JSON.parse(String(put![1]?.body)).amount).toBe("90");
+    });
+  });
+
+  test("clearing a saved amount deletes it", async () => {
+    mockApi();
+    renderWithSWR(<AccountsPage />);
+    await openEditRow(11);
+    const clears = await screen.findAllByRole("button", { name: /^Clear$/ });
+    fireEvent.click(clears[0]);
+    await waitFor(() => {
+      const del = vi.mocked(apiFetch).mock.calls.find(
+        ([p, init]) =>
+          p === "/api/v1/accounts/11/cycle-payments/2026/9" && init?.method === "DELETE",
+      );
+      expect(del).toBeTruthy();
+    });
   });
 });

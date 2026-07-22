@@ -1,6 +1,7 @@
 from app.models.base import Base
 from app.models.user import Organization, User
 from app.models.account import AccountType, Account
+from app.models.cc_cycle_payment import CcCyclePayment  # noqa: F401
 from app.models.category import Category, CategoryType
 from app.models.transaction import Transaction, TransactionType, TransactionStatus
 from app.models.recurring import RecurringTransaction, Frequency
@@ -72,6 +73,7 @@ __all__ = [
     "User",
     "AccountType",
     "Account",
+    "CcCyclePayment",
     "Category",
     "CategoryType",
     "Transaction",

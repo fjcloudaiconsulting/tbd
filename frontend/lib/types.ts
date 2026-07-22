@@ -123,6 +123,18 @@ export interface Account {
   fixed_payment_amount?: number | string | null;
 }
 
+// Credit Card Model V1 (Slice 2). One upcoming CC billing cycle with the
+// planned per-cycle payment amount (null when unset). Dates come from the
+// backend resolver so the FE never re-derives cycle math. Decimals serialize
+// as strings.
+export interface UpcomingCyclePayment {
+  year: number;
+  month: number;
+  close_date: string; // ISO date (YYYY-MM-DD)
+  due_date: string; // ISO date (YYYY-MM-DD)
+  amount: string | null;
+}
+
 export interface Category {
   id: number;
   name: string;
