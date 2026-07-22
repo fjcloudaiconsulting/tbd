@@ -39,11 +39,14 @@ import { useAccounts } from "@/lib/hooks/use-accounts";
 import { useBillingPeriods } from "@/lib/hooks/use-billing-periods";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import {
+  PAGE_SIZE_KEY_DASHBOARD_RECENT,
   SORT_KEY_DASHBOARD_SPENDING,
   SORT_KEY_DASHBOARD_TRANSACTIONS,
 } from "@/lib/hooks/persisted-keys";
 import { usePersistedSort } from "@/lib/hooks/use-persisted-sort";
 import type { PersistedSort } from "@/lib/hooks/use-persisted-sort";
+import { PAGE_SIZE_OPTIONS } from "@/lib/hooks/use-table-state";
+import { readPersisted, writePersisted } from "@/lib/persisted-state";
 import type { Account, BillingPeriod, Budget, Transaction } from "@/lib/types";
 import type {
   ForecastPlanLike,
@@ -53,6 +56,18 @@ import type { AccountMonthEndForecastResponse } from "@/components/dashboard/Acc
 
 // Recent-transactions tile page size (mirrors LegacyDashboard's PAGE_SIZE).
 const PAGE_SIZE = 10;
+
+// Guard for the persisted recent-tx page size: only accept one of the
+// selectable options so a stale / hand-edited localStorage value can never
+// drive an off-menu limit. Keyed by surface only (flat, like the
+// transactions page's PAGE_SIZE_KEY_TRANSACTIONS); per-user/org isolation is
+// the separate localStorage-scope backlog item.
+function isValidPageSize(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    (PAGE_SIZE_OPTIONS as readonly number[]).includes(value)
+  );
+}
 
 // Stable empty-array fallbacks so the SWR loading state (data === undefined)
 // doesn't hand a fresh [] to memos/effects on every render.
@@ -300,10 +315,15 @@ export function DashboardDataProvider({
   const [txTotal, setTxTotal] = useState(0);
   const [page, setPage] = useState(0);
   // Page size is user-selectable on the recent-tx tile (10–100); changing it
-  // resets to page 0. loadPageTransactions reads the current size.
-  const [pageSize, setPageSizeState] = useState(PAGE_SIZE);
+  // resets to page 0. loadPageTransactions reads the current size. Persisted
+  // to localStorage (lazy one-shot read on mount, write-through on change) so
+  // the chosen size survives reload and navigation, mirroring the sort hooks.
+  const [pageSize, setPageSizeState] = useState<number>(() =>
+    readPersisted(PAGE_SIZE_KEY_DASHBOARD_RECENT, PAGE_SIZE, isValidPageSize),
+  );
   const setPageSize = useCallback((n: number) => {
     setPageSizeState(n);
+    writePersisted(PAGE_SIZE_KEY_DASHBOARD_RECENT, n);
     setPage(0);
   }, []);
   const txPageRequestId = useRef(0);
