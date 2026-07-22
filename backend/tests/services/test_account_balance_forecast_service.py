@@ -616,15 +616,16 @@ async def test_cc_synth_fixed_amount_clamped_to_owed(db_session: AsyncSession):
     assert cc_row["cc_payments"] == [{"amount": "300.00", "date": "2026-05-01"}]
 
 
-async def test_cc_synth_minimum_only_reads_store_and_zero_when_unset(db_session: AsyncSession):
-    """(d) minimum_only reads the per-cycle stored amount; nothing when unset."""
-    seed = await _seed_cc(db_session, strategy=PaymentStrategy.MINIMUM_ONLY)
+async def test_cc_synth_override_applies_to_full_balance(db_session: AsyncSession):
+    """F2: a per-cycle override is honored on a full_balance card."""
+    seed = await _seed_cc(db_session)  # default strategy = FULL_BALANCE
     cc = seed["cc"]
     db_session.add(_charge(seed, cc, amount="900.00", on=datetime.date(2026, 4, 10)))
     cc.balance = Decimal("-900.00")
     await db_session.commit()
     r1 = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
-    assert next(a for a in r1["accounts"] if a["account_id"] == cc.id)["cc_payments"] == []
+    assert next(a for a in r1["accounts"] if a["account_id"] == cc.id)["cc_payments"] == [
+        {"amount": "900.00", "date": "2026-05-01"}]
     db_session.add(CcCyclePayment(account_id=cc.id, period_anchor_year=2026,
                                   period_anchor_month=4, amount=Decimal("75.00")))
     await db_session.commit()

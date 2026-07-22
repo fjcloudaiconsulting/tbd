@@ -7,8 +7,6 @@ and consumed-credit threading, and every strategy's target.
 from datetime import date
 from decimal import Decimal
 
-import pytest
-
 from app.services import cc_forecast_service as svc
 
 
@@ -91,18 +89,35 @@ def test_target_fixed_amount_is_literal():
     assert svc.cc_target_payment(acct, _cycle(acct), Decimal("1200.00"), {}) == Decimal("150.00")
 
 
-@pytest.mark.parametrize("strategy", ["minimum_only", "custom_per_period"])
-def test_target_stored_amount_when_present(strategy):
-    acct = _FakeAccount(payment_strategy=strategy)
+def test_target_override_wins_for_full_balance():
+    acct = _FakeAccount(payment_strategy="full_balance")
     cyc = _cycle(acct)  # close Apr 25 -> anchor (id, 2026, 4)
     per_cycle = {(acct.id, 2026, 4): Decimal("75.00")}
     assert svc.cc_target_payment(acct, cyc, Decimal("1200.00"), per_cycle) == Decimal("75.00")
 
 
-@pytest.mark.parametrize("strategy", ["minimum_only", "custom_per_period"])
-def test_target_zero_when_stored_amount_unset(strategy):
-    acct = _FakeAccount(payment_strategy=strategy)
-    assert svc.cc_target_payment(acct, _cycle(acct), Decimal("1200.00"), {}) == Decimal("0")
+def test_target_override_wins_for_none_strategy():
+    acct = _FakeAccount(payment_strategy=None)
+    cyc = _cycle(acct)
+    per_cycle = {(acct.id, 2026, 4): Decimal("40.00")}
+    assert svc.cc_target_payment(acct, cyc, Decimal("900.00"), per_cycle) == Decimal("40.00")
+
+
+def test_target_override_wins_over_fixed_amount():
+    acct = _FakeAccount(payment_strategy="fixed_amount", fixed_payment_amount=Decimal("150.00"))
+    cyc = _cycle(acct)
+    per_cycle = {(acct.id, 2026, 4): Decimal("60.00")}
+    assert svc.cc_target_payment(acct, cyc, Decimal("1200.00"), per_cycle) == Decimal("60.00")
+
+
+def test_target_full_balance_without_override_is_outstanding():
+    acct = _FakeAccount(payment_strategy="full_balance")
+    assert svc.cc_target_payment(acct, _cycle(acct), Decimal("1200.00"), {}) == Decimal("1200.00")
+
+
+def test_target_fixed_amount_without_override_is_literal():
+    acct = _FakeAccount(payment_strategy="fixed_amount", fixed_payment_amount=Decimal("150.00"))
+    assert svc.cc_target_payment(acct, _cycle(acct), Decimal("1200.00"), {}) == Decimal("150.00")
 
 
 def test_target_none_strategy_defaults_full_balance():
