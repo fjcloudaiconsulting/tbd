@@ -310,6 +310,9 @@ function renderProvider() {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
+  // The recent-tx page size now write-throughs to localStorage; clear it so a
+  // size persisted by one test can't leak into the next as a stale default.
+  window.localStorage.clear();
   vi.mocked(apiFetch).mockReset();
   vi.mocked(pagination.fetchAll).mockReset();
   // Default: no pending transactions.
@@ -1532,6 +1535,108 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
         calls.some((u) => u.includes("limit=25") && u.includes("offset=0")),
       ).toBe(true);
     });
+  });
+
+  it("persists the chosen page size to localStorage", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 50 },
+      }) as never,
+    );
+
+    function PageSizeConsumer() {
+      const ctx = useDashboard();
+      return (
+        <div>
+          <span data-testid="loading">{String(ctx.loading)}</span>
+          <button data-testid="set-page-size-50" onClick={() => ctx.setPageSize(50)} />
+        </div>
+      );
+    }
+
+    renderWithSWR(
+      <DashboardDataProvider>
+        <PageSizeConsumer />
+      </DashboardDataProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+
+    act(() => {
+      screen.getByTestId("set-page-size-50").click();
+    });
+
+    await waitFor(() =>
+      expect(window.localStorage.getItem("pfv:page-size:dashboard-recent")).toBe(
+        "50",
+      ),
+    );
+  });
+
+  it("restores a persisted page size on mount (and fetches at that size)", async () => {
+    // A previously-chosen size is honored on the next visit.
+    window.localStorage.setItem("pfv:page-size:dashboard-recent", "50");
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 200 },
+      }) as never,
+    );
+
+    function PageSizeConsumer() {
+      const ctx = useDashboard();
+      return (
+        <div>
+          <span data-testid="loading">{String(ctx.loading)}</span>
+          <span data-testid="page-size">{ctx.pageSize}</span>
+        </div>
+      );
+    }
+
+    renderWithSWR(
+      <DashboardDataProvider>
+        <PageSizeConsumer />
+      </DashboardDataProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    expect(screen.getByTestId("page-size").textContent).toBe("50");
+    await waitFor(() => {
+      const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0] as string);
+      expect(calls.some((u) => u.includes("limit=50"))).toBe(true);
+    });
+  });
+
+  it("ignores an off-menu persisted page size, falling back to the default", async () => {
+    window.localStorage.setItem("pfv:page-size:dashboard-recent", "999");
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 50 },
+      }) as never,
+    );
+
+    function PageSizeConsumer() {
+      const ctx = useDashboard();
+      return (
+        <div>
+          <span data-testid="loading">{String(ctx.loading)}</span>
+          <span data-testid="page-size">{ctx.pageSize}</span>
+        </div>
+      );
+    }
+
+    renderWithSWR(
+      <DashboardDataProvider>
+        <PageSizeConsumer />
+      </DashboardDataProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    expect(screen.getByTestId("page-size").textContent).toBe("10");
   });
 });
 
