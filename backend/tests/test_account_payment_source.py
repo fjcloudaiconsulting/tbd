@@ -351,6 +351,36 @@ def test_deleting_source_sets_target_pointer_null(session_factory, worlds):
     assert target.payment_source_account_id is None
 
 
+def test_converting_cc_to_non_cc_clears_payment_source(session_factory, worlds):
+    """Leaving credit_card must clear the paid-from pointer server-side, so
+    an asset account never retains an orphaned source the CC-only picker
+    could not surface to clear (mirrors the close_day leave-CC cascade)."""
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        set_res = client.put(
+            f"/api/v1/accounts/{a['cc_id']}",
+            json={"payment_source_account_id": a["savings_id"]},
+        )
+        assert set_res.status_code == 200, set_res.text
+
+        # Convert CC -> checking. The frontend omits payment_source on a
+        # non-CC save; the server cascade must still null it.
+        conv_res = client.put(
+            f"/api/v1/accounts/{a['cc_id']}",
+            json={"account_type_id": a["type_ids"]["checking"]},
+        )
+        assert conv_res.status_code == 200, conv_res.text
+        assert conv_res.json()["payment_source_account_id"] is None
+
+    import asyncio
+
+    row = asyncio.get_event_loop().run_until_complete(
+        _account_row(session_factory, a["cc_id"])
+    )
+    assert row.payment_source_account_id is None
+
+
 def test_inactive_source_rejected_at_write_time(session_factory, worlds):
     a = worlds["a"]
     app = _make_app(session_factory, a["admin_id"])
