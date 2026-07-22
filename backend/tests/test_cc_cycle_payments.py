@@ -75,6 +75,17 @@ async def _seed_org(db: AsyncSession, *, name: str, email: str) -> dict:
     )
     db.add(admin)
 
+    member = User(
+        org_id=org.id,
+        username=f"member-{name}",
+        email=f"member-{email}",
+        password_hash=hash_password("pw-1234567"),
+        role=Role.MEMBER,
+        is_active=True,
+        email_verified=True,
+    )
+    db.add(member)
+
     types = {}
     for slug, tname in [
         ("checking", "Checking"),
@@ -126,6 +137,7 @@ async def _seed_org(db: AsyncSession, *, name: str, email: str) -> dict:
     return {
         "org_id": org.id,
         "admin_id": admin.id,
+        "member_id": member.id,
         "type_ids": {slug: at.id for slug, at in types.items()} | {"cash": cash_at.id},
         "checking_id": checking.id,
         "savings_id": savings.id,
@@ -295,3 +307,160 @@ def test_validate_delete_path_skips_amount_check():
         account=acct, account_slug="credit_card",
         year=2026, month=8, today=date(2026, 7, 22), amount=None,
     )
+
+
+# ── endpoint: GET upcoming collection ───────────────────────────────────────
+
+
+def test_get_upcoming_returns_three_cycles_with_dates(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.get(f"/api/v1/accounts/{a['cc_id']}/cycle-payments")
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    assert len(rows) == 3
+    for r in rows:
+        assert set(r.keys()) == {"year", "month", "close_date", "due_date", "amount"}
+        assert r["amount"] is None
+        assert r["close_date"] < r["due_date"]
+
+
+def test_get_upcoming_non_cc_returns_empty(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.get(f"/api/v1/accounts/{a['checking_id']}/cycle-payments")
+    assert res.status_code == 200, res.text
+    assert res.json() == []
+
+
+def test_get_upcoming_cross_org_404(session_factory, worlds):
+    a, b = worlds["a"], worlds["b"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.get(f"/api/v1/accounts/{b['cc_id']}/cycle-payments")
+    assert res.status_code == 404, res.text
+
+
+def _first_upcoming_anchor(client, account_id) -> tuple[int, int]:
+    rows = client.get(f"/api/v1/accounts/{account_id}/cycle-payments").json()
+    return rows[0]["year"], rows[0]["month"]
+
+
+def test_put_then_get_reflects_amount(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        year, month = _first_upcoming_anchor(client, a["cc_id"])
+        put = client.put(
+            f"/api/v1/accounts/{a['cc_id']}/cycle-payments/{year}/{month}",
+            json={"amount": "200.00"},
+        )
+        assert put.status_code == 200, put.text
+        rows = client.get(f"/api/v1/accounts/{a['cc_id']}/cycle-payments").json()
+        hit = next(r for r in rows if r["year"] == year and r["month"] == month)
+        assert hit["amount"] == "200.00"
+
+
+def test_put_upsert_updates_existing(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        year, month = _first_upcoming_anchor(client, a["cc_id"])
+        client.put(
+            f"/api/v1/accounts/{a['cc_id']}/cycle-payments/{year}/{month}",
+            json={"amount": "200.00"},
+        )
+        upd = client.put(
+            f"/api/v1/accounts/{a['cc_id']}/cycle-payments/{year}/{month}",
+            json={"amount": "250.00"},
+        )
+        assert upd.status_code == 200, upd.text
+        rows = client.get(f"/api/v1/accounts/{a['cc_id']}/cycle-payments").json()
+        hit = next(r for r in rows if r["year"] == year and r["month"] == month)
+        assert hit["amount"] == "250.00"
+
+
+def test_put_zero_amount_rejected_422(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        year, month = _first_upcoming_anchor(client, a["cc_id"])
+        res = client.put(
+            f"/api/v1/accounts/{a['cc_id']}/cycle-payments/{year}/{month}",
+            json={"amount": "0"},
+        )
+    assert res.status_code == 422, res.text
+
+
+def test_put_past_cycle_rejected_409(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{a['cc_id']}/cycle-payments/2000/1",
+            json={"amount": "50.00"},
+        )
+    assert res.status_code == 409, res.text
+
+
+def test_put_non_cc_rejected_422(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{a['checking_id']}/cycle-payments/2030/1",
+            json={"amount": "50.00"},
+        )
+    assert res.status_code == 422, res.text
+
+
+def test_delete_removes_row(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        year, month = _first_upcoming_anchor(client, a["cc_id"])
+        client.put(
+            f"/api/v1/accounts/{a['cc_id']}/cycle-payments/{year}/{month}",
+            json={"amount": "200.00"},
+        )
+        res = client.delete(
+            f"/api/v1/accounts/{a['cc_id']}/cycle-payments/{year}/{month}"
+        )
+        assert res.status_code == 200, res.text
+        rows = client.get(f"/api/v1/accounts/{a['cc_id']}/cycle-payments").json()
+        hit = next(r for r in rows if r["year"] == year and r["month"] == month)
+        assert hit["amount"] is None
+
+
+def test_delete_absent_404(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        year, month = _first_upcoming_anchor(client, a["cc_id"])
+        res = client.delete(
+            f"/api/v1/accounts/{a['cc_id']}/cycle-payments/{year}/{month}"
+        )
+    assert res.status_code == 404, res.text
+
+
+def test_put_non_admin_forbidden(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["member_id"])
+    with TestClient(app) as client:
+        year, month = _first_upcoming_anchor(client, a["cc_id"])
+        res = client.put(
+            f"/api/v1/accounts/{a['cc_id']}/cycle-payments/{year}/{month}",
+            json={"amount": "50.00"},
+        )
+    assert res.status_code == 403, res.text
+
+
+def test_get_allowed_for_non_admin_member(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["member_id"])
+    with TestClient(app) as client:
+        res = client.get(f"/api/v1/accounts/{a['cc_id']}/cycle-payments")
+    assert res.status_code == 200, res.text
+    assert len(res.json()) == 3
