@@ -30,6 +30,8 @@ from app.routers.accounts import router as accounts_router
 from app.security import hash_password
 
 from app.models.account import PaymentStrategy
+from app.services.credit_card_service import validate_credit_card_fields
+from fastapi import HTTPException
 
 
 @pytest_asyncio.fixture
@@ -203,3 +205,124 @@ def test_payment_strategy_enum_roundtrips_lowercase(session_factory, worlds):
     assert reread.credit_limit == Decimal("2000.00")
     assert reread.apr == Decimal("19.99")
     assert reread.fixed_payment_amount == Decimal("75.00")
+
+
+# ── credit_card_service.validate_credit_card_fields (pure unit) ────────────
+
+
+def _expect_422(**kwargs) -> HTTPException:
+    with pytest.raises(HTTPException) as exc:
+        validate_credit_card_fields(**kwargs)
+    assert exc.value.status_code == 422
+    return exc.value
+
+
+def test_non_cc_forbids_all_four_cc_fields():
+    for field, value in [
+        ("credit_limit", Decimal("100.00")),
+        ("apr", Decimal("10.00")),
+        ("payment_strategy", PaymentStrategy.FULL_BALANCE),
+        ("fixed_payment_amount", Decimal("10.00")),
+    ]:
+        base = dict(
+            target_slug="checking",
+            credit_limit=None,
+            apr=None,
+            payment_strategy=None,
+            fixed_payment_amount=None,
+        )
+        base[field] = value
+        _expect_422(**base)
+
+
+def test_cc_allows_all_null():
+    # Bare CC account with nothing set is valid (limit optional, strategy NULL).
+    validate_credit_card_fields(
+        target_slug="credit_card",
+        credit_limit=None,
+        apr=None,
+        payment_strategy=None,
+        fixed_payment_amount=None,
+    )
+
+
+def test_cc_credit_limit_must_be_positive_when_set():
+    _expect_422(
+        target_slug="credit_card",
+        credit_limit=Decimal("0"),
+        apr=None,
+        payment_strategy=None,
+        fixed_payment_amount=None,
+    )
+    validate_credit_card_fields(
+        target_slug="credit_card",
+        credit_limit=Decimal("2500.00"),
+        apr=None,
+        payment_strategy=None,
+        fixed_payment_amount=None,
+    )
+
+
+@pytest.mark.parametrize("bad_apr", [Decimal("-1"), Decimal("100.01")])
+def test_cc_apr_out_of_range_rejected(bad_apr):
+    _expect_422(
+        target_slug="credit_card",
+        credit_limit=None,
+        apr=bad_apr,
+        payment_strategy=None,
+        fixed_payment_amount=None,
+    )
+
+
+@pytest.mark.parametrize("ok_apr", [Decimal("0"), Decimal("19.99"), Decimal("100")])
+def test_cc_apr_in_range_ok(ok_apr):
+    validate_credit_card_fields(
+        target_slug="credit_card",
+        credit_limit=None,
+        apr=ok_apr,
+        payment_strategy=None,
+        fixed_payment_amount=None,
+    )
+
+
+def test_fixed_amount_requires_positive_fixed_payment():
+    _expect_422(
+        target_slug="credit_card",
+        credit_limit=None,
+        apr=None,
+        payment_strategy=PaymentStrategy.FIXED_AMOUNT,
+        fixed_payment_amount=None,
+    )
+    _expect_422(
+        target_slug="credit_card",
+        credit_limit=None,
+        apr=None,
+        payment_strategy=PaymentStrategy.FIXED_AMOUNT,
+        fixed_payment_amount=Decimal("0"),
+    )
+    validate_credit_card_fields(
+        target_slug="credit_card",
+        credit_limit=None,
+        apr=None,
+        payment_strategy=PaymentStrategy.FIXED_AMOUNT,
+        fixed_payment_amount=Decimal("50.00"),
+    )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        PaymentStrategy.FULL_BALANCE,
+        PaymentStrategy.MINIMUM_ONLY,
+        PaymentStrategy.CUSTOM_PER_PERIOD,
+        None,
+    ],
+)
+def test_fixed_payment_forbidden_for_non_fixed_strategy(strategy):
+    _expect_422(
+        target_slug="credit_card",
+        credit_limit=None,
+        apr=None,
+        payment_strategy=strategy,
+        fixed_payment_amount=Decimal("50.00"),
+    )
