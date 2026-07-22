@@ -28,9 +28,11 @@ from app.models import (
     Organization,
     Transaction,
 )
+from app.models.account import PaymentStrategy
 from app.models.base import Base
 from app.models.billing import BillingPeriod
 from app.models.category import CategoryType
+from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.transaction import TransactionStatus, TransactionType
 from app.services.account_balance_forecast_service import (
     compute_account_balance_forecast,
@@ -472,3 +474,192 @@ async def test_manual_adjustments_excluded_from_pending_delta(
     row = next(a for a in result["accounts"] if a["account_id"] == primary.id)
     assert row["pending_delta"] == "0.00"
     assert row["expected_month_end_balance"] == "1000.00"
+
+
+# ---------- Slice 3: CC projected-payment synthesis ----------
+
+async def _seed_cc(
+    db: AsyncSession,
+    *,
+    strategy=PaymentStrategy.FULL_BALANCE,
+    fixed_payment_amount=None,
+    cc_currency="EUR",
+    source_currency="EUR",
+    close_day=25,
+    opening_balance=Decimal("0.00"),
+):
+    """Seed a checking source + a credit_card paid from it. Returns the base
+    _seed() dict plus 'cc', 'source', 'cc_type_id'."""
+    seed = await _seed(db)
+    org_id = seed["org_id"]
+    source = seed["accounts"]["primary"]
+    if source_currency != source.currency:
+        source.currency = source_currency
+    cc_type = AccountType(org_id=org_id, name="Credit Card", slug="credit_card", is_system=True)
+    db.add(cc_type)
+    await db.flush()
+    cc = Account(
+        org_id=org_id, name="Visa", account_type_id=cc_type.id,
+        balance=Decimal("0.00"), currency=cc_currency, is_default=False,
+        close_day=close_day, payment_day=1, payment_day_relative_month=1,
+        payment_source_account_id=source.id, payment_strategy=strategy,
+        fixed_payment_amount=fixed_payment_amount, opening_balance=opening_balance,
+    )
+    db.add(cc)
+    await db.flush()
+    seed["cc"] = cc
+    seed["source"] = source
+    seed["cc_type_id"] = cc_type.id
+    return seed
+
+
+def _charge(seed, cc, *, amount, on, settled=True):
+    """A settled CC expense (lowers the CC balance)."""
+    return _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_expense"],
+        amount=Decimal(amount), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED if settled else TransactionStatus.PENDING,
+        date=on, settled_date=on if settled else None,
+    )
+
+
+async def test_cc_synth_grace_period_uses_balance_as_of_close(db_session: AsyncSession):
+    """(h)+(a) close in the past, due in horizon: outflow == owed AS OF CLOSE."""
+    seed = await _seed_cc(db_session)
+    cc, source = seed["cc"], seed["source"]
+    db_session.add_all([
+        _charge(seed, cc, amount="500.00", on=datetime.date(2026, 4, 10)),
+        _charge(seed, cc, amount="700.00", on=datetime.date(2026, 5, 3)),
+    ])
+    cc.balance = Decimal("-1200.00")
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    by_id = {a["account_id"]: a for a in result["accounts"]}
+    cc_row, src_row = by_id[cc.id], by_id[source.id]
+    assert cc_row["cc_payments"] == [{"amount": "500.00", "date": "2026-05-01"}]
+    assert Decimal(cc_row["expected_month_end_balance"]) == Decimal(cc_row["balance"]) + Decimal("500.00")
+    assert Decimal(src_row["expected_month_end_balance"]) == (
+        Decimal(src_row["balance"]) + Decimal(src_row["pending_delta"]) - Decimal("500.00")
+    )
+
+
+async def test_cc_synth_conservation_same_currency(db_session: AsyncSession):
+    """(b) totals unchanged; Σ per-account expected == Σ(balance+pending)."""
+    seed = await _seed_cc(db_session)
+    cc = seed["cc"]
+    db_session.add(_charge(seed, cc, amount="300.00", on=datetime.date(2026, 4, 10)))
+    cc.balance = Decimal("-300.00")
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    eur = next(t for t in result["totals"] if t["currency"] == "EUR")
+    assert eur["expected_month_end_balance"] == str(
+        (Decimal(eur["balance"]) + Decimal(eur["pending_delta"])).quantize(Decimal("0.01")))
+    eur_rows = [a for a in result["accounts"] if a["currency"] == "EUR"]
+    assert sum(Decimal(a["expected_month_end_balance"]) for a in eur_rows) == sum(
+        Decimal(a["balance"]) + Decimal(a["pending_delta"]) for a in eur_rows)
+
+
+async def test_cc_synth_null_source_value_parity(db_session: AsyncSession):
+    """(e) NULL source -> no synth; money fields match pre-Slice-3; cc_payments empty."""
+    seed = await _seed_cc(db_session)
+    cc = seed["cc"]
+    cc.payment_source_account_id = None
+    db_session.add(_charge(seed, cc, amount="800.00", on=datetime.date(2026, 4, 10)))
+    cc.balance = Decimal("-800.00")
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    for a in result["accounts"]:
+        assert a["cc_payments"] == []
+        assert a["expected_month_end_balance"] == str(
+            (Decimal(a["balance"]) + Decimal(a["pending_delta"])).quantize(Decimal("0.01")))
+
+
+async def test_cc_synth_cross_currency_source_no_op(db_session: AsyncSession):
+    """(f) source currency != CC currency -> no synthesis."""
+    seed = await _seed_cc(db_session, cc_currency="EUR", source_currency="USD")
+    cc = seed["cc"]
+    db_session.add(_charge(seed, cc, amount="400.00", on=datetime.date(2026, 4, 10)))
+    cc.balance = Decimal("-400.00")
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == []
+
+
+async def test_cc_synth_card_in_credit_no_outflow(db_session: AsyncSession):
+    """(g) nothing owed -> no outflow."""
+    seed = await _seed_cc(db_session)
+    cc = seed["cc"]
+    cc.balance = Decimal("120.00")
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == []
+
+
+async def test_cc_synth_fixed_amount_clamped_to_owed(db_session: AsyncSession):
+    """(c)+(k) fixed_amount literal, clamped so it never pays into credit."""
+    seed = await _seed_cc(db_session, strategy=PaymentStrategy.FIXED_AMOUNT,
+                          fixed_payment_amount=Decimal("500.00"))
+    cc = seed["cc"]
+    db_session.add(_charge(seed, cc, amount="300.00", on=datetime.date(2026, 4, 10)))
+    cc.balance = Decimal("-300.00")
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == [{"amount": "300.00", "date": "2026-05-01"}]
+
+
+async def test_cc_synth_minimum_only_reads_store_and_zero_when_unset(db_session: AsyncSession):
+    """(d) minimum_only reads the per-cycle stored amount; nothing when unset."""
+    seed = await _seed_cc(db_session, strategy=PaymentStrategy.MINIMUM_ONLY)
+    cc = seed["cc"]
+    db_session.add(_charge(seed, cc, amount="900.00", on=datetime.date(2026, 4, 10)))
+    cc.balance = Decimal("-900.00")
+    await db_session.commit()
+    r1 = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    assert next(a for a in r1["accounts"] if a["account_id"] == cc.id)["cc_payments"] == []
+    db_session.add(CcCyclePayment(account_id=cc.id, period_anchor_year=2026,
+                                  period_anchor_month=4, amount=Decimal("75.00")))
+    await db_session.commit()
+    r2 = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    assert next(a for a in r2["accounts"] if a["account_id"] == cc.id)["cc_payments"] == [
+        {"amount": "75.00", "date": "2026-05-01"}]
+
+
+async def test_cc_synth_real_payment_nets_once(db_session: AsyncSession):
+    """(j) a real CC payment-in credit in (close, due] nets P_k."""
+    seed = await _seed_cc(db_session)
+    cc, source = seed["cc"], seed["source"]
+    db_session.add(_charge(seed, cc, amount="1000.00", on=datetime.date(2026, 4, 10)))
+    src_leg = _new_tx(org_id=seed["org_id"], account_id=source.id, category_id=seed["cat_transfer"],
+                      amount=Decimal("300.00"), type=TransactionType.EXPENSE,
+                      status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 28),
+                      settled_date=datetime.date(2026, 4, 28))
+    cc_leg = _new_tx(org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_transfer"],
+                     amount=Decimal("300.00"), type=TransactionType.INCOME,
+                     status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 28),
+                     settled_date=datetime.date(2026, 4, 28))
+    db_session.add_all([src_leg, cc_leg])
+    await db_session.flush()
+    src_leg.linked_transaction_id = cc_leg.id
+    cc_leg.linked_transaction_id = src_leg.id
+    cc.balance = Decimal("-700.00")
+    source.balance = source.balance - Decimal("300.00")
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == [{"amount": "700.00", "date": "2026-05-01"}]
+
+
+async def test_cc_synth_two_due_dates_s_prev(db_session: AsyncSession):
+    """(i) a two-month horizon bills carried debt once."""
+    seed = await _seed_cc(db_session)
+    cc = seed["cc"]
+    db_session.add(_charge(seed, cc, amount="1000.00", on=datetime.date(2026, 3, 10)))
+    cc.balance = Decimal("-1000.00")
+    seed["period"].end_date = datetime.date(2026, 6, 30)
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == [{"amount": "1000.00", "date": "2026-05-01"}]

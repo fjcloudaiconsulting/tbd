@@ -26,13 +26,18 @@ import datetime
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account, AccountType
+from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
+from app.services import cc_forecast_service
 from app.services.billing_service import resolve_period
-from app.services.transaction_filters import effective_period_date_expr
+from app.services.transaction_filters import (
+    effective_period_date_expr,
+    non_reverted_transaction_filter,
+)
 
 
 async def compute_account_balance_forecast(
@@ -100,6 +105,80 @@ async def compute_account_balance_forecast(
             pending_by_account.get(account_id, Decimal("0")) + delta
         )
 
+    # ── Credit-card projected-payment synthesis (Slice 3) ─────────────────────
+    # Ephemeral in-memory deltas with provenance source="credit_card_payment":
+    # on each resolved due date the source asset drops and the CC liability
+    # moves toward zero. Synthesized HERE (per-account balances include transfer
+    # legs), never in forecast_service (reportable aggregate excludes them).
+    # Totals are NOT adjusted (they derive from balance+pending); same-currency
+    # conservation keeps them correct, and cross-currency is skipped so the
+    # per-currency rollup never desyncs.
+    accounts_by_id = {acct.id: (acct, slug) for acct, slug in rows}
+    cc_accounts = [
+        acct for acct, slug in rows
+        if slug == "credit_card"
+        and acct.close_day is not None
+        and acct.payment_source_account_id is not None
+    ]
+    synth_delta_by_account: dict[int, Decimal] = {}
+    cc_payments_by_account: dict[int, list[dict]] = {}
+
+    if cc_accounts:
+        cc_ids = [a.id for a in cc_accounts]
+
+        pcp_rows = (await db.execute(
+            select(CcCyclePayment.account_id, CcCyclePayment.period_anchor_year,
+                   CcCyclePayment.period_anchor_month, CcCyclePayment.amount)
+            .where(CcCyclePayment.account_id.in_(cc_ids))
+        )).all()
+        per_cycle_amounts = {(aid, y, m): Decimal(str(amt)) for aid, y, m, amt in pcp_rows}
+
+        signed = case(
+            (Transaction.type == TransactionType.INCOME, Transaction.amount),
+            else_=-Transaction.amount,
+        )
+        ledger_rows = (await db.execute(
+            select(Transaction.account_id, eff_date.label("eff"), signed.label("signed"))
+            .where(Transaction.org_id == org_id,
+                   Transaction.account_id.in_(cc_ids),
+                   non_reverted_transaction_filter())
+        )).all()
+        ledger_by_account: dict[int, list[tuple]] = {}
+        for aid, eff, s in ledger_rows:
+            ledger_by_account.setdefault(aid, []).append((eff, Decimal(str(s))))
+
+        credit_rows = (await db.execute(
+            select(Transaction.id, Transaction.account_id, eff_date.label("eff"), Transaction.amount)
+            .where(Transaction.org_id == org_id,
+                   Transaction.account_id.in_(cc_ids),
+                   Transaction.linked_transaction_id.is_not(None),
+                   Transaction.type == TransactionType.INCOME,
+                   non_reverted_transaction_filter())
+        )).all()
+        credits_by_account: dict[int, list[tuple]] = {}
+        for cid, aid, eff, amt in credit_rows:
+            credits_by_account.setdefault(aid, []).append((cid, eff, Decimal(str(amt))))
+
+        for cc in cc_accounts:
+            source_entry = accounts_by_id.get(cc.payment_source_account_id)
+            if source_entry is None:
+                continue  # source inactive/not loaded -> no-op (do not resurrect)
+            source, _ = source_entry
+            if source.currency != cc.currency:
+                continue  # no FX in V1 -> would desync per-currency totals
+            payments = cc_forecast_service.synthesize_account_cc_payments(
+                cc, p_start=p_start, p_end=p_end,
+                opening_balance=Decimal(str(cc.opening_balance)),
+                ledger=ledger_by_account.get(cc.id, []),
+                credits=credits_by_account.get(cc.id, []),
+                per_cycle_amounts=per_cycle_amounts,
+            )
+            for pay_date, outflow in payments:
+                synth_delta_by_account[source.id] = synth_delta_by_account.get(source.id, Decimal("0")) - outflow
+                synth_delta_by_account[cc.id] = synth_delta_by_account.get(cc.id, Decimal("0")) + outflow
+                cc_payments_by_account.setdefault(cc.id, []).append(
+                    {"amount": _q(outflow), "date": pay_date.isoformat()})
+
     accounts_payload: list[dict] = []
     totals_by_currency: dict[str, dict[str, Decimal]] = {}
 
@@ -115,7 +194,8 @@ async def compute_account_balance_forecast(
     for account, type_slug in sorted_rows:
         balance = Decimal(str(account.balance))
         delta = pending_by_account.get(account.id, Decimal("0"))
-        expected = balance + delta
+        synth = synth_delta_by_account.get(account.id, Decimal("0"))
+        expected = balance + delta + synth
 
         accounts_payload.append(
             {
@@ -127,6 +207,7 @@ async def compute_account_balance_forecast(
                 "balance": _q(balance),
                 "pending_delta": _q(delta),
                 "expected_month_end_balance": _q(expected),
+                "cc_payments": cc_payments_by_account.get(account.id, []),
             }
         )
 
