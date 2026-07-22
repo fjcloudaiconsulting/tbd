@@ -1,6 +1,7 @@
 import asyncio
 import re
 import secrets
+import time
 import hmac as _hmac
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -473,6 +474,40 @@ def _log_refresh_rejected(
     if extra:
         detail.update(extra)
     _LOGGER.info("auth.refresh.rejected", **detail)
+
+
+def _log_google_callback_phase(
+    phase: str,
+    *,
+    duration_ms: float,
+    extra: dict | None = None,
+) -> None:
+    """One structlog breadcrumb per Google-callback phase, with the
+    per-phase duration in milliseconds.
+
+    The 2026-05-19 incident hung somewhere between the userinfo fetch and
+    the redirect, but none of those steps emitted a log line, so ops could
+    not tell which ``await`` was stuck (uvicorn's access log only fires at
+    response time). These breadcrumbs make the phase sequence visible: the
+    last phase logged before silence is the await that hung.
+
+    ``request_id`` is already bound on the structlog contextvars by
+    ``RequestContextMiddleware``, so every breadcrumb carries it for
+    per-sign-in correlation without threading it through here.
+
+    Gated by ``settings.auth_debug_logging`` (env ``AUTH_DEBUG_LOGGING``,
+    default false) — production stays quiet under normal operation;
+    operators flip the flag on during incident triage to capture the phase
+    durations, then off again. PII guard: phase names and durations only —
+    never a raw Google token and never a raw email (the new-user email
+    already rides the audit_events row, matching that privacy posture).
+    """
+    if not app_settings.auth_debug_logging:
+        return
+    detail: dict = {"phase": phase, "duration_ms": round(duration_ms, 1)}
+    if extra:
+        detail.update(extra)
+    _LOGGER.info("auth.google.callback.phase", **detail)
 
 
 SESSION_EXPIRED_DETAIL = "Session expired — please sign in again"
@@ -2911,6 +2946,23 @@ async def google_callback(
         )
         return _google_error_redirect("token")
 
+    # ── Post-userinfo breadcrumbs (2026-05-19 hang diagnosis) ────────
+    # Emit one gated structlog line per phase from here to the redirect so
+    # a future hang pins the exact stuck await (the last phase before
+    # silence). ``_phase`` reports the per-step duration; the clock resets
+    # each call. All gated behind AUTH_DEBUG_LOGGING, so this is free in
+    # normal production operation.
+    _phase_marker = {"t": time.monotonic()}
+
+    def _phase(name: str, extra: dict | None = None) -> None:
+        now = time.monotonic()
+        _log_google_callback_phase(
+            name, duration_ms=(now - _phase_marker["t"]) * 1000, extra=extra
+        )
+        _phase_marker["t"] = now
+
+    _phase("userinfo_ok")
+
     email = normalize_email(google_user.get("email", ""))
     if not email:
         await _record_google_callback_failure(
@@ -2944,6 +2996,7 @@ async def google_callback(
     # Check if user already exists by email
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
+    _phase("db_user_lookup_ok")
 
     # Track whether this callback created a new local user. The flag
     # drives two downstream effects: an audit row distinct from the
@@ -3032,6 +3085,8 @@ async def google_callback(
         await subscription_service.create_trial(db, org.id)
         await db.flush()
 
+    _phase("user_prepare_ok")
+
     # Issue tokens (or MFA challenge if enabled)
     await db.refresh(user, ["organization"])
 
@@ -3052,9 +3107,11 @@ async def google_callback(
     # so the Google-SSO branch lands the same cookie / JWT / Redis
     # TTL as the password-login branch.
     ttl_seconds = await get_org_session_ttl_seconds(db, user.org_id)
+    _phase("ttl_resolved")
     refresh_token, _jti, _sid = await _issue_refresh_session(
         user.id, ttl_seconds=ttl_seconds
     )
+    _phase("session_issue_ok")
 
     # Architect P1 finding on PR #306: on the new-user branch above we
     # switched ``db.commit()`` to ``db.flush()`` so the user + trial
@@ -3070,6 +3127,7 @@ async def google_callback(
     # committed any mutated-profile changes earlier, so this second
     # commit is a no-op for it.
     await db.commit()
+    _phase("db_commit_ok")
 
     # Redirect to frontend with the access token in the URL fragment. The
     # fragment stays client-side (not sent to servers, not logged), while
@@ -3103,6 +3161,7 @@ async def google_callback(
         path="/",
     )
     _clear_legacy_refresh_cookie(resp)
+    _phase("redirect_built")
     if created_user:
         # Distinct audit event for the "we just created a local user
         # from a Google identity" branch. Sits alongside the
@@ -3119,6 +3178,7 @@ async def google_callback(
     await _record_login_success(
         session_factory, user=user, request=request, method="google_sso"
     )
+    _phase("audit_ok")
     return resp
 
 
