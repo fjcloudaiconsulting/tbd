@@ -400,3 +400,63 @@ def test_create_cc_fixed_amount_without_fixed_payment_rejected(session_factory, 
             },
         )
     assert res.status_code == 422, res.text
+
+
+# ── PUT path ────────────────────────────────────────────────────────────────
+
+
+def test_put_sets_cc_fields_on_existing_cc(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{a['cc_id']}",
+            json={
+                "credit_limit": "5000.00",
+                "apr": "22.50",
+                "payment_strategy": "minimum_only",
+            },
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["credit_limit"] == "5000.00"
+    assert body["apr"] == "22.50"
+    assert body["payment_strategy"] == "minimum_only"
+    assert body["fixed_payment_amount"] is None
+
+
+def test_put_fixed_amount_requires_fixed_payment(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{a['cc_id']}",
+            json={"payment_strategy": "fixed_amount"},
+        )
+    assert res.status_code == 422, res.text
+
+
+def test_put_credit_limit_on_non_cc_rejected(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{a['checking_id']}",
+            json={"credit_limit": "1000.00"},
+        )
+    assert res.status_code == 422, res.text
+
+
+def test_put_switch_to_fixed_amount_with_payment_ok(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{a['cc_id']}",
+            json={
+                "payment_strategy": "fixed_amount",
+                "fixed_payment_amount": "125.00",
+            },
+        )
+    assert res.status_code == 200, res.text
+    assert res.json()["fixed_payment_amount"] == "125.00"
