@@ -16,7 +16,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -42,6 +42,7 @@ from app.schemas.forecast import AccountBalanceForecastResponse
 from app.services.account_balance_forecast_service import (
     compute_account_balance_forecast,
 )
+from app.services.transaction_filters import balance_contribution_filter
 
 
 @pytest_asyncio.fixture
@@ -806,6 +807,281 @@ async def test_cc_synth_excludes_reconcile_matched_reverted_duplicate_credit(
         db_session, seed["org_id"], period_start=PERIOD_START
     )
     cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == [{"amount": "700.00", "date": "2026-05-01"}]
+
+
+# ---------- Slice 3 architect correction: reciprocal-link discriminator ----------
+#
+# The flat-column predicate (import_batch_id IS NULL OR linked_transaction_id
+# IS NULL) over-excludes: a genuine transfer leg that happens to be
+# import-paired is byte-identical, in every flat column, to a reconcile-
+# MATCHED duplicate (both can carry import_batch_id set + linked_transaction_id
+# set + reconciliation_state='accepted'). The corrected discriminator is
+# partner-link RECIPROCITY: ``_link_pair`` (real transfers, incl. import
+# pairing) links BIDIRECTIONALLY; ``_apply_match`` (reconcile match) links
+# ONE-WAY onto the duplicate only. See transaction_filters.balance_contribution_filter.
+
+
+async def test_cc_synth_keeps_import_paired_transfer_leg_no_phantom_repayment(
+    db_session: AsyncSession,
+):
+    """THE BUG: a real, import-paired payment-in transfer leg (bidirectional
+    link + import_batch_id set on the CC leg) must still be KEPT in the B_k
+    ledger. Under the old flat-column filter it was wrongly dropped because
+    import_batch_id and linked_transaction_id are both set -- indistinguishable
+    from a reconcile-matched duplicate by flat columns alone. Dropping it
+    understates the ledger's reconstructed balance (still looks owed) and
+    the forecast synthesizes a phantom re-payment of debt that is already
+    paid off. On the OLD filter this assertion fails (RED); the fix makes
+    it pass (GREEN)."""
+    seed = await _seed_cc(db_session)
+    cc, source = seed["cc"], seed["source"]
+    db_session.add(_charge(seed, cc, amount="1000.00", on=datetime.date(2026, 4, 10)))
+
+    src_leg = _new_tx(
+        org_id=seed["org_id"], account_id=source.id, category_id=seed["cat_transfer"],
+        amount=Decimal("1000.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 20),
+        settled_date=datetime.date(2026, 4, 20),
+    )
+    cc_leg = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_transfer"],
+        amount=Decimal("1000.00"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 20),
+        settled_date=datetime.date(2026, 4, 20),
+    )
+    db_session.add_all([src_leg, cc_leg])
+    await db_session.flush()
+
+    # Import-paired real transfer: BIDIRECTIONAL link (what _link_pair
+    # writes, including at import time), import_batch_id set on the CC
+    # leg (this leg arrived via a bank import), state accepted.
+    batch = await _make_import_batch(db_session, seed, cc.id)
+    src_leg.linked_transaction_id = cc_leg.id
+    cc_leg.linked_transaction_id = src_leg.id
+    cc_leg.import_batch_id = batch.id
+    cc_leg.reconciliation_state = "accepted"
+
+    cc.balance = Decimal("0.00")  # fully paid down by the real transfer
+    source.balance = source.balance - Decimal("1000.00")
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START
+    )
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == []  # no phantom re-payment of already-paid debt
+
+
+async def test_cc_synth_drops_one_way_matched_duplicate_state_matched(
+    db_session: AsyncSession,
+):
+    """Explicit reciprocity-discriminator coverage: a reconcile-MATCHED
+    duplicate carries a ONE-WAY link (only the duplicate points at the
+    canonical row; the canonical row is not linked back) -- exactly what
+    ``_apply_match`` writes. Confirms the corrected filter still drops
+    these (terminal state 'matched')."""
+    seed = await _seed_cc(db_session)
+    cc = seed["cc"]
+    canonical = _charge(seed, cc, amount="500.00", on=datetime.date(2026, 4, 10))
+    db_session.add(canonical)
+    await db_session.flush()
+
+    batch = await _make_import_batch(db_session, seed, cc.id)
+    duplicate = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_expense"],
+        amount=Decimal("500.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 10),
+        settled_date=datetime.date(2026, 4, 10), is_imported=True,
+        import_batch_id=batch.id, reconciliation_state="matched",
+        linked_transaction_id=canonical.id,  # one-way; canonical stays unlinked
+    )
+    db_session.add(duplicate)
+    cc.balance = Decimal("-500.00")  # duplicate's contribution reverted at match time
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START
+    )
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == [{"amount": "500.00", "date": "2026-05-01"}]
+
+
+async def test_cc_synth_drops_one_way_matched_duplicate_state_accepted(
+    db_session: AsyncSession,
+):
+    """Same shape as the 'matched' case, but terminal state 'accepted' --
+    refutes the hypothesis that the corrected filter discriminates on
+    ``state != 'matched'`` rather than on link reciprocity. The duplicate
+    must still be dropped."""
+    seed = await _seed_cc(db_session)
+    cc = seed["cc"]
+    canonical = _charge(seed, cc, amount="500.00", on=datetime.date(2026, 4, 10))
+    db_session.add(canonical)
+    await db_session.flush()
+
+    batch = await _make_import_batch(db_session, seed, cc.id)
+    duplicate = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_expense"],
+        amount=Decimal("500.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 10),
+        settled_date=datetime.date(2026, 4, 10), is_imported=True,
+        import_batch_id=batch.id, reconciliation_state="accepted",  # NOT "matched"
+        linked_transaction_id=canonical.id,  # one-way; canonical stays unlinked
+    )
+    db_session.add(duplicate)
+    cc.balance = Decimal("-500.00")
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START
+    )
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == [{"amount": "500.00", "date": "2026-05-01"}]
+
+
+async def test_balance_contribution_filter_invariant_matches_account_balance(
+    db_session: AsyncSession,
+):
+    """Filter-level invariant, queried directly (no forecast synthesis
+    involved): Σ signed(settled rows passing balance_contribution_filter())
+    == account.balance - account.opening_balance, across every row shape --
+    unlinked reportable (keep), manual adjustment (keep), an import-paired
+    BIDIRECTIONAL transfer leg (keep), a ONE-WAY matched-reverted duplicate
+    (drop), skipped (drop), rejected (drop)."""
+    seed = await _seed_cc(db_session, opening_balance=Decimal("1000.00"))
+    cc, source = seed["cc"], seed["source"]
+    batch = await _make_import_batch(db_session, seed, cc.id)
+
+    plain = _charge(seed, cc, amount="200.00", on=datetime.date(2026, 4, 5))
+
+    adj = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_expense"],
+        amount=Decimal("50.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 6),
+        settled_date=datetime.date(2026, 4, 6), is_manual_adjustment=True,
+    )
+
+    # Import-paired BIDIRECTIONAL transfer leg -- KEEP despite carrying
+    # import_batch_id, the exact shape the bug wrongly dropped.
+    src_leg = _new_tx(
+        org_id=seed["org_id"], account_id=source.id, category_id=seed["cat_transfer"],
+        amount=Decimal("300.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 7),
+        settled_date=datetime.date(2026, 4, 7),
+    )
+    cc_leg = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_transfer"],
+        amount=Decimal("300.00"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 7),
+        settled_date=datetime.date(2026, 4, 7), is_imported=True,
+        import_batch_id=batch.id, reconciliation_state="accepted",
+    )
+
+    db_session.add_all([plain, adj, src_leg, cc_leg])
+    await db_session.flush()
+    src_leg.linked_transaction_id = cc_leg.id
+    cc_leg.linked_transaction_id = src_leg.id
+
+    # ONE-WAY matched-reverted duplicate of `plain` -- DROP.
+    dup = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_expense"],
+        amount=Decimal("77.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 8),
+        settled_date=datetime.date(2026, 4, 8), is_imported=True,
+        import_batch_id=batch.id, reconciliation_state="matched",
+        linked_transaction_id=plain.id,  # one-way; plain stays unlinked
+    )
+
+    # SKIPPED -- DROP (reverted at state transition).
+    skipped = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_expense"],
+        amount=Decimal("33.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 9),
+        settled_date=datetime.date(2026, 4, 9), reconciliation_state="skipped",
+    )
+
+    # REJECTED -- DROP (reverted at state transition).
+    rejected = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_expense"],
+        amount=Decimal("22.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 10),
+        settled_date=datetime.date(2026, 4, 10), reconciliation_state="rejected",
+    )
+
+    db_session.add_all([dup, skipped, rejected])
+
+    # Balance reflects ONLY the kept contributions: opening 1000.00
+    # - 200.00 (plain) - 50.00 (adj) + 300.00 (cc_leg income) = 1050.00.
+    # If `dup` (-77), `skipped` (-33), or `rejected` (-22) were wrongly
+    # kept, or `cc_leg` (+300) were wrongly dropped, this invariant breaks.
+    cc.balance = Decimal("1050.00")
+    await db_session.commit()
+
+    rows = (
+        await db_session.execute(
+            select(Transaction.type, Transaction.amount).where(
+                Transaction.account_id == cc.id, balance_contribution_filter()
+            )
+        )
+    ).all()
+    total = Decimal("0")
+    for tx_type, amount in rows:
+        signed = Decimal(str(amount))
+        total += signed if tx_type == TransactionType.INCOME else -signed
+
+    assert cc.balance - cc.opening_balance == total
+
+
+async def test_cc_credits_query_excludes_one_way_matched_duplicate_payment_in(
+    db_session: AsyncSession,
+):
+    """Credits (P_k) symmetry: a reconcile-MATCHED (ONE-WAY linked) imported
+    duplicate of a real CC payment-in leg must not double-net P_k -- only
+    the reciprocal/canonical payment nets once. Without the fix (or if the
+    reciprocity check were dropped from the credits side) this would net
+    twice, halving the projected outflow."""
+    seed = await _seed_cc(db_session)
+    cc, source = seed["cc"], seed["source"]
+    db_session.add(_charge(seed, cc, amount="1000.00", on=datetime.date(2026, 4, 10)))
+
+    src_leg = _new_tx(
+        org_id=seed["org_id"], account_id=source.id, category_id=seed["cat_transfer"],
+        amount=Decimal("300.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 28),
+        settled_date=datetime.date(2026, 4, 28),
+    )
+    cc_leg = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_transfer"],
+        amount=Decimal("300.00"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 28),
+        settled_date=datetime.date(2026, 4, 28),
+    )
+    db_session.add_all([src_leg, cc_leg])
+    await db_session.flush()
+    src_leg.linked_transaction_id = cc_leg.id
+    cc_leg.linked_transaction_id = src_leg.id
+
+    batch = await _make_import_batch(db_session, seed, cc.id)
+    dup_credit = _new_tx(
+        org_id=seed["org_id"], account_id=cc.id, category_id=seed["cat_transfer"],
+        amount=Decimal("300.00"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=datetime.date(2026, 4, 28),
+        settled_date=datetime.date(2026, 4, 28), is_imported=True,
+        import_batch_id=batch.id, reconciliation_state="matched",
+        linked_transaction_id=cc_leg.id,  # one-way; cc_leg stays unlinked to dup
+    )
+    db_session.add(dup_credit)
+
+    cc.balance = Decimal("-700.00")  # 1000 charge - 300 real payment only
+    source.balance = source.balance - Decimal("300.00")
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START
+    )
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    # 700, not 400 -- the duplicate credit must not net a second time.
     assert cc_row["cc_payments"] == [{"amount": "700.00", "date": "2026-05-01"}]
 
 
