@@ -615,6 +615,36 @@ async def test_patch_accepts_recent_transactions_tile(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_patch_accepts_cc_utilization_tile(session_factory):
+    """PATCH with the dash_cc_utilization tile must return 200 and round-trip
+    the layout VERBATIM.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    cc_utilization_layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "w-cc-utilization",
+                "type": "dash_cc_utilization",
+                "title": "Credit Card Utilization",
+                "grid": {"x": 0, "y": 19, "w": 4, "h": 5},
+                "config": {},
+            },
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch(
+            "/api/v1/dashboard", json={"layout_json": cc_utilization_layout}
+        )
+    assert res.status_code == 200, res.text
+    assert res.json()["layout_json"] == cc_utilization_layout
+
+
+@pytest.mark.asyncio
 async def test_patch_still_rejects_unknown_type_after_chart_tiles(session_factory):
     """After adding the 3 chart tiles, unknown widget types must still 422."""
     await _seed(session_factory)
