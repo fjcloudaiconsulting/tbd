@@ -236,6 +236,47 @@ describe("AccountMonthEndForecast — empty states", () => {
   });
 });
 
+const CC_WITH_PAYMENT: AccountMonthEndForecastResponse = {
+  period_start: "2026-05-01",
+  period_end: "2026-05-31",
+  totals: [
+    {
+      currency: "EUR",
+      balance: "-500.00",
+      pending_delta: "0.00",
+      expected_month_end_balance: "-500.00",
+    },
+  ],
+  accounts: [
+    {
+      account_id: 1,
+      account_name: "Visa",
+      currency: "EUR",
+      is_default: false,
+      account_type_slug: "credit_card",
+      balance: "-500.00",
+      pending_delta: "0.00",
+      expected_month_end_balance: "0.00",
+      cc_payments: [{ amount: "500.00", date: "2026-05-01" }],
+    },
+  ],
+};
+
+describe("AccountMonthEndForecast — credit-card projected payment", () => {
+  it("renders a muted Payment line from cc_payments", () => {
+    render(<AccountMonthEndForecast {...defaults({ forecast: CC_WITH_PAYMENT })} />);
+    const line = screen.getByText(/Payment.*€500\.00 on 2026-05-01/);
+    expect(line).toBeInTheDocument();
+    expect(line.className).toContain("text-text-muted");
+    expect(line.className).toContain("text-[10px]");
+  });
+
+  it("renders no payment line when cc_payments is absent or empty", () => {
+    render(<AccountMonthEndForecast {...defaults({ forecast: TWO_ACCOUNTS_EUR })} />);
+    expect(screen.queryByText(/Payment.*on /)).toBeNull();
+  });
+});
+
 describe("AccountMonthEndForecast — error state", () => {
   it("renders an explicit error message when hasError is true (not 'Loading…')", () => {
     render(
