@@ -460,3 +460,46 @@ def test_put_switch_to_fixed_amount_with_payment_ok(session_factory, worlds):
         )
     assert res.status_code == 200, res.text
     assert res.json()["fixed_payment_amount"] == "125.00"
+
+
+# ── leave-CC cascade ────────────────────────────────────────────────────────
+
+
+def test_leaving_cc_clears_all_four_cc_fields(session_factory, worlds):
+    """Converting a CC to a non-CC type must null every CC-only column, so
+    an asset row never silently retains a credit_limit/strategy no UI can
+    surface (same bug class as the payment_source leave-CC cascade)."""
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        set_res = client.put(
+            f"/api/v1/accounts/{a['cc_id']}",
+            json={
+                "credit_limit": "4000.00",
+                "apr": "18.00",
+                "payment_strategy": "fixed_amount",
+                "fixed_payment_amount": "90.00",
+            },
+        )
+        assert set_res.status_code == 200, set_res.text
+
+        conv_res = client.put(
+            f"/api/v1/accounts/{a['cc_id']}",
+            json={"account_type_id": a["type_ids"]["checking"]},
+        )
+        assert conv_res.status_code == 200, conv_res.text
+        body = conv_res.json()
+        assert body["credit_limit"] is None
+        assert body["apr"] is None
+        assert body["payment_strategy"] is None
+        assert body["fixed_payment_amount"] is None
+
+    import asyncio
+
+    row = asyncio.get_event_loop().run_until_complete(
+        _account_row(session_factory, a["cc_id"])
+    )
+    assert row.credit_limit is None
+    assert row.apr is None
+    assert row.payment_strategy is None
+    assert row.fixed_payment_amount is None
