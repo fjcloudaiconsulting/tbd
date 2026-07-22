@@ -807,3 +807,81 @@ async def test_list_broadcasts_happy_path_returns_populated_envelope(session_fac
     ids = {item["id"] for item in body["items"]}
     assert first["id"] in ids
     assert second["id"] in ids
+
+
+# ── delete draft ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_draft_removes_row_and_audits(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        draft = _create_draft(client)
+        res = client.delete(f"/api/v1/admin/broadcasts/{draft['id']}")
+        assert res.status_code == 204, res.text
+        # The row is gone.
+        assert (
+            client.get(f"/api/v1/admin/broadcasts/{draft['id']}").status_code == 404
+        )
+
+    async with session_factory() as db:
+        # The draft row is actually deleted.
+        remaining = (
+            await db.execute(
+                select(func.count()).select_from(EmailBroadcast)
+            )
+        ).scalar_one()
+        assert remaining == 0
+        # A no-PII audit event landed.
+        events = (
+            await db.execute(
+                select(AuditEvent).where(AuditEvent.event_type == "broadcast.delete")
+            )
+        ).scalars().all()
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.detail["broadcast_id"] == draft["id"]
+    assert "email" not in (ev.detail or {})
+    assert ev.target_org_id is None
+
+
+@pytest.mark.asyncio
+async def test_delete_non_draft_returns_409_and_keeps_row(session_factory):
+    await _seed(session_factory)
+    broadcast_id = await _seed_broadcast_with_status(
+        session_factory, BroadcastStatus.SENDING
+    )
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.delete(f"/api/v1/admin/broadcasts/{broadcast_id}")
+    assert res.status_code == 409
+    assert res.json()["detail"]["code"] == "broadcast_not_draft"
+    # A non-draft (sending/completed/failed) broadcast is never erased.
+    async with session_factory() as db:
+        assert await db.get(EmailBroadcast, broadcast_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_missing_returns_404(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.delete("/api/v1/admin/broadcasts/999999")
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_requires_superadmin(session_factory):
+    await _seed(session_factory)
+    # Create the draft as superadmin, then attempt delete as a plain user.
+    sa_app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(sa_app) as client:
+        draft = _create_draft(client)
+    plain_app = _make_app(session_factory, _plain_user_resolver())
+    with TestClient(plain_app) as client:
+        res = client.delete(f"/api/v1/admin/broadcasts/{draft['id']}")
+    assert res.status_code == 403
+    # The draft survives the forbidden attempt.
+    async with session_factory() as db:
+        assert await db.get(EmailBroadcast, draft["id"]) is not None

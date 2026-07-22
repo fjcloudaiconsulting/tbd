@@ -96,6 +96,7 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/admin/broadcasts/1/send"),     # send_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/resume"),   # resume_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/dry-run"),  # dry_run_broadcast (sends real email)
+    ("DELETE", "/api/v1/admin/broadcasts/1"),        # delete_broadcast (draft-only)
     # ── Follow-up: 3 more routes (Task-5 review, defense-in-depth) ──────────
     ("PATCH", "/api/v1/orgs/1/rename"),              # rename_org_endpoint
     ("POST", "/api/v1/orgs/invitations"),            # create_invitation (grants a role)

@@ -58,6 +58,13 @@ export async function resumeBroadcast(id: number): Promise<Broadcast> {
   return apiFetch<Broadcast>(`${BASE}/${id}/resume`, { method: "POST" });
 }
 
+// Delete a draft broadcast (204 No Content). Guarded draft-only server-side:
+// a non-draft returns 409 `broadcast_not_draft`. The UI only offers delete on
+// draft rows, so that 409 is a stale-tab guard, not a normal path.
+export async function deleteBroadcast(id: number): Promise<void> {
+  await apiFetch<void>(`${BASE}/${id}`, { method: "DELETE" });
+}
+
 export async function listRecipients(
   id: number,
   page: number,
@@ -94,7 +101,7 @@ export const BROADCAST_ERROR_COPY: Record<string, string> = {
   recipient_cap_exceeded:
     "This broadcast targets more recipients than the per-send cap allows.",
   broadcast_not_draft:
-    "This broadcast is no longer a draft, so it can't be sent or dry-run again.",
+    "This broadcast is no longer a draft, so it can't be sent, dry-run, or deleted.",
   invalid_template_token:
     "A '%' in the subject or body isn't allowed. Remove it and try again.",
 };
