@@ -129,6 +129,9 @@ export default function AccountsPage() {
   // L3.2 Wave 2A — opening balance fields are editable from the row.
   const [editAcctOpeningBalance, setEditAcctOpeningBalance] = useState("0.00");
   const [editAcctOpeningBalanceDate, setEditAcctOpeningBalanceDate] = useState("");
+  // Payment Source Foundation — "Paid from" pointer during inline edit.
+  // "" = none. Only surfaced/sent for credit_card accounts.
+  const [editAcctPaymentSource, setEditAcctPaymentSource] = useState<number | "">("");
   // Confirm modal state for type change (spec § 5.3). Holds the
   // pre-resolved old/new type labels + the change-effect copy so the
   // modal message can be a plain string (ConfirmModal does not take
@@ -153,6 +156,9 @@ export default function AccountsPage() {
   const todayIso = new Date().toISOString().slice(0, 10);
   const [acctOpeningBalance, setAcctOpeningBalance] = useState("0.00");
   const [acctOpeningBalanceDate, setAcctOpeningBalanceDate] = useState(todayIso);
+  // Payment Source Foundation — "Paid from" pointer on the create form.
+  // "" = none. Only surfaced/sent for credit_card accounts.
+  const [acctPaymentSource, setAcctPaymentSource] = useState<number | "">("");
   const selectedType = accountTypes.find((t) => t.id === acctTypeId) ?? null;
 
   const [error, setError] = useState("");
@@ -178,6 +184,30 @@ export default function AccountsPage() {
   const [adjustingAccount, setAdjustingAccount] = useState<Account | null>(null);
 
   const canAdjustBalance = !!user && isAdmin(user) && user.allow_manual_balance_adjustment;
+
+  // Payment Source Foundation — a liability's bill can be paid FROM an
+  // asset account (checking / savings / cash) in the same org. The list
+  // read is already org-scoped, so every row here is same-org by
+  // construction. Excludes the target itself (no self-pay) and inactive
+  // sources, but preserves a currently-selected source that has since
+  // become ineligible (e.g. deactivated) so the controlled <select> keeps
+  // a valid value and can show it as "(inactive)".
+  const paymentSourceOptions = useCallback(
+    (selectedId: number | "", excludeId: number | null): Account[] => {
+      const eligible = accounts.filter(
+        (s) =>
+          s.is_active &&
+          ["checking", "savings", "cash"].includes(s.account_type_slug ?? "") &&
+          s.id !== excludeId,
+      );
+      if (selectedId !== "" && !eligible.some((s) => s.id === selectedId)) {
+        const stale = accounts.find((s) => s.id === selectedId);
+        if (stale) return [stale, ...eligible];
+      }
+      return eligible;
+    },
+    [accounts],
+  );
 
   // Fetch the non-SWR reference data (account types + all-time pending) WITHOUT
   // committing it, so callers can decide when to commit. Account types are
@@ -322,18 +352,24 @@ export default function AccountsPage() {
     e.preventDefault();
     setError("");
     try {
+      const isCC = selectedType?.slug === "credit_card";
       await apiFetch("/api/v1/accounts", {
         method: "POST",
         body: JSON.stringify({
           name: acctName, account_type_id: acctTypeId,
           currency: acctCurrency,
-          close_day: selectedType?.slug === "credit_card" && acctCloseDay ? Number(acctCloseDay) : null,
+          close_day: isCC && acctCloseDay ? Number(acctCloseDay) : null,
           opening_balance: acctOpeningBalance || "0.00",
           opening_balance_date: acctOpeningBalanceDate || null,
+          // Only send the paid-from pointer for CC accounts; "" clears to null.
+          ...(isCC
+            ? { payment_source_account_id: acctPaymentSource === "" ? null : acctPaymentSource }
+            : {}),
         }),
       });
       setAcctName(""); setAcctTypeId(""); setAcctCloseDay("");
       setAcctOpeningBalance("0.00"); setAcctOpeningBalanceDate(todayIso);
+      setAcctPaymentSource("");
       setShowAccountForm(false);
       await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
@@ -355,6 +391,7 @@ export default function AccountsPage() {
     setEditAcctCloseDay(a.close_day ? String(a.close_day) : "");
     setEditAcctOpeningBalance(String(a.opening_balance ?? "0.00"));
     setEditAcctOpeningBalanceDate(a.opening_balance_date ?? "");
+    setEditAcctPaymentSource(a.payment_source_account_id ?? "");
   }
 
   // Resolve the currently-selected edit type so render gates (close-day
@@ -382,6 +419,11 @@ export default function AccountsPage() {
     // entirely when the user is not on CC.
     if (isCC) {
       body.close_day = editAcctCloseDay ? Number(editAcctCloseDay) : null;
+      // Payment Source Foundation — send the paid-from pointer only for CC
+      // accounts; "" clears it to null. Non-CC saves omit the key entirely
+      // so the server never sees a stray value on an asset account.
+      body.payment_source_account_id =
+        editAcctPaymentSource === "" ? null : editAcctPaymentSource;
     }
     // Always send account_type_id so the cascade and audit logic on
     // the backend trigger. The handler is idempotent when the value
@@ -697,6 +739,28 @@ export default function AccountsPage() {
                       <input id="acct-close" type="number" required min={1} max={28} value={acctCloseDay} onChange={(e) => setAcctCloseDay(e.target.value)} className={`w-24 ${input}`} placeholder="15" />
                     </div>
                   )}
+                  {/* Payment Source Foundation — "Paid from" picker,
+                      credit-card-only. Lists same-org checking/savings/cash
+                      accounts; "(none)" clears it. Server validation
+                      (payment_source_service) is the source of truth. */}
+                  {selectedType?.slug === "credit_card" && (
+                    <div>
+                      <label htmlFor="acct-payment-source" className={label}>Paid from</label>
+                      <select
+                        id="acct-payment-source"
+                        value={acctPaymentSource}
+                        onChange={(e) => setAcctPaymentSource(e.target.value === "" ? "" : Number(e.target.value))}
+                        className={input}
+                      >
+                        <option value="">(none)</option>
+                        {paymentSourceOptions(acctPaymentSource, null).map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}{!s.is_active ? " (inactive)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   {/* L3.2 Wave 2A — opening balance + date. Optional;
                       defaults are 0 / today. Helper text aimed at the
                       pre-launch friends-only audience: most users won't
@@ -802,7 +866,13 @@ export default function AccountsPage() {
                           // when leaving CC, so a stale value can't be
                           // sent.
                           const nextSlug = accountTypes.find((t) => t.id === next)?.slug ?? null;
-                          if (nextSlug !== "credit_card") setEditAcctCloseDay("");
+                          if (nextSlug !== "credit_card") {
+                            setEditAcctCloseDay("");
+                            // Drop the paid-from pointer too; _doSaveAcct
+                            // only sends it on CC, but clearing local state
+                            // keeps the picker from flashing a stale value.
+                            setEditAcctPaymentSource("");
+                          }
                         }}
                         className={`w-full text-sm sm:w-44 ${input}`}
                       >
@@ -819,6 +889,28 @@ export default function AccountsPage() {
                         <input aria-label="Close day" type="number" min={1} max={28} value={editAcctCloseDay} onChange={(e) => setEditAcctCloseDay(e.target.value)} placeholder="Close day" className={`w-full text-sm sm:w-24 ${input}`} />
                       )}
                     </div>
+                    {/* Payment Source Foundation — "Paid from" picker,
+                        credit-card-only. Lists same-org checking/savings/cash
+                        accounts (excluding this one); "(none)" clears it. */}
+                    {editingTypeSlug === "credit_card" && (
+                      <div className="w-full sm:w-72">
+                        <label htmlFor={`edit-acct-payment-source-${a.id}`} className={label}>Paid from</label>
+                        <select
+                          id={`edit-acct-payment-source-${a.id}`}
+                          aria-label="Paid from"
+                          value={editAcctPaymentSource}
+                          onChange={(e) => setEditAcctPaymentSource(e.target.value === "" ? "" : Number(e.target.value))}
+                          className={`w-full text-sm ${input}`}
+                        >
+                          <option value="">(none)</option>
+                          {paymentSourceOptions(editAcctPaymentSource, a.id).map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name}{!s.is_active ? " (inactive)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     {/* L3.2 Wave 2A — opening balance edit row. Two
                         compact fields, audit-logged on the backend. */}
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
@@ -873,6 +965,20 @@ export default function AccountsPage() {
                         )}
                         <span className="text-xs text-text-muted md:hidden">{a.account_type_name}</span>
                         {a.close_day && <span className="text-xs text-text-muted">· closes day {a.close_day}</span>}
+                        {/* Payment Source Foundation — "Paid from" detail.
+                            Resolves the source name from the (org-scoped)
+                            accounts list; flags a since-deactivated source. */}
+                        {a.payment_source_account_id != null && (() => {
+                          const src = accounts.find((s) => s.id === a.payment_source_account_id);
+                          return (
+                            <span className="text-xs text-text-muted">
+                              · paid from {src?.name ?? "unknown"}
+                              {src && !src.is_active ? (
+                                <span className="text-danger"> (inactive)</span>
+                              ) : null}
+                            </span>
+                          );
+                        })()}
                         {!a.is_active && <span className="text-xs text-danger">inactive</span>}
                       </div>
                     </div>
