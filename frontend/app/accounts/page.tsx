@@ -13,6 +13,7 @@ import { apiFetch, extractErrorMessage, ApiResponseError } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount } from "@/lib/format";
+import { creditUtilization } from "@/lib/credit";
 import {
   useTableState,
   paginate,
@@ -1282,12 +1283,9 @@ export default function AccountsPage() {
                           signal). Separator is a middle dot, no em-dash. */}
                       {a.account_type_slug === "credit_card" && Number(a.credit_limit) > 0
                         ? (() => {
-                            const limit = Number(a.credit_limit);
-                            const bal = Number(a.balance);
-                            const outstanding = Math.max(0, -bal);
-                            const util = Math.round((outstanding / limit) * 100);
-                            const available = limit + bal;
-                            const over = outstanding - limit;
+                            const { outstanding, utilizationPct, available, over } =
+                              creditUtilization(Number(a.balance), Number(a.credit_limit));
+                            const util = Math.round(utilizationPct);
                             let text: string;
                             if (outstanding === 0) {
                               text = "0% used · full limit available";
