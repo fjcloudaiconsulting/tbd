@@ -1143,6 +1143,37 @@ export default function AccountsPage() {
                           {a.opening_balance_date ? ` since ${a.opening_balance_date}` : ""}
                         </span>
                       ) : null}
+                      {/* Credit Card Model V1 (Slice 1) — utilization /
+                          available-credit subline. Render only for a CC
+                          with a positive credit_limit; otherwise stay
+                          silent (no "—"). Liabilities are negative
+                          balances: outstanding = max(0, -bal). No color
+                          band, even over-limit (owner-permitted state; the
+                          balance sign already carries the "you owe"
+                          signal). Separator is a middle dot, no em-dash. */}
+                      {a.account_type_slug === "credit_card" && Number(a.credit_limit) > 0
+                        ? (() => {
+                            const limit = Number(a.credit_limit);
+                            const bal = Number(a.balance);
+                            const outstanding = Math.max(0, -bal);
+                            const util = Math.round((outstanding / limit) * 100);
+                            const available = limit + bal;
+                            const over = outstanding - limit;
+                            let text: string;
+                            if (outstanding === 0) {
+                              text = "0% used · full limit available";
+                            } else if (over > 0) {
+                              text = `Using ${util}% of limit · ${formatAmount(over)} ${a.currency} over`;
+                            } else {
+                              text = `Using ${util}% of limit · ${formatAmount(available)} ${a.currency} left`;
+                            }
+                            return (
+                              <span className="text-xs tabular-nums text-text-muted">
+                                {text}
+                              </span>
+                            );
+                          })()
+                        : null}
                     </div>
                     {/* Action column. Edit (and Adjust balance, when the
                         admin permission is on AND the account is active)

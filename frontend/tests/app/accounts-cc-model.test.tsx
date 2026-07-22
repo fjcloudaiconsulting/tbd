@@ -90,7 +90,7 @@ const CC = {
   is_active: true, is_default: false, close_day: 15,
   opening_balance: "0.00", opening_balance_date: "2026-01-01",
   payment_source_account_id: 10, // paid from Primary
-  credit_limit: "2000.00", apr: "19.99", payment_strategy: "minimum_only",
+  credit_limit: "2000.00" as string | null, apr: "19.99", payment_strategy: "minimum_only",
   fixed_payment_amount: null,
 };
 
@@ -190,5 +190,40 @@ describe("CC Model — form fields", () => {
     await screen.findByLabelText("Account type");
     expect(screen.queryByLabelText(/Credit limit/i)).toBeNull();
     expect(screen.queryByLabelText(/Payment strategy/i)).toBeNull();
+  });
+});
+
+describe("CC Model — utilization subline", () => {
+  function ccWith(balance: string, credit_limit: string | null) {
+    return { ...CC, balance, credit_limit };
+  }
+
+  test("within-limit shows 'Using n% of limit · <available> <ccy> left'", async () => {
+    mockApi([CHECKING, SAVINGS, ccWith("-500.00", "2000.00")]);
+    renderWithSWR(<AccountsPage />);
+    const row = await screen.findByTestId("account-row-11");
+    expect(within(row).getByText(/Using 25% of limit · 1,500\.00 EUR left/)).toBeTruthy();
+  });
+
+  test("zero outstanding shows the full-limit copy", async () => {
+    mockApi([CHECKING, SAVINGS, ccWith("0.00", "2000.00")]);
+    renderWithSWR(<AccountsPage />);
+    const row = await screen.findByTestId("account-row-11");
+    expect(within(row).getByText(/0% used · full limit available/)).toBeTruthy();
+  });
+
+  test("over-limit shows the '<over> <ccy> over' copy (uncapped %)", async () => {
+    mockApi([CHECKING, SAVINGS, ccWith("-2500.00", "2000.00")]);
+    renderWithSWR(<AccountsPage />);
+    const row = await screen.findByTestId("account-row-11");
+    expect(within(row).getByText(/Using 125% of limit · 500\.00 EUR over/)).toBeTruthy();
+  });
+
+  test("no subline when credit_limit is null or zero", async () => {
+    mockApi([CHECKING, SAVINGS, ccWith("-500.00", null)]);
+    renderWithSWR(<AccountsPage />);
+    const row = await screen.findByTestId("account-row-11");
+    expect(within(row).queryByText(/of limit/)).toBeNull();
+    expect(within(row).queryByText(/full limit available/)).toBeNull();
   });
 });
