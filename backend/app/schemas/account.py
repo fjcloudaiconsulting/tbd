@@ -50,6 +50,10 @@ class AccountCreate(BaseModel):
         decimal_places=2,
     )
     opening_balance_date: Optional[date] = None
+    # Payment Source Foundation: the account this liability's bill is paid
+    # FROM. Optional; validated server-side (same-org, checking/savings/cash,
+    # not self, active) in payment_source_service.
+    payment_source_account_id: Optional[int] = None
 
 
 class AccountUpdate(BaseModel):
@@ -60,6 +64,9 @@ class AccountUpdate(BaseModel):
     payment_day: Optional[int] = Field(default=None, ge=1, le=31)
     payment_day_relative_month: Optional[int] = Field(default=None, ge=0, le=12)
     is_default: Optional[bool] = None
+    # Payment Source Foundation. Uses the model_fields_set idiom in the
+    # router: omit to preserve, send explicit null to clear the pointer.
+    payment_source_account_id: Optional[int] = None
     # Both opening fields are editable post-create. Audit-logged on
     # change (see ``accounts.update_account``).
     opening_balance: Optional[Decimal] = Field(
@@ -87,6 +94,7 @@ class AccountResponse(BaseModel):
     is_default: bool = False
     opening_balance: Decimal = Decimal("0.00")
     opening_balance_date: Optional[date] = None
+    payment_source_account_id: Optional[int] = None
 
     model_config = {"from_attributes": True}
 

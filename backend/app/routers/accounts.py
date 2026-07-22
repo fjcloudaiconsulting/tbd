@@ -26,6 +26,7 @@ from app.services.account_type_change_service import (
     validate_create_payment_day,
 )
 from app.services.exceptions import ConflictError, ValidationError
+from app.services.payment_source_service import validate_payment_source_account
 from app.services.transaction_service import (
     adjust_account_balance,
     assert_no_dependents,
@@ -62,6 +63,7 @@ def _to_response(account: Account) -> AccountResponse:
         is_default=account.is_default,
         opening_balance=account.opening_balance,
         opening_balance_date=account.opening_balance_date,
+        payment_source_account_id=account.payment_source_account_id,
     )
 
 
@@ -109,6 +111,16 @@ async def create_account(
         payment_day_value=body.payment_day,
         payment_day_relative_month_value=body.payment_day_relative_month,
     )
+    # Payment Source Foundation: validate the paid-from pointer before the
+    # insert. target_account_id is None (the row has no id yet), so the
+    # self-pay check is a no-op here; the rest (same-org, allowlisted type,
+    # active) still applies.
+    await validate_payment_source_account(
+        db,
+        org_id=current_user.org_id,
+        source_account_id=body.payment_source_account_id,
+        target_account_id=None,
+    )
 
     # opening_balance_date: caller may omit (and ride the DB default of
     # CURRENT_DATE) or supply an explicit date. We pass it through only
@@ -130,6 +142,7 @@ async def create_account(
         payment_day=body.payment_day,
         payment_day_relative_month=body.payment_day_relative_month,
         opening_balance=body.opening_balance,
+        payment_source_account_id=body.payment_source_account_id,
     )
     if body.opening_balance_date is not None:
         kwargs["opening_balance_date"] = body.opening_balance_date
@@ -304,6 +317,19 @@ async def _apply_non_type_fields(
 
     if body.name is not None:
         account.name = body.name
+
+    # Payment Source Foundation. The model_fields_set idiom distinguishes
+    # "omitted" (preserve) from "explicit null" (clear the pointer). Validate
+    # before applying so a bad source id aborts the whole PUT (in the atomic
+    # path the raised HTTPException rolls back the outer begin() with it).
+    if "payment_source_account_id" in body.model_fields_set:
+        await validate_payment_source_account(
+            db,
+            org_id=org_id,
+            source_account_id=body.payment_source_account_id,
+            target_account_id=account.id,
+        )
+        account.payment_source_account_id = body.payment_source_account_id
 
     # Apply the opening_balance shift BEFORE the is_active deactivate guard so
     # the guard evaluates the FINAL (post-shift) balance. A single PUT that
