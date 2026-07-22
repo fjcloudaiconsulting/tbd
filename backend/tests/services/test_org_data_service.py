@@ -22,6 +22,7 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
+from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.feature_override import OrgFeatureOverride
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.merchant_dictionary import MerchantDictionaryEntry
@@ -123,6 +124,14 @@ async def _seed_full_org(factory, *, name: str = "Acme") -> dict:
             type=CategoryType.EXPENSE,
         )
         db.add_all([account, master])
+        await db.commit()
+
+        db.add(CcCyclePayment(
+            account_id=account.id,
+            period_anchor_year=2099,
+            period_anchor_month=1,
+            amount=Decimal("100.00"),
+        ))
         await db.commit()
 
         # import_batches: account_id → accounts.id with no ON DELETE CASCADE.
@@ -274,6 +283,7 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
         "recurring_transactions", "forecast_plans", "billing_periods",
         "import_batches", "accounts", "account_types", "category_rules",
         "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
+        "cc_cycle_payments",
     }
     assert set(counts.keys()) == expected_keys
     for key, n in counts.items():
@@ -293,6 +303,10 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
             assert await _count(db, model, org_id=seeded["org_id"]) == 0, (
                 f"{model.__name__} not wiped"
             )
+        # cc_cycle_payments has no org_id column, so it can't be checked
+        # via the loop above; assert it's globally empty (the fixture
+        # only ever seeds one org's worth in this test).
+        assert await _count(db, CcCyclePayment) == 0, "CcCyclePayment not wiped"
         # Contributor rows for this org are gone too.
         assert (await db.scalar(
             select(func.count()).select_from(TagDictionaryContributor).where(
@@ -408,6 +422,7 @@ async def test_reset_returns_counts_and_wipes_data(session_factory):
         "recurring_transactions", "forecast_plans", "billing_periods",
         "import_batches", "accounts", "account_types", "category_rules",
         "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
+        "cc_cycle_payments",
         "seeded_account_types", "seeded_categories",
     }
     assert set(counts.keys()) == expected_keys
@@ -817,3 +832,24 @@ async def test_org_re_creation_re_increments_count_on_contribution(
             )
         )).scalar_one()
         assert re_count.contributor_org_count == 1
+
+
+# -- cc_cycle_payments (Credit Card Model V1, Slice 2) ---------------------
+
+
+@pytest.mark.asyncio
+async def test_reset_wipes_cc_cycle_payments(session_factory):
+    """reset_org_data must delete cc_cycle_payments via the subquery-
+    scoped delete (no org_id column, so _batch_delete_by_pk is unusable)."""
+    seeded = await _seed_full_org(session_factory)
+
+    async with session_factory() as db:
+        before = await _count(db, CcCyclePayment)
+        assert before >= 1
+
+    async with session_factory() as db:
+        counts = await org_data_service.reset_org_data(db, org_id=seeded["org_id"])
+
+    assert counts["cc_cycle_payments"] >= 1
+    async with session_factory() as db:
+        assert await _count(db, CcCyclePayment) == 0
