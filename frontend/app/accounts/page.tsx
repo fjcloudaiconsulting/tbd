@@ -23,7 +23,7 @@ import { SORT_KEY_ACCOUNTS } from "@/lib/hooks/persisted-keys";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { useAccounts, ACCOUNTS_KEY } from "@/lib/hooks/use-accounts";
-import type { Account, AccountType, Transaction } from "@/lib/types";
+import type { Account, AccountType, Transaction, UpcomingCyclePayment } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import OverflowMenu, { type OverflowMenuItem } from "@/components/ui/OverflowMenu";
 import AdjustBalanceModal from "@/components/accounts/AdjustBalanceModal";
@@ -137,6 +137,10 @@ export default function AccountsPage() {
   const [editAcctApr, setEditAcctApr] = useState("");
   const [editAcctPaymentStrategy, setEditAcctPaymentStrategy] = useState("");
   const [editAcctFixedPayment, setEditAcctFixedPayment] = useState("");
+  // Credit Card Model V1 (Slice 2) — upcoming per-cycle payments for the
+  // edited CC. Populated only for minimum_only / custom_per_period.
+  const [upcomingCycles, setUpcomingCycles] = useState<UpcomingCyclePayment[]>([]);
+  const [cycleDrafts, setCycleDrafts] = useState<Record<string, string>>({});
   // Confirm modal state for type change (spec § 5.3). Holds the
   // pre-resolved old/new type labels + the change-effect copy so the
   // modal message can be a plain string (ConfirmModal does not take
@@ -428,6 +432,37 @@ export default function AccountsPage() {
   const editingTypeSlug =
     accountTypes.find((t) => t.id === editAcctTypeId)?.slug ?? null;
 
+  // Fetch the upcoming-payments collection when a CC row is being edited
+  // under a per-cycle strategy. Backend supplies the cycle windows.
+  useEffect(() => {
+    const perCycle =
+      editAcctPaymentStrategy === "minimum_only" ||
+      editAcctPaymentStrategy === "custom_per_period";
+    if (editAcctId == null || editingTypeSlug !== "credit_card" || !perCycle) {
+      setUpcomingCycles([]);
+      setCycleDrafts({});
+      return;
+    }
+    let cancelled = false;
+    apiFetch<UpcomingCyclePayment[]>(`/api/v1/accounts/${editAcctId}/cycle-payments`)
+      .then((rows) => {
+        if (cancelled) return;
+        setUpcomingCycles(rows);
+        setCycleDrafts(
+          Object.fromEntries(rows.map((r) => [`${r.year}-${r.month}`, r.amount ?? ""])),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setUpcomingCycles([]);
+          setCycleDrafts({});
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editAcctId, editingTypeSlug, editAcctPaymentStrategy]);
+
   // Common PUT body builder for the save action. Pulled out so the
   // confirm-modal "Change type" handler can re-use it without
   // duplicating the JSON shape.
@@ -474,6 +509,30 @@ export default function AccountsPage() {
     setEditAcctTypeId("");
     setPendingTypeChange(null);
     await refreshAll();
+  }
+
+  // Persist one cycle amount. Empty -> DELETE, else PUT. Re-fetches so the
+  // Clear affordance and stored amounts stay in sync.
+  async function persistCycleAmount(year: number, month: number, raw: string) {
+    if (editAcctId == null) return;
+    const value = raw.trim();
+    const path = `/api/v1/accounts/${editAcctId}/cycle-payments/${year}/${month}`;
+    try {
+      if (value === "") {
+        await apiFetch(path, { method: "DELETE" }).catch(() => {});
+      } else {
+        await apiFetch(path, { method: "PUT", body: JSON.stringify({ amount: value }) });
+      }
+      const rows = await apiFetch<UpcomingCyclePayment[]>(
+        `/api/v1/accounts/${editAcctId}/cycle-payments`,
+      );
+      setUpcomingCycles(rows);
+      setCycleDrafts(
+        Object.fromEntries(rows.map((r) => [`${r.year}-${r.month}`, r.amount ?? ""])),
+      );
+    } catch (e) {
+      setError(extractErrorMessage(e));
+    }
   }
 
   async function handleSaveAcct() {
