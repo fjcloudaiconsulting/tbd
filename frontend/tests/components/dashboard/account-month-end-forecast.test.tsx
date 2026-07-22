@@ -277,6 +277,19 @@ describe("AccountMonthEndForecast — credit-card projected payment", () => {
   });
 });
 
+describe("AccountMonthEndForecast — contextual Change link", () => {
+  it("renders a Change link on the imminent payment line pointing at /accounts", () => {
+    render(<AccountMonthEndForecast {...defaults({ forecast: CC_WITH_PAYMENT })} />);
+    const change = screen.getByRole("link", { name: /change/i });
+    expect(change).toBeInTheDocument();
+    expect(change.getAttribute("href")).toBe("/accounts");
+  });
+  it("renders no Change link when there are no cc_payments", () => {
+    render(<AccountMonthEndForecast {...defaults({ forecast: TWO_ACCOUNTS_EUR })} />);
+    expect(screen.queryByRole("link", { name: /change/i })).toBeNull();
+  });
+});
+
 describe("AccountMonthEndForecast — error state", () => {
   it("renders an explicit error message when hasError is true (not 'Loading…')", () => {
     render(
