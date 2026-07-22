@@ -326,3 +326,16 @@ def test_fixed_payment_forbidden_for_non_fixed_strategy(strategy):
         payment_strategy=strategy,
         fixed_payment_amount=Decimal("50.00"),
     )
+
+
+# ── schema / read compatibility ────────────────────────────────────────────
+
+
+def test_read_exposes_all_four_cc_fields(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        body = client.get(f"/api/v1/accounts/{a['cc_id']}").json()
+    for key in ("credit_limit", "apr", "payment_strategy", "fixed_payment_amount"):
+        assert key in body
+        assert body[key] is None

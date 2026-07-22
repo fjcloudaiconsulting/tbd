@@ -4,6 +4,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from app.models.account import PaymentStrategy
+
 
 # Mirrors the Numeric(12, 2) DB constraint on accounts.opening_balance.
 # A schema-level range produces a clean 422 instead of a DB-overflow 500.
@@ -54,6 +56,18 @@ class AccountCreate(BaseModel):
     # FROM. Optional; validated server-side (same-org, checking/savings/cash,
     # not self, active) in payment_source_service.
     payment_source_account_id: Optional[int] = None
+    # Credit Card Model V1 (Slice 1). CC-only; validated server-side in
+    # credit_card_service. NULL on non-CC accounts. payment_strategy is a
+    # native enum (NULL = resolver default). fixed_payment_amount is
+    # required iff payment_strategy == fixed_amount.
+    credit_limit: Optional[Decimal] = Field(
+        default=None, max_digits=12, decimal_places=2
+    )
+    apr: Optional[Decimal] = Field(default=None, max_digits=12, decimal_places=2)
+    payment_strategy: Optional[PaymentStrategy] = None
+    fixed_payment_amount: Optional[Decimal] = Field(
+        default=None, max_digits=12, decimal_places=2
+    )
 
 
 class AccountUpdate(BaseModel):
@@ -77,6 +91,15 @@ class AccountUpdate(BaseModel):
         decimal_places=2,
     )
     opening_balance_date: Optional[date] = None
+    # Credit Card Model V1 (Slice 1). See AccountCreate for field semantics.
+    credit_limit: Optional[Decimal] = Field(
+        default=None, max_digits=12, decimal_places=2
+    )
+    apr: Optional[Decimal] = Field(default=None, max_digits=12, decimal_places=2)
+    payment_strategy: Optional[PaymentStrategy] = None
+    fixed_payment_amount: Optional[Decimal] = Field(
+        default=None, max_digits=12, decimal_places=2
+    )
 
 
 class AccountResponse(BaseModel):
@@ -95,6 +118,10 @@ class AccountResponse(BaseModel):
     opening_balance: Decimal = Decimal("0.00")
     opening_balance_date: Optional[date] = None
     payment_source_account_id: Optional[int] = None
+    credit_limit: Optional[Decimal] = None
+    apr: Optional[Decimal] = None
+    payment_strategy: Optional[PaymentStrategy] = None
+    fixed_payment_amount: Optional[Decimal] = None
 
     model_config = {"from_attributes": True}
 
