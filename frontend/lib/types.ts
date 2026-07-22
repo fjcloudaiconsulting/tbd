@@ -109,6 +109,18 @@ export interface Account {
   // once that type lands); the source must be a checking/savings/cash
   // account in the same org.
   payment_source_account_id?: number | null;
+  // Credit Card Model V1 (Slice 1). CC-only; null on asset accounts. The
+  // API serializes Decimals as strings. payment_strategy is a closed enum;
+  // null means "resolver default (full_balance)".
+  credit_limit?: number | string | null;
+  apr?: number | string | null;
+  payment_strategy?:
+    | "full_balance"
+    | "minimum_only"
+    | "fixed_amount"
+    | "custom_per_period"
+    | null;
+  fixed_payment_amount?: number | string | null;
 }
 
 export interface Category {

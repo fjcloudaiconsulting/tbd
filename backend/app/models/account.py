@@ -1,3 +1,4 @@
+import enum
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
@@ -6,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Enum as SAEnum,
     ForeignKey,
     Integer,
     Numeric,
@@ -24,6 +26,13 @@ SYSTEM_ACCOUNT_TYPES = [
     {"slug": "investment", "name": "Investment"},
     {"slug": "cash", "name": "Cash"},
 ]
+
+
+class PaymentStrategy(str, enum.Enum):
+    FULL_BALANCE = "full_balance"
+    MINIMUM_ONLY = "minimum_only"
+    FIXED_AMOUNT = "fixed_amount"
+    CUSTOM_PER_PERIOD = "custom_per_period"
 
 
 class AccountType(Base):
@@ -71,6 +80,28 @@ class Account(Base):
     # (migration 072) clears the pointer when the source account is deleted.
     payment_source_account_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True
+    )
+    # Credit Card Model V1 (specs/2026-07-22-cc-model-v1-design.md).
+    # Four CC-only columns, NULL-at-rest on non-CC rows (fat-account-row
+    # idiom, mirroring close_day). credit_limit is optional + non-enforcing;
+    # apr is percent metadata [0,100]; fixed_payment_amount is required iff
+    # payment_strategy == fixed_amount. payment_strategy is a native MySQL
+    # ENUM; NULL means "resolver default (full_balance)". Validation lives in
+    # credit_card_service, not the schema level.
+    credit_limit: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    apr: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    fixed_payment_amount: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    payment_strategy: Mapped[Optional[PaymentStrategy]] = mapped_column(
+        SAEnum(
+            PaymentStrategy,
+            name="account_payment_strategy",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        nullable=True,
     )
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # User-stated opening balance for the account. Migration 041 sets

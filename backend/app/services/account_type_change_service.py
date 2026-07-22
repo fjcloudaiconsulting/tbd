@@ -377,6 +377,15 @@ async def apply_type_change_in_session(
         # retain an orphaned pointer (which the CC-only picker could never
         # surface to clear). Mirrors the close_day leave-CC cascade above.
         account.payment_source_account_id = None
+        # Credit Card Model V1 (Slice 1): the four CC-only metadata columns
+        # only make sense on a credit_card row. Clear them on leaving CC so
+        # an asset account can't retain an orphaned credit_limit / apr /
+        # payment_strategy / fixed_payment_amount (mirrors the close_day and
+        # payment_source leave-CC cascades above).
+        account.credit_limit = None
+        account.apr = None
+        account.payment_strategy = None
+        account.fixed_payment_amount = None
 
     result = TypeChangeResult(
         account_id=account_id,

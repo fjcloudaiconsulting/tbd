@@ -1,3 +1,5 @@
+from typing import Optional
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import ValidationError as PydanticValidationError
@@ -25,6 +27,7 @@ from app.services.account_type_change_service import (
     validate_create_close_day,
     validate_create_payment_day,
 )
+from app.services.credit_card_service import validate_credit_card_fields
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.payment_source_service import validate_payment_source_account
 from app.services.transaction_service import (
@@ -64,6 +67,10 @@ def _to_response(account: Account) -> AccountResponse:
         opening_balance=account.opening_balance,
         opening_balance_date=account.opening_balance_date,
         payment_source_account_id=account.payment_source_account_id,
+        credit_limit=account.credit_limit,
+        apr=account.apr,
+        payment_strategy=account.payment_strategy,
+        fixed_payment_amount=account.fixed_payment_amount,
     )
 
 
@@ -111,6 +118,16 @@ async def create_account(
         payment_day_value=body.payment_day,
         payment_day_relative_month_value=body.payment_day_relative_month,
     )
+    # Credit Card Model V1 (Slice 1): the four CC-only fields. Non-CC
+    # accounts must leave all four NULL; CC accounts get optional
+    # credit_limit/apr and a strategy-gated fixed_payment_amount.
+    validate_credit_card_fields(
+        target_slug=target_type.slug,
+        credit_limit=body.credit_limit,
+        apr=body.apr,
+        payment_strategy=body.payment_strategy,
+        fixed_payment_amount=body.fixed_payment_amount,
+    )
     # Payment Source Foundation: validate the paid-from pointer before the
     # insert. target_account_id is None (the row has no id yet), so the
     # self-pay check is a no-op here; the rest (same-org, allowlisted type,
@@ -143,6 +160,10 @@ async def create_account(
         payment_day_relative_month=body.payment_day_relative_month,
         opening_balance=body.opening_balance,
         payment_source_account_id=body.payment_source_account_id,
+        credit_limit=body.credit_limit,
+        apr=body.apr,
+        payment_strategy=body.payment_strategy,
+        fixed_payment_amount=body.fixed_payment_amount,
     )
     if body.opening_balance_date is not None:
         kwargs["opening_balance_date"] = body.opening_balance_date
@@ -221,6 +242,10 @@ async def update_account(
         or "close_day" in body.model_fields_set
         or "payment_day" in body.model_fields_set
         or "payment_day_relative_month" in body.model_fields_set
+        or "credit_limit" in body.model_fields_set
+        or "apr" in body.model_fields_set
+        or "payment_strategy" in body.model_fields_set
+        or "fixed_payment_amount" in body.model_fields_set
     )
 
     if touches_type_or_cc_columns:
@@ -248,7 +273,8 @@ async def update_account(
     old_opening_balance = account.opening_balance
     old_opening_balance_date = account.opening_balance_date
     opening_changed = await _apply_non_type_fields(
-        db, account, body, actor_org_id, nested_default=True
+        db, account, body, actor_org_id, nested_default=True,
+        resolved_slug=account.account_type.slug if account.account_type else None,
     )
     new_opening_balance = account.opening_balance
     new_opening_balance_date = account.opening_balance_date
@@ -294,6 +320,7 @@ async def _apply_non_type_fields(
     org_id: int,
     *,
     nested_default: bool,
+    resolved_slug: Optional[str],
 ) -> bool:
     """Apply name / is_active / is_default / opening_* mutations.
 
@@ -330,6 +357,42 @@ async def _apply_non_type_fields(
             target_account_id=account.id,
         )
         account.payment_source_account_id = body.payment_source_account_id
+
+    # Credit Card Model V1 (Slice 1). Validate the RESULTING row state
+    # (post-lock snapshot overlaid with payload deltas) against the
+    # post-change slug, then apply the deltas. model_fields_set
+    # distinguishes "omitted" (preserve) from an explicit value/null.
+    cc_credit_limit = (
+        body.credit_limit
+        if "credit_limit" in body.model_fields_set
+        else account.credit_limit
+    )
+    cc_apr = body.apr if "apr" in body.model_fields_set else account.apr
+    cc_strategy = (
+        body.payment_strategy
+        if "payment_strategy" in body.model_fields_set
+        else account.payment_strategy
+    )
+    cc_fixed = (
+        body.fixed_payment_amount
+        if "fixed_payment_amount" in body.model_fields_set
+        else account.fixed_payment_amount
+    )
+    validate_credit_card_fields(
+        target_slug=resolved_slug,
+        credit_limit=cc_credit_limit,
+        apr=cc_apr,
+        payment_strategy=cc_strategy,
+        fixed_payment_amount=cc_fixed,
+    )
+    if "credit_limit" in body.model_fields_set:
+        account.credit_limit = body.credit_limit
+    if "apr" in body.model_fields_set:
+        account.apr = body.apr
+    if "payment_strategy" in body.model_fields_set:
+        account.payment_strategy = body.payment_strategy
+    if "fixed_payment_amount" in body.model_fields_set:
+        account.fixed_payment_amount = body.fixed_payment_amount
 
     # Apply the opening_balance shift BEFORE the is_active deactivate guard so
     # the guard evaluates the FINAL (post-shift) balance. A single PUT that
@@ -440,7 +503,8 @@ async def _update_account_atomic(
             old_opening_balance = account.opening_balance
             old_opening_balance_date = account.opening_balance_date
             opening_changed = await _apply_non_type_fields(
-                svc_db, account, body, actor_org_id, nested_default=False
+                svc_db, account, body, actor_org_id, nested_default=False,
+                resolved_slug=type_result.new_type_slug,
             )
             new_opening_balance = account.opening_balance
             new_opening_balance_date = account.opening_balance_date
