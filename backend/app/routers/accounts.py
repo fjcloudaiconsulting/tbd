@@ -25,6 +25,7 @@ from app.services.account_type_change_service import (
     validate_create_close_day,
     validate_create_payment_day,
 )
+from app.services.credit_card_service import validate_credit_card_fields
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.payment_source_service import validate_payment_source_account
 from app.services.transaction_service import (
@@ -64,6 +65,10 @@ def _to_response(account: Account) -> AccountResponse:
         opening_balance=account.opening_balance,
         opening_balance_date=account.opening_balance_date,
         payment_source_account_id=account.payment_source_account_id,
+        credit_limit=account.credit_limit,
+        apr=account.apr,
+        payment_strategy=account.payment_strategy,
+        fixed_payment_amount=account.fixed_payment_amount,
     )
 
 
@@ -111,6 +116,16 @@ async def create_account(
         payment_day_value=body.payment_day,
         payment_day_relative_month_value=body.payment_day_relative_month,
     )
+    # Credit Card Model V1 (Slice 1): the four CC-only fields. Non-CC
+    # accounts must leave all four NULL; CC accounts get optional
+    # credit_limit/apr and a strategy-gated fixed_payment_amount.
+    validate_credit_card_fields(
+        target_slug=target_type.slug,
+        credit_limit=body.credit_limit,
+        apr=body.apr,
+        payment_strategy=body.payment_strategy,
+        fixed_payment_amount=body.fixed_payment_amount,
+    )
     # Payment Source Foundation: validate the paid-from pointer before the
     # insert. target_account_id is None (the row has no id yet), so the
     # self-pay check is a no-op here; the rest (same-org, allowlisted type,
@@ -143,6 +158,10 @@ async def create_account(
         payment_day_relative_month=body.payment_day_relative_month,
         opening_balance=body.opening_balance,
         payment_source_account_id=body.payment_source_account_id,
+        credit_limit=body.credit_limit,
+        apr=body.apr,
+        payment_strategy=body.payment_strategy,
+        fixed_payment_amount=body.fixed_payment_amount,
     )
     if body.opening_balance_date is not None:
         kwargs["opening_balance_date"] = body.opening_balance_date

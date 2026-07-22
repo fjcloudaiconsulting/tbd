@@ -339,3 +339,64 @@ def test_read_exposes_all_four_cc_fields(session_factory, worlds):
     for key in ("credit_limit", "apr", "payment_strategy", "fixed_payment_amount"):
         assert key in body
         assert body[key] is None
+
+
+# ── create path ────────────────────────────────────────────────────────────
+
+
+def test_create_cc_with_fixed_amount_persists_fields(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "Rewards Visa",
+                "account_type_id": a["type_ids"]["credit_card"],
+                "currency": "EUR",
+                "close_day": 12,
+                "credit_limit": "3000.00",
+                "apr": "19.99",
+                "payment_strategy": "fixed_amount",
+                "fixed_payment_amount": "100.00",
+            },
+        )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["credit_limit"] == "3000.00"
+    assert body["apr"] == "19.99"
+    assert body["payment_strategy"] == "fixed_amount"
+    assert body["fixed_payment_amount"] == "100.00"
+
+
+def test_create_non_cc_with_credit_limit_rejected(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "Bad Checking",
+                "account_type_id": a["type_ids"]["checking"],
+                "currency": "EUR",
+                "credit_limit": "1000.00",
+            },
+        )
+    assert res.status_code == 422, res.text
+
+
+def test_create_cc_fixed_amount_without_fixed_payment_rejected(session_factory, worlds):
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "Half Visa",
+                "account_type_id": a["type_ids"]["credit_card"],
+                "currency": "EUR",
+                "close_day": 12,
+                "payment_strategy": "fixed_amount",
+            },
+        )
+    assert res.status_code == 422, res.text
