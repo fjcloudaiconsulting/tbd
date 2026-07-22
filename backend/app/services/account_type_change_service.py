@@ -41,11 +41,12 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.models.account import Account, AccountType
+from app.models.cc_cycle_payment import CcCyclePayment
 
 
 _CC = "credit_card"
@@ -72,6 +73,7 @@ class TypeChangeResult:
         "old_payment_day_relative_month",
         "new_payment_day_relative_month",
         "type_changed",
+        "deleted_cycle_payments",
     )
 
     def __init__(
@@ -89,6 +91,7 @@ class TypeChangeResult:
         old_payment_day_relative_month: Optional[int],
         new_payment_day_relative_month: Optional[int],
         type_changed: bool,
+        deleted_cycle_payments: Optional[list] = None,
     ) -> None:
         self.account_id = account_id
         self.old_type_id = old_type_id
@@ -102,6 +105,7 @@ class TypeChangeResult:
         self.old_payment_day_relative_month = old_payment_day_relative_month
         self.new_payment_day_relative_month = new_payment_day_relative_month
         self.type_changed = type_changed
+        self.deleted_cycle_payments = deleted_cycle_payments or []
 
 
 def validate_close_day_cascade(
@@ -350,6 +354,8 @@ async def apply_type_change_in_session(
     # Apply: type first, then cascade the close_day column.
     account.account_type_id = target_type_id
 
+    deleted_cycle_payments: list = []
+
     if target_slug == _CC:
         # CC target: write close_day only when the payload carried it.
         # The validator guarantees:
@@ -387,6 +393,28 @@ async def apply_type_change_in_session(
         account.payment_strategy = None
         account.fixed_payment_amount = None
 
+        # Credit Card Model V1 (Slice 2): per-cycle payment rows are money-
+        # bearing and anchored to the close_day being cleared here. Keeping
+        # them orphans money data no UI can surface and risks resurrecting
+        # stale amounts on a later revert. ON DELETE CASCADE only covers
+        # account DELETION, not a type change, so delete explicitly; snapshot
+        # first so the router can emit account.cycle_payment.deleted events.
+        _cp_rows = (
+            await svc_db.execute(
+                select(CcCyclePayment).where(
+                    CcCyclePayment.account_id == account_id
+                )
+            )
+        ).scalars().all()
+        deleted_cycle_payments = [
+            {"year": r.period_anchor_year, "month": r.period_anchor_month, "amount": str(r.amount)}
+            for r in _cp_rows
+        ]
+        if _cp_rows:
+            await svc_db.execute(
+                delete(CcCyclePayment).where(CcCyclePayment.account_id == account_id)
+            )
+
     result = TypeChangeResult(
         account_id=account_id,
         old_type_id=old_type_id,
@@ -400,6 +428,7 @@ async def apply_type_change_in_session(
         old_payment_day_relative_month=old_payment_day_relative_month,
         new_payment_day_relative_month=account.payment_day_relative_month,
         type_changed=type_changed,
+        deleted_cycle_payments=deleted_cycle_payments,
     )
     return account, result
 

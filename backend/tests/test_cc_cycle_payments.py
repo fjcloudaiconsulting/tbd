@@ -464,3 +464,36 @@ def test_get_allowed_for_non_admin_member(session_factory, worlds):
         res = client.get(f"/api/v1/accounts/{a['cc_id']}/cycle-payments")
     assert res.status_code == 200, res.text
     assert len(res.json()) == 3
+
+
+def test_leaving_cc_deletes_cycle_payments(session_factory, worlds):
+    """Converting a CC to a non-CC type must delete its cc_cycle_payments
+    rows (money-bearing rows anchored to a close_day being cleared)."""
+    import asyncio
+
+    a = worlds["a"]
+    app = _make_app(session_factory, a["admin_id"])
+    with TestClient(app) as client:
+        year, month = _first_upcoming_anchor(client, a["cc_id"])
+        client.put(
+            f"/api/v1/accounts/{a['cc_id']}/cycle-payments/{year}/{month}",
+            json={"amount": "175.00"},
+        )
+        conv = client.put(
+            f"/api/v1/accounts/{a['cc_id']}",
+            json={"account_type_id": a["type_ids"]["checking"]},
+        )
+        assert conv.status_code == 200, conv.text
+
+    async def _count_rows() -> int:
+        async with session_factory() as db:
+            rows = (
+                await db.execute(
+                    select(CcCyclePayment).where(
+                        CcCyclePayment.account_id == a["cc_id"]
+                    )
+                )
+            ).scalars().all()
+            return len(rows)
+
+    assert asyncio.get_event_loop().run_until_complete(_count_rows()) == 0

@@ -564,6 +564,21 @@ async def _update_account_atomic(
             new_type_slug=type_result.new_type_slug,
         )
 
+    if type_result is not None and type_result.deleted_cycle_payments:
+        for cp in type_result.deleted_cycle_payments:
+            await audit_service.record_audit_event(
+                session_factory,
+                event_type="account.cycle_payment.deleted",
+                actor_user_id=actor_user_id,
+                actor_email=actor_email,
+                target_org_id=actor_org_id,
+                target_org_name=None,
+                request_id=req_id,
+                ip_address=ip,
+                outcome="success",
+                detail={"account_id": account_id, "year": cp["year"], "month": cp["month"], "amount": cp["amount"]},
+            )
+
     if opening_changed:
         await audit_service.record_audit_event(
             session_factory,
