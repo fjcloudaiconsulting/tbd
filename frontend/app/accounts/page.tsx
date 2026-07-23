@@ -585,6 +585,10 @@ export default function AccountsPage() {
 
   async function handleSaveAcct() {
     if (!editAcctId) return;
+    // Share the submit-blocking guard with the disabled Save button so the
+    // Enter-in-name-field path (this row is a <div>, not a <form>, so it
+    // has a manual Enter handler) can't post a config that can only 400.
+    if (editAcctPaymentBeforeClose) return;
     setError("");
     // Spec § 5.3 — show the confirm modal ONLY when the type actually
     // changes. Plain name / close-day / opening-balance edits commit

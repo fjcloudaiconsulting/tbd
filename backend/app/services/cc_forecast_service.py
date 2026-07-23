@@ -148,14 +148,16 @@ def synthesize_account_cc_payments(
     payments: list[tuple[date, Decimal]] = []
     for cycle in cycles:
         # Belt-and-suspenders: a payment date on or before the close date
-        # collapses the credit-attribution window (close < eff <= payment)
-        # to empty, so p_k_owned would stay 0 and the projected outflow
-        # would be overstated. The create/PUT validation guard forbids the
-        # config that produces this (same-month payment_day <= close_day),
-        # but a same-month day-of-month clamp collision (e.g. Feb close 28 +
-        # payment 30, both clamp to Feb 28) can still land here. Skip the
-        # cycle rather than emit an overstated payment, and log it so the
-        # collision is observable rather than silent.
+        # is degenerate. For payment < close the projection is temporally
+        # nonsensical (a payment dated before the charges it pays), and for
+        # payment == close the credit-attribution window (close < eff <=
+        # payment) is empty so p_k_owned stays 0. Either way the cycle
+        # cannot be projected meaningfully. The create/PUT validation guard
+        # forbids the config that produces payment <= close (same-month
+        # payment_day <= close_day), but a same-month day-of-month clamp
+        # collision (e.g. Feb close 28 + payment 30, both clamp to Feb 28)
+        # can still land here. Skip the cycle rather than emit a bogus
+        # payment, and log it so the collision is observable, not silent.
         if cycle.payment_date <= cycle.period_end_inclusive:
             logger.warning(
                 "cc_forecast.degenerate_cycle_skipped",

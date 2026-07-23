@@ -215,8 +215,14 @@ describe("CC payment day — inline edit", () => {
     );
     const save = screen.getByRole("button", { name: /^Save$/ }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
-    // Clicking the disabled Save issues no PUT.
-    fireEvent.click(save);
+    // The edit row is a <div> (not a <form>), so the name input has a manual
+    // Enter handler that calls handleSaveAcct directly, bypassing the
+    // disabled button. handleSaveAcct must share the same guard: pressing
+    // Enter while the config is invalid issues NO PUT.
+    fireEvent.keyDown(screen.getByLabelText(/Account name/i), {
+      key: "Enter",
+      code: "Enter",
+    });
     await new Promise((r) => setTimeout(r, 0));
     expect(
       vi.mocked(apiFetch).mock.calls.find(
