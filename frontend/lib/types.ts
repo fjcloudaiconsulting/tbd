@@ -223,6 +223,13 @@ export interface SchedulerSettings {
   automate_recurring_generation: boolean;
   automate_billing_close: boolean;
   billing_close_reminder_lead_days: number;
+  // CC Statement Alerts V1 (Task 4). Mirrors automate_billing_close's
+  // coupling pattern: automate_cc_statement_alerts gates the per-card
+  // pre-close reminder notification. cc_statement_reminder_lead_days is
+  // independent of billing_close_reminder_lead_days — separate draft
+  // state, separate PUT patch.
+  automate_cc_statement_alerts: boolean;
+  cc_statement_reminder_lead_days: number;
 }
 
 export interface ForecastPlanItem {
