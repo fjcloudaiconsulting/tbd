@@ -90,7 +90,7 @@ Matches the existing tile idiom; **no new visual primitives**.
 ## Accessibility (WCAG 2.2 AA)
 
 - Liability meaning is **not** color-only (color dropped): conveyed by the `-` sign + the type label.
-- Per-row `aria-label` spelling the sign, e.g. `"Credit card, 1 account, balance minus 850.00 EUR"`; decorative icons `aria-hidden`.
+- Per-row `aria-label` spelling the sign, e.g. `"Credit card, 1 account, minus 850.00 EUR"`; decorative icons `aria-hidden`.
 - Amount in `text-text-primary` (AA on `surface`); only counts + currency code in `text-text-muted`.
 - Rows are focusable links carrying the Pressable-Surfaces focus ring; row height meets the mobile touch floor.
 

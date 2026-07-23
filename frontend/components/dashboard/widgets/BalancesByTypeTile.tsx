@@ -165,7 +165,7 @@ export default function BalancesByTypeTile() {
                 href="/accounts"
                 aria-label={ariaLabel}
                 data-testid="balances-by-type-row"
-                className="flex items-start justify-between gap-3 px-4 py-3 transition-colors hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                className="flex items-start justify-between gap-3 px-4 py-3 transition-colors hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">

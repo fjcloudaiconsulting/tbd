@@ -158,8 +158,11 @@ describe("BalancesByTypeTile", () => {
       ],
     });
     const { container } = render(<BalancesByTypeTile />);
-    expect(screen.getByText("-850.00")).toBeInTheDocument();
-    // house rule: the sign carries the meaning; no danger/coral treatment
+    const amount = screen.getByText("-850.00");
+    // positive: the amount uses the primary text token (the value, not a status)
+    expect(amount.className).toContain("text-text-primary");
+    // house rule: the sign carries the meaning; NO status color on the amount
+    expect(amount.className).not.toMatch(/text-(danger|warning|error|coral|red)/);
     expect(container.querySelector(".text-danger")).toBeNull();
   });
 
