@@ -27,7 +27,7 @@
  *     coupling shape as automate_billing_close, independent field.
  *   - cc_statement_reminder_lead_days: how many days before a card's
  *     statement closes the reminder fires (0-31). This has its OWN
- *     draft state (`ccLeadDaysDraft`) and commit handler — it must
+ *     draft state (`ccLeadDaysDraft`) and commit handler. It must
  *     never share state with `leadDaysDraft` (the budget-period lead
  *     days), so editing one never cross-wires the other.
  *
