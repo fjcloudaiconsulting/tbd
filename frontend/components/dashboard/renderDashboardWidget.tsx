@@ -25,6 +25,7 @@ import SpendingDonutWidget from "@/components/dashboard/widgets/SpendingDonutWid
 import BudgetBarsWidget from "@/components/dashboard/widgets/BudgetBarsWidget";
 import ForecastBarsWidget from "@/components/dashboard/widgets/ForecastBarsWidget";
 import RecentTransactionsWidget from "@/components/dashboard/widgets/RecentTransactionsWidget";
+import CreditUtilizationWidget from "@/components/dashboard/widgets/CreditUtilizationWidget";
 import { renderReportWidget } from "@/components/reports/renderReportWidget";
 
 /**
@@ -75,6 +76,9 @@ export function renderDashboardWidget(
 
     case "dash_recent_transactions":
       return fill(<RecentTransactionsWidget />);
+
+    case "dash_cc_utilization":
+      return fill(<CreditUtilizationWidget />);
 
     // ── Reports fall-through (cloned report widgets) ────────────────────────
     // Delegate all non-dash types to the shared report widget renderer.

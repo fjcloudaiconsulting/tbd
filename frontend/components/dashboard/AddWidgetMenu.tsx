@@ -98,6 +98,12 @@ const DASH_TILES: DashOption[] = [
     description: "Paginated transaction list for the current period.",
     Icon: ArrowRightLeft,
   },
+  {
+    type: "dash_cc_utilization",
+    label: "Credit card utilization",
+    description: "Balance versus limit for each credit card.",
+    Icon: CreditCard,
+  },
 ];
 
 /** Convert a widget type slug to a human-readable fallback label. */

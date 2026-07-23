@@ -30,9 +30,7 @@ SYSTEM_ACCOUNT_TYPES = [
 
 class PaymentStrategy(str, enum.Enum):
     FULL_BALANCE = "full_balance"
-    MINIMUM_ONLY = "minimum_only"
     FIXED_AMOUNT = "fixed_amount"
-    CUSTOM_PER_PERIOD = "custom_per_period"
 
 
 class AccountType(Base):

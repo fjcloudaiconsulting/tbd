@@ -313,8 +313,6 @@ def test_fixed_amount_requires_positive_fixed_payment():
     "strategy",
     [
         PaymentStrategy.FULL_BALANCE,
-        PaymentStrategy.MINIMUM_ONLY,
-        PaymentStrategy.CUSTOM_PER_PERIOD,
         None,
     ],
 )
@@ -414,14 +412,14 @@ def test_put_sets_cc_fields_on_existing_cc(session_factory, worlds):
             json={
                 "credit_limit": "5000.00",
                 "apr": "22.50",
-                "payment_strategy": "minimum_only",
+                "payment_strategy": "full_balance",
             },
         )
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["credit_limit"] == "5000.00"
     assert body["apr"] == "22.50"
-    assert body["payment_strategy"] == "minimum_only"
+    assert body["payment_strategy"] == "full_balance"
     assert body["fixed_payment_amount"] is None
 
 
@@ -503,3 +501,15 @@ def test_leaving_cc_clears_all_four_cc_fields(session_factory, worlds):
     assert row.apr is None
     assert row.payment_strategy is None
     assert row.fixed_payment_amount is None
+
+
+# ── enum collapse (F2) ──────────────────────────────────────────────────────
+
+
+def test_payment_strategy_enum_collapsed_to_two_members():
+    """F2: minimum_only + custom_per_period are dropped; a per-cycle
+    override (cc_cycle_payments) now expresses a single-cycle partial pay."""
+    values = {e.value for e in PaymentStrategy}
+    assert values == {"full_balance", "fixed_amount"}
+    assert not hasattr(PaymentStrategy, "MINIMUM_ONLY")
+    assert not hasattr(PaymentStrategy, "CUSTOM_PER_PERIOD")

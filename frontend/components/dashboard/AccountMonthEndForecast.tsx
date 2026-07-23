@@ -1,6 +1,8 @@
 "use client";
 
-import { card, cardHeader, cardTitle } from "@/lib/styles";
+import Link from "next/link";
+
+import { btnLink, card, cardHeader, cardTitle } from "@/lib/styles";
 import { formatAmount } from "@/lib/format";
 
 export interface AccountMonthEndForecastTotal {
@@ -197,6 +199,14 @@ export default function AccountMonthEndForecast({
                     >
                       Payment {pendingCurrencySymbol}
                       {formatAmount(p.amount)} on {p.date}
+                      {i === 0 && (
+                        <>
+                          {" "}
+                          <Link href="/accounts" className={btnLink}>
+                            Change
+                          </Link>
+                        </>
+                      )}
                     </p>
                   ))}
                 </div>

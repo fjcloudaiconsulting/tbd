@@ -13,6 +13,7 @@ import { apiFetch, extractErrorMessage, ApiResponseError } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount } from "@/lib/format";
+import { creditUtilization } from "@/lib/credit";
 import {
   useTableState,
   paginate,
@@ -138,7 +139,8 @@ export default function AccountsPage() {
   const [editAcctPaymentStrategy, setEditAcctPaymentStrategy] = useState("");
   const [editAcctFixedPayment, setEditAcctFixedPayment] = useState("");
   // Credit Card Model V1 (Slice 2) — upcoming per-cycle payments for the
-  // edited CC. Populated only for minimum_only / custom_per_period.
+  // edited CC. Populated for any credit_card being edited (Follow-ups
+  // Task 3 de-gated this off payment_strategy).
   const [upcomingCycles, setUpcomingCycles] = useState<UpcomingCyclePayment[]>([]);
   const [cycleDrafts, setCycleDrafts] = useState<Record<string, string>>({});
   // Confirm modal state for type change (spec § 5.3). Holds the
@@ -432,13 +434,12 @@ export default function AccountsPage() {
   const editingTypeSlug =
     accountTypes.find((t) => t.id === editAcctTypeId)?.slug ?? null;
 
-  // Fetch the upcoming-payments collection when a CC row is being edited
-  // under a per-cycle strategy. Backend supplies the cycle windows.
+  // Fetch the upcoming-payments collection when a CC row is being edited.
+  // CC Model V1 Follow-ups (Task 3) — the per-cycle override applies to any
+  // credit_card now, so this no longer gates on payment_strategy. Backend
+  // supplies the cycle windows.
   useEffect(() => {
-    const perCycle =
-      editAcctPaymentStrategy === "minimum_only" ||
-      editAcctPaymentStrategy === "custom_per_period";
-    if (editAcctId == null || editingTypeSlug !== "credit_card" || !perCycle) {
+    if (editAcctId == null || editingTypeSlug !== "credit_card") {
       setUpcomingCycles([]);
       setCycleDrafts({});
       return;
@@ -461,7 +462,7 @@ export default function AccountsPage() {
     return () => {
       cancelled = true;
     };
-  }, [editAcctId, editingTypeSlug, editAcctPaymentStrategy]);
+  }, [editAcctId, editingTypeSlug]);
 
   // Common PUT body builder for the save action. Pulled out so the
   // confirm-modal "Change type" handler can re-use it without
@@ -894,9 +895,7 @@ export default function AccountsPage() {
                       >
                         <option value="">(default: pay full balance)</option>
                         <option value="full_balance">Pay full balance</option>
-                        <option value="minimum_only">Minimum only</option>
-                        <option value="fixed_amount">Fixed amount</option>
-                        <option value="custom_per_period">Custom per period</option>
+                        <option value="fixed_amount">Pay a fixed amount</option>
                       </select>
                     </div>
                   )}
@@ -1089,9 +1088,7 @@ export default function AccountsPage() {
                         >
                           <option value="">(default: pay full balance)</option>
                           <option value="full_balance">Pay full balance</option>
-                          <option value="minimum_only">Minimum only</option>
-                          <option value="fixed_amount">Fixed amount</option>
-                          <option value="custom_per_period">Custom per period</option>
+                          <option value="fixed_amount">Pay a fixed amount</option>
                         </select>
                       </div>
                     )}
@@ -1101,74 +1098,74 @@ export default function AccountsPage() {
                         <input id={`edit-acct-fixed-payment-${a.id}`} type="number" step="0.01" min={0} value={editAcctFixedPayment} onChange={(e) => setEditAcctFixedPayment(e.target.value)} className={`w-full text-sm ${input}`} />
                       </div>
                     )}
-                    {/* Credit Card Model V1 (Slice 2) — inline "Upcoming
-                        payments" mini-list. Gated to the per-cycle
-                        strategies; cycle windows come from the backend
-                        (FE never re-derives). Persist on blur/Enter via
-                        PUT; empty clears via DELETE. Middle dot separator,
-                        no em-dash; muted design tokens only. */}
-                    {editingTypeSlug === "credit_card" &&
-                      (editAcctPaymentStrategy === "minimum_only" ||
-                        editAcctPaymentStrategy === "custom_per_period") && (
-                        <div className="w-full">
-                          <div className={label}>Upcoming payments</div>
-                          <p className="mb-2 text-xs text-text-muted">
-                            Enter what you plan to pay each cycle. We use it in your forecast.
+                    {/* Credit Card Model V1 Follow-ups (Task 3) — inline
+                        "Upcoming payments" mini-list, shown for any
+                        credit_card (the per-cycle override now applies
+                        regardless of payment_strategy). Cycle windows come
+                        from the backend (FE never re-derives). Persist on
+                        blur/Enter via PUT; empty clears via DELETE. Middle
+                        dot separator, no em-dash; muted design tokens only. */}
+                    {editingTypeSlug === "credit_card" && (
+                      <div className="w-full">
+                        <div className={label}>Upcoming payments</div>
+                        <p className="mb-2 text-xs text-text-muted">
+                          Paying the full balance by default. Enter a different amount for any
+                          cycle you plan to pay partially.
+                        </p>
+                        {upcomingCycles.length === 0 ? (
+                          <p className="text-xs text-text-muted">
+                            No upcoming cycles yet. Set a bill close day first.
                           </p>
-                          {upcomingCycles.length === 0 ? (
-                            <p className="text-xs text-text-muted">
-                              No upcoming cycles yet. Set a bill close day first.
-                            </p>
-                          ) : (
-                            <ul className="flex flex-col gap-2">
-                              {upcomingCycles.map((c) => {
-                                const key = `${c.year}-${c.month}`;
-                                const monthKey = `${c.year}-${String(c.month).padStart(2, "0")}`;
-                                return (
-                                  <li
-                                    key={key}
-                                    className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3"
-                                  >
-                                    <span className="text-xs tabular-nums text-text-muted sm:w-56">
-                                      Closes {c.close_date} · due {c.due_date}
-                                    </span>
-                                    <input
-                                      type="number"
-                                      step="0.01"
-                                      min={0}
-                                      aria-label={`Planned payment for ${monthKey}`}
-                                      value={cycleDrafts[key] ?? ""}
-                                      placeholder="amount not set"
-                                      onChange={(e) =>
-                                        setCycleDrafts((d) => ({ ...d, [key]: e.target.value }))
+                        ) : (
+                          <ul className="flex flex-col gap-2">
+                            {upcomingCycles.map((c) => {
+                              const key = `${c.year}-${c.month}`;
+                              const monthKey = `${c.year}-${String(c.month).padStart(2, "0")}`;
+                              return (
+                                <li
+                                  key={key}
+                                  className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3"
+                                >
+                                  <span className="text-xs tabular-nums text-text-muted sm:w-56">
+                                    Closes {c.close_date} · due {c.due_date}
+                                  </span>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min={0}
+                                    aria-label={`Planned payment for ${monthKey}`}
+                                    value={cycleDrafts[key] ?? ""}
+                                    placeholder="amount not set"
+                                    onChange={(e) =>
+                                      setCycleDrafts((d) => ({ ...d, [key]: e.target.value }))
+                                    }
+                                    onBlur={() =>
+                                      persistCycleAmount(c.year, c.month, cycleDrafts[key] ?? "")
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        persistCycleAmount(c.year, c.month, cycleDrafts[key] ?? "");
                                       }
-                                      onBlur={() =>
-                                        persistCycleAmount(c.year, c.month, cycleDrafts[key] ?? "")
-                                      }
-                                      onKeyDown={(e) => {
-                                        if (e.key === "Enter") {
-                                          e.preventDefault();
-                                          persistCycleAmount(c.year, c.month, cycleDrafts[key] ?? "");
-                                        }
-                                      }}
-                                      className={`w-full text-sm sm:w-32 ${input}`}
-                                    />
-                                    {c.amount != null && (
-                                      <button
-                                        type="button"
-                                        className={btnLink}
-                                        onClick={() => persistCycleAmount(c.year, c.month, "")}
-                                      >
-                                        Clear
-                                      </button>
-                                    )}
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          )}
-                        </div>
-                      )}
+                                    }}
+                                    className={`w-full text-sm sm:w-32 ${input}`}
+                                  />
+                                  {c.amount != null && (
+                                    <button
+                                      type="button"
+                                      className={btnLink}
+                                      onClick={() => persistCycleAmount(c.year, c.month, "")}
+                                    >
+                                      Clear
+                                    </button>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </div>
+                    )}
                     {/* L3.2 Wave 2A — opening balance edit row. Two
                         compact fields, audit-logged on the backend. */}
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
@@ -1286,12 +1283,9 @@ export default function AccountsPage() {
                           signal). Separator is a middle dot, no em-dash. */}
                       {a.account_type_slug === "credit_card" && Number(a.credit_limit) > 0
                         ? (() => {
-                            const limit = Number(a.credit_limit);
-                            const bal = Number(a.balance);
-                            const outstanding = Math.max(0, -bal);
-                            const util = Math.round((outstanding / limit) * 100);
-                            const available = limit + bal;
-                            const over = outstanding - limit;
+                            const { outstanding, utilizationPct, available, over } =
+                              creditUtilization(Number(a.balance), Number(a.credit_limit));
+                            const util = Math.round(utilizationPct);
                             let text: string;
                             if (outstanding === 0) {
                               text = "0% used · full limit available";

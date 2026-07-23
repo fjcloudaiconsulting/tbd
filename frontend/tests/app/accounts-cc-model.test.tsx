@@ -90,7 +90,7 @@ const CC = {
   is_active: true, is_default: false, close_day: 15,
   opening_balance: "0.00", opening_balance_date: "2026-01-01",
   payment_source_account_id: 10, // paid from Primary
-  credit_limit: "2000.00" as string | null, apr: "19.99", payment_strategy: "minimum_only",
+  credit_limit: "2000.00" as string | null, apr: "19.99", payment_strategy: "full_balance",
   fixed_payment_amount: null,
 };
 
@@ -249,25 +249,31 @@ describe("CC Model — utilization subline", () => {
 });
 
 describe("CC Model — upcoming payments mini-list", () => {
-  test("shows the section only under a per-cycle strategy", async () => {
-    mockApi();
-    renderWithSWR(<AccountsPage />);
-    await openEditRow(11); // CC seeded with payment_strategy=minimum_only
-    expect(await screen.findByText(/Upcoming payments/i)).toBeTruthy();
-    expect(
-      screen.getByText(/Enter what you plan to pay each cycle\. We use it in your forecast\./i),
-    ).toBeTruthy();
-    expect(screen.getByText(/Closes 2026-08-15 · due 2026-09-01/)).toBeTruthy();
-  });
-
-  test("hides the section for full_balance", async () => {
+  it("shows Upcoming payments for a full_balance CC and hides removed strategy options", async () => {
     mockApi();
     renderWithSWR(<AccountsPage />);
     await openEditRow(11);
+    expect(screen.getByText("Upcoming payments")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Paying the full balance by default\. Enter a different amount/),
+    ).toBeInTheDocument();
+    const select = screen.getByLabelText("Payment strategy") as HTMLSelectElement;
+    const optionValues = Array.from(select.options).map((o) => o.value);
+    expect(optionValues).not.toContain("minimum_only");
+    expect(optionValues).not.toContain("custom_per_period");
+    expect(optionValues).toEqual(["", "full_balance", "fixed_amount"]);
+  });
+
+  test("keeps showing Upcoming payments when switching away from full_balance", async () => {
+    mockApi();
+    renderWithSWR(<AccountsPage />);
+    await openEditRow(11); // CC seeded with payment_strategy=full_balance
+    expect(await screen.findByText(/Upcoming payments/i)).toBeTruthy();
+    expect(screen.getByText(/Closes 2026-08-15 · due 2026-09-01/)).toBeTruthy();
     fireEvent.change(await screen.findByLabelText(/Payment strategy/i), {
-      target: { value: "full_balance" },
+      target: { value: "fixed_amount" },
     });
-    expect(screen.queryByText(/Upcoming payments/i)).toBeNull();
+    expect(screen.getByText(/Upcoming payments/i)).toBeTruthy();
   });
 
   test("empty amount persists via DELETE, filled via PUT", async () => {

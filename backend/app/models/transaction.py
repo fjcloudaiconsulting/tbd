@@ -49,10 +49,13 @@ class Transaction(Base):
       8. The reserved TransactionType.TRANSFER value is not used by the
          pairing model; legs are typed by direction.
 
-    ``linked_transaction_id`` is **created** only by
-    ``transaction_service._link_pair`` and **cleared** only by
-    ``transaction_service.unpair_transactions``. Other code paths must not
-    write this column directly.
+    ``linked_transaction_id`` has two writers. ``transaction_service._link_pair``
+    sets it **bidirectionally** for transfer pairs and import pairing (and
+    ``unpair_transactions`` clears that pairing). ``reconciliation_service._apply_match``
+    also writes it **one-way** to point an imported row at its reconcile match.
+    Because a reconcile match reuses this column, forecast/balance queries must
+    gate CC payment-in legs with ``balance_contribution_filter`` (transaction_filters.py)
+    rather than assume every ``linked_transaction_id`` is a transfer leg (the Slice-3 gotcha).
 
     Reporting semantics: income/expense aggregates treat rows with
     ``linked_transaction_id IS NULL`` as reportable. Use
