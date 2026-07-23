@@ -138,6 +138,13 @@ export default function AccountsPage() {
   const [editAcctApr, setEditAcctApr] = useState("");
   const [editAcctPaymentStrategy, setEditAcctPaymentStrategy] = useState("");
   const [editAcctFixedPayment, setEditAcctFixedPayment] = useState("");
+  // CC billing cycle Slice 2 — configurable payment day. The two controls
+  // map to their two columns INDEPENDENTLY (the resolver defaults each
+  // separately): "" payment day => payment_day null; relative-month ""
+  // ("Month after close", default) => payment_day_relative_month null
+  // (resolver default 1, NULL-at-rest), "0" ("Same month as close") => 0.
+  const [editAcctPaymentDay, setEditAcctPaymentDay] = useState("");
+  const [editAcctPaymentRelMonth, setEditAcctPaymentRelMonth] = useState("");
   // Credit Card Model V1 (Slice 2) — upcoming per-cycle payments for the
   // edited CC. Populated for any credit_card being edited (Follow-ups
   // Task 3 de-gated this off payment_strategy).
@@ -175,6 +182,11 @@ export default function AccountsPage() {
   const [acctApr, setAcctApr] = useState("");
   const [acctPaymentStrategy, setAcctPaymentStrategy] = useState("");
   const [acctFixedPayment, setAcctFixedPayment] = useState("");
+  // CC billing cycle Slice 2 — configurable payment day (see the edit-form
+  // note above for the NULL-at-rest mapping). "" relative-month default =
+  // "Month after close".
+  const [acctPaymentDay, setAcctPaymentDay] = useState("");
+  const [acctPaymentRelMonth, setAcctPaymentRelMonth] = useState("");
   const selectedType = accountTypes.find((t) => t.id === acctTypeId) ?? null;
 
   const [error, setError] = useState("");
@@ -385,6 +397,9 @@ export default function AccountsPage() {
                   acctPaymentSource === "" ? null : acctPaymentSource,
                 credit_limit: acctCreditLimit === "" ? null : acctCreditLimit,
                 apr: acctApr === "" ? null : acctApr,
+                // CC billing cycle Slice 2 — independent per-column mapping.
+                payment_day: acctPaymentDay === "" ? null : Number(acctPaymentDay),
+                payment_day_relative_month: acctPaymentRelMonth === "0" ? 0 : null,
                 payment_strategy:
                   acctPaymentStrategy === "" ? null : acctPaymentStrategy,
                 fixed_payment_amount:
@@ -399,6 +414,7 @@ export default function AccountsPage() {
       setAcctOpeningBalance("0.00"); setAcctOpeningBalanceDate(todayIso);
       setAcctPaymentSource("");
       setAcctCreditLimit(""); setAcctApr(""); setAcctPaymentStrategy(""); setAcctFixedPayment("");
+      setAcctPaymentDay(""); setAcctPaymentRelMonth("");
       setShowAccountForm(false);
       await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
@@ -425,6 +441,11 @@ export default function AccountsPage() {
     setEditAcctApr(a.apr != null ? String(a.apr) : "");
     setEditAcctPaymentStrategy(a.payment_strategy ?? "");
     setEditAcctFixedPayment(a.fixed_payment_amount != null ? String(a.fixed_payment_amount) : "");
+    // CC billing cycle Slice 2 — seed the payment-day controls. Both a null
+    // and a stored 1 mean "month after close" => "" (NULL-at-rest); only an
+    // explicit 0 selects "same month as close".
+    setEditAcctPaymentDay(a.payment_day ? String(a.payment_day) : "");
+    setEditAcctPaymentRelMonth(a.payment_day_relative_month === 0 ? "0" : "");
   }
 
   // Resolve the currently-selected edit type so render gates (close-day
@@ -489,6 +510,9 @@ export default function AccountsPage() {
         editAcctPaymentSource === "" ? null : editAcctPaymentSource;
       body.credit_limit = editAcctCreditLimit === "" ? null : editAcctCreditLimit;
       body.apr = editAcctApr === "" ? null : editAcctApr;
+      // CC billing cycle Slice 2 — independent per-column mapping.
+      body.payment_day = editAcctPaymentDay === "" ? null : Number(editAcctPaymentDay);
+      body.payment_day_relative_month = editAcctPaymentRelMonth === "0" ? 0 : null;
       body.payment_strategy =
         editAcctPaymentStrategy === "" ? null : editAcctPaymentStrategy;
       body.fixed_payment_amount =
@@ -892,6 +916,25 @@ export default function AccountsPage() {
                       <input id="acct-close" type="number" required min={1} max={28} value={acctCloseDay} onChange={(e) => setAcctCloseDay(e.target.value)} className={`w-24 ${input}`} placeholder="15" />
                     </div>
                   )}
+                  {/* CC billing cycle Slice 2 — configurable payment day.
+                      Two independent controls; blank day + "Month after close"
+                      is the resolver default (1st of next month). Server
+                      validation is the source of truth; these are UX hints. */}
+                  {selectedType?.slug === "credit_card" && (
+                    <div>
+                      <label htmlFor="acct-payment-day" className={label}>Payment day (1-28)</label>
+                      <input id="acct-payment-day" type="number" min={1} max={28} value={acctPaymentDay} onChange={(e) => setAcctPaymentDay(e.target.value)} className={`w-24 ${input}`} placeholder="1" />
+                    </div>
+                  )}
+                  {selectedType?.slug === "credit_card" && (
+                    <div>
+                      <label htmlFor="acct-payment-month" className={label}>Payment month</label>
+                      <select id="acct-payment-month" value={acctPaymentRelMonth} onChange={(e) => setAcctPaymentRelMonth(e.target.value)} className={input}>
+                        <option value="">Month after close</option>
+                        <option value="0">Same month as close</option>
+                      </select>
+                    </div>
+                  )}
                   {/* Credit Card Model V1 (Slice 1) — credit_limit + apr,
                       credit-card-only. Server validation is the source of
                       truth; these are UX hints. */}
@@ -1072,6 +1115,8 @@ export default function AccountsPage() {
                             setEditAcctApr("");
                             setEditAcctPaymentStrategy("");
                             setEditAcctFixedPayment("");
+                            setEditAcctPaymentDay("");
+                            setEditAcctPaymentRelMonth("");
                           }
                         }}
                         className={`w-full text-sm sm:w-44 ${input}`}
@@ -1089,6 +1134,24 @@ export default function AccountsPage() {
                         <input aria-label="Close day" type="number" min={1} max={28} value={editAcctCloseDay} onChange={(e) => setEditAcctCloseDay(e.target.value)} placeholder="Close day" className={`w-full text-sm sm:w-24 ${input}`} />
                       )}
                     </div>
+                    {/* CC billing cycle Slice 2 — configurable payment day.
+                        Two independent controls (see the create form + state
+                        comments for the NULL-at-rest mapping). */}
+                    {editingTypeSlug === "credit_card" && (
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
+                        <div className="w-full sm:w-28">
+                          <label htmlFor={`edit-acct-payment-day-${a.id}`} className={label}>Payment day (1-28)</label>
+                          <input id={`edit-acct-payment-day-${a.id}`} aria-label="Payment day" type="number" min={1} max={28} value={editAcctPaymentDay} onChange={(e) => setEditAcctPaymentDay(e.target.value)} placeholder="1" className={`w-full text-sm ${input}`} />
+                        </div>
+                        <div className="w-full sm:w-48">
+                          <label htmlFor={`edit-acct-payment-month-${a.id}`} className={label}>Payment month</label>
+                          <select id={`edit-acct-payment-month-${a.id}`} aria-label="Payment month" value={editAcctPaymentRelMonth} onChange={(e) => setEditAcctPaymentRelMonth(e.target.value)} className={`w-full text-sm ${input}`}>
+                            <option value="">Month after close</option>
+                            <option value="0">Same month as close</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
                     {/* Payment Source Foundation — "Paid from" picker,
                         credit-card-only. Lists same-org checking/savings/cash
                         accounts (excluding this one); "(none)" clears it. */}
