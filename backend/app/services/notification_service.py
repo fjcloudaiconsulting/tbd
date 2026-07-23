@@ -548,6 +548,8 @@ async def dispatch_notification_to_org_members(
     body: str,
     link_url: Optional[str] = None,
     audit_event_id: Optional[int] = None,
+    send_email: bool = True,
+    email_body: Optional[str] = None,
 ) -> int:
     """Fan out to every ACTIVE user of ``org_id`` (all roles), dual-channel.
 
@@ -556,6 +558,13 @@ async def dispatch_notification_to_org_members(
     via send_notification_email when the user's email pref for ``category``
     allows. Returns the count of IN-APP rows actually written (email is
     fire-and-forget and not counted).
+
+    ``send_email`` (default ``True``) lets a caller opt a send out of the
+    email channel entirely while still fanning out in-app — e.g. a reminder
+    job that should only nudge inside the app. ``email_body`` (default
+    ``None``, falling back to ``body``) lets the email diverge from the
+    in-app copy — e.g. omitting a dollar amount from the email while the
+    in-app row keeps it. Both are no-ops for every pre-existing caller.
     """
     rows = (
         await db.execute(
@@ -577,10 +586,11 @@ async def dispatch_notification_to_org_members(
         except Exception:  # noqa: BLE001 — best-effort fanout
             await logger.awarning("notification.fanout.member_failed", user_id=uid, event_type=event_type)
         # Email outside the savepoint, gated by the email pref (shared helper).
-        await _send_notification_email_best_effort(
-            db, user_id=uid, email=email, category=category, event_type=event_type,
-            title=title, body=body, link_url=link_url,
-        )
+        if send_email:
+            await _send_notification_email_best_effort(
+                db, user_id=uid, email=email, category=category, event_type=event_type,
+                title=title, body=(email_body if email_body is not None else body), link_url=link_url,
+            )
     return written
 
 
