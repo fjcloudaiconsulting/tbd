@@ -540,6 +540,16 @@ async def _apply_match(
     facing "this imported row is the same thing as that existing one"
     intent. The narrower link is enough for the reconciliation inbox to
     show the relationship and for downstream reports to filter on it.
+
+    LOAD-BEARING: this link is ONE-WAY (only ``tx`` points at the target;
+    the target is not linked back), and that direction is a discriminator
+    ``transaction_filters.balance_contribution_filter`` depends on to tell
+    a reconcile match (drop from balance reconstruction) apart from a real
+    transfer leg, which ``_link_pair`` links BIDIRECTIONALLY (keep). Do NOT
+    "fix" this into a bidirectional link or route it through ``_link_pair``
+    without updating that filter -- doing so silently breaks CC carried-
+    balance reconstruction. See the ``Transaction.linked_transaction_id``
+    model docstring and ``reference_cc_model_v1`` (Slice 3 gotcha).
     """
     match_id = transition.match_with_transaction_id
     if match_id is None:
