@@ -27,6 +27,13 @@ describe("CreditUtilizationBar", () => {
     expect(screen.getByText(/Over limit/)).toBeInTheDocument();
     expect(screen.getByText(/500/)).toBeInTheDocument();
   });
+  it("labels an exactly-maxed card as High, not Over limit (over > 0 boundary)", () => {
+    // balance == -creditLimit -> 100% used, over == 0. This is the boundary
+    // the accounts subline treats as "not over"; the bar must agree.
+    render(<CreditUtilizationBar name="Maxed" balance={-2000} creditLimit={2000} currency="EUR" />);
+    expect(screen.getByText(/100% · High/)).toBeInTheDocument();
+    expect(screen.queryByText(/Over limit/)).toBeNull();
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════

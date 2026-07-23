@@ -202,7 +202,10 @@ export default function AccountMonthEndForecast({
                       {i === 0 && (
                         <>
                           {" "}
-                          <Link href="/accounts" className={btnLink}>
+                          <Link
+                            href={`/accounts?edit=${row.account_id}`}
+                            className={btnLink}
+                          >
                             Change
                           </Link>
                         </>
