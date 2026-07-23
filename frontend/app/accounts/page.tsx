@@ -455,6 +455,23 @@ export default function AccountsPage() {
   const editingTypeSlug =
     accountTypes.find((t) => t.id === editAcctTypeId)?.slug ?? null;
 
+  // CC billing cycle Slice 2 — a same-month payment (relative_month "0")
+  // must fall AFTER the close day: you can't pay a statement before it
+  // closes. Mirrors the backend guard (a blank payment day defaults to 1).
+  // The server 400 is the source of truth; this is a submit-blocking hint
+  // so the editor can't post a config that can only fail.
+  const acctPaymentBeforeClose =
+    selectedType?.slug === "credit_card" &&
+    acctPaymentRelMonth === "0" &&
+    acctCloseDay !== "" &&
+    (acctPaymentDay === "" ? 1 : Number(acctPaymentDay)) <= Number(acctCloseDay);
+  const editAcctPaymentBeforeClose =
+    editingTypeSlug === "credit_card" &&
+    editAcctPaymentRelMonth === "0" &&
+    editAcctCloseDay !== "" &&
+    (editAcctPaymentDay === "" ? 1 : Number(editAcctPaymentDay)) <=
+      Number(editAcctCloseDay);
+
   // Fetch the upcoming-payments collection when a CC row is being edited.
   // CC Model V1 Follow-ups (Task 3) — the per-cycle override applies to any
   // credit_card now, so this no longer gates on payment_strategy. Backend
@@ -935,6 +952,11 @@ export default function AccountsPage() {
                       </select>
                     </div>
                   )}
+                  {acctPaymentBeforeClose && (
+                    <p role="alert" className="text-xs text-danger">
+                      Payment day must be after the close day when paid in the same month.
+                    </p>
+                  )}
                   {/* Credit Card Model V1 (Slice 1) — credit_limit + apr,
                       credit-card-only. Server validation is the source of
                       truth; these are UX hints. */}
@@ -1038,7 +1060,7 @@ export default function AccountsPage() {
                   <p className="text-xs text-text-muted">
                     Your account&apos;s starting amount. Leave at 0 if you don&apos;t know.
                   </p>
-                  <button type="submit" className={`w-full sm:w-auto sm:min-h-0 ${btnPrimary}`}>Create Account</button>
+                  <button type="submit" disabled={acctPaymentBeforeClose} className={`w-full sm:w-auto sm:min-h-0 ${btnPrimary}`}>Create Account</button>
                 </form>
               )}
               {/* Sortable column header — visible only on md+ where the
@@ -1151,6 +1173,11 @@ export default function AccountsPage() {
                           </select>
                         </div>
                       </div>
+                    )}
+                    {editAcctPaymentBeforeClose && (
+                      <p role="alert" className="w-full text-xs text-danger">
+                        Payment day must be after the close day when paid in the same month.
+                      </p>
                     )}
                     {/* Payment Source Foundation — "Paid from" picker,
                         credit-card-only. Lists same-org checking/savings/cash
@@ -1307,7 +1334,7 @@ export default function AccountsPage() {
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <button onClick={handleSaveAcct} className="min-h-[44px] text-xs text-accent hover:text-accent-hover sm:min-h-0">Save</button>
+                      <button onClick={handleSaveAcct} disabled={editAcctPaymentBeforeClose} className="min-h-[44px] text-xs text-accent hover:text-accent-hover disabled:opacity-50 sm:min-h-0">Save</button>
                       <button onClick={() => { setEditAcctId(null); setEditAcctTypeId(""); }} className="min-h-[44px] text-xs text-text-muted sm:min-h-0">Cancel</button>
                     </div>
                   </div>

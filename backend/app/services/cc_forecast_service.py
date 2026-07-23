@@ -25,9 +25,12 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
+import structlog
 from dateutil.relativedelta import relativedelta
 
 from app.services.cc_cycle_service import CreditCardCycle, resolve_cycle_for_account
+
+logger = structlog.get_logger(__name__)
 
 # Safety cap on the enumeration walk (a horizon is at most a couple of
 # cycles; this only guards against a pathological resolver loop).
@@ -144,6 +147,23 @@ def synthesize_account_cc_payments(
     consumed: set[int] = set()
     payments: list[tuple[date, Decimal]] = []
     for cycle in cycles:
+        # Belt-and-suspenders: a payment date on or before the close date
+        # collapses the credit-attribution window (close < eff <= payment)
+        # to empty, so p_k_owned would stay 0 and the projected outflow
+        # would be overstated. The create/PUT validation guard forbids the
+        # config that produces this (same-month payment_day <= close_day),
+        # but a same-month day-of-month clamp collision (e.g. Feb close 28 +
+        # payment 30, both clamp to Feb 28) can still land here. Skip the
+        # cycle rather than emit an overstated payment, and log it so the
+        # collision is observable rather than silent.
+        if cycle.payment_date <= cycle.period_end_inclusive:
+            logger.warning(
+                "cc_forecast.degenerate_cycle_skipped",
+                account_id=getattr(account, "id", None),
+                close_date=cycle.period_end_inclusive.isoformat(),
+                payment_date=cycle.payment_date.isoformat(),
+            )
+            continue
         b_k = balance_at_close(opening_balance, ledger, cycle.period_end_inclusive)
         outstanding = outstanding_at_close(b_k)
         target = cc_target_payment(account, cycle, outstanding, per_cycle_amounts)

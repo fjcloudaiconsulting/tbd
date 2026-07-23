@@ -190,6 +190,63 @@ def validate_create_close_day(
         )
 
 
+# Resolver NULL-defaults (mirror cc_cycle_service._DEFAULT_*); a NULL
+# payment_day means "day 1", a NULL relative_month means "next month".
+_DEFAULT_PAYMENT_DAY = 1
+_DEFAULT_PAYMENT_DAY_RELATIVE_MONTH = 1
+
+
+def _reject_same_month_payment_before_close(
+    *,
+    close_day: Optional[int],
+    payment_day: Optional[int],
+    payment_day_relative_month: Optional[int],
+) -> None:
+    """Reject a CC config that would pay a statement on/before it closes.
+
+    When the payment lands in the SAME calendar month as the close
+    (``payment_day_relative_month == 0``), the resolved payment date must
+    fall strictly AFTER the close date. You cannot owe or pay a statement
+    before it is issued, so a same-month ``payment_day <= close_day`` is
+    semantically undefined (and collapses the forecast's credit-attribution
+    window ``close < eff <= payment_date`` to empty, overstating the
+    projected payment — see ``cc_forecast_service`` line ~155).
+
+    Operates on EFFECTIVE values, matching the resolver: a NULL
+    ``payment_day`` means day 1, a NULL ``relative_month`` means next month
+    (always after close, never rejected). Only an EXPLICIT same-month
+    config is checked. Callers must invoke this only for CC targets, where
+    ``close_day`` is guaranteed non-null.
+
+    400 (cross-column business-rule violation) matches the sibling cascade
+    validators; 422 stays reserved for cross-org entity resolution and
+    Pydantic field-range checks.
+    """
+    eff_relative_month = (
+        payment_day_relative_month
+        if payment_day_relative_month is not None
+        else _DEFAULT_PAYMENT_DAY_RELATIVE_MONTH
+    )
+    if eff_relative_month != 0:
+        # Next month (or later) is always after this cycle's close.
+        return
+    if close_day is None:
+        # CC accounts always carry a close_day; defensively no-op otherwise
+        # (the missing-close_day case is caught by the close_day validator).
+        return
+    eff_payment_day = (
+        payment_day if payment_day is not None else _DEFAULT_PAYMENT_DAY
+    )
+    if eff_payment_day <= close_day:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "payment_day must be after close_day when the payment is in "
+                "the same month as the close (payment_day_relative_month = 0)"
+            ),
+        )
+
+
 def validate_payment_day_cascade(
     *,
     target_slug: Optional[str],
@@ -241,12 +298,15 @@ def validate_create_payment_day(
     target_slug: Optional[str],
     payment_day_value: Optional[int],
     payment_day_relative_month_value: Optional[int],
+    close_day_value: Optional[int] = None,
 ) -> None:
     """Create-path validation for payment_day / payment_day_relative_month.
 
     Mirrors ``validate_create_close_day`` but with relaxed CC rules:
     both new columns are optional on CC accounts (NULL = resolver default).
-    Non-CC accounts must not carry non-null values.
+    Non-CC accounts must not carry non-null values. On CC accounts the
+    same-month payment-before-close rule is enforced against the create
+    payload's ``close_day``.
     """
     if target_slug != _CC:
         if payment_day_value is not None:
@@ -259,6 +319,13 @@ def validate_create_payment_day(
                 status_code=400,
                 detail="payment_day_relative_month is only allowed on credit_card accounts",
             )
+        return
+
+    _reject_same_month_payment_before_close(
+        close_day=close_day_value,
+        payment_day=payment_day_value,
+        payment_day_relative_month=payment_day_relative_month_value,
+    )
 
 
 async def apply_type_change_in_session(
@@ -350,6 +417,27 @@ async def apply_type_change_in_session(
         payment_day_relative_month_in_payload=payment_day_relative_month_in_payload,
         payment_day_relative_month_value=payment_day_relative_month_value,
     )
+
+    # Same-month payment-before-close guard, evaluated against the MERGED
+    # post-write triple (payload value if carried, else the locked row's
+    # current value). A partial PUT touching only relative_month=0 must
+    # still be validated against the existing payment_day / close_day, so
+    # the guard cannot live in a stateless schema validator.
+    if target_slug == _CC:
+        merged_close_day = close_day_value if close_day_in_payload else old_close_day
+        merged_payment_day = (
+            payment_day_value if payment_day_in_payload else old_payment_day
+        )
+        merged_relative_month = (
+            payment_day_relative_month_value
+            if payment_day_relative_month_in_payload
+            else old_payment_day_relative_month
+        )
+        _reject_same_month_payment_before_close(
+            close_day=merged_close_day,
+            payment_day=merged_payment_day,
+            payment_day_relative_month=merged_relative_month,
+        )
 
     # Apply: type first, then cascade the close_day column.
     account.account_type_id = target_type_id

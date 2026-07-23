@@ -76,11 +76,13 @@ const CHECKING = {
   opening_balance: "0.00", opening_balance_date: "2026-01-01",
   payment_source_account_id: null, payment_day: null, payment_day_relative_month: null,
 };
-// CC seeded with a non-default payment day (5th) in the SAME month as close (0).
+// CC seeded with a VALID same-month config: close on the 3rd, pay on the
+// 5th of the SAME month (0). 5 > 3, so the payment-before-close guard is
+// satisfied and the editor opens without the warning.
 const CC = {
   id: 11, name: "Visa", account_type_id: 2, account_type_name: "Credit Card",
   account_type_slug: "credit_card", balance: "-50.00", currency: "EUR",
-  is_active: true, is_default: false, close_day: 15,
+  is_active: true, is_default: false, close_day: 3,
   opening_balance: "0.00", opening_balance_date: "2026-01-01",
   payment_source_account_id: null, payment_day: 5, payment_day_relative_month: 0,
 };
@@ -199,20 +201,43 @@ describe("CC payment day — inline edit", () => {
     });
   });
 
-  test("blank day + same-month is reachable: day null, relative_month 0 (1st of same month)", async () => {
+  test("same-month payment on/before the close day warns and disables Save", async () => {
+    mockApi();
+    renderWithSWR(<AccountsPage />);
+    await openEditRow(11); // seed close_day=3, valid (pay 5 > 3): no warning yet
+    expect(screen.queryByRole("alert")).toBeNull();
+    // Move the payment day to the close day (3): 3 <= 3 -> before/at close.
+    fireEvent.change(await screen.findByLabelText("Payment day"), {
+      target: { value: "3" },
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /must be after the close day/i,
+    );
+    const save = screen.getByRole("button", { name: /^Save$/ }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    // Clicking the disabled Save issues no PUT.
+    fireEvent.click(save);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(
+      vi.mocked(apiFetch).mock.calls.find(
+        ([path, init]) => path === "/api/v1/accounts/11" && init?.method === "PUT",
+      ),
+    ).toBeUndefined();
+  });
+
+  test("blank day + same-month is blocked (effective day 1 is on/before close)", async () => {
     mockApi();
     renderWithSWR(<AccountsPage />);
     await openEditRow(11);
-    // Seed is already same-month (0); just clear the day.
+    // Clear the day: effective payment_day defaults to 1, and 1 <= close_day
+    // always, so "1st of the same month" is always before close.
     fireEvent.change(await screen.findByLabelText("Payment day"), {
       target: { value: "" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
-    await waitFor(() => {
-      const body = findPutBody(11);
-      expect(body.payment_day).toBeNull();
-      expect(body.payment_day_relative_month).toBe(0);
-    });
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(
+      (screen.getByRole("button", { name: /^Save$/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });
 
@@ -303,5 +328,31 @@ describe("CC payment day — create form", () => {
       expect(body.payment_day).toBeNull();
       expect(body.payment_day_relative_month).toBeNull();
     });
+  });
+
+  test("same-month payment before close warns and disables Create", async () => {
+    mockApi();
+    renderWithSWR(<AccountsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /\+ Add Account/i }));
+    fireEvent.change(await screen.findByLabelText(/Account name/i), {
+      target: { value: "Before-close CC" },
+    });
+    fireEvent.change(await screen.findByLabelText(/^Type$/), { target: { value: "2" } });
+    fireEvent.change(await screen.findByLabelText(/Bill close day/i), {
+      target: { value: "25" },
+    });
+    fireEvent.change(await screen.findByLabelText(/Payment day/i), {
+      target: { value: "5" }, // 5 <= 25
+    });
+    fireEvent.change(await screen.findByLabelText("Payment month"), {
+      target: { value: "0" }, // same month
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /must be after the close day/i,
+    );
+    expect(
+      (screen.getByRole("button", { name: /Create Account/i }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 });
