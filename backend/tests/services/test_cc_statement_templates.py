@@ -16,10 +16,11 @@ from app.services import notification_templates as t
 
 def test_reminder_copy():
     title, body, link = t.scheduler_cc_statement_reminder(
-        "Amex Gold", date(2026, 8, 1), 2
+        "Amex Gold", date(2026, 8, 1), 2, 42
     )
     assert title == "Amex Gold statement closes soon"
     assert "2026-08-01" in body and "2 day" in body and "—" not in body
+    assert link == "/accounts?edit=42"
 
 
 def test_close_copy_amount_in_app_not_email():
@@ -42,7 +43,7 @@ def test_close_zero_due_body():
 def test_no_em_dash_anywhere():
     """House copy rule: no em-dashes in any produced string."""
     reminder_strs = t.scheduler_cc_statement_reminder(
-        "Amex Gold", date(2026, 8, 1), 2
+        "Amex Gold", date(2026, 8, 1), 2, 42
     )
     closed_amount_strs = t.scheduler_cc_statement_closed(
         "Amex Gold", "1,240.00", "EUR", date(2026, 8, 1), 42

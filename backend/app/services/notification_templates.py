@@ -349,7 +349,7 @@ def scheduler_billing_closed(*, new_period_start: datetime.date) -> tuple[str, s
 
 
 def scheduler_cc_statement_reminder(
-    card_name: str, close_date: datetime.date, days_until: int
+    card_name: str, close_date: datetime.date, days_until: int, account_id: int
 ) -> tuple[str, str, str]:
     """Copy for the CC statement close reminder job (Task 8).
 
@@ -361,17 +361,19 @@ def scheduler_cc_statement_reminder(
         card_name: display name of the credit card account.
         close_date: the date the current statement cycle closes.
         days_until: whole days between "now" and ``close_date``.
+        account_id: the credit card account's id, used to deep-link the
+            reader to its editor (consistent with the close alert).
 
     Returns:
-        ``(title, body, link_url)``. ``link_url`` points at the
-        Accounts page so the reader can review the card directly.
+        ``(title, body, link_url)``. ``link_url`` deep-links to the
+        card's editor on the Accounts page.
     """
     title = f"{card_name} statement closes soon"
     body = (
         f"Your {card_name} statement closes on {close_date.isoformat()} "
         f"(in {days_until} day(s)). We'll send the amount due once it closes."
     )
-    return (title, body, "/accounts")
+    return (title, body, f"/accounts?edit={account_id}")
 
 
 def scheduler_cc_statement_closed(
