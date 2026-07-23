@@ -7,7 +7,7 @@ if any -- as of that close date, using the exact same ledger
 reconstruction the forecast bills (``cc_statement_service.statement_outstanding``),
 so the alerted amount can never drift from what the forecast shows.
 
-Dual-channel with an asymmetric amount policy (D9/D10): the in-app body
+Dual-channel with an asymmetric amount policy (D8/D10): the in-app body
 may state the amount due, the email body never does (an amount owed is
 sensitive; email is a less-trusted channel), and a $0 outstanding
 balance suppresses the email entirely while still fanning out in-app
