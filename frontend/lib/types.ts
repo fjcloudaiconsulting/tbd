@@ -93,6 +93,13 @@ export interface Account {
   currency: string;
   is_active: boolean;
   close_day: number | null;
+  // CC billing cycle (spec 2026-05-28, Slice 2). Configurable payment day
+  // for the resolver. Both null on non-CC accounts and null-by-default on
+  // CC accounts (null => resolver default = day 1, month after close).
+  // payment_day_relative_month: 0 = same calendar month as close, 1 = the
+  // following month (the default), etc.
+  payment_day?: number | null;
+  payment_day_relative_month?: number | null;
   is_default: boolean;
   // L3.2 Wave 2A — user-stated starting amount. 0 for accounts that
   // pre-date migration 041; new accounts may set a non-zero value at
