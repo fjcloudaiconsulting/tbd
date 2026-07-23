@@ -22,7 +22,8 @@ export type DashboardWidgetType =
   | "dash_budget"
   | "dash_forecast_category"
   | "dash_recent_transactions"
-  | "dash_cc_utilization";
+  | "dash_cc_utilization"
+  | "dash_balances_by_type";
 
 /** A dashboard-native widget.  config is empty — the provider owns the data. */
 export interface DashboardWidget {
@@ -82,6 +83,14 @@ const DASHBOARD_WIDGET_DEFAULTS: Record<
   dash_cc_utilization: {
     title: "Credit card utilization",
     grid: { x: 0, y: 25, w: 4, h: 6 },
+  },
+  dash_balances_by_type: {
+    title: "Balances by type",
+    // Opt-in tile (not in the backend seed). h=8 (~552px) fits ~5-6 type rows
+    // (icon + name + count subline ~72px/row) without clipping under the card's
+    // overflow-hidden. y sits below the existing defaults; addDashTile
+    // recomputes actual placement on insert so this y is nominal.
+    grid: { x: 0, y: 31, w: 4, h: 8 },
   },
 };
 
