@@ -19,7 +19,9 @@
  * Severity dot — visual category cue:
  * - security → subtle red dot (urgent / actionable)
  * - account / org_admin → neutral muted dot (informational)
- * - org_activity → muted further (background noise, opt-in only)
+ * - org_activity / cc_statement → muted further (background noise,
+ *   default-on but low-urgency; cc_statement mirrors org_activity's
+ *   tier since both are informational, in-app-only reminders)
  *
  * "View all" footer link navigates to ``/settings/notifications``
  * (the full inbox / preferences page) and closes the popover.
@@ -44,6 +46,7 @@ const SEVERITY_DOT: Record<NotificationCategory, string> = {
   account: "bg-text-muted",
   org_admin: "bg-text-muted",
   org_activity: "bg-text-muted/40",
+  cc_statement: "bg-text-muted/40",
 };
 
 function timeAgo(iso: string): string {

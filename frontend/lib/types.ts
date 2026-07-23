@@ -810,17 +810,20 @@ export interface AdminSubscriptionKPIs {
 
 // ── Notifications ──────────────────────
 //
-// Mirrors backend/app/schemas/notification.py. Four categories map to
+// Mirrors backend/app/schemas/notification.py. Five categories map to
 // preference toggles; ``security`` is force-on per architect lock.
-// ``link_url`` is a relative app path, ``audit_event_id`` is the
-// forensic correlation back to the audit row that triggered the
+// ``cc_statement`` is the credit-card statement close / due-amount
+// reminder (in-app only for now — the reminder job does not dispatch
+// email). ``link_url`` is a relative app path, ``audit_event_id`` is
+// the forensic correlation back to the audit row that triggered the
 // notification (nullable — not every dispatch has an audit row).
 
 export type NotificationCategory =
   | "security"
   | "account"
   | "org_admin"
-  | "org_activity";
+  | "org_activity"
+  | "cc_statement";
 
 export interface Notification {
   id: number;
