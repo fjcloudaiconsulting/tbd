@@ -641,6 +641,58 @@ export default function AccountsPage() {
   );
   const showPagination = totalAccountPages > 1;
 
+  // CC Model V1 Follow-ups polish — deep link from the dashboard forecast's
+  // projected-payment "Change" link (/accounts?edit=<id>) straight into that
+  // credit card's inline editor: open it, page to it within the active sort,
+  // and scroll its "Upcoming payments" input into view. Fires once, after
+  // accounts + types have loaded (so the account and its slug resolve).
+  // Reads window.location directly (client-only) to avoid needing a
+  // useSearchParams Suspense boundary on this authenticated page.
+  const deepLinkHandled = useRef(false);
+  const pendingScrollId = useRef<number | null>(null);
+  useEffect(() => {
+    if (deepLinkHandled.current) return;
+    if (accounts.length === 0 || accountTypes.length === 0) return;
+    deepLinkHandled.current = true;
+    const raw = new URLSearchParams(window.location.search).get("edit");
+    if (!raw) return;
+    const id = Number(raw);
+    const target = accounts.find((a) => a.id === id) ?? null;
+    if (!target) return;
+    startEditAcct(target);
+    const idx = sortedAccounts.findIndex((a) => a.id === id);
+    if (idx >= 0) setPage(Math.floor(idx / pageSize) + 1);
+    // Only track a scroll when the target is a credit card, whose editor
+    // actually renders the "Upcoming payments" anchor. This bounds the
+    // scroll effect below: a hand-crafted /accounts?edit=<non-cc-id> never
+    // sets pendingScrollId, so that effect stays idle.
+    const targetSlug =
+      accountTypes.find((t) => t.id === target.account_type_id)?.slug ?? null;
+    if (targetSlug === "credit_card") pendingScrollId.current = id;
+  }, [accounts, accountTypes, sortedAccounts, pageSize, setPage, startEditAcct]);
+
+  // Once the deep-linked editor row has rendered on the resolved page, scroll
+  // its cycle-payment section into view, then clear the pending marker. Runs
+  // after each render until the target element exists (edit row + correct
+  // page must both settle first).
+  useEffect(() => {
+    const id = pendingScrollId.current;
+    if (id == null) return;
+    // Editor closed or switched before we scrolled: stop tracking so this
+    // effect self-terminates instead of polling getElementById every render.
+    if (editAcctId !== id) {
+      pendingScrollId.current = null;
+      return;
+    }
+    const el = document.getElementById(`edit-acct-upcoming-payments-${id}`);
+    if (el) {
+      // Optional-chain: scrollIntoView is absent in jsdom (tests) and can be
+      // missing in older engines; the deep-link open still succeeds without it.
+      el.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      pendingScrollId.current = null;
+    }
+  });
+
   // Click a header: toggle direction if it is already the active column,
   // else switch to that column starting ascending.
   const handleSort = useCallback(
@@ -1106,7 +1158,7 @@ export default function AccountsPage() {
                         blur/Enter via PUT; empty clears via DELETE. Middle
                         dot separator, no em-dash; muted design tokens only. */}
                     {editingTypeSlug === "credit_card" && (
-                      <div className="w-full">
+                      <div className="w-full" id={`edit-acct-upcoming-payments-${a.id}`}>
                         <div className={label}>Upcoming payments</div>
                         <p className="mb-2 text-xs text-text-muted">
                           Paying the full balance by default. Enter a different amount for any
@@ -1291,6 +1343,12 @@ export default function AccountsPage() {
                               text = "0% used · full limit available";
                             } else if (over > 0) {
                               text = `Using ${util}% of limit · ${formatAmount(over)} ${a.currency} over`;
+                            } else if (available === 0) {
+                              // Exactly maxed (100% used, not over): "0 left"
+                              // reads as noise, so name the state directly.
+                              // Keeps parity with the bar, which labels this
+                              // "100% · High" rather than "Over limit".
+                              text = `Using ${util}% of limit · no credit left`;
                             } else {
                               text = `Using ${util}% of limit · ${formatAmount(available)} ${a.currency} left`;
                             }

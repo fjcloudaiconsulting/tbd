@@ -278,11 +278,12 @@ describe("AccountMonthEndForecast — credit-card projected payment", () => {
 });
 
 describe("AccountMonthEndForecast — contextual Change link", () => {
-  it("renders a Change link on the imminent payment line pointing at /accounts", () => {
+  it("renders a Change link deep-linking to that card's editor (/accounts?edit=<id>)", () => {
     render(<AccountMonthEndForecast {...defaults({ forecast: CC_WITH_PAYMENT })} />);
     const change = screen.getByRole("link", { name: /change/i });
     expect(change).toBeInTheDocument();
-    expect(change.getAttribute("href")).toBe("/accounts");
+    // CC row account_id is 1 -> opens that account's inline editor.
+    expect(change.getAttribute("href")).toBe("/accounts?edit=1");
   });
   it("renders no Change link when there are no cc_payments", () => {
     render(<AccountMonthEndForecast {...defaults({ forecast: TWO_ACCOUNTS_EUR })} />);
