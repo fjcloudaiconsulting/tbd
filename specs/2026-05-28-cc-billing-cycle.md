@@ -6,9 +6,93 @@ type: project
 
 # Credit Card Billing Cycle — Discovery + Substrate + Overrides
 
-**Date:** 2026-05-28. **Status:** discussion-grade, pre-implementation.
+**Date:** 2026-05-28. **Status:** RECONCILED 2026-07-23 — see the reconciliation section directly below before reading the rest.
 **Replaces:** nothing (extends `specs/credit-card-model-upgrade.md` from 2026-05-15).
 **Linked memory:** `project_credit_card_billing_backlog.md` (the 2026-05-27 owner backlog this responds to).
+
+## 2026-07-23 Reconciliation & Architect Verdict (READ FIRST — supersedes the sequencing below)
+
+Between 2026-05-28 and 2026-07-23 a large amount of CC work shipped that this spec could not
+foresee: the per-CC cycle resolver (Slice 1), Credit Card Model V1 (`credit_limit`, `apr`,
+`payment_strategy`, `fixed_payment_amount`, and the per-cycle **amount** store `cc_cycle_payments`),
+the payment-source foundation, and CC statement alerts. Two independent architects re-validated D1-D8
+against today's codebase (2026-07-23) and the owner confirmed their verdict. Net result:
+
+**Slice-by-slice status after reconciliation:**
+
+- **Slice 1 (substrate) — SHIPPED & mature.** `backend/app/services/cc_cycle_service.py` exposes the
+  pure resolver `resolve_cycle(...) -> CreditCardCycle(period_start, period_end_inclusive,
+  payment_date, source)`; `source` reserves `"override"` for the (now deferred) overrides work.
+  Columns `accounts.payment_day` + `accounts.payment_day_relative_month` exist. Consumed by the
+  forecast (`cc_forecast_service` / `account_balance_forecast_service`), both statement-alert jobs,
+  and `cc_cycle_payment_service` anchor resolution.
+- **Slice 2 (configurable payment day) — BACKEND SHIPPED; FRONTEND IS THIS DELIVERABLE.**
+  `schemas/account.py` accepts `payment_day` (ge=1,le=31) + `payment_day_relative_month`
+  (ge=0,le=12); `validate_create_payment_day` + `validate_payment_day_cascade` are wired into
+  create + PUT. The only missing piece is the CC-gated form UI. **This is what ships now** (its own
+  small PR): two CC-gated fields in the create form and inline editor of `frontend/app/accounts/page.tsx`
+  — a "Payment day (1-28)" number input (blank ⇒ send BOTH columns null = resolver default) and a
+  "Payment month" select ("Month after close" = relative_month 1, default / "Same month as close" =
+  0). No backend change.
+- **Slices 3 (per-month date overrides) + 4 (current-month shortcut) — DEFERRED to backlog.** Rationale
+  and the correct build-it-later design are in the "Deferred: Slices 3-4" section appended at the end
+  of this doc. Build only if users actually ask for per-month **date** shifting.
+
+**Why 3-4 are deferred (unanimous, independent architect judgment):** the high-value per-cycle axis —
+*how much* you pay this cycle — is already solved by `cc_cycle_payments`, and forecast + both alert
+jobs already work correctly off the default cycle. The date-override axis shifts a close/payment
+boundary by ~1-2 days ("the 25th was a Saturday"); that is marginal planning accuracy against a large,
+money-and-scheduler-adjacent blast radius. Shipping it *honestly* means overrides must flow through
+the resolver into forecast + both alert jobs + `cc_cycle_payments` anchoring (display-only is a
+correctness lie — rejected), which touches the DB-free forecast hot path and the alert dedup markers.
+Not worth the complexity budget until demand is validated.
+
+**Architect rulings that constrain any future 3-4 build (D1-D8 all still hold; these refine them):**
+
+- **Propagation (was implicit in D5/D8):** overrides flow end-to-end into all resolver consumers, or
+  the feature does not ship. No display-only tier.
+- **Resolver architecture (refines D8):** keep `resolve_cycle` PURE. Add an optional injected
+  `overrides` map param and a one-shot batch-fetcher, mirroring the proven `per_cycle_amounts`
+  batch-fetch → pure `synthesize_account_cc_payments` pattern at
+  `account_balance_forecast_service.py:130-135`. Do **not** add a per-call async DB fetch inside the
+  resolver — it would be an N+1 in `cc_forecast_service.due_cycles_in_horizon` (up to 60 iterations)
+  and break the module's deliberate DB-free contract. An async `resolve_cycle_with_overrides(db,
+  account, target_date)` convenience is fine for genuinely single-shot callers only.
+- **Storage (confirms D7):** keep `cc_cycle_overrides` as a SEPARATE table from `cc_cycle_payments`.
+  Amounts are money-bearing (owner/admin gate, `account.cycle_payment.*` audit); date shifts are
+  config-grade. Reuse the sibling's STRUCTURE (isolation-via-parent-load, past-anchor 409, explicit
+  wipe/reset deletes, leave-CC cascade), not its row.
+- **Anchor stability (resolves D-open):** anchor-month stability is STRUCTURAL — `_clamp_day` keeps a
+  `close_day_override` inside its calendar month, so an override can never move `period_end_inclusive`'s
+  month, and a committed `cc_cycle_payments` amount stays attached to its cycle. Cross-month shifting
+  is neither needed nor representable in D7's schema. Lock it with a unit test; reject any future
+  "close N days after X" axis that would break it.
+- **Consumer-list correction:** `account_type_change_service` is NOT a resolver consumer — it only
+  runs cascade validation and deletes `cc_cycle_payments`. For overrides it needs only the leave-CC
+  CASCADE DELETE (+ `account.cycle_override.deleted` audit), not override-aware resolution.
+- **Re-slice:** Slice 4's "current-month shortcut" is just a second entry point into Slice 3's
+  endpoint (see line ~172), so 3+4 are ONE PR, not two. Slice 2 frontend is independent and lands first.
+
+**Mandatory landmines for any 3-4 build (from the architect risk pass):**
+
+1. **Alert dedup re-fires on a shifted close date.** Both jobs dedup on `(account_id,
+   period_end_inclusive.isoformat())` (`scheduler/audit.py`, `cc_statement_{close,reminder}.py`). If a
+   user records a close-day override AFTER an alert fired, the resolved close date moves → new dedup
+   key → the same cycle re-alerts (in-app + email spam). Any override-aware alert path MUST re-key
+   dedup on the stable anchor MONTH `(account_id, anchor_year, anchor_month)`.
+2. **Forecast carried-balance perturbs adjacent cycles.** `synthesize_account_cc_payments` threads
+   `S_prev` and a consumed-credit set across all due cycles; an override that shifts one cycle's
+   close/payment date mid-horizon silently re-nets neighbors. Needs targeted tests before shipping.
+3. **Migrate forecast AND the cycle-payments "upcoming" list atomically** — if overrides flow into one
+   reader but not the other, the amount editor and forecast disagree on a cycle's due date.
+4. **New table's cascade obligations:** `cc_cycle_overrides` must be deleted in BOTH `wipe_org_data`
+   AND `reset_org_data`, plus the leave-CC cascade in `account_type_change_service` — per
+   `reference_org_delete_cascade_fk_audit`.
+5. **Alembic revision-id must fit `VARCHAR(32)`** (SQLite CI passes a longer id; prod MySQL 500s).
+6. **D6 refinement for close overrides:** "current" is computed from the DEFAULT cycle; reject a
+   close-day override whose effective close date is already `< today` (stricter than the amount
+   past-anchor 409 — editing an already-closed cycle's close date breaks reconciliation + re-fires
+   alerts). Payment-date-only overrides keep the amount-style current+future rule.
 
 ## TL;DR
 
