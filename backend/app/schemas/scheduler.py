@@ -8,9 +8,13 @@ class SchedulerSettingsResponse(BaseModel):
     automate_recurring_generation: bool
     automate_billing_close: bool
     billing_close_reminder_lead_days: int
+    automate_cc_statement_alerts: bool
+    cc_statement_reminder_lead_days: int
 
 
 class SchedulerSettingsUpdate(BaseModel):
     automate_recurring_generation: bool | None = None
     automate_billing_close: bool | None = None
     billing_close_reminder_lead_days: int | None = Field(default=None, ge=0, le=31)
+    automate_cc_statement_alerts: bool | None = None
+    cc_statement_reminder_lead_days: int | None = Field(default=None, ge=0, le=31)

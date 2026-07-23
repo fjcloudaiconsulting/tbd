@@ -39,6 +39,7 @@ from app.models.category import CategoryType
 from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.transaction import TransactionStatus, TransactionType
 from app.schemas.forecast import AccountBalanceForecastResponse
+from app.services import cc_statement_service as css
 from app.services.account_balance_forecast_service import (
     compute_account_balance_forecast,
 )
@@ -1115,3 +1116,81 @@ async def test_account_balance_forecast_response_preserves_cc_payments(
 
     source_row = next(a for a in response.accounts if a.account_id == source.id)
     assert source_row.cc_payments == []
+
+
+# ---------- Review finding: payment_date < close_date must not truncate ledger ----------
+
+
+async def test_cc_synth_payment_before_close_does_not_drop_ledger_row(
+    db_session: AsyncSession,
+):
+    """Reviewer finding on the Task 3 refactor: ``load_cc_ledgers``'s
+    ``up_to`` bound was previously mandatory and the forecast site passed
+    ``p_end`` (the horizon's period_end). That is only safe if
+    ``payment_date >= close_date`` for every due cycle -- an invariant that
+    does NOT hold. With ``payment_day < close_day`` and
+    ``payment_day_relative_month == 0`` (same-month payment),
+    ``_resolve_payment_date`` can yield ``payment_date < close_date``. If
+    the horizon's ``p_end`` then falls between them,
+    ``due_cycles_in_horizon`` still includes the cycle (its
+    ``payment_date <= p_end``) even though ``close_date > p_end`` --  so
+    bounding the ledger fetch at ``p_end`` drops rows in
+    ``(p_end, close_date]`` that ``balance_at_close(close_date)`` needs,
+    silently under-counting outstanding (and, transitively, the Task 9
+    close-day alert, which shares this module). Fixed: ``load_cc_ledgers``'s
+    ``up_to`` is optional and the forecast call site now passes none
+    (restoring the pre-refactor unbounded fetch). On the pre-fix code this
+    test is RED (``cc_payments == []``); on the fix it is GREEN.
+
+    Cycle here: close_day=25, payment_day=10, payment_day_relative_month=0
+    -> for the cycle closing 2026-05-25, payment_date resolves to
+    2026-05-10 (BEFORE close). The charge lands on 2026-05-20 -- after
+    payment_date, after p_end, but at-or-before close_date.
+    """
+    seed = await _seed(db_session)
+    org_id = seed["org_id"]
+    source = seed["accounts"]["primary"]
+
+    cc_type = AccountType(org_id=org_id, name="Credit Card", slug="credit_card", is_system=True)
+    db_session.add(cc_type)
+    await db_session.flush()
+
+    cc = Account(
+        org_id=org_id, name="Visa", account_type_id=cc_type.id,
+        balance=Decimal("-400.00"), currency="EUR", is_default=False,
+        close_day=25, payment_day=10, payment_day_relative_month=0,
+        payment_source_account_id=source.id, opening_balance=Decimal("0.00"),
+    )
+    db_session.add(cc)
+    await db_session.flush()
+
+    charge_date = datetime.date(2026, 5, 20)
+    close_date = datetime.date(2026, 5, 25)
+    db_session.add(
+        _new_tx(
+            org_id=org_id, account_id=cc.id, category_id=seed["cat_expense"],
+            amount=Decimal("400.00"), type=TransactionType.EXPENSE,
+            status=TransactionStatus.SETTLED, date=charge_date, settled_date=charge_date,
+        )
+    )
+
+    # Horizon ends BEFORE the close date but AFTER the payment date --
+    # exactly the window where due_cycles_in_horizon includes the cycle
+    # (payment_date=2026-05-10 <= p_end) while close_date=2026-05-25 > p_end.
+    seed["period"].end_date = datetime.date(2026, 5, 15)
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, org_id, period_start=PERIOD_START
+    )
+    cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
+    assert cc_row["cc_payments"] == [{"amount": "400.00", "date": "2026-05-10"}]
+
+    # Safe call site cross-check: statement_outstanding (up_to=close_date)
+    # must also include the post-p_end, pre-close charge -- it always has
+    # (this call site was never the bug), but pins the shared amount so the
+    # forecast and the Task 9 alert can never diverge for this cycle.
+    owed = await css.statement_outstanding(
+        db_session, org_id=org_id, account=cc, close_date=close_date
+    )
+    assert owed == Decimal("400.00")

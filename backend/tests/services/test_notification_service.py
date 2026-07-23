@@ -544,10 +544,12 @@ class _PrefPayload:
         self.email_account = kwargs.get("email_account", True)
         self.email_org_admin = kwargs.get("email_org_admin", True)
         self.email_org_activity = kwargs.get("email_org_activity", False)
+        self.email_cc_statement = kwargs.get("email_cc_statement", True)
         self.in_app_security = kwargs.get("in_app_security", True)
         self.in_app_account = kwargs.get("in_app_account", True)
         self.in_app_org_admin = kwargs.get("in_app_org_admin", True)
         self.in_app_org_activity = kwargs.get("in_app_org_activity", False)
+        self.in_app_cc_statement = kwargs.get("in_app_cc_statement", True)
 
 
 @pytest.mark.asyncio

@@ -116,6 +116,8 @@ async def test_get_returns_defaults(session_factory):
         "automate_recurring_generation": True,
         "automate_billing_close": True,
         "billing_close_reminder_lead_days": 3,
+        "automate_cc_statement_alerts": True,
+        "cc_statement_reminder_lead_days": 2,
     }
 
 
@@ -149,6 +151,51 @@ async def test_put_rejects_out_of_range_lead_days(session_factory):
     r = client.put(
         "/api/v1/scheduler/settings",
         json={"billing_close_reminder_lead_days": 99},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_put_updates_cc_statement_fields(session_factory):
+    ids = await _seed(session_factory)
+
+    async def resolver(_f):
+        return await _get_user(session_factory, ids["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    r = client.put(
+        "/api/v1/scheduler/settings",
+        json={
+            "automate_recurring_generation": True,
+            "automate_billing_close": True,
+            "billing_close_reminder_lead_days": 3,
+            "automate_cc_statement_alerts": False,
+            "cc_statement_reminder_lead_days": 5,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["automate_cc_statement_alerts"] is False
+    assert body["cc_statement_reminder_lead_days"] == 5
+
+    r2 = client.get("/api/v1/scheduler/settings")
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["automate_cc_statement_alerts"] is False
+    assert body2["cc_statement_reminder_lead_days"] == 5
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_out_of_range_cc_lead_days(session_factory):
+    ids = await _seed(session_factory)
+
+    async def resolver(_f):
+        return await _get_user(session_factory, ids["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    r = client.put(
+        "/api/v1/scheduler/settings",
+        json={"cc_statement_reminder_lead_days": 99},
     )
     assert r.status_code == 422
 

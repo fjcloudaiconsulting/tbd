@@ -39,6 +39,8 @@ function makePrefs(
     in_app_account: true,
     in_app_org_admin: true,
     in_app_org_activity: false,
+    email_cc_statement: true,
+    in_app_cc_statement: true,
     ...overrides,
   };
 }
@@ -173,8 +175,8 @@ describe("Notification preferences settings page", () => {
         name: /organization activity in-app notifications/i,
       }),
     ).toHaveAttribute("aria-checked", "false");
-    // Both channels of all four categories are present.
-    expect(screen.getAllByRole("switch")).toHaveLength(8);
+    // Both channels of all five categories are present.
+    expect(screen.getAllByRole("switch")).toHaveLength(10);
   });
 
   it("shows the in-app security switch on and disabled even if the loaded value is false", async () => {
@@ -220,6 +222,25 @@ describe("Notification preferences settings page", () => {
       ...makePrefs(),
       in_app_org_admin: false,
     });
+  });
+
+  it("renders the Credit card statements category with both toggles", async () => {
+    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs());
+    render(<NotificationsPage />);
+
+    expect(
+      await screen.findByText("Credit card statements"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", {
+        name: /credit card statements email notifications/i,
+      }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByRole("switch", {
+        name: /credit card statements in-app notifications/i,
+      }),
+    ).toHaveAttribute("aria-checked", "true");
   });
 
   it("shows an error when loading preferences fails", async () => {

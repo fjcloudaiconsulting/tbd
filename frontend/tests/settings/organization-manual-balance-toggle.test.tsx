@@ -18,6 +18,8 @@ vi.mock("@/lib/api", async () => {
       automate_recurring_generation: true,
       automate_billing_close: true,
       billing_close_reminder_lead_days: 3,
+      automate_cc_statement_alerts: true,
+      cc_statement_reminder_lead_days: 5,
     }),
     updateSchedulerSettings: vi.fn(),
   };

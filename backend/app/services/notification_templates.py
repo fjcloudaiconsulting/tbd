@@ -343,3 +343,77 @@ def scheduler_billing_closed(*, new_period_start: datetime.date) -> tuple[str, s
         f"{new_period_start.isoformat()}."
     )
     return (title, body, "/budgets")
+
+
+# ── CC Statement Alerts V1 templates (Task 6) ───────────────────────
+
+
+def scheduler_cc_statement_reminder(
+    card_name: str, close_date: datetime.date, days_until: int, account_id: int
+) -> tuple[str, str, str]:
+    """Copy for the CC statement close reminder job (Task 8).
+
+    Fires a few days before a credit card's statement closes, so the
+    amount due isn't yet known -- the body only names the close date
+    and promises a follow-up notification once the statement closes.
+
+    Args:
+        card_name: display name of the credit card account.
+        close_date: the date the current statement cycle closes.
+        days_until: whole days between "now" and ``close_date``.
+        account_id: the credit card account's id, used to deep-link the
+            reader to its editor (consistent with the close alert).
+
+    Returns:
+        ``(title, body, link_url)``. ``link_url`` deep-links to the
+        card's editor on the Accounts page.
+    """
+    title = f"{card_name} statement closes soon"
+    body = (
+        f"Your {card_name} statement closes on {close_date.isoformat()} "
+        f"(in {days_until} day(s)). We'll send the amount due once it closes."
+    )
+    return (title, body, f"/accounts?edit={account_id}")
+
+
+def scheduler_cc_statement_closed(
+    card_name: str,
+    amount_str: Optional[str],
+    currency: str,
+    payment_date: datetime.date,
+    account_id: int,
+) -> tuple[str, str, str, str]:
+    """Copy for the CC statement closed job (Task 9).
+
+    Fires once a credit card's statement cycle closes and the carried
+    balance (if any) is known. Unlike most templates in this module,
+    this one returns SEPARATE in-app and email bodies: the in-app body
+    may state the amount due, but the email body never does -- it only
+    tells the reader to open the app. ``amount_str`` and ``currency``
+    are pre-formatted by the caller (this function does not format
+    money); the amount renders as ``f"{amount_str} {currency}"``, never
+    a "$" literal.
+
+    Args:
+        card_name: display name of the credit card account.
+        amount_str: pre-formatted carried-balance amount (e.g.
+            ``"1,240.00"``), or ``None`` when nothing is due.
+        currency: ISO currency code paired with ``amount_str``.
+        payment_date: the date the carried balance is due.
+        account_id: the credit card account's id, used to deep-link
+            the reader to its editor.
+
+    Returns:
+        ``(title, in_app_body, email_body, link_url)``.
+    """
+    title = f"{card_name} statement closed"
+    if amount_str is None:
+        in_app_body = f"Your {card_name} statement closed with nothing due."
+    else:
+        in_app_body = (
+            f"Your {card_name} statement closed. {amount_str} {currency} "
+            f"is due on {payment_date.isoformat()}."
+        )
+    email_body = f"Your {card_name} statement closed. Open the app to see what's due."
+    link = f"/accounts?edit={account_id}"
+    return (title, in_app_body, email_body, link)

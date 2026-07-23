@@ -26,7 +26,7 @@ import datetime
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account, AccountType
@@ -34,6 +34,7 @@ from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services import cc_forecast_service
 from app.services.billing_service import resolve_period
+from app.services.cc_statement_service import load_cc_ledgers
 from app.services.transaction_filters import (
     balance_contribution_filter,
     effective_period_date_expr,
@@ -133,19 +134,17 @@ async def compute_account_balance_forecast(
         )).all()
         per_cycle_amounts = {(aid, y, m): Decimal(str(amt)) for aid, y, m, amt in pcp_rows}
 
-        signed = case(
-            (Transaction.type == TransactionType.INCOME, Transaction.amount),
-            else_=-Transaction.amount,
-        )
-        ledger_rows = (await db.execute(
-            select(Transaction.account_id, eff_date.label("eff"), signed.label("signed"))
-            .where(Transaction.org_id == org_id,
-                   Transaction.account_id.in_(cc_ids),
-                   balance_contribution_filter())
-        )).all()
-        ledger_by_account: dict[int, list[tuple]] = {}
-        for aid, eff, s in ledger_rows:
-            ledger_by_account.setdefault(aid, []).append((eff, Decimal(str(s))))
+        # Single source of the CC ledger query (cc_statement_service):
+        # UNBOUNDED (no up_to). A due cycle's payment_date is not
+        # guaranteed to be >= its own close_date -- with payment_day <
+        # close_day and payment_day_relative_month == 0 (same-month
+        # payment), payment_date can fall BEFORE close_date. Bounding the
+        # fetch at p_end would then drop ledger rows in (p_end, close_date]
+        # that balance_at_close(close_date) needs, silently under-counting
+        # outstanding. This matches the pre-refactor inline query, which
+        # was also unbounded and let balance_at_close's own close_date
+        # re-filter do the work.
+        ledger_by_account = await load_cc_ledgers(db, org_id, cc_ids)
 
         credit_rows = (await db.execute(
             select(Transaction.id, Transaction.account_id, eff_date.label("eff"), Transaction.amount)

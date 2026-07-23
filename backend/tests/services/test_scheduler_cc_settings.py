@@ -1,6 +1,8 @@
+"""Tests for the per-org CC statement alert scheduler settings (toggle +
+clamped lead-days), mirroring test_scheduler_org_settings.py's fixtures.
+"""
 from __future__ import annotations
 
-import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -33,34 +35,30 @@ async def org(session_factory):
         return o
 
 
-async def test_defaults_when_unset(session_factory, org):
+async def test_cc_toggle_defaults_on(session_factory, org):
     async with session_factory() as db:
-        assert await so.get_bool(db, org.id, so.AUTOMATE_RECURRING_KEY) is True
-        assert await so.get_bool(db, org.id, so.AUTOMATE_BILLING_KEY) is True
-        assert await so.get_reminder_lead_days(db, org.id) == 3
+        assert await so.get_bool(db, org.id, so.AUTOMATE_CC_STATEMENT_KEY) is True
 
 
-async def test_set_and_read_back(session_factory, org):
+async def test_cc_lead_days_default_and_clamp(session_factory, org):
     async with session_factory() as db:
-        await so.set_value(db, org.id, so.AUTOMATE_BILLING_KEY, "false")
-        await so.set_value(db, org.id, so.REMINDER_LEAD_DAYS_KEY, "7")
+        assert await so.get_cc_statement_lead_days(db, org.id) == 2
+        await so.set_value(db, org.id, so.CC_STATEMENT_REMINDER_LEAD_DAYS_KEY, "99")
         await db.commit()
     async with session_factory() as db:
-        assert await so.get_bool(db, org.id, so.AUTOMATE_BILLING_KEY) is False
-        assert await so.get_reminder_lead_days(db, org.id) == 7
+        assert await so.get_cc_statement_lead_days(db, org.id) == 31  # clamped
+
+
+async def test_cc_lead_days_clamped_on_garbage(session_factory, org):
+    async with session_factory() as db:
+        await so.set_value(db, org.id, so.CC_STATEMENT_REMINDER_LEAD_DAYS_KEY, "not-a-number")
+        await db.commit()
+    async with session_factory() as db:
+        assert await so.get_cc_statement_lead_days(db, org.id) == 2
+
+
+async def test_cc_fields_in_get_all(session_factory, org):
+    async with session_factory() as db:
         allv = await so.get_all(db, org.id)
-        assert allv == {
-            "automate_recurring_generation": True,
-            "automate_billing_close": False,
-            "billing_close_reminder_lead_days": 7,
-            "automate_cc_statement_alerts": True,
-            "cc_statement_reminder_lead_days": 2,
-        }
-
-
-async def test_reminder_lead_days_clamped_on_garbage(session_factory, org):
-    async with session_factory() as db:
-        await so.set_value(db, org.id, so.REMINDER_LEAD_DAYS_KEY, "not-a-number")
-        await db.commit()
-    async with session_factory() as db:
-        assert await so.get_reminder_lead_days(db, org.id) == 3
+        assert allv["automate_cc_statement_alerts"] is True
+        assert allv["cc_statement_reminder_lead_days"] == 2
