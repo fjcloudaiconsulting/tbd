@@ -1115,6 +1115,8 @@ export default function AccountsPage() {
                             setEditAcctApr("");
                             setEditAcctPaymentStrategy("");
                             setEditAcctFixedPayment("");
+                            setEditAcctPaymentDay("");
+                            setEditAcctPaymentRelMonth("");
                           }
                         }}
                         className={`w-full text-sm sm:w-44 ${input}`}
