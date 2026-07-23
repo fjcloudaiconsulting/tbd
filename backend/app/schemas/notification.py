@@ -79,10 +79,12 @@ class NotificationPreferencesResponse(BaseModel):
     email_account: bool
     email_org_admin: bool
     email_org_activity: bool
+    email_cc_statement: bool
     in_app_security: bool
     in_app_account: bool
     in_app_org_admin: bool
     in_app_org_activity: bool
+    in_app_cc_statement: bool
 
 
 class NotificationPreferencesUpdate(BaseModel):
@@ -100,7 +102,9 @@ class NotificationPreferencesUpdate(BaseModel):
     email_account: bool
     email_org_admin: bool
     email_org_activity: bool
+    email_cc_statement: bool
     in_app_security: bool
     in_app_account: bool
     in_app_org_admin: bool
     in_app_org_activity: bool
+    in_app_cc_statement: bool

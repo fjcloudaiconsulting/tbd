@@ -10,8 +10,9 @@ delta ``specs/2026-05-22-notification-system-2nd-arch-pass.md``):
   forensic correlation back to the matching audit row, nullable
   + ``ON DELETE SET NULL`` so audit row deletion does not orphan
   the notification feed.
-- ``user_notification_preferences`` — one row per user, four
-  categories x two channels. ``email_security`` is forced TRUE at
+- ``user_notification_preferences`` — one row per user, five
+  categories x two channels (``cc_statement`` added by migration 076
+  for CC Statement Alerts V1). ``email_security`` is forced TRUE at
   the API layer (the column shape is preserved so a future "really
   opt me out" exception is a one-line change). Auto-created on first
   access via the service layer.
@@ -56,6 +57,7 @@ class NotificationCategory(str, enum.Enum):
     ACCOUNT = "account"
     ORG_ADMIN = "org_admin"
     ORG_ACTIVITY = "org_activity"
+    CC_STATEMENT = "cc_statement"
 
 
 class Notification(Base):
@@ -179,6 +181,15 @@ class UserNotificationPreferences(Base):
     )
     in_app_org_activity: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
+    )
+    # CC statement alerts (reminder + close). Default ON/opt-out,
+    # mirroring email_account/in_app_account (NOT the opt-in
+    # org_activity shape) — these are money-timing signals, not noise.
+    email_cc_statement: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+    in_app_cc_statement: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

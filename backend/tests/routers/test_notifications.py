@@ -629,10 +629,12 @@ def _full_payload(**overrides) -> dict:
         "email_account": True,
         "email_org_admin": True,
         "email_org_activity": False,
+        "email_cc_statement": True,
         "in_app_security": True,
         "in_app_account": True,
         "in_app_org_admin": True,
         "in_app_org_activity": False,
+        "in_app_cc_statement": True,
     }
     base.update(overrides)
     return base

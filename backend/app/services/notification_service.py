@@ -84,6 +84,7 @@ _IN_APP_PREF_FIELD: dict[NotificationCategory, str] = {
     NotificationCategory.ACCOUNT: "in_app_account",
     NotificationCategory.ORG_ADMIN: "in_app_org_admin",
     NotificationCategory.ORG_ACTIVITY: "in_app_org_activity",
+    NotificationCategory.CC_STATEMENT: "in_app_cc_statement",
 }
 
 # Email category → preference-column mapping, mirroring
@@ -94,6 +95,7 @@ _EMAIL_PREF_FIELD: dict[NotificationCategory, str] = {
     NotificationCategory.ACCOUNT: "email_account",
     NotificationCategory.ORG_ADMIN: "email_org_admin",
     NotificationCategory.ORG_ACTIVITY: "email_org_activity",
+    NotificationCategory.CC_STATEMENT: "email_cc_statement",
 }
 
 
@@ -749,6 +751,8 @@ def _default_preferences(user_id: int) -> UserNotificationPreferences:
     "really opt me out" exception is a one-line change. ``org_activity``
     now defaults ON (opt-out) per the 2026-07-04 operator decision, so
     every category defaults on until the user explicitly opts out.
+    ``cc_statement`` (added by migration 076) defaults ON/opt-out too —
+    it mirrors ``account``, not the (now-flipped) opt-in shape.
     """
     return UserNotificationPreferences(
         user_id=user_id,
@@ -756,10 +760,12 @@ def _default_preferences(user_id: int) -> UserNotificationPreferences:
         email_account=True,
         email_org_admin=True,
         email_org_activity=True,
+        email_cc_statement=True,
         in_app_security=True,
         in_app_account=True,
         in_app_org_admin=True,
         in_app_org_activity=True,
+        in_app_cc_statement=True,
     )
 
 
@@ -829,10 +835,12 @@ async def update_preferences(
     row.email_account = payload.email_account
     row.email_org_admin = payload.email_org_admin
     row.email_org_activity = payload.email_org_activity
+    row.email_cc_statement = payload.email_cc_statement
     row.in_app_security = True  # force-on both channels (no route 400 for in-app)
     row.in_app_account = payload.in_app_account
     row.in_app_org_admin = payload.in_app_org_admin
     row.in_app_org_activity = payload.in_app_org_activity
+    row.in_app_cc_statement = payload.in_app_cc_statement
     await db.flush()
     await db.refresh(row)
     return row
