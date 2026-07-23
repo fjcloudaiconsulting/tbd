@@ -21,7 +21,8 @@ export type DashboardWidgetType =
   | "dash_spending"
   | "dash_budget"
   | "dash_forecast_category"
-  | "dash_recent_transactions";
+  | "dash_recent_transactions"
+  | "dash_cc_utilization";
 
 /** A dashboard-native widget.  config is empty — the provider owns the data. */
 export interface DashboardWidget {
@@ -77,6 +78,10 @@ const DASHBOARD_WIDGET_DEFAULTS: Record<
     // (~714px) without an inner scrollbar; the row region scrolls if resized
     // smaller. Keep in sync with the backend DEFAULT_DASHBOARD_LAYOUT.
     grid: { x: 0, y: 19, w: 12, h: 11 },
+  },
+  dash_cc_utilization: {
+    title: "Credit card utilization",
+    grid: { x: 0, y: 25, w: 4, h: 6 },
   },
 };
 

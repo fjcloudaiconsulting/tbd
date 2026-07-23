@@ -103,20 +103,24 @@ def cc_target_payment(
     outstanding: Decimal,
     per_cycle_amounts: dict[tuple[int, int, int], Decimal],
 ) -> Decimal:
-    """Per-strategy target BEFORE the uniform clamp + net."""
-    s = _strategy_value(account)
-    if s == "full_balance":
-        return outstanding
-    if s == "fixed_amount":
-        amt = getattr(account, "fixed_payment_amount", None)
-        return Decimal(str(amt)) if amt is not None else Decimal("0")
-    # minimum_only + custom_per_period: close-month-anchored stored amount.
+    """Per-cycle target BEFORE the uniform clamp + net.
+
+    Override-first (F2): a stored per-cycle amount, anchored on the cycle's
+    CLOSE month, wins for ANY strategy — a single-cycle "pay X this cycle"
+    decision that never auto-carries. With no override, fixed_amount pays its
+    literal and full_balance / NULL pays the whole outstanding balance.
+    """
     anchor = (
         account.id,
         cycle.period_end_inclusive.year,
         cycle.period_end_inclusive.month,
     )
-    return per_cycle_amounts.get(anchor, Decimal("0"))
+    if anchor in per_cycle_amounts:
+        return per_cycle_amounts[anchor]
+    if _strategy_value(account) == "fixed_amount":
+        amt = getattr(account, "fixed_payment_amount", None)
+        return Decimal(str(amt)) if amt is not None else Decimal("0")
+    return outstanding
 
 
 def synthesize_account_cc_payments(
