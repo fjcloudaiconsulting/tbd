@@ -135,11 +135,16 @@ async def compute_account_balance_forecast(
         per_cycle_amounts = {(aid, y, m): Decimal(str(amt)) for aid, y, m, amt in pcp_rows}
 
         # Single source of the CC ledger query (cc_statement_service):
-        # bounded at p_end, which is always >= every due cycle's close date
-        # in this horizon (due_cycles_in_horizon only returns cycles whose
-        # payment_date -- itself >= close date -- falls within [p_start,
-        # p_end]), so this cannot drop a row balance_at_close would need.
-        ledger_by_account = await load_cc_ledgers(db, org_id, cc_ids, p_end)
+        # UNBOUNDED (no up_to). A due cycle's payment_date is not
+        # guaranteed to be >= its own close_date -- with payment_day <
+        # close_day and payment_day_relative_month == 0 (same-month
+        # payment), payment_date can fall BEFORE close_date. Bounding the
+        # fetch at p_end would then drop ledger rows in (p_end, close_date]
+        # that balance_at_close(close_date) needs, silently under-counting
+        # outstanding. This matches the pre-refactor inline query, which
+        # was also unbounded and let balance_at_close's own close_date
+        # re-filter do the work.
+        ledger_by_account = await load_cc_ledgers(db, org_id, cc_ids)
 
         credit_rows = (await db.execute(
             select(Transaction.id, Transaction.account_id, eff_date.label("eff"), Transaction.amount)
