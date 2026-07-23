@@ -438,7 +438,7 @@ export interface PlanFeatures {
 // Notification preferences — mirrors the backend
 // `NotificationPreferencesResponse` / `NotificationPreferencesUpdate`
 // schemas (GET/PUT /api/v1/notifications/preferences). Two channels
-// (email + in-app) across the four categories. The PUT replaces every
+// (email + in-app) across the five categories. The PUT replaces every
 // toggle at once, so the settings page round-trips the full shape and
 // only mutates the email side. `email_security` cannot be turned off
 // (the API rejects it with code=security_emails_required).
@@ -447,10 +447,12 @@ export interface NotificationPreferences {
   email_account: boolean;
   email_org_admin: boolean;
   email_org_activity: boolean;
+  email_cc_statement: boolean;
   in_app_security: boolean;
   in_app_account: boolean;
   in_app_org_admin: boolean;
   in_app_org_activity: boolean;
+  in_app_cc_statement: boolean;
 }
 
 export interface OrgFeatureOverride {

@@ -16,14 +16,14 @@ import type { NotificationPreferences } from "@/lib/types";
 type PrefKey = keyof NotificationPreferences;
 
 /**
- * The four notification categories, in display order, each with its
+ * The five notification categories, in display order, each with its
  * email and in-app channel keys. `security` is listed first and is
  * locked on for BOTH channels: the backend rejects `email_security=false`
  * (code=security_emails_required) and force-coerces `in_app_security` to
  * true on read + write, so both switches render disabled+on.
  *
  * The PUT replaces every toggle at once, so the page round-trips the full
- * eight-field shape and `toggle` can flip any single key.
+ * ten-field shape and `toggle` can flip any single key.
  */
 const CATEGORIES: ReadonlyArray<{
   id: string;
@@ -65,6 +65,14 @@ const CATEGORIES: ReadonlyArray<{
       "Day-to-day activity within your organization. On by default, turn it off if you would rather not follow along.",
     emailKey: "email_org_activity",
     inAppKey: "in_app_org_activity",
+  },
+  {
+    id: "cc_statement",
+    title: "Credit card statements",
+    description:
+      "Reminders before each credit-card statement closes, and the amount due when it does. On by default; turn it off if you would rather not follow along.",
+    emailKey: "email_cc_statement",
+    inAppKey: "in_app_cc_statement",
   },
 ];
 
@@ -139,7 +147,7 @@ export default function NotificationsPage() {
     setSaveErr("");
     setSaveMsg("");
     try {
-      // PUT replaces every toggle, so we send the whole eight-field shape.
+      // PUT replaces every toggle, so we send the whole ten-field shape.
       const updated = await apiFetch<NotificationPreferences>(
         "/api/v1/notifications/preferences",
         { method: "PUT", body: JSON.stringify(prefs) },
