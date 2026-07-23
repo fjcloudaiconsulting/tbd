@@ -117,6 +117,7 @@ async def create_account(
         target_slug=target_type.slug,
         payment_day_value=body.payment_day,
         payment_day_relative_month_value=body.payment_day_relative_month,
+        close_day_value=body.close_day,
     )
     # Credit Card Model V1 (Slice 1): the four CC-only fields. Non-CC
     # accounts must leave all four NULL; CC accounts get optional
