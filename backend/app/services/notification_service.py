@@ -84,6 +84,7 @@ _IN_APP_PREF_FIELD: dict[NotificationCategory, str] = {
     NotificationCategory.ACCOUNT: "in_app_account",
     NotificationCategory.ORG_ADMIN: "in_app_org_admin",
     NotificationCategory.ORG_ACTIVITY: "in_app_org_activity",
+    NotificationCategory.CC_STATEMENT: "in_app_cc_statement",
 }
 
 # Email category → preference-column mapping, mirroring
@@ -94,6 +95,7 @@ _EMAIL_PREF_FIELD: dict[NotificationCategory, str] = {
     NotificationCategory.ACCOUNT: "email_account",
     NotificationCategory.ORG_ADMIN: "email_org_admin",
     NotificationCategory.ORG_ACTIVITY: "email_org_activity",
+    NotificationCategory.CC_STATEMENT: "email_cc_statement",
 }
 
 
@@ -546,6 +548,8 @@ async def dispatch_notification_to_org_members(
     body: str,
     link_url: Optional[str] = None,
     audit_event_id: Optional[int] = None,
+    send_email: bool = True,
+    email_body: Optional[str] = None,
 ) -> int:
     """Fan out to every ACTIVE user of ``org_id`` (all roles), dual-channel.
 
@@ -554,6 +558,13 @@ async def dispatch_notification_to_org_members(
     via send_notification_email when the user's email pref for ``category``
     allows. Returns the count of IN-APP rows actually written (email is
     fire-and-forget and not counted).
+
+    ``send_email`` (default ``True``) lets a caller opt a send out of the
+    email channel entirely while still fanning out in-app — e.g. a reminder
+    job that should only nudge inside the app. ``email_body`` (default
+    ``None``, falling back to ``body``) lets the email diverge from the
+    in-app copy — e.g. omitting a dollar amount from the email while the
+    in-app row keeps it. Both are no-ops for every pre-existing caller.
     """
     rows = (
         await db.execute(
@@ -575,10 +586,11 @@ async def dispatch_notification_to_org_members(
         except Exception:  # noqa: BLE001 — best-effort fanout
             await logger.awarning("notification.fanout.member_failed", user_id=uid, event_type=event_type)
         # Email outside the savepoint, gated by the email pref (shared helper).
-        await _send_notification_email_best_effort(
-            db, user_id=uid, email=email, category=category, event_type=event_type,
-            title=title, body=body, link_url=link_url,
-        )
+        if send_email:
+            await _send_notification_email_best_effort(
+                db, user_id=uid, email=email, category=category, event_type=event_type,
+                title=title, body=(email_body if email_body is not None else body), link_url=link_url,
+            )
     return written
 
 
@@ -749,6 +761,8 @@ def _default_preferences(user_id: int) -> UserNotificationPreferences:
     "really opt me out" exception is a one-line change. ``org_activity``
     now defaults ON (opt-out) per the 2026-07-04 operator decision, so
     every category defaults on until the user explicitly opts out.
+    ``cc_statement`` (added by migration 076) defaults ON/opt-out too —
+    it mirrors ``account``, not the (now-flipped) opt-in shape.
     """
     return UserNotificationPreferences(
         user_id=user_id,
@@ -756,10 +770,12 @@ def _default_preferences(user_id: int) -> UserNotificationPreferences:
         email_account=True,
         email_org_admin=True,
         email_org_activity=True,
+        email_cc_statement=True,
         in_app_security=True,
         in_app_account=True,
         in_app_org_admin=True,
         in_app_org_activity=True,
+        in_app_cc_statement=True,
     )
 
 
@@ -829,10 +845,12 @@ async def update_preferences(
     row.email_account = payload.email_account
     row.email_org_admin = payload.email_org_admin
     row.email_org_activity = payload.email_org_activity
+    row.email_cc_statement = payload.email_cc_statement
     row.in_app_security = True  # force-on both channels (no route 400 for in-app)
     row.in_app_account = payload.in_app_account
     row.in_app_org_admin = payload.in_app_org_admin
     row.in_app_org_activity = payload.in_app_org_activity
+    row.in_app_cc_statement = payload.in_app_cc_statement
     await db.flush()
     await db.refresh(row)
     return row

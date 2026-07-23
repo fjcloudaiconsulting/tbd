@@ -97,6 +97,7 @@ describe("NotificationPopover", () => {
       mkNotification(2, { category: "account" }),
       mkNotification(3, { category: "org_admin" }),
       mkNotification(4, { category: "org_activity" }),
+      mkNotification(5, { category: "cc_statement" }),
     ];
     render(
       <NotificationPopover
@@ -105,7 +106,7 @@ describe("NotificationPopover", () => {
         onClose={() => {}}
       />,
     );
-    // Security dot uses the danger token; the other three use
+    // Security dot uses the danger token; the other four use
     // neutral / muted classes. Class-based assertions match the
     // SEVERITY_DOT mapping in the component.
     expect(
@@ -120,6 +121,30 @@ describe("NotificationPopover", () => {
     expect(
       screen.getByTestId("severity-dot-org_activity").className,
     ).toContain("bg-text-muted/40");
+    expect(
+      screen.getByTestId("severity-dot-cc_statement").className,
+    ).toContain("bg-text-muted/40");
+  });
+
+  it("renders a defined, non-empty severity dot class for cc_statement notifications", () => {
+    // Regression guard: NotificationCategory used to omit "cc_statement",
+    // so SEVERITY_DOT[notif.category] resolved to undefined and the
+    // dot's className concatenated the literal string "undefined" —
+    // no crash, no tsc error, just an invisible/unstyled dot. Assert
+    // the class is a real, non-empty token and never that string.
+    render(
+      <NotificationPopover
+        items={[mkNotification(1, { category: "cc_statement" })]}
+        onAfterReadChange={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    const dotClassName = screen.getByTestId(
+      "severity-dot-cc_statement",
+    ).className;
+    expect(dotClassName).not.toContain("undefined");
+    expect(dotClassName.trim().length).toBeGreaterThan(0);
+    expect(dotClassName).toContain("bg-text-muted/40");
   });
 
   it("marks a row read and navigates on click", async () => {

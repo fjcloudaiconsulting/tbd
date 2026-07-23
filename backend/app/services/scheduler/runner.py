@@ -12,11 +12,19 @@ from app.services.scheduler.audit import record_run
 from app.services.scheduler.base import OUTCOME_SUCCESS
 from app.services.scheduler.jobs.billing_close import BillingCloseJob
 from app.services.scheduler.jobs.billing_reminder import BillingReminderJob
+from app.services.scheduler.jobs.cc_statement_close import CcStatementCloseJob
+from app.services.scheduler.jobs.cc_statement_reminder import CcStatementReminderJob
 from app.services.scheduler.jobs.recurring_generation import RecurringGenerationJob
 
 logger = structlog.get_logger(__name__)
 
-REGISTRY = [RecurringGenerationJob(), BillingReminderJob(), BillingCloseJob()]
+REGISTRY = [
+    RecurringGenerationJob(),
+    BillingReminderJob(),
+    BillingCloseJob(),
+    CcStatementReminderJob(),
+    CcStatementCloseJob(),
+]
 
 
 async def run_all_due(

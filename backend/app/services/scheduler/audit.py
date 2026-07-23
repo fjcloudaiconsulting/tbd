@@ -12,6 +12,8 @@ from app.models.user import Organization
 from app.services.audit_service import record_audit_event
 
 REMINDER_EVENT_TYPE = "scheduler.billing_close.reminder"
+CC_REMINDER_EVENT_TYPE = "scheduler.cc_statement.reminder"
+CC_CLOSED_EVENT_TYPE = "scheduler.cc_statement.closed"
 
 
 async def record_run(*, job_type: str, outcome: str, org: Organization, detail: dict[str, Any]) -> int | None:
@@ -57,3 +59,51 @@ async def reminder_already_sent(db: AsyncSession, org_id: int, period_start: dat
         )
     ).scalars().all()
     return any((r.detail or {}).get("period_start") == iso for r in rows)
+
+
+async def record_cc_alert(
+    *,
+    org: Organization,
+    account_id: int,
+    close_date: datetime.date,
+    event_type: str,
+    detail: dict[str, Any],
+) -> int | None:
+    # Do NOT include any dollar amount in the stored detail (security constraint).
+    payload = dict(detail)
+    payload["account_id"] = account_id
+    payload["close_date"] = close_date.isoformat()
+    return await record_audit_event(
+        async_session,
+        event_type=event_type,
+        actor_user_id=None,
+        actor_email="system",
+        target_org_id=org.id,
+        target_org_name=org.name,
+        request_id=None,
+        ip_address=None,
+        outcome="success",
+        detail=payload,
+    )
+
+
+async def cc_alerts_sent_since(
+    db: AsyncSession, org_id: int, event_type: str, since: datetime.date
+) -> set[tuple[int, str]]:
+    rows = (
+        await db.execute(
+            select(AuditEvent).where(
+                AuditEvent.event_type == event_type,
+                AuditEvent.target_org_id == org_id,
+                AuditEvent.created_at >= since,
+            )
+        )
+    ).scalars().all()
+    result: set[tuple[int, str]] = set()
+    for r in rows:
+        d = r.detail or {}
+        account_id = d.get("account_id")
+        if account_id is None:
+            continue
+        result.add((account_id, d.get("close_date")))
+    return result

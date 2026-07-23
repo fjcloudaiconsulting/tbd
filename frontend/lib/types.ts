@@ -223,6 +223,13 @@ export interface SchedulerSettings {
   automate_recurring_generation: boolean;
   automate_billing_close: boolean;
   billing_close_reminder_lead_days: number;
+  // CC Statement Alerts V1 (Task 4). Mirrors automate_billing_close's
+  // coupling pattern: automate_cc_statement_alerts gates the per-card
+  // pre-close reminder notification. cc_statement_reminder_lead_days is
+  // independent of billing_close_reminder_lead_days — separate draft
+  // state, separate PUT patch.
+  automate_cc_statement_alerts: boolean;
+  cc_statement_reminder_lead_days: number;
 }
 
 export interface ForecastPlanItem {
@@ -438,7 +445,7 @@ export interface PlanFeatures {
 // Notification preferences — mirrors the backend
 // `NotificationPreferencesResponse` / `NotificationPreferencesUpdate`
 // schemas (GET/PUT /api/v1/notifications/preferences). Two channels
-// (email + in-app) across the four categories. The PUT replaces every
+// (email + in-app) across the five categories. The PUT replaces every
 // toggle at once, so the settings page round-trips the full shape and
 // only mutates the email side. `email_security` cannot be turned off
 // (the API rejects it with code=security_emails_required).
@@ -447,10 +454,12 @@ export interface NotificationPreferences {
   email_account: boolean;
   email_org_admin: boolean;
   email_org_activity: boolean;
+  email_cc_statement: boolean;
   in_app_security: boolean;
   in_app_account: boolean;
   in_app_org_admin: boolean;
   in_app_org_activity: boolean;
+  in_app_cc_statement: boolean;
 }
 
 export interface OrgFeatureOverride {
@@ -808,17 +817,20 @@ export interface AdminSubscriptionKPIs {
 
 // ── Notifications ──────────────────────
 //
-// Mirrors backend/app/schemas/notification.py. Four categories map to
+// Mirrors backend/app/schemas/notification.py. Five categories map to
 // preference toggles; ``security`` is force-on per architect lock.
-// ``link_url`` is a relative app path, ``audit_event_id`` is the
-// forensic correlation back to the audit row that triggered the
+// ``cc_statement`` is the credit-card statement close / due-amount
+// reminder (in-app only for now — the reminder job does not dispatch
+// email). ``link_url`` is a relative app path, ``audit_event_id`` is
+// the forensic correlation back to the audit row that triggered the
 // notification (nullable — not every dispatch has an audit row).
 
 export type NotificationCategory =
   | "security"
   | "account"
   | "org_admin"
-  | "org_activity";
+  | "org_activity"
+  | "cc_statement";
 
 export interface Notification {
   id: number;
