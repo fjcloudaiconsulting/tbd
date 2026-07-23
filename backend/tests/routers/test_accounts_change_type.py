@@ -774,6 +774,127 @@ def test_create_account_non_credit_card_without_close_day_succeeds(
     assert body["account_type_slug"] == "checking"
 
 
+# ── CC same-month payment-before-close guard ─────────────────────────────
+#
+# When payment_day_relative_month == 0 (pay in the same calendar month as
+# the close) the resolved payment date must fall AFTER the close date —
+# you cannot owe/pay a statement before it is issued. The guard operates
+# on EFFECTIVE values (a NULL payment_day defaults to day 1, a NULL
+# relative_month defaults to 1 = next month), so it only bites explicit
+# same-month configs with payment_day <= close_day. Rejected with 400
+# (cross-column business-rule class, matching the sibling cascade
+# validators). See cc_forecast_service.py's credit window + the
+# 2026-05-28-cc-billing-cycle spec reconciliation.
+
+
+def test_create_cc_same_month_payment_before_close_rejected(session_factory, seeded):
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "Before-close CC",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 25,
+                "payment_day": 5,
+                "payment_day_relative_month": 0,  # same month, 5 <= 25
+            },
+        )
+    assert res.status_code == 400, res.text
+
+
+def test_create_cc_same_month_blank_payment_day_rejected(session_factory, seeded):
+    """Blank payment_day defaults to day 1; 1 <= close_day always, so
+    '1st of the same month' is always before close and rejected."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "First-of-same-month CC",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 25,
+                "payment_day_relative_month": 0,  # payment_day omitted -> 1
+            },
+        )
+    assert res.status_code == 400, res.text
+
+
+def test_create_cc_same_month_payment_after_close_ok(session_factory, seeded):
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "After-close same-month CC",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 5,
+                "payment_day": 25,
+                "payment_day_relative_month": 0,  # same month, 25 > 5
+            },
+        )
+    assert res.status_code == 201, res.text
+
+
+def test_create_cc_next_month_early_payment_day_ok(session_factory, seeded):
+    """relative_month>=1 puts payment in a later month, always after close,
+    regardless of the day-of-month values."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "Next-month CC",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 25,
+                "payment_day": 5,
+                "payment_day_relative_month": 1,  # next month, always after close
+            },
+        )
+    assert res.status_code == 201, res.text
+
+
+def test_change_type_cc_relmonth_zero_only_rejected_via_merged_row(
+    session_factory, seeded
+):
+    """PUT touching ONLY relative_month=0 must be validated against the
+    MERGED row: seeded CC has close_day=15, payment_day=NULL (eff 1), so
+    eff 1 <= 15 -> 400 even though payment_day/close_day aren't in the
+    payload."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={
+                "account_type_id": seeded["cc_type_id"],
+                "payment_day_relative_month": 0,
+            },
+        )
+    assert res.status_code == 400, res.text
+
+
+def test_change_type_cc_relmonth_zero_with_valid_payment_day_ok(
+    session_factory, seeded
+):
+    """Same PUT but with payment_day=20 in the payload: merged eff is
+    close=15, payment=20, rel=0 -> 20 > 15 -> allowed."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={
+                "account_type_id": seeded["cc_type_id"],
+                "payment_day": 20,
+                "payment_day_relative_month": 0,
+            },
+        )
+    assert res.status_code == 200, res.text
+
+
 # ── § 8.1 #19 row-lock concurrency ───────────────────────────────────────
 
 

@@ -1124,28 +1124,35 @@ async def test_account_balance_forecast_response_preserves_cc_payments(
 async def test_cc_synth_payment_before_close_does_not_drop_ledger_row(
     db_session: AsyncSession,
 ):
-    """Reviewer finding on the Task 3 refactor: ``load_cc_ledgers``'s
-    ``up_to`` bound was previously mandatory and the forecast site passed
-    ``p_end`` (the horizon's period_end). That is only safe if
-    ``payment_date >= close_date`` for every due cycle -- an invariant that
-    does NOT hold. With ``payment_day < close_day`` and
-    ``payment_day_relative_month == 0`` (same-month payment),
-    ``_resolve_payment_date`` can yield ``payment_date < close_date``. If
-    the horizon's ``p_end`` then falls between them,
-    ``due_cycles_in_horizon`` still includes the cycle (its
-    ``payment_date <= p_end``) even though ``close_date > p_end`` --  so
-    bounding the ledger fetch at ``p_end`` drops rows in
-    ``(p_end, close_date]`` that ``balance_at_close(close_date)`` needs,
-    silently under-counting outstanding (and, transitively, the Task 9
-    close-day alert, which shares this module). Fixed: ``load_cc_ledgers``'s
-    ``up_to`` is optional and the forecast call site now passes none
-    (restoring the pre-refactor unbounded fetch). On the pre-fix code this
-    test is RED (``cc_payments == []``); on the fix it is GREEN.
+    """A payment-before-close cycle is SKIPPED by the forecast (belt), and
+    ``load_cc_ledgers`` still fetches unbounded for the alert path.
+
+    Two things are pinned here:
+
+    1. **Belt (cc_forecast_service).** ``close_day=25, payment_day=10,
+       payment_day_relative_month=0`` resolves the 2026-05-25 cycle's
+       payment to 2026-05-10 -- BEFORE close. Projecting a payment on
+       05-10 for a charge made 05-20 is nonsense (paying before the charge
+       exists), and its empty credit-attribution window overstates the
+       outflow, so ``synthesize_account_cc_payments`` now skips the
+       degenerate cycle: ``cc_payments == []``. This config is also
+       forbidden at create/PUT by the same-month payment-before-close
+       validation guard; the row is constructed directly in the DB here to
+       exercise the forecast's defensive skip.
+
+    2. **Unbounded ledger fetch (the original reviewer finding).**
+       ``load_cc_ledgers``'s ``up_to`` was once mandatory and the forecast
+       passed ``p_end``, which drops rows in ``(p_end, close_date]`` that
+       ``balance_at_close(close_date)`` needs. That invariant is now
+       pinned on the live path via the ``statement_outstanding``
+       cross-check below (``up_to=close_date`` must include the post-p_end,
+       pre-close 05-20 charge -> owed 400), which the Task 9 close-day
+       alert shares.
 
     Cycle here: close_day=25, payment_day=10, payment_day_relative_month=0
-    -> for the cycle closing 2026-05-25, payment_date resolves to
-    2026-05-10 (BEFORE close). The charge lands on 2026-05-20 -- after
-    payment_date, after p_end, but at-or-before close_date.
+    -> the cycle closing 2026-05-25 has payment_date 2026-05-10 (BEFORE
+    close). The charge lands on 2026-05-20 -- after payment_date, after
+    p_end, but at-or-before close_date.
     """
     seed = await _seed(db_session)
     org_id = seed["org_id"]
@@ -1184,7 +1191,9 @@ async def test_cc_synth_payment_before_close_does_not_drop_ledger_row(
         db_session, org_id, period_start=PERIOD_START
     )
     cc_row = next(a for a in result["accounts"] if a["account_id"] == cc.id)
-    assert cc_row["cc_payments"] == [{"amount": "400.00", "date": "2026-05-10"}]
+    # Belt: the degenerate payment-before-close cycle is skipped, not
+    # projected on 05-10 (which would pre-date the 05-20 charge).
+    assert cc_row["cc_payments"] == []
 
     # Safe call site cross-check: statement_outstanding (up_to=close_date)
     # must also include the post-p_end, pre-close charge -- it always has
