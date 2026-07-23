@@ -239,12 +239,45 @@ describe("CC Model — utilization subline", () => {
     expect(within(row).getByText(/Using 125% of limit · 500\.00 EUR over/)).toBeTruthy();
   });
 
+  test("exactly maxed (100%, not over) reads 'no credit left', never 'over'", async () => {
+    mockApi([CHECKING, SAVINGS, ccWith("-2000.00", "2000.00")]);
+    renderWithSWR(<AccountsPage />);
+    const row = await screen.findByTestId("account-row-11");
+    expect(within(row).getByText(/Using 100% of limit · no credit left/)).toBeTruthy();
+    expect(within(row).queryByText(/over/)).toBeNull();
+    expect(within(row).queryByText(/0\.00 EUR left/)).toBeNull();
+  });
+
   test("no subline when credit_limit is null or zero", async () => {
     mockApi([CHECKING, SAVINGS, ccWith("-500.00", null)]);
     renderWithSWR(<AccountsPage />);
     const row = await screen.findByTestId("account-row-11");
     expect(within(row).queryByText(/of limit/)).toBeNull();
     expect(within(row).queryByText(/full limit available/)).toBeNull();
+  });
+});
+
+describe("CC Model — forecast deep link", () => {
+  test("?edit=<id> opens that card's editor with the Upcoming payments section", async () => {
+    // The deep-link scroll effect calls scrollIntoView, which jsdom lacks; the
+    // component optional-chains it, so the open still works with no stub.
+    window.history.replaceState({}, "", "/accounts?edit=11");
+    try {
+      mockApi();
+      renderWithSWR(<AccountsPage />);
+      // No Edit click: the editor opens itself, so the CC-only section shows.
+      expect(await screen.findByText("Upcoming payments")).toBeInTheDocument();
+      expect(await screen.findByLabelText(/Credit limit/i)).toBeTruthy();
+    } finally {
+      window.history.replaceState({}, "", "/accounts");
+    }
+  });
+
+  test("no editor opens when the edit param is absent", async () => {
+    mockApi();
+    renderWithSWR(<AccountsPage />);
+    await screen.findByTestId("account-row-11");
+    expect(screen.queryByText("Upcoming payments")).toBeNull();
   });
 });
 

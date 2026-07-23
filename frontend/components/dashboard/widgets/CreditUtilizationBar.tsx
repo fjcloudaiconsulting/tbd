@@ -7,10 +7,13 @@
  * domain is clamped to 100 so the fill maxes at the track; the overage is
  * surfaced in the text label, never by letting the bar exceed the track.
  * Bands (color earned only at the risky end; color never the sole signal,
- * every band pairs a color with text):
- *   util >= 100        -> over (danger), "Over limit · {over} {ccy} over"
- *   75 <= util < 100    -> warning, "{util}% · High"
- *   util < 75           -> neutral watch, "{util}%" (the % carries it)
+ * every band pairs a color with text). "Over limit" means strictly over
+ * (over > 0, i.e. utilization past 100%); exactly 100% is fully used, not
+ * over, and reads as High — matching the accounts-page subline, which also
+ * gates its "over" copy on over > 0:
+ *   over > 0                     -> over (danger), "Over limit · {over} {ccy} over"
+ *   util >= 75 && over <= 0       -> warning, "{util}% · High"
+ *   util < 75                     -> neutral watch, "{util}%" (the % carries it)
  *
  * Note: the row payload intentionally omits `over` (unlike the Budgets
  * stacked chart, which renders a separate over-budget segment past the
@@ -37,8 +40,8 @@ export default function CreditUtilizationBar({ name, balance, creditLimit, curre
   const util = Math.round(utilizationPct);
   const spent = Math.min(utilizationPct, 100);
   const remaining = Math.max(0, 100 - utilizationPct);
-  const isOver = utilizationPct >= 100;
-  const isHigh = utilizationPct >= 75 && utilizationPct < 100;
+  const isOver = over > 0;
+  const isHigh = utilizationPct >= 75 && !isOver;
   const fill = isOver ? chartColor.over : isHigh ? "var(--color-warning)" : chartColor.watch;
   const data = [{ name, spent, remaining }];
   const label = isOver
