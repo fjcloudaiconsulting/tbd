@@ -30,10 +30,17 @@ against today's codebase (2026-07-23) and the owner confirmed their verdict. Net
   `schemas/account.py` accepts `payment_day` (ge=1,le=31) + `payment_day_relative_month`
   (ge=0,le=12); `validate_create_payment_day` + `validate_payment_day_cascade` are wired into
   create + PUT. The only missing piece is the CC-gated form UI. **This is what ships now** (its own
-  small PR): two CC-gated fields in the create form and inline editor of `frontend/app/accounts/page.tsx`
-  — a "Payment day (1-28)" number input (blank ⇒ send BOTH columns null = resolver default) and a
-  "Payment month" select ("Month after close" = relative_month 1, default / "Same month as close" =
-  0). No backend change.
+  small PR): two CC-gated fields in the create form and inline editor of `frontend/app/accounts/page.tsx`.
+  The two controls map to their two columns **independently** (the resolver defaults each column
+  separately, so they must not be coupled — coupling them makes "1st of the same month" unreachable
+  and lets a blank day silently override a "same month" choice):
+    - "Payment day (1-28)" number input: blank ⇒ send `payment_day: null` (resolver default = day 1).
+    - "Payment month" select: "Month after close" (default) ⇒ send `payment_day_relative_month: null`
+      (resolver defaults it to 1 = month after close; keeps the column NULL-at-rest per D3/D7,
+      matching the existing `payment_strategy` "default option → null" idiom in this form); "Same
+      month as close" ⇒ send `0`.
+  Every combination is reachable, including "1st of the same month" (day blank + same-month). No
+  backend change.
 - **Slices 3 (per-month date overrides) + 4 (current-month shortcut) — DEFERRED to backlog.** Rationale
   and the correct build-it-later design are in the "Deferred: Slices 3-4" section appended at the end
   of this doc. Build only if users actually ask for per-month **date** shifting.
