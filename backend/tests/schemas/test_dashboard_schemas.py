@@ -217,3 +217,26 @@ def test_dashboard_accepts_cloned_sankey_widget():
     out = validate_dashboard_layout_json(layout)
     assert out["widgets"][0]["config"]["top_n"] == 12
     assert out["widgets"][0]["config"]["spending_granularity"] == "category"
+
+
+# ─── balances-by-type tile (Phase 0) ─────────────────────────────────
+
+
+def test_dashboard_accepts_balances_by_type_tile():
+    """The opt-in dash_balances_by_type tile validates and round-trips verbatim."""
+    layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "bbt1",
+                "type": "dash_balances_by_type",
+                "title": "Balances by type",
+                "grid": {"x": 0, "y": 31, "w": 4, "h": 8},
+                "config": {},
+            }
+        ],
+    }
+    out = validate_dashboard_layout_json(layout)
+    assert out["widgets"][0]["type"] == "dash_balances_by_type"
+    # provider-fed tile: config stays an empty object
+    assert out["widgets"][0]["config"] == {}
