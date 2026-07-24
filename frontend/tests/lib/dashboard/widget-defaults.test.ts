@@ -34,6 +34,7 @@ const CANONICAL_GRIDS: Record<DashboardWidgetType, WidgetGrid> = {
   dash_forecast_category: { x: 8, y: 13, w: 4, h: 6 },
   dash_recent_transactions: { x: 0, y: 19, w: 12, h: 11 },
   dash_cc_utilization: { x: 0, y: 25, w: 4, h: 6 },
+  dash_balances_by_type: { x: 0, y: 31, w: 4, h: 8 },
 };
 
 /**
@@ -50,6 +51,7 @@ const MIN_CONTENT_H: Record<DashboardWidgetType, number> = {
   dash_forecast_category: 6,
   dash_recent_transactions: 11,
   dash_cc_utilization: 6,
+  dash_balances_by_type: 8,
 };
 
 describe("dashboard widget default grids", () => {

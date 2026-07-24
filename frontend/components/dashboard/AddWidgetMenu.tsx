@@ -3,7 +3,7 @@
 /**
  * AddWidgetMenu — picker for adding widgets to the custom dashboard.
  *
- * Shows a "Dashboard tiles" group (the 7 dash_* finance tiles) so users
+ * Shows a "Dashboard tiles" group (the dash_* finance tiles) so users
  * can re-add any tile they previously removed, and a "From a report" entry
  * that lets users clone a widget from any saved report onto the dashboard.
  *
@@ -27,6 +27,7 @@ import {
   BarChart3,
   CircleDollarSign,
   CreditCard,
+  Layers,
   LayoutDashboard,
   TrendingUp,
 } from "lucide-react";
@@ -103,6 +104,12 @@ const DASH_TILES: DashOption[] = [
     label: "Credit card utilization",
     description: "Balance versus limit for each credit card.",
     Icon: CreditCard,
+  },
+  {
+    type: "dash_balances_by_type",
+    label: "Balances by type",
+    description: "Subtotal for each account type, grouped by currency.",
+    Icon: Layers,
   },
 ];
 
