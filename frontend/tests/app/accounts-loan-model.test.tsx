@@ -189,22 +189,28 @@ describe("Loan Model — form fields", () => {
   });
 });
 
-describe("Loan Model — read-only subline", () => {
+describe("Loan Model — read-only card", () => {
+  // Loan detail moved out of the balance-cell subline into the loan card
+  // below the table. Dates render as month-year; the payoff state is a status
+  // chip (on_track / interest_only / paid_off / not-yet-set).
   function loanWith(overrides: Record<string, unknown>) {
     return { ...LOAN, ...overrides };
   }
 
-  test("on_track loan shows monthly payment, matures, total interest and payoff date", async () => {
+  test("on_track card shows payment, matures (month-year), interest, and payoff chip", async () => {
     mockApi();
     renderWithSWR(<AccountsPage />);
-    const row = await screen.findByTestId("account-row-11");
-    expect(within(row).getByText(/Monthly payment 391\.32 EUR/)).toBeTruthy();
-    expect(within(row).getByText(/Matures 2031-01-01/)).toBeTruthy();
-    expect(within(row).getByText(/Total interest \(full term\) 3,479\.20 EUR/)).toBeTruthy();
-    expect(within(row).getByText(/On track to pay off 2030-11-01/)).toBeTruthy();
+    const card = await screen.findByTestId("loan-card-11");
+    expect(within(card).getByText(/391\.32 EUR/)).toBeTruthy();
+    expect(within(card).getByText(/Jan 2031/)).toBeTruthy(); // Matures (from 2031-01-01)
+    expect(within(card).getByText(/3,479\.20 EUR/)).toBeTruthy(); // interest over term
+    expect(within(card).getByText(/On track · paid off by Nov 2030/)).toBeTruthy();
+    // the table row is now clean (detail moved to the card)
+    const row = screen.getByTestId("account-row-11");
+    expect(within(row).queryByText(/Monthly payment/)).toBeNull();
   });
 
-  test("interest_only shows a quiet 'Not on track to pay off' with no date", async () => {
+  test("interest_only card shows 'Payment covers interest only' with no payoff date", async () => {
     mockApi([
       CHECKING,
       loanWith({
@@ -219,14 +225,12 @@ describe("Loan Model — read-only subline", () => {
       }),
     ]);
     renderWithSWR(<AccountsPage />);
-    const row = await screen.findByTestId("account-row-11");
-    expect(within(row).getByText(/Not on track to pay off/)).toBeTruthy();
-    expect(within(row).queryByText(/On track to pay off/)).toBeNull();
-    // Never surfaces the raw "interest-only" product phrasing.
-    expect(within(row).queryByText(/interest.only/i)).toBeNull();
+    const card = await screen.findByTestId("loan-card-11");
+    expect(within(card).getByText(/Payment covers interest only/)).toBeTruthy();
+    expect(within(card).queryByText(/On track/)).toBeNull();
   });
 
-  test("paid_off shows 'Paid off'", async () => {
+  test("paid_off card shows 'Paid off'", async () => {
     mockApi([
       CHECKING,
       loanWith({
@@ -242,15 +246,15 @@ describe("Loan Model — read-only subline", () => {
       }),
     ]);
     renderWithSWR(<AccountsPage />);
-    const row = await screen.findByTestId("account-row-11");
-    expect(within(row).getByText(/^Paid off$/)).toBeTruthy();
+    const card = await screen.findByTestId("loan-card-11");
+    expect(within(card).getByText(/^Paid off$/)).toBeTruthy();
   });
 
-  test("no loan subline when the loan metrics object is null", async () => {
+  test("null loan metrics still renders a teachable card with no metric rows", async () => {
     mockApi([CHECKING, loanWith({ loan: null })]);
     renderWithSWR(<AccountsPage />);
-    const row = await screen.findByTestId("account-row-11");
-    expect(within(row).queryByText(/Monthly payment/)).toBeNull();
-    expect(within(row).queryByText(/Matures/)).toBeNull();
+    const card = await screen.findByTestId("loan-card-11");
+    expect(within(card).getByText(/Finish setting up this loan/)).toBeTruthy();
+    expect(within(card).queryByText(/Monthly payment/)).toBeNull();
   });
 });

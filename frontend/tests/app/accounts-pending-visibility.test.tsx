@@ -107,7 +107,7 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
   it("renders no Pending line when there are no pending transactions", async () => {
     mockAccountsAPI([]);
     renderWithSWR(<AccountsPage />);
-    await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Amex Primary/).length).toBeGreaterThan(0));
     expect(screen.queryByText(/^Pending:/)).not.toBeInTheDocument();
   });
 
@@ -153,7 +153,7 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
       return Promise.resolve({});
     }) as never);
     renderWithSWR(<AccountsPage />);
-    await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Amex Primary/).length).toBeGreaterThan(0));
     expect(screen.getByText(/ING Joint/)).toBeInTheDocument();
     // Without the best-effort handling, the spinner would never clear
     // and Amex Primary would never render.

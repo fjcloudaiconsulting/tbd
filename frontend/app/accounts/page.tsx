@@ -13,7 +13,6 @@ import { apiFetch, extractErrorMessage, ApiResponseError } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount } from "@/lib/format";
-import { creditUtilization } from "@/lib/credit";
 import {
   useTableState,
   paginate,
@@ -28,6 +27,7 @@ import type { Account, AccountType, Transaction, UpcomingCyclePayment } from "@/
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import OverflowMenu, { type OverflowMenuItem } from "@/components/ui/OverflowMenu";
 import AdjustBalanceModal from "@/components/accounts/AdjustBalanceModal";
+import LiabilityCards from "@/components/accounts/LiabilityCards";
 
 // Stable empty-array fallback so the SWR loading state (accountsData ===
 // undefined) doesn't hand a fresh [] to memos/effects on every render.
@@ -885,6 +885,7 @@ export default function AccountsPage() {
         // table no longer leaves a wide whitespace band above the
         // Accounts list. Items align to start so the Types card keeps its
         // intrinsic height instead of stretching to match Accounts.
+        <>
         <div
           data-testid="accounts-page-grid"
           className="flex flex-col gap-6 lg:grid lg:grid-cols-3 lg:items-start lg:gap-6"
@@ -1487,21 +1488,9 @@ export default function AccountsPage() {
                           </span>
                         )}
                         <span className="text-xs text-text-muted md:hidden">{a.account_type_name}</span>
-                        {a.close_day && <span className="text-xs text-text-muted">· closes day {a.close_day}</span>}
-                        {/* Payment Source Foundation — "Paid from" detail.
-                            Resolves the source name from the (org-scoped)
-                            accounts list; flags a since-deactivated source. */}
-                        {a.payment_source_account_id != null && (() => {
-                          const src = accounts.find((s) => s.id === a.payment_source_account_id);
-                          return (
-                            <span className="text-xs text-text-muted">
-                              · paid from {src?.name ?? "unknown"}
-                              {src && !src.is_active ? (
-                                <span className="text-danger"> (inactive)</span>
-                              ) : null}
-                            </span>
-                          );
-                        })()}
+                        {/* Liability metadata (statement close day, "paid from"
+                            source) moved to the liability cards below the table;
+                            the row name column stays lean (name + Default). */}
                         {!a.is_active && <span className="text-xs text-danger">inactive</span>}
                       </div>
                     </div>
@@ -1541,82 +1530,10 @@ export default function AccountsPage() {
                           {a.opening_balance_date ? ` since ${a.opening_balance_date}` : ""}
                         </span>
                       ) : null}
-                      {/* Credit Card Model V1 (Slice 1) — utilization /
-                          available-credit subline. Render only for a CC
-                          with a positive credit_limit; otherwise stay
-                          silent (no "—"). Liabilities are negative
-                          balances: outstanding = max(0, -bal). No color
-                          band, even over-limit (owner-permitted state; the
-                          balance sign already carries the "you owe"
-                          signal). Separator is a middle dot, no em-dash. */}
-                      {a.account_type_slug === "credit_card" && Number(a.credit_limit) > 0
-                        ? (() => {
-                            const { outstanding, utilizationPct, available, over } =
-                              creditUtilization(Number(a.balance), Number(a.credit_limit));
-                            const util = Math.round(utilizationPct);
-                            let text: string;
-                            if (outstanding === 0) {
-                              text = "0% used · full limit available";
-                            } else if (over > 0) {
-                              text = `Using ${util}% of limit · ${formatAmount(over)} ${a.currency} over`;
-                            } else if (available === 0) {
-                              // Exactly maxed (100% used, not over): "0 left"
-                              // reads as noise, so name the state directly.
-                              // Keeps parity with the bar, which labels this
-                              // "100% · High" rather than "Over limit".
-                              text = `Using ${util}% of limit · no credit left`;
-                            } else {
-                              text = `Using ${util}% of limit · ${formatAmount(available)} ${a.currency} left`;
-                            }
-                            return (
-                              <span className="text-xs tabular-nums text-text-muted">
-                                {text}
-                              </span>
-                            );
-                          })()
-                        : null}
-                      {/* Loan Account Type V1 (Slice 1) — read-only loan
-                          subline. Render only for a loan carrying a computed
-                          `loan` metrics object (a fully-specified loan);
-                          otherwise stay silent (no "—"). Mirrors the CC
-                          utilization subline: quiet muted tokens, no color
-                          band. The contractual "Matures" date and the
-                          live-solved payoff line are kept on separate lines
-                          (the total-interest line sits between them) and
-                          worded distinctly so the two dates never read as a
-                          single range. Paid-from is already shown in the name
-                          column (shared Payment Source render), same as a CC.
-                          "interest_only" shows a quiet "Not on track to pay
-                          off" with no date; "paid_off" shows "Paid off". */}
-                      {a.account_type_slug === "loan" && a.loan
-                        ? (() => {
-                            const m = a.loan;
-                            let payoff: string;
-                            if (m.status === "paid_off") {
-                              payoff = "Paid off";
-                            } else if (m.status === "interest_only") {
-                              payoff = "Not on track to pay off";
-                            } else {
-                              payoff = `On track to pay off ${m.projected_payoff_date}`;
-                            }
-                            return (
-                              <>
-                                <span className="text-xs tabular-nums text-text-muted">
-                                  Monthly payment {formatAmount(m.expected_monthly_payment)} {a.currency}
-                                </span>
-                                <span className="text-xs tabular-nums text-text-muted">
-                                  Matures {m.maturation_date}
-                                </span>
-                                <span className="text-xs tabular-nums text-text-muted">
-                                  Total interest (full term) {formatAmount(m.total_interest)} {a.currency}
-                                </span>
-                                <span className="text-xs tabular-nums text-text-muted">
-                                  {payoff}
-                                </span>
-                              </>
-                            );
-                          })()
-                        : null}
+                      {/* Liability detail (CC utilization, loan metrics) is no
+                          longer stacked in the balance cell — it moved to the
+                          dedicated liability cards below the table so the list
+                          stays a clean one-line-per-account balance glance. */}
                     </div>
                     {/* Action column. Edit (and Adjust balance, when the
                         admin permission is on AND the account is active)
@@ -1691,6 +1608,12 @@ export default function AccountsPage() {
             </div>
           </div>
         </div>
+        {/* Liability detail zone — full-width sibling BELOW the two-panel
+            grid (not nested inside the Accounts card, which is itself a card).
+            Reads the full, unpaged sorted list so a liability on page 2 keeps
+            its card. */}
+        <LiabilityCards accounts={sortedAccounts} />
+        </>
       )}
       <ConfirmModal
         open={confirmDeleteTypeId !== null}

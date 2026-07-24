@@ -174,6 +174,17 @@ Per-payment principal/interest split UI; full amortization schedule UI; ARM/vari
 - **O2 — already-paid heuristic (Slice 2 only): OPEN, tie-break at Slice 2 start.** Reviewers split between period-skip and a `p_k_owned` clone; leaning period-skip for the current-balance model (see §4). Does not block Slice 1.
 - **O3 — `interest_only` / `paid_off` surfacing: RESOLVED.** Quiet status, null date, no bare "interest-only" phrasing; copy "Not on track to pay off" / "Paid off". Folded into §3.7; confirm final wording with the operator during the UI pass.
 
+## 7b. Accounts page redesign (bundled into this PR at operator request)
+
+The Slice-1 UI stacked CC utilization + loan metrics into the balance table cell, making liability rows ~5 lines tall (spreadsheet-skin, the PRODUCT.md anti-reference). Operator asked to restore a clean balance list and move CC + Loan detail into dedicated cards on the same page. Two grounded reviews (architect: feasibility/data; design critic: on-brand/composition) both returned CHANGES REQUIRED on the assessment; all folded. Final:
+
+- **Zone 1 — clean table:** strip the CC-utilization + loan sublines from the balance cell (keep balance / Pending / Opening); drop the inline "· closes day · paid from" subtitle from the row name column. Rows are one line again.
+- **Zone 2 — liability cards** (`frontend/components/accounts/LiabilityCards.tsx`), full-width sibling BELOW the two-panel grid (not nested inside the Accounts card): grouped "Credit cards" / "Loans", **2-column max** grid (not auto-fit — the AI-card-wall tell). Each card = account-name label → **balance hero** (sans, tabular-nums) → **one expressive element** (CC: reused `CreditUtilizationBar` with new `hideName`; Loan: payoff status chip via `badge*`) → hairline divider → **borderless** 2-col label/value metric list. Accent rides status tokens only (gold reserved, One Brass Rule). Metric labels use `text-secondary` (not `text-muted`, which fails AA on the light theme).
+- **Data:** zero new endpoint — every field is already on the account object / nested `account.loan` / client-derived. Cards read the **unpaged** `sortedAccounts` (a liability on page 2 keeps its card). Shared `resolvePaymentSource(accounts, id)` helper.
+- **Copy:** month-year dates ("Matures Jun 2054", "On track · paid off by Nov 2030"); `interest_only` → "Payment covers interest only"; `paid_off` → "Paid off"; teachable empty cards ("No credit limit set" / "Finish setting up this loan"). Ordering: CCs by utilization desc, loans by balance magnitude desc. Inactive liabilities shown dimmed (matches the table).
+- **Tests:** the two loan/CC row-subline test blocks + one payment-source assertion re-pointed at the new card testids with the new copy; three accounts-page tests loosened `getByText(name)` → `getAllByText` (names now legitimately appear in row + card); new `liability-cards.test.tsx` (helpers, grouping, ordering, teachable state). `formatMonthYear` added to `lib/format.ts`.
+- Visual-verified on the live stack (light theme). Frontend: 322 files / 2615 tests, tsc + eslint + design-tokens clean.
+
 ## 8. Sign-off record
 
 - 2026-07-24 — two independent grounded design reviews (schema/validation + forecast/product) → all Critical/Important findings folded into this spec.

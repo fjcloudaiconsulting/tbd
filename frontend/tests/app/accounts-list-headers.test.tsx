@@ -112,7 +112,7 @@ describe("AccountsPage — list header row and fixed action column", () => {
 
   it("renders sortable Account / Type / Balance headers above the accounts list", async () => {
     renderWithSWR(<AccountsPage />);
-    await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Amex Primary/).length).toBeGreaterThan(0));
 
     const header = screen.getByTestId("accounts-list-header");
     expect(header).toBeInTheDocument();
@@ -154,7 +154,7 @@ describe("AccountsPage — list header row and fixed action column", () => {
 
   it("uses the same shared grid template on header and rows so columns align", async () => {
     renderWithSWR(<AccountsPage />);
-    await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Amex Primary/).length).toBeGreaterThan(0));
 
     // The header <tr> and each row <article> must carry the IDENTICAL
     // md:grid-cols-* template so the Account / Type / Balance / Actions
@@ -208,7 +208,7 @@ describe("AccountsPage — list header row and fixed action column", () => {
 
   it("offers Set default in the overflow menu only on a non-default active row", async () => {
     renderWithSWR(<AccountsPage />);
-    await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Amex Primary/).length).toBeGreaterThan(0));
 
     const actions = screen.getByTestId("account-row-actions-10");
     fireEvent.click(
