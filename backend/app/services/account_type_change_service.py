@@ -50,6 +50,11 @@ from app.models.cc_cycle_payment import CcCyclePayment
 
 
 _CC = "credit_card"
+_LOAN = "loan"
+# The set of liability types that legitimately carry a payment_source_account_id
+# ("paid from") pointer. The pointer is cleared only when leaving ALL of them
+# (Loan V1 widened this from the original leave-CC-only rule).
+_LIABILITY = frozenset({_CC, _LOAN})
 
 
 class TypeChangeResult:
@@ -444,6 +449,7 @@ async def apply_type_change_in_session(
 
     deleted_cycle_payments: list = []
 
+    # ── close_day / payment_day columns: strictly credit_card-gated ──────
     if target_slug == _CC:
         # CC target: write close_day only when the payload carried it.
         # The validator guarantees:
@@ -466,27 +472,30 @@ async def apply_type_change_in_session(
         account.close_day = None
         account.payment_day = None
         account.payment_day_relative_month = None
-        # Payment Source Foundation: a "paid from" pointer only makes sense
-        # on a liability. Clear it on leaving CC so an asset account can't
-        # retain an orphaned pointer (which the CC-only picker could never
-        # surface to clear). Mirrors the close_day leave-CC cascade above.
+
+    # ── payment_source_account_id: cleared only when leaving ALL liabilities ─
+    # Payment Source Foundation + Loan V1: a "paid from" pointer only makes
+    # sense on a liability (credit_card OR loan). Clear it only when the target
+    # is neither, so a CC->loan (or loan->CC) change KEEPS the pointer while a
+    # liability->asset change sheds it. (Loan V1 widened this from the original
+    # unconditional leave-CC clear, which would have wrongly wiped a loan's
+    # pointer on CC->loan.)
+    if target_slug not in _LIABILITY:
         account.payment_source_account_id = None
-        # Credit Card Model V1 (Slice 1): the four CC-only metadata columns
-        # only make sense on a credit_card row. Clear them on leaving CC so
-        # an asset account can't retain an orphaned credit_limit / apr /
-        # payment_strategy / fixed_payment_amount (mirrors the close_day and
-        # payment_source leave-CC cascades above).
+
+    # ── Credit Card metadata + per-cycle payments: cleared when target != CC ─
+    # The four CC-only metadata columns and the money-bearing per-cycle payment
+    # rows only make sense on a credit_card row. Clear/delete whenever the
+    # target is not credit_card (this now includes CC->loan). ON DELETE CASCADE
+    # only covers account DELETION, not a type change, so delete the cycle-
+    # payment rows explicitly; snapshot first so the router can emit
+    # account.cycle_payment.deleted events.
+    if target_slug != _CC:
         account.credit_limit = None
         account.apr = None
         account.payment_strategy = None
         account.fixed_payment_amount = None
 
-        # Credit Card Model V1 (Slice 2): per-cycle payment rows are money-
-        # bearing and anchored to the close_day being cleared here. Keeping
-        # them orphans money data no UI can surface and risks resurrecting
-        # stale amounts on a later revert. ON DELETE CASCADE only covers
-        # account DELETION, not a type change, so delete explicitly; snapshot
-        # first so the router can emit account.cycle_payment.deleted events.
         _cp_rows = (
             await svc_db.execute(
                 select(CcCyclePayment).where(
@@ -502,6 +511,17 @@ async def apply_type_change_in_session(
             await svc_db.execute(
                 delete(CcCyclePayment).where(CcCyclePayment.account_id == account_id)
             )
+
+    # ── Loan metadata: cleared when target != loan ───────────────────────
+    # Loan Account Type V1: the five loan-only columns only make sense on a
+    # loan row. Clear whenever the target is not loan (this includes loan->CC,
+    # which the old CC branch never cleared, and loan->asset).
+    if target_slug != _LOAN:
+        account.principal_amount = None
+        account.interest_rate_apr = None
+        account.term_months = None
+        account.origination_date = None
+        account.first_payment_date = None
 
     result = TypeChangeResult(
         account_id=account_id,

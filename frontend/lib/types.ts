@@ -126,6 +126,33 @@ export interface Account {
   apr?: number | string | null;
   payment_strategy?: "full_balance" | "fixed_amount" | null;
   fixed_payment_amount?: number | string | null;
+  // Loan Account Type V1 (Slice 1). Loan-only; null on non-loan accounts.
+  // The API serializes Decimals as strings. term_months is an integer
+  // month count; origination_date / first_payment_date are ISO YYYY-MM-DD.
+  principal_amount?: number | string | null;
+  interest_rate_apr?: number | string | null;
+  term_months?: number | null;
+  origination_date?: string | null;
+  first_payment_date?: string | null;
+  // Computed loan metrics (pure math, no storage). Non-null only for a
+  // fully-specified loan (slug == "loan" with all five fields set); see
+  // backend loan_service. Read-only on responses; never sent on writes.
+  loan?: LoanMetrics | null;
+}
+
+// Loan Account Type V1 (Slice 1) — computed metrics nested on
+// AccountResponse. Null unless the account is a fully-specified loan. Money
+// fields serialize as strings; dates are ISO YYYY-MM-DD. `status` drives the
+// quiet payoff subline: `on_track` carries a live-solved projected payoff
+// date, `paid_off` means the balance is already clear, and `interest_only`
+// means the current payment never amortizes (projected_payoff_* are null).
+export interface LoanMetrics {
+  expected_monthly_payment: string;
+  maturation_date: string;
+  total_interest: string;
+  projected_payoff_date: string | null;
+  projected_payoff_months: number | null;
+  status: "on_track" | "paid_off" | "interest_only";
 }
 
 // Credit Card Model V1 (Slice 2). One upcoming CC billing cycle with the

@@ -19,6 +19,7 @@ from app.schemas.account import (
     AccountUpdate,
     BalanceAdjustmentRequest,
     BalanceAdjustmentResponse,
+    LoanMetrics,
     ReconcileResponse,
 )
 from app.services import audit_service
@@ -28,6 +29,7 @@ from app.services.account_type_change_service import (
     validate_create_payment_day,
 )
 from app.services.credit_card_service import validate_credit_card_fields
+from app.services.loan_service import compute_loan_metrics, validate_loan_fields
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.payment_source_service import validate_payment_source_account
 from app.services.transaction_service import (
@@ -48,6 +50,41 @@ def _request_id() -> str | None:
 
 def _is_admin_user(user: User) -> bool:
     return user.role in (Role.OWNER, Role.ADMIN) or user.is_superadmin
+
+
+def _loan_metrics_for(account: Account) -> Optional[LoanMetrics]:
+    """Compute the nested loan metrics for a fully-specified loan account.
+
+    Returns ``None`` unless the account is a loan with all five loan columns
+    set (guards against a half-populated row never surfacing bogus math).
+    """
+    slug = account.account_type.slug if account.account_type else None
+    if slug != "loan":
+        return None
+    if (
+        account.principal_amount is None
+        or account.interest_rate_apr is None
+        or account.term_months is None
+        or account.origination_date is None
+        or account.first_payment_date is None
+    ):
+        return None
+    m = compute_loan_metrics(
+        principal_amount=account.principal_amount,
+        interest_rate_apr=account.interest_rate_apr,
+        term_months=account.term_months,
+        origination_date=account.origination_date,
+        first_payment_date=account.first_payment_date,
+        balance=account.balance,
+    )
+    return LoanMetrics(
+        expected_monthly_payment=m.expected_monthly_payment,
+        maturation_date=m.maturation_date,
+        total_interest=m.total_interest,
+        projected_payoff_date=m.projected_payoff_date,
+        projected_payoff_months=m.projected_payoff_months,
+        status=m.status,
+    )
 
 
 def _to_response(account: Account) -> AccountResponse:
@@ -71,6 +108,12 @@ def _to_response(account: Account) -> AccountResponse:
         apr=account.apr,
         payment_strategy=account.payment_strategy,
         fixed_payment_amount=account.fixed_payment_amount,
+        principal_amount=account.principal_amount,
+        interest_rate_apr=account.interest_rate_apr,
+        term_months=account.term_months,
+        origination_date=account.origination_date,
+        first_payment_date=account.first_payment_date,
+        loan=_loan_metrics_for(account),
     )
 
 
@@ -129,6 +172,17 @@ async def create_account(
         payment_strategy=body.payment_strategy,
         fixed_payment_amount=body.fixed_payment_amount,
     )
+    # Loan Account Type V1 (Slice 1): the five loan-only fields. Non-loan
+    # accounts must leave all five NULL; loan accounts require all five with
+    # in-range values (loan_service raises 422).
+    validate_loan_fields(
+        target_slug=target_type.slug,
+        principal_amount=body.principal_amount,
+        interest_rate_apr=body.interest_rate_apr,
+        term_months=body.term_months,
+        origination_date=body.origination_date,
+        first_payment_date=body.first_payment_date,
+    )
     # Payment Source Foundation: validate the paid-from pointer before the
     # insert. target_account_id is None (the row has no id yet), so the
     # self-pay check is a no-op here; the rest (same-org, allowlisted type,
@@ -165,6 +219,11 @@ async def create_account(
         apr=body.apr,
         payment_strategy=body.payment_strategy,
         fixed_payment_amount=body.fixed_payment_amount,
+        principal_amount=body.principal_amount,
+        interest_rate_apr=body.interest_rate_apr,
+        term_months=body.term_months,
+        origination_date=body.origination_date,
+        first_payment_date=body.first_payment_date,
     )
     if body.opening_balance_date is not None:
         kwargs["opening_balance_date"] = body.opening_balance_date
@@ -238,7 +297,7 @@ async def update_account(
     req_id = _request_id()
     ip = get_client_ip(request)
 
-    touches_type_or_cc_columns = (
+    touches_type_or_liability_columns = (
         body.account_type_id is not None
         or "close_day" in body.model_fields_set
         or "payment_day" in body.model_fields_set
@@ -247,9 +306,14 @@ async def update_account(
         or "apr" in body.model_fields_set
         or "payment_strategy" in body.model_fields_set
         or "fixed_payment_amount" in body.model_fields_set
+        or "principal_amount" in body.model_fields_set
+        or "interest_rate_apr" in body.model_fields_set
+        or "term_months" in body.model_fields_set
+        or "origination_date" in body.model_fields_set
+        or "first_payment_date" in body.model_fields_set
     )
 
-    if touches_type_or_cc_columns:
+    if touches_type_or_liability_columns:
         return await _update_account_atomic(
             account_id=account_id,
             body=body,
@@ -394,6 +458,53 @@ async def _apply_non_type_fields(
         account.payment_strategy = body.payment_strategy
     if "fixed_payment_amount" in body.model_fields_set:
         account.fixed_payment_amount = body.fixed_payment_amount
+
+    # Loan Account Type V1 (Slice 1). Same resulting-state pattern as the CC
+    # block above: validate the post-change row (snapshot overlaid with payload
+    # deltas) against the post-change slug, then apply the deltas.
+    loan_principal = (
+        body.principal_amount
+        if "principal_amount" in body.model_fields_set
+        else account.principal_amount
+    )
+    loan_apr = (
+        body.interest_rate_apr
+        if "interest_rate_apr" in body.model_fields_set
+        else account.interest_rate_apr
+    )
+    loan_term = (
+        body.term_months
+        if "term_months" in body.model_fields_set
+        else account.term_months
+    )
+    loan_origination = (
+        body.origination_date
+        if "origination_date" in body.model_fields_set
+        else account.origination_date
+    )
+    loan_first_payment = (
+        body.first_payment_date
+        if "first_payment_date" in body.model_fields_set
+        else account.first_payment_date
+    )
+    validate_loan_fields(
+        target_slug=resolved_slug,
+        principal_amount=loan_principal,
+        interest_rate_apr=loan_apr,
+        term_months=loan_term,
+        origination_date=loan_origination,
+        first_payment_date=loan_first_payment,
+    )
+    if "principal_amount" in body.model_fields_set:
+        account.principal_amount = body.principal_amount
+    if "interest_rate_apr" in body.model_fields_set:
+        account.interest_rate_apr = body.interest_rate_apr
+    if "term_months" in body.model_fields_set:
+        account.term_months = body.term_months
+    if "origination_date" in body.model_fields_set:
+        account.origination_date = body.origination_date
+    if "first_payment_date" in body.model_fields_set:
+        account.first_payment_date = body.first_payment_date
 
     # Apply the opening_balance shift BEFORE the is_active deactivate guard so
     # the guard evaluates the FINAL (post-shift) balance. A single PUT that

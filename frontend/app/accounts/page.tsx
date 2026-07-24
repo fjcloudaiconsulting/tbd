@@ -145,6 +145,12 @@ export default function AccountsPage() {
   // (resolver default 1, NULL-at-rest), "0" ("Same month as close") => 0.
   const [editAcctPaymentDay, setEditAcctPaymentDay] = useState("");
   const [editAcctPaymentRelMonth, setEditAcctPaymentRelMonth] = useState("");
+  // Loan Account Type V1 (Slice 1) — loan-only edit fields. "" = unset.
+  const [editAcctPrincipal, setEditAcctPrincipal] = useState("");
+  const [editAcctInterestRate, setEditAcctInterestRate] = useState("");
+  const [editAcctTermMonths, setEditAcctTermMonths] = useState("");
+  const [editAcctOriginationDate, setEditAcctOriginationDate] = useState("");
+  const [editAcctFirstPaymentDate, setEditAcctFirstPaymentDate] = useState("");
   // Credit Card Model V1 (Slice 2) — upcoming per-cycle payments for the
   // edited CC. Populated for any credit_card being edited (Follow-ups
   // Task 3 de-gated this off payment_strategy).
@@ -187,6 +193,12 @@ export default function AccountsPage() {
   // "Month after close".
   const [acctPaymentDay, setAcctPaymentDay] = useState("");
   const [acctPaymentRelMonth, setAcctPaymentRelMonth] = useState("");
+  // Loan Account Type V1 (Slice 1) — loan-only create fields. "" = unset.
+  const [acctPrincipal, setAcctPrincipal] = useState("");
+  const [acctInterestRate, setAcctInterestRate] = useState("");
+  const [acctTermMonths, setAcctTermMonths] = useState("");
+  const [acctOriginationDate, setAcctOriginationDate] = useState("");
+  const [acctFirstPaymentDate, setAcctFirstPaymentDate] = useState("");
   const selectedType = accountTypes.find((t) => t.id === acctTypeId) ?? null;
 
   const [error, setError] = useState("");
@@ -381,6 +393,7 @@ export default function AccountsPage() {
     setError("");
     try {
       const isCC = selectedType?.slug === "credit_card";
+      const isLoan = selectedType?.slug === "loan";
       await apiFetch("/api/v1/accounts", {
         method: "POST",
         body: JSON.stringify({
@@ -408,6 +421,21 @@ export default function AccountsPage() {
                     : null,
               }
             : {}),
+          // Loan Account Type V1 (Slice 1) — the paid-from picker is shared
+          // with CC; loan also carries the five loan-terms fields. "" clears
+          // to null. Non-loan creates omit every key here.
+          ...(isLoan
+            ? {
+                payment_source_account_id:
+                  acctPaymentSource === "" ? null : acctPaymentSource,
+                principal_amount: acctPrincipal === "" ? null : acctPrincipal,
+                interest_rate_apr: acctInterestRate === "" ? null : acctInterestRate,
+                term_months: acctTermMonths === "" ? null : Number(acctTermMonths),
+                origination_date: acctOriginationDate === "" ? null : acctOriginationDate,
+                first_payment_date:
+                  acctFirstPaymentDate === "" ? null : acctFirstPaymentDate,
+              }
+            : {}),
         }),
       });
       setAcctName(""); setAcctTypeId(""); setAcctCloseDay("");
@@ -415,6 +443,8 @@ export default function AccountsPage() {
       setAcctPaymentSource("");
       setAcctCreditLimit(""); setAcctApr(""); setAcctPaymentStrategy(""); setAcctFixedPayment("");
       setAcctPaymentDay(""); setAcctPaymentRelMonth("");
+      setAcctPrincipal(""); setAcctInterestRate(""); setAcctTermMonths("");
+      setAcctOriginationDate(""); setAcctFirstPaymentDate("");
       setShowAccountForm(false);
       await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
@@ -446,6 +476,12 @@ export default function AccountsPage() {
     // explicit 0 selects "same month as close".
     setEditAcctPaymentDay(a.payment_day ? String(a.payment_day) : "");
     setEditAcctPaymentRelMonth(a.payment_day_relative_month === 0 ? "0" : "");
+    // Loan Account Type V1 (Slice 1) — seed the loan-terms fields.
+    setEditAcctPrincipal(a.principal_amount != null ? String(a.principal_amount) : "");
+    setEditAcctInterestRate(a.interest_rate_apr != null ? String(a.interest_rate_apr) : "");
+    setEditAcctTermMonths(a.term_months != null ? String(a.term_months) : "");
+    setEditAcctOriginationDate(a.origination_date ?? "");
+    setEditAcctFirstPaymentDate(a.first_payment_date ?? "");
   }
 
   // Resolve the currently-selected edit type so render gates (close-day
@@ -508,6 +544,7 @@ export default function AccountsPage() {
   async function _doSaveAcct() {
     if (!editAcctId) return;
     const isCC = editingTypeSlug === "credit_card";
+    const isLoan = editingTypeSlug === "loan";
     const body: Record<string, unknown> = {
       name: editAcctName,
       opening_balance: editAcctOpeningBalance || "0.00",
@@ -536,6 +573,20 @@ export default function AccountsPage() {
         editAcctPaymentStrategy === "fixed_amount" && editAcctFixedPayment !== ""
           ? editAcctFixedPayment
           : null;
+    }
+    // Loan Account Type V1 (Slice 1) — the paid-from pointer is shared with
+    // CC; loan also carries the five loan-terms fields. Only send these on a
+    // loan; non-loan saves omit them so the server never sees stray values.
+    if (isLoan) {
+      body.payment_source_account_id =
+        editAcctPaymentSource === "" ? null : editAcctPaymentSource;
+      body.principal_amount = editAcctPrincipal === "" ? null : editAcctPrincipal;
+      body.interest_rate_apr = editAcctInterestRate === "" ? null : editAcctInterestRate;
+      body.term_months = editAcctTermMonths === "" ? null : Number(editAcctTermMonths);
+      body.origination_date =
+        editAcctOriginationDate === "" ? null : editAcctOriginationDate;
+      body.first_payment_date =
+        editAcctFirstPaymentDate === "" ? null : editAcctFirstPaymentDate;
     }
     // Always send account_type_id so the cascade and audit logic on
     // the backend trigger. The handler is idempotent when the value
@@ -976,11 +1027,12 @@ export default function AccountsPage() {
                       <input id="acct-apr" type="number" step="0.01" min={0} max={100} value={acctApr} onChange={(e) => setAcctApr(e.target.value)} className={`w-28 ${input}`} placeholder="19.99" />
                     </div>
                   )}
-                  {/* Payment Source Foundation — "Paid from" picker,
-                      credit-card-only. Lists same-org checking/savings/cash
-                      accounts; "(none)" clears it. Server validation
-                      (payment_source_service) is the source of truth. */}
-                  {selectedType?.slug === "credit_card" && (
+                  {/* Payment Source Foundation — "Paid from" picker, shown
+                      for credit_card and loan. Lists same-org
+                      checking/savings/cash accounts; "(none)" clears it.
+                      Server validation (payment_source_service) is the source
+                      of truth. */}
+                  {(selectedType?.slug === "credit_card" || selectedType?.slug === "loan") && (
                     <div>
                       <label htmlFor="acct-payment-source" className={label}>Paid from</label>
                       <select
@@ -1025,6 +1077,35 @@ export default function AccountsPage() {
                       <label htmlFor="acct-fixed-payment" className={label}>Fixed payment amount</label>
                       <input id="acct-fixed-payment" type="number" step="0.01" min={0} value={acctFixedPayment} onChange={(e) => setAcctFixedPayment(e.target.value)} className={`w-40 ${input}`} placeholder="100.00" />
                     </div>
+                  )}
+                  {/* Loan Account Type V1 (Slice 1) — loan-only terms:
+                      principal, interest rate, term, origination + first
+                      payment dates. The "Paid from" picker above is shared
+                      with credit cards. Server validation (loan_service) is
+                      the source of truth; these are UX hints. */}
+                  {selectedType?.slug === "loan" && (
+                    <>
+                      <div>
+                        <label htmlFor="acct-principal" className={label}>Principal amount</label>
+                        <input id="acct-principal" type="number" step="0.01" min={0} value={acctPrincipal} onChange={(e) => setAcctPrincipal(e.target.value)} className={`w-40 ${input}`} placeholder="20000.00" />
+                      </div>
+                      <div>
+                        <label htmlFor="acct-interest-rate" className={label}>Interest rate (APR %)</label>
+                        <input id="acct-interest-rate" type="number" step="0.01" min={0} max={100} value={acctInterestRate} onChange={(e) => setAcctInterestRate(e.target.value)} className={`w-28 ${input}`} placeholder="6.50" />
+                      </div>
+                      <div>
+                        <label htmlFor="acct-term-months" className={label}>Term (months)</label>
+                        <input id="acct-term-months" type="number" min={1} max={480} value={acctTermMonths} onChange={(e) => setAcctTermMonths(e.target.value)} className={`w-28 ${input}`} placeholder="60" />
+                      </div>
+                      <div>
+                        <label htmlFor="acct-origination-date" className={label}>Origination date</label>
+                        <input id="acct-origination-date" type="date" value={acctOriginationDate} onChange={(e) => setAcctOriginationDate(e.target.value)} className={`w-44 ${input}`} />
+                      </div>
+                      <div>
+                        <label htmlFor="acct-first-payment-date" className={label}>First payment date</label>
+                        <input id="acct-first-payment-date" type="date" value={acctFirstPaymentDate} onChange={(e) => setAcctFirstPaymentDate(e.target.value)} className={`w-44 ${input}`} />
+                      </div>
+                    </>
                   )}
                   {/* L3.2 Wave 2A — opening balance + date. Optional;
                       defaults are 0 / today. Helper text aimed at the
@@ -1133,16 +1214,28 @@ export default function AccountsPage() {
                           const nextSlug = accountTypes.find((t) => t.id === next)?.slug ?? null;
                           if (nextSlug !== "credit_card") {
                             setEditAcctCloseDay("");
-                            // Drop the paid-from pointer too; _doSaveAcct
-                            // only sends it on CC, but clearing local state
-                            // keeps the picker from flashing a stale value.
-                            setEditAcctPaymentSource("");
                             setEditAcctCreditLimit("");
                             setEditAcctApr("");
                             setEditAcctPaymentStrategy("");
                             setEditAcctFixedPayment("");
                             setEditAcctPaymentDay("");
                             setEditAcctPaymentRelMonth("");
+                          }
+                          // Loan Account Type V1 (Slice 1) — clear the
+                          // loan-terms fields when leaving loan.
+                          if (nextSlug !== "loan") {
+                            setEditAcctPrincipal("");
+                            setEditAcctInterestRate("");
+                            setEditAcctTermMonths("");
+                            setEditAcctOriginationDate("");
+                            setEditAcctFirstPaymentDate("");
+                          }
+                          // Drop the paid-from pointer unless the new type
+                          // still uses one (credit_card or loan); _doSaveAcct
+                          // only sends it for those, but clearing local state
+                          // keeps the picker from flashing a stale value.
+                          if (nextSlug !== "credit_card" && nextSlug !== "loan") {
+                            setEditAcctPaymentSource("");
                           }
                         }}
                         className={`w-full text-sm sm:w-44 ${input}`}
@@ -1183,10 +1276,11 @@ export default function AccountsPage() {
                         Payment day must be after the close day when paid in the same month.
                       </p>
                     )}
-                    {/* Payment Source Foundation — "Paid from" picker,
-                        credit-card-only. Lists same-org checking/savings/cash
-                        accounts (excluding this one); "(none)" clears it. */}
-                    {editingTypeSlug === "credit_card" && (
+                    {/* Payment Source Foundation — "Paid from" picker, shown
+                        for credit_card and loan. Lists same-org
+                        checking/savings/cash accounts (excluding this one);
+                        "(none)" clears it. */}
+                    {(editingTypeSlug === "credit_card" || editingTypeSlug === "loan") && (
                       <div className="w-full sm:w-72">
                         <label htmlFor={`edit-acct-payment-source-${a.id}`} className={label}>Paid from</label>
                         <select
@@ -1310,6 +1404,34 @@ export default function AccountsPage() {
                             })}
                           </ul>
                         )}
+                      </div>
+                    )}
+                    {/* Loan Account Type V1 (Slice 1) — loan-only terms.
+                        The "Paid from" picker above is shared with credit
+                        cards. Server validation (loan_service) is the source
+                        of truth; these are UX hints. */}
+                    {editingTypeSlug === "loan" && (
+                      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end sm:gap-3">
+                        <div className="w-full sm:w-40">
+                          <label htmlFor={`edit-acct-principal-${a.id}`} className={label}>Principal amount</label>
+                          <input id={`edit-acct-principal-${a.id}`} type="number" step="0.01" min={0} value={editAcctPrincipal} onChange={(e) => setEditAcctPrincipal(e.target.value)} className={`w-full text-sm ${input}`} />
+                        </div>
+                        <div className="w-full sm:w-32">
+                          <label htmlFor={`edit-acct-interest-rate-${a.id}`} className={label}>Interest rate (APR %)</label>
+                          <input id={`edit-acct-interest-rate-${a.id}`} type="number" step="0.01" min={0} max={100} value={editAcctInterestRate} onChange={(e) => setEditAcctInterestRate(e.target.value)} className={`w-full text-sm ${input}`} />
+                        </div>
+                        <div className="w-full sm:w-28">
+                          <label htmlFor={`edit-acct-term-months-${a.id}`} className={label}>Term (months)</label>
+                          <input id={`edit-acct-term-months-${a.id}`} type="number" min={1} max={480} value={editAcctTermMonths} onChange={(e) => setEditAcctTermMonths(e.target.value)} className={`w-full text-sm ${input}`} />
+                        </div>
+                        <div className="w-full sm:w-44">
+                          <label htmlFor={`edit-acct-origination-date-${a.id}`} className={label}>Origination date</label>
+                          <input id={`edit-acct-origination-date-${a.id}`} type="date" value={editAcctOriginationDate} onChange={(e) => setEditAcctOriginationDate(e.target.value)} className={`w-full text-sm ${input}`} />
+                        </div>
+                        <div className="w-full sm:w-44">
+                          <label htmlFor={`edit-acct-first-payment-date-${a.id}`} className={label}>First payment date</label>
+                          <input id={`edit-acct-first-payment-date-${a.id}`} type="date" value={editAcctFirstPaymentDate} onChange={(e) => setEditAcctFirstPaymentDate(e.target.value)} className={`w-full text-sm ${input}`} />
+                        </div>
                       </div>
                     )}
                     {/* L3.2 Wave 2A — opening balance edit row. Two
@@ -1450,6 +1572,48 @@ export default function AccountsPage() {
                               <span className="text-xs tabular-nums text-text-muted">
                                 {text}
                               </span>
+                            );
+                          })()
+                        : null}
+                      {/* Loan Account Type V1 (Slice 1) — read-only loan
+                          subline. Render only for a loan carrying a computed
+                          `loan` metrics object (a fully-specified loan);
+                          otherwise stay silent (no "—"). Mirrors the CC
+                          utilization subline: quiet muted tokens, no color
+                          band. The contractual "Matures" date and the
+                          live-solved payoff line are kept on separate lines
+                          (the total-interest line sits between them) and
+                          worded distinctly so the two dates never read as a
+                          single range. Paid-from is already shown in the name
+                          column (shared Payment Source render), same as a CC.
+                          "interest_only" shows a quiet "Not on track to pay
+                          off" with no date; "paid_off" shows "Paid off". */}
+                      {a.account_type_slug === "loan" && a.loan
+                        ? (() => {
+                            const m = a.loan;
+                            let payoff: string;
+                            if (m.status === "paid_off") {
+                              payoff = "Paid off";
+                            } else if (m.status === "interest_only") {
+                              payoff = "Not on track to pay off";
+                            } else {
+                              payoff = `On track to pay off ${m.projected_payoff_date}`;
+                            }
+                            return (
+                              <>
+                                <span className="text-xs tabular-nums text-text-muted">
+                                  Monthly payment {formatAmount(m.expected_monthly_payment)} {a.currency}
+                                </span>
+                                <span className="text-xs tabular-nums text-text-muted">
+                                  Matures {m.maturation_date}
+                                </span>
+                                <span className="text-xs tabular-nums text-text-muted">
+                                  Total interest (full term) {formatAmount(m.total_interest)} {a.currency}
+                                </span>
+                                <span className="text-xs tabular-nums text-text-muted">
+                                  {payoff}
+                                </span>
+                              </>
                             );
                           })()
                         : null}
