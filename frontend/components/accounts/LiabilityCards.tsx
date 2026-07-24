@@ -115,7 +115,7 @@ function CardShell({
       </div>
       <div className="text-2xl font-semibold tabular-nums text-text-primary">
         {formatAmount(account.balance)}{" "}
-        <span className="text-base font-normal text-text-muted">{account.currency}</span>
+        <span className="text-base font-normal text-text-secondary">{account.currency}</span>
       </div>
       {expressive}
       {children ? (
@@ -175,9 +175,13 @@ function LoanCard({ account, accounts }: { account: Account; accounts: Account[]
   } else if (m.status === "interest_only") {
     chip = <span className={badgeWarning}>Payment covers interest only</span>;
   } else {
+    // on_track: the backend supplies a payoff date, but guard defensively so a
+    // null never renders a dangling "paid off by ".
     chip = (
       <span className={badgeSuccess}>
-        On track · paid off by {formatMonthYear(m.projected_payoff_date)}
+        {m.projected_payoff_date
+          ? `On track · paid off by ${formatMonthYear(m.projected_payoff_date)}`
+          : "On track"}
       </span>
     );
   }
@@ -197,7 +201,7 @@ function LoanCard({ account, accounts }: { account: Account; accounts: Account[]
           />
           <Metric
             label="Rate"
-            value={account.interest_rate_apr != null ? `${account.interest_rate_apr}%` : "—"}
+            value={account.interest_rate_apr != null ? `${Number(account.interest_rate_apr)}%` : "—"}
             numeric
           />
           <Metric
