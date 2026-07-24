@@ -53,6 +53,38 @@ _INSERT_LOAN_TYPE = sa.text(
     "INSERT INTO account_types (org_id, name, slug, is_system) "
     "VALUES (:org_id, 'Loan', 'loan', :is_system)"
 )
+_DELETE_UNREFERENCED_LOAN_TYPES = sa.text(
+    "DELETE FROM account_types "
+    "WHERE slug = 'loan' AND is_system = :is_system "
+    "AND id NOT IN (SELECT account_type_id FROM accounts)"
+)
+
+
+def backfill_loan_type(bind) -> int:
+    """Insert a ``loan`` system AccountType for every org lacking one.
+
+    Idempotent, existence-guarded on **slug only** (there is no
+    UNIQUE(org_id, slug), so a naive insert double-creates; and an org that
+    hand-created a custom is_system=False ``loan`` type must not get a second).
+    Module-level + returns a count so it is unit-testable on SQLite without the
+    Alembic op context (the columns above are plain types, SQLite-portable).
+    Returns the number of rows inserted.
+    """
+    inserted = 0
+    org_ids = [row[0] for row in bind.execute(_SELECT_ORG_IDS).all()]
+    for org_id in org_ids:
+        if bind.execute(_LOAN_EXISTS, {"org_id": org_id}).first() is not None:
+            continue
+        bind.execute(_INSERT_LOAN_TYPE, {"org_id": org_id, "is_system": True})
+        inserted += 1
+    return inserted
+
+
+def delete_unreferenced_loan_types(bind) -> None:
+    """Delete only SYSTEM ``loan`` types with no referencing accounts, so a
+    downgrade never orphans an accounts.account_type_id FK (custom is_system
+    =False loan types are left untouched)."""
+    bind.execute(_DELETE_UNREFERENCED_LOAN_TYPES, {"is_system": True})
 
 
 def upgrade() -> None:
@@ -78,28 +110,11 @@ def upgrade() -> None:
     )
 
     # Per-org backfill of the loan system account type (existing orgs only).
-    bind = op.get_bind()
-    org_ids = [row[0] for row in bind.execute(_SELECT_ORG_IDS).all()]
-    for org_id in org_ids:
-        exists = bind.execute(_LOAN_EXISTS, {"org_id": org_id}).first()
-        if exists is not None:
-            continue  # slug-only guard: never double-create (no UNIQUE(org_id, slug))
-        bind.execute(_INSERT_LOAN_TYPE, {"org_id": org_id, "is_system": True})
+    backfill_loan_type(op.get_bind())
 
 
 def downgrade() -> None:
-    # Delete only the SYSTEM loan types that have no referencing accounts, so a
-    # downgrade never orphans an accounts.account_type_id FK. (Custom is_system
-    # =False loan types are left untouched.)
-    bind = op.get_bind()
-    bind.execute(
-        sa.text(
-            "DELETE FROM account_types "
-            "WHERE slug = 'loan' AND is_system = :is_system "
-            "AND id NOT IN (SELECT account_type_id FROM accounts)"
-        ),
-        {"is_system": True},
-    )
+    delete_unreferenced_loan_types(op.get_bind())
 
     op.drop_column("accounts", "first_payment_date")
     op.drop_column("accounts", "origination_date")

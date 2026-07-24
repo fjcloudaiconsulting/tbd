@@ -244,6 +244,16 @@ def test_put_single_loan_field_updates(session_factory, world):
     assert row.principal_amount == Decimal("12000.00")
 
 
+def test_put_loan_field_onto_non_loan_account_422(session_factory, world):
+    # The forbidden-off-loan guard on the UPDATE path (create-side is covered
+    # by test_create_non_loan_with_loan_field_422).
+    client = _client(session_factory, world["admin_id"])
+    r = client.put(
+        f"{BASE}/{world['checking_id']}", json={"principal_amount": "100.00"}
+    )
+    assert r.status_code == 422
+
+
 # ── type-change matrix ────────────────────────────────────────────────────
 
 

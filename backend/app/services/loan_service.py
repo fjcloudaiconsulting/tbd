@@ -153,9 +153,13 @@ def compute_loan_metrics(
     pmt = compute_pmt(principal_amount, interest_rate_apr, term_months)
 
     maturation_date = first_payment_date + relativedelta(months=term_months - 1)
-    total_interest = (pmt * Decimal(term_months) - principal_amount).quantize(
-        _CENTS, rounding=ROUND_HALF_UP
-    )
+    # Contractual interest is non-negative; clamp at 0 so the cent-rounding
+    # residual of a near-zero-rate loan never renders a negative "total
+    # interest" (e.g. P=1000, apr=0, term=3 -> pmt 333.33 -> -0.01).
+    total_interest = max(
+        Decimal("0"),
+        (pmt * Decimal(term_months) - principal_amount),
+    ).quantize(_CENTS, rounding=ROUND_HALF_UP)
 
     owed = -balance  # positive when money is owed
 

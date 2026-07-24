@@ -195,6 +195,18 @@ def test_total_interest_full_term():
     assert m.total_interest == Decimal("1599.80")
 
 
+def test_total_interest_clamped_non_negative_at_zero_rate():
+    # 0% loan whose PMT doesn't divide evenly -> cent residual must not render
+    # a negative total interest.
+    m = _metrics(
+        principal_amount=Decimal("1000.00"),
+        interest_rate_apr=Decimal("0"),
+        term_months=3,
+        balance=Decimal("-1000.00"),
+    )
+    assert m.total_interest == Decimal("0.00")
+
+
 def test_paid_off_when_balance_zero():
     m = _metrics(balance=Decimal("0.00"))
     assert m.status == "paid_off"
