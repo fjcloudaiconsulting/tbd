@@ -27,6 +27,7 @@ import {
   BarChart3,
   CircleDollarSign,
   CreditCard,
+  Landmark,
   Layers,
   LayoutDashboard,
   TrendingUp,
@@ -110,6 +111,12 @@ const DASH_TILES: DashOption[] = [
     label: "Balances by type",
     description: "Subtotal for each account type, grouped by currency.",
     Icon: Layers,
+  },
+  {
+    type: "dash_loan_payoff",
+    label: "Loan payoff",
+    description: "Payoff status and next payment for each loan.",
+    Icon: Landmark,
   },
 ];
 
