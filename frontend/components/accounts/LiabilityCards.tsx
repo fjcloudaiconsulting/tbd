@@ -11,14 +11,16 @@
  * -> ONE expressive element (CC utilization bar / loan payoff chip, the only
  * colored moment; gold stays on the page CTA per the One Brass Rule) ->
  * hairline divider -> a BORDERLESS 2-col label/value metric list (hierarchy
- * from weight + spacing, never internal gridlines — that would just relocate
- * the spreadsheet skin). Metric labels use text-secondary (not text-muted,
- * which fails AA on the light theme).
+ * from weight + spacing, never internal gridlines, which would just relocate
+ * the spreadsheet skin). Metric labels use text-secondary (a step stronger
+ * than text-muted) for hierarchy against the balance hero; the zone heading
+ * below uses text-muted via the shared cardTitle token (it clears AA on both
+ * themes since the token was darkened).
  */
 import CreditUtilizationBar from "@/components/dashboard/widgets/CreditUtilizationBar";
 import { creditUtilization } from "@/lib/credit";
 import { formatAmount, formatMonthYear } from "@/lib/format";
-import { badgeInfo, badgeNeutral, badgeSuccess, badgeWarning } from "@/lib/styles";
+import { badgeInfo, badgeNeutral, badgeSuccess, badgeWarning, cardTitle } from "@/lib/styles";
 import type { Account } from "@/lib/types";
 
 interface PaymentSource {
@@ -255,11 +257,8 @@ export default function LiabilityCards({ accounts }: { accounts: Account[] }) {
         : "Loans";
 
   return (
-    <section data-testid="liability-cards" className="mt-8">
-      <h2
-        data-testid="liability-cards-heading"
-        className="mb-3 text-xs font-medium uppercase tracking-wider text-text-muted"
-      >
+    <section data-testid="liability-cards" className="mt-8" aria-labelledby="liability-cards-heading">
+      <h2 id="liability-cards-heading" data-testid="liability-cards-heading" className={`mb-3 ${cardTitle}`}>
         {heading}
       </h2>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
