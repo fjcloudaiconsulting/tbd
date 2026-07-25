@@ -103,7 +103,7 @@ function CardShell({
   return (
     <div
       data-testid={testid}
-      className={`flex min-w-[18rem] flex-1 flex-col gap-3 rounded-lg border border-border bg-surface p-4${
+      className={`flex flex-col gap-3 rounded-lg border border-border bg-surface p-4${
         account.is_active ? "" : " opacity-50"
       }`}
     >
@@ -224,11 +224,11 @@ function LoanCard({ account, accounts }: { account: Account; accounts: Account[]
 
 export default function LiabilityCards({ accounts }: { accounts: Account[] }) {
   // Credit cards first (by utilization desc), then loans (by balance magnitude
-  // desc), rendered in ONE flex-wrap row so the cards stay equal-width and
-  // proportionate rather than splitting into lopsided per-type rows. Each card
-  // is `flex-1` with a min width, so they fill the row evenly and only wrap
-  // when they would get too narrow. The card content (utilization bar vs payoff
-  // chip) already distinguishes the two types, so no per-type heading is needed.
+  // desc), rendered in ONE responsive grid capped at 3 columns on large screens
+  // (2 on tablet, 1 on mobile). A grid (not flex-wrap) keeps every card an equal
+  // fraction and, as accounts grow, wraps extras into tidy rows of 3 without
+  // stretching a lone last-row card full-width. The card content (utilization
+  // bar vs payoff chip) already signals the type, so no per-type heading.
   const creditCards = accounts
     .filter((a) => a.account_type_slug === "credit_card")
     .sort(
@@ -243,7 +243,10 @@ export default function LiabilityCards({ accounts }: { accounts: Account[] }) {
   if (creditCards.length === 0 && loans.length === 0) return null;
 
   return (
-    <div data-testid="liability-cards" className="mt-8 flex flex-wrap gap-4">
+    <div
+      data-testid="liability-cards"
+      className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+    >
       {creditCards.map((a) => (
         <CreditCardCard key={a.id} account={a} accounts={accounts} />
       ))}
