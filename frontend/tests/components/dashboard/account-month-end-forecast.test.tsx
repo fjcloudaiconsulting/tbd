@@ -291,6 +291,48 @@ describe("AccountMonthEndForecast — contextual Change link", () => {
   });
 });
 
+const LOAN_WITH_PAYMENT: AccountMonthEndForecastResponse = {
+  period_start: "2026-05-01",
+  period_end: "2026-05-31",
+  totals: [
+    {
+      currency: "EUR",
+      balance: "-10000.00",
+      pending_delta: "0.00",
+      expected_month_end_balance: "-10000.00",
+    },
+  ],
+  accounts: [
+    {
+      account_id: 2,
+      account_name: "Car Loan",
+      currency: "EUR",
+      is_default: false,
+      account_type_slug: "loan",
+      balance: "-10000.00",
+      pending_delta: "0.00",
+      expected_month_end_balance: "-9768.00",
+      loan_payments: [{ amount: "232.00", date: "2026-05-15" }],
+    },
+  ],
+};
+
+describe("AccountMonthEndForecast — loan projected payment", () => {
+  it("renders a muted Payment line from loan_payments", () => {
+    render(<AccountMonthEndForecast {...defaults({ forecast: LOAN_WITH_PAYMENT })} />);
+    const line = screen.getByText(/Payment.*€232\.00 on 2026-05-15/);
+    expect(line).toBeInTheDocument();
+    expect(line.className).toContain("text-text-muted");
+    expect(line.className).toContain("text-[10px]");
+  });
+
+  it("deep-links Change to the loan's editor (/accounts?edit=<id>)", () => {
+    render(<AccountMonthEndForecast {...defaults({ forecast: LOAN_WITH_PAYMENT })} />);
+    const change = screen.getByRole("link", { name: /change/i });
+    expect(change.getAttribute("href")).toBe("/accounts?edit=2");
+  });
+});
+
 describe("AccountMonthEndForecast — error state", () => {
   it("renders an explicit error message when hasError is true (not 'Loading…')", () => {
     render(

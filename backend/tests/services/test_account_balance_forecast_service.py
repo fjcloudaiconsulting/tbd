@@ -43,6 +43,7 @@ from app.services import cc_statement_service as css
 from app.services.account_balance_forecast_service import (
     compute_account_balance_forecast,
 )
+from app.services.loan_service import compute_pmt
 from app.services.transaction_filters import balance_contribution_filter
 
 
@@ -1203,3 +1204,262 @@ async def test_cc_synth_payment_before_close_does_not_drop_ledger_row(
         db_session, org_id=org_id, account=cc, close_date=close_date
     )
     assert owed == Decimal("400.00")
+
+
+# ---------- Slice 2: Loan projected-payment synthesis ----------
+
+_LOAN_PRINCIPAL = Decimal("12000.00")
+_LOAN_APR = Decimal("6.00")
+_LOAN_TERM = 60
+_LOAN_PMT = compute_pmt(_LOAN_PRINCIPAL, _LOAN_APR, _LOAN_TERM)  # ~232.00
+
+
+async def _seed_loan(
+    db: AsyncSession,
+    *,
+    loan_currency="EUR",
+    source_currency="EUR",
+    balance=Decimal("-10000.00"),
+    first_payment_date=IN_PERIOD,
+    term_months=_LOAN_TERM,
+):
+    """Seed a checking source + a loan paid from it. Adds 'loan', 'source'."""
+    seed = await _seed(db)
+    org_id = seed["org_id"]
+    source = seed["accounts"]["primary"]
+    if source_currency != source.currency:
+        source.currency = source_currency
+    loan_type = AccountType(org_id=org_id, name="Loan", slug="loan", is_system=True)
+    db.add(loan_type)
+    await db.flush()
+    loan = Account(
+        org_id=org_id, name="Car Loan", account_type_id=loan_type.id,
+        balance=balance, currency=loan_currency, is_default=False,
+        payment_source_account_id=source.id, opening_balance=balance,
+        principal_amount=_LOAN_PRINCIPAL, interest_rate_apr=_LOAN_APR,
+        term_months=term_months, origination_date=datetime.date(2026, 5, 1),
+        first_payment_date=first_payment_date,
+    )
+    db.add(loan)
+    await db.flush()
+    seed["loan"] = loan
+    seed["source"] = source
+    return seed
+
+
+async def _add_loan_payment(db, seed, loan, source, *, amount, on=IN_PERIOD, settled=True):
+    """A linked source->loan transfer pair (the 'already paid this period' leg)."""
+    st = TransactionStatus.SETTLED if settled else TransactionStatus.PENDING
+    exp = _new_tx(
+        org_id=seed["org_id"], account_id=source.id, category_id=seed["cat_transfer"],
+        amount=Decimal(amount), type=TransactionType.EXPENSE, status=st,
+        date=on, settled_date=on if settled else None,
+    )
+    inc = _new_tx(
+        org_id=seed["org_id"], account_id=loan.id, category_id=seed["cat_transfer"],
+        amount=Decimal(amount), type=TransactionType.INCOME, status=st,
+        date=on, settled_date=on if settled else None,
+    )
+    db.add_all([exp, inc])
+    await db.flush()
+    exp.linked_transaction_id = inc.id
+    inc.linked_transaction_id = exp.id
+
+
+async def test_loan_synth_projects_one_payment(db_session: AsyncSession):
+    seed = await _seed_loan(db_session)
+    loan, source = seed["loan"], seed["source"]
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    by_id = {a["account_id"]: a for a in result["accounts"]}
+    loan_row, src_row = by_id[loan.id], by_id[source.id]
+    assert loan_row["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]
+    # loan moves toward zero by PMT; source drops by PMT
+    assert Decimal(loan_row["expected_month_end_balance"]) == Decimal(loan_row["balance"]) + _LOAN_PMT
+    assert Decimal(src_row["expected_month_end_balance"]) == (
+        Decimal(src_row["balance"]) + Decimal(src_row["pending_delta"]) - _LOAN_PMT
+    )
+
+
+async def test_loan_synth_conservation_totals_unchanged(db_session: AsyncSession):
+    seed = await _seed_loan(db_session)
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    # Σ synth == 0: per-account expected sums to Σ(balance+pending) per currency.
+    for tot in result["totals"]:
+        ccy = tot["currency"]
+        acct_sum = sum(
+            Decimal(a["expected_month_end_balance"])
+            for a in result["accounts"] if a["currency"] == ccy
+        )
+        assert acct_sum == Decimal(tot["expected_month_end_balance"])
+        assert Decimal(tot["expected_month_end_balance"]) == (
+            Decimal(tot["balance"]) + Decimal(tot["pending_delta"])
+        )
+
+
+async def test_loan_synth_paid_off_noop(db_session: AsyncSession):
+    seed = await _seed_loan(db_session, balance=Decimal("0.00"))
+    loan = seed["loan"]
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    assert loan_row["loan_payments"] == []
+
+
+async def test_loan_synth_final_installment_caps_at_outstanding(db_session: AsyncSession):
+    # owed 100 < PMT -> applied = 100 (never drive loan positive).
+    seed = await _seed_loan(db_session, balance=Decimal("-100.00"))
+    loan, source = seed["loan"], seed["source"]
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    by_id = {a["account_id"]: a for a in result["accounts"]}
+    assert by_id[loan.id]["loan_payments"] == [{"amount": "100.00", "date": "2026-05-15"}]
+    assert Decimal(by_id[loan.id]["expected_month_end_balance"]) == Decimal("0.00")
+
+
+async def test_loan_synth_skips_when_settled_payment_in_period(db_session: AsyncSession):
+    seed = await _seed_loan(db_session)
+    loan, source = seed["loan"], seed["source"]
+    await _add_loan_payment(db_session, seed, loan, source, amount="232.00", settled=True)
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    # already paid (settled linked leg in period) -> no phantom projection
+    assert loan_row["loan_payments"] == []
+
+
+async def test_loan_synth_skips_when_pending_payment_in_period(db_session: AsyncSession):
+    # The load-bearing pending case: a pending linked payment is already in
+    # pending_delta; synthesis MUST skip or it double-counts.
+    seed = await _seed_loan(db_session)
+    loan, source = seed["loan"], seed["source"]
+    await _add_loan_payment(db_session, seed, loan, source, amount="232.00", settled=False)
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    by_id = {a["account_id"]: a for a in result["accounts"]}
+    loan_row, src_row = by_id[loan.id], by_id[source.id]
+    assert loan_row["loan_payments"] == []
+    # pending_delta already moved both legs exactly once (no double count)
+    assert Decimal(loan_row["pending_delta"]) == Decimal("232.00")
+    assert Decimal(loan_row["expected_month_end_balance"]) == (
+        Decimal(loan_row["balance"]) + Decimal("232.00")
+    )
+    assert Decimal(src_row["expected_month_end_balance"]) == (
+        Decimal(src_row["balance"]) + Decimal(src_row["pending_delta"])
+    )
+
+
+async def test_loan_synth_fx_mismatch_skips(db_session: AsyncSession):
+    seed = await _seed_loan(db_session, source_currency="USD")
+    loan = seed["loan"]
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    assert loan_row["loan_payments"] == []
+
+
+async def test_loan_synth_inactive_source_noop(db_session: AsyncSession):
+    seed = await _seed_loan(db_session)
+    loan, source = seed["loan"], seed["source"]
+    source.is_active = False
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    assert loan_row["loan_payments"] == []
+
+
+async def test_loan_synth_past_term_not_projected(db_session: AsyncSession):
+    # 12-month loan first paid a year ago -> last payment 2026-04-15 (< window).
+    seed = await _seed_loan(
+        db_session, first_payment_date=datetime.date(2025, 5, 15), term_months=12
+    )
+    loan = seed["loan"]
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    assert loan_row["loan_payments"] == []
+
+
+async def test_loan_and_cc_share_source_accumulates_both(db_session: AsyncSession):
+    # A source funding BOTH a CC and a loan must keep both synth deltas.
+    seed = await _seed_loan(db_session)
+    loan, source = seed["loan"], seed["source"]
+    cc_type = AccountType(org_id=seed["org_id"], name="Credit Card", slug="credit_card", is_system=True)
+    db_session.add(cc_type)
+    await db_session.flush()
+    cc = Account(
+        org_id=seed["org_id"], name="Visa", account_type_id=cc_type.id,
+        balance=Decimal("-300.00"), currency="EUR", is_default=False,
+        close_day=25, payment_day=1, payment_day_relative_month=1,
+        payment_source_account_id=source.id, opening_balance=Decimal("0.00"),
+    )
+    db_session.add(cc)
+    await db_session.flush()
+    db_session.add(_charge(seed, cc, amount="300.00", on=datetime.date(2026, 4, 10)))
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    by_id = {a["account_id"]: a for a in result["accounts"]}
+    src_row = by_id[source.id]
+    # source drops by BOTH the loan payment and the CC payment (300)
+    assert Decimal(src_row["expected_month_end_balance"]) == (
+        Decimal(src_row["balance"]) + Decimal(src_row["pending_delta"]) - _LOAN_PMT - Decimal("300.00")
+    )
+    assert by_id[loan.id]["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]
+    assert by_id[cc.id]["cc_payments"] == [{"amount": "300.00", "date": "2026-05-01"}]
+
+
+async def test_loan_synth_linked_expense_leg_does_not_suppress(db_session: AsyncSession):
+    # A linked EXPENSE leg on the loan (e.g. a disbursement, which increases
+    # owed) must NOT trip the already-paid skip -- only INCOME payment-in legs
+    # do. Guards the `type == INCOME` predicate.
+    seed = await _seed_loan(db_session)
+    loan, source = seed["loan"], seed["source"]
+    exp = _new_tx(
+        org_id=seed["org_id"], account_id=loan.id, category_id=seed["cat_transfer"],
+        amount=Decimal("500.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=IN_PERIOD, settled_date=IN_PERIOD,
+    )
+    inc = _new_tx(
+        org_id=seed["org_id"], account_id=source.id, category_id=seed["cat_transfer"],
+        amount=Decimal("500.00"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=IN_PERIOD, settled_date=IN_PERIOD,
+    )
+    db_session.add_all([exp, inc])
+    await db_session.flush()
+    exp.linked_transaction_id = inc.id
+    inc.linked_transaction_id = exp.id
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    assert loan_row["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]
+
+
+async def test_loan_synth_unlinked_income_leg_does_not_suppress(db_session: AsyncSession):
+    # An UNLINKED income leg on the loan (not a transfer payment) must NOT
+    # suppress. Guards the `linked_transaction_id IS NOT NULL` predicate.
+    seed = await _seed_loan(db_session)
+    loan = seed["loan"]
+    db_session.add(_new_tx(
+        org_id=seed["org_id"], account_id=loan.id, category_id=seed["cat_income"],
+        amount=Decimal("400.00"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=IN_PERIOD, settled_date=IN_PERIOD,
+    ))
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    assert loan_row["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]
+
+
+async def test_loan_synth_out_of_period_payment_does_not_suppress(db_session: AsyncSession):
+    # A linked payment settled in a PRIOR period must NOT suppress the current
+    # period's projection. Guards the eff-in-[p_start,p_end] bound.
+    seed = await _seed_loan(db_session)
+    loan, source = seed["loan"], seed["source"]
+    await _add_loan_payment(
+        db_session, seed, loan, source, amount="232.00", on=BEFORE_PERIOD, settled=True
+    )
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    assert loan_row["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]

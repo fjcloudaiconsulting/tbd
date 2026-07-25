@@ -23,6 +23,8 @@ export interface AccountMonthEndForecastRow {
   expected_month_end_balance: string;
   // Slice 3: synthesized credit-card payment(s) projected in this period.
   cc_payments?: { amount: string; date: string }[];
+  // Loan V1 Slice 2: synthesized loan payment(s) projected in this period.
+  loan_payments?: { amount: string; date: string }[];
 }
 
 export interface AccountMonthEndForecastResponse {
@@ -195,6 +197,26 @@ export default function AccountMonthEndForecast({
                   {(row.cc_payments ?? []).map((p, i) => (
                     <p
                       key={`${p.date}-${i}`}
+                      className="text-[10px] tabular-nums text-text-muted"
+                    >
+                      Payment {pendingCurrencySymbol}
+                      {formatAmount(p.amount)} on {p.date}
+                      {i === 0 && (
+                        <>
+                          {" "}
+                          <Link
+                            href={`/accounts?edit=${row.account_id}`}
+                            className={btnLink}
+                          >
+                            Change
+                          </Link>
+                        </>
+                      )}
+                    </p>
+                  ))}
+                  {(row.loan_payments ?? []).map((p, i) => (
+                    <p
+                      key={`loan-${p.date}-${i}`}
                       className="text-[10px] tabular-nums text-text-muted"
                     >
                       Payment {pendingCurrencySymbol}
