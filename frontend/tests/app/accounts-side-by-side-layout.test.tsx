@@ -96,7 +96,7 @@ describe("AccountsPage — side-by-side layout (post-#199 follow-up)", () => {
 
   it("wraps the two cards in a 3-column grid at lg+ that stacks below lg", async () => {
     renderWithSWR(<AccountsPage />);
-    await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Amex Primary/).length).toBeGreaterThan(0));
 
     const grid = screen.getByTestId("accounts-page-grid");
     expect(grid).toBeInTheDocument();
@@ -114,7 +114,7 @@ describe("AccountsPage — side-by-side layout (post-#199 follow-up)", () => {
 
   it("places Account Types in col-span-1 and Accounts in col-span-2 at lg+", async () => {
     renderWithSWR(<AccountsPage />);
-    await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Amex Primary/).length).toBeGreaterThan(0));
 
     const grid = screen.getByTestId("accounts-page-grid");
     const [typesCard, accountsCard] = Array.from(grid.children) as HTMLElement[];
@@ -128,7 +128,7 @@ describe("AccountsPage — side-by-side layout (post-#199 follow-up)", () => {
 
   it("still renders the Account Types and Accounts cards with all controls", async () => {
     renderWithSWR(<AccountsPage />);
-    await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/Amex Primary/).length).toBeGreaterThan(0));
 
     // Account Types card content survived the reflow.
     expect(screen.getByRole("heading", { name: /Account Types/ })).toBeInTheDocument();

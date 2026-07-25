@@ -213,47 +213,54 @@ describe("CC Model — form fields", () => {
   });
 });
 
-describe("CC Model — utilization subline", () => {
+describe("CC Model — utilization card", () => {
+  // The liability detail moved out of the balance-cell subline into the CC
+  // card below the table; the card reuses CreditUtilizationBar, so the copy
+  // is the bar's label ("25%", "Over limit · N over", "100% · High"), not the
+  // old "Using X% of limit" subline. The row itself is now clean.
   function ccWith(balance: string, credit_limit: string | null) {
     return { ...CC, balance, credit_limit };
   }
 
-  test("within-limit shows 'Using n% of limit · <available> <ccy> left'", async () => {
+  test("within-limit card shows the utilization % and the credit limit", async () => {
     mockApi([CHECKING, SAVINGS, ccWith("-500.00", "2000.00")]);
     renderWithSWR(<AccountsPage />);
-    const row = await screen.findByTestId("account-row-11");
-    expect(within(row).getByText(/Using 25% of limit · 1,500\.00 EUR left/)).toBeTruthy();
+    const card = await screen.findByTestId("cc-card-11");
+    expect(within(card).getByText(/^25%$/)).toBeTruthy();
+    expect(within(card).getByText(/2,000\.00 EUR/)).toBeTruthy();
+    // the old balance-cell subline copy is gone from the table row
+    const row = screen.getByTestId("account-row-11");
+    expect(within(row).queryByText(/of limit/)).toBeNull();
   });
 
-  test("zero outstanding shows the full-limit copy", async () => {
+  test("zero outstanding card shows 0%", async () => {
     mockApi([CHECKING, SAVINGS, ccWith("0.00", "2000.00")]);
     renderWithSWR(<AccountsPage />);
-    const row = await screen.findByTestId("account-row-11");
-    expect(within(row).getByText(/0% used · full limit available/)).toBeTruthy();
+    const card = await screen.findByTestId("cc-card-11");
+    expect(within(card).getByText(/^0%$/)).toBeTruthy();
   });
 
-  test("over-limit shows the '<over> <ccy> over' copy (uncapped %)", async () => {
+  test("over-limit card shows 'Over limit · <over> <ccy> over'", async () => {
     mockApi([CHECKING, SAVINGS, ccWith("-2500.00", "2000.00")]);
     renderWithSWR(<AccountsPage />);
-    const row = await screen.findByTestId("account-row-11");
-    expect(within(row).getByText(/Using 125% of limit · 500\.00 EUR over/)).toBeTruthy();
+    const card = await screen.findByTestId("cc-card-11");
+    expect(within(card).getByText(/Over limit · 500\.00 EUR over/)).toBeTruthy();
   });
 
-  test("exactly maxed (100%, not over) reads 'no credit left', never 'over'", async () => {
+  test("exactly maxed (100%, not over) reads 'High', never 'over'", async () => {
     mockApi([CHECKING, SAVINGS, ccWith("-2000.00", "2000.00")]);
     renderWithSWR(<AccountsPage />);
-    const row = await screen.findByTestId("account-row-11");
-    expect(within(row).getByText(/Using 100% of limit · no credit left/)).toBeTruthy();
-    expect(within(row).queryByText(/over/)).toBeNull();
-    expect(within(row).queryByText(/0\.00 EUR left/)).toBeNull();
+    const card = await screen.findByTestId("cc-card-11");
+    expect(within(card).getByText(/100% · High/)).toBeTruthy();
+    expect(within(card).queryByText(/over/)).toBeNull();
   });
 
-  test("no subline when credit_limit is null or zero", async () => {
+  test("no-limit card shows 'No credit limit set' and no utilization %", async () => {
     mockApi([CHECKING, SAVINGS, ccWith("-500.00", null)]);
     renderWithSWR(<AccountsPage />);
-    const row = await screen.findByTestId("account-row-11");
-    expect(within(row).queryByText(/of limit/)).toBeNull();
-    expect(within(row).queryByText(/full limit available/)).toBeNull();
+    const card = await screen.findByTestId("cc-card-11");
+    expect(within(card).getByText(/No credit limit set/)).toBeTruthy();
+    expect(within(card).queryByText(/%/)).toBeNull();
   });
 });
 

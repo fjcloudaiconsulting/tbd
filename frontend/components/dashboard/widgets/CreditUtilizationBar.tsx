@@ -33,9 +33,16 @@ export interface CreditUtilizationBarProps {
   balance: number;
   creditLimit: number;
   currency: string;
+  /**
+   * Hide the left-hand name in the label row (the utilization label stays,
+   * right-aligned). Used on the accounts liability card, which already shows
+   * the account name as its own heading, so the bar would otherwise repeat it.
+   * The dashboard widget leaves this false and keeps the name.
+   */
+  hideName?: boolean;
 }
 
-export default function CreditUtilizationBar({ name, balance, creditLimit, currency }: CreditUtilizationBarProps) {
+export default function CreditUtilizationBar({ name, balance, creditLimit, currency, hideName = false }: CreditUtilizationBarProps) {
   const { utilizationPct, over } = creditUtilization(balance, creditLimit);
   const util = Math.round(utilizationPct);
   const spent = Math.min(utilizationPct, 100);
@@ -53,7 +60,7 @@ export default function CreditUtilizationBar({ name, balance, creditLimit, curre
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between text-xs text-text-secondary">
-        <span className="truncate">{name}</span>
+        {hideName ? <span aria-hidden="true" /> : <span className="truncate">{name}</span>}
         <span className="tabular-nums">{label}</span>
       </div>
       <div className="h-4 w-full">

@@ -25,6 +25,25 @@ export function todayISO(): string {
   return formatLocalDate(new Date());
 }
 
+const _MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/**
+ * Format an ISO `YYYY-MM-DD` date as `Mon YYYY` (e.g. "Mar 2031"). Parses the
+ * parts directly (no Date construction) so it never shifts across timezones.
+ * Returns the input unchanged if it doesn't match the expected shape.
+ */
+export function formatMonthYear(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const monthIdx = Number(m[2]) - 1;
+  if (monthIdx < 0 || monthIdx > 11) return iso;
+  return `${_MONTHS[monthIdx]} ${m[1]}`;
+}
+
 // Projected close date for an open billing period: the day before the next
 // occurrence of `cycleDay`. Returns null if the inputs aren't valid.
 export function projectedPeriodEnd(startISO: string, cycleDay: number): string | null {
