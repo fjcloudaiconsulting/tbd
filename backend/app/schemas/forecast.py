@@ -30,6 +30,15 @@ class CcPaymentLine(BaseModel):
     date: datetime.date
 
 
+class LoanPaymentLine(BaseModel):
+    """A synthesized loan payment on the per-account forecast line (Loan V1
+    Slice 2). ``amount`` is the projected outflow (capped at the outstanding
+    balance) on ``date`` (the scheduled payment date)."""
+
+    amount: Decimal
+    date: datetime.date
+
+
 class AccountBalanceForecastRow(BaseModel):
     account_id: int
     account_name: str
@@ -40,6 +49,7 @@ class AccountBalanceForecastRow(BaseModel):
     pending_delta: Decimal
     expected_month_end_balance: Decimal
     cc_payments: list[CcPaymentLine] = []
+    loan_payments: list[LoanPaymentLine] = []
 
 
 class AccountBalanceForecastResponse(BaseModel):
