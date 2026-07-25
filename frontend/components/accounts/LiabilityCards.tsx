@@ -11,14 +11,16 @@
  * -> ONE expressive element (CC utilization bar / loan payoff chip, the only
  * colored moment; gold stays on the page CTA per the One Brass Rule) ->
  * hairline divider -> a BORDERLESS 2-col label/value metric list (hierarchy
- * from weight + spacing, never internal gridlines — that would just relocate
- * the spreadsheet skin). Metric labels use text-secondary (not text-muted,
- * which fails AA on the light theme).
+ * from weight + spacing, never internal gridlines, which would just relocate
+ * the spreadsheet skin). Metric labels use text-secondary (a step stronger
+ * than text-muted) for hierarchy against the balance hero; the zone heading
+ * below uses text-muted via the shared cardTitle token (it clears AA on both
+ * themes since the token was darkened).
  */
 import CreditUtilizationBar from "@/components/dashboard/widgets/CreditUtilizationBar";
 import { creditUtilization } from "@/lib/credit";
 import { formatAmount, formatMonthYear } from "@/lib/format";
-import { badgeInfo, badgeNeutral, badgeSuccess, badgeWarning } from "@/lib/styles";
+import { badgeInfo, badgeNeutral, badgeSuccess, badgeWarning, cardTitle } from "@/lib/styles";
 import type { Account } from "@/lib/types";
 
 interface PaymentSource {
@@ -227,8 +229,9 @@ export default function LiabilityCards({ accounts }: { accounts: Account[] }) {
   // desc), rendered in ONE responsive grid capped at 3 columns on large screens
   // (2 on tablet, 1 on mobile). A grid (not flex-wrap) keeps every card an equal
   // fraction and, as accounts grow, wraps extras into tidy rows of 3 without
-  // stretching a lone last-row card full-width. The card content (utilization
-  // bar vs payoff chip) already signals the type, so no per-type heading.
+  // stretching a lone last-row card full-width. One zone heading labels the
+  // whole band (below), but the card content (utilization bar vs payoff chip)
+  // already signals the type, so no per-type sub-headings inside it.
   const creditCards = accounts
     .filter((a) => a.account_type_slug === "credit_card")
     .sort(
@@ -242,17 +245,30 @@ export default function LiabilityCards({ accounts }: { accounts: Account[] }) {
 
   if (creditCards.length === 0 && loans.length === 0) return null;
 
+  // One zone label so a single card no longer reads as attached to the
+  // Account Types column above-left; it anchors the cards as their own
+  // full-width band. Contextual (cards / loans / both) but never per-type
+  // sub-headings — the utilization bar vs payoff chip already signals type.
+  const heading =
+    creditCards.length > 0 && loans.length > 0
+      ? "Credit cards & loans"
+      : creditCards.length > 0
+        ? "Credit cards"
+        : "Loans";
+
   return (
-    <div
-      data-testid="liability-cards"
-      className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
-    >
-      {creditCards.map((a) => (
-        <CreditCardCard key={a.id} account={a} accounts={accounts} />
-      ))}
-      {loans.map((a) => (
-        <LoanCard key={a.id} account={a} accounts={accounts} />
-      ))}
-    </div>
+    <section data-testid="liability-cards" className="mt-8" aria-labelledby="liability-cards-heading">
+      <h2 id="liability-cards-heading" data-testid="liability-cards-heading" className={`mb-3 ${cardTitle}`}>
+        {heading}
+      </h2>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {creditCards.map((a) => (
+          <CreditCardCard key={a.id} account={a} accounts={accounts} />
+        ))}
+        {loans.map((a) => (
+          <LoanCard key={a.id} account={a} accounts={accounts} />
+        ))}
+      </div>
+    </section>
   );
 }
