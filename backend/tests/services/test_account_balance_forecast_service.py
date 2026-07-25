@@ -1407,3 +1407,59 @@ async def test_loan_and_cc_share_source_accumulates_both(db_session: AsyncSessio
     )
     assert by_id[loan.id]["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]
     assert by_id[cc.id]["cc_payments"] == [{"amount": "300.00", "date": "2026-05-01"}]
+
+
+async def test_loan_synth_linked_expense_leg_does_not_suppress(db_session: AsyncSession):
+    # A linked EXPENSE leg on the loan (e.g. a disbursement, which increases
+    # owed) must NOT trip the already-paid skip -- only INCOME payment-in legs
+    # do. Guards the `type == INCOME` predicate.
+    seed = await _seed_loan(db_session)
+    loan, source = seed["loan"], seed["source"]
+    exp = _new_tx(
+        org_id=seed["org_id"], account_id=loan.id, category_id=seed["cat_transfer"],
+        amount=Decimal("500.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=IN_PERIOD, settled_date=IN_PERIOD,
+    )
+    inc = _new_tx(
+        org_id=seed["org_id"], account_id=source.id, category_id=seed["cat_transfer"],
+        amount=Decimal("500.00"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=IN_PERIOD, settled_date=IN_PERIOD,
+    )
+    db_session.add_all([exp, inc])
+    await db_session.flush()
+    exp.linked_transaction_id = inc.id
+    inc.linked_transaction_id = exp.id
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    assert loan_row["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]
+
+
+async def test_loan_synth_unlinked_income_leg_does_not_suppress(db_session: AsyncSession):
+    # An UNLINKED income leg on the loan (not a transfer payment) must NOT
+    # suppress. Guards the `linked_transaction_id IS NOT NULL` predicate.
+    seed = await _seed_loan(db_session)
+    loan = seed["loan"]
+    db_session.add(_new_tx(
+        org_id=seed["org_id"], account_id=loan.id, category_id=seed["cat_income"],
+        amount=Decimal("400.00"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=IN_PERIOD, settled_date=IN_PERIOD,
+    ))
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    assert loan_row["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]
+
+
+async def test_loan_synth_out_of_period_payment_does_not_suppress(db_session: AsyncSession):
+    # A linked payment settled in a PRIOR period must NOT suppress the current
+    # period's projection. Guards the eff-in-[p_start,p_end] bound.
+    seed = await _seed_loan(db_session)
+    loan, source = seed["loan"], seed["source"]
+    await _add_loan_payment(
+        db_session, seed, loan, source, amount="232.00", on=BEFORE_PERIOD, settled=True
+    )
+    await db_session.commit()
+    result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
+    loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
+    assert loan_row["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]
