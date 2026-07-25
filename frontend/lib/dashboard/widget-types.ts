@@ -23,7 +23,8 @@ export type DashboardWidgetType =
   | "dash_forecast_category"
   | "dash_recent_transactions"
   | "dash_cc_utilization"
-  | "dash_balances_by_type";
+  | "dash_balances_by_type"
+  | "dash_loan_payoff";
 
 /** A dashboard-native widget.  config is empty — the provider owns the data. */
 export interface DashboardWidget {
@@ -91,6 +92,14 @@ const DASHBOARD_WIDGET_DEFAULTS: Record<
     // overflow-hidden. y sits below the existing defaults; addDashTile
     // recomputes actual placement on insert so this y is nominal.
     grid: { x: 0, y: 31, w: 4, h: 8 },
+  },
+  dash_loan_payoff: {
+    title: "Loan payoff",
+    // Opt-in tile (not in the backend seed). h=6 = MIN_CONTENT_H floor; same
+    // 4-wide sidebar footprint as dash_cc_utilization (a payoff row ~ a CC
+    // row). y is nominal (addDashTile recomputes placement on insert) but must
+    // match CANONICAL_GRIDS in widget-defaults.test.ts.
+    grid: { x: 0, y: 37, w: 4, h: 6 },
   },
 };
 

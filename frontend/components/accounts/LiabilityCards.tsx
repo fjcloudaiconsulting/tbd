@@ -20,7 +20,8 @@
 import CreditUtilizationBar from "@/components/dashboard/widgets/CreditUtilizationBar";
 import { creditUtilization } from "@/lib/credit";
 import { formatAmount, formatMonthYear } from "@/lib/format";
-import { badgeInfo, badgeNeutral, badgeSuccess, badgeWarning, cardTitle } from "@/lib/styles";
+import { loanPayoffStatus } from "@/lib/loan";
+import { badgeForTone, cardTitle } from "@/lib/styles";
 import type { Account } from "@/lib/types";
 
 interface PaymentSource {
@@ -168,19 +169,23 @@ function CreditCardCard({ account, accounts }: { account: Account; accounts: Acc
 function LoanCard({ account, accounts }: { account: Account; accounts: Account[] }) {
   const source = resolvePaymentSource(accounts, account.payment_source_account_id);
   const m = account.loan;
+  // Shared classifier resolves the tone; the card owns its verbose labels. Each
+  // branch below matches the classified tone one-to-one, so this is the same
+  // badge token the card rendered inline before the lib/loan.ts extraction.
+  const badgeClass = badgeForTone(loanPayoffStatus(m).tone);
 
   let chip: React.ReactNode;
   if (!m) {
-    chip = <span className={badgeInfo}>Finish setting up this loan</span>;
+    chip = <span className={badgeClass}>Finish setting up this loan</span>;
   } else if (m.status === "paid_off") {
-    chip = <span className={badgeNeutral}>Paid off</span>;
+    chip = <span className={badgeClass}>Paid off</span>;
   } else if (m.status === "interest_only") {
-    chip = <span className={badgeWarning}>Payment covers interest only</span>;
+    chip = <span className={badgeClass}>Payment covers interest only</span>;
   } else {
     // on_track: the backend supplies a payoff date, but guard defensively so a
     // null never renders a dangling "paid off by ".
     chip = (
-      <span className={badgeSuccess}>
+      <span className={badgeClass}>
         {m.projected_payoff_date
           ? `On track · paid off by ${formatMonthYear(m.projected_payoff_date)}`
           : "On track"}

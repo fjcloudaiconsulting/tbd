@@ -222,6 +222,16 @@ describe("renderDashboardWidget — dashboard-native tiles", () => {
     ).toBeNull();
   });
 
+  it("renders LoanPayoffTile for dash_loan_payoff (guards the silent-blank render arm)", () => {
+    // The switch has a default arm delegating to renderReportWidget (→ null for
+    // an unknown dash_* type), so a MISSING case compiles clean and ships a blank
+    // tile. This is the only test that fails loudly if the render arm is dropped.
+    const w = emptyDashboardWidget("dash_loan_payoff", "wlp");
+    renderWidget(w);
+    // Empty activeAccounts → the tile still renders its shell (empty state).
+    expect(screen.getByTestId("loan-payoff-tile")).toBeInTheDocument();
+  });
+
   it("renders the forecast tile wrapper with accounts present", () => {
     const ACCT = {
       id: 1,
