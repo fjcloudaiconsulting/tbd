@@ -3,7 +3,8 @@
  * a payoff STATE and its semantic TONE. Both the accounts-page detail card
  * (LiabilityCards `LoanCard`) and the dashboard `LoanPayoffTile` consume this,
  * so neither can drift on which colour a state gets (item 7). Mirrors the shape
- * and altitude of `lib/credit.ts`: pure classification, no React, no styles.
+ * and altitude of `lib/credit.ts`: pure classification, no React, and only a
+ * type-only import from lib/styles (BadgeTone) with no runtime style coupling.
  *
  * The state->tone map is the shared invariant. tone->className is a trivial
  * presentational mapping that legitimately varies per surface, so it stays out

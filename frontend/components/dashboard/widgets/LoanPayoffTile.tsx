@@ -63,10 +63,17 @@ export default function LoanPayoffTile() {
       .sort((x, y) => {
         const byState = STATE_ORDER[x.status.state] - STATE_ORDER[y.status.state];
         if (byState !== 0) return byState;
-        // Tie-break: soonest next payment first (missing dates sort last), then name.
-        const dx = nextPaymentByAccount[x.account.id]?.date ?? "￿";
-        const dy = nextPaymentByAccount[y.account.id]?.date ?? "￿";
-        if (dx !== dy) return dx < dy ? -1 : 1;
+        // Tie-break: soonest next payment first; loans with no next payment
+        // sort after those that have one; then by name.
+        const dx = nextPaymentByAccount[x.account.id]?.date;
+        const dy = nextPaymentByAccount[y.account.id]?.date;
+        if (dx && dy) {
+          if (dx !== dy) return dx < dy ? -1 : 1;
+        } else if (dx) {
+          return -1;
+        } else if (dy) {
+          return 1;
+        }
         return x.account.name.localeCompare(y.account.name);
       });
   }, [activeAccounts, nextPaymentByAccount]);
