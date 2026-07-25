@@ -63,9 +63,16 @@ async def test_window_excludes_old(session_factory, org):
         event_type=sched_audit.CC_CLOSED_EVENT_TYPE,
         detail={},
     )
+    # cc_alerts_sent_since filters on the audit event's created_at (wall clock
+    # at record time), NOT close_date. To assert a just-recorded alert falls
+    # BEFORE the window, the ``since`` boundary must be strictly in the future
+    # relative to now. Using a fixed date here is a time bomb: it worked only
+    # while the clock was before it (this test began failing the day the clock
+    # reached the old hardcoded 2026-07-25). Anchor to tomorrow instead.
+    since_tomorrow = datetime.date.today() + datetime.timedelta(days=1)
     async with session_factory() as db:
         sent = await sched_audit.cc_alerts_sent_since(
-            db, org.id, sched_audit.CC_CLOSED_EVENT_TYPE, datetime.date(2026, 7, 25)
+            db, org.id, sched_audit.CC_CLOSED_EVENT_TYPE, since_tomorrow
         )
     assert (7, "2026-07-20") not in sent
 
