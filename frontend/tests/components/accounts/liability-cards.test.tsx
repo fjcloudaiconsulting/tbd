@@ -61,7 +61,7 @@ describe("LiabilityCards", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  test("groups credit cards and loans, and only renders a group that has members", () => {
+  test("renders a card only for liabilities, ignoring asset accounts", () => {
     render(
       <LiabilityCards
         accounts={[
@@ -76,9 +76,10 @@ describe("LiabilityCards", () => {
         ]}
       />,
     );
-    expect(screen.getByText("Credit cards")).toBeInTheDocument();
-    expect(screen.queryByText("Loans")).toBeNull();
     expect(screen.getByTestId("cc-card-2")).toBeInTheDocument();
+    // no loan in the fixture, and the checking account gets no card
+    expect(screen.queryByTestId(/^loan-card-/)).toBeNull();
+    expect(screen.queryByTestId("cc-card-1")).toBeNull();
   });
 
   test("orders credit cards by utilization desc and loans by balance magnitude desc", () => {
