@@ -108,4 +108,42 @@ describe("LiabilityCards", () => {
     const card = screen.getByTestId("loan-card-7");
     expect(within(card).getByText(/Finish setting up this loan/)).toBeInTheDocument();
   });
+
+  describe("section heading", () => {
+    test("labels the band 'Credit cards' when only cards are present", () => {
+      render(
+        <LiabilityCards
+          accounts={[
+            acct({ id: 2, account_type_slug: "credit_card", name: "Visa", balance: "-100.00", credit_limit: "1000.00" }),
+          ]}
+        />,
+      );
+      expect(screen.getByTestId("liability-cards-heading")).toHaveTextContent("Credit cards");
+      expect(screen.getByTestId("liability-cards-heading").textContent).not.toMatch(/loan/i);
+    });
+
+    test("labels the band 'Loans' when only loans are present", () => {
+      render(
+        <LiabilityCards accounts={[acct({ id: 3, account_type_slug: "loan", name: "Mortgage", balance: "-5000.00" })]} />,
+      );
+      expect(screen.getByTestId("liability-cards-heading")).toHaveTextContent("Loans");
+    });
+
+    test("labels the band 'Credit cards & loans' when both are present", () => {
+      render(
+        <LiabilityCards
+          accounts={[
+            acct({ id: 2, account_type_slug: "credit_card", name: "Visa", balance: "-100.00", credit_limit: "1000.00" }),
+            acct({ id: 3, account_type_slug: "loan", name: "Mortgage", balance: "-5000.00" }),
+          ]}
+        />,
+      );
+      expect(screen.getByTestId("liability-cards-heading")).toHaveTextContent("Credit cards & loans");
+    });
+
+    test("renders no heading when there are no liabilities", () => {
+      render(<LiabilityCards accounts={[acct({ id: 1, account_type_slug: "checking" })]} />);
+      expect(screen.queryByTestId("liability-cards-heading")).toBeNull();
+    });
+  });
 });
