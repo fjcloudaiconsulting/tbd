@@ -81,6 +81,24 @@ export const badgeSuccess =
 export const badgeNeutral =
   `${badgeBase} bg-surface-raised text-text-secondary`;
 
+// Semantic badge tone -> resolved badge class. A single home so any surface
+// that classifies a status into a tone (e.g. loanPayoffStatus in lib/loan.ts)
+// resolves to the identical badge token, and two surfaces can't drift on which
+// colour a tone gets. Tone is generic (not domain-specific), so it lives here
+// beside the tokens rather than in a feature module.
+export type BadgeTone = "info" | "success" | "neutral" | "warning";
+
+const BADGE_BY_TONE: Record<BadgeTone, string> = {
+  info: badgeInfo,
+  success: badgeSuccess,
+  neutral: badgeNeutral,
+  warning: badgeWarning,
+};
+
+export function badgeForTone(tone: BadgeTone): string {
+  return BADGE_BY_TONE[tone];
+}
+
 export const stickyBar =
   "sticky top-0 z-20 -mx-4 sm:-mx-8 border-b border-border bg-surface-raised px-4 sm:px-8";
 

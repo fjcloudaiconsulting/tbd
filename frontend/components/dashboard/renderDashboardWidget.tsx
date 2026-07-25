@@ -27,6 +27,7 @@ import ForecastBarsWidget from "@/components/dashboard/widgets/ForecastBarsWidge
 import RecentTransactionsWidget from "@/components/dashboard/widgets/RecentTransactionsWidget";
 import CreditUtilizationWidget from "@/components/dashboard/widgets/CreditUtilizationWidget";
 import BalancesByTypeTile from "@/components/dashboard/widgets/BalancesByTypeTile";
+import LoanPayoffTile from "@/components/dashboard/widgets/LoanPayoffTile";
 import { renderReportWidget } from "@/components/reports/renderReportWidget";
 
 /**
@@ -83,6 +84,9 @@ export function renderDashboardWidget(
 
     case "dash_balances_by_type":
       return fill(<BalancesByTypeTile />);
+
+    case "dash_loan_payoff":
+      return fill(<LoanPayoffTile />);
 
     // ── Reports fall-through (cloned report widgets) ────────────────────────
     // Delegate all non-dash types to the shared report widget renderer.

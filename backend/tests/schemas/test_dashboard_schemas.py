@@ -240,3 +240,23 @@ def test_dashboard_accepts_balances_by_type_tile():
     assert out["widgets"][0]["type"] == "dash_balances_by_type"
     # provider-fed tile: config stays an empty object
     assert out["widgets"][0]["config"] == {}
+
+
+def test_dashboard_accepts_loan_payoff_tile():
+    """The opt-in dash_loan_payoff tile validates and round-trips verbatim."""
+    layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "loan1",
+                "type": "dash_loan_payoff",
+                "title": "Loan payoff",
+                "grid": {"x": 0, "y": 37, "w": 4, "h": 6},
+                "config": {},
+            }
+        ],
+    }
+    out = validate_dashboard_layout_json(layout)
+    assert out["widgets"][0]["type"] == "dash_loan_payoff"
+    # provider-fed tile: config stays an empty object
+    assert out["widgets"][0]["config"] == {}

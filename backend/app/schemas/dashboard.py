@@ -65,6 +65,7 @@ class DashWidgetType(str, enum.Enum):
     RECENT_TRANSACTIONS = "dash_recent_transactions"
     CC_UTILIZATION = "dash_cc_utilization"
     BALANCES_BY_TYPE = "dash_balances_by_type"
+    LOAN_PAYOFF = "dash_loan_payoff"
 
 
 class _DashWidgetConfig(BaseModel):
@@ -136,6 +137,11 @@ class DashBalancesByTypeWidget(_DashWidgetBase):
     config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
 
 
+class DashLoanPayoffWidget(_DashWidgetBase):
+    type: Literal[DashWidgetType.LOAN_PAYOFF]
+    config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
+
+
 # ─── widened widget union (dash_* + all report types) ────────────────────────
 #
 # Re-uses the public report widget classes from report_layout.  The
@@ -152,6 +158,7 @@ _DashboardWidget = Annotated[
         DashRecentTransactionsWidget,
         DashCcUtilizationWidget,
         DashBalancesByTypeWidget,
+        DashLoanPayoffWidget,
         # report widget types (public classes from report_layout)
         KPIWidget,
         BarWidget,
