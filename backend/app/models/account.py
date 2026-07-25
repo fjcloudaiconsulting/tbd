@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     func,
 )
@@ -25,6 +26,7 @@ SYSTEM_ACCOUNT_TYPES = [
     {"slug": "credit_card", "name": "Credit Card"},
     {"slug": "investment", "name": "Investment"},
     {"slug": "cash", "name": "Cash"},
+    {"slug": "loan", "name": "Loan"},
 ]
 
 
@@ -101,6 +103,25 @@ class Account(Base):
         ),
         nullable=True,
     )
+    # Loan Account Type V1 (specs/2026-07-24-loan-account-type-v1-design.md).
+    # Five loan-only columns, NULL-at-rest on non-loan rows (fat-account-row
+    # idiom, mirroring the CC columns above). Dedicated interest_rate_apr
+    # rather than reusing ``apr`` so the two liability types' leave-type
+    # clear cascades stay independent. All required-on-loan / range coupling
+    # lives in loan_service.validate_loan_fields, not the schema level.
+    # ``principal_amount`` is the ORIGINAL contractual principal (positive);
+    # the live owed amount is ``balance`` (negative), independent of it so a
+    # mid-life loan can be imported. Cleared on leaving the loan type by
+    # account_type_change_service.
+    principal_amount: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    interest_rate_apr: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 2), nullable=True
+    )
+    term_months: Mapped[Optional[int]] = mapped_column(SmallInteger, nullable=True)
+    origination_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    first_payment_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # User-stated opening balance for the account. Migration 041 sets
     # this to 0 for every existing account (canonical backfill, see

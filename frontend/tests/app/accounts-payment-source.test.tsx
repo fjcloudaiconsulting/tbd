@@ -203,11 +203,14 @@ describe("Payment Source — inline edit picker", () => {
 });
 
 describe("Payment Source — detail line + create form", () => {
-  test("CC row renders a read-only 'paid from <name>' detail", async () => {
+  test("CC card renders a read-only 'paid from <name>' detail", async () => {
+    // The "paid from" detail moved out of the table row into the CC card
+    // below the table (the row is now a clean balance line).
     mockApi();
     renderWithSWR(<AccountsPage />);
-    const row = await screen.findByTestId("account-row-11");
-    expect(within(row).getByText(/paid from Primary/i)).toBeTruthy();
+    const card = await screen.findByTestId("cc-card-11");
+    expect(within(card).getByText(/Paid from/i)).toBeTruthy();
+    expect(within(card).getByText("Primary")).toBeTruthy();
   });
 
   test("create form surfaces the Paid from picker only for credit_card and POSTs it", async () => {

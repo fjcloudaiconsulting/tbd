@@ -57,3 +57,4 @@ frontend/tsconfig.tsbuildinfo
 
 # Codex
 AGENTS.md
+docker-compose.loan-test.yml

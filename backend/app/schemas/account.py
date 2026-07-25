@@ -12,6 +12,11 @@ from app.models.account import PaymentStrategy
 _OPENING_BALANCE_CAP_HI = Decimal("9999999999.99")
 _OPENING_BALANCE_CAP_LO = Decimal("-9999999999.99")
 
+# Loan Account Type V1. Parse-time belt for the loan columns (the
+# "required-on-loan" coupling still lives in loan_service since the schema
+# can't see the target slug). interest_rate_apr mirrors Numeric(5, 2).
+_LOAN_APR_CAP_HI = Decimal("999.99")
+
 
 class AccountTypeCreate(BaseModel):
     name: str
@@ -68,6 +73,19 @@ class AccountCreate(BaseModel):
     fixed_payment_amount: Optional[Decimal] = Field(
         default=None, max_digits=12, decimal_places=2
     )
+    # Loan Account Type V1 (Slice 1). Loan-only; validated server-side in
+    # loan_service (required-on-loan / forbidden-off-loan). principal_amount is
+    # the ORIGINAL contractual principal; the live owed amount rides
+    # opening_balance/balance and is independent (mid-life import allowed).
+    principal_amount: Optional[Decimal] = Field(
+        default=None, gt=0, max_digits=12, decimal_places=2
+    )
+    interest_rate_apr: Optional[Decimal] = Field(
+        default=None, ge=0, le=_LOAN_APR_CAP_HI, max_digits=5, decimal_places=2
+    )
+    term_months: Optional[int] = Field(default=None, ge=1, le=480)
+    origination_date: Optional[date] = None
+    first_payment_date: Optional[date] = None
 
 
 class AccountUpdate(BaseModel):
@@ -100,6 +118,30 @@ class AccountUpdate(BaseModel):
     fixed_payment_amount: Optional[Decimal] = Field(
         default=None, max_digits=12, decimal_places=2
     )
+    # Loan Account Type V1 (Slice 1). See AccountCreate for field semantics.
+    # model_fields_set idiom in the router: omit to preserve, send explicit
+    # null to clear (loan columns are cleared server-side on leaving the type).
+    principal_amount: Optional[Decimal] = Field(
+        default=None, gt=0, max_digits=12, decimal_places=2
+    )
+    interest_rate_apr: Optional[Decimal] = Field(
+        default=None, ge=0, le=_LOAN_APR_CAP_HI, max_digits=5, decimal_places=2
+    )
+    term_months: Optional[int] = Field(default=None, ge=1, le=480)
+    origination_date: Optional[date] = None
+    first_payment_date: Optional[date] = None
+
+
+class LoanMetrics(BaseModel):
+    """Computed loan metrics (no storage), projected into AccountResponse.loan
+    for loan accounts with all five loan fields set. See loan_service."""
+
+    expected_monthly_payment: Decimal
+    maturation_date: date
+    total_interest: Decimal
+    projected_payoff_date: Optional[date] = None
+    projected_payoff_months: Optional[int] = None
+    status: str  # "on_track" | "paid_off" | "interest_only"
 
 
 class AccountResponse(BaseModel):
@@ -122,6 +164,13 @@ class AccountResponse(BaseModel):
     apr: Optional[Decimal] = None
     payment_strategy: Optional[PaymentStrategy] = None
     fixed_payment_amount: Optional[Decimal] = None
+    principal_amount: Optional[Decimal] = None
+    interest_rate_apr: Optional[Decimal] = None
+    term_months: Optional[int] = None
+    origination_date: Optional[date] = None
+    first_payment_date: Optional[date] = None
+    # Computed (no storage); populated only for fully-specified loan accounts.
+    loan: Optional[LoanMetrics] = None
 
     model_config = {"from_attributes": True}
 
