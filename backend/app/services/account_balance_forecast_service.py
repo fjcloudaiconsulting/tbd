@@ -32,9 +32,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.account import Account, AccountType
 from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
-from app.services import cc_forecast_service
+from app.services import cc_forecast_service, loan_forecast_service
 from app.services.billing_service import resolve_period
 from app.services.cc_statement_service import load_cc_ledgers
+from app.services.loan_service import compute_pmt
 from app.services.transaction_filters import (
     balance_contribution_filter,
     effective_period_date_expr,
@@ -178,6 +179,74 @@ async def compute_account_balance_forecast(
                 cc_payments_by_account.setdefault(cc.id, []).append(
                     {"amount": _q(outflow), "date": pay_date.isoformat()})
 
+    # ── Loan projected-payment synthesis (Slice 2) ────────────────────────────
+    # Same conserving shape as the CC synthesis above (source drops, loan moves
+    # toward zero on the scheduled payment date), accumulated into the SAME
+    # synth_delta_by_account map so a source that funds both a CC and a loan
+    # keeps both deltas. Design A (period-skip): outstanding uses the CURRENT
+    # balance and we SKIP the period when a loan payment-in leg is already
+    # accounted for. See loan_forecast_service for the O2 rationale.
+    loan_accounts = [
+        acct for acct, slug in rows
+        if slug == "loan"
+        and acct.payment_source_account_id is not None
+        and acct.principal_amount is not None
+        and acct.interest_rate_apr is not None
+        and acct.term_months is not None
+        and acct.origination_date is not None
+        and acct.first_payment_date is not None
+    ]
+    loan_payments_by_account: dict[int, list[dict]] = {}
+
+    if loan_accounts:
+        loan_ids = [a.id for a in loan_accounts]
+
+        # Already-paid signal: any linked INCOME (payment-in) leg on the loan
+        # whose effective date falls in the period. balance_contribution_filter()
+        # carries NO status filter, so this catches BOTH settled legs (already
+        # in loan.balance) and pending legs (already in pending_delta) -- DO NOT
+        # add a status filter here or a pending loan payment double-counts
+        # against pending_delta (regression-tested). Disbursement legs are an
+        # EXPENSE on the loan and never match; manual adjustments are unlinked.
+        loan_paid_rows = (await db.execute(
+            select(Transaction.account_id).distinct()
+            .where(Transaction.org_id == org_id,
+                   Transaction.account_id.in_(loan_ids),
+                   Transaction.linked_transaction_id.is_not(None),
+                   Transaction.type == TransactionType.INCOME,
+                   balance_contribution_filter(),
+                   and_(eff_date >= p_start, eff_date <= p_end))
+        )).all()
+        loan_paid_ids = {aid for (aid,) in loan_paid_rows}
+
+        for loan in loan_accounts:
+            source_entry = accounts_by_id.get(loan.payment_source_account_id)
+            if source_entry is None:
+                continue  # source inactive/not loaded -> no-op (do not resurrect)
+            source, _ = source_entry
+            if source.currency != loan.currency:
+                continue  # no FX in V1 -> would desync per-currency totals
+            pmt = compute_pmt(
+                Decimal(str(loan.principal_amount)),
+                Decimal(str(loan.interest_rate_apr)),
+                int(loan.term_months),
+            )
+            payments = loan_forecast_service.synthesize_account_loan_payment(
+                first_payment_date=loan.first_payment_date,
+                term_months=int(loan.term_months),
+                balance=Decimal(str(loan.balance)),
+                pmt=pmt,
+                p_start=p_start,
+                p_end=p_end,
+                already_paid=loan.id in loan_paid_ids,
+                account_id=loan.id,
+            )
+            for pay_date, applied in payments:
+                synth_delta_by_account[source.id] = synth_delta_by_account.get(source.id, Decimal("0")) - applied
+                synth_delta_by_account[loan.id] = synth_delta_by_account.get(loan.id, Decimal("0")) + applied
+                loan_payments_by_account.setdefault(loan.id, []).append(
+                    {"amount": _q(applied), "date": pay_date.isoformat()})
+
     accounts_payload: list[dict] = []
     totals_by_currency: dict[str, dict[str, Decimal]] = {}
 
@@ -207,6 +276,7 @@ async def compute_account_balance_forecast(
                 "pending_delta": _q(delta),
                 "expected_month_end_balance": _q(expected),
                 "cc_payments": cc_payments_by_account.get(account.id, []),
+                "loan_payments": loan_payments_by_account.get(account.id, []),
             }
         )
 
