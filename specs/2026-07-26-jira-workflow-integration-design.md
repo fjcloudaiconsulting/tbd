@@ -138,6 +138,39 @@ Neither addition conflicts with existing conventions:
 
 The Code and Development tabs surface pull requests linked **within the last 30 days**. A long-dormant issue will look bare in that tab even though its development history is intact on the issue itself. Do not read an empty Code tab as "no work happened."
 
+### Smart commits
+
+Smart commits let the commit message itself drive Jira. They cover the half of the lifecycle the **agent** controls, because the agent authors the commit message: no admin configuration is involved and the narrative travels with the code rather than sitting in a side channel.
+
+**Smart commits fire on commits only. They cannot see pull-request events.** By the time a PR is opened the commits are already pushed, so `PR opened → In Review`, `PR merged → Done` and `PR declined → To Do` are not expressible as smart commits and remain automation rules. The two mechanisms are complementary, not alternatives.
+
+**Prerequisite that fails silently.** The committer's email must resolve to **exactly one** Jira user. If it does not, the command is discarded, the commit still succeeds, and nothing appears in Jira. Atlassian only emails a failure notice when it can identify a recipient; otherwise the failure is silent.
+
+This project hit that exact mismatch on setup: commits were authored as `jorge.flamarion@gmail.com` while the Jira account is `flamarion@fjconsulting.io`. Fixed by setting a **repo-local** `user.email` in `~/src/tbd` (global config left alone). An Atlassian account cannot hold a second email address, so aligning git was the only workable direction.
+
+Consequence to watch: the address must also be verified on the GitHub account, or GitHub shows those commits as unattributed.
+
+**Placement: key in the subject, commands in the body.** Commands must not span lines, and Atlassian explicitly says not to put them in PR titles. Keeping commands out of the subject also keeps the conventional-commit subject clean, which matters because it is the release gate and would feed a generated CHANGELOG.
+
+```
+feat(reports): TBD-170 add utilization gauge
+
+TBD-170 #comment Spec specs/....md. Chose a gauge over a bar per design review; per-currency, never summed.
+```
+
+**Commands used here**
+
+| Command | Use |
+|---|---|
+| `#comment <text>` | The "why": spec path, decisions taken, review findings folded |
+| `#in-progress` | Optional, on the first commit of a branch. Redundant once the branch-created rule exists |
+
+`#time` is skipped: it needs an admin-enabled time-tracking setting and this project does not track time. `#resolve` is avoided because it cannot set the Resolution field; `#done` is the transition to use.
+
+**Transition-name rules.** Only the text before the first space is processed, so a multi-word transition needs hyphens to disambiguate (`#in-review`, `#in-progress`). A transition command targeting a status that does not exist fails silently, so `#in-review` will do nothing until the In Review status is added.
+
+**Squash-merge duplicate-comment hazard.** GitHub's squash commit body concatenates the original commit messages, so a `#comment` in an original commit can be reprocessed on the squash commit and post twice. Use `#comment` on one substantive commit per branch rather than on every commit.
+
 ## 5. Automation rules
 
 Transitions come from Jira automation, not from the agent. Automation does not forget, which is the actual fix for the drift problem.
@@ -164,6 +197,10 @@ Rule 5 deliberately does not transition. Red CI is an event during review, not a
 
 **Rule 3 and merge-to-main.** `main` requires one human approval and direct pushes are blocked, so rule 3 only ever fires on a genuine reviewed merge. It is safe as an unconditional transition to Done.
 
+### Smart-commit enablement
+
+Atlassian lists GitHub as a supported smart-commit source "after proper account linking and enabling Smart Commits." Whether the GitHub for Jira app exposes an explicit toggle (as the Bitbucket integration does) needs confirming in the app's configuration rather than assumed. Verify empirically: push a commit carrying `TBD-nnn #comment test` and check the issue. That is the only reliable check, because a disabled integration produces the same silence as a mismatched email.
+
 ### If "In Review" is not added
 
 Rules 1, 3, 4 and 5 still work. Rule 2 is simply skipped, and a PR-open shows as a development-panel entry on an In Progress issue. The system degrades cleanly rather than breaking, so adding the status can wait without blocking anything else.
@@ -172,11 +209,14 @@ Rules 1, 3, 4 and 5 still work. Rule 2 is simply skipped, and a PR-open shows as
 
 | Owner | Responsibility |
 |---|---|
-| **Automation rules** | All code-driven state: branch, PR open, merge, decline, build failure |
-| **Agent via MCP** | Knowledge-driven content: creating and refining issues, recording spec paths, capturing design decisions, noting which review findings were folded, explaining an item closed with no code, parking and unparking |
+| **Automation rules** | PR-driven state that commits cannot express: PR opened, merged, declined, build failure |
+| **Smart commits** | The narrative, agent-authored in the commit body: spec paths, decisions, review findings folded. Optionally `#in-progress` on a branch's first commit |
+| **Agent via MCP** | Issue creation and refinement, labels, links, parking and unparking, and closing an item that shipped no code |
 | **Operator in browser** | Project administration: statuses, automation rules, permissions, board configuration |
 
-The dividing line: **automation owns what happened, the agent owns why.** An agent should never make a transition that a rule already covers, because duplicate transitions produce confusing double entries in the history.
+The dividing line: **automation owns what happened, smart commits and the agent own why.** An agent should never make a transition that a rule already covers, because duplicate transitions produce confusing double entries in the history.
+
+Smart commits absorb most of what would otherwise be MCP comment calls, which is a real reduction in tool calls and keeps the explanation attached to the diff that caused it. MCP commenting remains for anything with no commit behind it, such as parking an item or recording a decision taken in conversation.
 
 The one exception is closing an item with no code. That happens in this project (twice in July 2026, when a live `/impeccable` triage found two polish items already resolved) and no code event exists to trigger it, so the agent transitions to Done and comments the reason.
 
@@ -234,5 +274,7 @@ New items created mid-session get their Jira issue immediately. It is a single c
 **Automation rules are invisible to the agent.** No MCP tool can read or verify them. If a rule is disabled or misconfigured, the agent cannot tell, and will only notice as a status mismatch during reconcile. This is inherent to the capability boundary, and is the reason Phase 1C reports drift rather than fixing it.
 
 **Issue keys in commit messages are a new habit.** A missed key means no build linkage for that PR. Not fatal, and self-correcting once noticed, but expect misses early.
+
+**Smart commits fail silently by design.** A wrong committer email, a non-existent transition name, or a transition blocked by a required field all discard the command while the commit succeeds. Nothing in the git history indicates the command did not land. Treat a missing Jira comment as a signal to check the committer email first, since that is the failure mode with no error surface at all.
 
 **Effort labels inherit the roadmap's optimism.** The roadmap's own Group H notes an item tagged S that turned out to need a hook redesign. Treat `effort-*` as the original estimate, not a verified one.
