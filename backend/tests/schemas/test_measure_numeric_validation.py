@@ -16,5 +16,9 @@ def test_sum_id_still_rejected_at_pydantic():
         Measure(agg=Aggregation.SUM, field=MeasureField.ID)
 
 
-def test_numeric_set_is_amount_and_balance():
-    assert NUMERIC_MEASURE_FIELDS == {MeasureField.AMOUNT, MeasureField.BALANCE}
+def test_numeric_set_is_amount_balance_networth():
+    # net_worth is a numeric measure field (nominal — NetWorthSource's
+    # build_rows computes the reconstruction) so sum(net_worth) validates.
+    assert NUMERIC_MEASURE_FIELDS == {
+        MeasureField.AMOUNT, MeasureField.BALANCE, MeasureField.NET_WORTH,
+    }
