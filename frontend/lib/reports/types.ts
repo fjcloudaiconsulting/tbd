@@ -25,7 +25,7 @@ export type WidgetType =
 // values to the editor's ``addWidget`` factory.
 export type WidgetTypeV1 = WidgetType;
 
-export type Dataset = "transactions" | "accounts" | "recurring";
+export type Dataset = "transactions" | "accounts" | "recurring" | "networth";
 
 export type Aggregation = "sum" | "count" | "avg" | "distinct";
 
@@ -34,7 +34,8 @@ export type MeasureField =
   | "id"
   | "category_id"
   | "account_id"
-  | "balance";
+  | "balance"
+  | "net_worth";
 
 export type Dimension =
   | "category"
@@ -117,6 +118,8 @@ export interface QueryMeta {
   row_count: number;
   truncated: boolean;
   query_ms: number;
+  /** Non-blocking source notice (e.g. NetWorth multi-currency warning). */
+  warning?: string;
 }
 
 export type QueryRow = Record<string, string | number | null>;

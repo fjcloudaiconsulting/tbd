@@ -57,7 +57,7 @@ MAX_TOP_N = 100  # Upper bound for SankeyQuery.top_n (frontend clamps min=2).
 
 # Fields a SUM / AVG may target. Source-agnostic numeric sanity gate — the
 # per-source validate() still rejects a field the source does not publish.
-NUMERIC_MEASURE_FIELDS = {MeasureField.AMOUNT, MeasureField.BALANCE}
+NUMERIC_MEASURE_FIELDS = {MeasureField.AMOUNT, MeasureField.BALANCE, MeasureField.NET_WORTH}
 
 
 class FilterField(str, enum.Enum):
@@ -280,6 +280,11 @@ class QueryMeta(BaseModel):
     row_count: int
     truncated: bool
     query_ms: int
+    # Optional non-blocking notice a source can surface to the client
+    # (e.g. NetWorthSource's multi-currency "showing per-currency" warning).
+    # Without this field QueryMeta's default extra="ignore" would silently
+    # drop a warning key returned in the source's meta dict.
+    warning: Optional[str] = None
 
 
 class QueryRow(BaseModel):

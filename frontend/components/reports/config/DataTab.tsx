@@ -41,6 +41,7 @@ const DATASET_FALLBACK_LABELS: Record<Dataset, string> = {
   transactions: "Transactions",
   accounts: "Accounts",
   recurring: "Recurring",
+  networth: "Net worth",
 };
 
 /**

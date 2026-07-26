@@ -66,6 +66,7 @@ export const MEASURE_FIELD_LABELS: Record<MeasureField, string> = {
   category_id: "Category",
   account_id: "Account",
   balance: "Balance",
+  net_worth: "Net worth",
 };
 
 /** Display label for a measure field, falling back to the raw key. */
