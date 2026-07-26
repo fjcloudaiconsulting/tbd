@@ -20,7 +20,7 @@ Sibling docs you will end up at:
 
 ```bash
 # 1. Clone and configure
-git clone https://github.com/flamarion/pfv.git && cd pfv
+git clone https://github.com/fjcloudaiconsulting/tbd.git && cd tbd
 cp .env.example .env
 
 # 2. Generate a real JWT secret. The backend refuses to boot on the placeholder.
