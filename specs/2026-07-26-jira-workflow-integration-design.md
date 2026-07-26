@@ -169,7 +169,13 @@ TBD-170 #comment Spec specs/....md. Chose a gauge over a bar per design review; 
 
 **Transition-name rules.** Only the text before the first space is processed, so a multi-word transition needs hyphens to disambiguate (`#in-review`, `#in-progress`). A transition command targeting a status that does not exist fails silently, so `#in-review` will do nothing until the In Review status is added.
 
-**Squash-merge duplicate-comment hazard.** GitHub's squash commit body concatenates the original commit messages, so a `#comment` in an original commit can be reprocessed on the squash commit and post twice. Use `#comment` on one substantive commit per branch rather than on every commit.
+**Squash-merge duplicate comments: a hazard on paper, not in practice here.** GitHub's squash commit body concatenates the original commit messages, so in principle a `#comment` from a branch commit could be reprocessed on the squash commit and post twice.
+
+**Measured on the first real merge (PR 583): it does not happen.** The squash body was left fully intact, containing three `#comment` commands, and TBD-166 ended with exactly four comments, one from MCP and three from the branch commits. No repeats.
+
+The reason is the email rule again. GitHub authors a squash commit as `<id>+<user>@users.noreply.github.com`, with committer `GitHub <noreply@github.com>`. Neither resolves to a Jira user, so every smart-commit command in a squash body is discarded. The same requirement that silently broke the first smart commit here also suppresses squash duplication.
+
+Treat this as **incidental protection, not a guarantee**: it depends on a GitHub default that is not ours to control, and an account configured to expose its real commit email would bring the duplicates back. There is no need to clear the squash body as a routine step. Build and dev-panel linkage is unaffected regardless, since those match on the issue key rather than the author.
 
 ### The `#` collision, verified the hard way
 
@@ -192,9 +198,9 @@ TBD-170 #comment Gauge over bar per design review. Follows PR 581; per-currency,
 
 Note that this constraint applies only to commit bodies that carry a smart-commit command. Commits without one are unaffected, and `#nnn` in a PR *description* is never parsed.
 
-**A consequence at merge time.** This repo squash-merges, and GitHub's squash subject is `<PR title> (#NNN)`. Since the PR title carries the issue key, the resulting subject reads `... (TBD-166) (#583)` and that `#583` is parsed as a transition command named `583`. No such transition exists, so it fails harmlessly, but it means **every squash merge attempts one bogus command.** Nothing to fix; worth not being alarmed by.
+**A consequence at merge time.** This repo squash-merges, and GitHub's squash subject is `<PR title> (#NNN)`. Since the PR title carries the issue key, the resulting subject reads `... (TBD-166) (#583)` and that `#583` would be parsed as a transition command named `583`.
 
-More actionable: the squash *body* concatenates the branch's commit messages, so any `#comment` in them is reprocessed and posts again. **Clear the squash body in the merge dialog** when merging a branch whose commits carried smart commits.
+In practice nothing happens at all, for two independent reasons: no such transition exists, and the squash commit's author email does not resolve to a Jira user anyway. Nothing to fix; worth not being alarmed by. See the squash-merge note above for the measured behaviour.
 
 ## 5. Automation rules
 
