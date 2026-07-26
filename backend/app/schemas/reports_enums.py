@@ -15,6 +15,7 @@ class Dataset(str, enum.Enum):
     TRANSACTIONS = "transactions"
     ACCOUNTS = "accounts"
     RECURRING = "recurring"
+    NETWORTH = "networth"
 
 
 class Aggregation(str, enum.Enum):
@@ -33,6 +34,11 @@ class MeasureField(str, enum.Enum):
     ID = "id"
     CATEGORY_ID = "category_id"
     ACCOUNT_ID = "account_id"
+    # NetWorthSource (Phase 6). A NOMINAL field: the networth source's
+    # build_rows computes the cumulative reconstruction and ignores the
+    # generic agg/field machinery. Distinct from BALANCE so the frontend
+    # measure picker / axis / CSV label it "Net worth", not "Balance".
+    NET_WORTH = "net_worth"
 
 
 class RelativeDateToken(str, enum.Enum):
