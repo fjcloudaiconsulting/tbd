@@ -192,6 +192,10 @@ TBD-170 #comment Gauge over bar per design review. Follows PR 581; per-currency,
 
 Note that this constraint applies only to commit bodies that carry a smart-commit command. Commits without one are unaffected, and `#nnn` in a PR *description* is never parsed.
 
+**A consequence at merge time.** This repo squash-merges, and GitHub's squash subject is `<PR title> (#NNN)`. Since the PR title carries the issue key, the resulting subject reads `... (TBD-166) (#583)` and that `#583` is parsed as a transition command named `583`. No such transition exists, so it fails harmlessly, but it means **every squash merge attempts one bogus command.** Nothing to fix; worth not being alarmed by.
+
+More actionable: the squash *body* concatenates the branch's commit messages, so any `#comment` in them is reprocessed and posts again. **Clear the squash body in the merge dialog** when merging a branch whose commits carried smart commits.
+
 ## 5. Automation rules
 
 Transitions come from Jira automation, not from the agent. Automation does not forget, which is the actual fix for the drift problem.
