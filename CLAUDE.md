@@ -138,6 +138,11 @@ frontend/
 - **nginx is the single entry point in dev** — backend and frontend only expose ports internally. `/api/*` routes to FastAPI, everything else to Next.js. FastAPI's Swagger UI is served at `/api/docs` (with `/api/openapi.json`) so `/docs` is free for the public in-app user manual served by Next.js. In production (DO App Platform) ingress takes nginx's role.
 - **Production data plane is self-hosted** — MySQL 8 and Redis run on a single dedicated DO droplet (`pfv-data-01`) in a private VPC; App Platform reaches them over the VPC's private IPv4. Runbook lives in `infra/MIGRATION.md`. Terraform is VCS-driven via TFC (workspace `FlamaCorp/pfv`), with manual Confirm & Apply on merge.
 - **Sensitive admin / org actions are audited** — org rename, org-data wipe, override sweep, role edits, etc. write to `audit_events` and surface in `/admin/audit`.
+- **Squash-merge only** — merge commits and rebase merging are disabled on the repo. The squash subject is the **PR title** and the squash body is the **PR description**. This is why the PR title is the release gate: it is the string semantic-release parses.
+- **Jira-linked branches and commits** — the backlog is mirrored in Jira project `TBD` (`https://fjconsulting.atlassian.net/browse/TBD`). Put the issue key in the **branch name** (`TBD-179-sso-timeout`), in **commit messages**, and in the **PR title** (`fix(auth): … (TBD-179)`). Commit messages are what make GitHub Actions runs link as Jira "builds"; the branch name alone gets branches and PRs but no CI status.
+  - **Smart commits** carry the narrative: `TBD-179 #comment <text>` in the commit **body** — never the subject, never the PR title (commands cannot span lines, and the subject is the release gate).
+  - **Gotcha:** any `#word` token terminates the preceding `#comment` and is itself executed as a command. Put `#comment` **last** and keep its text free of `#` — write `PR 583`, not `#583`.
+  - Smart commits resolve the committer by email and **fail silently** otherwise. This repo therefore sets a **repo-local** `user.email` matching the Jira account; don't revert it.
 
 ## Design Context
 
