@@ -1,0 +1,238 @@
+# Jira Workflow Integration Design
+
+**Date:** 2026-07-26
+**Jira:** TBD-166
+**Status:** approved, first pass in progress
+**Scope:** Stand up Jira project TBD as the shared visibility layer over the roadmap backlog, and wire GitHub so issue state follows code activity without manual bookkeeping.
+
+---
+
+## 1. Why
+
+The backlog has lived in two places: `project_roadmap.md` (agent memory, prose + decisions) and `~/src/tbd/specs/` (design docs). Neither is visible to anyone but the operator and the agent holding that memory in context, and the roadmap demonstrably drifts. The 2026-07-16 reconciliation sweep found three "todo" items that had already shipped.
+
+Jira adds three things the current setup cannot provide:
+
+1. **External visibility** into what is queued, in flight, and blocked.
+2. **Automatic state** driven by real code events rather than an agent remembering to update a memory file.
+3. **A pickup surface** for future autonomous agents, which can query "what is ready to build" instead of parsing prose.
+
+It also adds a second write target, which is a real cost. Section 8 addresses how that cost is contained.
+
+## 2. Environment as found
+
+Verified 2026-07-26 against the live site, not assumed:
+
+| Property | Value |
+|---|---|
+| Site | `fjconsulting.atlassian.net`, cloudId `77d2c7b6-82b2-45bc-96e5-a61403474bae` |
+| Project | `TBD` / "The Better Decision", id `10003` |
+| Project type | `software`, **company-managed** (`simplified: false`, style `classic`) |
+| Issue types | Epic (10000), Story (10012), Task (10013), Sub-task (10014), Bug (10015) |
+| Statuses | **To Do** (10008), **In Progress** (3), **Done** (10009) |
+| Transitions | 11 to To Do, 21 to In Progress, 31 to Done. All `isGlobal: true`, so any-to-any is permitted |
+| Issue numbering | Starts at TBD-153. Earlier keys were consumed by deleted content |
+| Story Points | **Absent from the create screen.** Effort cannot be a numeric field |
+| Components | None defined, and the MCP connection cannot create them |
+| Fix versions | None defined |
+
+**MCP capability boundary.** The Atlassian connection carries `read:jira-work` and `write:jira-work`. That covers issue CRUD, comments, transitions, and issue links. It does **not** cover workflows, statuses, custom fields, components, versions, boards, permission schemes, or automation rules. Everything in that second list is an operator action in a browser. This boundary is the single most important constraint on the design: anything requiring project administration must be specified precisely enough for a human to apply it, because no agent can.
+
+## 3. Project shape
+
+### Epics are roadmap groups
+
+One Epic per roadmap group **that has open work**. Group A (Reports v3 sources) is complete as of #581 and gets no Epic; it reappears only if new report work lands.
+
+| Epic | Group |
+|---|---|
+| TBD-153 | B: Dashboard and customization surfaces |
+| TBD-154 | C: Credit card and financial primitives |
+| TBD-155 | D: AI agentic layer (north-star, parked) |
+| TBD-156 | E: Auth and security residuals |
+| TBD-157 | F: Payments and monetization (parked by policy) |
+| TBD-158 | G: Admin and platform |
+| TBD-159 | H: Frontend tech debt and SWR |
+| TBD-160 | I: Onboarding, help and UX polish |
+| TBD-161 | J: Infra and release engineering |
+| TBD-162 | K: Testing |
+| TBD-163 | L: Operator and browser-only |
+| TBD-164 | M: Post-launch program (large, future) |
+| TBD-165 | N: Singletons |
+
+Group N exists because the roadmap has a genuine "ungroupable singleton" section. It is deliberately tiny. If it grows past a handful of issues, that is a signal the grouping needs revisiting, not that this Epic needs expanding.
+
+### Children are individual backlog items
+
+Each open roadmap item becomes one issue, typed by nature of the work:
+
+- **Story** for user-visible capability
+- **Task** for chores, infra, tooling, operator actions
+- **Bug** for defects, including latent ones that only bite at scale
+
+Sub-tasks are **not** created up front. They are for build slices, minted at spec time when the decomposition is actually known. Pre-inventing slices without a spec produces guesses that then have to be deleted.
+
+### Labels carry what has no field
+
+Since there is no Story Points field and no components, labels do the structural work.
+
+| Family | Values | Purpose |
+|---|---|---|
+| effort | `effort-xs` `effort-s` `effort-m` `effort-l` `effort-xl` | Mirrors the roadmap legend: XS <1h, S 1-4h, M 0.5-1 day, L 1-3 days, XL 1 week+ |
+| readiness | `needs-design` `needs-spec` `has-spec` `ready` | The agent-pickup gate. See section 6 |
+| state | `state-gated` `state-parked` `state-deferred` `state-trigger-gated` `needs-decision` | Why something is not simply "next" |
+| area | `area-backend` `area-frontend` `area-infra` `area-security` `area-ai` `area-reports` `area-dashboard` `area-admin` `area-payments` `area-seo` `area-testing` | Substitutes for components |
+| routing | `operator-only` | No agent code comes from this issue, ever |
+| group | `group-a` through `group-n` | Redundant with the Epic on purpose. Survives regrouping and lets JQL filter without an Epic join |
+
+### Priority reflects the real queue
+
+**High** for genuinely next-up work. **Medium** as the default. **Low** for parked and deferred clusters (D, F, M, the deferred CC slices). **Lowest** for XS nice-to-haves. **Highest** is reserved for production incidents and is currently unused, which is accurate: nothing is on fire.
+
+### Issue body template
+
+Every issue carries the same shape so a reader, human or agent, needs no other context:
+
+```
+{what and why, carried over from the roadmap prose}
+
+**Effort:** M
+**Roadmap group:** C - Credit card and financial primitives
+**Spec:** specs/2026-05-28-cc-billing-cycle.md   |   none yet - design-first
+**State:** open | gated | parked | deferred
+
+**Definition of done**
+- ...
+
+**Notes / decisions in force**
+- ...
+
+**Local source:** memory/project_roadmap.md -> GROUP C
+```
+
+The `Notes / decisions in force` section is load-bearing. It is where architect locks travel with the work, so a future agent cannot innocently undo one. Example: the #38 bar-chart secondary-dimension restriction is deliberately reversed and must not be re-applied.
+
+## 4. GitHub linkage
+
+### How Jira learns about code
+
+The **GitHub for Jira app is display-only.** It renders branches, commits, pull requests and builds in the development panel. It does not transition anything. That is worth stating plainly because it is the most common misconception about the integration, and designing around the assumption that the app transitions issues produces a workflow that silently never moves.
+
+Linkage happens when the issue key appears in specific places. Per Atlassian's documentation, the key must be in:
+
+| Location | Format | What it links |
+|---|---|---|
+| Branch name | `TBD-166-jira-workflow-integration` | The branch, and the PR raised from it |
+| Commit messages | `feat(infra): TBD-166 add jira integration spec` | The commits, **and GitHub Actions runs as Jira "builds"** |
+| PR title | `feat(infra): jira workflow integration (TBD-166)` | The PR |
+| GitHub comments | `[TBD-166]` in brackets | An ad-hoc reference |
+
+**Commit messages are not optional.** GitHub Actions workflows surface in Jira as builds only when the key appears in the commit messages behind the PR. Branch name alone gets branches and PRs but no CI status. Since "CI green" is an explicit gate in this project's build loop, the key belongs in commit messages.
+
+Neither addition conflicts with existing conventions:
+
+- The PR title release gate parses the leading `type(scope):` prefix. A trailing ` (TBD-166)` is inert to it.
+- The local `commit-msg` hook strips AI attribution only. It does not touch issue keys.
+
+### Retention caveat
+
+The Code and Development tabs surface pull requests linked **within the last 30 days**. A long-dormant issue will look bare in that tab even though its development history is intact on the issue itself. Do not read an empty Code tab as "no work happened."
+
+## 5. Automation rules
+
+Transitions come from Jira automation, not from the agent. Automation does not forget, which is the actual fix for the drift problem.
+
+**All rules are single-project, scoped to TBD.** This matters commercially: single-project rules do not draw on the monthly automation execution quota, only global and multi-project rules do. So rule volume here is free regardless of plan tier.
+
+### Prerequisite: add an "In Review" status
+
+The workflow currently has only To Do, In Progress and Done. The PR gate has nowhere to land. Before rule 2 can exist, add **In Review** (category "In Progress" / yellow) to the workflow used by project TBD.
+
+*Project settings > Workflows > edit the active workflow > add status > publish.* Because existing transitions are global, the new status is reachable from anywhere without hand-wiring transitions.
+
+### The rules
+
+| # | Trigger | Condition | Action | Purpose |
+|---|---|---|---|---|
+| 1 | Branch created | branch name contains the issue key (implicit in the trigger) | Transition to **In Progress** | Work started, visible the moment a branch exists |
+| 2 | Pull request created | none | Transition to **In Review** | The review gate becomes visible |
+| 3 | Pull request merged | none | Transition to **Done** | Ship state, driven by the merge itself |
+| 4 | Pull request declined | none | Transition to **To Do** | A closed-unmerged PR returns work to the queue rather than stranding it In Review |
+| 5 | Build failed | none | Add comment: CI failed, with the build link. **No transition** | Surfaces red CI on the issue without yanking status out from under an active review |
+
+Rule 5 deliberately does not transition. Red CI is an event during review, not a state change; transitioning on it would thrash status on every flaky run.
+
+**Rule 3 and merge-to-main.** `main` requires one human approval and direct pushes are blocked, so rule 3 only ever fires on a genuine reviewed merge. It is safe as an unconditional transition to Done.
+
+### If "In Review" is not added
+
+Rules 1, 3, 4 and 5 still work. Rule 2 is simply skipped, and a PR-open shows as a development-panel entry on an In Progress issue. The system degrades cleanly rather than breaking, so adding the status can wait without blocking anything else.
+
+## 6. Division of labour
+
+| Owner | Responsibility |
+|---|---|
+| **Automation rules** | All code-driven state: branch, PR open, merge, decline, build failure |
+| **Agent via MCP** | Knowledge-driven content: creating and refining issues, recording spec paths, capturing design decisions, noting which review findings were folded, explaining an item closed with no code, parking and unparking |
+| **Operator in browser** | Project administration: statuses, automation rules, permissions, board configuration |
+
+The dividing line: **automation owns what happened, the agent owns why.** An agent should never make a transition that a rule already covers, because duplicate transitions produce confusing double entries in the history.
+
+The one exception is closing an item with no code. That happens in this project (twice in July 2026, when a live `/impeccable` triage found two polish items already resolved) and no code event exists to trigger it, so the agent transitions to Done and comments the reason.
+
+### The pickup gate
+
+For the eventual autonomous agents, "is this ready to work?" resolves to:
+
+```
+project = TBD AND labels = ready AND labels != operator-only
+  AND status = "To Do" AND labels not in (state-parked, state-gated, needs-decision)
+```
+
+An issue reaches `ready` only when a spec path sits in its description. The progression is `needs-design` to `needs-spec` to `has-spec` to `ready`. Nothing is agent-pickable on prose alone, which preserves the existing spec-first discipline rather than routing around it.
+
+## 7. Dependency links
+
+Links encode constraints that labels cannot:
+
+- **Group C chain** is dependency-ordered. Its remaining items link in build order.
+- **Group F cluster** all carry "is blocked by" against the Paddle payment-integration issue, because a single business decision unlocks the whole cluster. Modelling it as six independent parked items loses that fact.
+- **PAT follow-ups** "relates to" the Group D authenticated-MCP item, since PATs are the auth substrate that item will build on.
+- **CC utilization (F1)** "relates to" the Reports and Dashboard Epics, because it needs a surface in both.
+
+## 8. Dual maintenance
+
+**The roadmap stays primary.** It keeps the prose, the architect locks, and the decision history. Jira carries status, links and the PR trail. This split is deliberate: the roadmap is read into agent context every session and is cheap to grep, while Jira is the surface humans and automation see.
+
+**Keys are inlined.** Each open roadmap bullet gains an inline `[TBD-nn]`, so the two sides never require fuzzy title matching to reconcile.
+
+**Reconciliation is a phase in `end-session`,** not a separate ritual. Phase 1C:
+
+1. For items touched this session, verify the Jira status matches reality. Automation should have handled it; a mismatch is a signal a rule misfired and needs reporting, not silent correction.
+2. Mint issues for roadmap items created mid-session.
+3. Backfill `[TBD-nn]` keys into the roadmap for anything newly minted.
+4. Report drift rather than papering over it, so rule bugs surface instead of being masked by an agent cleaning up after them.
+
+Step 4 matters. If the agent silently fixes what automation should have done, the automation stays broken forever.
+
+New items created mid-session get their Jira issue immediately. It is a single call and defers nothing.
+
+## 9. Out of scope
+
+**Deployment tracking.** Deployments would appear in Jira only by adding `chrnorm/deployment-action` and a `.jira/config.yml` environment mapping to the GitHub Actions workflow. This project deploys through DO App Platform, so that means changing the deploy pipeline, with its own failure modes, for reporting value. Filed as its own Group J issue instead of bundled here.
+
+**Components.** Labels cover the same ground. Components are worth defining only for per-area lead assignment, which does not apply to a single-operator project.
+
+**Shipped history.** 230+ merged PRs stay in `git log main`. Recreating them as Done issues would duplicate git and bury the actionable backlog.
+
+**Sprints and estimation.** A Sprint field exists but no board process needs it yet. Adding ceremony before it earns its keep is exactly the failure this project's pace guidance warns about.
+
+## 10. Risks
+
+**A second write target can drift.** Mitigated by making automation own the state that changes most often, and by making reconciliation report rather than silently repair.
+
+**Automation rules are invisible to the agent.** No MCP tool can read or verify them. If a rule is disabled or misconfigured, the agent cannot tell, and will only notice as a status mismatch during reconcile. This is inherent to the capability boundary, and is the reason Phase 1C reports drift rather than fixing it.
+
+**Issue keys in commit messages are a new habit.** A missed key means no build linkage for that PR. Not fatal, and self-correcting once noticed, but expect misses early.
+
+**Effort labels inherit the roadmap's optimism.** The roadmap's own Group H notes an item tagged S that turned out to need a hook redesign. Treat `effort-*` as the original estimate, not a verified one.
