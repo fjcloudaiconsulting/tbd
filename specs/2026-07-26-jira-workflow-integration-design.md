@@ -171,6 +171,27 @@ TBD-170 #comment Spec specs/....md. Chose a gauge over a bar per design review; 
 
 **Squash-merge duplicate-comment hazard.** GitHub's squash commit body concatenates the original commit messages, so a `#comment` in an original commit can be reprocessed on the squash commit and post twice. Use `#comment` on one substantive commit per branch rather than on every commit.
 
+### The `#` collision, verified the hard way
+
+**Any `#word` token terminates the preceding `#comment` and is itself parsed as a command.** This was confirmed empirically on the first live smart commit in this repo: the comment text contained the literal `#in-progress` while describing it, and Jira posted a comment truncated at exactly that point, then executed `#in-progress` as a transition.
+
+This is not an edge case here. **This project references pull requests as `#nnn` constantly: 38 of the last 40 commit bodies contain such a token.** Left unaddressed, a routine commit body mentioning `#583` would silently truncate its Jira comment at that word and attempt a transition named `583`.
+
+Two rules follow, and they are not optional:
+
+1. **`#comment` goes LAST** in the message. Anything after it is consumed as its argument, so nothing else can be terminated by accident.
+2. **The comment text contains no `#` at all.** Write pull-request references as `PR 583`, `pull/583`, or `GH-583`. Never `#583`.
+
+The safe shape:
+
+```
+feat(reports): TBD-170 add utilization gauge
+
+TBD-170 #comment Gauge over bar per design review. Follows PR 581; per-currency, never summed.
+```
+
+Note that this constraint applies only to commit bodies that carry a smart-commit command. Commits without one are unaffected, and `#nnn` in a PR *description* is never parsed.
+
 ## 5. Automation rules
 
 Transitions come from Jira automation, not from the agent. Automation does not forget, which is the actual fix for the drift problem.
