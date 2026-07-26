@@ -205,6 +205,7 @@ class NetWorthSource:
         eff = effective_period_date_expr()
         base_where = [
             Transaction.org_id == org_id,
+            Account.org_id == org_id,  # defense-in-depth alongside the tx org gate
             Transaction.status == TransactionStatus.SETTLED,
             balance_contribution_filter(),
         ]
@@ -273,11 +274,18 @@ class NetWorthSource:
             for r in rows:
                 r.pop("currency", None)
 
-        rows = rows[:min(query.limit, MAX_LIMIT)]
+        # Truncate to the limit. A time series is sorted period-ASCENDING, so
+        # keep the most-recent TAIL (the "today" end users want on a net-worth
+        # chart), not the oldest head. The no-dimension / by-currency path is
+        # value-desc, so its head is the right keep. truncated reflects whether
+        # anything was actually dropped (measured pre-slice).
+        limit = min(query.limit, MAX_LIMIT)
+        total = len(rows)
+        rows = rows[-limit:] if time_dim is not None else rows[:limit]
 
         meta: dict = {
             "row_count": len(rows),
-            "truncated": len(rows) >= query.limit,
+            "truncated": total > limit,
             "query_ms": int((time.perf_counter() - started) * 1000),
         }
         if not currency_requested and multi_currency:

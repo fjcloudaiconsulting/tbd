@@ -119,7 +119,7 @@ async def test_month_series_reconstruction(db_session):
     rows, meta = await SRC.build_rows(db_session, org.id, _q([Dimension.MONTH]))
     series = {r["month"]: r["value"] for r in rows}
     assert series == {"2026-01": 1000.0, "2026-02": 1500.0, "2026-03": 1300.0}
-    assert meta["warning"] is None if "warning" in meta else True
+    assert meta.get("warning") is None
 
 
 @pytest.mark.asyncio
@@ -341,3 +341,73 @@ async def test_org_isolation(db_session):
     await _acct(db_session, org2, at2, "B", 9999, date(2026, 1, 1))
     rows, _ = await SRC.build_rows(db_session, org1.id, _q([Dimension.MONTH]))
     assert all(r["value"] == 1000.0 for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_foreign_account_id_returns_empty(db_session):
+    """Adversarial: an org1 caller smuggling org2's account_id sees nothing —
+    the org gate on BOTH streams (not the account filter) prevents the leak."""
+    org1, at1 = await _org(db_session, "One")
+    org2, at2 = await _org(db_session, "Two")
+    other = await _acct(db_session, org2, at2, "Foreign", 5000, date(2026, 1, 1))
+    q = _q([Dimension.MONTH], [Filter(field=FilterField.ACCOUNT_ID, op=FilterOp.IN, value=[other.id])])
+    rows, _ = await SRC.build_rows(db_session, org1.id, q)
+    assert rows == []
+
+
+# ─── granularity + gap + edge coverage ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_day_granularity(db_session):
+    org, at = await _org(db_session)
+    a = await _acct(db_session, org, at, "A", 1000, date(2026, 1, 5))
+    await _tx(db_session, org, a, 500, TransactionType.INCOME, date(2026, 1, 10))
+    rows, _ = await SRC.build_rows(db_session, org.id, _q([Dimension.DAY]))
+    series = {r["day"]: r["value"] for r in rows}
+    assert series == {"2026-01-05": 1000.0, "2026-01-10": 1500.0}
+
+
+@pytest.mark.asyncio
+async def test_week_granularity(db_session):
+    org, at = await _org(db_session)
+    a = await _acct(db_session, org, at, "A", 1000, date(2026, 1, 5))
+    await _tx(db_session, org, a, 500, TransactionType.INCOME, date(2026, 3, 10))
+    rows, _ = await SRC.build_rows(db_session, org.id, _q([Dimension.WEEK]))
+    # two distinct weeks, chronological, cumulative
+    assert [r["value"] for r in rows] == [1000.0, 1500.0]
+    assert all("week" in r for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_gap_carry_forward(db_session):
+    org, at = await _org(db_session)
+    a = await _acct(db_session, org, at, "A", 1000, date(2026, 1, 1))
+    await _tx(db_session, org, a, 500, TransactionType.INCOME, date(2026, 2, 1))
+    # March has no activity → no point emitted (sparse); April carries Feb total
+    await _tx(db_session, org, a, 300, TransactionType.EXPENSE, date(2026, 4, 1))
+    rows, _ = await SRC.build_rows(db_session, org.id, _q([Dimension.MONTH]))
+    series = {r["month"]: r["value"] for r in rows}
+    assert series == {"2026-01": 1000.0, "2026-02": 1500.0, "2026-04": 1200.0}
+    assert "2026-03" not in series
+
+
+@pytest.mark.asyncio
+async def test_multi_currency_kpi_truncates_and_warns(db_session):
+    org, at = await _org(db_session)
+    await _acct(db_session, org, at, "E", 1000, date(2026, 1, 1), currency="EUR")
+    await _acct(db_session, org, at, "U", 2000, date(2026, 1, 1), currency="USD")
+    rows, meta = await SRC.build_rows(db_session, org.id, _q([], limit=1))
+    assert len(rows) == 1  # limit:1 keeps one currency (never a summed 3000)
+    assert rows[0]["value"] in (1000.0, 2000.0)
+    assert meta.get("warning")
+    assert meta["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_zero_accounts_empty(db_session):
+    org, _at = await _org(db_session)
+    rows, meta = await SRC.build_rows(db_session, org.id, _q([Dimension.MONTH]))
+    assert rows == []
+    assert meta["row_count"] == 0
+    assert meta["truncated"] is False
