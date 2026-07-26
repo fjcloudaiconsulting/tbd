@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-The Better Decision is a personal finance management application. FastAPI backend, Next.js + TypeScript frontend, MySQL database. Designed as a 12-factor app targeting Kubernetes for production.
+The Better Decision is a personal finance management application. FastAPI backend, Next.js + TypeScript frontend, MySQL database. Built as a 12-factor app (Kubernetes-ready); currently deployed on DigitalOcean App Platform with a self-hosted MySQL + Redis data droplet (see the Production data plane note below).
 
 ## Stack
 

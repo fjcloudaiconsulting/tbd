@@ -6,15 +6,18 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 
 ## Features
 
-- **Dashboard** with spending breakdown, budget progress, and forecast comparison charts
+- **Customizable dashboard**, drag-and-drop widgets: spending breakdown, budget progress, forecast comparison, balances by type, credit-card utilization, loan payoff
 - **Transactions** with income, expenses, and linked account-to-account transfers
+- **Multi-account**, checking, savings, investment, credit cards (limits, utilization, billing cycles, statement alerts), and loans (payoff tracking), each with balance tracking
 - **Hierarchical categories**, master categories for budgets, subcategories for tagging
 - **Budgets** per category per billing period, with inter-budget transfers
 - **Forecast plans**, editable income / expense plans with actual vs planned tracking
 - **Recurring transactions**, templates that auto-generate future transactions
-- **CSV import**, upload bank exports, preview with duplicate detection, map categories
+- **Reports**, a custom report builder over transactions, accounts, recurring, and net-worth-over-time, with charts, Sankey flows, and CSV export
+- **Bank import**, upload CSV / OFX exports, preview with duplicate detection, map categories
+- **Notifications**, in-app and email alerts (billing periods, credit-card statement close, and more)
+- **AI assistance** (bring-your-own provider), transaction categorization, forecast refinement, budget rebalancing
 - **Billing periods**, org-level month close dates with configurable cycle day
-- **Multi-account**, checking, savings, credit cards, each with balance tracking
 - **Authentication**, email / password, Google SSO, TOTP MFA with recovery codes and email fallback
 - **Org-scoped**, all data isolated per organization, multi-user ready
 - **Responsive**, works on desktop and narrow viewports (tablet, half-screen)
@@ -35,7 +38,7 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 ## Quick Start
 
 ```bash
-git clone https://github.com/flamarion/pfv.git && cd pfv
+git clone https://github.com/fjcloudaiconsulting/tbd.git && cd tbd
 cp .env.example .env
 ./pfv start
 ```
