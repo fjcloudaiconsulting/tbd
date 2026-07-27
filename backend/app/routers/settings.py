@@ -233,6 +233,44 @@ async def update_billing_cycle(
     new_start = old_start
     reanchored = 0
 
+    async def _audit(outcome: str, **extra) -> None:
+        """Structlog breadcrumb + audit row for this endpoint.
+
+        ``record_audit_event`` swallows every exception by design
+        (audit_service.py) and names "the structlog event the caller already
+        emitted" as its fallback record, so the log line has to be emitted
+        first — otherwise a transient audit-session failure leaves no trace
+        at all that a period boundary and its budgets moved.
+        """
+        payload = {
+            "old_day": old_day,
+            "new_day": new_day,
+            "period_id": period_id,
+            "old_start": old_start.isoformat(),
+            "new_start": new_start.isoformat(),
+            **extra,
+        }
+        await logger.ainfo(
+            "org.billing_cycle_day.updated",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=actor_org_id,
+            outcome=outcome,
+            **payload,
+        )
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="org.billing_cycle_day.updated",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=actor_org_id,
+            target_org_name=org_name,
+            request_id=req_id,
+            ip_address=ip,
+            outcome=outcome,
+            detail=payload,
+        )
+
     if current_period.end_date is None:
         today = datetime.date.today()
         y, m, d = today.year, today.month, today.day
@@ -254,31 +292,39 @@ async def update_billing_cycle(
             )
             if clash is not None:
                 await db.rollback()
-                await audit_service.record_audit_event(
-                    session_factory,
-                    event_type="org.billing_cycle_day.updated",
-                    actor_user_id=actor_user_id,
-                    actor_email=actor_email,
-                    target_org_id=actor_org_id,
-                    target_org_name=org_name,
-                    request_id=req_id,
-                    ip_address=ip,
-                    outcome="failure",
-                    detail={
-                        "old_day": old_day,
-                        "new_day": new_day,
-                        "period_id": period_id,
-                        "old_start": old_start.isoformat(),
-                        "new_start": new_start.isoformat(),
-                        "reason": "billing_period_exists",
-                        "conflicting_period_id": clash,
-                    },
+                await _audit(
+                    "failure",
+                    reason="billing_period_exists",
+                    conflicting_period_id=clash,
                 )
                 raise ConflictError(
                     f"A billing period already starts on {new_start.isoformat()}",
                     code="billing_period_exists",
                 )
             current_period.start_date = new_start
+
+            # Flush the period write HERE, where an IntegrityError is still
+            # attributable to it. Left pending, autoflush would fire it from
+            # the first `db.execute` inside `reanchor_period_dependents` —
+            # i.e. a uq_billing_period_org_start violation raised outside
+            # this handler (unhandled 500, the exact failure class this
+            # slice removes) or, once TBD-235 makes that helper run twice,
+            # swallowed by its own `except IntegrityError` and reported as
+            # `budget_period_conflict` with a message about budgets that
+            # never moved. The pre-flight above is TOCTOU: a concurrent PUT
+            # or BillingCloseJob (900s tick, `automate_billing_close` on by
+            # default) can land a period on `new_start` in between.
+            try:
+                await db.flush()
+            except IntegrityError:
+                await db.rollback()
+                await _audit(
+                    "failure", reason="billing_period_exists", race=True
+                )
+                raise ConflictError(
+                    f"A billing period already starts on {new_start.isoformat()}",
+                    code="billing_period_exists",
+                )
 
         # `new_end` is the OPEN period's end_date, which is None by
         # construction. Do NOT substitute a projected end here: it would
@@ -293,49 +339,16 @@ async def update_billing_cycle(
             )
         except ConflictError as exc:
             await db.rollback()
-            await audit_service.record_audit_event(
-                session_factory,
-                event_type="org.billing_cycle_day.updated",
-                actor_user_id=actor_user_id,
-                actor_email=actor_email,
-                target_org_id=actor_org_id,
-                target_org_name=org_name,
-                request_id=req_id,
-                ip_address=ip,
-                outcome="failure",
-                detail={
-                    "old_day": old_day,
-                    "new_day": new_day,
-                    "period_id": period_id,
-                    "old_start": old_start.isoformat(),
-                    "new_start": new_start.isoformat(),
-                    "reason": exc.code or "conflict",
-                    "message": exc.detail,
-                },
+            await _audit(
+                "failure",
+                reason=exc.code or "conflict",
+                message=exc.detail,
             )
             raise
 
     await db.commit()
 
-    await audit_service.record_audit_event(
-        session_factory,
-        event_type="org.billing_cycle_day.updated",
-        actor_user_id=actor_user_id,
-        actor_email=actor_email,
-        target_org_id=actor_org_id,
-        target_org_name=org_name,
-        request_id=req_id,
-        ip_address=ip,
-        outcome="success",
-        detail={
-            "old_day": old_day,
-            "new_day": new_day,
-            "period_id": period_id,
-            "old_start": old_start.isoformat(),
-            "new_start": new_start.isoformat(),
-            "budgets_reanchored": reanchored,
-        },
-    )
+    await _audit("success", budgets_reanchored=reanchored)
 
     return {"billing_cycle_day": new_day}
 
@@ -377,8 +390,12 @@ async def create_period(
 ):
     """Create a billing period with explicit dates (for seeding/migration).
 
-    ``status_code`` stays 200: ``seed.py`` branches on ``r.status_code == 200``
-    and adopting 201 would silently break it.
+    ``status_code`` stays 200 — the pre-existing contract of an endpoint whose
+    only callers live in ``seed.py``; there is nothing to gain by churning it
+    to 201. ``seed.py`` no longer branches on the status code itself: it hands
+    the response to ``seed.billing_period_outcome``, which absorbs the 409
+    below (the seed dataset is re-runnable and its start dates are
+    deterministic) and raises on everything else.
     """
     _require_admin(current_user)
 
@@ -471,10 +488,26 @@ async def close_period(
     closed_period_id = closing.id
     closed_period_start = closing.start_date
 
-    try:
-        new_period = await billing_service.close_period(db, actor_org_id, close_date)
-    except ValidationError as exc:
-        await db.rollback()
+    async def _audit(outcome: str, **extra) -> None:
+        """Structlog breadcrumb + audit row for this endpoint.
+
+        ``record_audit_event`` swallows every exception by design
+        (audit_service.py) and names "the structlog event the caller already
+        emitted" as its fallback record, so the log line goes first.
+        """
+        payload = {
+            "closed_period_id": closed_period_id,
+            "closed_period_start": closed_period_start.isoformat(),
+            **extra,
+        }
+        await logger.ainfo(
+            "org.billing_period.closed",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=actor_org_id,
+            outcome=outcome,
+            **payload,
+        )
         await audit_service.record_audit_event(
             session_factory,
             event_type="org.billing_period.closed",
@@ -484,36 +517,39 @@ async def close_period(
             target_org_name=org_name,
             request_id=req_id,
             ip_address=ip,
-            outcome="failure",
-            detail={
-                "closed_period_id": closed_period_id,
-                "closed_period_start": closed_period_start.isoformat(),
-                "close_date": close_date.isoformat() if close_date else None,
-                "reason": "validation",
-                "message": exc.detail,
-            },
+            outcome=outcome,
+            detail=payload,
+        )
+
+    try:
+        new_period = await billing_service.close_period(db, actor_org_id, close_date)
+    except Exception as exc:  # noqa: BLE001 — nothing may close unaudited.
+        # ValidationError (close date before the period start) is not the only
+        # way out of `close_period`: it also raises RuntimeError when the row
+        # vanishes after its own IntegrityError retry, and IntegrityError can
+        # escape its second commit. Catching only ValidationError left both as
+        # unaudited 500s. `org_data.py`'s reset path is the house reference:
+        # catch broadly, audit, re-raise untouched.
+        try:
+            await db.rollback()
+        except Exception:  # noqa: BLE001 — best effort; the audit matters more
+            pass
+        await _audit(
+            "failure",
+            close_date=close_date.isoformat() if close_date else None,
+            reason="validation" if isinstance(exc, ValidationError) else "error",
+            message=getattr(exc, "detail", None) or str(exc),
+            error_type=type(exc).__name__,
         )
         raise
 
     resolved_close_date = new_period.start_date - datetime.timedelta(days=1)
 
-    await audit_service.record_audit_event(
-        session_factory,
-        event_type="org.billing_period.closed",
-        actor_user_id=actor_user_id,
-        actor_email=actor_email,
-        target_org_id=actor_org_id,
-        target_org_name=org_name,
-        request_id=req_id,
-        ip_address=ip,
-        outcome="success",
-        detail={
-            "closed_period_id": closed_period_id,
-            "closed_period_start": closed_period_start.isoformat(),
-            "close_date": resolved_close_date.isoformat(),
-            "new_period_id": new_period.id,
-            "new_period_start": new_period.start_date.isoformat(),
-        },
+    await _audit(
+        "success",
+        close_date=resolved_close_date.isoformat(),
+        new_period_id=new_period.id,
+        new_period_start=new_period.start_date.isoformat(),
     )
 
     return {

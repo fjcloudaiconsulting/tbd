@@ -242,6 +242,7 @@ async def reanchor_period_dependents(
         Budget.org_id == org_id,
         Budget.period_start == old_start,
     )
+    update_where = moving_at_old
 
     if old_start == new_start:
         # Identity case — nothing moves horizontally. The only possible work
@@ -258,6 +259,11 @@ async def reanchor_period_dependents(
         )
         if stale is None:
             return 0
+        # Narrow the UPDATE to the rows whose snapshot is actually stale.
+        # Unscoped it matches every row at `old_start`, including ones that
+        # already carry `new_end`, and the returned count (surfaced as
+        # `budgets_reanchored` in the audit detail) over-reports.
+        update_where = (*moving_at_old, end_differs)
 
     # Pre-flight for uq_budget_org_cat_period. Excludes the rows being moved
     # (rule 2) — with old_start == new_start the two period_start predicates
@@ -296,7 +302,7 @@ async def reanchor_period_dependents(
     try:
         result = await db.execute(
             update(Budget)
-            .where(*moving_at_old)
+            .where(*update_where)
             .values(period_start=new_start, period_end=new_end)
         )
     except IntegrityError:
@@ -308,7 +314,9 @@ async def reanchor_period_dependents(
             code="budget_period_conflict",
         )
 
-    return result.rowcount or 0
+    # `rowcount` is -1 when the driver cannot report a count; never let that
+    # reach the audit detail as a negative number of budgets.
+    return max(result.rowcount or 0, 0)
 
 
 async def close_period(db: AsyncSession, org_id: int, close_date: datetime.date | None = None) -> BillingPeriod:

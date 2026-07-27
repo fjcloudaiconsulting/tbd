@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime
 from collections.abc import AsyncIterator
 from decimal import Decimal
+from unittest import mock
 
 import pytest
 import pytest_asyncio
@@ -296,6 +297,20 @@ async def test_close_period_writes_audit_row(session_factory):
 
     assert resp.status_code == 200, resp.text
     new_start = datetime.date.fromisoformat(resp.json()["start_date"])
+    # `close_period` defaults to "close yesterday", so the new period opens
+    # today. Asserted against the clock, not against the router's own
+    # response, so the audited close date is pinned to something independent.
+    assert new_start == today
+    yesterday = today - datetime.timedelta(days=1)
+
+    # The closing period really was closed at that date.
+    async with session_factory() as db:
+        closed = (
+            await db.execute(
+                select(BillingPeriod).where(BillingPeriod.id == period_id)
+            )
+        ).scalar_one()
+    assert closed.end_date == yesterday
 
     rows = await _audit_rows(session_factory, "org.billing_period.closed")
     assert len(rows) == 1
@@ -305,11 +320,35 @@ async def test_close_period_writes_audit_row(session_factory):
     assert row.actor_email == "owner@acme.io"
     assert row.detail["closed_period_id"] == period_id
     assert row.detail["closed_period_start"] == start.isoformat()
-    # Resolved from the NEW period's start, never re-derived in the router.
-    assert row.detail["close_date"] == (
-        new_start - datetime.timedelta(days=1)
-    ).isoformat()
-    assert row.detail["new_period_start"] == new_start.isoformat()
+    # Resolved from the NEW period's start, never re-derived in the router —
+    # and it matches the end_date actually written on the closed row.
+    assert row.detail["close_date"] == yesterday.isoformat()
+    assert row.detail["new_period_start"] == today.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_close_period_audits_non_validation_failures(session_factory):
+    """`close_period` can also raise RuntimeError (its row vanished after an
+    IntegrityError retry) or IntegrityError from its second commit. Catching
+    only ValidationError left those as unaudited 500s."""
+    ids = await _seed(session_factory)
+    start = datetime.date.today() - datetime.timedelta(days=5)
+    period_id = await _add_period(session_factory, ids["org"], start)
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+
+    async def _boom(db, org_id, close_date=None):
+        raise RuntimeError("period vanished")
+
+    with mock.patch.object(billing_service, "close_period", _boom):
+        with pytest.raises(RuntimeError):
+            client.post("/api/v1/settings/billing-period/close")
+
+    rows = await _audit_rows(session_factory, "org.billing_period.closed")
+    assert len(rows) == 1
+    assert rows[0].outcome.value == "failure"
+    assert rows[0].detail["reason"] == "error"
+    assert rows[0].detail["error_type"] == "RuntimeError"
+    assert rows[0].detail["closed_period_id"] == period_id
 
 
 @pytest.mark.asyncio
@@ -526,6 +565,82 @@ async def test_update_billing_cycle_period_conflict_returns_409(session_factory)
 
 
 @pytest.mark.asyncio
+async def test_update_billing_cycle_period_race_returns_409(
+    session_factory, monkeypatch
+):
+    """The uq_billing_period_org_start pre-flight is TOCTOU.
+
+    A concurrent PUT, or BillingCloseJob (900s tick, `automate_billing_close`
+    on by default), can land a period on `new_start` between the SELECT and
+    the write. Blinding the pre-flight stands in for losing that race: the
+    only thing then standing between the duplicate and an unhandled 500 is
+    the explicit `db.flush()` + IntegrityError backstop in the router.
+
+    Without that flush the pending UPDATE is emitted by autoflush from the
+    first `db.execute` inside `reanchor_period_dependents`, i.e. outside the
+    router's handler entirely.
+    """
+    ids = await _seed(session_factory, cycle_day=1)
+    today = datetime.date.today()
+    new_day = 15 if today.day != 15 else 14
+    old_start = _anchor_for(1, today)
+    new_start = _anchor_for(new_day, today)
+    assert old_start != new_start
+
+    open_id = await _add_period(session_factory, ids["org"], old_start)
+    await _add_period(
+        session_factory, ids["org"], new_start,
+        new_start + datetime.timedelta(days=5),
+    )
+    # A budget to move, so `reanchor_period_dependents` really would run and
+    # really would autoflush the period write if the router did not.
+    await _add_budget(session_factory, ids["org"], ids["groceries"], old_start)
+
+    real_scalar = AsyncSession.scalar
+
+    async def _blind_preflight(self, statement, *args, **kwargs):
+        # The router's period pre-flight is the only statement in this flow
+        # carrying an `id != :param` predicate.
+        if "billing_periods.id != " in str(statement):
+            return None
+        return await real_scalar(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "scalar", _blind_preflight)
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+
+    resp = client.put(
+        "/api/v1/settings/billing-cycle", json={"billing_cycle_day": new_day}
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "billing_period_exists"
+
+    rows = await _audit_rows(session_factory, "org.billing_cycle_day.updated")
+    assert len(rows) == 1
+    assert rows[0].outcome.value == "failure"
+    assert rows[0].detail["reason"] == "billing_period_exists"
+    assert rows[0].detail["race"] is True
+
+    # Nothing stuck: the open period kept its start, the budget did not move,
+    # and the cycle day was not persisted.
+    async with session_factory() as db:
+        period = (
+            await db.execute(
+                select(BillingPeriod).where(BillingPeriod.id == open_id)
+            )
+        ).scalar_one()
+        org = (
+            await db.execute(
+                select(Organization).where(Organization.id == ids["org"])
+            )
+        ).scalar_one()
+    assert period.start_date == old_start
+    assert org.billing_cycle_day == 1
+    budgets = await _budgets(session_factory, ids["org"])
+    assert [b.period_start for b in budgets] == [old_start]
+
+
+@pytest.mark.asyncio
 async def test_update_billing_cycle_rejects_non_admin(session_factory):
     ids = await _seed(session_factory)
     client = TestClient(_make_app(session_factory, ids["member"]))
@@ -580,6 +695,31 @@ async def test_reanchor_identity_with_changed_end_updates_end_only(session_facto
     budgets = await _budgets(session_factory, ids["org"])
     assert budgets[0].period_start == start
     assert budgets[0].period_end == new_end
+
+
+@pytest.mark.asyncio
+async def test_reanchor_identity_counts_only_stale_rows(session_factory):
+    """In the identity fall-through the UPDATE must be scoped to the rows
+    whose `period_end` snapshot is actually stale. Unscoped it matches every
+    row at `old_start` and `budgets_reanchored` over-reports."""
+    ids = await _seed(session_factory)
+    start = datetime.date(2026, 3, 1)
+    new_end = datetime.date(2026, 3, 31)
+    # Already correct — must not be counted.
+    await _add_budget(session_factory, ids["org"], ids["groceries"], start, new_end)
+    # Stale snapshot — the only genuine move.
+    await _add_budget(session_factory, ids["org"], ids["transport"], start)
+
+    async with session_factory() as db:
+        moved = await billing_service.reanchor_period_dependents(
+            db, org_id=ids["org"], old_start=start,
+            new_start=start, new_end=new_end,
+        )
+        await db.commit()
+
+    assert moved == 1
+    budgets = await _budgets(session_factory, ids["org"])
+    assert {b.period_end for b in budgets} == {new_end}
 
 
 @pytest.mark.asyncio

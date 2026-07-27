@@ -27,6 +27,33 @@ USER = {
 }
 
 
+def billing_period_outcome(r: httpx.Response) -> str:
+    """Interpret a ``POST /api/v1/settings/billing-period`` response.
+
+    ``./pfv seed`` is documented as a repeatable dataset (CLAUDE.md,
+    "Seeding"), and the period dates below are deterministic for a given
+    ``today``, so a same-day re-run posts start dates that already exist.
+    TBD-232 gave that endpoint a duplicate-start pre-flight that answers
+    409 ``billing_period_exists``; treat that one status as "already
+    seeded" and carry on, exactly like the login-instead-of-register and
+    ``if r.status_code == 201`` account guards earlier in this script.
+
+    Every OTHER non-2xx still raises. That is the contract-drift guard the
+    endpoint needs: TBD-232 also moved it from query params to a Pydantic
+    body, and a swallowed 422 would leave the demo org with zero billing
+    periods under a cheerful "Seed complete!".
+    """
+    if r.status_code == 409:
+        try:
+            code = r.json().get("code")
+        except ValueError:
+            code = None
+        if code == "billing_period_exists":
+            return "exists"
+    r.raise_for_status()
+    return "created"
+
+
 async def main():
     async with httpx.AsyncClient(base_url=BASE, timeout=30) as c:
         print("=== PFV2 Seed Script ===\n")
@@ -214,17 +241,16 @@ async def main():
             if end < today:
                 r = await c.post("/api/v1/settings/billing-period", headers=headers,
                                  json={"start_date": start.isoformat(), "end_date": end.isoformat()})
-                r.raise_for_status()
-                if r.status_code == 200:
-                    print(f"   Period: {start} — {end}")
+                outcome = billing_period_outcome(r)
+                print(f"   Period: {start} — {end} ({outcome})")
 
         # Current open period (starts day after last closed)
         last_end = period_defs[-1][1] if period_defs[-1][1] < today else period_defs[-2][1]
         current_start = last_end + timedelta(days=1)
         r = await c.post("/api/v1/settings/billing-period", headers=headers,
                          json={"start_date": current_start.isoformat()})
-        r.raise_for_status()
-        print(f"   Current period: {current_start} — open")
+        outcome = billing_period_outcome(r)
+        print(f"   Current period: {current_start} — open ({outcome})")
 
         await c.put("/api/v1/settings/billing-cycle", headers=headers,
                     json={"billing_cycle_day": 25})
