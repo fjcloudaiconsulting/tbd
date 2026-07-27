@@ -198,24 +198,14 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     ).not.toBeInTheDocument();
   });
 
-  // The preview date is derived from the wall clock (the backend anchors
-  // the new start off `date.today()`), so both preview tests pin the clock.
-  // `toFake: ["Date"]` leaves setTimeout/queueMicrotask real, which waitFor
-  // and React's scheduler need.
-  function freezeClock(d: Date) {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(d);
-  }
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
+  // The preview is DATELESS on purpose. The backend re-anchors off
+  // server-local `date.today()` via a threshold (`today.day >= cycle_day`
+  // picks this month, else last month), so a one-day browser-vs-server
+  // skew would shift a computed date by a full MONTH. These tests assert
+  // the rule-shaped wording and that no concrete date is claimed; no clock
+  // pinning is needed because nothing here reads the wall clock.
 
   it("renders the re-anchor preview when the new value is dirty + valid", async () => {
-    // Today is the 20th, new cycle day is 15, so 20 >= 15 and the open
-    // period re-roots to day 15 of the current month. Anchored to a fixed
-    // date so the assertion cannot flip when the real clock rolls over.
-    freezeClock(new Date(2026, 4, 20, 12, 0, 0));
     render(<OrganizationSettingsPage />);
     const input = (await screen.findByLabelText(
       /Billing cycle day/i,
@@ -226,16 +216,15 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     await waitFor(() => {
       expect(
         screen.getByText(
-          /Saving will move the current period's start to 2026-05-15 and move its budgets with it\./i,
+          /Saving will move the current period's start to day 15 and move its budgets with it\./i,
         ),
       ).toBeInTheDocument();
     });
   });
 
-  it("anchors the preview to last month when today is before the new day", async () => {
-    // Today is the 3rd and the new cycle day is 15, so 3 < 15 and the
-    // backend falls back to day 15 of the previous month.
-    freezeClock(new Date(2026, 4, 3, 12, 0, 0));
+  it("never claims a concrete destination date in the preview", async () => {
+    // Regression guard for the browser-vs-server date skew: any
+    // YYYY-MM-DD in this string would be a guess that can be a month off.
     render(<OrganizationSettingsPage />);
     const input = (await screen.findByLabelText(
       /Billing cycle day/i,
@@ -243,17 +232,15 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     await waitFor(() => expect(input.value).toBe("1"));
 
     fireEvent.change(input, { target: { value: "15" } });
-    await waitFor(() => {
-      expect(
-        screen.getByText(
-          /Saving will move the current period's start to 2026-04-15/i,
-        ),
-      ).toBeInTheDocument();
-    });
+    const preview = await screen.findByText(
+      /Saving will move the current period's start/i,
+    );
+    expect(preview.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    // House copy rule.
+    expect(preview.textContent).not.toMatch(/—|–/);
   });
 
   it("clears the preview once the value matches the saved one again", async () => {
-    freezeClock(new Date(2026, 4, 20, 12, 0, 0));
     render(<OrganizationSettingsPage />);
     const input = (await screen.findByLabelText(
       /Billing cycle day/i,

@@ -14,7 +14,7 @@ import {
   mapBillingPeriodCloseError,
   validateBillingCycleDay,
 } from "@/lib/formErrors";
-import { formatLocalDate, projectedPeriodEnd } from "@/lib/format";
+import { projectedPeriodEnd } from "@/lib/format";
 import { isAdmin } from "@/lib/auth";
 import DemoDataCard from "@/components/settings/DemoDataCard";
 import SchedulerSettingsCard from "@/components/settings/SchedulerSettingsCard";
@@ -33,33 +33,6 @@ import {
   success as successCls,
 } from "@/lib/styles";
 import type { OrgSetting } from "@/lib/types";
-
-/**
- * Where the open period's start lands after saving a new billing cycle day.
- *
- * Mirrors the backend's re-anchor math in
- * `backend/app/routers/settings.py:209-214`: `PUT /billing-cycle` closes
- * nothing and creates nothing, it re-roots the open period's `start_date`
- * in place to day N of the current month when today is on or past day N,
- * and to day N of the previous month otherwise.
- *
- * Deliberately not `projectedPeriodEnd` from `@/lib/format`: that computes
- * an END from a START and models none of the four server-side definitions
- * of a period window. Keeping this local avoids implying it is a shared
- * contract; TBD-235 will need a real one.
- *
- * `cycleDay` is constrained to 1-28 (same rule as `validateBillingCycleDay`)
- * so the day always exists in both candidate months.
- */
-function reanchoredPeriodStart(cycleDay: number, today: Date = new Date()): string | null {
-  if (!Number.isInteger(cycleDay) || cycleDay < 1 || cycleDay > 28) return null;
-  const anchor =
-    today.getDate() >= cycleDay
-      ? new Date(today.getFullYear(), today.getMonth(), cycleDay)
-      : // Month -1 rolls the year back on its own for January.
-        new Date(today.getFullYear(), today.getMonth() - 1, cycleDay);
-  return formatLocalDate(anchor);
-}
 
 export default function OrganizationSettingsPage() {
   const { user, loading, refreshMe } = useAuth();
@@ -589,15 +562,26 @@ export default function OrganizationSettingsPage() {
                   Day of the month each new period starts. Days 1 to 28 only, so every month has it.
                 </p>
                 {/*
-                  Dirty + valid + changed preview. Tells the admin what the
-                  current period would look like the moment they save, so
-                  the consequence of changing the cycle day is visible
-                  before they commit. Static placeholder keeps layout
-                  stable when no preview is shown.
+                  Dirty + valid + changed preview. Tells the admin what saving
+                  does to the current period, so the consequence of changing
+                  the cycle day is visible before they commit. Static
+                  placeholder keeps layout stable when no preview is shown.
 
                   Saving does not close anything: PUT /billing-cycle re-roots
-                  the open period's start in place and drags its budgets
-                  along, so the preview names the destination start date.
+                  the open period's start in place and drags its budgets along.
+
+                  DELIBERATELY DATELESS — do not "helpfully" compute the
+                  destination date here. The backend anchors off server-local
+                  `date.today()` (UTC in this deployment) and the browser can
+                  only see the viewer's local date. The server's rule is a
+                  THRESHOLD (`today.day >= cycle_day` picks this month, else
+                  last month), not a linear offset, so a single day of
+                  local-vs-server skew flips the answer by a FULL MONTH. An
+                  admin in Europe/Amsterdam at 01:00 on the 15th would be
+                  shown "moves to <this month> the 15th" while the server,
+                  still on the 14th in UTC, re-anchors to LAST month. The
+                  client cannot know the server's date without a new API
+                  field, so we state the rule instead of guessing a date.
                 */}
                 <p
                   id="billing-cycle-day-preview"
@@ -609,10 +593,14 @@ export default function OrganizationSettingsPage() {
                     if (billingCycleDay.trim() === "") return "";
                     if (billingCycleDay === savedCycleDay) return "";
                     const day = Number(billingCycleDay);
-                    if (!Number.isFinite(day) || !currentPeriod?.start_date) return "";
-                    const newStart = reanchoredPeriodStart(day);
-                    if (!newStart) return "";
-                    return `Saving will move the current period's start to ${newStart} and move its budgets with it.`;
+                    if (!Number.isFinite(day)) return "";
+                    // The `currentPeriod` guard is INTENTIONAL, not vestigial:
+                    // the sentence promises a move of "the current period",
+                    // and if GET /billing-period failed we do not know there
+                    // is an open period to move. Staying silent beats
+                    // promising a move we cannot vouch for.
+                    if (!currentPeriod?.start_date) return "";
+                    return `Saving will move the current period's start to day ${day} and move its budgets with it.`;
                   })()}
                 </p>
                 {cycleFieldError && (
