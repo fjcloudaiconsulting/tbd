@@ -213,15 +213,17 @@ async def main():
         for start, end in period_defs:
             if end < today:
                 r = await c.post("/api/v1/settings/billing-period", headers=headers,
-                                 params={"start_date": start.isoformat(), "end_date": end.isoformat()})
+                                 json={"start_date": start.isoformat(), "end_date": end.isoformat()})
+                r.raise_for_status()
                 if r.status_code == 200:
                     print(f"   Period: {start} — {end}")
 
         # Current open period (starts day after last closed)
         last_end = period_defs[-1][1] if period_defs[-1][1] < today else period_defs[-2][1]
         current_start = last_end + timedelta(days=1)
-        await c.post("/api/v1/settings/billing-period", headers=headers,
-                     params={"start_date": current_start.isoformat()})
+        r = await c.post("/api/v1/settings/billing-period", headers=headers,
+                         json={"start_date": current_start.isoformat()})
+        r.raise_for_status()
         print(f"   Current period: {current_start} — open")
 
         await c.put("/api/v1/settings/billing-cycle", headers=headers,

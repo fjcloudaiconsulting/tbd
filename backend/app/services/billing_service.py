@@ -12,11 +12,13 @@ import calendar
 import datetime
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.billing import BillingPeriod
+from app.models.budget import Budget
+from app.models.category import Category
 from app.models.user import Organization
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
@@ -189,6 +191,124 @@ async def ensure_future_periods(
             created = []
 
     return created
+
+
+async def reanchor_period_dependents(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    old_start: datetime.date,
+    new_start: datetime.date,
+    new_end: datetime.date | None,
+) -> int:
+    """Move budgets anchored to ``old_start`` onto ``new_start`` / ``new_end``.
+
+    Returns the number of budget rows re-anchored. Raises ConflictError
+    (code ``budget_period_conflict``) when a budget already exists for the
+    same category at ``new_start``.
+
+    A boundary move in TBD-235 calls this TWICE: once for the previous
+    period (old_start == new_start, only ``new_end`` changes) and once for
+    the next period (old_start != new_start).
+
+    Does **not** commit. ``Budget.period_start`` is the sole join key
+    (budget_service.py:100-101), so this write must land in the same
+    transaction as the period write that moved the boundary; a crash
+    between the two orphans every budget for that period and
+    ``list_budgets`` then silently returns ``[]``.
+
+    Three rules here are load-bearing (spec
+    ``2026-07-27-billing-period-truth-and-safety.md`` section 4):
+
+    1. **Identity case.** When ``old_start == new_start`` and ``new_end`` is
+       already what every affected row carries, return 0 without running
+       any pre-flight. The rows being "moved" ARE the rows at the
+       destination, so a naive pre-flight finds each budget conflicting
+       with itself. This is not hypothetical: ``close_period`` defaults to
+       "close yesterday", so any org that ever closed manually has an open
+       period starting off the cycle-day grid, and an admin re-saving the
+       same cycle day would get a permanent 409 on a previously working
+       no-op. ``./pfv seed`` hits the same path ~7 days a month.
+    2. **The pre-flight excludes rows whose ``period_start == old_start``** —
+       i.e. the rows being moved — for the same reason.
+    3. **The IntegrityError backstop stays alongside the pre-flight.** A
+       pre-flight SELECT alone is TOCTOU; under real MySQL two admins (or
+       an admin and ``BillingCloseJob``, which ticks every 900s with
+       ``automate_billing_close`` on by default) can race between the
+       SELECT and the UPDATE and 500 anyway. The house pattern in this
+       area is both (see :func:`get_current_period`, :func:`close_period`).
+    """
+    moving_at_old = (
+        Budget.org_id == org_id,
+        Budget.period_start == old_start,
+    )
+
+    if old_start == new_start:
+        # Identity case — nothing moves horizontally. The only possible work
+        # is refreshing the `period_end` snapshot, so if that is already
+        # correct on every affected row this is a genuine no-op.
+        if new_end is None:
+            end_differs = Budget.period_end.is_not(None)
+        else:
+            end_differs = or_(
+                Budget.period_end.is_(None), Budget.period_end != new_end
+            )
+        stale = await db.scalar(
+            select(Budget.id).where(*moving_at_old, end_differs).limit(1)
+        )
+        if stale is None:
+            return 0
+
+    # Pre-flight for uq_budget_org_cat_period. Excludes the rows being moved
+    # (rule 2) — with old_start == new_start the two period_start predicates
+    # are contradictory, so this correctly finds nothing.
+    # `.correlate(None)` is load-bearing: the subquery's only FROM is
+    # `budgets`, which is also the enclosing query's FROM. Pinning it off
+    # keeps SQLAlchemy from ever auto-correlating it into a per-row
+    # comparison against the outer Budget.
+    moving_categories = (
+        select(Budget.category_id)
+        .where(*moving_at_old)
+        .correlate(None)
+        .scalar_subquery()
+    )
+    clashing = (
+        await db.execute(
+            select(Category.name)
+            .select_from(Budget)
+            .join(Category, Category.id == Budget.category_id)
+            .where(
+                Budget.org_id == org_id,
+                Budget.period_start == new_start,
+                Budget.period_start != old_start,
+                Budget.category_id.in_(moving_categories),
+            )
+            .order_by(Category.name)
+        )
+    ).scalars().all()
+    if clashing:
+        raise ConflictError(
+            "A budget already exists at the new period start for: "
+            + ", ".join(clashing),
+            code="budget_period_conflict",
+        )
+
+    try:
+        result = await db.execute(
+            update(Budget)
+            .where(*moving_at_old)
+            .values(period_start=new_start, period_end=new_end)
+        )
+    except IntegrityError:
+        # TOCTOU backstop (rule 3): someone inserted a budget at the
+        # destination between our SELECT and this UPDATE.
+        await db.rollback()
+        raise ConflictError(
+            "A budget already exists at the new period start",
+            code="budget_period_conflict",
+        )
+
+    return result.rowcount or 0
 
 
 async def close_period(db: AsyncSession, org_id: int, close_date: datetime.date | None = None) -> BillingPeriod:
