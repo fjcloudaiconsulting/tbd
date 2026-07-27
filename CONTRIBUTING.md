@@ -20,7 +20,7 @@ Sibling docs you will end up at:
 
 ```bash
 # 1. Clone and configure
-git clone https://github.com/flamarion/pfv.git && cd pfv
+git clone https://github.com/fjcloudaiconsulting/tbd.git && cd tbd
 cp .env.example .env
 
 # 2. Generate a real JWT secret. The backend refuses to boot on the placeholder.
@@ -352,9 +352,10 @@ Swagger UI at http://localhost/api/docs is the fastest way to poke a single endp
 ## Branching and pull requests
 
 - **Never push directly to `main`.** Always branch and open a PR.
-- Branch naming convention: `feat/<name>`, `fix/<name>`, `chore/<name>`.
-- Match the PR title to the commit prefix (`feat:`, `fix:`, ...). The PR title is what semantic-release reads if you squash-merge.
-- Keep PR descriptions concise. No test plan section required.
+- **Branch naming: lead with the Jira issue key** — `TBD-<number>-<slug>`, e.g. `TBD-179-sso-timeout`. The key is what links the branch, its commits and the PR to the issue in Jira. For work with no Jira issue, fall back to `feat/<name>`, `fix/<name>`, `chore/<name>`.
+- **Put the issue key in commit messages too**, e.g. `fix(auth): TBD-179 bound the session-issuance await`. Commit messages are what make CI runs appear as "builds" on the Jira issue; the branch name alone does not.
+- Match the PR title to the commit prefix (`feat:`, `fix:`, ...) and append the key, e.g. `fix(auth): bound the session-issuance await (TBD-179)`. **The repo is squash-merge only**, so the PR title becomes the commit subject and is exactly what semantic-release reads.
+- Keep PR descriptions concise. No test plan section required. Note the squash body is the PR description, so it lands in permanent history.
 
 ## Deployment
 
