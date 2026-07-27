@@ -198,7 +198,24 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     ).not.toBeInTheDocument();
   });
 
-  it("renders the projected close preview when the new value is dirty + valid", async () => {
+  // The preview date is derived from the wall clock (the backend anchors
+  // the new start off `date.today()`), so both preview tests pin the clock.
+  // `toFake: ["Date"]` leaves setTimeout/queueMicrotask real, which waitFor
+  // and React's scheduler need.
+  function freezeClock(d: Date) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(d);
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("renders the re-anchor preview when the new value is dirty + valid", async () => {
+    // Today is the 20th, new cycle day is 15, so 20 >= 15 and the open
+    // period re-roots to day 15 of the current month. Anchored to a fixed
+    // date so the assertion cannot flip when the real clock rolls over.
+    freezeClock(new Date(2026, 4, 20, 12, 0, 0));
     render(<OrganizationSettingsPage />);
     const input = (await screen.findByLabelText(
       /Billing cycle day/i,
@@ -206,15 +223,37 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     await waitFor(() => expect(input.value).toBe("1"));
 
     fireEvent.change(input, { target: { value: "15" } });
-    // start_date=2026-05-01, new cycle day=15 → projected close = 2026-06-14
     await waitFor(() => {
       expect(
-        screen.getByText(/Saving will close the current period on 2026-06-14/i),
+        screen.getByText(
+          /Saving will move the current period's start to 2026-05-15 and move its budgets with it\./i,
+        ),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("anchors the preview to last month when today is before the new day", async () => {
+    // Today is the 3rd and the new cycle day is 15, so 3 < 15 and the
+    // backend falls back to day 15 of the previous month.
+    freezeClock(new Date(2026, 4, 3, 12, 0, 0));
+    render(<OrganizationSettingsPage />);
+    const input = (await screen.findByLabelText(
+      /Billing cycle day/i,
+    )) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("1"));
+
+    fireEvent.change(input, { target: { value: "15" } });
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          /Saving will move the current period's start to 2026-04-15/i,
+        ),
       ).toBeInTheDocument();
     });
   });
 
   it("clears the preview once the value matches the saved one again", async () => {
+    freezeClock(new Date(2026, 4, 20, 12, 0, 0));
     render(<OrganizationSettingsPage />);
     const input = (await screen.findByLabelText(
       /Billing cycle day/i,
@@ -224,15 +263,43 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     fireEvent.change(input, { target: { value: "15" } });
     await waitFor(() =>
       expect(
-        screen.getByText(/Saving will close the current period/i),
+        screen.getByText(/Saving will move the current period's start/i),
       ).toBeInTheDocument(),
     );
     fireEvent.change(input, { target: { value: "1" } });
     await waitFor(() => {
       expect(
-        screen.queryByText(/Saving will close the current period/i),
+        screen.queryByText(/Saving will move the current period's start/i),
       ).not.toBeInTheDocument();
     });
+  });
+
+  // ── TBD-232: the close-period confirm must describe what actually happens ──
+  //
+  // The frontend POSTs /billing-period/close with no `close_date`, so the
+  // service closes YESTERDAY and the replacement period opens TODAY. The
+  // previous copy said only "a new period will open automatically", which
+  // told the admin nothing about which dates move.
+
+  it("confirm copy states the close sets yesterday and opens today", async () => {
+    render(<OrganizationSettingsPage />);
+    const closeBtn = await screen.findByRole("button", { name: /Close period/i });
+    fireEvent.click(closeBtn);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(
+      /Close the current billing period starting 2026-05-01\?/,
+    );
+    expect(dialog.textContent).toMatch(
+      /sets its end date to yesterday and opens a new period starting today/i,
+    );
+    // The caution survives: reopening is still impossible from the app.
+    expect(dialog.textContent).toMatch(/no way to reopen a period from the app yet/i);
+    // The old, misleading sentence is gone.
+    expect(dialog.textContent).not.toMatch(/cannot be undone/i);
+    expect(dialog.textContent).not.toMatch(/A new period will open automatically/i);
+    // House copy rule.
+    expect(dialog.textContent).not.toMatch(/—|–/);
   });
 
   it("maps a 422 save error to friendly copy without echoing raw body", async () => {

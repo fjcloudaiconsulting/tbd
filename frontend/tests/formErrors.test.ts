@@ -144,6 +144,28 @@ describe("mapBillingCycleError", () => {
   it("maps 429 to a rate-limit message", () => {
     expect(mapBillingCycleError(new ApiResponseError(429, "x"))).toMatch(/wait a moment/i);
   });
+
+  // A 409 carries the conflicting budget category or period start from the
+  // server. Before TBD-232 it fell through `default:` and rendered exactly
+  // the sentence a 500 renders, throwing that detail away.
+  it("surfaces the server detail on a 409 instead of the generic fallback", () => {
+    const msg = mapBillingCycleError(
+      new ApiResponseError(
+        409,
+        "A budget for Groceries already exists for the period starting 2026-05-15.",
+        "budget_period_conflict",
+      ),
+    );
+    expect(msg).toMatch(/Groceries/);
+    expect(msg).toMatch(/2026-05-15/);
+    expect(msg).not.toMatch(/could not save the billing cycle/i);
+  });
+
+  it("falls back to a conflict sentence when the 409 body is empty", () => {
+    const msg = mapBillingCycleError(new ApiResponseError(409, "   "));
+    expect(msg).toMatch(/collides/i);
+    expect(msg).not.toMatch(/—|–/);
+  });
 });
 
 describe("mapBillingPeriodCloseError", () => {

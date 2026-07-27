@@ -14,7 +14,7 @@ import {
   mapBillingPeriodCloseError,
   validateBillingCycleDay,
 } from "@/lib/formErrors";
-import { projectedPeriodEnd } from "@/lib/format";
+import { formatLocalDate, projectedPeriodEnd } from "@/lib/format";
 import { isAdmin } from "@/lib/auth";
 import DemoDataCard from "@/components/settings/DemoDataCard";
 import SchedulerSettingsCard from "@/components/settings/SchedulerSettingsCard";
@@ -33,6 +33,33 @@ import {
   success as successCls,
 } from "@/lib/styles";
 import type { OrgSetting } from "@/lib/types";
+
+/**
+ * Where the open period's start lands after saving a new billing cycle day.
+ *
+ * Mirrors the backend's re-anchor math in
+ * `backend/app/routers/settings.py:209-214`: `PUT /billing-cycle` closes
+ * nothing and creates nothing, it re-roots the open period's `start_date`
+ * in place to day N of the current month when today is on or past day N,
+ * and to day N of the previous month otherwise.
+ *
+ * Deliberately not `projectedPeriodEnd` from `@/lib/format`: that computes
+ * an END from a START and models none of the four server-side definitions
+ * of a period window. Keeping this local avoids implying it is a shared
+ * contract; TBD-235 will need a real one.
+ *
+ * `cycleDay` is constrained to 1-28 (same rule as `validateBillingCycleDay`)
+ * so the day always exists in both candidate months.
+ */
+function reanchoredPeriodStart(cycleDay: number, today: Date = new Date()): string | null {
+  if (!Number.isInteger(cycleDay) || cycleDay < 1 || cycleDay > 28) return null;
+  const anchor =
+    today.getDate() >= cycleDay
+      ? new Date(today.getFullYear(), today.getMonth(), cycleDay)
+      : // Month -1 rolls the year back on its own for January.
+        new Date(today.getFullYear(), today.getMonth() - 1, cycleDay);
+  return formatLocalDate(anchor);
+}
 
 export default function OrganizationSettingsPage() {
   const { user, loading, refreshMe } = useAuth();
@@ -295,9 +322,14 @@ export default function OrganizationSettingsPage() {
   function handleClosePeriod() {
     setConfirmAction({
       title: "Close billing period",
+      // We POST /billing-period/close with no `close_date`, so the service
+      // defaults to closing yesterday (`billing_service.py:200-201`) and the
+      // replacement period opens today, not tomorrow. There is still no
+      // un-close endpoint or UI, so the caution stays until TBD-233/TBD-235.
       message:
         `Close the current billing period starting ${currentPeriod?.start_date}? ` +
-        "A new period will open automatically. Closing a period cannot be undone.",
+        "This sets its end date to yesterday and opens a new period starting today. " +
+        "There is no way to reopen a period from the app yet, so close only when the period is done.",
       variant: "warning",
       action: async () => {
         if (closingPeriod) return;
@@ -486,9 +518,21 @@ export default function OrganizationSettingsPage() {
                     Current: {currentPeriod.start_date}
                     {currentPeriodEndDisplay ? `, ${currentPeriodEndDisplay}` : ", open"}
                   </p>
+                  {/*
+                    The closed branch is unreachable today: `currentPeriod` is
+                    only ever filled from GET /billing-period, which returns
+                    `billing_service.get_current_period` and by construction
+                    only yields rows with `end_date IS NULL`. It becomes
+                    reachable in TBD-234 (read-only period roster), so the
+                    copy is corrected now. Nothing in the backend locks a
+                    closed period, and transactions are bucketed by the date
+                    they settled, so the old "locked" claim was false.
+                    Not covered by a test: asserting it needs a fixture the
+                    real API cannot produce.
+                  */}
                   <p className="text-xs text-text-muted">
                     {currentPeriod.end_date
-                      ? "Closed. Transactions in this range are locked from period rollover."
+                      ? "Closed. This period's window is fixed at these dates. Transactions are still counted by the date they settled, so editing a transaction can move it in or out."
                       : "Open. New transactions are being recorded in this period."}
                   </p>
                 </div>
@@ -550,6 +594,10 @@ export default function OrganizationSettingsPage() {
                   the consequence of changing the cycle day is visible
                   before they commit. Static placeholder keeps layout
                   stable when no preview is shown.
+
+                  Saving does not close anything: PUT /billing-cycle re-roots
+                  the open period's start in place and drags its budgets
+                  along, so the preview names the destination start date.
                 */}
                 <p
                   id="billing-cycle-day-preview"
@@ -562,9 +610,9 @@ export default function OrganizationSettingsPage() {
                     if (billingCycleDay === savedCycleDay) return "";
                     const day = Number(billingCycleDay);
                     if (!Number.isFinite(day) || !currentPeriod?.start_date) return "";
-                    const projected = projectedPeriodEnd(currentPeriod.start_date, day);
-                    if (!projected) return "";
-                    return `Saving will close the current period on ${projected} and open a new one on day ${day}.`;
+                    const newStart = reanchoredPeriodStart(day);
+                    if (!newStart) return "";
+                    return `Saving will move the current period's start to ${newStart} and move its budgets with it.`;
                   })()}
                 </p>
                 {cycleFieldError && (

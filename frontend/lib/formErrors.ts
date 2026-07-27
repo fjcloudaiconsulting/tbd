@@ -134,6 +134,13 @@ export function mapBillingCycleError(
       return "Pick a whole number between 1 and 28.";
     case 403:
       return "You do not have permission to change the billing cycle.";
+    case 409:
+      // The server raises ConflictError here with a specific, already
+      // customer-facing sentence: which category's budget, or which
+      // period, already sits on the destination start date. That detail
+      // is the entire point of the 409, so keep it rather than flattening
+      // it into the generic fallback a 500 would show.
+      return err.message.trim() || "That day collides with a period or budget that already exists. Pick a different day.";
     case 429:
       return "Too many save attempts. Wait a moment and try again.";
     default:
