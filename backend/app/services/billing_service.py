@@ -6,6 +6,14 @@ and opens a new period starting the next day.
 
 The org's billing_cycle_day is used as a hint to auto-create the first
 period, but the user has full control over when to close.
+
+Note on :func:`reanchor_period_dependents`: it has **no production caller**.
+TBD-239 deleted the one it had (``PUT /billing-cycle``'s re-anchor), and its
+named future consumers are TBD-235 (boundary editor / re-anchor as an
+explicit confirmed action) and TBD-241 (``close_period`` bound). It is kept
+deliberately, with its direct service tests. Two consequences: do not prune
+it as dead code, and do not read those tests as end-to-end coverage — no
+request path reaches it today.
 """
 
 import calendar
@@ -148,10 +156,13 @@ async def list_periods(db: AsyncSession, org_id: int) -> list[BillingPeriod]:
 async def ensure_future_periods(
     db: AsyncSession, org_id: int, count: int = 3,
 ) -> list[BillingPeriod]:
-    """Create stub periods for the next `count` months from today.
+    """Create stub periods for the `count` cycles after the OPEN period.
 
-    Always anchored to today — calling this multiple times is idempotent
-    and will never create stubs beyond `count` months in the future.
+    Anchored to the open period's ``start_date``, not to today (line 161).
+    For an org whose open period is months behind the calendar the stubs are
+    therefore historic; correcting the anchor is TBD-235 blocker 1, not this
+    function's job. Calling this repeatedly is idempotent: a candidate whose
+    window intersects an existing period is skipped.
     """
     current = await get_current_period(db, org_id)
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
@@ -162,18 +173,56 @@ async def ensure_future_periods(
     created = []
     for i in range(1, count + 1):
         next_start = _snap_to_cycle(base + relativedelta(months=i), cycle_day)
+        end_date = _snap_to_cycle(next_start + relativedelta(months=1), cycle_day) - datetime.timedelta(days=1)
 
-        # Skip if already exists
-        existing = await db.scalar(
+        # Skip when the candidate window [next_start, end_date] intersects an
+        # existing period (TBD-239 §2). Exact-start matching was not enough:
+        # `PUT /billing-cycle` used to move the open period off the grid and
+        # the cycle day can change at any time, so the very next mount of
+        # Budgets or Forecasts proposed a whole second grid whose windows sat
+        # across the existing one. Days counted twice, in two periods.
+        #
+        # Compared against the RAW `end_date`, deliberately. `effective_end`,
+        # `COALESCE(end_date, '9999-12-31')` or hydrating the rows and
+        # filtering in Python would each make the OPEN period (end_date IS
+        # NULL) intersect every candidate and stop stub creation for every
+        # org — silently, since the loop just creates nothing.
+        #
+        # `end_date IS NOT NULL` is redundant: in SQL three-valued logic
+        # `end_date >= :start` already does not match NULL. It is kept as
+        # documentation of intent. Excluding open rows is safe because
+        # candidates are `base + i months` snapped to the cycle day for
+        # `i >= 1` with `cycle_day` in [1, 28] (schemas/settings.py:12), so a
+        # candidate always lands in a strictly later calendar month than the
+        # open row it was derived from; a backward overlap is impossible.
+        #
+        # Known hole: this is blind to a SECOND open row.
+        # `get_current_period` warns when it finds several, and
+        # `POST /billing-period` can insert an open row at an arbitrary start
+        # (`seed.py:250-251` does). `uq_billing_period_org_start` backstops
+        # only exact-start collisions.
+        overlapping = await db.scalar(
             select(BillingPeriod.id).where(
                 BillingPeriod.org_id == org_id,
-                BillingPeriod.start_date == next_start,
-            )
+                BillingPeriod.end_date.is_not(None),
+                BillingPeriod.start_date <= end_date,
+                BillingPeriod.end_date >= next_start,
+            ).limit(1)
         )
-        if existing:
+        if overlapping:
+            # Skip silently and keep going: this runs on every Budgets and
+            # Forecasts mount (budgets/page.tsx:97,
+            # ForecastPlansClient.tsx:290), so a 409 here would break two
+            # pages for an org whose roster is merely off-grid.
+            import structlog
+            await structlog.stdlib.get_logger().awarning(
+                "billing.stub.skipped_overlap",
+                org_id=org_id,
+                candidate_start=next_start.isoformat(),
+                candidate_end=end_date.isoformat(),
+                existing_period_id=overlapping,
+            )
             continue
-
-        end_date = _snap_to_cycle(next_start + relativedelta(months=1), cycle_day) - datetime.timedelta(days=1)
 
         stub = BillingPeriod(org_id=org_id, start_date=next_start, end_date=end_date)
         db.add(stub)

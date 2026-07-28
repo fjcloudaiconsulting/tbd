@@ -1,10 +1,18 @@
 """Route-level coverage for the billing-period endpoints in
-``routers/settings.py`` (TBD-232, slice 1 of the TBD-213 split).
+``routers/settings.py`` (TBD-232, slice 1 of the TBD-213 split; extended
+by TBD-239).
 
 Before this file the router had **zero** billing coverage: three write
 paths (``PUT /billing-cycle``, ``POST /billing-period``,
 ``POST /billing-period/close``) that mutate period boundaries and budget
 anchors were exercised only indirectly through the service layer.
+
+TBD-239 removed the ``PUT /billing-cycle`` re-anchor entirely (a cycle-day
+change now applies from the next period) and gave the two remaining
+boundary producers an **intersection** guard instead of an exact-start
+one. The re-anchor's router-level tests went with it; the direct
+``reanchor_period_dependents`` service tests at the bottom of this file
+stay, because TBD-235 and TBD-241 are its named future consumers.
 
 Harness note — load-bearing
 ---------------------------
@@ -21,12 +29,14 @@ codes are precisely what the frontend branches on.
 from __future__ import annotations
 
 import datetime
+import types
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from unittest import mock
 
 import pytest
 import pytest_asyncio
+from dateutil.relativedelta import relativedelta
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -43,6 +53,7 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category
 from app.models.user import Organization, Role, User
+from app.routers import settings as settings_module
 from app.routers.settings import router as settings_router
 from app.security import hash_password
 from app.services import billing_service
@@ -183,17 +194,66 @@ async def _audit_rows(factory, event_type: str | None = None) -> list[AuditEvent
         return list((await db.execute(stmt)).scalars().all())
 
 
-def _anchor_for(cycle_day: int, today: datetime.date) -> datetime.date:
-    """Mirror the router's anchor math (settings.py) so tests can name the
-    destination start without hardcoding a wall-clock date.
+async def _periods(factory, org_id) -> list[BillingPeriod]:
+    async with factory() as db:
+        return list(
+            (
+                await db.execute(
+                    select(BillingPeriod)
+                    .where(BillingPeriod.org_id == org_id)
+                    .order_by(BillingPeriod.start_date)
+                )
+            ).scalars().all()
+        )
 
-    See reference_wall_clock_date_bomb_tests: never pin a literal near-today
-    date, derive it.
+
+async def _roster(factory, org_id) -> list[tuple]:
+    """(id, start_date, end_date) for every period, ordered by start."""
+    return [(p.id, p.start_date, p.end_date) for p in await _periods(factory, org_id)]
+
+
+def _freeze_today(monkeypatch, frozen: datetime.date) -> None:
+    """Pin ``datetime.date.today()`` for the router and the billing service.
+
+    Load-bearing for the seed-shape case: the branch that used to orphan a
+    day is ``today.day < 25``, and the real wall clock spends most of the
+    month in the other branch, where the old code was a no-op. An unfrozen
+    test there proves nothing.
+
+    Patches the module-level ``datetime`` name rather than the stdlib type
+    (``datetime.date`` is a C type and rejects ``setattr``), so the freeze
+    is scoped to the two modules under test.
     """
-    if today.day >= cycle_day:
-        return datetime.date(today.year, today.month, cycle_day)
-    prev = datetime.date(today.year, today.month, 1) - datetime.timedelta(days=1)
-    return datetime.date(prev.year, prev.month, cycle_day)
+
+    class _Date(datetime.date):
+        @classmethod
+        def today(cls) -> datetime.date:
+            return frozen
+
+    shim = types.SimpleNamespace(
+        date=_Date,
+        timedelta=datetime.timedelta,
+        datetime=datetime.datetime,
+    )
+    monkeypatch.setattr(settings_module, "datetime", shim)
+    monkeypatch.setattr(billing_service, "datetime", shim)
+
+
+def _intersecting_pairs(periods: list[BillingPeriod]) -> list[tuple]:
+    """Every pair of rows whose [start, end] windows overlap.
+
+    Rows with a NULL ``end_date`` are compared on their start date alone —
+    an open row's true extent is unknowable, which is exactly why the
+    production predicates ignore it.
+    """
+    bad = []
+    for i, a in enumerate(periods):
+        for b in periods[i + 1:]:
+            a_end = a.end_date or a.start_date
+            b_end = b.end_date or b.start_date
+            if a.start_date <= b_end and b.start_date <= a_end:
+                bad.append((a.start_date, a_end, b.start_date, b_end))
+    return bad
 
 
 # ── POST /billing-period ──────────────────────────────────────────────────
@@ -280,6 +340,148 @@ async def test_create_period_rejects_non_admin(session_factory):
     )
 
     assert resp.status_code == 403
+
+
+# TBD-239 §3 — containment. Case 7 of the spec's Testing section.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("start", "end", "label"),
+    [
+        ("2026-03-10", "2026-03-20", "fully contained"),
+        ("2026-02-20", "2026-03-10", "straddles the start"),
+        ("2026-03-20", "2026-04-10", "straddles the end"),
+        ("2026-02-01", "2026-04-30", "swallows it whole"),
+        ("2026-03-31", "2026-04-30", "touches the last day"),
+    ],
+)
+async def test_create_period_overlapping_window_returns_409(
+    session_factory, start, end, label
+):
+    ids = await _seed(session_factory)
+    await _add_period(
+        session_factory, ids["org"],
+        datetime.date(2026, 3, 1), datetime.date(2026, 3, 31),
+    )
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+
+    resp = client.post(
+        "/api/v1/settings/billing-period",
+        json={"start_date": start, "end_date": end},
+    )
+
+    assert resp.status_code == 409, f"{label}: {resp.text}"
+    body = resp.json()
+    assert body["code"] == "billing_period_overlap"
+    assert body["detail"] == (
+        "A billing period already covers 2026-03-01 to 2026-03-31. "
+        "Choose dates outside that range."
+    )
+
+    # Nothing was inserted.
+    assert len(await _periods(session_factory, ids["org"])) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        ("2026-04-01", "2026-04-30"),  # abuts the end, no shared day
+        ("2026-01-01", "2026-02-28"),  # abuts the start, no shared day
+    ],
+)
+async def test_create_period_adjacent_window_is_allowed(session_factory, start, end):
+    """Boundaries are INCLUSIVE, so touching is not overlapping. A period
+    that starts the day after the neighbour ends is the contiguous roster
+    the whole ticket is trying to preserve."""
+    ids = await _seed(session_factory)
+    await _add_period(
+        session_factory, ids["org"],
+        datetime.date(2026, 3, 1), datetime.date(2026, 3, 31),
+    )
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+
+    resp = client.post(
+        "/api/v1/settings/billing-period",
+        json={"start_date": start, "end_date": end},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert _intersecting_pairs(await _periods(session_factory, ids["org"])) == []
+
+
+@pytest.mark.asyncio
+async def test_create_period_duplicate_start_still_wins_over_overlap(session_factory):
+    """The exact-start check keeps its first position.
+
+    A same-day `./pfv seed` re-run posts start dates that already exist and
+    branches on `billing_period_exists`; if the containment check ran first
+    it would answer `billing_period_overlap` for the same rows and the seed
+    helper's older branch would stop absorbing it.
+    """
+    ids = await _seed(session_factory)
+    await _add_period(
+        session_factory, ids["org"],
+        datetime.date(2026, 3, 1), datetime.date(2026, 3, 31),
+    )
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+
+    resp = client.post(
+        "/api/v1/settings/billing-period",
+        json={"start_date": "2026-03-01", "end_date": "2026-03-31"},
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "billing_period_exists"
+
+
+@pytest.mark.asyncio
+async def test_create_open_period_is_checked_on_its_start_date_alone(session_factory):
+    """A candidate with no `end_date` is NOT unbounded.
+
+    `seed.py:250-251` posts exactly this shape for the current open period.
+    Treating it as extending to infinity would make seeding an open period
+    after any closed period conflict every time.
+    """
+    ids = await _seed(session_factory)
+    await _add_period(
+        session_factory, ids["org"],
+        datetime.date(2026, 3, 1), datetime.date(2026, 3, 31),
+    )
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+
+    # Start date falls inside the closed window -> conflict.
+    inside = client.post(
+        "/api/v1/settings/billing-period", json={"start_date": "2026-03-15"}
+    )
+    assert inside.status_code == 409, inside.text
+    assert inside.json()["code"] == "billing_period_overlap"
+
+    # Start date after it -> allowed, even though the candidate has no end.
+    after = client.post(
+        "/api/v1/settings/billing-period", json={"start_date": "2026-04-01"}
+    )
+    assert after.status_code == 200, after.text
+    assert after.json()["end_date"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_period_ignores_existing_open_rows(session_factory):
+    """An existing row with `end_date IS NULL` has an unknowable extent, so
+    it cannot be intersected with. Only its exact start is protected, by the
+    check above it."""
+    ids = await _seed(session_factory)
+    await _add_period(session_factory, ids["org"], datetime.date(2026, 3, 1))
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+
+    resp = client.post(
+        "/api/v1/settings/billing-period",
+        json={"start_date": "2026-03-15", "end_date": "2026-04-14"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert len(await _periods(session_factory, ids["org"])) == 2
 
 
 # ── POST /billing-period/close ────────────────────────────────────────────
@@ -383,15 +585,56 @@ async def test_close_period_rejects_non_admin(session_factory):
 
 
 # ── PUT /billing-cycle ────────────────────────────────────────────────────
+#
+# TBD-239 §1 deleted the re-anchor. The fixture below is deliberately
+# OFF-GRID — an open period starting on the 2nd while the cycle day is the
+# 15th — because that is the shape every org that has ever closed manually
+# already has (`close_period` closes yesterday), and it is the shape the
+# deleted code silently rewrote.
+
+_FROZEN_TODAY = datetime.date(2026, 3, 20)
+_OFF_GRID_CLOSED = (datetime.date(2026, 2, 2), datetime.date(2026, 3, 1))
+_OFF_GRID_OPEN = datetime.date(2026, 3, 2)
+
+
+async def _seed_off_grid(session_factory) -> dict:
+    """Org on cycle day 15 whose open period starts on the 2nd.
+
+    With ``_FROZEN_TODAY``, the deleted re-anchor would have moved that
+    start to 2026-03-05 for cycle day 5 (forward) and to 2026-02-25 for
+    cycle day 25 (backward, straight into the middle of the closed
+    predecessor).
+    """
+    ids = await _seed(session_factory, cycle_day=15)
+    ids["closed_period"] = await _add_period(
+        session_factory, ids["org"], *_OFF_GRID_CLOSED
+    )
+    ids["open_period"] = await _add_period(
+        session_factory, ids["org"], _OFF_GRID_OPEN
+    )
+    return ids
 
 
 @pytest.mark.asyncio
-async def test_update_billing_cycle_writes_audit_row(session_factory):
-    ids = await _seed(session_factory, cycle_day=1)
-    today = datetime.date.today()
-    new_day = 15 if today.day != 15 else 14
-    old_start = _anchor_for(1, today)
-    period_id = await _add_period(session_factory, ids["org"], old_start)
+@pytest.mark.parametrize(
+    ("new_day", "direction"), [(5, "forward"), (25, "backward")]
+)
+async def test_update_billing_cycle_mutates_no_period_rows(
+    session_factory, monkeypatch, new_day, direction
+):
+    """Case 1 — a cycle-day change in EITHER direction touches zero rows.
+
+    The old handler re-rooted the open period's ``start_date`` in place and
+    dragged its budgets along, which opened a gap (forward) or an overlap
+    with the closed predecessor (backward). Now it writes the org column
+    and nothing else; the grid change lands at the next close.
+    """
+    _freeze_today(monkeypatch, _FROZEN_TODAY)
+    ids = await _seed_off_grid(session_factory)
+    budget_id = await _add_budget(
+        session_factory, ids["org"], ids["groceries"], _OFF_GRID_OPEN
+    )
+    before = await _roster(session_factory, ids["org"])
     client = TestClient(_make_app(session_factory, ids["owner"]))
 
     resp = client.put(
@@ -401,243 +644,124 @@ async def test_update_billing_cycle_writes_audit_row(session_factory):
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"billing_cycle_day": new_day}
 
+    # Every id, start and end is byte-for-byte what it was, and no row was
+    # added or removed. `direction` only names which way the old code moved.
+    assert await _roster(session_factory, ids["org"]) == before
+
+    # Budgets stayed anchored to the period they were budgeted for.
+    budgets = await _budgets(session_factory, ids["org"])
+    assert [(b.id, b.period_start, b.period_end) for b in budgets] == [
+        (budget_id, _OFF_GRID_OPEN, None)
+    ]
+
+    # The cycle day itself did stick — it is the whole write.
+    async with session_factory() as db:
+        org = (
+            await db.execute(
+                select(Organization).where(Organization.id == ids["org"])
+            )
+        ).scalar_one()
+    assert org.billing_cycle_day == new_day
+
+
+@pytest.mark.asyncio
+async def test_update_billing_cycle_writes_audit_row(session_factory, monkeypatch):
+    """Case 2 — the audit payload describes deferral, not a move."""
+    _freeze_today(monkeypatch, _FROZEN_TODAY)
+    ids = await _seed_off_grid(session_factory)
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+
+    resp = client.put(
+        "/api/v1/settings/billing-cycle", json={"billing_cycle_day": 25}
+    )
+
+    assert resp.status_code == 200, resp.text
     rows = await _audit_rows(session_factory, "org.billing_cycle_day.updated")
     assert len(rows) == 1
     row = rows[0]
     assert row.outcome.value == "success"
-    assert row.detail["old_day"] == 1
-    assert row.detail["new_day"] == new_day
-    assert row.detail["period_id"] == period_id
-    assert row.detail["old_start"] == old_start.isoformat()
-    assert row.detail["new_start"] == _anchor_for(new_day, today).isoformat()
-    assert row.detail["budgets_reanchored"] == 0
+    assert row.detail["old_day"] == 15
+    assert row.detail["new_day"] == 25
+    assert row.detail["period_id"] == ids["open_period"]
+    assert row.detail["open_period_start"] == _OFF_GRID_OPEN.isoformat()
+    assert row.detail["applies_from"] == "next_period"
+    # The three keys that described the deleted move are gone. Left behind
+    # they would keep telling /admin/audit a boundary moved.
+    assert "budgets_reanchored" not in row.detail
+    assert "new_start" not in row.detail
+    assert "old_start" not in row.detail
 
 
 @pytest.mark.asyncio
-async def test_update_billing_cycle_reanchors_budget_start_and_end(session_factory):
-    ids = await _seed(session_factory, cycle_day=1)
-    today = datetime.date.today()
-    new_day = 15 if today.day != 15 else 14
-    old_start = _anchor_for(1, today)
-    new_start = _anchor_for(new_day, today)
-    assert old_start != new_start
-
-    await _add_period(session_factory, ids["org"], old_start)
-    # A stale non-null snapshot, exactly the shape close_period can revive.
-    await _add_budget(
-        session_factory, ids["org"], ids["groceries"], old_start,
-        old_start + datetime.timedelta(days=20),
-    )
-    client = TestClient(_make_app(session_factory, ids["owner"]))
-
-    resp = client.put(
-        "/api/v1/settings/billing-cycle", json={"billing_cycle_day": new_day}
-    )
-
-    assert resp.status_code == 200, resp.text
-    budgets = await _budgets(session_factory, ids["org"])
-    assert len(budgets) == 1
-    assert budgets[0].period_start == new_start
-    # The open period's end_date is None, so the snapshot must become None.
-    assert budgets[0].period_end is None
-
-    rows = await _audit_rows(session_factory, "org.billing_cycle_day.updated")
-    assert rows[0].detail["budgets_reanchored"] == 1
-
-
-@pytest.mark.asyncio
-async def test_update_billing_cycle_identity_case_is_a_noop(session_factory):
-    """THE test of this slice.
-
-    An org that ever closed manually has an open period starting on an
-    arbitrary day. Re-saving the same cycle day (or `./pfv seed`, which
-    PUTs cycle day 25 right after creating a period starting on the 25th)
-    hits old_start == new_start. A naive pre-flight finds every budget
-    conflicting with itself and turns a working no-op into a hard 409.
-    """
-    ids = await _seed(session_factory, cycle_day=1)
-    today = datetime.date.today()
-    cycle_day = today.day if today.day <= 28 else 28
-    start = _anchor_for(cycle_day, today)
-    assert start == datetime.date(today.year, today.month, cycle_day)
-
-    await _add_period(session_factory, ids["org"], start)
-    budget_id = await _add_budget(
-        session_factory, ids["org"], ids["groceries"], start
-    )
-    client = TestClient(_make_app(session_factory, ids["owner"]))
-
-    resp = client.put(
-        "/api/v1/settings/billing-cycle", json={"billing_cycle_day": cycle_day}
-    )
-
-    assert resp.status_code == 200, resp.text
-    budgets = await _budgets(session_factory, ids["org"])
-    assert [b.id for b in budgets] == [budget_id]
-    assert budgets[0].period_start == start
-    assert budgets[0].period_end is None
-
-    rows = await _audit_rows(session_factory, "org.billing_cycle_day.updated")
-    assert rows[0].outcome.value == "success"
-    assert rows[0].detail["budgets_reanchored"] == 0
-
-
-@pytest.mark.asyncio
-async def test_update_billing_cycle_budget_conflict_returns_409(session_factory):
-    ids = await _seed(session_factory, cycle_day=1)
-    today = datetime.date.today()
-    new_day = 15 if today.day != 15 else 14
-    old_start = _anchor_for(1, today)
-    new_start = _anchor_for(new_day, today)
-    assert old_start != new_start
-
-    await _add_period(session_factory, ids["org"], old_start)
-    await _add_budget(session_factory, ids["org"], ids["groceries"], old_start)
-    # Same category already budgeted at the destination start.
-    await _add_budget(session_factory, ids["org"], ids["groceries"], new_start)
-    client = TestClient(_make_app(session_factory, ids["owner"]))
-
-    resp = client.put(
-        "/api/v1/settings/billing-cycle", json={"billing_cycle_day": new_day}
-    )
-
-    assert resp.status_code == 409, resp.text
-    body = resp.json()
-    assert body["code"] == "budget_period_conflict"
-    assert "Groceries" in body["detail"]
-
-    # Nothing moved, and the cycle day did not stick.
-    budgets = await _budgets(session_factory, ids["org"])
-    assert sorted(b.period_start for b in budgets) == sorted([old_start, new_start])
-    async with session_factory() as db:
-        org = (
-            await db.execute(
-                select(Organization).where(Organization.id == ids["org"])
-            )
-        ).scalar_one()
-    assert org.billing_cycle_day == 1
-
-    rows = await _audit_rows(session_factory, "org.billing_cycle_day.updated")
-    assert len(rows) == 1
-    assert rows[0].outcome.value == "failure"
-    assert rows[0].detail["reason"] == "budget_period_conflict"
-
-
-@pytest.mark.asyncio
-async def test_update_billing_cycle_period_conflict_returns_409(session_factory):
-    ids = await _seed(session_factory, cycle_day=1)
-    today = datetime.date.today()
-    new_day = 15 if today.day != 15 else 14
-    old_start = _anchor_for(1, today)
-    new_start = _anchor_for(new_day, today)
-    assert old_start != new_start
-
-    await _add_period(session_factory, ids["org"], old_start)
-    # A closed period already occupies the destination start.
-    await _add_period(
-        session_factory, ids["org"], new_start,
-        new_start + datetime.timedelta(days=5),
-    )
-    client = TestClient(_make_app(session_factory, ids["owner"]))
-
-    resp = client.put(
-        "/api/v1/settings/billing-cycle", json={"billing_cycle_day": new_day}
-    )
-
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["code"] == "billing_period_exists"
-
-    async with session_factory() as db:
-        period = (
-            await db.execute(
-                select(BillingPeriod).where(
-                    BillingPeriod.org_id == ids["org"],
-                    BillingPeriod.end_date.is_(None),
-                )
-            )
-        ).scalar_one()
-    assert period.start_date == old_start
-
-    rows = await _audit_rows(session_factory, "org.billing_cycle_day.updated")
-    assert len(rows) == 1
-    assert rows[0].outcome.value == "failure"
-    assert rows[0].detail["reason"] == "billing_period_exists"
-
-
-@pytest.mark.asyncio
-async def test_update_billing_cycle_period_race_returns_409(
+async def test_update_billing_cycle_leaves_no_gap_on_the_seed_shape(
     session_factory, monkeypatch
 ):
-    """The uq_billing_period_org_start pre-flight is TOCTOU.
+    """Case 3 — ``./pfv seed``'s own dataset, on the branch that used to
+    orphan a day.
 
-    A concurrent PUT, or BillingCloseJob (900s tick, `automate_billing_close`
-    on by default), can land a period on `new_start` between the SELECT and
-    the write. Blinding the pre-flight stands in for losing that race: the
-    only thing then standing between the duplicate and an unhandled 500 is
-    the explicit `db.flush()` + IntegrityError backstop in the router.
+    ``seed.py`` posts three closed periods and one open one, then PUTs cycle
+    day 25. With ``today.day < 25`` the old handler re-rooted the open
+    period from the 24th to the 25th of the previous month, orphaning the
+    24th: a day belonging to no period, invisible to ``list_budgets`` and
+    the forecast while still counting toward the account balance.
 
-    Without that flush the pending UPDATE is emitted by autoflush from the
-    first `db.execute` inside `reanchor_period_dependents`, i.e. outside the
-    router's handler entirely.
+    The date is FROZEN because the real clock spends most of the month in
+    the ``>= 25`` branch, where the old code happened to be a no-op. Seed's
+    own dates are deliberately NOT patched — the delete fixes this for
+    free, and patching seed.py would mask the regression.
     """
+    seed_today = datetime.date(2026, 3, 10)
+    assert seed_today.day < 25, "this case only bites in the `< 25` branch"
+    _freeze_today(monkeypatch, seed_today)
+
     ids = await _seed(session_factory, cycle_day=1)
-    today = datetime.date.today()
-    new_day = 15 if today.day != 15 else 14
-    old_start = _anchor_for(1, today)
-    new_start = _anchor_for(new_day, today)
-    assert old_start != new_start
-
-    open_id = await _add_period(session_factory, ids["org"], old_start)
-    await _add_period(
-        session_factory, ids["org"], new_start,
-        new_start + datetime.timedelta(days=5),
-    )
-    # A budget to move, so `reanchor_period_dependents` really would run and
-    # really would autoflush the period write if the router did not.
-    await _add_budget(session_factory, ids["org"], ids["groceries"], old_start)
-
-    real_scalar = AsyncSession.scalar
-
-    async def _blind_preflight(self, statement, *args, **kwargs):
-        # The router's period pre-flight is the only statement in this flow
-        # carrying an `id != :param` predicate.
-        if "billing_periods.id != " in str(statement):
-            return None
-        return await real_scalar(self, statement, *args, **kwargs)
-
-    monkeypatch.setattr(AsyncSession, "scalar", _blind_preflight)
     client = TestClient(_make_app(session_factory, ids["owner"]))
 
-    resp = client.put(
-        "/api/v1/settings/billing-cycle", json={"billing_cycle_day": new_day}
+    # Verbatim shape of seed.py:231-253 for this `today`.
+    first = seed_today.replace(day=1)
+    period_defs = [
+        (first - relativedelta(months=3) + datetime.timedelta(days=24),
+         first - relativedelta(months=2) + datetime.timedelta(days=21)),
+        (first - relativedelta(months=2) + datetime.timedelta(days=22),
+         first - relativedelta(months=1) + datetime.timedelta(days=22)),
+        (first - relativedelta(months=1) + datetime.timedelta(days=23),
+         first + datetime.timedelta(days=23)),
+    ]
+    for start, end in period_defs:
+        if end < seed_today:
+            resp = client.post(
+                "/api/v1/settings/billing-period",
+                json={"start_date": start.isoformat(), "end_date": end.isoformat()},
+            )
+            assert resp.status_code == 200, resp.text
+    last_end = (
+        period_defs[-1][1] if period_defs[-1][1] < seed_today else period_defs[-2][1]
     )
+    current_start = last_end + datetime.timedelta(days=1)
+    resp = client.post(
+        "/api/v1/settings/billing-period",
+        json={"start_date": current_start.isoformat()},
+    )
+    assert resp.status_code == 200, resp.text
 
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["code"] == "billing_period_exists"
+    resp = client.put(
+        "/api/v1/settings/billing-cycle", json={"billing_cycle_day": 25}
+    )
+    assert resp.status_code == 200, resp.text
 
-    rows = await _audit_rows(session_factory, "org.billing_cycle_day.updated")
-    assert len(rows) == 1
-    assert rows[0].outcome.value == "failure"
-    assert rows[0].detail["reason"] == "billing_period_exists"
-    assert rows[0].detail["race"] is True
-
-    # Nothing stuck: the open period kept its start, the budget did not move,
-    # and the cycle day was not persisted.
-    async with session_factory() as db:
-        period = (
-            await db.execute(
-                select(BillingPeriod).where(BillingPeriod.id == open_id)
-            )
-        ).scalar_one()
-        org = (
-            await db.execute(
-                select(Organization).where(Organization.id == ids["org"])
-            )
-        ).scalar_one()
-    assert period.start_date == old_start
-    assert org.billing_cycle_day == 1
-    budgets = await _budgets(session_factory, ids["org"])
-    assert [b.period_start for b in budgets] == [old_start]
+    periods = await _periods(session_factory, ids["org"])
+    assert [p.start_date for p in periods] == [
+        period_defs[0][0], period_defs[1][0], current_start,
+    ]
+    # No gap: every closed period ends the day before the next one starts.
+    for earlier, later in zip(periods, periods[1:]):
+        assert earlier.end_date is not None
+        assert earlier.end_date + datetime.timedelta(days=1) == later.start_date, (
+            f"gap or overlap between {earlier.start_date}..{earlier.end_date} "
+            f"and {later.start_date}"
+        )
+    assert periods[-1].start_date == current_start
+    assert periods[-1].end_date is None
 
 
 @pytest.mark.asyncio
@@ -649,6 +773,131 @@ async def test_update_billing_cycle_rejects_non_admin(session_factory):
 
     assert resp.status_code == 403
     assert await _audit_rows(session_factory) == []
+
+
+# ── billing_service.ensure_future_periods ─────────────────────────────────
+#
+# TBD-239 §2. The intersection predicate runs in SQL over the RAW
+# `end_date`. Built with `effective_end` / COALESCE semantics instead, the
+# open row (end_date IS NULL) would intersect every candidate and stub
+# creation would stop for every org, silently breaking next-period budgets.
+# The first test below is the guard for exactly that.
+
+
+@pytest.mark.asyncio
+async def test_ensure_future_periods_still_creates_stubs_on_a_healthy_org(
+    session_factory, monkeypatch
+):
+    """Case 4 — THE guard for §2.
+
+    A wrong intersection predicate does not fail loudly; it just creates
+    nothing. Without this test the first symptom is a budgets test failing
+    somewhere else entirely.
+    """
+    _freeze_today(monkeypatch, _FROZEN_TODAY)
+    ids = await _seed(session_factory, cycle_day=15)
+    await _add_period(session_factory, ids["org"], datetime.date(2026, 2, 15))
+
+    async with session_factory() as db:
+        created = await billing_service.ensure_future_periods(
+            db, ids["org"], count=3
+        )
+
+    assert [(p.start_date, p.end_date) for p in created] == [
+        (datetime.date(2026, 3, 15), datetime.date(2026, 4, 14)),
+        (datetime.date(2026, 4, 15), datetime.date(2026, 5, 14)),
+        (datetime.date(2026, 5, 15), datetime.date(2026, 6, 14)),
+    ]
+    assert _intersecting_pairs(await _periods(session_factory, ids["org"])) == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_future_periods_is_idempotent(session_factory, monkeypatch):
+    """The exact-start skip the intersection test replaces still holds: a
+    second call with the same cycle day adds nothing."""
+    _freeze_today(monkeypatch, _FROZEN_TODAY)
+    ids = await _seed(session_factory, cycle_day=15)
+    await _add_period(session_factory, ids["org"], datetime.date(2026, 2, 15))
+
+    async with session_factory() as db:
+        await billing_service.ensure_future_periods(db, ids["org"], count=3)
+    async with session_factory() as db:
+        again = await billing_service.ensure_future_periods(db, ids["org"], count=3)
+
+    assert again == []
+    assert len(await _periods(session_factory, ids["org"])) == 4
+
+
+@pytest.mark.asyncio
+async def test_ensure_future_periods_builds_no_second_grid_after_cycle_change(
+    session_factory, monkeypatch
+):
+    """Case 5 — the dual grid, which the §1 delete alone does NOT fix.
+
+    An off-grid org already carries stubs on the old cycle-day grid. After
+    the admin changes the cycle day, the next Budgets or Forecasts mount
+    calls `ensure_future_periods` with `base = current.start_date` and the
+    NEW cycle day, so every candidate lands mid-stub. Exact-start matching
+    missed all of them and built a second, overlapping grid.
+    """
+    _freeze_today(monkeypatch, _FROZEN_TODAY)
+    ids = await _seed_off_grid(session_factory)
+    # Stubs as a prior run on cycle day 15 would have left them.
+    for start, end in [
+        (datetime.date(2026, 4, 15), datetime.date(2026, 5, 14)),
+        (datetime.date(2026, 5, 15), datetime.date(2026, 6, 14)),
+        (datetime.date(2026, 6, 15), datetime.date(2026, 7, 14)),
+    ]:
+        await _add_period(session_factory, ids["org"], start, end)
+    before = await _roster(session_factory, ids["org"])
+
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+    resp = client.put(
+        "/api/v1/settings/billing-cycle", json={"billing_cycle_day": 25}
+    )
+    assert resp.status_code == 200, resp.text
+
+    async with session_factory() as db:
+        created = await billing_service.ensure_future_periods(
+            db, ids["org"], count=3
+        )
+
+    # Candidates were 2026-04-25, 2026-05-25 and 2026-06-25 — each one
+    # strictly inside an existing stub.
+    assert created == []
+    assert await _roster(session_factory, ids["org"]) == before
+    assert _intersecting_pairs(await _periods(session_factory, ids["org"])) == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_future_periods_on_a_stale_open_period(
+    session_factory, monkeypatch
+):
+    """Case 6 — an org whose open period started four months ago.
+
+    `base` is the open period's start, not today (see the docstring fix in
+    §2), so the candidates are historic. They must still be created: the
+    open row's NULL `end_date` carries no extent and cannot intersect
+    anything, and no candidate can reach backwards into it because every
+    candidate lands in a strictly later calendar month.
+    """
+    _freeze_today(monkeypatch, _FROZEN_TODAY)
+    ids = await _seed(session_factory, cycle_day=10)
+    open_start = datetime.date(2025, 11, 10)
+    await _add_period(session_factory, ids["org"], open_start)
+
+    async with session_factory() as db:
+        created = await billing_service.ensure_future_periods(
+            db, ids["org"], count=3
+        )
+
+    assert [(p.start_date, p.end_date) for p in created] == [
+        (datetime.date(2025, 12, 10), datetime.date(2026, 1, 9)),
+        (datetime.date(2026, 1, 10), datetime.date(2026, 2, 9)),
+        (datetime.date(2026, 2, 10), datetime.date(2026, 3, 9)),
+    ]
+    assert all(p.start_date > open_start for p in created)
+    assert _intersecting_pairs(await _periods(session_factory, ids["org"])) == []
 
 
 # ── billing_service.reanchor_period_dependents ────────────────────────────
