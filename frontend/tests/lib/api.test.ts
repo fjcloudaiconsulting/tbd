@@ -551,6 +551,46 @@ describe("apiFetch", () => {
       },
     });
   });
+
+  it("lifts a top-level code onto the error when detail is a plain string", async () => {
+    // TBD-232: main.py's ConflictError handler emits the machine code as a
+    // SIBLING of `detail`, not nested inside it. This is the shape every
+    // domain ConflictError in the app produces. Before this test the code
+    // was dropped and `err.code` was always undefined for 409s, so any
+    // `if (err.code === "budget_period_conflict")` branch never fired.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail: "A budget already exists at the new period start for: Groceries",
+          code: "budget_period_conflict",
+        },
+        { status: 409 },
+      ),
+    );
+
+    await expect(
+      apiFetch("/api/v1/settings/billing-cycle", { method: "PUT" }),
+    ).rejects.toMatchObject({
+      name: "ApiResponseError",
+      status: 409,
+      code: "budget_period_conflict",
+      message: "A budget already exists at the new period start for: Groceries",
+    });
+  });
+
+  it("leaves code undefined when the body carries no code at all", async () => {
+    // Guards the additive-only promise: adding the flat-code lookup must
+    // not start inventing codes for the ordinary { detail: "..." } shape.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: "Account not found" }, { status: 404 }),
+    );
+
+    const err = (await apiFetch("/api/v1/accounts/9999").catch(
+      (e) => e,
+    )) as ApiResponseError;
+    expect(err).toMatchObject({ name: "ApiResponseError", status: 404 });
+    expect(err.code).toBeUndefined();
+  });
 });
 
 
