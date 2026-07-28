@@ -218,7 +218,7 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     await waitFor(() => {
       expect(
         screen.getByText(
-          /Saving applies from your next billing period\. The period you are in now keeps its current dates\./i,
+          /Saving changes the day your billing periods start on, from your next period onward\./i,
         ),
       ).toBeInTheDocument();
     });
@@ -235,14 +235,46 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
 
     fireEvent.change(input, { target: { value: "15" } });
     const preview = await screen.findByText(
-      /Saving applies from your next billing period/i,
+      /Saving changes the day your billing periods start on/i,
     );
     expect(preview.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
     // The old copy promised a move of the current period's start. The
     // backend no longer does that, so the sentence must not either.
     expect(preview.textContent).not.toMatch(/move the current period/i);
+    // Nor may it promise the opposite. `BillingCloseJob.is_due` fires on
+    // the next 900s tick after a forward cycle-day move whose new day has
+    // already passed this month, closing the current period with an end
+    // date in the past. "keeps its current dates" would be false within
+    // fifteen minutes.
+    expect(preview.textContent).not.toMatch(/keeps its current dates/i);
     // House copy rule.
     expect(preview.textContent).not.toMatch(/—|–/);
+  });
+
+  // TBD-239 review F2. The "Current:" line projects the open period's end
+  // from the cycle day. Reading the LIVE input made it jump to a different
+  // date the instant the admin typed, while the preview two elements below
+  // simultaneously said saving does not re-date the current period. It reads
+  // from `savedCycleDay` instead, so it only moves after a successful save.
+  it("does not re-date the Current line while the cycle-day input is dirty", async () => {
+    render(<OrganizationSettingsPage />);
+    const input = (await screen.findByLabelText(
+      /Billing cycle day/i,
+    )) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("1"));
+
+    // start 2026-05-01 + saved cycle day 1 -> projected end 2026-05-31.
+    const before = await screen.findByText(/^Current: 2026-05-01/);
+    expect(before.textContent).toMatch(/2026-05-31/);
+
+    fireEvent.change(input, { target: { value: "15" } });
+    // Wait for the preview so we know the dirty-state render has flushed.
+    await screen.findByText(/Saving changes the day your billing periods start on/i);
+
+    const after = screen.getByText(/^Current: 2026-05-01/);
+    expect(after.textContent).toMatch(/2026-05-31/);
+    // Cycle day 15 would have projected 2026-06-14.
+    expect(after.textContent).not.toMatch(/2026-06-14/);
   });
 
   it("clears the preview once the value matches the saved one again", async () => {
@@ -255,13 +287,13 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     fireEvent.change(input, { target: { value: "15" } });
     await waitFor(() =>
       expect(
-        screen.getByText(/Saving applies from your next billing period/i),
+        screen.getByText(/Saving changes the day your billing periods start on/i),
       ).toBeInTheDocument(),
     );
     fireEvent.change(input, { target: { value: "1" } });
     await waitFor(() => {
       expect(
-        screen.queryByText(/Saving applies from your next billing period/i),
+        screen.queryByText(/Saving changes the day your billing periods start on/i),
       ).not.toBeInTheDocument();
     });
   });

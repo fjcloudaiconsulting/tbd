@@ -182,8 +182,23 @@ cross-day re-run.
 
 `frontend/app/settings/organization/page.tsx`:
 
-- **Preview (~`:603`)** → `Saving applies from your next billing period. The period you are in now keeps its current dates.`
-- **Success message (~`:282`)** → `Billing cycle saved. Your next period will start on day N.`
+- **Preview (~`:603`)** → `Saving changes the day your billing periods start on, from your next period onward. Saving on its own does not re-date the period you are in now. If automatic billing close is on, that period may close shortly so the new day can take effect.`
+  A shorter *"the period you are in now keeps its current dates"* was drafted and rejected: it is false
+  within fifteen minutes. `BillingCloseJob.is_due` compares the open period's start against
+  `current_cycle_window(NEW cycle_day, today)[0]`, so a forward move past a day that already went by
+  this month makes the next 900s tick close the current period with an end date in the past.
+- **Success message (~`:282`)** → `Billing cycle saved. Day N applies from your next billing period. Closing a period by hand still opens the next one the day after the close date.`
+  *"Your next period will start on day N"* was drafted and rejected: it is true only with
+  `automate_billing_close` ON. With it off, the only in-app close path (`:311`) posts no `close_date`,
+  so `close_period` defaults to yesterday and the next period starts **today**.
+- **Drop the `GET /billing-period` refetch after the PUT (~`:278-281`)**. The PUT writes one org column
+  and leaves the open period alone, so there is nothing to re-read; a failing refetch landed in the
+  `catch` and reported a save failure for a save that had already succeeded.
+- **`currentPeriodEndDisplay` (`:112-113`)** must read `savedCycleDay`, not the live `billingCycleDay`
+  input. Reading the live value made the `Current:` line jump to a different end date on the first
+  keystroke while the preview below it simultaneously said the current period is not re-dated. (The
+  deeper problem — `projectedPeriodEnd` being a month out for off-grid orgs — needs a backend-supplied
+  projected end and is TBD-235.)
 - **Delete `:570-571`** — *"Saving does not close anything: PUT /billing-cycle re-roots the open period's start in place and drags its budgets along."* Describes deleted code. Keep the rest of the `DELIBERATELY DATELESS` block (`:573-585`); its server-vs-browser date reasoning stands.
 - **Stale comment (~`:494-505`)** claiming a branch *"becomes reachable in TBD-234"* — it does not; TBD-234 is a separate read-only route that never feeds `currentPeriod`. Rewrite.
 - **The `if (!currentPeriod?.start_date) return "";` guard at `:602`, whose rationale comment is at `:597-601`** — justified by *"the sentence promises a move of 'the current period'"*. **Keep the guard** (the new sentence still refers to "the period you are in now") and update the comment. Decide explicitly so two engineers do not differ.
@@ -235,7 +250,11 @@ FK-sensitive assertion belongs in the router file.
 
 Cases:
 
-1. Cycle-day change forward and backward mutates **zero** `billing_periods` rows.
+1. Cycle-day change forward and backward mutates **zero** `billing_periods` rows — **only for an org
+   that already has an open period**. For an org with none, the retained `get_current_period` call takes
+   its auto-create branch and commits one row, carrying the pending `billing_cycle_day` with it. That
+   shape needs its own case, pinning the created row's start on the NEW grid; the handler docstring must
+   not claim "touches no period row" unconditionally.
 2. Audit row carries `applies_from: "next_period"`, `open_period_start`, and no `budgets_reanchored`.
 3. `./pfv seed`'s shape produces **no gap**. The `today.day < 25` branch is the one that currently
    orphans day 24, so it **needs a frozen date** — today's real date is in the `>= 25` branch, which is
@@ -248,7 +267,17 @@ Cases:
 6. Stale open period (start four months back) → stubs build without intersecting the open window.
 7. `POST /billing-period` rejects an overlapping window → 409 `billing_period_overlap`; a duplicate start
    still returns `billing_period_exists` first; a candidate with `end_date IS NULL` is checked on its
-   start date alone; existing rows with `end_date IS NULL` are ignored.
+   start date alone; an existing row with `end_date IS NULL` is compared on its **start** only — waved
+   through when that start is outside the candidate window, rejected when it falls inside it (its end is
+   unknowable, its start is not).
+7b. **The `ensure_future_periods` skip keeps an exact-start arm alongside the intersection arm.**
+   `close_period` REVIVES a stub at its `new_start` rather than inserting, so a closed intersecting row
+   can become an open row at a start still under consideration; the intersection arm alone then misses
+   it and `db.add` duplicates. The resulting `IntegrityError` fires from autoflush in the NEXT
+   iteration's `db.scalar`, outside the `try/except` around `db.commit()`, and escapes as a 500. Force
+   the race by monkeypatching `get_current_period` to return the pre-revive open row.
+7c. The `billing.stub.skipped_overlap` warning is asserted (`structlog.testing.capture_logs`); the skip
+   is otherwise invisible, so the event name and payload keys are the only production signal.
 8. `seed.billing_period_outcome` absorbs `billing_period_overlap` as well as `billing_period_exists`.
 9. Frontend: the four assertions on the old preview string at
    `organization-billing-period-polish.test.tsx:219, 236, 253, 259` updated; the em-dash guards at

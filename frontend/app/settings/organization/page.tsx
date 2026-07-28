@@ -109,8 +109,19 @@ export default function OrganizationSettingsPage() {
   const expectedResetPhrase = `RESET ${orgName}`;
   const resetPhraseMatches = resetPhrase.trim() === expectedResetPhrase;
 
+  // Derived from `savedCycleDay`, NOT the live input. Typing a new cycle day
+  // changes nothing on the server, so the "Current:" line must not react to
+  // keystrokes: it would re-date the current period on screen while the
+  // preview under the input says saving does not re-date it. Two
+  // contradictory statements in one card.
+  //
+  // Known wrong for off-grid orgs and NOT fixed here: `projectedPeriodEnd`
+  // assumes the open period starts on the cycle day, so for an org whose
+  // open period sits off the grid (any org that ever closed manually) the
+  // projection can be a month out. Correcting it needs the backend to return
+  // the period's projected end, which is TBD-235.
   const currentPeriodEndDisplay = currentPeriod
-    ? currentPeriod.end_date ?? projectedPeriodEnd(currentPeriod.start_date, Number(billingCycleDay))
+    ? currentPeriod.end_date ?? projectedPeriodEnd(currentPeriod.start_date, Number(savedCycleDay))
     : null;
 
   useEffect(() => {
@@ -275,11 +286,14 @@ export default function OrganizationSettingsPage() {
       // button correctly disables again until the next edit.
       userEditedCycleDayRef.current = false;
       setSavedCycleDay(String(day));
-      const period = await apiFetch<{ id: number; start_date: string; end_date: string | null }>(
-        "/api/v1/settings/billing-period"
+      // No GET /billing-period refetch here on purpose. The PUT writes one
+      // org column and leaves the open period alone, so there is nothing to
+      // re-read, and a failing refetch used to land in the catch below and
+      // report a save failure for a save that had already succeeded.
+      setSuccessMsg(
+        `Billing cycle saved. Day ${day} applies from your next billing period. ` +
+          "Closing a period by hand still opens the next one the day after the close date."
       );
-      setCurrentPeriod(period);
-      setSuccessMsg(`Billing cycle saved. Your next period will start on day ${day}.`);
       setTimeout(() => setSuccessMsg(""), 4000);
     } catch (err) {
       // Map known status codes to friendly copy; the raw server message
@@ -296,9 +310,10 @@ export default function OrganizationSettingsPage() {
     setConfirmAction({
       title: "Close billing period",
       // We POST /billing-period/close with no `close_date`, so the service
-      // defaults to closing yesterday (`billing_service.py:328-329`) and the
-      // replacement period opens today, not tomorrow. There is still no
-      // un-close endpoint or UI, so the caution stays until TBD-233/TBD-235.
+      // defaults to closing yesterday (see `close_period` in
+      // `billing_service.py`) and the replacement period opens today, not
+      // tomorrow. There is still no un-close endpoint or UI, so the caution
+      // stays until TBD-233/TBD-235.
       message:
         `Close the current billing period starting ${currentPeriod?.start_date}? ` +
         "This sets its end date to yesterday and opens a new period starting today. " +
@@ -603,7 +618,15 @@ export default function OrganizationSettingsPage() {
                     // not know there is one. Staying silent beats reassuring
                     // an admin about a period we cannot vouch for.
                     if (!currentPeriod?.start_date) return "";
-                    return "Saving applies from your next billing period. The period you are in now keeps its current dates.";
+                    // Does NOT promise the current period keeps its dates.
+                    // `BillingCloseJob.is_due` compares the open period's
+                    // start against the window derived from the NEW cycle
+                    // day, so a forward move past a day that already went by
+                    // this month makes the very next scheduler tick (900s)
+                    // close the current period, with an end date in the
+                    // past. Any "nothing changes now" wording here would be
+                    // contradicted inside fifteen minutes.
+                    return "Saving changes the day your billing periods start on, from your next period onward. Saving on its own does not re-date the period you are in now. If automatic billing close is on, that period may close shortly so the new day can take effect.";
                   })()}
                 </p>
                 {cycleFieldError && (

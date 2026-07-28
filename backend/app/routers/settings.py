@@ -2,7 +2,7 @@ import datetime
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -199,11 +199,15 @@ async def update_billing_cycle(
 ):
     """Set the org's billing cycle day. Applies from the NEXT period.
 
-    This writes one column and touches no period row and no budget. A
-    cycle-day change is a scheduling hint (``billing_service`` module
-    docstring); the org migrates onto the new grid at its next close, which
-    ``BillingCloseJob`` performs automatically when ``automate_billing_close``
-    is on.
+    For an org that already has an open period this writes one column and
+    modifies no period row and no budget. A cycle-day change is a
+    scheduling hint (``billing_service`` module docstring); the org
+    migrates onto the new grid at its next close, which ``BillingCloseJob``
+    performs automatically when ``automate_billing_close`` is on.
+
+    For an org with NO open period the ``get_current_period`` call below
+    inserts one and commits, so "zero rows written" is not true for that
+    shape. See the note on that call further down.
 
     TBD-239 deleted the re-anchor that used to move the open period's
     ``start_date`` in place. It checked only exact ``start_date`` equality,
@@ -217,10 +221,18 @@ async def update_billing_cycle(
 
     ``billing_service.get_current_period`` is still called: the audit payload
     names the period this change will NOT touch. Stated honestly, that call
-    auto-creates and **commits** when the org has no open row
-    (``billing_service.py:88-112``), committing the pending
-    ``billing_cycle_day`` with it. Benign — the new row lands on the new grid
-    — and pre-existing.
+    auto-creates and **commits** when the org has no open row (the
+    ``if period is None`` branch of ``billing_service.get_current_period``),
+    committing the pending ``billing_cycle_day`` with it. Benign — the new
+    row lands on the new grid — and pre-existing.
+
+    Pre-existing and NOT fixed here: if that auto-create loses an insert
+    race, its ``IntegrityError`` branch calls ``db.rollback()``, which also
+    discards the pending ``org.billing_cycle_day`` assignment above. The
+    ``db.commit()`` below then writes nothing and this endpoint still
+    returns 200 with a ``success`` audit row for a save that did not land.
+    Narrow (needs two concurrent first-ever period creations for the same
+    org) and out of scope for TBD-239.
     """
     _require_admin(current_user)
 
@@ -364,15 +376,20 @@ async def create_period(
     #
     # NULL semantics, pinned in both directions:
     #
-    # * Existing rows are compared on their RAW `end_date`. A row with
-    #   `end_date IS NULL` is the open period, whose true extent is
-    #   unknowable at insert time, so it cannot be intersected with; SQL
-    #   three-valued logic drops it from `end_date >= :start` on its own and
-    #   the explicit `is_not(None)` below only documents that intent. Its
-    #   exact start is still protected, by the check above.
+    # * A CLOSED existing row (arm 1) is compared on its RAW `end_date`,
+    #   window against window.
+    # * An OPEN existing row (arm 2) has an unknowable end, so it cannot be
+    #   intersected as a window. Its `start_date` is perfectly knowable
+    #   though, and the candidate's window is fully known, so an open row
+    #   whose start falls inside [candidate.start, candidate_end] is a
+    #   PROVABLE overlap and is rejected. Only the unprovable part (whether
+    #   the open row extends past the candidate) is waved through. An
+    #   earlier revision skipped open rows entirely and let that provable
+    #   case land: repeated `./pfv seed` runs produced closed rows that
+    #   swallowed an open row's start.
     # * The CANDIDATE is checked on its `start_date` alone when it carries no
     #   `end_date` (`BillingPeriodCreate.end_date` is optional and
-    #   `seed.py:250-251` posts exactly that shape). Treating an open
+    #   `seed.py:260-261` posts exactly that shape). Treating an open
     #   candidate as unbounded would make seeding an open period after any
     #   closed period conflict every time.
     candidate_end = body.end_date or body.start_date
@@ -381,9 +398,17 @@ async def create_period(
             select(BillingPeriod)
             .where(
                 BillingPeriod.org_id == current_user.org_id,
-                BillingPeriod.end_date.is_not(None),
                 BillingPeriod.start_date <= candidate_end,
-                BillingPeriod.end_date >= body.start_date,
+                or_(
+                    and_(
+                        BillingPeriod.end_date.is_not(None),
+                        BillingPeriod.end_date >= body.start_date,
+                    ),
+                    and_(
+                        BillingPeriod.end_date.is_(None),
+                        BillingPeriod.start_date >= body.start_date,
+                    ),
+                ),
             )
             .order_by(BillingPeriod.start_date)
             .limit(1)
@@ -394,9 +419,17 @@ async def create_period(
         # the exact-start case no unique constraint backstops an intersecting
         # row. Best-effort by design; detection of what slips through is
         # TBD-234's anomaly kernel.
+        covers = (
+            f"starts on {overlap.start_date.isoformat()} and is still open"
+            if overlap.end_date is None
+            else (
+                f"covers {overlap.start_date.isoformat()} to "
+                f"{overlap.end_date.isoformat()}"
+            )
+        )
         raise ConflictError(
-            f"A billing period already covers {overlap.start_date.isoformat()} "
-            f"to {overlap.end_date.isoformat()}. Choose dates outside that range.",
+            f"A billing period already {covers}. "
+            "Choose dates outside that range.",
             code="billing_period_overlap",
         )
 
