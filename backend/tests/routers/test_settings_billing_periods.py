@@ -53,11 +53,12 @@ from app.models.audit_event import AuditEvent
 from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category
+from app.models.forecast_plan import ForecastPlan
 from app.models.user import Organization, Role, User
 from app.routers import settings as settings_module
 from app.routers.settings import router as settings_router
 from app.security import hash_password
-from app.services import billing_service
+from app.services import billing_service, budget_service
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
@@ -632,6 +633,187 @@ async def test_close_period_rejects_non_admin(session_factory):
 
     assert resp.status_code == 403
     assert await _audit_rows(session_factory) == []
+
+
+# ── TBD-241: chain-close, through the FK-enforcing harness ────────────────
+#
+# Spec: specs/2026-07-28-close-period-chain-close-design.md, §5 tests 14-17.
+#
+# House rule: FK-sensitive assertions belong in THIS file, whose fixture sets
+# `PRAGMA foreign_keys=ON` (`:75`). `tests/services/test_billing_service.py`
+# does not, so an FK violation passes there undetected — which is exactly what
+# tests 14 and 15 exist to catch.
+#
+# Tests 14 and 15 carry a GUARD as their purpose but are also regression
+# fences: both FAIL against `main`. Test 14 expects the response to open at
+# 2026-05-25 where `main` jumps the whole way and opens 2026-07-25; test 15
+# expects the revived row's budget to carry `period_end is None` where `main`
+# leaves the stale 2026-06-24 snapshot. *(The spec, and the first draft of this
+# comment, called them "guards that pass against main". Checked against `main`
+# during the code review — they do not. Corrected, F6.)*
+#
+# The guard half is what they were written for: the design that was rejected in
+# favour of the clamp absorbed intervening periods by DELETEing them, and
+# `forecast_plans.billing_period_id` is NOT NULL with no `ondelete`
+# (`models/forecast_plan.py:43`), so InnoDB would RESTRICT -> MySQL 1451 -> an
+# unhandled 500. `Budget` has no FK at all and `period_start` is its sole join
+# key, so a deleted period would strand its budgets: invisible via
+# `list_budgets` (which swallows the error and returns `[]`) while still
+# occupying `uq_budget_org_cat_period`.
+#
+# Test 17 is `test_close_period_audits_non_validation_failures` above: its
+# `_boom(db, org_id, close_date=None)` monkeypatch still matches because D2
+# made `today` KEYWORD-ONLY and the router call site deliberately does not pass
+# it.
+
+
+async def _lapsed_roster(factory) -> dict:
+    """Open period two cycles behind plus two intact stubs, cycle day 25.
+
+    The §0 roster: an org whose open period has lapsed, with stubs a Forecasts
+    mount already created ahead of it.
+    """
+    ids = await _seed(factory, cycle_day=25)
+    ids["open"] = await _add_period(factory, ids["org"], datetime.date(2026, 4, 25))
+    ids["stub_1"] = await _add_period(
+        factory, ids["org"], datetime.date(2026, 5, 25), datetime.date(2026, 6, 24)
+    )
+    ids["stub_2"] = await _add_period(
+        factory, ids["org"], datetime.date(2026, 6, 25), datetime.date(2026, 7, 24)
+    )
+    return ids
+
+
+@pytest.mark.asyncio
+async def test_clamped_close_leaves_a_stubs_forecast_plan_intact(
+    session_factory, monkeypatch
+):
+    """§5 test 14 — no row is deleted, so no FK is ever restricted."""
+    _freeze_today(monkeypatch, datetime.date(2026, 7, 28))
+    ids = await _lapsed_roster(session_factory)
+    async with session_factory() as db:
+        plan = ForecastPlan(org_id=ids["org"], billing_period_id=ids["stub_2"])
+        db.add(plan)
+        await db.commit()
+        plan_id = plan.id
+
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+    resp = client.post(
+        "/api/v1/settings/billing-period/close?close_date=2026-07-24"
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["start_date"] == "2026-05-25"
+
+    async with session_factory() as db:
+        plan_row = (
+            await db.execute(select(ForecastPlan).where(ForecastPlan.id == plan_id))
+        ).scalar_one()
+        assert plan_row.billing_period_id == ids["stub_2"]
+    assert await _roster(session_factory, ids["org"]) == [
+        (ids["open"], datetime.date(2026, 4, 25), datetime.date(2026, 5, 24)),
+        (ids["stub_1"], datetime.date(2026, 5, 25), None),
+        (ids["stub_2"], datetime.date(2026, 6, 25), datetime.date(2026, 7, 24)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_clamped_close_leaves_stub_budgets_reachable(
+    session_factory, monkeypatch
+):
+    """§5 test 15 — every intervening period survives AS the closed period the
+    user planned, with its budgets still joinable at its own start."""
+    _freeze_today(monkeypatch, datetime.date(2026, 7, 28))
+    ids = await _lapsed_roster(session_factory)
+    revived_budget = await _add_budget(
+        session_factory, ids["org"], ids["groceries"],
+        datetime.date(2026, 5, 25), datetime.date(2026, 6, 24),
+    )
+    await _add_budget(
+        session_factory, ids["org"], ids["groceries"],
+        datetime.date(2026, 6, 25), datetime.date(2026, 7, 24),
+    )
+
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+    resp = client.post(
+        "/api/v1/settings/billing-period/close?close_date=2026-07-24"
+    )
+    assert resp.status_code == 200, resp.text
+
+    async with session_factory() as db:
+        untouched = await budget_service.list_budgets(
+            db, ids["org"], datetime.date(2026, 6, 25)
+        )
+    assert [b.category_id for b in untouched] == [ids["groceries"]]
+    assert untouched[0].period_end == datetime.date(2026, 7, 24)
+
+    # D5's mirror: the revived row is open again, so its budgets' stored
+    # `period_end` snapshot is cleared rather than left describing a window
+    # that no longer ends.
+    assert (await _budgets(session_factory, ids["org"]))[0].id == revived_budget
+    async with session_factory() as db:
+        revived = await budget_service.list_budgets(
+            db, ids["org"], datetime.date(2026, 5, 25)
+        )
+    assert revived[0].period_end is None
+
+
+@pytest.mark.asyncio
+async def test_clamped_close_audits_the_clamped_and_the_requested_date(
+    session_factory, monkeypatch
+):
+    """§5 test 16 — D10's audit mechanism.
+
+    The audit key `close_date` is derived from the NEW period's start
+    (`settings.py:568`), never echoed from the parameter, so it already reports
+    the CLAMPED date with no code change. `requested_close_date` is added as a
+    verbatim echo of the raw parameter — null when absent, which under the
+    current UI means null on every human close. The clamp signal itself is the
+    service's structured event.
+    """
+    _freeze_today(monkeypatch, datetime.date(2026, 7, 28))
+    ids = await _lapsed_roster(session_factory)
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+
+    with structlog.testing.capture_logs() as logs:
+        resp = client.post(
+            "/api/v1/settings/billing-period/close?close_date=2026-07-24"
+        )
+    assert resp.status_code == 200, resp.text
+
+    rows = await _audit_rows(session_factory, "org.billing_period.closed")
+    assert len(rows) == 1
+    detail = rows[0].detail
+    assert detail["close_date"] == "2026-05-24", "the CLAMPED date"
+    assert detail["requested_close_date"] == "2026-07-24"
+    assert detail["closed_period_id"] == ids["open"]
+    assert detail["new_period_start"] == "2026-05-25"
+
+    clamped = [e for e in logs if e.get("event") == "billing.close.clamped"]
+    assert len(clamped) == 1
+    assert clamped[0]["requested_close_date"] == "2026-07-24"
+    assert clamped[0]["clamped_to"] == "2026-05-24"
+    assert clamped[0]["absorbed_period_ids"] == [ids["stub_1"], ids["stub_2"]]
+    assert clamped[0]["revived_period_id"] == ids["stub_1"]
+
+
+@pytest.mark.asyncio
+async def test_unclamped_close_audits_a_null_requested_date(
+    session_factory, monkeypatch
+):
+    """D10's honest limitation, pinned: the UI sends no `close_date`, so the
+    echo is null for every human close and the audit row alone cannot
+    distinguish "asked for 07-27" from "asked for nothing"."""
+    _freeze_today(monkeypatch, datetime.date(2026, 7, 28))
+    ids = await _seed(session_factory, cycle_day=25)
+    await _add_period(session_factory, ids["org"], datetime.date(2026, 7, 25))
+    client = TestClient(_make_app(session_factory, ids["owner"]))
+
+    assert client.post("/api/v1/settings/billing-period/close").status_code == 200
+
+    rows = await _audit_rows(session_factory, "org.billing_period.closed")
+    assert rows[0].detail["requested_close_date"] is None
+    assert rows[0].detail["close_date"] == "2026-07-27"
 
 
 # ── PUT /billing-cycle ────────────────────────────────────────────────────

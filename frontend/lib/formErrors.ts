@@ -140,9 +140,12 @@ export function mapBillingCycleError(
       // answer `billing_period_exists` or `budget_period_conflict`; the
       // re-anchor is gone, so the endpoint now has no 409 path at all.
       // Deleting this branch would only mean re-deriving it: TBD-235
-      // brings re-anchoring back as an explicit confirmed action and
-      // TBD-241 bounds `close_period`, and both raise ConflictError with
-      // exactly this shape. Until then it costs one switch case and
+      // brings re-anchoring back as an explicit confirmed action, and it
+      // raises ConflictError with exactly this shape. (TBD-241 shipped
+      // `close_period`'s bound without adding a reachable 409 to THIS
+      // endpoint; its own defence-in-depth 409 branch lives on
+      // `mapBillingPeriodCloseError` below.) Until then it costs one
+      // switch case and
       // guarantees a stray 409 never reaches a user as a bare fallback.
       //
       // The server raises ConflictError with a specific, already
@@ -175,9 +178,27 @@ export function mapBillingPeriodCloseError(
       if (/already.*closed/i.test(err.message) || /no.*open/i.test(err.message)) {
         return "This period is already closed. Refresh the page to see the next one.";
       }
+      // TBD-241 D1. The server message is pinned as "Close date cannot be in
+      // the future" (`billing_service.close_period`), so the predicate and the
+      // sentence are not written against each other by guesswork. Rewording
+      // either one without the other drops this back to the bare fallback.
+      if (/cannot be in the future/i.test(err.message)) {
+        return "That close date is in the future. Pick today or an earlier day.";
+      }
       return fallback;
     case 403:
       return "You do not have permission to close the period.";
+    case 409:
+      // TBD-241 D7 — defence in depth, NOT a reachable path. The close's
+      // budget re-anchor is the identity case, whose pre-flight carries a
+      // contradictory pair of `period_start` predicates and so matches
+      // nothing; its IntegrityError backstop is unreachable under the
+      // service's normative operation order; and the UPDATE changes only
+      // `period_end`, which is not part of `uq_budget_org_cat_period`. The
+      // mapper had no `case 409` at all, so a stray one would have reached the
+      // user as the generic fallback with the server's specific, already
+      // customer-facing sentence thrown away.
+      return err.message.trim() || "Something else changed this period while you were closing it. Refresh and try again.";
     case 429:
       return "Too many attempts. Wait a moment and try again.";
     default:

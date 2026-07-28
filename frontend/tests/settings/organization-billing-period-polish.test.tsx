@@ -300,12 +300,21 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
 
   // ── TBD-232: the close-period confirm must describe what actually happens ──
   //
-  // The frontend POSTs /billing-period/close with no `close_date`, so the
-  // service closes YESTERDAY and the replacement period opens TODAY. The
-  // previous copy said only "a new period will open automatically", which
-  // told the admin nothing about which dates move.
+  // The frontend POSTs /billing-period/close with no `close_date`.
+  //
+  // TBD-241 D6: the copy this test used to pin ("sets its end date to
+  // yesterday and opens a new period starting today") became FALSE. The
+  // service now clamps the close to the first intervening period boundary, so
+  // on a lapsed org with stubs ahead of it BOTH halves are wrong. The
+  // replacement must not name a date it cannot know before the call.
+  //
+  // Code review F6: the replacement's first draft ("if a later period already
+  // exists, the close stops at the day before it starts") was itself only
+  // sometimes true — a later period beyond the close date stops nothing. The
+  // copy now states only the guarantee that always holds, and this test pins
+  // that shape rather than the mechanism.
 
-  it("confirm copy states the close sets yesterday and opens today", async () => {
+  it("confirm copy describes the close without promising a date it cannot know", async () => {
     render(<OrganizationSettingsPage />);
     const closeBtn = await screen.findByRole("button", { name: /Close period/i });
     fireEvent.click(closeBtn);
@@ -314,9 +323,14 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     expect(dialog.textContent).toMatch(
       /Close the current billing period starting 2026-05-01\?/,
     );
-    expect(dialog.textContent).toMatch(
-      /sets its end date to yesterday and opens a new period starting today/i,
-    );
+    expect(dialog.textContent).toMatch(/ends the period and opens the next one/i);
+    expect(dialog.textContent).toMatch(/never swallowed/i);
+    expect(dialog.textContent).toMatch(/never reaches past one/i);
+    // The over-promise from the first draft of this copy is gone too.
+    expect(dialog.textContent).not.toMatch(/stops at the day before/i);
+    // The sentences TBD-241 falsified are gone.
+    expect(dialog.textContent).not.toMatch(/end date to yesterday/i);
+    expect(dialog.textContent).not.toMatch(/starting today/i);
     // The caution survives: reopening is still impossible from the app.
     expect(dialog.textContent).toMatch(/no way to reopen a period from the app yet/i);
     // The old, misleading sentence is gone.
