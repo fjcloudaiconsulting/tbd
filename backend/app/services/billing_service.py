@@ -6,13 +6,21 @@ and opens a new period starting the next day.
 
 The org's billing_cycle_day is used as a hint to auto-create the first
 period, but the user has full control over when to close.
+
+Note on :func:`reanchor_period_dependents`: it has **no production caller**.
+TBD-239 deleted the one it had (``PUT /billing-cycle``'s re-anchor), and its
+named future consumers are TBD-235 (boundary editor / re-anchor as an
+explicit confirmed action) and TBD-241 (``close_period`` bound). It is kept
+deliberately, with its direct service tests. Two consequences: do not prune
+it as dead code, and do not read those tests as end-to-end coverage — no
+request path reaches it today.
 """
 
 import calendar
 import datetime
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -148,10 +156,14 @@ async def list_periods(db: AsyncSession, org_id: int) -> list[BillingPeriod]:
 async def ensure_future_periods(
     db: AsyncSession, org_id: int, count: int = 3,
 ) -> list[BillingPeriod]:
-    """Create stub periods for the next `count` months from today.
+    """Create stub periods for the `count` cycles after the OPEN period.
 
-    Always anchored to today — calling this multiple times is idempotent
-    and will never create stubs beyond `count` months in the future.
+    Anchored to the open period's ``start_date`` (the ``base`` local below),
+    not to today.
+    For an org whose open period is months behind the calendar the stubs are
+    therefore historic; correcting the anchor is TBD-235 blocker 1, not this
+    function's job. Calling this repeatedly is idempotent: a candidate whose
+    window intersects an existing period is skipped.
     """
     current = await get_current_period(db, org_id)
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
@@ -162,18 +174,82 @@ async def ensure_future_periods(
     created = []
     for i in range(1, count + 1):
         next_start = _snap_to_cycle(base + relativedelta(months=i), cycle_day)
+        end_date = _snap_to_cycle(next_start + relativedelta(months=1), cycle_day) - datetime.timedelta(days=1)
 
-        # Skip if already exists
-        existing = await db.scalar(
+        # Skip when the candidate collides with an existing period
+        # (TBD-239 §2). BOTH arms below are needed; neither is a superset of
+        # the other.
+        #
+        # Arm 1 — exact start. Cheap, and the ONLY arm that is safe against
+        # a concurrent `close_period`. `close_period` does not insert when a
+        # stub already sits at its `new_start`; it REVIVES that stub by
+        # setting `end_date = None`. So a row that arm 2 matched a moment
+        # ago (closed, intersecting) can become an open row at a start this
+        # loop is still about to propose. Arm 2 alone would then miss it and
+        # `db.add` a duplicate, and the resulting IntegrityError surfaces
+        # from autoflush inside the NEXT iteration's `db.scalar` — outside
+        # the try/except around `db.commit()` below, so it escapes as a 500.
+        # Arm 1 matches regardless of `end_date` and closes that window.
+        #
+        # Arm 2 — window intersection. Exact-start matching alone was not
+        # enough either: `PUT /billing-cycle` used to move the open period
+        # off the grid and the cycle day can change at any time, so the very
+        # next mount of Budgets or Forecasts proposed a whole second grid
+        # whose windows sat across the existing one. Days counted twice, in
+        # two periods.
+        #
+        # Arm 2 is compared against the RAW `end_date`, deliberately.
+        # `effective_end`, `COALESCE(end_date, '9999-12-31')` or hydrating
+        # the rows and filtering in Python would each make the OPEN period
+        # (end_date IS NULL) intersect every candidate and stop stub
+        # creation for every org — silently, since the loop just creates
+        # nothing.
+        #
+        # `end_date IS NOT NULL` in arm 2 is redundant: in SQL three-valued
+        # logic `end_date >= :start` already does not match NULL. It is kept
+        # as documentation of intent. Letting arm 2 skip open rows is safe
+        # because candidates are `base + i months` snapped to the cycle day
+        # for `i >= 1` with `cycle_day` in [1, 28] (see
+        # `BillingCycleUpdate` in schemas/settings.py), so a candidate always
+        # lands in a strictly later calendar month than the open row it was
+        # derived from; a backward overlap is impossible. That argument
+        # depends on `base` coming from the MAX open start, which is what
+        # `get_current_period`'s `order_by(start_date.desc())` guarantees
+        # when the duplicate-open-row case warned about below is live.
+        #
+        # Known hole: this is blind to a SECOND open row whose start is not
+        # a candidate start. `get_current_period` warns when it finds
+        # several, and `POST /billing-period` can insert an open row at an
+        # arbitrary start (`seed.py:260-261` does).
+        # `uq_billing_period_org_start` backstops only exact-start
+        # collisions.
+        overlapping = await db.scalar(
             select(BillingPeriod.id).where(
                 BillingPeriod.org_id == org_id,
-                BillingPeriod.start_date == next_start,
-            )
+                or_(
+                    BillingPeriod.start_date == next_start,
+                    and_(
+                        BillingPeriod.end_date.is_not(None),
+                        BillingPeriod.start_date <= end_date,
+                        BillingPeriod.end_date >= next_start,
+                    ),
+                ),
+            ).limit(1)
         )
-        if existing:
+        if overlapping is not None:
+            # Skip silently and keep going: this runs on every Budgets and
+            # Forecasts mount (budgets/page.tsx:97,
+            # ForecastPlansClient.tsx:290), so a 409 here would break two
+            # pages for an org whose roster is merely off-grid.
+            import structlog
+            await structlog.stdlib.get_logger().awarning(
+                "billing.stub.skipped_overlap",
+                org_id=org_id,
+                candidate_start=next_start.isoformat(),
+                candidate_end=end_date.isoformat(),
+                existing_period_id=overlapping,
+            )
             continue
-
-        end_date = _snap_to_cycle(next_start + relativedelta(months=1), cycle_day) - datetime.timedelta(days=1)
 
         stub = BillingPeriod(org_id=org_id, start_date=next_start, end_date=end_date)
         db.add(stub)
@@ -224,11 +300,14 @@ async def reanchor_period_dependents(
        already what every affected row carries, return 0 without running
        any pre-flight. The rows being "moved" ARE the rows at the
        destination, so a naive pre-flight finds each budget conflicting
-       with itself. This is not hypothetical: ``close_period`` defaults to
-       "close yesterday", so any org that ever closed manually has an open
-       period starting off the cycle-day grid, and an admin re-saving the
-       same cycle day would get a permanent 409 on a previously working
-       no-op. ``./pfv seed`` hits the same path ~7 days a month.
+       with itself, and the caller gets a 409 on what is really a no-op.
+       TBD-239 deleted the one caller that reached this shape in
+       production (``PUT /billing-cycle``'s re-anchor), so the rule is
+       currently proven only by this module's own tests. It is kept
+       because the named future callers hit the same shape by
+       construction: TBD-235's boundary editor calls this twice per move
+       and the first call is always ``old_start == new_start`` with only
+       ``new_end`` changing.
     2. **The pre-flight excludes rows whose ``period_start == old_start``** —
        i.e. the rows being moved — for the same reason.
     3. **The IntegrityError backstop stays alongside the pre-flight.** A
@@ -261,8 +340,10 @@ async def reanchor_period_dependents(
             return 0
         # Narrow the UPDATE to the rows whose snapshot is actually stale.
         # Unscoped it matches every row at `old_start`, including ones that
-        # already carry `new_end`, and the returned count (surfaced as
-        # `budgets_reanchored` in the audit detail) over-reports.
+        # already carry `new_end`, and the returned count over-reports.
+        # TBD-239 removed the `budgets_reanchored` audit key along with the
+        # `PUT /billing-cycle` re-anchor, so nothing surfaces that count
+        # today; keep it honest for the callers TBD-235/TBD-241 add back.
         update_where = (*moving_at_old, end_differs)
 
     # Pre-flight for uq_budget_org_cat_period. Excludes the rows being moved

@@ -2,7 +2,7 @@ import datetime
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -197,20 +197,49 @@ async def update_billing_cycle(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
-    """Re-root the open period on a new cycle day and move its budgets with it.
+    """Set the org's billing cycle day. Applies from the NEXT period.
 
-    This closes nothing and creates nothing: the open period's ``start_date``
-    moves in place and every budget anchored to the old start follows.
+    For an org that already has an open period this writes one column and
+    modifies no period row and no budget. A cycle-day change is a
+    scheduling hint (``billing_service`` module docstring); the org
+    migrates onto the new grid at its next close, which ``BillingCloseJob``
+    performs automatically when ``automate_billing_close`` is on.
 
-    The budget move lives in ``billing_service.reanchor_period_dependents``
-    so TBD-235's boundary editor does not become a second implementation of
-    the same thing. The ``if old_start != new_start:`` guard below is kept —
-    only the inline ``UPDATE Budget`` it used to wrap is gone.
+    For an org with NO open period the ``get_current_period`` call below
+    inserts one and commits, so "zero rows written" is not true for that
+    shape. See the note on that call further down.
+
+    TBD-239 deleted the re-anchor that used to move the open period's
+    ``start_date`` in place. It checked only exact ``start_date`` equality,
+    never the predecessor's ``end_date``, so a forward move opened a gap
+    (days belonging to no period: invisible to ``budget_service.list_budgets``
+    and the forecast, yet still counted in the account balance) and a
+    backward move silently pulled already-closed, already-reported settled
+    spend out of a closed period. A forward re-anchor is exactly expressible
+    as a close; a backward one is not expressible as anything honest.
+    Re-anchoring returns in TBD-235 as an explicit, confirmed action.
+
+    ``billing_service.get_current_period`` is still called: the audit payload
+    names the period this change will NOT touch. Stated honestly, that call
+    auto-creates and **commits** when the org has no open row (the
+    ``if period is None`` branch of ``billing_service.get_current_period``),
+    committing the pending ``billing_cycle_day`` with it. Benign — the new
+    row lands on the new grid — and pre-existing.
+
+    Pre-existing and NOT fixed here: if that auto-create loses an insert
+    race, its ``IntegrityError`` branch calls ``db.rollback()``, which also
+    discards the pending ``org.billing_cycle_day`` assignment above. The
+    ``db.commit()`` below then writes nothing and this endpoint still
+    returns 200 with a ``success`` audit row for a save that did not land.
+    Narrow (needs two concurrent first-ever period creations for the same
+    org) and out of scope for TBD-239.
     """
     _require_admin(current_user)
 
-    # Snapshot actor identity before any await on db so a rollback path
-    # can't expire `current_user` and break the audit row.
+    # Snapshot actor identity before any await on db. No handler path rolls
+    # back today, but `record_audit_event` opens its own session after the
+    # request session has committed, and an expired `current_user` there
+    # would break the audit row.
     actor_user_id = current_user.id
     actor_email = current_user.email
     actor_org_id = current_user.org_id
@@ -226,12 +255,11 @@ async def update_billing_cycle(
     new_day = body.billing_cycle_day
     org.billing_cycle_day = new_day
 
-    # Recalculate the current open period to match the new cycle day
+    # The open period is NOT modified. It is read so the audit row can name
+    # the period the new cycle day does not apply to.
     current_period = await billing_service.get_current_period(db, actor_org_id)
     period_id = current_period.id
-    old_start = current_period.start_date
-    new_start = old_start
-    reanchored = 0
+    open_period_start = current_period.start_date
 
     async def _audit(outcome: str, **extra) -> None:
         """Structlog breadcrumb + audit row for this endpoint.
@@ -240,14 +268,19 @@ async def update_billing_cycle(
         (audit_service.py) and names "the structlog event the caller already
         emitted" as its fallback record, so the log line has to be emitted
         first — otherwise a transient audit-session failure leaves no trace
-        at all that a period boundary and its budgets moved.
+        at all that an org's billing cycle day changed.
+
+        Written as a closure, and kept as one after TBD-239 removed the
+        ``outcome="failure"`` call sites: the payload keys stay in one place
+        for the failure branch TBD-235 will add back when re-anchoring
+        returns as an explicit action.
         """
         payload = {
             "old_day": old_day,
             "new_day": new_day,
             "period_id": period_id,
-            "old_start": old_start.isoformat(),
-            "new_start": new_start.isoformat(),
+            "open_period_start": open_period_start.isoformat(),
+            "applies_from": "next_period",
             **extra,
         }
         await logger.ainfo(
@@ -271,84 +304,9 @@ async def update_billing_cycle(
             detail=payload,
         )
 
-    if current_period.end_date is None:
-        today = datetime.date.today()
-        y, m, d = today.year, today.month, today.day
-        if d >= new_day:
-            new_start = datetime.date(y, m, new_day)
-        else:
-            prev = datetime.date(y, m, 1) - datetime.timedelta(days=1)
-            new_start = datetime.date(prev.year, prev.month, new_day)
-
-        if old_start != new_start:
-            # uq_billing_period_org_start pre-flight. Excludes this period so
-            # the identity case can never collide with itself.
-            clash = await db.scalar(
-                select(BillingPeriod.id).where(
-                    BillingPeriod.org_id == actor_org_id,
-                    BillingPeriod.start_date == new_start,
-                    BillingPeriod.id != period_id,
-                )
-            )
-            if clash is not None:
-                await db.rollback()
-                await _audit(
-                    "failure",
-                    reason="billing_period_exists",
-                    conflicting_period_id=clash,
-                )
-                raise ConflictError(
-                    f"A billing period already starts on {new_start.isoformat()}",
-                    code="billing_period_exists",
-                )
-            current_period.start_date = new_start
-
-            # Flush the period write HERE, where an IntegrityError is still
-            # attributable to it. Left pending, autoflush would fire it from
-            # the first `db.execute` inside `reanchor_period_dependents` —
-            # i.e. a uq_billing_period_org_start violation raised outside
-            # this handler (unhandled 500, the exact failure class this
-            # slice removes) or, once TBD-235 makes that helper run twice,
-            # swallowed by its own `except IntegrityError` and reported as
-            # `budget_period_conflict` with a message about budgets that
-            # never moved. The pre-flight above is TOCTOU: a concurrent PUT
-            # or BillingCloseJob (900s tick, `automate_billing_close` on by
-            # default) can land a period on `new_start` in between.
-            try:
-                await db.flush()
-            except IntegrityError:
-                await db.rollback()
-                await _audit(
-                    "failure", reason="billing_period_exists", race=True
-                )
-                raise ConflictError(
-                    f"A billing period already starts on {new_start.isoformat()}",
-                    code="billing_period_exists",
-                )
-
-        # `new_end` is the OPEN period's end_date, which is None by
-        # construction. Do NOT substitute a projected end here: it would
-        # write a non-null snapshot onto every open-period budget.
-        try:
-            reanchored = await billing_service.reanchor_period_dependents(
-                db,
-                org_id=actor_org_id,
-                old_start=old_start,
-                new_start=new_start,
-                new_end=current_period.end_date,
-            )
-        except ConflictError as exc:
-            await db.rollback()
-            await _audit(
-                "failure",
-                reason=exc.code or "conflict",
-                message=exc.detail,
-            )
-            raise
-
     await db.commit()
 
-    await _audit("success", budgets_reanchored=reanchored)
+    await _audit("success")
 
     return {"billing_cycle_day": new_day}
 
@@ -409,6 +367,70 @@ async def create_period(
         raise ConflictError(
             f"A billing period already starts on {body.start_date.isoformat()}",
             code="billing_period_exists",
+        )
+
+    # Containment (TBD-239 §3). The exact-start check above is deliberately
+    # first: `./pfv seed` re-runs post start dates that already exist and
+    # `seed.billing_period_outcome` reads the code, so those rows must keep
+    # answering `billing_period_exists`.
+    #
+    # NULL semantics, pinned in both directions:
+    #
+    # * A CLOSED existing row (arm 1) is compared on its RAW `end_date`,
+    #   window against window.
+    # * An OPEN existing row (arm 2) has an unknowable end, so it cannot be
+    #   intersected as a window. Its `start_date` is perfectly knowable
+    #   though, and the candidate's window is fully known, so an open row
+    #   whose start falls inside [candidate.start, candidate_end] is a
+    #   PROVABLE overlap and is rejected. Only the unprovable part (whether
+    #   the open row extends past the candidate) is waved through. An
+    #   earlier revision skipped open rows entirely and let that provable
+    #   case land: repeated `./pfv seed` runs produced closed rows that
+    #   swallowed an open row's start.
+    # * The CANDIDATE is checked on its `start_date` alone when it carries no
+    #   `end_date` (`BillingPeriodCreate.end_date` is optional and
+    #   `seed.py:260-261` posts exactly that shape). Treating an open
+    #   candidate as unbounded would make seeding an open period after any
+    #   closed period conflict every time.
+    candidate_end = body.end_date or body.start_date
+    overlap = (
+        await db.execute(
+            select(BillingPeriod)
+            .where(
+                BillingPeriod.org_id == current_user.org_id,
+                BillingPeriod.start_date <= candidate_end,
+                or_(
+                    and_(
+                        BillingPeriod.end_date.is_not(None),
+                        BillingPeriod.end_date >= body.start_date,
+                    ),
+                    and_(
+                        BillingPeriod.end_date.is_(None),
+                        BillingPeriod.start_date >= body.start_date,
+                    ),
+                ),
+            )
+            .order_by(BillingPeriod.start_date)
+            .limit(1)
+        )
+    ).scalars().first()
+    if overlap is not None:
+        # SELECT-then-INSERT, therefore TOCTOU under real MySQL, and unlike
+        # the exact-start case no unique constraint backstops an intersecting
+        # row. Best-effort by design; detection of what slips through is
+        # TBD-234's anomaly kernel.
+        covers = (
+            f"starts on {overlap.start_date.isoformat()} and is still open"
+            if overlap.end_date is None
+            else (
+                f"covers {overlap.start_date.isoformat()} to "
+                f"{overlap.end_date.isoformat()}"
+            )
+        )
+        raise ConflictError(
+            f"A billing period already {covers}. "
+            "Choose dates outside that range.",
+            code="billing_period_overlap",
         )
 
     period = BillingPeriod(
