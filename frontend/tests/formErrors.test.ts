@@ -186,4 +186,43 @@ describe("mapBillingPeriodCloseError", () => {
       /do not have permission/,
     );
   });
+
+  // TBD-241 D7. The server message is PINNED as "Close date cannot be in the
+  // future" so the predicate and the sentence are not written against each
+  // other by guesswork.
+  it("maps the future-date 400 to its own hint, not the generic fallback", () => {
+    const msg = mapBillingPeriodCloseError(
+      new ApiResponseError(400, "Close date cannot be in the future"),
+    );
+    expect(msg).toMatch(/future/i);
+    expect(msg).not.toMatch(/already closed/i);
+    expect(msg).not.toMatch(/We could not close the period/i);
+    expect(msg).not.toMatch(/—|–/);
+  });
+
+  it("keeps the unrecognised 400 on the fallback", () => {
+    expect(mapBillingPeriodCloseError(new ApiResponseError(400, "who knows"))).toMatch(
+      /We could not close the period/i,
+    );
+  });
+
+  // Defence in depth, not a reachable path: by D5's own argument the identity
+  // pre-flight matches nothing, the IntegrityError backstop is unreachable
+  // under the normative operation order, and the identity UPDATE changes only
+  // `period_end` so it cannot violate uq_budget_org_cat_period. The mapper had
+  // no `case 409` at all, so a stray one reached the user as a bare fallback.
+  it("surfaces a 409 body instead of flattening it into the fallback", () => {
+    const msg = mapBillingPeriodCloseError(
+      new ApiResponseError(409, "A budget already exists at the new period start for: Rent"),
+    );
+    expect(msg).toMatch(/Rent/);
+    expect(msg).not.toMatch(/We could not close the period/i);
+  });
+
+  it("falls back to a conflict sentence when the 409 body is empty", () => {
+    const msg = mapBillingPeriodCloseError(new ApiResponseError(409, "   "));
+    expect(msg).toMatch(/Something else changed this period/i);
+    expect(msg).not.toMatch(/We could not close the period/i);
+    expect(msg).not.toMatch(/—|–/);
+  });
 });
