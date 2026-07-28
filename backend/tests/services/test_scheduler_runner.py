@@ -7,8 +7,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from sqlalchemy.exc import IntegrityError
+
 from app.models import Base
+from app.models.audit_event import AuditEvent
 from app.models.user import Organization
+from app.services.scheduler import audit as sched_audit
 from app.services.scheduler import runner as R
 from app.services.scheduler.base import JobResult
 
@@ -202,3 +206,69 @@ async def test_failure_outcome_does_not_consume_budget(session_factory, monkeypa
     await R.run_all_due(datetime.date(2026, 7, 4), session_factory=session_factory,
                         registry=reg, max_orgs=1)
     assert failures["n"] == 3  # all 3 attempted despite cap=1 (failures don't count)
+
+
+# ── TBD-241 §5 test 20 (runner half) ──────────────────────────────────────
+#
+# The job-side half of this test lives in `test_scheduler_job_billing_close.py`
+# and calls `job.run(...)` directly, so its `_silence_side_effects` patches
+# `record_run` in the JOB module namespace, not the runner's. The assertion
+# below — that `runner.py:67-72` writes the failure row D11 relies on — can
+# therefore only be made from here, driven through `run_all_due` with the house
+# patches. `sched_audit.async_session` is patched too so the row is OBSERVABLE
+# rather than merely counted.
+
+
+async def test_mid_convergence_failure_is_audited_by_the_runner(
+    session_factory, monkeypatch
+):
+    """D11's whole argument rests on this row existing.
+
+    Revision 2 required `BillingCloseJob.run` to emit its own partial audit row
+    and notification before letting a mid-convergence exception propagate. That
+    was deleted by SUBTRACTION: the runner already catches every job exception,
+    rolls back, and records a `scheduler.billing_close.failure` carrying the
+    original error — and `record_run` writes through its OWN session
+    (`scheduler/audit.py:20` -> `audit_service.py:117`), so the row lands even
+    though the job left this session deactivated.
+    """
+    monkeypatch.setattr(R, "async_session", session_factory)
+    monkeypatch.setattr(sched_audit, "async_session", session_factory)
+
+    async def _enabled(db, org_id, key):
+        return True
+
+    monkeypatch.setattr(R.org_settings, "get_bool", _enabled)
+    async with session_factory() as db:
+        db.add(Organization(name="A", billing_cycle_day=25))
+        await db.commit()
+
+    class _Converging:
+        job_type = "billing_close"
+        setting_key = "automate_billing_close"
+
+        async def is_due(self, db, org, today):
+            return True
+
+        async def run(self, db, org, today):
+            raise IntegrityError("stmt", {}, Exception("peer won at new_start"))
+
+    await R.run_all_due(
+        datetime.date(2026, 7, 28),
+        session_factory=session_factory,
+        registry=[_Converging()],
+    )
+
+    async with session_factory() as db:
+        rows = list(
+            (
+                await db.execute(
+                    select(AuditEvent).where(
+                        AuditEvent.event_type == "scheduler.billing_close.failure"
+                    )
+                )
+            ).scalars().all()
+        )
+    assert len(rows) == 1
+    assert rows[0].outcome.value == "failure"
+    assert "peer won at new_start" in rows[0].detail["error"]

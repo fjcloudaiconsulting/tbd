@@ -491,6 +491,13 @@ async def close_period(
     via ``get_current_period`` BEFORE the call, and the resolved close date is
     derived as ``new_period.start_date - 1 day``. Re-implementing the service's
     "yesterday" default here would drift from it.
+
+    Since TBD-241 the service also CLAMPS the close to the first intervening
+    period boundary, so the resolved date is not always the requested one. The
+    derivation above needs no change for that — it reads the row the service
+    actually opened — which is why the audit key ``close_date`` reports the
+    clamped date for free. One click closes one period; convergence for a
+    lapsed org is ``BillingCloseJob``'s job, not this route's.
     """
     _require_admin(current_user)
 
@@ -570,6 +577,16 @@ async def close_period(
     await _audit(
         "success",
         close_date=resolved_close_date.isoformat(),
+        # TBD-241 D10: a VERBATIM echo of the raw parameter, null when absent.
+        # Never re-derive the service's "yesterday" default to fill it — that is
+        # what the docstring above forbids, and under D2 it would additionally
+        # drift, because this route deliberately does not pass `today`.
+        # Honest limitation: the UI sends no `close_date`, so this key is null
+        # for every human close and the audit row alone cannot distinguish
+        # "asked for 07-27, clamped to 05-24" from "asked for 05-24". The clamp
+        # signal is the service's `billing.close.clamped` event; this key earns
+        # its place for API and PAT callers.
+        requested_close_date=close_date.isoformat() if close_date else None,
         new_period_id=new_period.id,
         new_period_start=new_period.start_date.isoformat(),
     )

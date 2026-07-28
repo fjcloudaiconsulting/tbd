@@ -310,13 +310,26 @@ export default function OrganizationSettingsPage() {
     setConfirmAction({
       title: "Close billing period",
       // We POST /billing-period/close with no `close_date`, so the service
-      // defaults to closing yesterday (see `close_period` in
-      // `billing_service.py`) and the replacement period opens today, not
-      // tomorrow. There is still no un-close endpoint or UI, so the caution
-      // stays until TBD-233/TBD-235.
+      // picks the date (see `close_period` in `billing_service.py`).
+      //
+      // TBD-241 D6: it is NOT always yesterday. The service clamps the close to
+      // the first period boundary that already exists after the open one, so on
+      // a lapsed org with stubs ahead of it the period ends well before
+      // yesterday and the row that opens is an existing stub, not a new row
+      // starting today. The copy below therefore states the RULE and never
+      // names a date it cannot know before the call. The success toast needs no
+      // such care: it renders `p.start_date` from a refetch, so it already
+      // reports the real new start whatever the clamp did. There is still no
+      // un-close endpoint or UI, so the caution stays until TBD-233/TBD-235.
+      //
+      // The sentence below states only the guarantee that ALWAYS holds. An
+      // earlier draft promised "if a later period already exists, the close
+      // stops at the day before it starts", which is false whenever that later
+      // period starts after the close date: nothing stops it, and nothing needs
+      // to. Code review F6.
       message:
         `Close the current billing period starting ${currentPeriod?.start_date}? ` +
-        "This sets its end date to yesterday and opens a new period starting today. " +
+        "This ends the period and opens the next one. A period you have already planned is never swallowed, because the close never reaches past one. " +
         "There is no way to reopen a period from the app yet, so close only when the period is done.",
       variant: "warning",
       action: async () => {
