@@ -109,8 +109,19 @@ export default function OrganizationSettingsPage() {
   const expectedResetPhrase = `RESET ${orgName}`;
   const resetPhraseMatches = resetPhrase.trim() === expectedResetPhrase;
 
+  // Derived from `savedCycleDay`, NOT the live input. Typing a new cycle day
+  // changes nothing on the server, so the "Current:" line must not react to
+  // keystrokes: it would re-date the current period on screen while the
+  // preview under the input says saving does not re-date it. Two
+  // contradictory statements in one card.
+  //
+  // Known wrong for off-grid orgs and NOT fixed here: `projectedPeriodEnd`
+  // assumes the open period starts on the cycle day, so for an org whose
+  // open period sits off the grid (any org that ever closed manually) the
+  // projection can be a month out. Correcting it needs the backend to return
+  // the period's projected end, which is TBD-235.
   const currentPeriodEndDisplay = currentPeriod
-    ? currentPeriod.end_date ?? projectedPeriodEnd(currentPeriod.start_date, Number(billingCycleDay))
+    ? currentPeriod.end_date ?? projectedPeriodEnd(currentPeriod.start_date, Number(savedCycleDay))
     : null;
 
   useEffect(() => {
@@ -275,11 +286,14 @@ export default function OrganizationSettingsPage() {
       // button correctly disables again until the next edit.
       userEditedCycleDayRef.current = false;
       setSavedCycleDay(String(day));
-      const period = await apiFetch<{ id: number; start_date: string; end_date: string | null }>(
-        "/api/v1/settings/billing-period"
+      // No GET /billing-period refetch here on purpose. The PUT writes one
+      // org column and leaves the open period alone, so there is nothing to
+      // re-read, and a failing refetch used to land in the catch below and
+      // report a save failure for a save that had already succeeded.
+      setSuccessMsg(
+        `Billing cycle saved. Day ${day} applies from your next billing period. ` +
+          "Closing a period by hand still opens the next one the day after the close date."
       );
-      setCurrentPeriod(period);
-      setSuccessMsg(`Billing cycle saved. Periods now start on day ${day} of each month.`);
       setTimeout(() => setSuccessMsg(""), 4000);
     } catch (err) {
       // Map known status codes to friendly copy; the raw server message
@@ -296,9 +310,10 @@ export default function OrganizationSettingsPage() {
     setConfirmAction({
       title: "Close billing period",
       // We POST /billing-period/close with no `close_date`, so the service
-      // defaults to closing yesterday (`billing_service.py:200-201`) and the
-      // replacement period opens today, not tomorrow. There is still no
-      // un-close endpoint or UI, so the caution stays until TBD-233/TBD-235.
+      // defaults to closing yesterday (see `close_period` in
+      // `billing_service.py`) and the replacement period opens today, not
+      // tomorrow. There is still no un-close endpoint or UI, so the caution
+      // stays until TBD-233/TBD-235.
       message:
         `Close the current billing period starting ${currentPeriod?.start_date}? ` +
         "This sets its end date to yesterday and opens a new period starting today. " +
@@ -492,14 +507,17 @@ export default function OrganizationSettingsPage() {
                     {currentPeriodEndDisplay ? `, ${currentPeriodEndDisplay}` : ", open"}
                   </p>
                   {/*
-                    The closed branch is unreachable today: `currentPeriod` is
-                    only ever filled from GET /billing-period, which returns
+                    The closed branch is unreachable, and no planned ticket
+                    makes it reachable. `currentPeriod` is only ever filled
+                    from GET /billing-period, which returns
                     `billing_service.get_current_period` and by construction
-                    only yields rows with `end_date IS NULL`. It becomes
-                    reachable in TBD-234 (read-only period roster), so the
-                    copy is corrected now. Nothing in the backend locks a
-                    closed period, and transactions are bucketed by the date
-                    they settled, so the old "locked" claim was false.
+                    only yields rows with `end_date IS NULL`. TBD-234's
+                    period roster is a SEPARATE read-only route with its own
+                    state; it never feeds this variable. The copy is kept
+                    correct anyway because the branch is one line away from
+                    being wrong again: nothing in the backend locks a closed
+                    period, and transactions are bucketed by the date they
+                    settled, so the old "locked" claim was false.
                     Not covered by a test: asserting it needs a fixture the
                     real API cannot produce.
                   */}
@@ -562,26 +580,25 @@ export default function OrganizationSettingsPage() {
                   Day of the month each new period starts. Days 1 to 28 only, so every month has it.
                 </p>
                 {/*
-                  Dirty + valid + changed preview. Tells the admin what saving
-                  does to the current period, so the consequence of changing
-                  the cycle day is visible before they commit. Static
-                  placeholder keeps layout stable when no preview is shown.
-
-                  Saving does not close anything: PUT /billing-cycle re-roots
-                  the open period's start in place and drags its budgets along.
+                  Dirty + valid + changed preview. Tells the admin WHEN the
+                  new cycle day takes effect, so the consequence of changing
+                  it is visible before they commit. Static placeholder keeps
+                  layout stable when no preview is shown.
 
                   DELIBERATELY DATELESS — do not "helpfully" compute the
-                  destination date here. The backend anchors off server-local
-                  `date.today()` (UTC in this deployment) and the browser can
-                  only see the viewer's local date. The server's rule is a
-                  THRESHOLD (`today.day >= cycle_day` picks this month, else
-                  last month), not a linear offset, so a single day of
-                  local-vs-server skew flips the answer by a FULL MONTH. An
-                  admin in Europe/Amsterdam at 01:00 on the 15th would be
-                  shown "moves to <this month> the 15th" while the server,
-                  still on the 14th in UTC, re-anchors to LAST month. The
-                  client cannot know the server's date without a new API
-                  field, so we state the rule instead of guessing a date.
+                  destination date here. Saving writes only the org's cycle
+                  day; the roster changes at the next close, whose date the
+                  browser cannot know. The backend decides boundaries off
+                  server-local `date.today()` (UTC in this deployment) while
+                  the browser can only see the viewer's local date, and the
+                  cycle-day rule is a THRESHOLD (`today.day >= cycle_day`
+                  picks this month, else last month), not a linear offset, so
+                  a single day of local-vs-server skew flips the answer by a
+                  FULL MONTH. An admin in Europe/Amsterdam at 01:00 on the
+                  15th would be shown one month while the server, still on
+                  the 14th in UTC, is working in another. The client cannot
+                  know the server's date without a new API field, so we state
+                  the rule instead of guessing a date.
                 */}
                 <p
                   id="billing-cycle-day-preview"
@@ -594,13 +611,22 @@ export default function OrganizationSettingsPage() {
                     if (billingCycleDay === savedCycleDay) return "";
                     const day = Number(billingCycleDay);
                     if (!Number.isFinite(day)) return "";
-                    // The `currentPeriod` guard is INTENTIONAL, not vestigial:
-                    // the sentence promises a move of "the current period",
-                    // and if GET /billing-period failed we do not know there
-                    // is an open period to move. Staying silent beats
-                    // promising a move we cannot vouch for.
+                    // The `currentPeriod` guard is INTENTIONAL, not vestigial,
+                    // and it survives TBD-239 by an explicit decision: the
+                    // new sentence still makes a claim about "the period you
+                    // are in now", and if GET /billing-period failed we do
+                    // not know there is one. Staying silent beats reassuring
+                    // an admin about a period we cannot vouch for.
                     if (!currentPeriod?.start_date) return "";
-                    return `Saving will move the current period's start to day ${day} and move its budgets with it.`;
+                    // Does NOT promise the current period keeps its dates.
+                    // `BillingCloseJob.is_due` compares the open period's
+                    // start against the window derived from the NEW cycle
+                    // day, so a forward move past a day that already went by
+                    // this month makes the very next scheduler tick (900s)
+                    // close the current period, with an end date in the
+                    // past. Any "nothing changes now" wording here would be
+                    // contradicted inside fifteen minutes.
+                    return "Saving changes the day your billing periods start on, from your next period onward. Saving on its own does not re-date the period you are in now. If automatic billing close is on, that period may close shortly so the new day can take effect.";
                   })()}
                 </p>
                 {cycleFieldError && (

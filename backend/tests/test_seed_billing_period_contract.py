@@ -30,6 +30,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import httpx
+import pytest
+
+import seed
+
 
 SEED_PY = Path(__file__).resolve().parents[1] / "seed.py"
 
@@ -199,3 +204,56 @@ def test_seed_tolerates_duplicate_billing_period_conflict():
             f"route its response through one of {sorted(helper_names)}, so a "
             "duplicate start date on a re-run aborts the whole seed."
         )
+
+
+# ── seed.billing_period_outcome (TBD-239 §3) ─────────────────────────────
+#
+# TBD-239 gave POST /billing-period a second conflict code,
+# `billing_period_overlap`. The helper is called directly here rather than
+# through the AST, because "absorbs the code" is a runtime property.
+
+
+def _response(status: int, payload: dict | None = None) -> httpx.Response:
+    return httpx.Response(
+        status,
+        json=payload if payload is not None else {},
+        request=httpx.Request("POST", f"http://localhost:8000{BILLING_PERIOD_PATH}"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("billing_period_exists", "exists"),
+        ("billing_period_overlap", "overlaps"),
+    ],
+)
+def test_billing_period_outcome_absorbs_both_conflict_codes(code, expected):
+    """`./pfv seed` is re-runnable by contract.
+
+    Seed's dates are deterministic for a given `today`, but `today` moves:
+    a re-run on a later day shifts the whole window, so a period that was
+    posted yesterday is now *contained* by the one being posted today. That
+    answers 409 `billing_period_overlap`, not `billing_period_exists`, and
+    a helper that absorbs only the latter aborts the seed at step 5.
+    """
+    assert (
+        seed.billing_period_outcome(
+            _response(409, {"detail": "...", "code": code})
+        )
+        == expected
+    )
+
+
+def test_billing_period_outcome_still_raises_on_other_statuses():
+    """The contract-drift guard has to survive the widening: a 422 from a
+    changed request shape must not be swallowed into a cheerful
+    "Seed complete!" over an org with no billing periods."""
+    with pytest.raises(httpx.HTTPStatusError):
+        seed.billing_period_outcome(_response(422, {"detail": "nope"}))
+    with pytest.raises(httpx.HTTPStatusError):
+        seed.billing_period_outcome(_response(409, {"code": "something_else"}))
+
+
+def test_billing_period_outcome_reports_creation_on_2xx():
+    assert seed.billing_period_outcome(_response(200, {"id": 1})) == "created"

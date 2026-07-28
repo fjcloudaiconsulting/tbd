@@ -135,7 +135,17 @@ export function mapBillingCycleError(
     case 403:
       return "You do not have permission to change the billing cycle.";
     case 409:
-      // The server raises ConflictError here with a specific, already
+      // UNREACHABLE from PUT /billing-cycle as of TBD-239, and kept on
+      // purpose. That handler used to re-anchor the open period and could
+      // answer `billing_period_exists` or `budget_period_conflict`; the
+      // re-anchor is gone, so the endpoint now has no 409 path at all.
+      // Deleting this branch would only mean re-deriving it: TBD-235
+      // brings re-anchoring back as an explicit confirmed action and
+      // TBD-241 bounds `close_period`, and both raise ConflictError with
+      // exactly this shape. Until then it costs one switch case and
+      // guarantees a stray 409 never reaches a user as a bare fallback.
+      //
+      // The server raises ConflictError with a specific, already
       // customer-facing sentence: which category's budget, or which
       // period, already sits on the destination start date. That detail
       // is the entire point of the 409, so keep it rather than flattening

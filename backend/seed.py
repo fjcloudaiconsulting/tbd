@@ -38,6 +38,14 @@ def billing_period_outcome(r: httpx.Response) -> str:
     seeded" and carry on, exactly like the login-instead-of-register and
     ``if r.status_code == 201`` account guards earlier in this script.
 
+    TBD-239 added a second conflict code, ``billing_period_overlap``, and it
+    has to be absorbed too. The dates below are anchored to ``today``, so a
+    re-run on a LATER day shifts the whole window: the periods seeded
+    yesterday are still there, and the ones being posted now land across
+    them rather than exactly on them. That is a cross-day re-run answering
+    409 ``billing_period_overlap``, and raising on it would abort ``./pfv
+    seed`` at step 5, before recurring, budgets, forecast plans and reports.
+
     Every OTHER non-2xx still raises. That is the contract-drift guard the
     endpoint needs: TBD-232 also moved it from query params to a Pydantic
     body, and a swallowed 422 would leave the demo org with zero billing
@@ -50,6 +58,8 @@ def billing_period_outcome(r: httpx.Response) -> str:
             code = None
         if code == "billing_period_exists":
             return "exists"
+        if code == "billing_period_overlap":
+            return "overlaps"
     r.raise_for_status()
     return "created"
 
