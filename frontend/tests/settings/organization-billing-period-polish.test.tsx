@@ -198,14 +198,16 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     ).not.toBeInTheDocument();
   });
 
-  // The preview is DATELESS on purpose. The backend re-anchors off
-  // server-local `date.today()` via a threshold (`today.day >= cycle_day`
-  // picks this month, else last month), so a one-day browser-vs-server
-  // skew would shift a computed date by a full MONTH. These tests assert
-  // the rule-shaped wording and that no concrete date is claimed; no clock
-  // pinning is needed because nothing here reads the wall clock.
+  // The preview is DATELESS on purpose. TBD-239 removed the re-anchor, so
+  // there is no destination date to name at all any more — a cycle-day
+  // change applies from the next period. The dateless rule outlives the
+  // re-anchor: the backend still decides period boundaries off server-local
+  // `date.today()`, and a one-day browser-vs-server skew would shift any
+  // date this component computed. These tests assert the rule-shaped
+  // wording and that no concrete date is claimed; no clock pinning is
+  // needed because nothing here reads the wall clock.
 
-  it("renders the re-anchor preview when the new value is dirty + valid", async () => {
+  it("renders the deferral preview when the new value is dirty + valid", async () => {
     render(<OrganizationSettingsPage />);
     const input = (await screen.findByLabelText(
       /Billing cycle day/i,
@@ -216,7 +218,7 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     await waitFor(() => {
       expect(
         screen.getByText(
-          /Saving will move the current period's start to day 15 and move its budgets with it\./i,
+          /Saving applies from your next billing period\. The period you are in now keeps its current dates\./i,
         ),
       ).toBeInTheDocument();
     });
@@ -233,9 +235,12 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
 
     fireEvent.change(input, { target: { value: "15" } });
     const preview = await screen.findByText(
-      /Saving will move the current period's start/i,
+      /Saving applies from your next billing period/i,
     );
     expect(preview.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    // The old copy promised a move of the current period's start. The
+    // backend no longer does that, so the sentence must not either.
+    expect(preview.textContent).not.toMatch(/move the current period/i);
     // House copy rule.
     expect(preview.textContent).not.toMatch(/—|–/);
   });
@@ -250,13 +255,13 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     fireEvent.change(input, { target: { value: "15" } });
     await waitFor(() =>
       expect(
-        screen.getByText(/Saving will move the current period's start/i),
+        screen.getByText(/Saving applies from your next billing period/i),
       ).toBeInTheDocument(),
     );
     fireEvent.change(input, { target: { value: "1" } });
     await waitFor(() => {
       expect(
-        screen.queryByText(/Saving will move the current period's start/i),
+        screen.queryByText(/Saving applies from your next billing period/i),
       ).not.toBeInTheDocument();
     });
   });
