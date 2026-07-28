@@ -56,6 +56,14 @@ async def test_suggest_rebalance_is_zero_sum(monkeypatch):
         _fact(2, "Bills", "90", "100", "100"),
     ]
     monkeypatch.setattr(svc, "get_current_period", AsyncMock(return_value=_Period))
+    # TBD-240: `suggest_rebalance` now derives the spend window before
+    # calling `_gather_facts`. These are pure unit tests over a mock db, so
+    # the helper is stubbed alongside the other two. `None` is the honest
+    # value for `_Period`: it is open and has no successor on the roster,
+    # which is the roster-tail case the helper leaves unbounded.
+    monkeypatch.setattr(
+        svc, "period_spend_window_end", AsyncMock(return_value=None)
+    )
     monkeypatch.setattr(svc, "_gather_facts", AsyncMock(return_value=facts))
 
     class _Resp:
@@ -88,6 +96,14 @@ async def test_suggest_rebalance_refuses_when_no_surplus(monkeypatch):
         _fact(2, "Bills", "90", "100", "100"),            # over
     ]
     monkeypatch.setattr(svc, "get_current_period", AsyncMock(return_value=_Period))
+    # TBD-240: `suggest_rebalance` now derives the spend window before
+    # calling `_gather_facts`. These are pure unit tests over a mock db, so
+    # the helper is stubbed alongside the other two. `None` is the honest
+    # value for `_Period`: it is open and has no successor on the roster,
+    # which is the roster-tail case the helper leaves unbounded.
+    monkeypatch.setattr(
+        svc, "period_spend_window_end", AsyncMock(return_value=None)
+    )
     monkeypatch.setattr(svc, "_gather_facts", AsyncMock(return_value=facts))
     monkeypatch.setattr(svc, "call_llm_structured", AsyncMock())
 
@@ -109,6 +125,14 @@ async def test_suggest_rebalance_stays_balanced_when_llm_unavailable(monkeypatch
         _fact(2, "Bills", "90", "100", "100"),
     ]
     monkeypatch.setattr(svc, "get_current_period", AsyncMock(return_value=_Period))
+    # TBD-240: `suggest_rebalance` now derives the spend window before
+    # calling `_gather_facts`. These are pure unit tests over a mock db, so
+    # the helper is stubbed alongside the other two. `None` is the honest
+    # value for `_Period`: it is open and has no successor on the roster,
+    # which is the roster-tail case the helper leaves unbounded.
+    monkeypatch.setattr(
+        svc, "period_spend_window_end", AsyncMock(return_value=None)
+    )
     monkeypatch.setattr(svc, "_gather_facts", AsyncMock(return_value=facts))
     monkeypatch.setattr(
         svc,

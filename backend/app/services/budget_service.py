@@ -16,9 +16,10 @@ from app.models.category import Category
 from app.models.forecast_plan import ForecastItemType, ForecastPlan
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.budget import BudgetCreate, BudgetResponse, BudgetUpdate
+from app.services import billing_service
 from app.services.billing_service import (
     ensure_future_periods,
-    get_current_period,
+    period_spend_window_end,
     resolve_period,
 )
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
@@ -32,7 +33,15 @@ async def _compute_spent(
     db: AsyncSession, org_id: int, master_category_id: int,
     period_start: datetime.date, period_end: datetime.date | None,
 ) -> Decimal:
-    """Sum settled expense transactions for a master category and all its subcategories."""
+    """Sum settled expense transactions for a master category and all its subcategories.
+
+    ``period_end`` is the **spend window end**, not the period row's stored
+    ``end_date``. Every caller resolves it through
+    ``billing_service.period_spend_window_end`` before calling in (TBD-240 §4):
+    this helper runs once per budget row, so deriving the window here would be
+    an N+1. Its signature is deliberately unchanged so the derivation stays at
+    exactly one altitude per request.
+    """
     sub_ids_result = await db.execute(
         select(Category.id).where(
             Category.parent_id == master_category_id, Category.org_id == org_id
@@ -58,7 +67,21 @@ async def _compute_spent(
         effective_period_date_expr() >= period_start,
         reportable_transaction_filter(),
     )
-    # If period is still open (no end_date), include all from start_date onward
+    # `None` means UNBOUNDED, and after TBD-240 it no longer means "the period
+    # is open": an open period with a later period on the roster is bounded at
+    # that period's start minus one day, floored at today.
+    #
+    # For every caller that resolves its bound through
+    # `billing_service.period_spend_window_end`, `None` now narrows to exactly
+    # one case — the TRUE ROSTER TAIL, where there is no later period a
+    # future-dated settled row could belong to (§2.2).
+    #
+    # The two D4 stranded fallbacks are the exception, so the claim is not
+    # universal: `update_budget` / `transfer_budget` pass the stored
+    # `Budget.period_end` snapshot when no period row exists at the budget's
+    # `period_start`, and that snapshot is NULL for a budget created while its
+    # period was open. On that (production-unreachable) path `None` still
+    # carries the old, weaker "no known bound" meaning.
     if period_end is not None:
         q = q.where(effective_period_date_expr() <= period_end)
 
@@ -85,10 +108,16 @@ def _to_response(budget: Budget, spent: Decimal) -> BudgetResponse:
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
 async def list_budgets(
-    db: AsyncSession, org_id: int, period_start: datetime.date | None = None
+    db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
+    *, today: datetime.date | None = None,
 ) -> list[BudgetResponse]:
     """List budgets for a billing period with spend computation.
-    If period_start is None, uses the current open period."""
+    If period_start is None, uses the current open period.
+
+    ``today`` is injectable (TBD-240 D6) because the spend window floors at the
+    wall clock; no production caller threads it, every consumer is
+    request-scoped.
+    """
     try:
         period = await resolve_period(db, org_id, period_start)
     except ValidationError:
@@ -107,9 +136,14 @@ async def list_budgets(
     for b in budgets:
         await db.refresh(b, ["category"])
 
+    # Hoisted ABOVE the loop on purpose (TBD-240 §4): the window is a property
+    # of the period, not of the budget row, and deriving it per row would add
+    # one `MIN(start_date)` seek per budget.
+    window_end = await period_spend_window_end(db, org_id, period, today=today)
+
     responses = []
     for b in budgets:
-        spent = await _compute_spent(db, org_id, b.category_id, period.start_date, period.end_date)
+        spent = await _compute_spent(db, org_id, b.category_id, period.start_date, window_end)
         responses.append(_to_response(b, spent))
 
     return responses
@@ -118,6 +152,7 @@ async def list_budgets(
 async def create_budget(
     db: AsyncSession, org_id: int, body: BudgetCreate,
     period_start: datetime.date | None = None,
+    *, today: datetime.date | None = None,
 ) -> BudgetResponse:
     """Create a budget for a period. Only master categories allowed."""
     cat_result = await db.execute(
@@ -146,18 +181,24 @@ async def create_budget(
         category_id=body.category_id,
         amount=body.amount,
         period_start=period.start_date,
+        # RAW `end_date`, never the derived window (TBD-240 D5). This column
+        # means "what the period's end was", refreshed only by `close_period`;
+        # freezing a clock-dependent value into it would be a new lie in the
+        # same column that TBD-241 just made honest.
         period_end=period.end_date,
     )
     db.add(budget)
     await db.commit()
     await db.refresh(budget, ["category"])
 
-    spent = await _compute_spent(db, org_id, budget.category_id, period.start_date, period.end_date)
+    window_end = await period_spend_window_end(db, org_id, period, today=today)
+    spent = await _compute_spent(db, org_id, budget.category_id, period.start_date, window_end)
     return _to_response(budget, spent)
 
 
 async def update_budget(
-    db: AsyncSession, org_id: int, budget_id: int, body: BudgetUpdate
+    db: AsyncSession, org_id: int, budget_id: int, body: BudgetUpdate,
+    *, today: datetime.date | None = None,
 ) -> BudgetResponse:
     result = await db.execute(
         select(Budget).where(Budget.id == budget_id, Budget.org_id == org_id)
@@ -172,9 +213,36 @@ async def update_budget(
     await db.commit()
     await db.refresh(budget, ["category"])
 
-    # Use the live period end_date (not the stored one) for open periods
-    period = await get_current_period(db, org_id)
-    end = period.end_date if period.start_date == budget.period_start else budget.period_end
+    # ── TBD-240 D4 ────────────────────────────────────────────────────────
+    #
+    # Resolve the budget's OWN period. What this replaces was
+    # `get_current_period(...)` plus `period.end_date if period.start_date ==
+    # budget.period_start else budget.period_end` — and `get_current_period`
+    # returns the row with `end_date IS NULL` by construction, so that first
+    # branch handed `_compute_spent` an unconditional `None`. This endpoint was
+    # therefore unbounded for the current period on every single call: the very
+    # defect this ticket is named for.
+    #
+    # Neither of the two obvious resolvers is usable here:
+    #   * `resolve_period` raises ValidationError on a miss, which would turn a
+    #     PUT on a budget with no period row into a 400;
+    #   * `get_current_period` auto-creates AND COMMITS a BillingPeriod, so a
+    #     read-shaped PUT silently writes a period row. Resolving by
+    #     `budget.period_start` removes that side effect for free.
+    #
+    # The `None` fallback to the stored snapshot is defence in depth. A
+    # stranded budget is not reachable today (`org_data_service` deletes every
+    # Budget fourteen lines before it deletes the periods, in one transaction,
+    # and that is the only `delete(BillingPeriod)` in the codebase); it is kept
+    # for TBD-235's boundary move and against direct data surgery.
+    period = await billing_service._find_period_by_start(
+        db, org_id, budget.period_start
+    )
+    end = (
+        await period_spend_window_end(db, org_id, period, today=today)
+        if period is not None
+        else budget.period_end
+    )
     spent = await _compute_spent(db, org_id, budget.category_id, budget.period_start, end)
     return _to_response(budget, spent)
 
@@ -182,6 +250,7 @@ async def update_budget(
 async def transfer_budget(
     db: AsyncSession, org_id: int,
     from_budget_id: int, to_category_id: int, amount: Decimal,
+    *, today: datetime.date | None = None,
 ) -> list[BudgetResponse]:
     """Transfer allocation from one budget to another within the same period.
 
@@ -271,8 +340,22 @@ async def transfer_budget(
     await db.refresh(source, ["category"])
     await db.refresh(target, ["category"])
 
-    period = await get_current_period(db, org_id)
-    end = period.end_date if period.start_date == source.period_start else source.period_end
+    # TBD-240 D4, same rewrite as `update_budget` and for the same reason: the
+    # old `get_current_period(...).end_date` was unconditionally None, leaving
+    # `POST /budgets/transfer` unbounded for the current period.
+    #
+    # ONE lookup serves both rows: `target` is created at, or found by,
+    # `source.period_start` (see the find-or-create above), so source and
+    # target always share the window. The stranded fallback is
+    # `source.period_end`, matching what this line read before.
+    period = await billing_service._find_period_by_start(
+        db, org_id, source.period_start
+    )
+    end = (
+        await period_spend_window_end(db, org_id, period, today=today)
+        if period is not None
+        else source.period_end
+    )
 
     source_spent = await _compute_spent(db, org_id, source.category_id, source.period_start, end)
     target_spent = await _compute_spent(db, org_id, target.category_id, target.period_start, end)
