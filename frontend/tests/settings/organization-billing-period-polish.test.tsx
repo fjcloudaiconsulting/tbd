@@ -198,7 +198,14 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     ).not.toBeInTheDocument();
   });
 
-  it("renders the projected close preview when the new value is dirty + valid", async () => {
+  // The preview is DATELESS on purpose. The backend re-anchors off
+  // server-local `date.today()` via a threshold (`today.day >= cycle_day`
+  // picks this month, else last month), so a one-day browser-vs-server
+  // skew would shift a computed date by a full MONTH. These tests assert
+  // the rule-shaped wording and that no concrete date is claimed; no clock
+  // pinning is needed because nothing here reads the wall clock.
+
+  it("renders the re-anchor preview when the new value is dirty + valid", async () => {
     render(<OrganizationSettingsPage />);
     const input = (await screen.findByLabelText(
       /Billing cycle day/i,
@@ -206,12 +213,31 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     await waitFor(() => expect(input.value).toBe("1"));
 
     fireEvent.change(input, { target: { value: "15" } });
-    // start_date=2026-05-01, new cycle day=15 → projected close = 2026-06-14
     await waitFor(() => {
       expect(
-        screen.getByText(/Saving will close the current period on 2026-06-14/i),
+        screen.getByText(
+          /Saving will move the current period's start to day 15 and move its budgets with it\./i,
+        ),
       ).toBeInTheDocument();
     });
+  });
+
+  it("never claims a concrete destination date in the preview", async () => {
+    // Regression guard for the browser-vs-server date skew: any
+    // YYYY-MM-DD in this string would be a guess that can be a month off.
+    render(<OrganizationSettingsPage />);
+    const input = (await screen.findByLabelText(
+      /Billing cycle day/i,
+    )) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("1"));
+
+    fireEvent.change(input, { target: { value: "15" } });
+    const preview = await screen.findByText(
+      /Saving will move the current period's start/i,
+    );
+    expect(preview.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    // House copy rule.
+    expect(preview.textContent).not.toMatch(/—|–/);
   });
 
   it("clears the preview once the value matches the saved one again", async () => {
@@ -224,15 +250,43 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     fireEvent.change(input, { target: { value: "15" } });
     await waitFor(() =>
       expect(
-        screen.getByText(/Saving will close the current period/i),
+        screen.getByText(/Saving will move the current period's start/i),
       ).toBeInTheDocument(),
     );
     fireEvent.change(input, { target: { value: "1" } });
     await waitFor(() => {
       expect(
-        screen.queryByText(/Saving will close the current period/i),
+        screen.queryByText(/Saving will move the current period's start/i),
       ).not.toBeInTheDocument();
     });
+  });
+
+  // ── TBD-232: the close-period confirm must describe what actually happens ──
+  //
+  // The frontend POSTs /billing-period/close with no `close_date`, so the
+  // service closes YESTERDAY and the replacement period opens TODAY. The
+  // previous copy said only "a new period will open automatically", which
+  // told the admin nothing about which dates move.
+
+  it("confirm copy states the close sets yesterday and opens today", async () => {
+    render(<OrganizationSettingsPage />);
+    const closeBtn = await screen.findByRole("button", { name: /Close period/i });
+    fireEvent.click(closeBtn);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(
+      /Close the current billing period starting 2026-05-01\?/,
+    );
+    expect(dialog.textContent).toMatch(
+      /sets its end date to yesterday and opens a new period starting today/i,
+    );
+    // The caution survives: reopening is still impossible from the app.
+    expect(dialog.textContent).toMatch(/no way to reopen a period from the app yet/i);
+    // The old, misleading sentence is gone.
+    expect(dialog.textContent).not.toMatch(/cannot be undone/i);
+    expect(dialog.textContent).not.toMatch(/A new period will open automatically/i);
+    // House copy rule.
+    expect(dialog.textContent).not.toMatch(/—|–/);
   });
 
   it("maps a 422 save error to friendly copy without echoing raw body", async () => {

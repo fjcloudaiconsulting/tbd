@@ -688,6 +688,17 @@ export async function apiFetch<T>(
     } else {
       message = "Request failed";
     }
+    // Flat machine code: several handlers return the code as a SIBLING of
+    // `detail` rather than nested inside it — e.g. main.py's ConflictError
+    // handler emits { detail: "<sentence>", code: "budget_period_conflict" }.
+    // Without this, `err.code` was only ever populated for the nested
+    // { detail: { code, message } } shape, so every domain ConflictError in
+    // the app arrived with `code === undefined` and any
+    // `if (err.code === "...")` branch silently never fired.
+    // Additive only: the nested shape already set `code` above and wins.
+    if (code === undefined && typeof (body as { code?: unknown }).code === "string") {
+      code = (body as { code: string }).code;
+    }
     throw new ApiResponseError(res.status, message, code, body.detail);
   }
 

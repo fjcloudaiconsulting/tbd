@@ -295,9 +295,14 @@ export default function OrganizationSettingsPage() {
   function handleClosePeriod() {
     setConfirmAction({
       title: "Close billing period",
+      // We POST /billing-period/close with no `close_date`, so the service
+      // defaults to closing yesterday (`billing_service.py:200-201`) and the
+      // replacement period opens today, not tomorrow. There is still no
+      // un-close endpoint or UI, so the caution stays until TBD-233/TBD-235.
       message:
         `Close the current billing period starting ${currentPeriod?.start_date}? ` +
-        "A new period will open automatically. Closing a period cannot be undone.",
+        "This sets its end date to yesterday and opens a new period starting today. " +
+        "There is no way to reopen a period from the app yet, so close only when the period is done.",
       variant: "warning",
       action: async () => {
         if (closingPeriod) return;
@@ -486,9 +491,21 @@ export default function OrganizationSettingsPage() {
                     Current: {currentPeriod.start_date}
                     {currentPeriodEndDisplay ? `, ${currentPeriodEndDisplay}` : ", open"}
                   </p>
+                  {/*
+                    The closed branch is unreachable today: `currentPeriod` is
+                    only ever filled from GET /billing-period, which returns
+                    `billing_service.get_current_period` and by construction
+                    only yields rows with `end_date IS NULL`. It becomes
+                    reachable in TBD-234 (read-only period roster), so the
+                    copy is corrected now. Nothing in the backend locks a
+                    closed period, and transactions are bucketed by the date
+                    they settled, so the old "locked" claim was false.
+                    Not covered by a test: asserting it needs a fixture the
+                    real API cannot produce.
+                  */}
                   <p className="text-xs text-text-muted">
                     {currentPeriod.end_date
-                      ? "Closed. Transactions in this range are locked from period rollover."
+                      ? "Closed. This period's window is fixed at these dates. Transactions are still counted by the date they settled, so editing a transaction can move it in or out."
                       : "Open. New transactions are being recorded in this period."}
                   </p>
                 </div>
@@ -545,11 +562,26 @@ export default function OrganizationSettingsPage() {
                   Day of the month each new period starts. Days 1 to 28 only, so every month has it.
                 </p>
                 {/*
-                  Dirty + valid + changed preview. Tells the admin what the
-                  current period would look like the moment they save, so
-                  the consequence of changing the cycle day is visible
-                  before they commit. Static placeholder keeps layout
-                  stable when no preview is shown.
+                  Dirty + valid + changed preview. Tells the admin what saving
+                  does to the current period, so the consequence of changing
+                  the cycle day is visible before they commit. Static
+                  placeholder keeps layout stable when no preview is shown.
+
+                  Saving does not close anything: PUT /billing-cycle re-roots
+                  the open period's start in place and drags its budgets along.
+
+                  DELIBERATELY DATELESS — do not "helpfully" compute the
+                  destination date here. The backend anchors off server-local
+                  `date.today()` (UTC in this deployment) and the browser can
+                  only see the viewer's local date. The server's rule is a
+                  THRESHOLD (`today.day >= cycle_day` picks this month, else
+                  last month), not a linear offset, so a single day of
+                  local-vs-server skew flips the answer by a FULL MONTH. An
+                  admin in Europe/Amsterdam at 01:00 on the 15th would be
+                  shown "moves to <this month> the 15th" while the server,
+                  still on the 14th in UTC, re-anchors to LAST month. The
+                  client cannot know the server's date without a new API
+                  field, so we state the rule instead of guessing a date.
                 */}
                 <p
                   id="billing-cycle-day-preview"
@@ -561,10 +593,14 @@ export default function OrganizationSettingsPage() {
                     if (billingCycleDay.trim() === "") return "";
                     if (billingCycleDay === savedCycleDay) return "";
                     const day = Number(billingCycleDay);
-                    if (!Number.isFinite(day) || !currentPeriod?.start_date) return "";
-                    const projected = projectedPeriodEnd(currentPeriod.start_date, day);
-                    if (!projected) return "";
-                    return `Saving will close the current period on ${projected} and open a new one on day ${day}.`;
+                    if (!Number.isFinite(day)) return "";
+                    // The `currentPeriod` guard is INTENTIONAL, not vestigial:
+                    // the sentence promises a move of "the current period",
+                    // and if GET /billing-period failed we do not know there
+                    // is an open period to move. Staying silent beats
+                    // promising a move we cannot vouch for.
+                    if (!currentPeriod?.start_date) return "";
+                    return `Saving will move the current period's start to day ${day} and move its budgets with it.`;
                   })()}
                 </p>
                 {cycleFieldError && (
