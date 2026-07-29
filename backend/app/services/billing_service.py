@@ -130,13 +130,11 @@ async def resolve_period(
     Raises ValidationError if period_start is given but no matching period exists.
     """
     if period_start:
-        result = await db.execute(
-            select(BillingPeriod).where(
-                BillingPeriod.org_id == org_id,
-                BillingPeriod.start_date == period_start,
-            )
-        )
-        period = result.scalar_one_or_none()
+        # Implemented ON TOP of `_find_period_by_start` (TBD-240 N7) rather
+        # than carrying a fourth copy of the same SELECT. The only difference
+        # between the two is the no-match behaviour: this raises, the helper
+        # returns None — which is exactly why D4's callers cannot use this one.
+        period = await _find_period_by_start(db, org_id, period_start)
         if period is None:
             raise ValidationError("Billing period not found")
         return period
@@ -297,10 +295,10 @@ async def reanchor_period_dependents(
     the next period (old_start != new_start).
 
     Does **not** commit. ``Budget.period_start`` is the sole join key
-    (budget_service.py:100-101), so this write must land in the same
-    transaction as the period write that moved the boundary; a crash
-    between the two orphans every budget for that period and
-    ``list_budgets`` then silently returns ``[]``.
+    (``budget_service.list_budgets``, budget_service.py:129-130), so this
+    write must land in the same transaction as the period write that moved
+    the boundary; a crash between the two orphans every budget for that
+    period and ``list_budgets`` then silently returns ``[]``.
 
     Three rules here are load-bearing (spec
     ``2026-07-27-billing-period-truth-and-safety.md`` section 4):
@@ -431,6 +429,206 @@ async def _next_period_start(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def _find_period_by_start(
+    db: AsyncSession, org_id: int, start: datetime.date
+) -> BillingPeriod | None:
+    """The org's period row at exactly ``start``, or ``None``.
+
+    TBD-240 D4. ``scalar_one_or_none`` is safe: ``uq_billing_period_org_start``
+    makes ``(org_id, start_date)`` unique.
+
+    Exists as its own function because D4's two callers
+    (``budget_service.update_budget`` / ``transfer_budget``) must NOT use
+    :func:`resolve_period` — that raises ``ValidationError`` when no row
+    matches, which would turn a ``PUT /budgets/{id}`` on a budget whose period
+    row is missing into a 400 — nor :func:`get_current_period`, which
+    auto-creates *and commits* a period row as a side effect of a plain read.
+    :func:`resolve_period` is implemented on top of this (N7).
+
+    ``db.execute``, never ``db.scalar`` (D7): the house convention for anything
+    selecting ``BillingPeriod``, so that a future caller moved into
+    ``close_period``'s path cannot consume the shape-keyed one-shot test patch
+    that :func:`_next_period_start` and :func:`_lock_period` are pinned against.
+    """
+    return (
+        await db.execute(
+            select(BillingPeriod).where(
+                BillingPeriod.org_id == org_id,
+                BillingPeriod.start_date == start,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def period_effective_end(
+    db: AsyncSession, org_id: int, period: BillingPeriod
+) -> datetime.date | None:
+    """The period's roster-derived end. **No clock.**
+
+    TBD-240 §2.2. Three cases, in order:
+
+    * ``end_date IS NOT NULL`` → returned **verbatim**. A closed period's end
+      is settled fact.
+    * open, with a later period on the roster → the day before that period
+      starts, so the two windows abut without overlapping.
+    * open, with nothing later (``s0 is None``) → ``None``, meaning genuinely
+      unbounded. This is the roster tail: there is no later period a
+      future-dated settled row could belong to, so bounding it would hide
+      spend and buy nothing. ⚠ This is a **knowingly retained** unbounded
+      window, not a compatibility win — see :func:`period_spend_window_end`
+      for what it costs.
+
+    ⚠ **No production caller in this ticket**, deliberately — same idiom as
+    :func:`reanchor_period_dependents` above. It is reachable only through
+    :func:`period_spend_window_end` and the tests. Its named consumer is
+    **TBD-234**, whose gap/overlap anomaly kernel needs an end that does NOT
+    depend on the wall clock: handing that kernel the floored value would make
+    it paint phantom overlaps between the open row's floored window and the
+    historic stubs on every lapsed org. Do not prune this as dead code, and do
+    not collapse the two helpers into one.
+
+    Two prohibitions carried over from the boundary model
+    (``reference_billing_period_boundary_model.md``). They apply to
+    :func:`period_spend_window_end` equally, and are **restated in full there**
+    rather than only cross-referenced — that is the helper with production
+    callers, and the one a future author is likeliest to read in isolation.
+    Keep the two copies in sync:
+
+    1. **Never persist either result** to ``BillingPeriod.end_date`` or
+       ``Budget.period_end``. Both columns mean "what the period's end *was*",
+       written by ``close_period``; freezing a derived value into them would be
+       a new lie in the same column (TBD-240 D5).
+    2. **Never** use either in :func:`ensure_future_periods`' arm-2
+       intersection predicate or :func:`_apply_close_step`'s straddle
+       predicate. Both depend on raw ``end_date`` three-valued logic;
+       substituting a derived end there makes the open row intersect every
+       candidate and stops stub creation for **every** org, silently.
+    """
+    if period.end_date is not None:
+        return period.end_date
+    s0 = await _next_period_start(db, org_id, after=period.start_date)
+    if s0 is None:
+        return None
+    return s0 - datetime.timedelta(days=1)
+
+
+async def period_spend_window_end(
+    db: AsyncSession,
+    org_id: int,
+    period: BillingPeriod,
+    *,
+    today: datetime.date | None = None,
+) -> datetime.date | None:
+    """:func:`period_effective_end`, then floored at ``today`` — **iff the
+    period is open**. The upper bound every SPEND query must use.
+
+    TBD-240 §2.2 / §2.3. The three clauses below are each load-bearing:
+
+    * **Closed rows are returned verbatim, before any floor.** Flooring a
+      closed period's end would silently re-open reported history — the worst
+      outcome available here.
+    * **``None`` stays ``None``.** The roster tail keeps its unbounded window,
+      **knowingly**, and this is a residual rather than a win. Say it plainly:
+      the very behaviour TBD-240 calls a defect is left in place for tail
+      periods, so an org's ``spent`` depends on whether the stub roster has
+      been materialized at all — and nothing on the read path materializes it.
+      Stubs appear only when somebody triggers ``ensure_future_periods`` from
+      elsewhere (the admin-only ``POST /settings/billing-periods/ensure-future``,
+      a user copying budgets or a plan forward, or a ``close_period`` run). Two
+      orgs with identical transactions can therefore report different ``spent``
+      purely because one of them once clicked something. Accepted because
+      bounding the tail would hide spend with no later period to move it to;
+      revisit when the roster is guaranteed converged (TBD-241 /
+      ``BillingCloseJob``). See :func:`period_effective_end`.
+    * **``max(e, today)`` on the open interior.** ``ensure_future_periods``
+      anchors its stubs on the open period's ``start_date``, not on today, and
+      concedes in its own docstring that they are "therefore historic" for a
+      lapsed org. So the *derived* end of a months-stale open row lands in the
+      **past**, and every settled transaction dated after it — hand-entered,
+      bank-imported (``import_service`` builds a ``TransactionCreate`` whose
+      ``status`` defaults to settled), or generated by an auto-settle template
+      — would fall outside the open period's window while the stub that
+      contains it is rendered read-only by ``budgets/page.tsx``. The org's
+      current spending would become invisible and unbudgetable: an under-count
+      strictly worse than the over-count this ticket removes. The floor holds
+      the line at today.
+
+    **Accepted residual, recorded so it is not "fixed" by deleting the floor.**
+    On a lapsed roster the floored window ``[start, today]`` still overlaps the
+    historic stubs, and the double-counted region is **not just today** — it is
+    the whole interval ``[derived_end + 1, today]``, which widens by one day
+    per day for as long as the roster stays unconverged (spec §2.3). That
+    double count happens today already and *unbounded*; this bounds it, and it
+    disappears once the roster converges (``BillingCloseJob``, per TBD-241). An
+    unconverged roster genuinely has ambiguous ownership of that interval; the
+    right answer is to keep it visible in the editable row, not to make it
+    invisible everywhere. Repairing the roster itself is **TBD-235 blocker 1**.
+
+    ``today`` is keyword-only and injectable (D6) because this introduces the
+    wall clock into money computation; tests anchor relative to
+    ``date.today()`` rather than on literals near the clamp boundary
+    (``reference_wall_clock_date_bomb_tests``). **Callers that resolve a window
+    AND do any other date arithmetic must resolve the clock once themselves and
+    pass a concrete date to both** — see :func:`suggest_rebalance
+    <app.services.budget_rebalance_service.suggest_rebalance>`, where letting
+    the ``None`` default through to two callees separated by a round-trip would
+    reintroduce exactly the two-clocks straddle D6 exists to prevent.
+
+    **The two prohibitions from :func:`period_effective_end` apply here
+    verbatim, and they are restated rather than cross-referenced because this
+    is the helper with production callers** (boundary model:
+    ``reference_billing_period_boundary_model.md``):
+
+    1. **Never persist this result** to ``BillingPeriod.end_date`` or
+       ``Budget.period_end``. Both columns mean "what the period's end *was*",
+       written by ``close_period``; freezing a derived, clock-dependent value
+       into them would be a new lie in the same column (TBD-240 D5).
+    2. **Never** use this in :func:`ensure_future_periods`' arm-2 intersection
+       predicate or :func:`_apply_close_step`'s straddle predicate. Both depend
+       on raw ``end_date`` three-valued logic; substituting a derived end there
+       makes the open row intersect every candidate and stops stub creation for
+       **every** org, silently.
+    """
+    end = await period_effective_end(db, org_id, period)
+    if period.end_date is not None:
+        return end
+    if end is None:
+        return None
+
+    today = today if today is not None else datetime.date.today()
+    window_end = max(end, today)
+
+    # §2.4 — the non-inversion invariant. `_next_period_start` selects
+    # `start_date > after` STRICTLY, so `end = s0 - 1 >= period.start_date`
+    # and `max(end, today) >= end >= start`. The window can never invert.
+    #
+    # This is not decorative: `_apply_close_step` may legally leave the open
+    # row starting TOMORROW (a close with `close_date = today`), so
+    # `today < period.start_date` is a reachable state and must not be allowed
+    # to produce `end < start`.
+    #
+    # `raise`, not `assert` — bare asserts are stripped under `python -O` and
+    # this is money math. `RuntimeError`, never `ValidationError`: mapping this
+    # to a 400 would turn an internal invariant violation into a user-facing
+    # error on `GET /api/v1/budgets`.
+    #
+    # ⚠ Be honest about what this is: the branch is UNREACHABLE by
+    # construction, given the two facts above, and **no test drives it** —
+    # spec §5 test 5 exercises the tomorrow-start shape and asserts the window
+    # does NOT invert, i.e. it proves the invariant holds, it does not cover
+    # this `raise`. So the message string and the branch itself are unproven
+    # code kept as a tripwire for a future change that breaks the derivation
+    # (e.g. making `_next_period_start` non-strict). Do not read the absence of
+    # coverage as a gap to close with a contrived test; read it as the reason
+    # not to put anything load-bearing inside this branch.
+    if window_end < period.start_date:
+        raise RuntimeError(
+            f"Spend window inverted for billing period {period.id}: "
+            f"end {window_end} precedes start {period.start_date}"
+        )
+    return window_end
 
 
 async def _lock_period(db: AsyncSession, period_id: int) -> BillingPeriod | None:
@@ -628,8 +826,23 @@ async def _apply_close_step(
     # Identity re-anchor (old_start == new_start): only `period_end` moves.
     # `Budget.period_end` is a stored snapshot written as `period.end_date` at
     # creation, so a budget created while its period was open carries NULL
-    # forever and `_compute_spent` then drops its upper bound
-    # (budget_service.py:62-63) for a period that is in fact closed.
+    # forever unless something refreshes it. This step is that refresh.
+    #
+    # ⚠ Updated by TBD-240. This used to say the stale NULL made
+    # `_compute_spent` drop its upper bound for a period that is in fact
+    # closed. That is no longer reachable on any live path: every spend query
+    # now derives its bound from the PERIOD ROW via `period_spend_window_end`
+    # (budget_service.py:85 is the guard it feeds), so a closed period is
+    # bounded by its own `end_date` no matter what the budget snapshot says.
+    # Two reasons the step is still required:
+    #
+    #   1. `Budget.period_end` is emitted verbatim in `BudgetResponse`
+    #      (`budget_service._to_response`) and read by the frontend. A NULL
+    #      there on a closed period is a user-visible lie regardless of which
+    #      bound the sum used.
+    #   2. It is the fallback bound for D4's stranded-budget branch in
+    #      `update_budget` / `transfer_budget` — the one path where the
+    #      snapshot is still authoritative because no period row was found.
     #
     # ⚠ `new_end` is `resolved`, NEVER the raw `close_date` parameter. That
     # parameter is `None` on every UI close (page.tsx sends no date), which

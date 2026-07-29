@@ -60,7 +60,10 @@ from app.services.ai_providers import (
     NativeNotAvailable,
     StructuredOutputError,
 )
-from app.services.billing_service import get_current_period
+from app.services.billing_service import (
+    get_current_period,
+    period_spend_window_end,
+)
 from app.services.transaction_filters import (
     effective_period_date_expr,
     reportable_transaction_filter,
@@ -247,12 +250,27 @@ async def _gather_facts(
     org_id: int,
     period_start: datetime.date,
     period_end: Optional[datetime.date],
+    today: Optional[datetime.date] = None,
 ) -> list[_CategoryFact]:
     """Aggregate per-master-category facts for the prompt.
 
     Returns one row per current-period budget. Includes the prior 3
     months' total + average + this month's running actual. Aggregates
     only — no transaction-level data leaves this function.
+
+    ``period_end`` is the **spend window end** resolved by the caller
+    (``billing_service.period_spend_window_end``), not the period row's stored
+    ``end_date`` — see :func:`suggest_rebalance`. This function's signature is
+    otherwise unchanged (TBD-240 §4).
+
+    ``today`` is threaded in rather than read here (D6) precisely because it
+    governs the 3-month split below. If only the window end were injected, an
+    injected clock would drive the window while the real wall clock drove
+    ``three_mo_upper`` — two clocks in one computation, and a test that
+    straddles midnight becomes unstable. :func:`suggest_rebalance`, the only
+    caller, resolves the clock once and always passes a concrete date; the
+    ``None`` default below is a safety net for a future caller, not a second
+    clock on the live path.
     """
     # Eager-load the master category so we don't fire N+1 refreshes
     # row-by-row below. selectinload issues one extra IN-query for all
@@ -291,7 +309,7 @@ async def _gather_facts(
             continue
         parent_to_subs.setdefault(parent_id, []).append(sub_id)
 
-    today = datetime.date.today()
+    today = today if today is not None else datetime.date.today()
     current_month_start = today.replace(day=1)
 
     # The 3-month window must be (a) exactly 3 calendar months wide so
@@ -475,6 +493,7 @@ async def suggest_rebalance(
     *,
     org_id: int,
     session_factory: Optional[async_sessionmaker[AsyncSession]] = None,
+    today: Optional[datetime.date] = None,
 ) -> BudgetRebalanceResponse:
     """Compute the AI rebalance suggestion for an org's current period.
 
@@ -487,13 +506,44 @@ async def suggest_rebalance(
     call this without one; the router always passes it. When provided,
     the LLM dispatch runs in its own session so the dispatcher's
     ledger commit can't bleed into the request transaction.
+
+    ``today`` is injectable (TBD-240 D6) and governs BOTH the spend window
+    below and :func:`_gather_facts`' 3-month split. No production caller
+    threads it; the router is request-scoped.
     """
+    # RESOLVE THE CLOCK ONCE, HERE, before either consumer reads it. Leaving
+    # `today=None` to be defaulted independently inside
+    # `period_spend_window_end` and `_gather_facts` is the exact two-clocks
+    # hazard D6 exists to prevent: in production nothing threads `today`, the
+    # two defaults are separated by a `SELECT MIN(start_date)` round-trip, and
+    # a request that straddles midnight would take its window from one date
+    # and its 3-month trailing split from the next — moving every
+    # `suggested_amount`. One read, one value, both callees.
+    today = today if today is not None else datetime.date.today()
+
     period = await get_current_period(db, org_id)
+
+    # ── TBD-240 §4 ────────────────────────────────────────────────────────
+    #
+    # `get_current_period` returns the row with `end_date IS NULL` by
+    # construction, so passing `period.end_date` straight through meant
+    # `_gather_facts`' `if period_end is not None:` guard had never once been
+    # taken: this surface was not *sometimes* unbounded, it was ALWAYS
+    # unbounded, and the current-period actual swallowed every future stub's
+    # window.
+    #
+    # The response is NOT monotone in this narrowing (§2.3 case 3):
+    # `movable = min(total_headroom, total_deficit)` means a tighter window can
+    # RAISE a category's `suggested_amount`, and an org sitting at
+    # `total_headroom <= 0` can leave the `empty_no_surplus` refusal entirely.
+    # `uncovered_overspend` does move down and `total_suggested` is conserved.
+    window_end = await period_spend_window_end(db, org_id, period, today=today)
     facts = await _gather_facts(
         db,
         org_id=org_id,
         period_start=period.start_date,
-        period_end=period.end_date,
+        period_end=window_end,
+        today=today,
     )
     if not facts:
         return BudgetRebalanceResponse(

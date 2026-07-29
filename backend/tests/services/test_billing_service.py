@@ -1225,3 +1225,252 @@ async def test_recovery_raises_loudly_when_the_racers_open_row_is_missing(
             await billing_service.close_period(db, org_id, today=_TODAY)
 
     assert injected["fired"] is True, "the racer was never injected"
+
+
+# ── TBD-240 — period_effective_end / period_spend_window_end ────────────────
+#
+# Spec: specs/2026-07-28-open-period-spend-window-design.md §5, tests 1-7.
+#
+# Unlike the TBD-241 tests above, these anchor on `date.today()` offsets:
+# `period_spend_window_end` floors at today by construction, so a fixed
+# calendar literal near the clamp boundary is the wall-clock date bomb
+# `reference_wall_clock_date_bomb_tests` describes. Where a deterministic
+# clock is needed the `today=` kwarg is passed explicitly (D6).
+
+
+@pytest.mark.asyncio
+async def test_effective_end_closed_period_returns_end_date_verbatim(session_factory):
+    """Test 1 — a closed period's end is settled fact; the floor never applies.
+
+    Both helpers return the stored `end_date` even though it is far in the
+    past, because flooring a closed row would silently re-open reported
+    history (§2.2).
+    """
+    org_id = 1
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=90)
+    end = today - datetime.timedelta(days=61)
+    await _seed_org_with_open_period(session_factory, org_id=org_id, start=start)
+    async with session_factory() as db:
+        await db.execute(
+            update(BillingPeriod)
+            .where(BillingPeriod.org_id == org_id)
+            .values(end_date=end)
+        )
+        await db.commit()
+        period = (
+            await db.execute(select(BillingPeriod).where(BillingPeriod.org_id == org_id))
+        ).scalar_one()
+
+        assert await billing_service.period_effective_end(db, org_id, period) == end
+        assert (
+            await billing_service.period_spend_window_end(db, org_id, period, today=today)
+            == end
+        )
+
+
+@pytest.mark.asyncio
+async def test_effective_end_open_period_no_successor_is_none(session_factory):
+    """Test 2 — roster tail: `s0 is None` → None from both helpers.
+
+    The tail keeps its unbounded window, knowingly. That is a retained
+    residual, not a compatibility win — an unbounded window is the behaviour
+    this ticket calls a defect everywhere else — and it is pinned here so a
+    later change cannot narrow the tail without someone deciding to. See
+    `period_spend_window_end`'s docstring for what it costs (§2.2).
+    """
+    org_id = 1
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=10)
+    await _seed_org_with_open_period(session_factory, org_id=org_id, start=start)
+    async with session_factory() as db:
+        period = (
+            await db.execute(select(BillingPeriod).where(BillingPeriod.org_id == org_id))
+        ).scalar_one()
+
+        assert await billing_service.period_effective_end(db, org_id, period) is None
+        assert (
+            await billing_service.period_spend_window_end(db, org_id, period, today=today)
+            is None
+        )
+
+
+@pytest.mark.asyncio
+async def test_effective_end_open_period_future_successor(session_factory):
+    """Test 3 — successor in the future → both return s0 - 1; no floor fires."""
+    org_id = 1
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=5)
+    successor = today + datetime.timedelta(days=20)
+    await _seed_org_with_open_period(session_factory, org_id=org_id, start=start)
+    await _add_period(
+        session_factory, org_id, successor, successor + datetime.timedelta(days=29)
+    )
+    async with session_factory() as db:
+        period = (
+            await db.execute(
+                select(BillingPeriod).where(
+                    BillingPeriod.org_id == org_id,
+                    BillingPeriod.start_date == start,
+                )
+            )
+        ).scalar_one()
+        expected = successor - datetime.timedelta(days=1)
+
+        assert await billing_service.period_effective_end(db, org_id, period) == expected
+        assert (
+            await billing_service.period_spend_window_end(db, org_id, period, today=today)
+            == expected
+        )
+
+
+@pytest.mark.asyncio
+async def test_spend_window_floors_at_today_on_lapsed_roster(session_factory):
+    """Test 4 — the pair that proves D3's split.
+
+    Lapsed roster: the successor stub is already in the PAST, so the pure
+    derived end lands behind today. `period_effective_end` reports that
+    honestly (TBD-234 needs it); `period_spend_window_end` floors at today
+    so the org's current spending stays visible (§2.3).
+    """
+    org_id = 1
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=95)
+    successor = today - datetime.timedelta(days=65)
+    await _seed_org_with_open_period(session_factory, org_id=org_id, start=start)
+    await _add_period(
+        session_factory, org_id, successor, successor + datetime.timedelta(days=29)
+    )
+    async with session_factory() as db:
+        period = (
+            await db.execute(
+                select(BillingPeriod).where(
+                    BillingPeriod.org_id == org_id,
+                    BillingPeriod.start_date == start,
+                )
+            )
+        ).scalar_one()
+
+        assert await billing_service.period_effective_end(
+            db, org_id, period
+        ) == successor - datetime.timedelta(days=1)
+        assert (
+            await billing_service.period_spend_window_end(db, org_id, period, today=today)
+            == today
+        )
+
+
+@pytest.mark.asyncio
+async def test_spend_window_never_inverts_when_period_starts_tomorrow(session_factory):
+    """Test 5 — non-inversion (§2.4).
+
+    `_apply_close_step` may legally leave the open row starting TOMORROW
+    (close with `close_date = today`), so `today < period.start_date` is a
+    reachable state. A successor strictly after tomorrow is seeded on
+    purpose: with only the one row `s0 is None`, both helpers return None
+    and the assertion would be vacuous.
+    """
+    org_id = 1
+    today = datetime.date.today()
+    tomorrow = today + datetime.timedelta(days=1)
+    successor = tomorrow + datetime.timedelta(days=30)
+    await _seed_org_with_open_period(session_factory, org_id=org_id, start=tomorrow)
+    await _add_period(
+        session_factory, org_id, successor, successor + datetime.timedelta(days=29)
+    )
+    async with session_factory() as db:
+        period = (
+            await db.execute(
+                select(BillingPeriod).where(
+                    BillingPeriod.org_id == org_id,
+                    BillingPeriod.start_date == tomorrow,
+                )
+            )
+        ).scalar_one()
+
+        end = await billing_service.period_spend_window_end(
+            db, org_id, period, today=today
+        )
+        assert end is not None
+        assert end >= period.start_date
+        assert end == successor - datetime.timedelta(days=1)
+
+
+@pytest.mark.asyncio
+async def test_spend_window_respects_injected_today(session_factory, monkeypatch):
+    """Test 6 — `today=` is honoured and `date.today()` is never consulted."""
+    org_id = 1
+    real_today = datetime.date.today()
+    start = real_today - datetime.timedelta(days=95)
+    successor = real_today - datetime.timedelta(days=65)
+    injected = real_today - datetime.timedelta(days=30)
+    await _seed_org_with_open_period(session_factory, org_id=org_id, start=start)
+    await _add_period(
+        session_factory, org_id, successor, successor + datetime.timedelta(days=29)
+    )
+
+    class _ExplodingDate(datetime.date):
+        @classmethod
+        def today(cls):  # pragma: no cover - must never be reached
+            raise AssertionError("date.today() consulted despite an injected today=")
+
+    # Swap only the NAME `datetime` inside billing_service, not the global
+    # module: replacing `datetime.date` process-wide breaks SQLAlchemy's
+    # isinstance-based Date coercion. `_ExplodingDate` subclasses `date`, so
+    # every construction and comparison the module performs still works.
+    monkeypatch.setattr(
+        billing_service,
+        "datetime",
+        types.SimpleNamespace(date=_ExplodingDate, timedelta=datetime.timedelta),
+    )
+    async with session_factory() as db:
+        period = (
+            await db.execute(
+                select(BillingPeriod).where(
+                    BillingPeriod.org_id == org_id,
+                    BillingPeriod.start_date == start,
+                )
+            )
+        ).scalar_one()
+        assert (
+            await billing_service.period_spend_window_end(
+                db, org_id, period, today=injected
+            )
+            == injected
+        )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_open_rows_floor_overlaps_the_later_open_row(session_factory):
+    """Test 7 — duplicate open rows, asserted on BOTH helpers separately.
+
+    Open A [today-94, NULL), open B [today-3, NULL). `period_effective_end(A)`
+    stops the day before B starts; `period_spend_window_end(A)` floors to
+    today and therefore OVERLAPS B's window. That is intended under D2, but
+    it is exactly the shape called a phantom overlap elsewhere, so it is
+    asserted explicitly rather than discovered later.
+    """
+    org_id = 1
+    today = datetime.date.today()
+    a_start = today - datetime.timedelta(days=94)
+    b_start = today - datetime.timedelta(days=3)
+    await _seed_org_with_open_period(session_factory, org_id=org_id, start=a_start)
+    await _add_period(session_factory, org_id, b_start, None)
+    async with session_factory() as db:
+        a = (
+            await db.execute(
+                select(BillingPeriod).where(
+                    BillingPeriod.org_id == org_id,
+                    BillingPeriod.start_date == a_start,
+                )
+            )
+        ).scalar_one()
+
+        assert await billing_service.period_effective_end(
+            db, org_id, a
+        ) == b_start - datetime.timedelta(days=1)
+        window = await billing_service.period_spend_window_end(
+            db, org_id, a, today=today
+        )
+        assert window == today
+        assert window >= b_start, "the floored window deliberately overlaps open row B"
