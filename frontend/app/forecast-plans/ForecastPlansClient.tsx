@@ -14,7 +14,11 @@ import CategorySelect from "@/components/ui/CategorySelect";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { isAdmin } from "@/lib/auth";
-import { formatAmount } from "@/lib/format";
+import { formatAmount, todayISO } from "@/lib/format";
+import {
+  periodStatus,
+  selectCurrentPeriodIndex,
+} from "@/lib/billingPeriodStatus";
 import {
   input,
   label,
@@ -120,10 +124,10 @@ export default function ForecastPlansClient({
   const [categories, setCategories] = useState<Category[]>(initialCategories);
   const [periods, setPeriods] = useState<BillingPeriod[]>(initialPeriods);
 
-  // Default to the current period (open = no end_date), not index 0.
-  // Mirrors the pre-RSC loadRefs() logic.
+  // Default to the current period (TBD-242), not index 0.
+  // Mirrors `pickCurrentPeriod` in the RSC parent, which uses the same helper.
   const initialPeriodIdx = (() => {
-    const idx = initialPeriods.findIndex((p) => p.end_date === null);
+    const idx = selectCurrentPeriodIndex(initialPeriods);
     return idx >= 0 ? idx : 0;
   })();
   const [periodIdx, setPeriodIdx] = useState(initialPeriodIdx);
@@ -245,18 +249,24 @@ export default function ForecastPlansClient({
     }
   }, [plan?.forecast_input_granularity]);
 
-  // Determine period context label
-  const today = new Date().toISOString().slice(0, 10);
-  const isFuturePeriod = selectedPeriod
-    ? selectedPeriod.start_date > today
-    : false;
-  const isCurrentPeriod = selectedPeriod
-    ? selectedPeriod.start_date <= today &&
-      (!selectedPeriod.end_date || selectedPeriod.end_date >= today)
-    : false;
-  const isPastPeriod = selectedPeriod
-    ? selectedPeriod.end_date !== null && selectedPeriod.end_date < today
-    : false;
+  // Determine period context label.
+  //
+  // TBD-242: this file used to compute `today` as UTC
+  // (`new Date().toISOString().slice(0, 10)`) while the dashboard and budgets
+  // used the LOCAL date via `todayISO()`. The two disagree for a large part of
+  // every day east or west of Greenwich, so the same row could be labelled
+  // "current" here and "past" there. Local wins: it is what the rest of the
+  // app already used, and it is the date the person reading the screen is in.
+  //
+  // This file also used CALENDAR CONTAINMENT for `isCurrentPeriod` while its
+  // own "Today" button used `end_date === null` — so on a lapsed roster the
+  // badge and the button disagreed inside one component. Both now route
+  // through the shared classifier.
+  const today = todayISO();
+  const _planStatus = selectedPeriod ? periodStatus(selectedPeriod, today) : null;
+  const isFuturePeriod = _planStatus === "upcoming";
+  const isCurrentPeriod = _planStatus === "open";
+  const isPastPeriod = _planStatus === "past";
 
   // Refs mirroring `periods` / `periodIdx` so the long-lived
   // ensure-future async closure below can read the latest values
@@ -301,12 +311,9 @@ export default function ForecastPlansClient({
           ? fresh.findIndex((p) => p.start_date === currentStart)
           : -1;
         if (nextIdx === -1) {
-          const today = new Date().toISOString().slice(0, 10);
-          const openIdx = fresh.findIndex(
-            (p) =>
-              p.start_date <= today &&
-              (p.end_date === null || today <= p.end_date),
-          );
+          // TBD-242: was calendar containment, which could land on a stub the
+          // backend would not treat as current. Selection is clock-free now.
+          const openIdx = selectCurrentPeriodIndex(fresh);
           nextIdx = openIdx !== -1 ? openIdx : 0;
         }
         setPeriods(fresh);
@@ -1022,7 +1029,7 @@ export default function ForecastPlansClient({
           {!isCurrentPeriod && (
             <button
               onClick={() => {
-                const idx = periods.findIndex((p) => p.end_date === null);
+                const idx = selectCurrentPeriodIndex(periods);
                 if (idx >= 0) setPeriodIdx(idx);
               }}
               className="ml-1 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted hover:bg-surface-raised"

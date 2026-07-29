@@ -10,6 +10,11 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, todayISO } from "@/lib/format";
+import {
+  periodStatus,
+  selectCurrentPeriod,
+  selectCurrentPeriodIndex,
+} from "@/lib/billingPeriodStatus";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle, badgeError } from "@/lib/styles";
 import dynamic from "next/dynamic";
 import type { BillingPeriod, Budget, Category } from "@/lib/types";
@@ -76,11 +81,13 @@ export default function BudgetsPage() {
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
-  const isCurrentPeriod = selectedPeriod?.end_date === null;
-  // A future stub (start_date after today) is the editable "next" period.
-  const isNextPeriod = selectedPeriod
-    ? selectedPeriod.start_date > todayISO()
-    : false;
+  // TBD-242: one classifier. `open` is the current period; `upcoming` is the
+  // editable "next" stub. Both read from the same LOCAL clock.
+  const _budgetStatus = selectedPeriod
+    ? periodStatus(selectedPeriod, todayISO())
+    : null;
+  const isCurrentPeriod = _budgetStatus === "open";
+  const isNextPeriod = _budgetStatus === "upcoming";
   // Current + next are editable; past (closed) periods are read-only.
   const isEditable = isCurrentPeriod || isNextPeriod;
 
@@ -114,8 +121,8 @@ export default function BudgetsPage() {
     // on it): [next, current, prev, ...].
     const pl = future.length > 0 ? [future[0], ...past] : past;
     setPeriods(pl);
-    // Default to the current period (open = no end_date), not the next one.
-    const currentIdx = pl.findIndex((bp) => bp.end_date === null);
+    // Default to the current period (TBD-242), not the next one.
+    const currentIdx = selectCurrentPeriodIndex(pl);
     if (currentIdx >= 0) setPeriodIdx(currentIdx);
   }, [user]);
 
@@ -196,7 +203,7 @@ export default function BudgetsPage() {
 
   async function handleCopyForward() {
     setError("");
-    const current = periods.find((p) => p.end_date === null);
+    const current = selectCurrentPeriod(periods);
     if (!current || !periodStart) return;
     try {
       const updated = await apiFetch<Budget[]>(
@@ -342,7 +349,7 @@ export default function BudgetsPage() {
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
           </button>
           {!isCurrentPeriod && (
-            <button onClick={() => { const idx = periods.findIndex((p) => p.end_date === null); if (idx >= 0) setPeriodIdx(idx); }} className="ml-1 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted hover:bg-surface-raised">Today</button>
+            <button onClick={() => { const idx = selectCurrentPeriodIndex(periods); if (idx >= 0) setPeriodIdx(idx); }} className="ml-1 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted hover:bg-surface-raised">Today</button>
           )}
         </div>
       )}
