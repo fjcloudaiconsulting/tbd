@@ -1,21 +1,83 @@
 {
   "_comment": "TBD-242 cross-language contract. GENERATED from backend period_status; do not hand-edit. Regenerate: python backend/scripts/gen_period_status_vectors.py",
   "today": "2026-07-29",
-  "statuses": ["current_by_calendar", "invalid", "open", "past", "upcoming"],
+  "statuses": [
+    "current_by_calendar",
+    "invalid",
+    "open",
+    "past",
+    "upcoming"
+  ],
   "vectors": [
-    { "start_date": "2026-07-01", "end_date": null, "status": "open" },
-    { "start_date": "2020-01-01", "end_date": null, "status": "open" },
-    { "start_date": "2999-01-01", "end_date": null, "status": "open" },
-    { "start_date": "2026-07-20", "end_date": "2026-07-10", "status": "invalid" },
-    { "start_date": "2999-01-01", "end_date": "1999-01-01", "status": "invalid" },
-    { "start_date": "2026-07-30", "end_date": "2026-08-29", "status": "upcoming" },
-    { "start_date": "2026-07-01", "end_date": "2026-07-31", "status": "current_by_calendar" },
-    { "start_date": "2026-07-29", "end_date": "2026-07-29", "status": "current_by_calendar" },
-    { "start_date": "2026-06-01", "end_date": "2026-06-30", "status": "past" },
-    { "start_date": "2026-06-01", "end_date": "2026-07-28", "status": "past" },
-    { "start_date": "2026-07-29", "end_date": "2026-08-28", "status": "current_by_calendar" },
-    { "start_date": "2026-06-29", "end_date": "2026-07-29", "status": "current_by_calendar" },
-    { "start_date": "2026-07-30", "end_date": null, "status": "open" },
-    { "start_date": "2026-07-30", "end_date": "2026-07-29", "status": "invalid" }
+    {
+      "start_date": "2026-07-01",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2020-01-01",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2999-01-01",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2026-07-20",
+      "end_date": "2026-07-10",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2999-01-01",
+      "end_date": "1999-01-01",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2026-07-29",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2026-08-29",
+      "status": "upcoming"
+    },
+    {
+      "start_date": "2026-07-01",
+      "end_date": "2026-07-31",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2026-07-29",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2026-08-28",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-06-29",
+      "end_date": "2026-07-29",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-06-01",
+      "end_date": "2026-06-30",
+      "status": "past"
+    },
+    {
+      "start_date": "2026-06-01",
+      "end_date": "2026-07-28",
+      "status": "past"
+    }
   ]
 }

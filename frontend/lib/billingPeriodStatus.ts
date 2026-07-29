@@ -30,7 +30,6 @@
  * That rule is clock-free, which is also what keeps SELECTION immune to the
  * timezone skew discussed below.
  */
-import type { BillingPeriod } from "@/lib/types";
 
 /**
  * §2.3's five-branch partition. Mirrors
@@ -106,11 +105,20 @@ export function isOpenPeriod(row: PeriodRowLike): boolean {
  * the display from the write target (see the module docstring). The
  * `never consults a clock` test guards this.
  *
- * ⚠ **Returns `null` rather than falling back to `periods[0]`.** Roughly seven
- * sites used to do `find(p => !p.end_date) ?? periods[0]`, which silently
- * presents the newest row as current on a `no_open` roster — an org whose
- * periods are corrupt gets plausible-looking numbers instead of a signal.
- * Callers must handle `null` explicitly.
+ * ⚠ **Returns `null` rather than falling back to `periods[0]`**, so that "no
+ * period is current" is expressible at all.
+ *
+ * ⚠ **But no caller acts on that distinction yet, and this docstring used to
+ * claim otherwise.** Exactly ONE site ever wrote `?? periods[0]`
+ * (`app/forecast-plans/page.tsx`), and TBD-242 deliberately KEPT that
+ * fallback — the RSC still has to seed the client with something. Every other
+ * caller guards with `idx >= 0` / `!== null` and then falls back to index 0
+ * anyway. So on a `no_open` roster the screens still present the first row as
+ * if it were current; this signature merely makes fixing that possible.
+ * Surfacing it is TBD-235's job. (An earlier revision of this comment said
+ * "roughly seven sites" and implied the benefit was already delivered. It was
+ * not. Corrected after review — the same unreliable-description defect this
+ * programme keeps hitting, reproduced here.)
  *
  * ⚠ **Ties break on the greater `id`.** `get_current_period` orders by
  * `start_date DESC` alone, because `uq_billing_period_org_start` makes ties
@@ -150,6 +158,3 @@ export function selectCurrentPeriodIndex(
   const current = selectCurrentPeriod(periods);
   return current === null ? -1 : periods.indexOf(current);
 }
-
-/** Narrowing helper for the common `BillingPeriod` case. */
-export type { BillingPeriod };

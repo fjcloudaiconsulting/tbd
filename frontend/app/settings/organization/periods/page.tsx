@@ -32,6 +32,7 @@
  */
 
 import { useEffect, useState, type ReactNode } from "react";
+import { selectCurrentPeriod } from "@/lib/billingPeriodStatus";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
@@ -207,11 +208,12 @@ function RosterView({
   // `badgeError`, never brass.
   // Carries the ROW, not the id: an id would have to be resolved back through
   // `periods.find` on every step, making an O(n) scan O(n²).
-  const anchoredOpen = periods.reduce<RosterPeriod | null>((acc, p) => {
-    if (p.status !== "open") return acc;
-    if (acc === null) return p;
-    return p.start_date >= acc.start_date ? p : acc;
-  }, null);
+  // TBD-242: the shared selector, not a fourth hand-rolled copy. It keys off
+  // `end_date === null`, which on this page is exactly the rows the SERVER
+  // marked `status === "open"` (the backend derives that status from the same
+  // column), so the brass anchor is unchanged — but the tie-break is now the
+  // app-wide one instead of this file's private `>=` last-wins.
+  const anchoredOpen = selectCurrentPeriod(periods);
   const anchoredOpenId = anchoredOpen?.id ?? null;
 
   return (

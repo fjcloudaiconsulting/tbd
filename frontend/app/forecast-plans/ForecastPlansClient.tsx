@@ -17,6 +17,7 @@ import { isAdmin } from "@/lib/auth";
 import { formatAmount, todayISO } from "@/lib/format";
 import {
   periodStatus,
+  selectCurrentPeriod,
   selectCurrentPeriodIndex,
 } from "@/lib/billingPeriodStatus";
 import {
@@ -264,6 +265,7 @@ export default function ForecastPlansClient({
   // through the shared classifier.
   const today = todayISO();
   const _planStatus = selectedPeriod ? periodStatus(selectedPeriod, today) : null;
+  const hasCurrentPeriod = selectCurrentPeriod(periods) !== null;
   const isFuturePeriod = _planStatus === "upcoming";
   const isCurrentPeriod = _planStatus === "open";
   const isPastPeriod = _planStatus === "past";
@@ -1026,7 +1028,13 @@ export default function ForecastPlansClient({
               />
             </svg>
           </button>
-          {!isCurrentPeriod && (
+          {/* TBD-242: gate on a current period EXISTING, not just on the
+              selected row not being it. Under the old calendar-containment
+              rule a `no_open` roster whose stub contained today counted as
+              current, so this button stayed hidden. `open` is stricter, so
+              without `hasCurrentPeriod` the button would render on such a
+              roster and its handler would no-op on the `-1`. */}
+          {!isCurrentPeriod && hasCurrentPeriod && (
             <button
               onClick={() => {
                 const idx = selectCurrentPeriodIndex(periods);

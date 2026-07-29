@@ -21,6 +21,7 @@ import {
   isOpenPeriod,
   periodStatus,
   selectCurrentPeriod,
+  selectCurrentPeriodIndex,
 } from "@/lib/billingPeriodStatus";
 
 const p = (id: number, start_date: string, end_date: string | null = null) => ({
@@ -157,6 +158,68 @@ describe("selectCurrentPeriod — mirrors get_current_period, newest OPEN row", 
     // containment into SELECTION, which would desync from the backend.
     const periods = [p(1, "2999-01-01", null)];
     expect(selectCurrentPeriod(periods)?.id).toBe(1);
+  });
+});
+
+describe("selectCurrentPeriodIndex — the most-used export, and the one most easily reverted", () => {
+  // ⚠ These exist because the migration replaced eight `findIndex(p =>
+  // p.end_date === null)` call sites with this function, and NOTHING in the
+  // suite failed when it was mutated back to exactly that expression. A
+  // helper whose regression is invisible is not a fix, it is a rename.
+
+  it("returns the index of the newest open row, NOT the first one in the list", () => {
+    // The mutation `periods.findIndex(isOpenPeriod)` returns 0 here. This is
+    // the pre-refactor rule, and it is the whole bug: on a duplicate-open
+    // roster that is not newest-first, the screen and the backend disagree
+    // about which period a write lands in.
+    const periods = [
+      p(1, "2026-06-01", null),
+      p(2, "2026-07-01", null),
+      p(3, "2026-05-01", null),
+    ];
+    expect(selectCurrentPeriodIndex(periods)).toBe(1);
+  });
+
+  it("returns an INDEX INTO THE GIVEN ARRAY, matching selectCurrentPeriod", () => {
+    const periods = [
+      p(1, "2026-05-01", "2026-05-31"),
+      p(2, "2026-06-01", "2026-06-30"),
+      p(3, "2026-07-01", null),
+    ];
+    const idx = selectCurrentPeriodIndex(periods);
+    expect(idx).toBe(2);
+    expect(periods[idx]).toBe(selectCurrentPeriod(periods));
+  });
+
+  it("returns -1 when no row is open, so callers can tell 'none' from index 0", () => {
+    // Every caller guards with `idx >= 0`. If this returned 0 instead, the
+    // dashboard/budgets/forecasts would silently present the FIRST row as the
+    // current period on a `no_open` roster.
+    const periods = [
+      p(1, "2026-06-01", "2026-06-30"),
+      p(2, "2026-07-01", "2026-07-31"),
+    ];
+    expect(selectCurrentPeriodIndex(periods)).toBe(-1);
+  });
+
+  it("returns -1 on an empty roster", () => {
+    expect(selectCurrentPeriodIndex([])).toBe(-1);
+  });
+
+  it("agrees with selectCurrentPeriod on every shape", () => {
+    const rosters = [
+      [],
+      [p(1, "2026-07-01", null)],
+      [p(1, "2026-06-01", "2026-06-30")],
+      [p(1, "2026-06-01", null), p(2, "2026-07-01", null)],
+      [p(2, "2026-07-01", null), p(1, "2026-06-01", null)],
+      [p(1, "2026-01-01", null), p(2, "2026-07-01", "2026-07-31")],
+    ];
+    for (const roster of rosters) {
+      const idx = selectCurrentPeriodIndex(roster);
+      const picked = selectCurrentPeriod(roster);
+      expect(idx === -1 ? null : roster[idx]).toBe(picked);
+    }
   });
 });
 

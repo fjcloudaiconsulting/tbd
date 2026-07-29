@@ -36,6 +36,7 @@ CASES: list[tuple[str, str | None]] = [
     ("2026-07-01", None),
     ("2020-01-01", None),  # LAPSED open row: still `open`, never `past`
     ("2999-01-01", None),  # open AND future -> discriminates branch 2 vs 3
+    ("2026-07-30", None),  # open, starting TOMORROW -> branch 2 vs 3, tight
     # branch 1 — invalid
     ("2026-07-20", "2026-07-10"),
     ("2999-01-01", "1999-01-01"),  # inverted AND future -> branch 1 vs 3
