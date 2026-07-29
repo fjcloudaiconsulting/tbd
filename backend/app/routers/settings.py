@@ -1,8 +1,10 @@
 import datetime
+from decimal import Decimal
 
 import structlog
+from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, case, func, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -10,8 +12,18 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.billing import BillingPeriod
 from app.models.settings import OrgSetting
+from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization, Role, User
 from app.rate_limit import get_client_ip
+from app.schemas.billing_roster import (
+    ReferencedPeriod,
+    RosterPeriod,
+    RosterResponse,
+    RosterScope,
+    WindowScope,
+    anomaly_referenced_ids,
+    to_wire_anomaly,
+)
 from app.schemas.settings import (
     BillingCycleUpdate,
     BillingPeriodCreate,
@@ -22,6 +34,7 @@ from app.schemas.settings import (
 )
 from app.services import audit_service, billing_service
 from app.services.exceptions import ConflictError, ValidationError
+from app.services.transaction_filters import reportable_transaction_filter
 from app.services.settings_service import (
     FORECAST_GRANULARITY_VALUES,
     FORECAST_INPUT_GRANULARITY_KEY,
@@ -338,6 +351,287 @@ async def list_periods(
         }
         for p in periods
     ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TBD-234b — the read-only billing period roster.
+#
+# Spec: `specs/2026-07-29-billing-period-roster-design.md` §2.5, D1/D6-D10.
+# The kernel it consumes (TBD-234a, `15faa922`) is FROZEN: this route fetches
+# the roster, aggregates the money, windows the DISPLAY and renders §2.5's
+# body. It changes nothing on the kernel side and writes nothing anywhere.
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: D6. The display slice keeps the NEWEST rows past this count. The naive
+#: alternative — the FIRST 200 — keeps the oldest rows and discards the open
+#: row, every stub and every recent boundary.
+ROSTER_DISPLAY_CAP = 200
+
+#: D6/D8. `months` is clamped rather than rejected: out-of-range INTEGERS are
+#: clamped, a non-integer still 422s in FastAPI's coercion layer before any
+#: handler code runs, and this spec does not fight that.
+ROSTER_MIN_MONTHS = 1
+ROSTER_MAX_MONTHS = 60
+
+
+def _roster_length_days(
+    row: billing_service.RosterRow,
+    effective_end: datetime.date | None,
+    status: str,
+) -> int | None:
+    """Inclusive span, `null` where it would be meaningless.
+
+    `null` when `effective_end` is null (the roster tail is genuinely
+    unbounded) OR when the row is `invalid`, where
+    `effective_end - start_date + 1` is negative and the status already
+    carries the signal.
+    """
+    if effective_end is None or status == "invalid":
+        return None
+    return (effective_end - row.start_date).days + 1
+
+
+async def _roster_transaction_count(
+    db: AsyncSession,
+    org_id: int,
+    start: datetime.date,
+    counting_through: datetime.date | None,
+) -> int:
+    """D7's UNFILTERED count, as a two-branch ``UNION ALL``.
+
+    ⚠ **Two columns, two filters, two DIFFERENT predicate shapes**, and this
+    is the un-filtered one. `list_transactions` applies no
+    `reportable_transaction_filter`, so a filtered count would not match the
+    click-through the page links to.
+
+    With no status predicate, `ix_transactions_org_settled_date` is
+    unreachable (its `status` column sits in the MIDDLE of the two useful
+    ones) and a top-level `OR` across two columns degrades to an `org_id`
+    prefix scan. The two branches are each sargable: one on
+    `(org_id, ..., settled_date)`, the other on `ix_transactions_org_date`.
+    Because `_apply_transaction_filters` runs `date_from`/`date_to` through
+    `effective_period_date_expr()` — `coalesce(settled_date, date)` — this
+    union is not an approximation of the click-through set, it **is** that
+    set, decomposed into its two sargable halves.
+
+    ⚠ **A null `counting_through` makes BOTH branches one-sided**, never one
+    and not the other. That is the roster tail, where `effective_end` and
+    `counting_through` are both null; the one-sided form keeps the index
+    range intact and simply drops the trailing bound.
+    """
+    settled_branch = select(Transaction.id).where(
+        Transaction.org_id == org_id,
+        Transaction.settled_date >= start,
+    )
+    pending_branch = select(Transaction.id).where(
+        Transaction.org_id == org_id,
+        Transaction.settled_date.is_(None),
+        Transaction.date >= start,
+    )
+    if counting_through is not None:
+        settled_branch = settled_branch.where(Transaction.settled_date <= counting_through)
+        pending_branch = pending_branch.where(Transaction.date <= counting_through)
+
+    combined = union_all(settled_branch, pending_branch).subquery()
+    return (
+        await db.execute(select(func.count()).select_from(combined))
+    ).scalar_one()
+
+
+async def _roster_settled_net(
+    db: AsyncSession,
+    org_id: int,
+    start: datetime.date,
+    counting_through: datetime.date | None,
+) -> Decimal:
+    """D7's reportable settled net: income minus expense, in cents.
+
+    The filtered column, and the opposite index story from the count above:
+    pinning `status = SETTLED` makes this a clean three-column range on
+    `ix_transactions_org_settled_date` = `(org_id, status, settled_date)`.
+    **No `OR`, no `coalesce`** — the `settled_date IS NULL` disjunct is dead
+    code under a `SETTLED` predicate (migration
+    `036_settled_implies_settled_date` carries a real CHECK,
+    `status <> 'settled' OR settled_date IS NOT NULL`, mirrored at flush
+    time), and adding it would remove the range from the trailing key part
+    and collapse the plan to `(org_id, status)`.
+
+    One-sided when `counting_through` is null, exactly as the count above.
+    """
+    signed = case(
+        (Transaction.type == TransactionType.INCOME, Transaction.amount),
+        else_=-Transaction.amount,
+    )
+    stmt = select(func.coalesce(func.sum(signed), 0)).where(
+        Transaction.org_id == org_id,
+        reportable_transaction_filter(),
+        Transaction.status == TransactionStatus.SETTLED,
+        Transaction.settled_date >= start,
+    )
+    if counting_through is not None:
+        stmt = stmt.where(Transaction.settled_date <= counting_through)
+    return Decimal(str((await db.execute(stmt)).scalar_one()))
+
+
+@router.get("/billing-periods/roster", response_model=RosterResponse)
+async def get_billing_period_roster(
+    months: int = 12,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Everything wrong with this org's billing period roster, plus the money.
+
+    **Read-only, and that is load-bearing.** Five shipped tickets deferred
+    residual corruption to a detector that did not exist, and today the
+    fleet's roster health is observable only by grepping structlog.
+
+    Three rules this handler exists to obey:
+
+    * **D10 — never call ``get_current_period``.** It auto-creates *and
+      commits* a `BillingPeriod` when none is open, and "no open row" is one
+      of the anomalies this page exists to *report*. A read-only diagnostic
+      that manufactures the row it reports on is disqualifying.
+    * **D6 — ONE fetch of ``billing_periods``.** The display window is a
+      Python slice over :func:`load_complete_roster`'s result, never a second
+      ``SELECT``. A second windowed query buys nothing and costs correctness:
+      an insert landing between the two makes `roster.period_count` and
+      `periods` describe different rosters, which is the scope confusion
+      §2.5's two-scope contract exists to prevent, reintroduced at the query
+      layer. Fenced by test 32's statement counter.
+    * **D8a — resolve the clock ONCE.** ``today`` goes to `period_status`, to
+      `find_period_anomalies` and to `period_spend_window_end`. Without it a
+      request straddling UTC midnight can classify a row `past` against day
+      D while computing its window against day D+1, producing a
+      self-contradictory row on the page whose entire job is catching
+      self-contradictory rows.
+
+    **Two scopes, never conflated.** `roster` is org-wide and is the anomaly
+    domain; `window` is display only. Analysis quantifies over the COMPLETE
+    roster, so a truncated page still reports every marker, with the
+    off-window ones resolvable through `referenced_periods`. That is what
+    lets the page make the strong claim — *absence of markers means the
+    roster is healthy* — rather than the weak one a windowed design could
+    only make.
+
+    Query budget, accepted rather than hidden: 1 roster fetch + 2 aggregates
+    per displayed row + ~1 per displayed OPEN row for `counting_through`
+    (`period_effective_end` costs ZERO queries on a closed row), so ~402 at
+    the 200-row cap. DO App Platform's request timeout binds before the cap
+    does; the fix is the recorded single-JOIN alternative (spec D6), not a
+    raised cap.
+    """
+    _require_admin(current_user)
+    org_id = current_user.org_id
+
+    # D8a — once, here, and passed to every callee.
+    today = datetime.date.today()
+
+    roster = await billing_service.load_complete_roster(db, org_id)
+    anomalies = billing_service.find_period_anomalies(roster, today=today)
+
+    # Derived ends for EVERY row, not only the displayed ones:
+    # `referenced_periods` must carry `effective_end` for off-window ids too.
+    effective_ends = [
+        billing_service.kernel_derived_end(roster, i) for i in range(len(roster.rows))
+    ]
+    statuses = [billing_service.period_status(row, today=today) for row in roster.rows]
+
+    # ── the display window: a Python slice, never a second SELECT ────────
+    months = min(max(months, ROSTER_MIN_MONTHS), ROSTER_MAX_MONTHS)
+    cutoff = today - relativedelta(months=months)
+    in_window = [
+        i for i, row in enumerate(roster.rows) if row.start_date >= cutoff
+    ]
+    truncated = len(in_window) > ROSTER_DISPLAY_CAP
+    # `roster.rows` is already `start_date` ASC, so the newest rows are the
+    # LAST ones and the slice needs no re-sorting at all.
+    displayed = in_window[-ROSTER_DISPLAY_CAP:] if truncated else in_window
+
+    periods: list[RosterPeriod] = []
+    for i in displayed:
+        row = roster.rows[i]
+        # B4: the roster row is passed straight through. Re-materialising an
+        # ORM entity here would trip D6's single-fetch rule.
+        counting_through = await billing_service.period_spend_window_end(
+            db, org_id, row, today=today
+        )
+        periods.append(
+            RosterPeriod(
+                id=row.id,
+                start_date=row.start_date,
+                end_date=row.end_date,
+                effective_end=effective_ends[i],
+                counting_through=counting_through,
+                status=statuses[i],
+                length_days=_roster_length_days(row, effective_ends[i], statuses[i]),
+                transaction_count=await _roster_transaction_count(
+                    db, org_id, row.start_date, counting_through
+                ),
+                settled_net=str(
+                    (
+                        await _roster_settled_net(
+                            db, org_id, row.start_date, counting_through
+                        )
+                    ).quantize(Decimal("0.01"))
+                ),
+            )
+        )
+
+    displayed_ids = {roster.rows[i].id for i in displayed}
+    by_id = {row.id: i for i, row in enumerate(roster.rows)}
+
+    wire_anomalies = []
+    referenced: dict[str, ReferencedPeriod] = {}
+    for anomaly in anomalies:
+        ids = anomaly_referenced_ids(anomaly)
+        wire_anomalies.append(
+            to_wire_anomaly(
+                anomaly,
+                off_window=any(pid not in displayed_ids for pid in ids),
+            )
+        )
+        for pid in ids:
+            if str(pid) in referenced:
+                continue
+            # Direct indexing, never `.get`: every id a marker names came out
+            # of the same `CompleteRoster`, so a miss is a kernel bug and
+            # must surface rather than silently drop the entry the page needs
+            # to render an off-window marker.
+            i = by_id[pid]
+            row = roster.rows[i]
+            referenced[str(pid)] = ReferencedPeriod(
+                id=row.id,
+                start_date=row.start_date,
+                end_date=row.end_date,
+                effective_end=effective_ends[i],
+                status=statuses[i],
+            )
+
+    return RosterResponse(
+        roster=RosterScope(
+            # ⚠ Served from the `CompleteRoster` the kernel received, never
+            # from an independent `SELECT COUNT(*)`: without that identity,
+            # test 22 goes green on exactly the wiring it exists to forbid.
+            period_count=len(roster.rows),
+            first_start=roster.rows[0].start_date if roster.rows else None,
+            last_start=roster.rows[-1].start_date if roster.rows else None,
+            # A scope-level restatement of a marker the kernel already emits,
+            # not a second source of truth. ⚠ It names an OVERLAP-only
+            # refusal: the other eight rules always ran.
+            analyzed=not any(
+                a.kind == "overlap_analysis_skipped" for a in anomalies
+            ),
+        ),
+        window=WindowScope(
+            from_=periods[0].start_date if periods else None,
+            to=None,
+            displayed_count=len(periods),
+            truncated=truncated,
+        ),
+        periods=periods,
+        anomalies=wire_anomalies,
+        referenced_periods=referenced,
+    )
 
 
 @router.post("/billing-period", status_code=200)
