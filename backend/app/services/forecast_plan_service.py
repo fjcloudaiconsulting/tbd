@@ -31,7 +31,7 @@ from app.schemas.forecast_plan import (
     ForecastPlanItemUpdate,
     ForecastPlanResponse,
 )
-from app.services.billing_service import resolve_period
+from app.services.billing_service import period_spend_window_end, resolve_period
 from app.services.date_utils import advance_date
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.settings_service import (
@@ -288,14 +288,41 @@ async def _compute_actuals_batch(
 
 async def _build_response(
     db: AsyncSession, org_id: int, plan: ForecastPlan,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     granularity = await get_forecast_input_granularity(db, org_id)
     period = plan.billing_period
     p_start = period.start_date
     p_end = period.end_date
 
+    # ── TBD-240 §4 ────────────────────────────────────────────────────────
+    #
+    # TWO different ends live in this function, and they are not
+    # interchangeable:
+    #
+    #   * `p_end` — the RAW stored `end_date`, `None` while the period is
+    #     open. It is what the response emits, unchanged (D5): the derived end
+    #     is for queries only, and `ForecastPlanResponse.period_end` keeps
+    #     meaning "what the period row says".
+    #   * `window_end` — the spend window. `_compute_actuals_batch` sums
+    #     SETTLED rows, so leaving it on `p_end` let an open period's actuals
+    #     run unbounded forward and swallow every future stub's window.
+    #
+    # ⚠ `populate_from_sources` in this same file uses a THIRD expression
+    # (`p_start + 1 month - 1 day`) and that is deliberate — there `p_end`
+    # doubles as a forward PROJECTION HORIZON for recurring synthesis, and
+    # clamping it to a derived-or-today value would zero the recurring
+    # contribution for exactly the lapsed orgs this ticket is about. Separating
+    # the settled-sum bound from the projection horizon at those sites is a
+    # named follow-up (spec §7); do not unify the two shapes.
+    #
+    # `today` is injectable (D6) because the window floors at the wall clock.
+    # All eleven `_build_response` call sites pass it through from their own
+    # entry point; none of them is a loop, so this fires once per request.
+    window_end = await period_spend_window_end(db, org_id, period, today=today)
+
     # Batch compute actuals for all items (2 queries instead of 2*N)
-    actuals = await _compute_actuals_batch(db, org_id, plan.items, p_start, p_end)
+    actuals = await _compute_actuals_batch(db, org_id, plan.items, p_start, window_end)
 
     # Batch fetch category names (avoids lazy-load MissingGreenlet in async)
     cat_ids = {item.category_id for item in plan.items}
@@ -358,17 +385,19 @@ async def _build_response(
 
 async def get_or_create_plan(
     db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Get existing plan for a period, or create a new draft."""
     period = await resolve_period(db, org_id, period_start)
     plan = await _get_or_create_plan_row(db, org_id, period.id)
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan)
+    return await _build_response(db, org_id, plan, today=today)
 
 
 async def get_plan_for_period(
     db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse | None:
     """Read-only: return the plan for a period, or None if none exists.
 
@@ -388,11 +417,12 @@ async def get_plan_for_period(
     if plan is None:
         return None
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan)
+    return await _build_response(db, org_id, plan, today=today)
 
 
 async def populate_from_sources(
     db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Auto-populate plan items from recurring templates and 3-month history averages.
 
@@ -629,11 +659,12 @@ async def populate_from_sources(
 
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan)
+    return await _build_response(db, org_id, plan, today=today)
 
 
 async def refresh_from_sources(
     db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Replace auto-generated plan items, preserving manual edits.
 
@@ -657,11 +688,14 @@ async def refresh_from_sources(
     # Re-run populate against the cleared slate. populate handles its own
     # commit; we ride on its commit so the deletes and inserts land
     # together.
-    return await populate_from_sources(db, org_id, period_start=period_start)
+    return await populate_from_sources(
+        db, org_id, period_start=period_start, today=today
+    )
 
 
 async def upsert_item(
     db: AsyncSession, org_id: int, plan_id: int, body: ForecastPlanItemCreate,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Add or update a single plan item."""
     plan = await _get_plan(db, org_id, plan_id)
@@ -705,11 +739,12 @@ async def upsert_item(
 
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan)
+    return await _build_response(db, org_id, plan, today=today)
 
 
 async def bulk_upsert(
     db: AsyncSession, org_id: int, plan_id: int, body: BulkUpsertRequest,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Bulk add/update multiple plan items at once."""
     plan = await _get_plan(db, org_id, plan_id)
@@ -793,11 +828,12 @@ async def bulk_upsert(
 
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan)
+    return await _build_response(db, org_id, plan, today=today)
 
 
 async def update_item(
     db: AsyncSession, org_id: int, plan_id: int, item_id: int, body: ForecastPlanItemUpdate,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Update a single plan item amount."""
     plan = await _get_plan(db, org_id, plan_id)
@@ -817,11 +853,12 @@ async def update_item(
 
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan)
+    return await _build_response(db, org_id, plan, today=today)
 
 
 async def delete_item(
     db: AsyncSession, org_id: int, plan_id: int, item_id: int,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Remove a single plan item."""
     plan = await _get_plan(db, org_id, plan_id)
@@ -839,11 +876,12 @@ async def delete_item(
     await db.delete(item)
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan)
+    return await _build_response(db, org_id, plan, today=today)
 
 
 async def activate_plan(
     db: AsyncSession, org_id: int, plan_id: int,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Mark plan as active (finalized). Active plans are read-only."""
     plan = await _get_plan(db, org_id, plan_id)
@@ -855,11 +893,12 @@ async def activate_plan(
     plan.status = PlanStatus.ACTIVE
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan)
+    return await _build_response(db, org_id, plan, today=today)
 
 
 async def revert_to_draft(
     db: AsyncSession, org_id: int, plan_id: int,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Revert an active plan back to draft for editing."""
     plan = await _get_plan(db, org_id, plan_id)
@@ -870,11 +909,12 @@ async def revert_to_draft(
     plan.status = PlanStatus.DRAFT
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan)
+    return await _build_response(db, org_id, plan, today=today)
 
 
 async def discard_plan(
     db: AsyncSession, org_id: int, plan_id: int,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Remove all items from a draft plan."""
     plan = await _get_plan(db, org_id, plan_id)
@@ -886,13 +926,14 @@ async def discard_plan(
     plan.status = PlanStatus.DRAFT
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan)
+    return await _build_response(db, org_id, plan, today=today)
 
 
 async def copy_from_period(
     db: AsyncSession, org_id: int,
     target_period_start: datetime.date | None,
     source_period_start: datetime.date,
+    *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Copy plan items from a previous period to the target period."""
     target_period = await resolve_period(db, org_id, target_period_start)
@@ -967,7 +1008,7 @@ async def copy_from_period(
 
     await db.commit()
     await db.refresh(target_plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, target_plan)
+    return await _build_response(db, org_id, target_plan, today=today)
 
 
 # ── Internal ─────────────────────────────────────────────────────────────────
