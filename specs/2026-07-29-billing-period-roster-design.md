@@ -1,6 +1,6 @@
 # TBD-234 — read-only billing period roster, and the anomaly kernel
 
-Status: REVISION 5 — awaiting sign-off round 5
+Status: REVISION 6 — 234a MERGED-PENDING (PR #590 review folded)
 Date: 2026-07-29
 Jira: TBD-234 (Story, child of TBD-213) — **re-scoped to effort L and SPLIT in two.** **Blocks TBD-233 / TBD-242.**
 
@@ -15,7 +15,7 @@ Related specs: `2026-07-28-open-period-spend-window-design.md`, `2026-07-28-clos
 must split:
 
 - **TBD-234a — the kernel.** `load_complete_roster`, `find_period_anomalies` and the §2.3 status
-  partition as a `period_status` helper, all in `billing_service.py`. Tests 1-14. Ships FIRST.
+  partition as a `period_status` helper, all in `billing_service.py`. Tests 1-14b. Ships FIRST.
 - **TBD-234b — the route and the page.** Fetching, aggregates, display windowing, gating, the
   response contract, the page. Tests 15-31. Opens only AFTER 234a merges.
 
@@ -49,6 +49,32 @@ a completeness precondition guarded by a tool this repo does not have (§2.2), a
 reimplementation path for the wrong end semantics (test 11 clause (e)), and two markers with no
 rendering home (§1.1). Two corrections to statements this document had been repeating since revision 1
 are folded alongside them (§0.1 C1, and the effort label above).
+
+**Revision 6 folds the PR-review findings on 234a's implementation (PR #590), audited independently
+by three reviewers.** No design ruling changed here either; what changed is that several of THIS
+DOCUMENT'S claims were shown to be empirically false and are corrected in place:
+
+- **§4a's claim that test 11 clause (e) is "F4's only fence inside 234a" is FALSE** and is corrected
+  in §2.4 and §4a. The actual fences are test 2 and test 14a's signature assertions (§4a, finding
+  R-S1).
+- **Test 2's fixture alternative silently killed a fence** and is deleted; test 2 is relabelled
+  `fence` (§4a, R-S2).
+- **Four test gaps, each proven by a GREEN defect injection**, are recorded with their injections and
+  closed by new tests 13c, 13d, 13e and by fixture corrections to tests 14 and 14a (§4a, R-S3).
+- **§2.4a's emission-ceiling payload could not carry information** (`emitted_count` was always the
+  cap); it is now `overlap_count`, and the ceiling's boundary direction is pinned like the analysis
+  cap's (§2.4a, §2.5).
+- **§2.5's ordering claim of totality was false** as implemented and is now true by construction
+  (§2.5).
+- **§2.5 and §8.1 contradicted each other** over who owns the ordering ruling; resolved in favour of
+  §8.1 (§2.5).
+- **§8.1's freeze omitted four shipped symbols and `period_status`' signature**; both added.
+
+⚠ **Line citations in this document are computed against `main` as it stood BEFORE 234a merged.**
+234a adds two imports and eleven docstring lines above `period_effective_end`, shifting every
+`billing_service.py:NNN` citation below it by **+13**. Resolve citations **by symbol name**, which is
+shift-proof; the numbers are kept only because §7's round records quote them. The kernel's own
+in-file citations were converted to symbol references in the fold, for exactly this reason.
 
 ---
 
@@ -283,6 +309,14 @@ def find_period_anomalies(roster: CompleteRoster, *, today: datetime.date) -> li
 (`backend/app/models/billing.py:12-14`, verified). For a **complete** roster in `start_date` ASC
 order with per-org unique starts:
 
+⚠ **"in `start_date` ASC order" is a PRECONDITION of the proof, not decoration, and revision 6 gives
+it its own fence (test 14b).** On an unordered list `rows[i+1].start_date` is not
+`MIN(start_date) WHERE start_date > rows[i].start_date` and every derived end below is garbage.
+Production is MySQL, which guarantees no order without an `ORDER BY`; SQLite in the test suite
+happens to return `(org_id, start_date)` order through the unique constraint's implicit index **with
+or without the clause**, which is why deleting it was invisible to every behavioural test. See §4a's
+R-S3 gap T1.
+
 ```
 effective_end(rows, i) = rows[i].end_date                     if end_date IS NOT NULL
                        = rows[i+1].start_date - 1 day         if open and i+1 exists
@@ -337,12 +371,21 @@ hand-shaped rosters, and §8.1 advertises the kernel as testable without the rou
 `backend/app/` and fail on a forbidden construct (the #552 pattern, verified: both use `import ast`, a
 `BACKEND_APP.rglob("*.py")` walk and an `_enclosing_function` parent stack).
 
-**234a ships one:** an AST guard asserting that within `backend/app/`, a call node named
-`CompleteRoster` appears **only** inside `load_complete_roster`. ⚠ **The scan is source-scoped to
-`backend/app/`, so tests are exempt by construction**, which is also what resolves the contradiction
-above: hand-shaped kernel fixtures are legal precisely because they are not production code. Test 14
+**234a ships one:** an AST guard asserting that within `backend/app/`, a `CompleteRoster` is
+constructed **only** inside `load_complete_roster`. ⚠ **The scan is source-scoped to `backend/app/`,
+so tests are exempt by construction**, which is also what resolves the contradiction above:
+hand-shaped kernel fixtures are legal precisely because they are not production code. Test 14
 carries the guard and is a **fence**, not a guard label, because it fails against an implementation
 that constructs a `CompleteRoster` at a second site.
+
+⚠ **Revision 6 (R-B1): "a call node NAMED `CompleteRoster`" is too narrow, and shipping it that way
+left the guard green against three real construction shapes** — including `dataclasses.replace`,
+which the paragraph above names in the same breath as the risk. **Normative: the guard matches four
+SHAPES** — direct, `ImportFrom`-aliased, `dataclasses.replace` with a positional first argument, and
+class-object indirection (`__class__`, `type(...)`) — **and it enumerates what it does not cover
+rather than claiming completeness.** Detail and the proving injections in §4a's R-B1 note. It also
+carries a **positive control**, because a detector that fires on nothing is green, and green is what
+this guard looked like.
 
 **This is NOT the rejected two-unit fix in disguise.** `load_complete_roster` **fetches rows**; it
 does not **compute ends**. `period_spend_window_end` remains **structurally unreachable everywhere in
@@ -596,9 +639,28 @@ today, where the floor is a no-op. **All fourteen pass, 234a merges, and every l
 production gets phantom overlaps between the open row's floored end and its historic stubs.**
 
 **Ruling: the correct statement is that the async helper is unreachable while the floored semantics
-are trivially reimplementable, and the fence inside 234a is test 11's clause (e)** (§4), which
-requires the open interior row to be **lapsed relative to the injected `today`**. Test 16 additionally
-fences the route, where both helpers are genuinely reachable.
+are trivially reimplementable, and 234a must fence the semantics rather than rely on the signature.**
+Test 16 additionally fences the route, where both helpers are genuinely reachable.
+
+⚠ **Revision 6 correction (R-S1): revisions 5's claim that test 11 clause (e) is "F4's only fence
+inside 234a" is FALSE, and the review PROVED it by building the three floors separately.** Clause (e)
+catches exactly one of the three, and not through the clause:
+
+| where the floor is written | caught by | not caught by |
+|---|---|---|
+| **D3a** — inside `kernel_derived_end`, reading a real clock | **test 11** | — |
+| **D3c** — inside `find_period_anomalies`, duplicating the derivation | **test 2** | test 11 (it asserts on `kernel_derived_end`, which stays clean) |
+| **D3b** — behind an optional `today=` kwarg on `kernel_derived_end` | **test 14a's signature assertions** | test 11 (the kwarg defaults to no floor) |
+
+Test 11 is green against **both** D3b and D3c. And it catches D3a by wall-clock MAGNITUDE — the
+fixture's `today` is years past the derived end — not by clause (e)'s relation as such. Clause (e)
+remains normative and remains required, because without it even D3a escapes; it is simply not the
+only fence, and stating that it was left two of the three floors reading as unfenced when they are
+not.
+
+**Ruling: F4's fences inside 234a are test 2 (D3c), test 14a's signature assertions (D3b) and test
+11's clause (e) (D3a) — three tests, one per place the floor can be written.** This is why §4a now
+labels test 2 a `fence` and deletes the fixture alternative that would have dissolved it.
 
 #### Row-level suppression rules, both normative
 
@@ -633,8 +695,11 @@ its right gaps, neither of which describes anything a reader can act on. **Rulin
 
 - **Display truncates** (D6): newest-first, `LIMIT 200`, `truncated: true`. Unchanged.
 - **Analysis refuses.** But scope the refusal correctly. **Only `overlap` is `O(n²)`.** `gap` is
-  adjacent-pair `O(n)`; `straddling` is `O(n·k)` in open rows; `inverted`, `no_open`,
-  `duplicate_open` are `O(n)`.
+  adjacent-pair `O(n)`; `straddling` resolves ONE anchor and makes ONE `O(n)` pass; `inverted`,
+  `no_open`, `duplicate_open` are `O(n)`. ⚠ **Revision 6 correction:** revision 5 said `straddling`
+  was `O(n·k)` in open rows. It is not, and never was as implemented — the anchor is a single row
+  (the MAX-start open one), so there is no `k`. The shipped code was better than this document
+  advertised; the advertisement is corrected rather than the code.
 
 **Ruling: past the cap, suppress `overlap` ALONE** and emit an **`overlap_analysis_skipped`** marker
 carrying the row count and the cap. Suppressing every structural marker would kill `duplicate_open`
@@ -661,14 +726,36 @@ render. The comparison loop stays sub-second, so the cap never fires.
 This is admin-authenticated and self-inflicted, so it is **recorded with a bound rather than treated
 as a threat**. **Ruling, consistent with §2.4a's named rule (truncation for analysis must be refused,
 never silently applied): a marker-count ceiling of 5000.** Past it the kernel stops emitting `overlap`
-markers and emits **`overlap_emission_capped`** carrying `emitted_count` and `cap`, a **roster-scoped**
-marker under §1.1's third class, exactly like `overlap_analysis_skipped`. Non-`overlap` markers are
-never suppressed by this ceiling.
+markers and emits **`overlap_emission_capped`**, a **roster-scoped** marker under §1.1's third class,
+exactly like `overlap_analysis_skipped`. Non-`overlap` markers are never suppressed by this ceiling.
+
+⚠ **The ceiling's boundary is PINNED, in the same direction as the analysis cap's, and revision 5
+left it unstated while the implementation used `>=`.** **Normative: the marker fires when the number
+of candidate `overlap` markers EXCEEDS 5000.** At exactly 5000 nothing was suppressed, so there is
+nothing to refuse and no marker is emitted. (The two comparisons are deliberately parallel:
+`len(rows) > 2000` for the analysis cap, `overlap_count > 5000` for the emission ceiling.)
+
+⚠ **The payload is `overlap_count`, NOT `emitted_count`, and revision 5's field could not carry
+information.** The review proved it: the loop stopped the instant `emitted` reached the ceiling, so
+whenever the marker fired `emitted_count` was **always exactly 5000** and the page would render
+"5000 of 5000". **Ruling: the marker carries `overlap_count`, the number of `overlap` markers the
+roster WOULD have produced had there been no ceiling, together with `cap`.** How many were emitted is
+`cap`, by construction, so it needs no field of its own. The pair scan therefore runs to completion
+rather than breaking early; the extra cost is bounded by the analysis cap directly above
+(`n <= 2000` → at most ~2M comparisons, the exact budget that cap was sized for).
 
 ### 2.5 Response contract
 
 **The `PeriodAnomaly` type and its marker payload schema are [234a]** — the kernel's output contract,
-which 234b consumes verbatim. **Everything else in this section is [234b].**
+which 234b consumes verbatim. **Everything else in this section is [234b], with ONE exception, named
+explicitly below.**
+
+⚠ **Revision 6 resolves a contradiction the review found (R-S4).** "Everything else in this section
+is [234b]" swept up the **anomaly list ordering ruling** further down this section, while §8.1 item 4
+assigns that ordering to the 234a freeze. The two statements cannot both hold, and the shipped code
+follows §8.1: `_anomaly_sort_key` and the sorted return are in the kernel. **Ruling: §8.1 wins. The
+ordering ruling is [234a]**, because an unordered kernel output cannot be pinned by a 234b test
+without 234b first re-sorting, which is the rewrite §8.1 exists to prevent.
 
 #### The kernel's types [234a]
 
@@ -714,9 +801,22 @@ class PeriodAnomaly:
     to_date: datetime.date | None = None
     effective_end: datetime.date | None = None
     period_count: int | None = None
-    emitted_count: int | None = None
+    overlap_count: int | None = None      # ⚠ revision 6: was `emitted_count`
     cap: int | None = None
 ```
+
+Four more module-level names ship with the kernel and are **part of the freeze** (§8.1), because
+234b's response model and threshold tests need them by name:
+
+```python
+AnomalyKind = Literal[...]          # the nine kinds, in the order §2.5 sorts by
+PeriodStatus = Literal["invalid", "open", "upcoming", "current_by_calendar", "past"]
+OVERLAP_ANALYSIS_CAP = 2000         # §2.4a
+OVERLAP_EMISSION_CAP = 5000         # §2.4a's emission ceiling
+```
+
+⚠ **`AnomalyKind`'s declaration order IS the sort order.** Reordering the `Literal` silently
+reorders every response; it is contract, not formatting.
 
 #### Marker payloads, one row per kind, all nine, frozen in 234a
 
@@ -733,7 +833,7 @@ frozen in 234a, so it cannot be left to 234b.
 | `straddling` | `period_id`, `anchor_period_id` | the straddler and the MAX-start open row it straddles |
 | `lapsed_open` | `period_id`, `effective_end` | the anchored open row and its derived end, which is `< today` |
 | `overlap_analysis_skipped` | `period_count`, `cap` | §2.4a; `period_count` is the org's true row count, `cap` is 2000. **Roster-scoped** (§1.1) |
-| `overlap_emission_capped` | `emitted_count`, `cap` | §2.4a's emission ceiling; `cap` is 5000. **Roster-scoped** (§1.1) |
+| `overlap_emission_capped` | `overlap_count`, `cap` | §2.4a's emission ceiling; `cap` is 5000. ⚠ **`overlap_count` is what the roster WOULD have emitted, always `> cap` when the marker fires** — never the emitted count, which is `cap` by construction (revision 6). **Roster-scoped** (§1.1) |
 
 #### The response body [234b]
 
@@ -811,10 +911,27 @@ Remaining rules:
 - ⚠ **Anomaly list ORDERING is pinned, and revision 4 left it unspecified.** Unordered, 234b's
   rendering is nondeterministic across equivalent rosters and every test asserting a list is
   accidentally order-sensitive. **Ruling: `anomalies` is sorted by `kind` in the `Literal` declaration
-  order above, then by the lowest period id the marker references, then by `from_date`.** Markers
-  referencing no id sort last within their kind. This is a total order on every roster because ids are
-  unique. **Tests may assert the list directly**; the alternative (mandating order-insensitive
-  assertions everywhere) was considered and rejected, because it leaves 234b's rendering unpinned.
+  order above, then by the period ids the marker references, ASCENDING, as a whole tuple, then by
+  `from_date`.** Markers referencing no id sort last within their kind. **Tests may assert the list
+  directly**; the alternative (mandating order-insensitive assertions everywhere) was considered and
+  rejected, because it leaves 234b's rendering unpinned. **This ruling is [234a]** (see the exception
+  named at the top of this section).
+
+  ⚠ **Revision 6 correction (R-B2): revision 5 said "by the LOWEST period id the marker references"
+  and asserted "this is a total order on every roster because ids are unique". The second claim was
+  FALSE**, and the review produced the counterexample: rows `A(id=5)`, `B(id=6)` and `C(id=1)`, with
+  both `A` and `B` containing `C`, produce `overlap 5→1` and `overlap 6→1` — two distinct markers,
+  same kind, same lowest id, same `from_date`, therefore **byte-identical keys**. Output stayed
+  deterministic (stable sort, fixed emission order), so nothing was broken at runtime; but the licence
+  to "assert the list directly" and 234b's rendering pin both rest on totality, so **the claim is made
+  TRUE rather than softened: the id component is the whole sorted tuple, not its minimum.** The
+  leading comparison is unchanged — the lowest id still decides first — and the remaining ids are the
+  tie-break behind it.
+
+  **What totality guarantees, precisely:** no two markers the kernel emits from one roster share a
+  key. Within a kind, each rule emits at most one marker per row (`inverted`, `straddling`), per
+  adjacent pair (`gap`), per `i < j` pair (`overlap`), or per roster (`duplicate_open`, `no_open`,
+  `lapsed_open`, and the two refusal markers), and row ids are unique. Fenced by test 13e.
 - `status` values are the snake_case literals above. `invalid` is branch 1 of §2.3.
 - **Ordering: `start_date` ASC** in `periods`. ⚠ This is the **response** ordering, not the query's;
   see D6 on truncation direction. `list_periods`' DESC ordering is for a different consumer.
@@ -995,7 +1112,7 @@ resolves a real `date.today()`.
 labelled none, and three of its "fences" could not fail. Revision 2 labelled them and three were
 still wrong. Revision 3 fixed those and shipped a **new** vacuous one. Revision 4's test 2 was
 labelled a fence and **empirically was not** (round 4's F2, relabelled below). This programme's
-vacuous-test defect has now been caught **ELEVEN times**.
+vacuous-test defect has now been caught **FIFTEEN times** — eleven in sign-off, and four more in the PR review of 234a's implementation, where the pattern shifted from *tests that could not fail* to **guards that could not guard** (§7's PR review round).
 
 ### 4a. Kernel — `tests/services/test_period_anomalies.py` [TBD-234a]
 
@@ -1006,13 +1123,19 @@ carries **no DB fixture** (verified: no `session_factory`, no `create_async_engi
 `async_sessionmaker` anywhere in it), and there is no `tests/services/conftest.py`. Every service test
 builds its own engine. `tests/services/test_period_anomalies.py` therefore **copies the
 `session_factory` block from `backend/tests/services/test_billing_service.py:38-52`** (in-memory
-SQLite over `StaticPool`, `Base.metadata.create_all`, disposed in a `finally`). Tests 1-10 and 12 need
-no session at all; tests 11, 13 and 14a do.
+SQLite over `StaticPool`, `Base.metadata.create_all`, disposed in a `finally`). Tests 1-10, 12, 13a,
+13b, 13c, 13d and 13e need no session at all; tests 11, 13, 14's load clause and 14a do.
+
+⚠ **Test 14 SPLITS across two files, and 14b joins it there.** Test 14's load clause is a DB test and
+stays in `test_period_anomalies.py`; its **AST half**, plus test **14b** (the `ORDER BY` source
+guard), live in `backend/tests/test_complete_roster_single_construction_site.py`, matching the
+placement of the two shipped backend source guards they are modelled on
+(`tests/test_no_raw_request_client.py`, `tests/auth/test_sessions_invalidated_at_allowlist.py`).
 
 | # | Ticket | Test | Kind |
 |---|---|---|---|
 | 1 | 234a | Clean contiguous roster → no anomalies | guard |
-| 2 | 234a | The healthy shape `[…closed…, OPEN, stub, stub]` → **no anomalies**. ⚠ Assert the **structural** set only, or pin the fixture converged against the injected `today`; `lapsed_open` is temporal and an unscoped "no anomalies" would be scope creep | **guard** — ⚠ relabelled in revision 5, see F2 below. It is a regression net for the healthy shape, and it is the test that caught F1(a) |
+| 2 | 234a | The healthy shape `[…closed…, OPEN, stub, stub]` → **no structural anomalies**. ⚠ **Assert the STRUCTURAL set only, and pin the fixture LAPSED against the injected `today`.** Revision 5 offered a second option ("or pin the fixture converged against the injected `today`") and **revision 6 DELETES it: it silently killed the D3c fence**, because a converged fixture gives an in-`find_period_anomalies` floor nothing to reach | **fence** — ⚠ **relabelled AGAIN in revision 6**, this time upward. It is the SOLE fence for three defects: D3c (the floored end duplicated inside `find_period_anomalies`), D5 (dropping `straddling`'s self-exclusion) and D29 (`lapsed_open` never emitted). Round 4's F2 correctly showed it was not a fence for the two conditions revision 4 CLAIMED; it is a fence for three others |
 | 3 | 234a | Gap between two **closed** rows → one `gap` with **both dates pinned** per §2.5 (`effective_end + 1` and `next.start − 1`) | **fence** — red against revision 1's dead-detector derivation, and the date pins make it falsifiable |
 | 4 | 234a | Overlap between two **closed** rows → one `overlap`, dates pinned to `(rows[j].start_date, effective_end(rows, i))` | **fence** |
 | 5 | 234a | **All-pairs overlap.** `A[2026-01-01→2026-12-31]`, `B[2026-02-01→2026-02-28]`, `C[2026-03-01→2026-03-31]`, all closed → **two** overlaps, `(A,B)` and `(A,C)` | **fence** — red against any adjacent-pair implementation |
@@ -1021,11 +1144,17 @@ no session at all; tests 11, 13 and 14a do.
 | 8 | 234a | Roster tail (open row, no successor) → **not** a gap, **and** a genuine gap whose RIGHT member is that tail row **IS** reported | **fence** — ⚠ the second clause is red against revision 3's "participates in no pair, on either side" clause; the first clause alone is a guard (a pairwise iterator never makes `rows[-1]` a LEFT member) |
 | 9 | 234a | **Straddling, non-adjacent, with two open rows.** A straddler `S` separated from anchor `O` by an intervening row `X` → `straddling(S)` naming `O` as `anchor_period_id`, **and** an `overlap` with **`from_period_id == S.id` and `to_period_id == O.id`** | **fence** — ⚠ **the id assertion is normative and is what makes this non-vacuous**: `overlap(S, X)` also holds and an adjacent-pair implementation emits it, so "an overlap marker is present" goes green against the very implementation all-pairs exists to kill |
 | 10 | 234a | Row with `end_date < start_date`, **inserted directly** → `inverted`; `period_status` returns `invalid`; `length_days` is `null`; **and no `gap` or `overlap` is emitted on either side of it** | **fence** — not vacuous: the fixture bypasses every writer §2.3 proves non-inverting |
-| 11 | 234a | **⭐ The differential fence.** For **every** row: `kernel_derived_end(roster, i) == await period_effective_end(db, org_id, row)`. The kernel does **not** call the helper, so this is a genuine differential and kills any divergence. Fixture clauses (a)-(e) below are normative | **fence** — 234a's flagship, and after revision 5 the **only** test that is red against (i) an in-kernel `max(end, today)` floor, (ii) an `effective_end` that returns `None` for every open row, and (iii) revision 1's `successor.start − 1`-for-every-row formula |
+| 11 | 234a | **⭐ The differential fence.** For **every** row: `kernel_derived_end(roster, i) == await period_effective_end(db, org_id, row)`. The kernel does **not** call the helper, so this is a genuine differential and kills any divergence. Fixture clauses (a)-(e) below are normative | **fence** — 234a's flagship. Red against (i) an `effective_end` that returns `None` for every open row, (ii) revision 1's `successor.start − 1`-for-every-row formula, and (iii) a `max(end, today)` floor **written inside `kernel_derived_end`**. ⚠ **Revision 6 (R-S1) strikes the word "only":** test 11 is GREEN against the same floor written inside `find_period_anomalies` (test 2 catches that) or hidden behind an optional `today=` kwarg (test 14a catches that) |
 | 12 | 234a | **Status partition**: an `invalid` row, a `current_by_calendar` row on a lapsed roster, and an open row starting tomorrow each get the documented status from `period_status`, with `today` injected | **fence** |
 | 13 | 234a | **Analysis cap** (§2.4a): a roster of **2001** rows (`> 2000`, §2.4a's pinned comparison) carrying a duplicate open pair → `overlap_analysis_skipped` with `period_count` and `cap`, **`duplicate_open` still emitted**, and `anomalies` is **not** empty. ⚠ **Seed the rows and route through `load_complete_roster`**, do not hand-build a `CompleteRoster`; see the note below | **fence** — red against a cap that suppresses every structural marker, and red against a silent empty list |
-| 14 | 234a | **The `CompleteRoster` AST guard** (§2.2): an `ast.parse` walk over every `.py` under `backend/app/` asserting that a call node named `CompleteRoster` appears **only** inside `load_complete_roster`. Plus the load assertion: `load_complete_roster` returns **every** row for the org, `start_date` ASC, on a roster larger than `list_periods`' 24 and larger than any lookback | **fence** — ⚠ relabelled in revision 5. Red against a second construction site anywhere in `backend/app/`, which is the completeness precondition's **only** mechanism now that the type-checker claim is struck (F3) |
+| 13a | 234a | **The emission ceiling** (§2.4a): 101 mutually-containing rows → 5050 candidate overlaps against a ceiling of 5000 → exactly 5000 `overlap` markers plus `overlap_emission_capped(overlap_count=5050, cap=5000)`, and **no** `overlap_analysis_skipped` (the roster is below the analysis cap) | **fence** — ⚠ added during implementation: revision 5 introduced the ceiling and its marker without assigning either a test. The `5050 != 5000` pin is what makes revision 6's `overlap_count` semantics falsifiable |
+| 13b | 234a | **The pinned ordering** (§2.5): a fixture that emits `inverted` before `gap` in rule order comes back `gap`, `no_open`, `inverted` | **fence** — ⚠ added during implementation, same reason: revision 5 made the ordering normative and assigned it no test, yet it is what licenses tests 3, 4, 6, 7, 8 and 10 to assert their lists directly |
+| 13c | 234a | **The analysis cap from BELOW** (§2.4a): a roster of **exactly 2000** rows containing one genuine overlap → **no** `overlap_analysis_skipped`, **and the overlap IS reported**. Hand-built, not seeded (the AST guard is source-scoped to `backend/app/`) | **fence** — ⚠ **added in revision 6, closing proven gap T2.** Red against `>=` in place of `>` |
+| 13d | 234a | **`straddling`'s `>=` bound AT the boundary** (§2.4): a closed row whose derived end equals `anchor.start_date` **exactly** → `straddling` fires, **and** the `overlap` is emitted alongside it | **fence** — ⚠ **added in revision 6, closing proven gap T3.** Red against a strict `>` |
+| 13e | 234a | **The ordering is TOTAL, not merely deterministic** (§2.5): `A(id=5)` and `B(id=6)` both containing `C(id=1)` → the two `overlap` markers' sort keys **differ** | **fence** — ⚠ **added in revision 6.** Red against the shipped `min(ids)` key, which tied them |
+| 14 | 234a | **The `CompleteRoster` AST guard** (§2.2): an `ast.parse` walk over every `.py` under `backend/app/` asserting that a call node named `CompleteRoster` appears **only** inside `load_complete_roster`. Plus the load assertion: `load_complete_roster` returns **every** row for the org, `start_date` ASC, on a roster larger than `list_periods`' 24 and larger than any lookback, **seeded DESCENDING** so the output order does not merely inherit the insertion order | **fence** — ⚠ relabelled in revision 5. Red against a second construction site anywhere in `backend/app/`, which is the completeness precondition's **only** mechanism now that the type-checker claim is struck (F3). ⚠ **Revision 6 widens the AST half to four construction SHAPES and adds a positive control**; see R-B1 below |
 | 14a | 234a | **The clock-injection fence** (§8.1 item 3, previously untested): `find_period_anomalies`, `kernel_derived_end` and `period_status` never consult `date.today()`. Monkeypatch `billing_service.datetime` with a `SimpleNamespace(date=_ExplodingDate, timedelta=datetime.timedelta)` whose `date.today()` raises, then call all three with an injected `today`. ⚠ Reuse the existing pattern verbatim from `tests/services/test_billing_service.py:1400-1425` (roughly 8 lines) | **fence** — red against any `date.today()` fallback inside the kernel. ⚠ Numbered **14a** rather than renumbering 15-31, so every cross-reference in this document and in §7's round records stays valid |
+| 14b | 234a | **The `ORDER BY start_date` source guard**: an `ast.parse` of `load_complete_roster` asserting its `SELECT` carries exactly one `.order_by(...)`, naming `BillingPeriod.start_date`, ascending | **fence** — ⚠ **added in revision 6, closing proven gap T1.** Red against deleting the clause AND against `.desc()`. It is a SOURCE guard because the clause is **behaviourally unobservable** in the test DB; see R-S3/T1 below |
 
 **⚠ Round-4 finding F2: test 2's `fence` label was FALSE, and this is vacuous-test instance ELEVEN.**
 The reviewer built both of test 2's stated red conditions and ran them:
@@ -1036,11 +1165,25 @@ The reviewer built both of test 2's stated red conditions and ran them:
 - **Only test 11 catches either**, verified RED with `assert None == date(2026, 4, 30)` on the
   interior open row.
 
-**Ruling: test 2 is relabelled `guard`, and its two stated red conditions MOVE to test 11**, where
-they actually hold. ⚠ **Test 2 nonetheless earned its keep, by catching a defect it was not aimed at:**
-it is the test that went red against F1's self-straddle, because the healthy shape is exactly where a
-missing `i != anchor_index` shows up. A guard that catches a blocking finding is doing its job; the
-lie was the label, not the test.
+**Ruling: test 2's two stated red conditions MOVE to test 11**, where they actually hold. ⚠ **Test 2
+nonetheless earned its keep, by catching a defect it was not aimed at:** it is the test that went red
+against F1's self-straddle, because the healthy shape is exactly where a missing `i != anchor_index`
+shows up.
+
+⚠ **Revision 6 (R-S2) relabels test 2 `fence`, and the direction matters.** Revision 5 demoted it to
+`guard`, which was right about the two conditions revision 4 claimed and wrong about the test. The
+PR review injected all 33 defects against it and found test 2 is the **SOLE** fence for three:
+
+- **D3c** — the floored `max(end, today)` derivation duplicated inside `find_period_anomalies`
+  (test 11 asserts on `kernel_derived_end`, which stays clean under D3c);
+- **D5** — dropping `straddling`'s `i != anchor_index` self-exclusion;
+- **D29** — `lapsed_open` never emitted at all.
+
+**And its fixture is what makes all three hold, which is why revision 5's fixture ALTERNATIVE is
+deleted.** "Pin the fixture converged against the injected `today`" reads as a harmless equivalent
+and is not: a converged open row gives D3c's floor nothing to reach, so choosing that option removes
+the D3c fence with nothing failing to announce it. **The lapsed fixture is mandatory.** A spec option
+that silently disarms a fence is the same defect class as a mislabelled one.
 
 **⚠ Test 11's fixture is normative, and without it the test re-vacuums.** On a clean contiguous
 roster `end_date == successor.start − 1` by construction, so the wrong derivation and the right one
@@ -1052,11 +1195,16 @@ structural defect. **The fixture must contain, at minimum:**
 - **(b)** a closed row where `end_date >= successor.start` (an overlap);
 - **(c)** an open **interior** row, asserting `successor.start − 1`;
 - **(d)** an open **tail** row, asserting `None`;
-- **(e)** ⚠ **added in revision 5, and it is F4's only fence inside 234a: the open interior row of
-  clause (c) must be LAPSED relative to the injected `today`**, that is
-  `rows[i+1].start_date - 1 day < today`. Without it, an in-kernel
-  `max(rows[i+1].start_date - 1 day, today)` floor is a no-op on the fixture, test 11 goes green, all
-  fourteen kernel tests pass, and 234a merges with the wrong end semantics baked in.
+- **(e)** ⚠ **added in revision 5: the open interior row of clause (c) must be LAPSED relative to the
+  injected `today`**, that is `rows[i+1].start_date - 1 day < today`. Without it, an in-kernel
+  `max(rows[i+1].start_date - 1 day, today)` floor **written inside `kernel_derived_end`** is a no-op
+  on the fixture, test 11 goes green, and 234a merges with the wrong end semantics baked in.
+  ⚠ **Revision 6 correction (R-S1): clause (e) is NOT "F4's only fence inside 234a", as revision 5
+  claimed.** It fences the floor written into `kernel_derived_end` with a real clock read (D3a), and
+  it fences that by wall-clock magnitude rather than through the clause as such. The floor written
+  into `find_period_anomalies` (D3c) is fenced by **test 2**, and the floor hidden behind an optional
+  `today=` kwarg (D3b) by **test 14a's signature assertions**; test 11 is green against both. See
+  §2.4's three-row table. All three fences are required and none is redundant.
 
 **Without (a) and (b) both formulas agree; without (e) the floored variant agrees too.** All three are
 required for test 11 to be worth its ⭐.
@@ -1074,6 +1222,41 @@ which is the shape test 14's AST guard forbids in `backend/app/`. Measured by th
 is affordable: seeding 2102 rows took **0.357s** and `load_complete_roster` over them **0.003s**. This
 is consistent with F3's source-scoped guard rather than an exception to it, since the exemption for
 tests is what makes tests 1-10's hand-shaped fixtures legal in the first place.
+
+#### ⚠ Revision 6 — four test gaps, each PROVEN by a green defect injection
+
+The PR-review round ran **33 defect injections** against the merged-pending 234a suite. Four passed
+the entire suite, which means four wrong implementations would have shipped. This is the
+vacuous-test defect class again — instances **twelve through fifteen** — and the record is kept here
+because "a test exists for this rule" is exactly the claim that keeps turning out to be untrue.
+
+| gap | injection that stayed GREEN | why the suite could not see it | closed by |
+|---|---|---|---|
+| **T1** | **D22** — delete `load_complete_roster`'s `ORDER BY start_date` entirely | ⚠ **The reported cause was wrong and the prescribed fix does not work.** It is not that fixtures seeded ascending and rowid order coincided: `uq_billing_period_org_start` is on `(org_id, start_date)`, and SQLite plans the query through the implicit index behind it whether or not the clause is present (`EXPLAIN QUERY PLAN` → `SEARCH ... USING INDEX sqlite_autoindex_billing_periods_1 (org_id=?)` in **both** forms). The order survives deletion for **any** insertion order — verified by seeding DESCENDING and re-running. A *wrong* order (`.desc()`) was always caught; a *missing* one is **behaviourally unobservable against this schema** | **test 14b**, a source guard. Test 14 additionally seeds DESCENDING, which is worth having (it proves output order is not inherited from insertion order) but is **not** the fence |
+| **T2** | **D17** — `len(rows) >= 2000` in place of `> 2000` | test 13 seeds **2001** rows, which both comparisons skip identically. §2.4a pinned the boundary in prose and nothing tested the lower side | **test 13c**, at exactly 2000 |
+| **T3** | **D20** — strict `>` in place of `>=` on `straddling`'s upper bound | test 9's straddler ends `2026-12-31`, nine months past the anchor's start, so `>` still fires. ⚠ §2.4 explicitly warns that "ends after it" would "silently under-report exactly the shape whose deferral created this marker" — and then left it untested | **test 13d**, derived end `==` anchor start |
+| **T4** | **D24a** — a value-neutral `date.today()` read inside `kernel_derived_end`'s successor branch | test 14a's roster was one closed row plus one open **tail**, so `rows[i+1].start_date - 1` never executed under the `_ExplodingDate` monkeypatch. The clock fence never ran the branch most likely to grow a clock — **F4's floor is written on that very line** | **test 14a's fixture**, now three rows so the open one is INTERIOR and all three branches execute armed |
+
+#### ⚠ Revision 6 — R-B1: the AST guard missed three construction shapes
+
+All three reviewers found this and one proved it with three green injections. The shipped guard
+matched only a `Call` whose terminal callee name was literally `CompleteRoster`. These all produce a
+windowed `CompleteRoster` inside `backend/app/` and left it **green**:
+
+- `dataclasses.replace(roster, rows=windowed)` — ⚠ **the guard's own docstring named this shape and
+  asserted "Only this test objects." That claim was false.** And it is the live risk: **TBD-234b is
+  the ticket that will window a roster for display**, where `dataclasses.replace` is the natural
+  reach;
+- `from ... import CompleteRoster as _CR` followed by `_CR(...)`;
+- `roster.__class__(org_id=..., rows=windowed)`.
+
+**Ruling: the guard covers four shapes** — direct, `ImportFrom`-aliased, `dataclasses.replace` with a
+positional first argument, and class-object indirection (`__class__` and `type(...)`) — **and its
+docstring now enumerates what remains UNCOVERED** (assignment aliasing, fully dynamic construction,
+unparseable modules) instead of claiming completeness it does not have. **A positive control is
+mandatory**: the guard is exercised against synthetic module sources, one per covered shape plus
+false-positive controls, because a detector with no positive control cannot be distinguished from a
+detector that fires on nothing — and green is what both look like.
 
 ### 4b. Endpoint — `tests/routers/test_billing_period_roster.py` [TBD-234b]
 
@@ -1324,7 +1507,30 @@ org-wide analysis upgrade. **Folding findings keeps introducing findings.** Revi
 a targeted fold rather than a restructure for that reason, and each of its edits was verified against
 the repository before being written.
 
-**Sign-off round 5 — revision 5:** _(pending)_
+**Sign-off round 5 — revision 5:** APPROVED; 234a built and opened as PR #590.
+
+### PR review round — 234a's IMPLEMENTATION (PR #590), three independent reviewers
+
+2026-07-29. Kernel correctness, test vacuity (**33 defect injections**), and conventions/regressions.
+**No design ruling was challenged, for the fifth consecutive round.** What the round found was that
+several of **this document's own claims** were empirically false, and that the guard the document
+calls "the precondition's only mechanism" did not cover the shape the document names as the risk.
+
+| # | Finding | Disposition |
+|---|---|---|
+| R-B1 | The `CompleteRoster` AST guard missed three construction shapes, **including `dataclasses.replace`, which its own docstring claimed to catch** ("Only this test objects"). Found by all three reviewers; one proved it with three green injections | **ADOPTED.** Guard widened to four shapes (direct, `ImportFrom` alias, positional `replace`, `__class__` / `type(...)`); docstring now enumerates what it does NOT cover; **positive control added** so the detector cannot silently stop detecting. §2.2, §4a R-B1 |
+| R-B2 | `_anomaly_sort_key`'s docstring shipped a false invariant: collapsing four id fields to `min(ids)` is **not** a total order. Counterexample proven | **ADOPTED.** Key uses the whole sorted id tuple; the claim is made TRUE rather than softened. §2.5, **test 13e** |
+| R-T1..T4 | **Four test gaps, each proven by a GREEN injection** (D22 `ORDER BY`, D17 the cap boundary, D20 `straddling`'s `>=`, D24a the successor branch under the clock monkeypatch) | **ADOPTED, with one correction to the finding itself:** T1's stated cause and prescribed fix were wrong — the clause is behaviourally unobservable against this schema, so it gets a **source guard (test 14b)**. §4a's R-S3 table |
+| R-S1 | §4a's claim that test 11 clause (e) is "F4's only fence inside 234a" is FALSE; test 11 is green against two of the three places the floor can be written | **ADOPTED.** §2.4 gains the three-row fence table; clause (e)'s claim narrowed to D3a |
+| R-S2 | Test 2 is the SOLE fence for three defects, and §4a still offered a fixture option that **silently kills one of them** | **ADOPTED.** Option deleted, lapsed fixture mandated, test 2 relabelled **`fence`** |
+| R-S4 | Contract gaps that would mislead 234b: the emission ceiling's boundary direction unpinned; `period_status` missing from the freeze (and its `RosterRow` argument unstated); four shipped symbols unnamed; test numbering drifted; §2.5 and §8.1 contradicted each other over the ordering ruling | **ADOPTED.** §8.1 now freezes **five** items; §2.5 defers to §8.1; numbering reconciled to 1-13, 13a-13e, 14, 14a, 14b |
+| R-C1..C6 | Stale self-citations (+13 shift), the missing "no production caller / do not prune" idiom, a duplicated `invalid` predicate, an `emitted_count` that could not carry information, an inaccurate `O(n·k)` comment, an undocumented unreachable guard | **ADOPTED.** In-file citations converted to **symbol references** (shift-proof, and the same defect class as residual R1); `_is_inverted` extracted **without** routing through `period_status`, which would make a clock-free structural rule depend on `today`; `emitted_count` → `overlap_count` |
+
+**⚠ Vacuous-test instances twelve through fifteen, and the pattern has now shifted.** Rounds 1-4
+caught tests that could not fail; this round caught **guards that could not guard** — an AST matcher
+with no positive control, a boundary pinned only on the side a fixture happened to sit, a clock fence
+that never executed the branch most likely to grow a clock. **Revert-the-fix-and-confirm-red is
+still the only reliable gate, and it must be run against the GUARD as well as against the code.**
 
 ---
 
@@ -1342,9 +1548,9 @@ one side or the other.
 
 | | TBD-234a — the kernel | TBD-234b — the route and page |
 |---|---|---|
-| **Deliverables** | `load_complete_roster`, `kernel_derived_end`, `find_period_anomalies`, `period_status`, the `PeriodAnomaly` / `CompleteRoster` / `RosterRow` types, the marker payload schema, the `CompleteRoster` AST guard, residual R1 | the route, D6/D7/D8/D8a display windowing and aggregates, D9 gating, the §2.5 response body, `referenced_periods`, the page |
+| **Deliverables** | `load_complete_roster`, `kernel_derived_end`, `find_period_anomalies`, `period_status`, the `PeriodAnomaly` / `CompleteRoster` / `RosterRow` types, the `AnomalyKind` / `PeriodStatus` literals, `OVERLAP_ANALYSIS_CAP` / `OVERLAP_EMISSION_CAP`, the marker payload schema, the anomaly ordering, the `CompleteRoster` AST guard, the `ORDER BY` source guard, residual R1 | the route, D6/D7/D8/D8a display windowing and aggregates, D9 gating, the §2.5 response body, `referenced_periods`, the page |
 | **Sections** | §2.2, §2.3, §2.4, §2.4a, §2.5's kernel types and marker table, D2, D4, D5 | §1.1, §2.1, §2.5's response body, D1, D3, D6, D7, D8, D8a, D9, D10 |
-| **Tests** | 1-14, 14a | 15-31 |
+| **Tests** | 1-13, 13a-13e, 14, 14a, 14b | 15-31 |
 | **Contains** | no route, no page, no display window, no aggregates, **no window vocabulary** | no changes to the kernel |
 | **Order** | ships FIRST | opens only AFTER 234a merges |
 
@@ -1358,11 +1564,25 @@ partition is a kernel fact and should not first be tested through an HTTP round 
 
 ### 8.1 The frozen kernel contract
 
-Four items are **frozen by 234a** and 234b consumes them unchanged.
+Five items are **frozen by 234a** and 234b consumes them unchanged.
 
-1. **The three signatures** (§2.2): `load_complete_roster`, **`kernel_derived_end`** and
-   `find_period_anomalies`. ⚠ **`kernel_derived_end` joins the freeze in revision 5**, because test 11
-   asserts on it by name and a closure is not a contract. `find_period_anomalies` is **PURE and SYNC**:
+1. **The FOUR signatures** (§2.2, §2.3): `load_complete_roster`, **`kernel_derived_end`**,
+   `find_period_anomalies` and **`period_status`**. ⚠ **`kernel_derived_end` joins the freeze in
+   revision 5**, because test 11 asserts on it by name and a closure is not a contract.
+   ⚠ **`period_status` joins in revision 6 (R-S4):** revision 5 froze "the three signatures" and
+   omitted it, while §8 listed it as a 234a deliverable and D2 shipped it. Its signature is
+   normative and it constrains 234b:
+
+   ```python
+   def period_status(row: RosterRow, *, today: datetime.date) -> PeriodStatus
+   ```
+
+   ⚠ **It takes a `RosterRow`, NOT a `BillingPeriod`.** 234b builds §2.5's `referenced_periods`
+   entries — which each carry a `status` — and must therefore reach for the roster's row tuples, not
+   for ORM entities it happens to have in the session. That is deliberate: the row tuples are the
+   ones `load_complete_roster` guarantees are complete and ASC.
+
+   `find_period_anomalies` is **PURE and SYNC**:
    it takes no session, so `period_spend_window_end` and `period_effective_end` are both structurally
    unreachable from it. ⚠ **That unreachability is a fact about the FUNCTIONS, not about the
    SEMANTICS** (F4): a floored end is one pure line away, and what fences it is **test 11's fixture
@@ -1376,13 +1596,21 @@ Four items are **frozen by 234a** and 234b consumes them unchanged.
    (D8a). ⚠ **Fenced by test 14a**, added in revision 5; this item had no assigned test in revisions
    1 through 4.
 4. **The marker payload schema** (§2.5's nine-kind table), including `gap`'s and `overlap`'s pinned
-   dates, the anomaly list's pinned ordering, and §1.1's three marker classes.
+   dates, `overlap_emission_capped`'s `overlap_count`, the anomaly list's pinned **total** ordering,
+   and §1.1's three marker classes. ⚠ **The ordering is 234a's, and §2.5's blanket "everything else
+   is 234b" no longer sweeps it up** (revision 6, R-S4).
+5. **Four module-level NAMES**, added in revision 6 (R-S4) because 234b's response model and its
+   threshold tests need them and revision 5 named none of them: **`AnomalyKind`** (whose `Literal`
+   declaration order **is** the sort order — reordering it silently reorders every response),
+   **`PeriodStatus`**, **`OVERLAP_ANALYSIS_CAP`** and **`OVERLAP_EMISSION_CAP`**. 234b imports the
+   two caps rather than restating `2000` / `5000`, or its threshold tests pin a copy of a constant
+   instead of the constant.
 
 **⚠ The freeze NO LONGER covers `open_row_ids` or the out-of-window predecessor convention. Both are
 deleted.** `no_open` and `duplicate_open` derive from the complete roster like every other marker,
 and there is no predecessor to fetch because there is no window to be outside of.
 
-**Rationale.** Without these four, 234b would be forced to **rewrite the kernel**: a
+**Rationale.** Without these five, 234b would be forced to **rewrite the kernel**: a
 fetching-and-windowing kernel cannot be reused by the sweep script, a roster-shaped input that is not
 nominally complete silently degrades to whatever the caller passes, a `date.today()` kernel cannot be
 clock-injected, and an unspecified payload gets reshaped by whoever renders it. A forced downstream

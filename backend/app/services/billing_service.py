@@ -1107,12 +1107,27 @@ async def close_period(
 # out of that one fusion. Every property below (contiguity, non-overlap,
 # exactly-one-open, straddling, lapsed) is a property of a WHOLE roster; a
 # windowed sample of a roster is not a roster and does not carry them.
+#
+# ⚠ **NO PRODUCTION CALLER YET — do NOT prune any of this as dead code.**
+# Every symbol below (`RosterRow`, `CompleteRoster`, `PeriodAnomaly`,
+# `AnomalyKind`, `PeriodStatus`, `OVERLAP_ANALYSIS_CAP`,
+# `OVERLAP_EMISSION_CAP`, `load_complete_roster`, `kernel_derived_end`,
+# `period_status`, `find_period_anomalies`) has zero references outside this
+# module today. That is by design and it is temporary: **TBD-234b** is the
+# named consumer — it adds `GET /settings/billing-periods/roster`, the
+# response model over `PeriodAnomaly`, and the page — and §8's split forbids
+# the two shipping together. Same idiom, same reason, as
+# :func:`reanchor_period_dependents` in the module docstring. Two
+# consequences: do not prune, and do not read the kernel's direct service
+# tests as end-to-end coverage — no request path reaches any of it today.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 #: §2.4a. `len(roster.rows) > OVERLAP_ANALYSIS_CAP` skips overlap analysis;
 #: at exactly the cap the analysis RUNS. Only `overlap` is O(n²) — `gap` is
-#: adjacent-pair O(n), `straddling` is O(n·k) in open rows, and `inverted` /
+#: adjacent-pair O(n), `straddling` resolves ONE anchor and makes ONE O(n)
+#: pass (§2.4a said `O(n·k)` in open rows; the implementation is better than
+#: that advertisement and the comment is corrected here), and `inverted` /
 #: `no_open` / `duplicate_open` are O(n) — so the refusal is scoped to that
 #: one rule. Suppressing every structural marker would kill `duplicate_open`
 #: on 1000+ row orgs, which is precisely where that corruption hides.
@@ -1129,6 +1144,13 @@ OVERLAP_ANALYSIS_CAP = 2000
 #: self-inflicted, so it is bounded rather than treated as a threat, and
 #: bounded by the same named rule: truncation for analysis must be REFUSED,
 #: never silently applied.
+#:
+#: ⚠ **The boundary is pinned, in the same direction as the analysis cap:**
+#: at exactly `OVERLAP_EMISSION_CAP` candidate overlaps nothing is suppressed
+#: and NO `overlap_emission_capped` marker is emitted; the marker fires only
+#: at `cap + 1` candidates. Its payload carries `overlap_count`, the number of
+#: `overlap` markers the roster WOULD have produced — never the number
+#: emitted, which is the cap itself and therefore carries no information.
 OVERLAP_EMISSION_CAP = 5000
 
 
@@ -1237,7 +1259,12 @@ class PeriodAnomaly:
     `straddling`                `period_id`, `anchor_period_id`
     `lapsed_open`               `period_id`, `effective_end` (which is `< today`)
     `overlap_analysis_skipped`  `period_count`, `cap`
-    `overlap_emission_capped`   `emitted_count`, `cap`
+    `overlap_emission_capped`   `overlap_count`, `cap` — `overlap_count` is
+                                the number of `overlap` markers the roster
+                                WOULD have produced, always `> cap` when this
+                                marker fires. ⚠ Never "how many were emitted":
+                                that is the cap, by construction, so a field
+                                carrying it could never carry information
     ==========================  ==================================================
 
     A frozen dataclass with a `Literal` tag, matching the service-layer
@@ -1258,7 +1285,7 @@ class PeriodAnomaly:
     to_date: datetime.date | None = None
     effective_end: datetime.date | None = None
     period_count: int | None = None
-    emitted_count: int | None = None
+    overlap_count: int | None = None
     cap: int | None = None
 
 
@@ -1277,8 +1304,10 @@ async def load_complete_roster(db: AsyncSession, org_id: int) -> CompleteRoster:
     column, and `RosterRow` tuples keep an unbounded fetch cheap on a
     thousand-row org.
 
-    ⚠ Do **not** route this through :func:`list_periods`: that caps at 24
-    (`:144-151`) and answers a different question.
+    ⚠ Do **not** route this through :func:`list_periods`: that caps at 24 rows
+    and answers a different question. (Cited by SYMBOL, not by line: this
+    module's own line numbers shift under every edit above, and a stale
+    self-citation is residual R1's defect class.)
 
     Index note, stated rather than left to be discovered: `ix_billing_periods_org`
     is `(org_id)` only (`014_billing_periods.py`), with no `start_date`
@@ -1320,7 +1349,9 @@ def kernel_derived_end(roster: CompleteRoster, i: int) -> datetime.date | None:
     so on a complete `start_date`-ASC list `rows[i+1].start_date` **is**
     `MIN(start_date) WHERE start_date > rows[i].start_date`, which is exactly
     what :func:`_next_period_start` computes. The three branches are
-    line-for-line `period_effective_end:509-514`.
+    line-for-line :func:`period_effective_end`'s three-case body (cited by
+    symbol, not by line — an in-file line citation goes stale on the next
+    edit above it, which is residual R1's defect class).
 
     ⚠ **Case-split on `end_date IS NULL` or the whole kernel dies silently.**
     Revision 1 of the spec applied the successor rule to EVERY row; composed
@@ -1346,6 +1377,24 @@ def kernel_derived_end(roster: CompleteRoster, i: int) -> datetime.date | None:
     if i + 1 < len(roster.rows):
         return roster.rows[i + 1].start_date - datetime.timedelta(days=1)
     return None
+
+
+def _is_inverted(row: RosterRow) -> bool:
+    """`end_date IS NOT NULL AND end_date < start_date`. §2.3 branch 1.
+
+    ⚠ **One definition, two callers**, and it is deliberately NOT routed
+    through :func:`period_status`. `period_status` needs a clock;
+    "inverted" is a purely STRUCTURAL property of one row, and
+    :func:`find_period_anomalies` uses it to suppress `gap` and `overlap`.
+    Deriving a clock-free structural suppression rule from a clock-dependent
+    classifier would make the structural output set depend on `today` —
+    exactly the fusion §2.4's two output sets exist to keep apart.
+
+    It is extracted rather than written twice because the two copies were
+    the same expression and the kernel's gap/overlap suppression depends on
+    them staying the same expression.
+    """
+    return row.end_date is not None and row.end_date < row.start_date
 
 
 def period_status(row: RosterRow, *, today: datetime.date) -> PeriodStatus:
@@ -1380,9 +1429,16 @@ def period_status(row: RosterRow, *, today: datetime.date) -> PeriodStatus:
     ⚠ **Branch 1 is UNREACHABLE through shipped code and stays anyway, as a
     DEFENSIVE branch.** Every `end_date` writer was enumerated and each is
     provably non-inverting (`BillingPeriodCreate`'s validator at
-    `schemas/settings.py:32-35`; the stub insert's `snap(next_start + 1mo) - 1`
-    at `:175`; `_apply_close_step`'s `resolved`, guarded at `:1034`; three
-    writers that write NULL). But `models/billing.py:12-14` carries no CHECK
+    `schemas/settings.py:32-35`; :func:`ensure_future_periods`' stub insert,
+    `snap(next_start + 1mo) - 1`; :func:`_apply_close_step`'s `resolved`,
+    guarded by :func:`close_period`'s `requested < current.start_date` check;
+    three writers that write NULL). ⚠ Those three are cited by SYMBOL rather
+    than by line on purpose: they all sit above this function in this same
+    file, so a line citation goes stale the moment anything above it grows.
+    This section shipped with three such citations already wrong — residual
+    R1's own defect class, one commit later.
+
+    But `models/billing.py:12-14` carries no CHECK
     constraint, so the database **will** accept an inverted row written by a
     direct DB edit, by operator prod access, or by a future writer that skips
     the schema layer. A diagnostic whose subject is data corruption must
@@ -1394,7 +1450,7 @@ def period_status(row: RosterRow, *, today: datetime.date) -> PeriodStatus:
     straddling UTC midnight classifies a row against day D while computing its
     window against day D+1.
     """
-    if row.end_date is not None and row.end_date < row.start_date:
+    if _is_inverted(row):
         return "invalid"
     if row.end_date is None:
         return "open"
@@ -1408,13 +1464,36 @@ def period_status(row: RosterRow, *, today: datetime.date) -> PeriodStatus:
 
 
 def _anomaly_sort_key(anomaly: PeriodAnomaly) -> tuple:
-    """§2.5's pinned ordering: kind (declaration order), then the lowest
-    period id the marker references, then `from_date`.
+    """§2.5's pinned ordering: kind (declaration order), then the period ids
+    the marker references ASCENDING, then `from_date`.
 
-    Markers referencing no id sort last within their kind. This is a total
-    order on every roster because ids are unique, which is what lets tests
-    assert the list directly — the alternative, mandating order-insensitive
-    assertions everywhere, leaves 234b's rendering unpinned.
+    Markers referencing no id sort last within their kind. The leading
+    comparison is still "the lowest period id the marker references", which is
+    what §2.5 pins; the remaining ids are the tie-break behind it.
+
+    ⚠ **The id component is the WHOLE sorted tuple, not `min(ids)`, and that
+    is what makes the order total rather than merely deterministic.** The
+    review of this PR proved the collapsed form ties: rows `A(id=5)`,
+    `B(id=6)` and `C(id=1)`, with both `A` and `B` containing `C`, produce
+    `overlap 5→1` and `overlap 6→1`, whose `min(ids)` is `1` for both — two
+    distinct markers, byte-identical keys. Output stayed deterministic (a
+    stable sort plus a fixed emission order), but §2.5 licenses tests to
+    assert the list DIRECTLY on the strength of totality, and 234b will pin
+    rendering order on it, so the claim is made true rather than softened.
+
+    **What is guaranteed, exactly:** no two markers `find_period_anomalies`
+    emits from the same roster share a key. Within a kind, each rule emits at
+    most one marker per row (`inverted`, `straddling`), per adjacent pair
+    (`gap`), per `i < j` pair (`overlap`), or per roster (`duplicate_open`,
+    `no_open`, `lapsed_open`, and the two refusal markers), and `RosterRow.id`
+    values are unique — so the sorted id tuple identifies the marker within
+    its kind. The two refusal markers reference no id at all and are emitted
+    at most once each, so they can only tie with themselves.
+
+    Tuples of unequal length stay comparable because every element is an
+    `int`: Python compares element-wise and falls back to length only on a
+    common prefix. No padding is needed, and the empty tuple is reachable only
+    when the preceding `0 if ids else 1` component already matched.
     """
     ids: list[int] = []
     for value in (
@@ -1430,7 +1509,7 @@ def _anomaly_sort_key(anomaly: PeriodAnomaly) -> tuple:
     return (
         _KIND_ORDER[anomaly.kind],
         0 if ids else 1,
-        min(ids) if ids else 0,
+        tuple(sorted(ids)),
         0 if anomaly.from_date is not None else 1,
         anomaly.from_date if anomaly.from_date is not None else _SORT_EPOCH,
     )
@@ -1476,9 +1555,10 @@ def find_period_anomalies(
     * **`straddling` excludes the anchor itself** (`i != anchor_index`).
       Without it, the anchor trivially straddles itself on this ticket's own
       healthy shape. The shipped precedent is exact:
-      `_apply_close_step`'s straddle query carries `BillingPeriod.id !=
-      current.id` at `:774` and has always excluded the anchor from its own
-      straddle set.
+      :func:`_apply_close_step`'s straddle query carries `BillingPeriod.id !=
+      current.id` and has always excluded the anchor from its own straddle
+      set. (By symbol, not by line — see :func:`period_status` on why in-file
+      line citations are banned in this section.)
     * **`straddling` is emitted IN ADDITION TO `overlap`, never instead of
       it.** Suppressing the overlap would hide genuine overlaps on any roster
       containing a straddler — precisely the rosters this exists for.
@@ -1509,9 +1589,10 @@ def find_period_anomalies(
     anomalies: list[PeriodAnomaly] = []
 
     ends = [kernel_derived_end(roster, i) for i in range(n)]
-    invalid = [
-        row.end_date is not None and row.end_date < row.start_date for row in rows
-    ]
+    # ⚠ Same predicate as `period_status` branch 1, and it is SHARED rather
+    # than duplicated (:func:`_is_inverted`): the gap/overlap suppression
+    # below depends on the two staying the same expression.
+    invalid = [_is_inverted(row) for row in rows]
 
     # ── inverted (§2.3 branch 1 / §2.4 shape 5) ──────────────────────────
     for i, row in enumerate(rows):
@@ -1548,22 +1629,29 @@ def find_period_anomalies(
             )
         )
     else:
+        # ⚠ The scan runs to completion even once the emission ceiling is hit,
+        # and the early `break` it replaces was a false economy. Stopping
+        # early is what made the old `emitted_count` payload incapable of
+        # carrying information: it was always exactly the cap, so the marker
+        # rendered "5000 of 5000". `overlap_count` is the count the roster
+        # WOULD have produced, which is the number an operator staring at a
+        # corrupt roster actually needs. The extra cost is bounded by the
+        # analysis cap directly above — `n <= OVERLAP_ANALYSIS_CAP` means at
+        # most ~2M pair comparisons, the exact budget that cap was sized for.
         emitted = 0
-        capped = False
+        overlap_count = 0
         for i in range(n):
             left_end = ends[i]
             if left_end is None or invalid[i]:
                 continue
-            if capped:
-                break
             for j in range(i + 1, n):
                 if invalid[j]:
                     continue
                 if rows[j].start_date > left_end:
                     continue
+                overlap_count += 1
                 if emitted >= OVERLAP_EMISSION_CAP:
-                    capped = True
-                    break
+                    continue
                 anomalies.append(
                     PeriodAnomaly(
                         kind="overlap",
@@ -1574,11 +1662,13 @@ def find_period_anomalies(
                     )
                 )
                 emitted += 1
-        if capped:
+        # Boundary pinned, same direction as the analysis cap: at exactly the
+        # ceiling nothing was suppressed, so there is nothing to refuse.
+        if overlap_count > OVERLAP_EMISSION_CAP:
             anomalies.append(
                 PeriodAnomaly(
                     kind="overlap_emission_capped",
-                    emitted_count=emitted,
+                    overlap_count=overlap_count,
                     cap=OVERLAP_EMISSION_CAP,
                 )
             )
@@ -1620,6 +1710,15 @@ def find_period_anomalies(
             if i == anchor_index:
                 continue
             end = ends[i]
+            # ⚠ CURRENTLY UNREACHABLE, and kept as defence in depth. Proven by
+            # review: deleting it leaves every test green. `kernel_derived_end`
+            # returns `None` only for the roster TAIL; an open tail row is by
+            # definition the MAX-start open row, so it IS the anchor, and the
+            # `i == anchor_index` skip above has already consumed it. Do NOT
+            # "repair" a test to reach this line, and do NOT delete it: it
+            # becomes live the moment the anchor rule stops selecting the
+            # MAX-start open row, and F1(b) is what an unguarded `None >= date`
+            # costs (a 500 on the fleet's commonest roster).
             if end is None:
                 continue
             if rows[i].start_date <= anchor.start_date and end >= anchor.start_date:

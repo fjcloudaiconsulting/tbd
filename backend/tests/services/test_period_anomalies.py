@@ -3,7 +3,8 @@
 Spec: ``specs/2026-07-29-billing-period-roster-design.md`` (revision 5),
 §2.2 (the complete roster and the derived end), §2.3 (the status
 partition), §2.4 / §2.4a (the anomaly rules and the analysis cap),
-§2.5's kernel types, and §4a's test plan (tests 1-14, 14a).
+§2.5's kernel types, and §4a's test plan (tests 1-13, 13a-13e, 14, 14a, 14b —
+renumbered in spec revision 6 after the PR-review fold).
 
 ⚠ **Dates here are FULLY FIXED calendar literals, including every injected
 ``today``, and that REVERSES the house rule** (``reference_wall_clock_date_bomb_tests``).
@@ -17,12 +18,18 @@ because its route resolves a real ``date.today()``.
 Fixture plumbing: ``backend/tests/conftest.py`` carries no DB fixture and
 there is no ``tests/services/conftest.py``, so the ``session_factory``
 block below is copied from ``tests/services/test_billing_service.py:38-52``
-(spec §4a). Tests 1-10, 12 and 13a need no session; tests 11, 13, 14's
-load clause and 14a do.
+(spec §4a). Tests 1-10, 12 and 13a-13e need no session; tests 11, 13,
+14's load clause and 14a do.
 
-The ``CompleteRoster`` construction site guard (test 14's AST half) lives
-in ``backend/tests/test_complete_roster_single_construction_site.py``,
-matching the placement of the two shipped source guards it is modelled on.
+The ``CompleteRoster`` construction-site guard (test 14's AST half) and the
+``ORDER BY start_date`` source guard (test 14b) live in
+``backend/tests/test_complete_roster_single_construction_site.py``,
+matching the placement of the two shipped source guards they are modelled on.
+⚠ **Test 14b is a SOURCE guard because the clause it fences is
+behaviourally unobservable here:** ``uq_billing_period_org_start`` is on
+``(org_id, start_date)`` and SQLite plans the roster query through the
+implicit index behind it whether or not the ``ORDER BY`` is present, so the
+ASC order survives the clause's deletion for any insertion order.
 Hand-built rosters in this file are legal precisely because that scan is
 source-scoped to ``backend/app/`` (spec §2.2, finding F3).
 """
@@ -384,7 +391,8 @@ def test_9_non_adjacent_straddler_emits_straddling_and_its_own_overlap():
         to_date=D(2026, 12, 31),
     ) in overlaps
     # The anchor never straddles itself (§2.4 F1(a); the shipped precedent
-    # is `_apply_close_step`'s `id != current.id` at billing_service.py:774).
+    # is `_apply_close_step`'s `id != current.id` clause — cited by symbol,
+    # not by line, because in-file line citations go stale on every edit).
     assert all(a.period_id != 92 for a in _of_kind(anomalies, "straddling"))
 
 
@@ -561,6 +569,112 @@ async def test_13_analysis_cap_suppresses_overlap_alone(session_factory):
     ]
 
 
+# ── Test 13c [fence] — the analysis cap's LOWER side ───────────────────────
+
+
+def test_13c_at_exactly_the_analysis_cap_the_overlap_analysis_still_runs():
+    """Test 13c — §2.4a's pinned boundary, from below. **Added in the fold.**
+
+    ⚠ **This closes proven test gap T2.** §2.4a is explicit that
+    ``len(roster.rows) > 2000`` skips overlap analysis and that *at exactly
+    2000 rows the analysis RUNS*, yet nothing fenced the second half: the
+    review injected ``>= OVERLAP_ANALYSIS_CAP`` in place of ``>`` and the
+    ENTIRE suite stayed green. Test 13 seeds 2001 rows, which both
+    comparisons skip identically, so it cannot see the difference.
+
+    Two assertions, and the second is what bites: no
+    ``overlap_analysis_skipped`` marker, **and** the genuine overlap the
+    fixture plants is actually reported — proof the O(n²) loop ran rather
+    than merely that a marker was absent.
+
+    Hand-built rather than seeded, deliberately: the AST construction guard
+    is source-scoped to ``backend/app/`` (§2.2, F3), so a 2000-row in-memory
+    roster is both legal and two orders of magnitude cheaper than a 2000-row
+    insert. Test 13 seeds because it is asserting on ``load_complete_roster``
+    as well; this test is not.
+    """
+    cap = billing_service.OVERLAP_ANALYSIS_CAP
+    base = D(2020, 1, 1)
+
+    # Rows 0 and 1 overlap by containment; the remaining 1998 are disjoint
+    # single-day rows far in the future, present only to reach the cap.
+    rows: list[tuple[int, datetime.date, datetime.date | None]] = [
+        (300, base, base + datetime.timedelta(days=10)),
+        (301, base + datetime.timedelta(days=5), base + datetime.timedelta(days=6)),
+    ]
+    rows += [
+        (
+            302 + k,
+            base + datetime.timedelta(days=100 + 2 * k),
+            base + datetime.timedelta(days=100 + 2 * k),
+        )
+        for k in range(cap - 3)
+    ]
+    rows.append((302 + cap - 3, base + datetime.timedelta(days=9000), None))
+    roster = _roster(*rows)
+
+    assert len(roster.rows) == cap == 2000  # exactly AT the cap, not past it
+
+    anomalies = find_period_anomalies(roster, today=D(2030, 1, 1))
+
+    assert _of_kind(anomalies, "overlap_analysis_skipped") == []
+    assert (
+        PeriodAnomaly(
+            kind="overlap",
+            from_period_id=300,
+            to_period_id=301,
+            from_date=base + datetime.timedelta(days=5),
+            to_date=base + datetime.timedelta(days=10),
+        )
+        in _of_kind(anomalies, "overlap")
+    )
+
+
+# ── Test 13d [fence] — `straddling`'s `>=` boundary ────────────────────────
+
+
+def test_13d_straddler_ending_exactly_on_the_anchor_start_is_straddling():
+    """Test 13d — §2.4's ``>=`` bound, AT the boundary. **Added in the fold.**
+
+    ⚠ **This closes proven test gap T3.** §2.4 states the bound as ``>=``
+    ("at or after") and warns in as many words that revision 1's "ends after
+    it" *"would silently under-report exactly the shape whose deferral
+    created this marker"*. Nothing fenced it: the review injected a strict
+    ``>`` and the entire suite stayed green, because test 9's straddler ends
+    ``2026-12-31``, nine months past the anchor's start, where ``>`` still
+    fires.
+
+    Here the straddler's derived end is the anchor's ``start_date``
+    **exactly**, which is the only place the two operators disagree. That is
+    also the real shape: a closed period ending on the same day the open one
+    begins is a one-day double-count, and it is precisely what
+    ``_apply_close_step``'s deferred straddle handling leaves behind.
+    """
+    roster = _roster(
+        (310, D(2026, 1, 1), D(2026, 3, 1)),  # closed; end == anchor.start
+        (311, D(2026, 3, 1), None),  # the anchor (only open row)
+    )
+
+    # The boundary itself, spelled out so a fixture edit cannot dissolve it.
+    assert kernel_derived_end(roster, 0) == roster.rows[1].start_date
+
+    anomalies = find_period_anomalies(roster, today=D(2026, 3, 15))
+
+    assert _of_kind(anomalies, "straddling") == [
+        PeriodAnomaly(kind="straddling", period_id=310, anchor_period_id=311)
+    ]
+    # And the overlap is emitted IN ADDITION, per §2.4's precedence ruling.
+    assert _of_kind(anomalies, "overlap") == [
+        PeriodAnomaly(
+            kind="overlap",
+            from_period_id=310,
+            to_period_id=311,
+            from_date=D(2026, 3, 1),
+            to_date=D(2026, 3, 1),
+        )
+    ]
+
+
 # ── Test 13a [fence] — the emission ceiling ────────────────────────────────
 
 
@@ -575,6 +689,14 @@ def test_13a_overlap_emission_ceiling_refuses_rather_than_truncating_silently():
     101 mutually-containing rows yield 5050 candidate overlaps against a
     ceiling of 5000. Below the analysis cap, so the comparison loop is never
     refused — the marker must come from the ceiling, not from §2.4a's cap.
+
+    ⚠ **The payload assertion is `overlap_count == 5050`, not 5000**, and the
+    difference is the whole point of the fold's C4. The shipped field was
+    `emitted_count`, which could only ever equal the cap (the loop stopped
+    the instant it hit it), so the marker rendered "5000 of 5000" and carried
+    no information. `overlap_count` is the number of `overlap` markers the
+    roster WOULD have produced, so the two numbers here are genuinely
+    different and a regression to the emitted count is RED.
     """
     rows: list[tuple[int, datetime.date, datetime.date | None]] = [
         (200 + k, D(2020, 1, 1) + datetime.timedelta(days=k), D(2040, 1, 1))
@@ -584,9 +706,10 @@ def test_13a_overlap_emission_ceiling_refuses_rather_than_truncating_silently():
 
     anomalies = find_period_anomalies(roster, today=D(2030, 1, 1))
 
+    # 101 mutually-containing rows: C(101, 2) = 5050 candidate pairs.
     assert len(_of_kind(anomalies, "overlap")) == 5000
     assert _of_kind(anomalies, "overlap_emission_capped") == [
-        PeriodAnomaly(kind="overlap_emission_capped", emitted_count=5000, cap=5000)
+        PeriodAnomaly(kind="overlap_emission_capped", overlap_count=5050, cap=5000)
     ]
     assert _of_kind(anomalies, "overlap_analysis_skipped") == []
 
@@ -627,6 +750,59 @@ def test_13b_anomaly_list_ordering_is_pinned_to_the_declaration_order():
     ]
 
 
+# ── Test 13e [fence] — the sort key is TOTAL, not merely deterministic ─────
+
+
+def test_13e_sort_key_separates_markers_sharing_their_lowest_id():
+    """Test 13e — §2.5's ordering is a TOTAL order. **Added in the fold.**
+
+    ⚠ The shipped ``_anomaly_sort_key`` collapsed all four id fields to
+    ``min(ids)`` while its docstring claimed *"This is a total order on every
+    roster because ids are unique."* That claim was false, and the review
+    produced the counterexample this fixture reproduces verbatim: ``A(id=5)``
+    and ``B(id=6)`` both containing ``C(id=1)`` yield ``overlap 5→1`` and
+    ``overlap 6→1``, two DISTINCT markers whose collapsed keys were
+    byte-identical.
+
+    Output stayed deterministic either way (Python's sort is stable and the
+    emission order is fixed), so this is not a runtime defect — it is a
+    LICENCE defect. §2.5 permits tests to assert the anomaly list directly on
+    the strength of totality, and TBD-234b will pin rendering order on it.
+    The claim is therefore made true rather than softened, and this test is
+    what holds it true: it is RED against ``min(ids)``.
+    """
+    # Rows are `start_date` ASC, as the precondition requires. ⚠ The IDS
+    # deliberately do NOT ascend with `start_date` — legal, since ids are
+    # insertion-ordered in production — and that is what creates the tie.
+    roster = _roster(
+        (5, D(2026, 1, 1), D(2026, 6, 30)),  # A — contains C
+        (6, D(2026, 2, 1), D(2026, 5, 31)),  # B — contains C
+        (1, D(2026, 3, 1), D(2026, 3, 31)),  # C — contained by both
+    )
+
+    overlaps = _of_kind(find_period_anomalies(roster, today=D(2026, 7, 15)), "overlap")
+    a_to_c = next(
+        a for a in overlaps if a.from_period_id == 5 and a.to_period_id == 1
+    )
+    b_to_c = next(
+        a for a in overlaps if a.from_period_id == 6 and a.to_period_id == 1
+    )
+
+    assert a_to_c != b_to_c  # two genuinely distinct markers …
+    # … which the collapsed key could not tell apart: same kind, same lowest
+    # referenced id, same `from_date`. Only `to_date` differs, and `to_date`
+    # is not part of the key.
+    assert a_to_c.from_date == b_to_c.from_date
+    assert a_to_c.to_date != b_to_c.to_date
+    assert billing_service._anomaly_sort_key(
+        a_to_c
+    ) != billing_service._anomaly_sort_key(b_to_c), (
+        "two distinct markers share a sort key — the ordering is not a total "
+        "order, and §2.5 licenses direct list assertions on the claim that "
+        "it is"
+    )
+
+
 # ── Test 14 [fence] — the load half ────────────────────────────────────────
 
 
@@ -638,8 +814,24 @@ async def test_14_load_complete_roster_returns_every_row_ascending(session_facto
     window 234b will apply, org-scoped, ``start_date`` ASC, no LIMIT and no
     date predicate.
 
-    (The AST half of test 14 lives in
-    ``backend/tests/test_complete_roster_single_construction_site.py``.)
+    ⚠ **The rows are INSERTED OUT OF `start_date` ORDER (T1).** This asserts
+    the loader's output order is independent of insertion order, which is
+    worth having — but be clear about what it does NOT do. The review
+    reported that deleting ``load_complete_roster``'s ``ORDER BY start_date``
+    left every test green, and prescribed exactly this fixture change as the
+    fix. **It is not sufficient, and the stated cause was wrong**: the rows
+    never came back in rowid order to begin with.
+    ``uq_billing_period_org_start`` is on ``(org_id, start_date)`` and SQLite
+    plans the query through the implicit index behind it either way, so the
+    ASC order survives the clause's deletion for ANY insertion order.
+    Verified: this fixture now seeds DESCENDING and still passes with the
+    ``ORDER BY`` removed.
+
+    **The clause's actual fence is therefore a SOURCE guard**,
+    ``test_load_complete_roster_orders_by_start_date_ascending`` in
+    ``backend/tests/test_complete_roster_single_construction_site.py``, which
+    also carries the ``EXPLAIN QUERY PLAN`` evidence. (That file is where
+    test 14's AST half lives.)
     """
     org_id = 1
     other_org_id = 2
@@ -649,7 +841,16 @@ async def test_14_load_complete_roster_returns_every_row_ascending(session_facto
         for k in range(29)
     ]
     specs.append((base + datetime.timedelta(days=31 * 29), None))
-    ids = await _seed_periods(session_factory, org_id, specs)
+
+    # Insert DESCENDING (T1): maximally adversarial against insertion order,
+    # and it puts the open row first rather than last.
+    insert_specs = list(reversed(specs))
+    insert_ids = await _seed_periods(session_factory, org_id, insert_specs)
+    id_by_start = {s: pid for (s, _), pid in zip(insert_specs, insert_ids)}
+    # What ASC order MUST produce, independent of the order rows went in.
+    ids = [id_by_start[s] for s, _ in specs]
+    assert ids != insert_ids  # the fixture really is out of order
+
     await _seed_periods(
         session_factory,
         other_org_id,
@@ -688,6 +889,17 @@ async def test_14a_kernel_never_consults_date_today(session_factory, monkeypatch
     pin ``kernel_derived_end`` as clock-free, which is the frozen contract's
     structural half: a ``today`` parameter there, in any form, is the
     one-line door to ``period_spend_window_end``'s floored semantics (F4).
+
+    ⚠ **The fixture carries THREE rows so the open one is INTERIOR, and that
+    closes proven test gap T4.** The shipped version had one closed row plus
+    an open TAIL, so ``kernel_derived_end``'s middle branch —
+    ``rows[i+1].start_date - 1`` — never executed under the monkeypatch: the
+    review planted a value-neutral ``datetime.date.today()`` read inside that
+    exact branch and the whole suite stayed green. A clock fence that never
+    runs the branch most likely to GROW a clock (F4's floor is written on
+    that very line) is not a fence. All three branches of
+    ``kernel_derived_end`` now execute while ``date.today()`` is armed to
+    raise.
     """
     import inspect
 
@@ -709,8 +921,9 @@ async def test_14a_kernel_never_consults_date_today(session_factory, monkeypatch
         session_factory,
         org_id,
         [
-            (D(2026, 1, 1), D(2026, 1, 31)),
-            (D(2026, 3, 1), None),
+            (D(2026, 1, 1), D(2026, 1, 31)),  # closed → branch 1
+            (D(2026, 3, 1), None),  # open INTERIOR → branch 2 (T4)
+            (D(2026, 5, 1), None),  # open TAIL → branch 3
         ],
     )
     async with session_factory() as db:
@@ -732,8 +945,10 @@ async def test_14a_kernel_never_consults_date_today(session_factory, monkeypatch
     )
 
     today = D(2026, 3, 15)
+    # All THREE branches of `kernel_derived_end`, with the clock armed (T4).
     assert billing_service.kernel_derived_end(roster, 0) == D(2026, 1, 31)
-    assert billing_service.kernel_derived_end(roster, 1) is None
+    assert billing_service.kernel_derived_end(roster, 1) == D(2026, 4, 30)
+    assert billing_service.kernel_derived_end(roster, 2) is None
     assert billing_service.period_status(roster.rows[0], today=today) == "past"
     assert billing_service.find_period_anomalies(roster, today=today) == [
         PeriodAnomaly(
@@ -742,5 +957,9 @@ async def test_14a_kernel_never_consults_date_today(session_factory, monkeypatch
             to_period_id=roster.rows[1].id,
             from_date=D(2026, 2, 1),
             to_date=D(2026, 2, 28),
-        )
+        ),
+        PeriodAnomaly(
+            kind="duplicate_open",
+            period_ids=(roster.rows[1].id, roster.rows[2].id),
+        ),
     ]
