@@ -119,6 +119,27 @@ def test_vectors_discriminate_branch_order() -> None:
     assert all(v["status"] == "open" for v in open_future)
 
 
+def test_fixture_is_reproducible_from_the_generator() -> None:
+    """The committed fixture must BE the generator's output, byte for byte.
+
+    ⚠ This exists because it once was not. The fixture shipped claiming
+    "GENERATED ... do not hand-edit" while carrying 14 vectors to the
+    generator's 13, in a different order and a layout ``json.dumps`` cannot
+    produce. Every value happened to be correct, so nothing was red — and
+    anyone running the documented regenerate command to fix a failure would
+    have silently DROPPED a vector.
+
+    A provenance banner that no test enforces is decoration. This is the test
+    that makes it true.
+    """
+    from scripts.gen_period_status_vectors import build
+
+    assert _load() == build(), (
+        "the committed fixture is not the generator's output. Do not hand-edit "
+        f"it — run: {REGEN}"
+    )
+
+
 def test_every_status_is_exercised_by_at_least_one_vector() -> None:
     data = _load()
     covered = {v["status"] for v in data["vectors"]}

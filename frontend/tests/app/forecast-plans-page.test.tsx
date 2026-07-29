@@ -10,6 +10,7 @@ import {
 import ForecastPlansClient from "@/app/forecast-plans/ForecastPlansClient";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import { todayISO } from "@/lib/format";
 import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
 
 // The page itself is now an async Server Component (RSC) — it calls
@@ -180,6 +181,84 @@ function renderClient(plan: ForecastPlan | null) {
     />,
   );
 }
+
+describe("ForecastPlansClient — lapsed roster (TBD-242)", () => {
+  // ⚠ THE ONLY TEST THAT CAN TELL THE OLD RULE FROM THE NEW ONE.
+  //
+  // Before TBD-242 this component decided `isCurrentPeriod` by CALENDAR
+  // CONTAINMENT (`start <= today && (!end || end >= today)`); it now uses the
+  // shared classifier's `open` branch. Every other period test in this repo
+  // uses a roster whose open row also contains today, where the two rules
+  // agree — so they pass under both and fence nothing.
+  //
+  // A LAPSED roster is where they diverge: an open row that started long ago,
+  // plus a CLOSED stub that calendar-contains today. Under the old rule that
+  // stub was "current"; under the new rule it is `current_by_calendar`, which
+  // is deliberately NOT current, because `resolve_period` would write to the
+  // open row instead.
+  const LAPSED_OPEN: BillingPeriod = {
+    id: 90, start_date: "2020-01-01", end_date: null,
+  };
+  const CONTAINING_STUB: BillingPeriod = {
+    id: 91,
+    start_date: todayISO().slice(0, 8) + "01",
+    end_date: "2999-12-31",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    vi.mocked(useAuth).mockReturnValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      user: { id: 1, role: "owner", is_superadmin: false } as any,
+    } as never);
+  });
+
+  it("selects the OPEN row, not the calendar-containing stub", async () => {
+    mockApiFetch(makePlan());
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[CONTAINING_STUB, LAPSED_OPEN]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText(LAPSED_OPEN.start_date)).toBeTruthy();
+    });
+  });
+
+  it("does NOT label a calendar-containing CLOSED stub as current", () => {
+    // A `no_open` roster: no open row at all, and the only row calendar-
+    // contains today. Under the OLD containment rule this row was "current"
+    // and rendered the green pill; under the new rule it is
+    // `current_by_calendar`, which is deliberately not current — the backend
+    // would auto-create a fresh open period rather than write here.
+    mockApiFetch(makePlan());
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[CONTAINING_STUB]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    expect(screen.queryByText("current")).toBeNull();
+  });
+
+  it("DOES still label a genuinely open row as current", () => {
+    // The other half of the discriminator: without this, the test above
+    // would also pass against a component that never renders the pill.
+    mockApiFetch(makePlan());
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[LAPSED_OPEN]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    expect(screen.getByText("current")).toBeTruthy();
+  });
+});
 
 describe("ForecastPlansClient — dropdown + refresh", () => {
   beforeEach(() => {

@@ -30,7 +30,30 @@ from app.services.billing_service import PeriodStatus, RosterRow, period_status
 #: 2026-07-01..2026-07-31 so containment cases have room on both sides.
 TODAY = datetime.date(2026, 7, 29)
 
+def _grid() -> list[tuple[str, str | None]]:
+    """A DENSE sweep around `today`, not a hand-picked sample.
+
+    The hand-picked list below pins 14 enumerated inputs; a Python-side
+    predicate change affecting any triple outside them is invisible to both
+    suites. The grid turns "14 enumerated inputs" into several hundred at zero
+    maintenance cost: every ordered pair of offsets in a window around `today`,
+    INCLUDING inverted pairs (`end < start`), plus far-past/far-future anchors
+    so the unbounded branches stay covered.
+    """
+    offsets = [-400, -3, -2, -1, 0, 1, 2, 3, 400]
+    out: list[tuple[str, str | None]] = []
+    for so in offsets:
+        start = (TODAY + datetime.timedelta(days=so)).isoformat()
+        out.append((start, None))  # branch 2 across the whole window
+        for eo in offsets:
+            out.append((start, (TODAY + datetime.timedelta(days=eo)).isoformat()))
+    return out
+
+
 #: (start_date, end_date). Ordered by the branch each is meant to exercise.
+#: These are the NAMED cases; `_grid()` is appended to them. Do not delete a
+#: named case to silence a failure — two of them are structurally asserted by
+#: `test_vectors_discriminate_branch_order`.
 CASES: list[tuple[str, str | None]] = [
     # branch 2 — open
     ("2026-07-01", None),
@@ -84,7 +107,7 @@ def build() -> dict:
                     today=TODAY,
                 ),
             }
-            for i, (start, end) in enumerate(CASES, start=1)
+            for i, (start, end) in enumerate(CASES + _grid(), start=1)
         ],
     }
 

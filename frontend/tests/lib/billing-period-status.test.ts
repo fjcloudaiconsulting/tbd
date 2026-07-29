@@ -67,6 +67,30 @@ describe("periodStatus — the five-branch partition, in normative order", () =>
     expect(periodStatus(p(10, "2026-06-01", "2026-07-28"), TODAY)).toBe("past");
   });
 
+  it("actually READS `today` — one row reclassifies as the clock moves across it", () => {
+    // ⚠ Without this, every `periodStatus` assertion in this file and every
+    // vector in the contract fixture used the SAME date, so a classifier that
+    // ignored its `today` argument and hardcoded "2026-07-29" passed the
+    // entire 2687-test suite. Caught by review, not by the author.
+    //
+    // This is not hypothetical: the module's loudest warning is that `today`
+    // must be LOCAL rather than UTC, and this PR's headline fix is deleting a
+    // UTC clock from Forecasts. A future "simplification" to `periodStatus(row)`
+    // with an internal clock is precisely the regression this fences.
+    const row = { start_date: "2026-07-01", end_date: "2026-07-31" };
+    expect(periodStatus(row, "2026-06-30")).toBe("upcoming");
+    expect(periodStatus(row, "2026-07-01")).toBe("current_by_calendar");
+    expect(periodStatus(row, "2026-07-31")).toBe("current_by_calendar");
+    expect(periodStatus(row, "2026-08-01")).toBe("past");
+  });
+
+  it("reads `today` for an open row too (branch 2 must not depend on the clock)", () => {
+    const open = { start_date: "2026-07-01", end_date: null };
+    for (const t of ["2020-01-01", "2026-07-01", "2099-01-01"]) {
+      expect(periodStatus(open, t)).toBe("open");
+    }
+  });
+
   it("partitions any roster totally — every row gets exactly one status", () => {
     const rows = [
       p(1, "2026-07-20", "2026-07-10"),
@@ -227,5 +251,14 @@ describe("isOpenPeriod", () => {
   it("is true only for a null end_date", () => {
     expect(isOpenPeriod(p(1, "2026-07-01", null))).toBe(true);
     expect(isOpenPeriod(p(2, "2026-07-01", "2026-07-31"))).toBe(false);
+  });
+
+  it("is STRICTLY null-checking, not truthiness", () => {
+    // `!row.end_date` and `row.end_date == null` both pass the tests above.
+    // `selectCurrentPeriod`'s tie-break rationale argues the input is an
+    // untrusted JSON array; if that is the threat model here, "" is in scope.
+    const emptyEnd = { start_date: "2026-07-01", end_date: "" as unknown as string };
+    expect(isOpenPeriod(emptyEnd)).toBe(false);
+    expect(selectCurrentPeriod([emptyEnd])).toBeNull();
   });
 });

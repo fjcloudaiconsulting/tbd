@@ -78,6 +78,456 @@
       "start_date": "2026-06-01",
       "end_date": "2026-07-28",
       "status": "past"
+    },
+    {
+      "start_date": "2025-06-24",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2025-06-24",
+      "end_date": "2025-06-24",
+      "status": "past"
+    },
+    {
+      "start_date": "2025-06-24",
+      "end_date": "2026-07-26",
+      "status": "past"
+    },
+    {
+      "start_date": "2025-06-24",
+      "end_date": "2026-07-27",
+      "status": "past"
+    },
+    {
+      "start_date": "2025-06-24",
+      "end_date": "2026-07-28",
+      "status": "past"
+    },
+    {
+      "start_date": "2025-06-24",
+      "end_date": "2026-07-29",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2025-06-24",
+      "end_date": "2026-07-30",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2025-06-24",
+      "end_date": "2026-07-31",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2025-06-24",
+      "end_date": "2026-08-01",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2025-06-24",
+      "end_date": "2027-09-02",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-26",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2026-07-26",
+      "end_date": "2025-06-24",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-26",
+      "end_date": "2026-07-26",
+      "status": "past"
+    },
+    {
+      "start_date": "2026-07-26",
+      "end_date": "2026-07-27",
+      "status": "past"
+    },
+    {
+      "start_date": "2026-07-26",
+      "end_date": "2026-07-28",
+      "status": "past"
+    },
+    {
+      "start_date": "2026-07-26",
+      "end_date": "2026-07-29",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-26",
+      "end_date": "2026-07-30",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-26",
+      "end_date": "2026-07-31",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-26",
+      "end_date": "2026-08-01",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-26",
+      "end_date": "2027-09-02",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-27",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2026-07-27",
+      "end_date": "2025-06-24",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-27",
+      "end_date": "2026-07-26",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-27",
+      "end_date": "2026-07-27",
+      "status": "past"
+    },
+    {
+      "start_date": "2026-07-27",
+      "end_date": "2026-07-28",
+      "status": "past"
+    },
+    {
+      "start_date": "2026-07-27",
+      "end_date": "2026-07-29",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-27",
+      "end_date": "2026-07-30",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-27",
+      "end_date": "2026-07-31",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-27",
+      "end_date": "2026-08-01",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-27",
+      "end_date": "2027-09-02",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": "2025-06-24",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": "2026-07-26",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": "2026-07-27",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": "2026-07-28",
+      "status": "past"
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": "2026-07-29",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": "2026-07-30",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": "2026-07-31",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": "2026-08-01",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": "2027-09-02",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2025-06-24",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2026-07-26",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2026-07-27",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2026-07-28",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2026-07-29",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2026-07-30",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2026-07-31",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2026-08-01",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-29",
+      "end_date": "2027-09-02",
+      "status": "current_by_calendar"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2025-06-24",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2026-07-26",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2026-07-27",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2026-07-28",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2026-07-29",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2026-07-30",
+      "status": "upcoming"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2026-07-31",
+      "status": "upcoming"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2026-08-01",
+      "status": "upcoming"
+    },
+    {
+      "start_date": "2026-07-30",
+      "end_date": "2027-09-02",
+      "status": "upcoming"
+    },
+    {
+      "start_date": "2026-07-31",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2026-07-31",
+      "end_date": "2025-06-24",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-31",
+      "end_date": "2026-07-26",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-31",
+      "end_date": "2026-07-27",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-31",
+      "end_date": "2026-07-28",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-31",
+      "end_date": "2026-07-29",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-31",
+      "end_date": "2026-07-30",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-07-31",
+      "end_date": "2026-07-31",
+      "status": "upcoming"
+    },
+    {
+      "start_date": "2026-07-31",
+      "end_date": "2026-08-01",
+      "status": "upcoming"
+    },
+    {
+      "start_date": "2026-07-31",
+      "end_date": "2027-09-02",
+      "status": "upcoming"
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": "2025-06-24",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": "2026-07-26",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": "2026-07-27",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": "2026-07-28",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": "2026-07-29",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": "2026-07-30",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": "2026-07-31",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": "2026-08-01",
+      "status": "upcoming"
+    },
+    {
+      "start_date": "2026-08-01",
+      "end_date": "2027-09-02",
+      "status": "upcoming"
+    },
+    {
+      "start_date": "2027-09-02",
+      "end_date": null,
+      "status": "open"
+    },
+    {
+      "start_date": "2027-09-02",
+      "end_date": "2025-06-24",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2027-09-02",
+      "end_date": "2026-07-26",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2027-09-02",
+      "end_date": "2026-07-27",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2027-09-02",
+      "end_date": "2026-07-28",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2027-09-02",
+      "end_date": "2026-07-29",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2027-09-02",
+      "end_date": "2026-07-30",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2027-09-02",
+      "end_date": "2026-07-31",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2027-09-02",
+      "end_date": "2026-08-01",
+      "status": "invalid"
+    },
+    {
+      "start_date": "2027-09-02",
+      "end_date": "2027-09-02",
+      "status": "upcoming"
     }
   ]
 }

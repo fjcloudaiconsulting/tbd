@@ -43,10 +43,23 @@ describe("periodStatus matches the backend contract fixture", () => {
   });
 
   it("keeps the TS union exhaustive over the backend's members", () => {
-    // A compile-time check expressed at runtime: every fixture status must be
-    // assignable to the TS PeriodStatus union. If Python gains a member and
-    // the union does not, this array stops type-checking under tsc.
-    const asUnion: PeriodStatus[] = vectors.statuses as PeriodStatus[];
-    expect(asUnion.length).toBe(vectors.statuses.length);
+    // ⚠ The previous version of this test was a TAUTOLOGY: it cast
+    // `vectors.statuses` to the union and asserted `x.length === x.length`.
+    // It could not fail, and its comment claimed a compile-time guarantee it
+    // did not have — `vectors.statuses` infers as `string[]` from the JSON
+    // import (no literal types), and `as PeriodStatus[]` is an assertion, not
+    // a check. A six-member fixture compiled clean and the test stayed green.
+    //
+    // This version is real in BOTH directions. The Record is a genuine
+    // compile-time exhaustiveness check (a missing key or an extra key is a
+    // tsc error), and the runtime comparison catches Python-side drift.
+    const TS_MEMBERS: Record<PeriodStatus, true> = {
+      invalid: true,
+      open: true,
+      upcoming: true,
+      current_by_calendar: true,
+      past: true,
+    };
+    expect([...vectors.statuses].sort()).toEqual(Object.keys(TS_MEMBERS).sort());
   });
 });
