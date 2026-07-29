@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { mutate } from "swr";
 import SettingsLayout from "@/components/SettingsLayout";
@@ -23,6 +24,7 @@ import SmartRulesSection from "@/components/settings/SmartRulesSection";
 import {
   input,
   label,
+  btnLink,
   btnPrimary,
   btnSecondary,
   btnDangerSolid,
@@ -699,6 +701,33 @@ export default function OrganizationSettingsPage() {
                 )}
               </div>
             </form>
+
+            {/*
+              TBD-234's roster (`/settings/organization/periods`) is the only
+              entry point to that page, so without this link the feature is
+              deep-link-only. Deliberately quiet: `btnLink`, bottom of the
+              card, no icon and no blurb, so it never competes with Close
+              period or Save. It is a read-only diagnostic; do not promote it
+              into a button.
+
+              The `admin` guard is belt-and-braces, NOT the enforcing gate.
+              This whole page already early-returns a spinner for non-admins
+              (`if (loading || !user || !admin)` above), and the roster route
+              gates itself the same way because
+              GET /api/v1/settings/billing-periods/roster 403s non-admins. It
+              is kept because
+              the day this page grows a read-only member view, an ungated
+              link would start bouncing members into a 403. Note for anyone
+              writing a "hidden for non-admins" test: assert it against the
+              rendered page, and know the early return is what makes it pass.
+            */}
+            {admin && (
+              <p>
+                <Link href="/settings/organization/periods" className={btnLink}>
+                  View period roster →
+                </Link>
+              </p>
+            )}
           </div>
         </div>
 
