@@ -18,7 +18,11 @@
  *   org this page exists for: 400 periods, all lapsed, none open.
  * * **Unknown kinds are rendered, never dropped.** §2.5 requires clients to
  *   tolerate a kind they do not know; `describeAnomaly` returns a neutral
- *   marker carrying the raw string rather than throwing or skipping.
+ *   marker carrying the raw string rather than throwing or skipping, and
+ *   `bandAnomalies` admits it unconditionally because the band is the only
+ *   home it can have — `inlineAnomaliesFor` and `railBreakGaps` both key off
+ *   knowledge this build does not have. Dropping it would leave the verdict
+ *   counting a marker the page never shows.
  */
 
 export type PeriodStatus =
@@ -358,12 +362,28 @@ export function anomalyPeriodIds(anomaly: RosterAnomaly): number[] {
 }
 
 /**
- * The summary band's contents. ⚠ The `ROSTER_SCOPED` union is the point: a
- * plain `off_window` filter erases `no_open` and both refusal markers.
+ * The summary band's contents. ⚠ The union of THREE sets is the point, and
+ * dropping any one of them erases a marker the verdict still counts:
+ *
+ * * `ROSTER_SCOPED` — a plain `off_window` filter erases `no_open` and both
+ *   refusal markers, on the exact org this page exists for.
+ * * **Unknown kinds** — the band is their ONLY home. `inlineAnomaliesFor`
+ *   cannot place them (`anomalyPeriodIds` returns `[]` for a kind this build
+ *   does not know, so no row ever matches) and `railBreakGaps` only takes
+ *   `gap`. Both an unknown ROW-scoped kind naming a displayed row and an
+ *   unknown ROSTER-scoped kind naming nothing compute `off_window: false`, so
+ *   without this clause they render nowhere while `highestTier` and the
+ *   verdict's count still count them: "1 issue found", zero markers on screen.
+ *   Reachable under deploy skew, which is what §2.5's tolerate-unknown rule
+ *   exists for.
+ * * `off_window` — the known kinds whose rows are not displayed.
  */
 export function bandAnomalies(anomalies: RosterAnomaly[]): RosterAnomaly[] {
   return anomalies.filter(
-    (anomaly) => ROSTER_SCOPED.has(anomaly.kind) || anomaly.off_window,
+    (anomaly) =>
+      ROSTER_SCOPED.has(anomaly.kind) ||
+      !KNOWN_KIND_SET.has(anomaly.kind) ||
+      anomaly.off_window,
   );
 }
 

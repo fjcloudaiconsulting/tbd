@@ -126,10 +126,20 @@ export default function BillingPeriodRosterPage() {
   }, [loading, admin, router]);
 
   const key = `/api/v1/settings/billing-periods/roster?months=${months}`;
+  // ⚠ `keepPreviousData` is NOT a nicety here, it is what makes two of §1.1's
+  // contracts hold. The window `<select>` changes `key`, and SWR returns
+  // `data: undefined` for a never-fetched key, so `{data && <RosterView/>}`
+  // would UNMOUNT the whole subtree on every window change. That subtree
+  // contains (a) the one `role="status"` live region this page is allowed —
+  // and a live region re-inserted into the DOM already populated never
+  // announces, so the mandated announcement would provably never fire — and
+  // (b) the `<select>` the keyboard user is operating, which would be removed
+  // mid-interaction with focus dumped to `<body>`: a change of context on
+  // input. Precedent: `app/forecast-plans/ForecastPlansClient.tsx`.
   const { data, error, isLoading } = useSWR<RosterResponse>(
     admin ? key : null,
     () => apiFetch<RosterResponse>(key),
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false, keepPreviousData: true },
   );
 
   if (loading || !user || !admin) {
@@ -195,12 +205,14 @@ function RosterView({
   // among open rows, matching `get_current_period`'s ordering and the kernel's
   // straddle anchor. Under `duplicate_open` the other open rows get
   // `badgeError`, never brass.
-  const anchoredOpenId = periods.reduce<number | null>((acc, p) => {
+  // Carries the ROW, not the id: an id would have to be resolved back through
+  // `periods.find` on every step, making an O(n) scan O(n²).
+  const anchoredOpen = periods.reduce<RosterPeriod | null>((acc, p) => {
     if (p.status !== "open") return acc;
-    if (acc === null) return p.id;
-    const current = periods.find((q) => q.id === acc);
-    return current && p.start_date >= current.start_date ? p.id : acc;
+    if (acc === null) return p;
+    return p.start_date >= acc.start_date ? p : acc;
   }, null);
+  const anchoredOpenId = anchoredOpen?.id ?? null;
 
   return (
     <div className="space-y-6">
@@ -404,7 +416,13 @@ function WindowCaption({
   return (
     <>
       Showing {win.displayed_count} of {roster.period_count} periods
-      {win.from ? <> from {win.from}</> : null}.
+      {win.from ? (
+        <>
+          {" "}
+          from <DateText iso={win.from} />
+        </>
+      ) : null}
+      .
       {win.truncated
         ? ` More periods start in the last ${months} months than fit here, so only the newest are shown.`
         : ""}
@@ -634,7 +652,12 @@ function RailRow({
         {" · "}
         {/* Not colour-coded: on this page colour means severity, nothing else. */}
         <span className="tabular-nums">
-          Net {Number(period.settled_net) >= 0 ? "+" : ""}
+          {/* ⚠ `> 0`, never `>= 0`. `Number("-0.00")` is `-0`, which satisfies
+              `>= 0` while `formatAmount` still emits "-0.00" — printing
+              "+-0.00". MySQL's DECIMAL normalises the sign away so this is
+              unreachable in production today, but nothing guarantees that of
+              the next store, and a sign prefix on a zero buys nothing. */}
+          Net {Number(period.settled_net) > 0 ? "+" : ""}
           {formatAmount(period.settled_net)}
         </span>
         {period.counting_through && (

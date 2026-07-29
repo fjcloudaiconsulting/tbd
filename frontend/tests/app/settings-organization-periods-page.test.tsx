@@ -18,7 +18,7 @@
  * this file mounts the same key with different payloads across `it` blocks, so
  * a shared cache would warm one test's roster into the next one.
  */
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import BillingPeriodRosterPage from "@/app/settings/organization/periods/page";
 import { apiFetch } from "@/lib/api";
@@ -342,6 +342,15 @@ describe("Billing period roster page", () => {
     expect(convergedLine).toBeDefined();
     // Identical styling for both facts: one <p>, one class list, and no chip.
     expect(convergedLi.querySelector(".bg-warning-dim")).toBeNull();
+    // ⚠ Fold: "identical styling" used to be fenced ONLY as "no warning chip
+    // in this row", so rendering `Counting through` inside a `text-text-muted`
+    // span — visually differentiating, which §1.1 forbids — passed. The line
+    // must contain exactly two elements, the two <time>s, and their class
+    // lists must be equal.
+    const convergedTimes = Array.from(convergedLine!.querySelectorAll("time"));
+    expect(convergedTimes).toHaveLength(2);
+    expect(convergedTimes[0].className).toBe(convergedTimes[1].className);
+    expect(convergedLine!.querySelectorAll("*")).toHaveLength(2);
 
     // Diverged: the second fact moves to its OWN line, in `badgeWarning`, with
     // the divergence stated in words inside the chip.
@@ -473,6 +482,242 @@ describe("Billing period roster page", () => {
       screen.getByText(/The overlap check was skipped because this roster is too large/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/No billing periods yet/)).toBeNull();
+  });
+
+  // ── Fold (blocker B1 / coverage gap C5) ────────────────────────────
+  it("renders an unknown marker kind as a neutral chip carrying the raw kind", async () => {
+    mockUser("admin");
+    const shown = period({
+      id: 1,
+      start_date: "2026-06-01",
+      end_date: "2026-06-30",
+      effective_end: "2026-06-30",
+      counting_through: "2026-06-30",
+      length_days: 30,
+    });
+    serve(
+      response({
+        periods: [shown],
+        anomalies: [
+          // Deploy skew: a backend newer than the served bundle, which is
+          // exactly what §2.5's tolerate-unknown rule exists for. This kind
+          // is in NEITHER `ROSTER_SCOPED` nor `KNOWN_KIND_SET`, and
+          // `off_window` is FALSE.
+          { kind: "future_kind", off_window: false } as RosterAnomaly,
+        ],
+      }),
+    );
+    renderWithSWR(<BillingPeriodRosterPage />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Issues not shown on the timeline")).toBeInTheDocument(),
+    );
+
+    // ⚠ The fence. Without the unknown clause in `bandAnomalies` the marker
+    // has NO home: `inlineAnomaliesFor` cannot place it (`anomalyPeriodIds`
+    // returns `[]` for an unknown kind, so no row matches) and
+    // `railBreakGaps` only takes `gap`. It renders nowhere.
+    const chip = screen.getByText("future_kind");
+    // `badgeNeutral`, carrying the RAW kind string as its label.
+    expect(chip.className).toContain("bg-surface-raised");
+    expect(chip.className).toContain("text-text-secondary");
+    expect(
+      screen.getByText(/reported an issue this page does not recognize yet/),
+    ).toBeInTheDocument();
+
+    // ⚠ Why dropping it is worse than mislabelling it: the verdict counts it
+    // either way, so the page would read "1 issue found" with zero visible
+    // markers.
+    expect(
+      screen.getByText(/^1 issue found\. Nothing here changes your numbers\.$/),
+    ).toBeInTheDocument();
+  });
+
+  // ── Fold (blocker B2) ──────────────────────────────────────────────
+  it("keeps the timeline mounted across a window change, so the live region survives", async () => {
+    mockUser("admin");
+    const twelve = response({
+      periods: [
+        period({
+          id: 1,
+          start_date: "2026-06-01",
+          end_date: "2026-06-30",
+          effective_end: "2026-06-30",
+          counting_through: "2026-06-30",
+          length_days: 30,
+        }),
+      ],
+      roster: {
+        period_count: 2,
+        first_start: "2020-01-01",
+        last_start: "2026-06-01",
+        analyzed: true,
+      },
+    });
+    const three = response({
+      periods: [],
+      roster: {
+        period_count: 2,
+        first_start: "2020-01-01",
+        last_start: "2026-06-01",
+        analyzed: true,
+      },
+    });
+    vi.mocked(apiFetch).mockImplementation(((url: string) =>
+      Promise.resolve(url.includes("months=3") ? three : twelve)) as never);
+
+    renderWithSWR(<BillingPeriodRosterPage />);
+    await waitFor(() => expect(screen.getByLabelText("Window")).toBeInTheDocument());
+
+    const select = screen.getByLabelText("Window") as HTMLSelectElement;
+    const captionBefore = screen.getByRole("status");
+
+    // Fold (small fix 4): the caption's date is machine-readable `<time>`,
+    // not bare prose, and the sentence still reads as one sentence.
+    expect(captionBefore.querySelector("time")).toHaveAttribute(
+      "datetime",
+      "2026-06-01",
+    );
+    expect((captionBefore.textContent ?? "").replace(/\s+/g, " ")).toBe(
+      "Showing 1 of 2 periods from 2026-06-01.",
+    );
+
+    select.focus();
+    expect(document.activeElement).toBe(select);
+
+    fireEvent.change(select, { target: { value: "3" } });
+
+    // ⚠ The fence, and it is synchronous on purpose: the key changes, SWR
+    // returns `data: undefined` for a never-fetched key WITHOUT
+    // `keepPreviousData`, and `{data && <RosterView/>}` unmounts the whole
+    // subtree in that very render. Two §1.1 contracts break at once:
+    //  (a) the one `role="status"` live region is destroyed and re-inserted
+    //      ALREADY POPULATED, and a live region inserted populated never
+    //      announces — so the mandated announcement provably never fires;
+    //  (b) the <select> the keyboard user is operating is removed
+    //      mid-interaction and focus is dumped to <body>: a change of
+    //      context on input.
+    expect(screen.getByRole("status")).toBe(captionBefore);
+    expect(screen.getByLabelText("Window")).toBe(select);
+    expect(document.activeElement).toBe(select);
+    // The previous window's rows stay on screen while the new key resolves.
+    expect(within(timeline()).getByText("2026-06-01")).toBeInTheDocument();
+
+    // …and the new caption text arrives in that SAME node, which is what
+    // makes an `aria-live` update an announcement rather than an insertion.
+    await waitFor(() =>
+      expect(captionBefore.textContent).toContain(
+        "periods start in the last 3 months",
+      ),
+    );
+    expect(screen.getByRole("status")).toBe(captionBefore);
+    expect(document.activeElement).toBe(select);
+  });
+
+  // ── Fold (small fix 3, small fix 5, frontend half of gap C2) ───────
+  it("renders the recessive line and puts the single brass dot on the newest open row", async () => {
+    mockUser("admin");
+    const closed = period({
+      id: 1,
+      start_date: "2026-05-01",
+      end_date: "2026-05-31",
+      effective_end: "2026-05-31",
+      counting_through: "2026-05-31",
+      status: "past",
+      length_days: 31,
+      transaction_count: 4,
+      // ⚠ Negative zero. `Number("-0.00")` is `-0`, which satisfies `>= 0`
+      // while `formatAmount` still emits "-0.00" — so a `>= 0` sign test
+      // prints "+-0.00". Fixture-only today (MySQL DECIMAL normalises the
+      // sign away), which is precisely why nothing caught it.
+      settled_net: "-0.00",
+    });
+    const olderOpen = period({
+      id: 2,
+      start_date: "2026-06-01",
+      end_date: null,
+      effective_end: "2026-06-30",
+      counting_through: "2026-06-30",
+      status: "open",
+      length_days: 30,
+      transaction_count: 1,
+      settled_net: "120.50",
+    });
+    const newerOpen = period({
+      id: 3,
+      start_date: "2026-07-01",
+      end_date: null,
+      effective_end: null,
+      counting_through: null,
+      status: "open",
+      length_days: null,
+      transaction_count: 2,
+      settled_net: "-12.30",
+    });
+    serve(response({ periods: [closed, olderOpen, newerOpen] }));
+    renderWithSWR(<BillingPeriodRosterPage />);
+
+    await waitFor(() => expect(timeline()).toBeInTheDocument());
+    const ol = timeline();
+
+    const closedLi = closestLi(within(ol).getByText("2026-05-01"));
+    const text = (el: HTMLElement) => (el.textContent ?? "").replace(/\s+/g, " ");
+
+    // The inclusive span is RENDERED, not merely carried on the wire: an
+    // off-by-one in `_roster_length_days` is visible on every row.
+    expect(text(closedLi)).toContain("31 days");
+    expect(text(closedLi)).toContain("4 transactions");
+    // ⚠ The negative-zero fence.
+    expect(text(closedLi)).toContain("Net -0.00");
+    expect(text(closedLi)).not.toContain("+-0.00");
+
+    // A genuinely positive net still gets its "+".
+    expect(text(closestLi(within(ol).getByText("2026-06-01")))).toContain(
+      "Net +120.50",
+    );
+
+    // Null `length_days` says so in words rather than printing "null days".
+    const newestLi = closestLi(within(ol).getByText("2026-07-01"));
+    expect(text(newestLi)).toContain("Length not shown");
+    expect(text(newestLi)).not.toContain("null");
+
+    // ⚠ Exactly ONE brass dot, on the MAX-`start_date` open row, matching
+    // `get_current_period`'s ordering. Two open rows, so a reducer that keeps
+    // the first open row it meets picks 2026-06-01 and fails here.
+    const brass = Array.from(ol.querySelectorAll(".bg-accent"));
+    expect(brass).toHaveLength(1);
+    expect(newestLi.contains(brass[0])).toBe(true);
+  });
+
+  // ── Fold (small fix 1) ─────────────────────────────────────────────
+  it("renders the empty-ROSTER copy, never the empty-WINDOW copy, at zero periods", async () => {
+    mockUser("admin");
+    serve(
+      response({
+        periods: [],
+        roster: {
+          period_count: 0,
+          first_start: null,
+          last_start: null,
+          analyzed: true,
+        },
+      }),
+    );
+    renderWithSWR(<BillingPeriodRosterPage />);
+
+    await waitFor(() => expect(screen.getByText("Roster health")).toBeInTheDocument());
+
+    expect(
+      screen.getByText(
+        /No billing periods yet\. One is created the first time a screen asks for the current period\./,
+      ),
+    ).toBeInTheDocument();
+    // ⚠ The fence. Deleting the `roster.period_count === 0` branch falls
+    // through to empty state (b), which renders "None of this organization's
+    // 0 periods start in the last 12 months … still covered all 0" — nonsense
+    // copy, and green without these two assertions.
+    expect(screen.queryByText(/None of this organization/)).toBeNull();
+    expect(screen.queryByText(/Widen the window/)).toBeNull();
   });
 
   // ── Test 31 ────────────────────────────────────────────────────────

@@ -262,12 +262,22 @@ class WindowScope(BaseModel):
     that sets it.
 
     ``months`` is deliberately absent: the page owns the query param it sent.
+
+    ⚠ **Neither nullable field carries a DEFAULT**, and that is deliberate.
+    A default makes the field OPTIONAL in the generated OpenAPI schema, so a
+    generated TS client types `window.from` as `string | undefined` and a
+    consumer can no longer tell "empty display window" — §2.5's legitimate
+    maximally-lapsed case — from "field absent". Every other nullable field on
+    this wire (``RosterPeriod.end_date``/``effective_end``/
+    ``counting_through``/``length_days``, ``ReferencedPeriod.end_date``/
+    ``effective_end``) is required-and-nullable; these two now match. The route
+    always passes both explicitly, so nothing relies on the default.
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
-    from_: datetime.date | None = Field(default=None, alias="from")
-    to: datetime.date | None = None
+    from_: datetime.date | None = Field(alias="from")
+    to: datetime.date | None
     displayed_count: int
     truncated: bool
 

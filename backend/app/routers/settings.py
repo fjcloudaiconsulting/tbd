@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import structlog
 from dateutil.relativedelta import relativedelta
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, case, func, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -34,11 +34,11 @@ from app.schemas.settings import (
 )
 from app.services import audit_service, billing_service
 from app.services.exceptions import ConflictError, ValidationError
-from app.services.transaction_filters import reportable_transaction_filter
 from app.services.settings_service import (
     FORECAST_GRANULARITY_VALUES,
     FORECAST_INPUT_GRANULARITY_KEY,
 )
+from app.services.transaction_filters import reportable_transaction_filter
 
 logger = structlog.stdlib.get_logger()
 
@@ -444,7 +444,12 @@ async def _roster_settled_net(
     start: datetime.date,
     counting_through: datetime.date | None,
 ) -> Decimal:
-    """D7's reportable settled net: income minus expense, in cents.
+    """D7's reportable settled net: income minus expense.
+
+    ⚠ **In CURRENCY UNITS, not cents.** The column is a `DECIMAL` in major
+    units, the result is quantized to `Decimal("0.01")` and it reaches the
+    wire as `"-55.00"` per `RosterPeriod.settled_net`'s Decimal-string
+    convention. Nothing anywhere in this path scales by 100.
 
     The filtered column, and the opposite index story from the count above:
     pinning `status = SETTLED` makes this a clean three-column range on
@@ -475,7 +480,18 @@ async def _roster_settled_net(
 
 @router.get("/billing-periods/roster", response_model=RosterResponse)
 async def get_billing_period_roster(
-    months: int = 12,
+    # ⚠ Documented bounds, NOT enforced bounds. D6/D8 clamp out-of-range
+    # integers rather than rejecting them, so `ge`/`le` here would turn the
+    # ruling inside out and 422 a `months=600` the spec says to serve as 60.
+    # The description exists because a bare `int = 12` advertises no bounds at
+    # all, leaving a client unable to know that 600 silently becomes 60.
+    months: int = Query(
+        default=12,
+        description=(
+            "Calendar lookback in months. Out-of-range integers are CLAMPED "
+            "to 1..60, never rejected; a non-integer still 422s in coercion."
+        ),
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):

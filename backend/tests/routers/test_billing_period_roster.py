@@ -554,7 +554,19 @@ async def test_19_future_stubs_render_as_upcoming(session_factory):
 async def test_20_off_window_markers_and_referenced_periods(session_factory):
     """Test 20 (fence). Corruption entirely outside the display window is
     still reported: ``off_window`` is true and ``referenced_periods`` carries
-    every named id INCLUDING its ``effective_end``."""
+    every named id INCLUDING its ``effective_end``.
+
+    ⚠ **The p2→p3 clause below is the fold's C1 fix, and without it the
+    ``any()`` in the route is unfenced.** Every off-window marker this file
+    used to assert on had **both** ids outside the window, so
+    ``any(pid not in displayed_ids ...)`` rewritten as ``all(...)`` stayed
+    green. The consequence of the wrong answer is not a mislabelled marker,
+    it is an INVISIBLE one: with ``off_window: False`` a straddling gap is
+    dropped by ``bandAnomalies`` *and* can never match the rail's
+    adjacent-displayed-pair lookup, so it renders nowhere at all — while the
+    verdict still counts it. That defeats the page's whole claim that an
+    absence of markers means a healthy roster.
+    """
     seeded = await _seed_org(
         session_factory,
         periods=[
@@ -576,6 +588,7 @@ async def test_20_off_window_markers_and_referenced_periods(session_factory):
         for a in payload["anomalies"]
         if a["kind"] == "gap" and a["from_period_id"] == p1
     ]
+    # Both ids off-window — true under `any` AND under `all`.
     assert gap_off == [
         {
             "kind": "gap",
@@ -583,6 +596,25 @@ async def test_20_off_window_markers_and_referenced_periods(session_factory):
             "to_period_id": p2,
             "from_date": _d(-349).isoformat(),
             "to_date": _d(-301).isoformat(),
+            "off_window": True,
+        }
+    ]
+
+    # ⚠ The STRADDLING gap: `p2` is off-window, `p3` is displayed. `any` says
+    # True (one named row cannot be pointed at, so the band must carry it);
+    # `all` says False and the marker disappears from the page entirely.
+    gap_straddling = [
+        a
+        for a in payload["anomalies"]
+        if a["kind"] == "gap" and a["from_period_id"] == p2
+    ]
+    assert gap_straddling == [
+        {
+            "kind": "gap",
+            "from_period_id": p2,
+            "to_period_id": p3,
+            "from_date": _d(-249).isoformat(),
+            "to_date": _d(-11).isoformat(),
             "off_window": True,
         }
     ]
@@ -625,16 +657,26 @@ async def test_21_months_clamped_and_truncation_keeps_the_newest(session_factory
     """Test 21 (fence). ``months`` clamps to 1..60 rather than 422ing; past
     the 200-row cap ``window.truncated`` is true and the SURVIVORS ARE THE
     NEWEST rows; ``roster.period_count`` still reports the full count and the
-    anomaly set is UNCHANGED by truncation."""
+    anomaly set is UNCHANGED by truncation.
+
+    ⚠ **The UPPER clamp cannot be fenced on this fixture, and asserting it
+    here was vacuous** (fold, C4). 250 rows 7 days apart span ~57 months, so
+    every lookback at or above ~48 months admits all 250 rows and the 200-row
+    DISPLAY cap binds first — collapsing every such window to the identical
+    newest-200 slice. ``over == wide`` therefore could not fail: bracketing
+    showed clamps of 12/24/36 caught, 48 and total removal NOT. The upper
+    clamp moved to :func:`test_21b_upper_month_clamp`, on a fixture where the
+    lookback is the binding constraint. The LOWER clamp stays here and does
+    bite: unclamped, ``months=0`` gives ``cutoff = today`` and one row, while
+    ``months=1`` gives several.
+    """
     seeded, starts = await _seed_wide_roster(session_factory)
 
     _sc, wide = _get(session_factory, seeded, months=60)
-    _sc, over = _get(session_factory, seeded, months=999)
     _sc, narrow = _get(session_factory, seeded, months=1)
     _sc, zero = _get(session_factory, seeded, months=0)
 
-    # Clamped, not rejected, and clamping is what makes these pairs equal.
-    assert over == wide
+    # Clamped, not rejected, and clamping is what makes this pair equal.
     assert zero == narrow
 
     # Newest-200, never oldest-200.
@@ -670,6 +712,66 @@ async def test_21_months_clamped_and_truncation_keeps_the_newest(session_factory
             "off_window": True,
         }
     ]
+
+
+# ─── test 21b — the UPPER month clamp, on a fixture where it binds ───────
+
+
+async def _seed_deep_roster(session_factory) -> tuple[dict, list[datetime.date]]:
+    """120 contiguous rows, 30 days apart, the last one OPEN.
+
+    Deliberately two things at once, and both are load-bearing for
+    :func:`test_21b_upper_month_clamp`:
+
+    * **Span ~117 months**, comfortably past ``ROSTER_MAX_MONTHS``, so the
+      60-month lookback genuinely excludes rows.
+    * **120 rows, well UNDER ``ROSTER_DISPLAY_CAP``**, so the display slice
+      never binds. That is the property test 21's 250-row fixture lacks, and
+      it is why the clamp assertion there could not fail.
+    """
+    starts = [_d(-30 * (119 - k)) for k in range(120)]
+    periods: list[tuple[datetime.date, datetime.date | None]] = [
+        (start, None if k == 119 else start + datetime.timedelta(days=29))
+        for k, start in enumerate(starts)
+    ]
+    seeded = await _seed_org(session_factory, periods=periods)
+    return seeded, starts
+
+
+@pytest.mark.asyncio
+async def test_21b_upper_month_clamp(session_factory):
+    """Fold (coverage gap C4). ``months`` clamps DOWN to
+    ``ROSTER_MAX_MONTHS``, and the clamped lookback is the thing that decides
+    the window.
+
+    Two independent assertions, because one alone is not enough:
+
+    * ``over == wide`` catches REMOVING the upper clamp (999 months admits
+      all 120 rows, 60 months admits ~61).
+    * The absolute expected slice catches LOWERING the clamp, e.g. to 48 —
+      which ``over == wide`` cannot see, since both sides clamp identically.
+    """
+    seeded, starts = await _seed_deep_roster(session_factory)
+
+    _sc, wide = _get(session_factory, seeded, months=60)
+    _sc, over = _get(session_factory, seeded, months=999)
+
+    # The premise: the DISPLAY cap is not what is doing the work here.
+    assert wide["window"]["truncated"] is False
+    assert 0 < len(wide["periods"]) < settings_router_module.ROSTER_DISPLAY_CAP
+    assert len(wide["periods"]) < 120, "the 60-month lookback must exclude rows"
+
+    # Removing the upper clamp lets `months=999` reach further back.
+    assert over == wide
+
+    # Lowering the clamp (e.g. to 48) changes the slice, and only an absolute
+    # expectation sees that.
+    expected = [
+        s.isoformat() for s in starts if s >= TODAY - relativedelta(months=60)
+    ]
+    assert [p["start_date"] for p in wide["periods"]] == expected
+    assert wide["window"]["from"] == expected[0]
+    assert wide["roster"]["period_count"] == 120
 
 
 # ─── test 22 — scope separation belt ─────────────────────────────────────
@@ -1025,3 +1127,164 @@ async def test_34_lookback_boundary_both_sides(session_factory):
     assert shown == [at, tail]
     assert payload["window"]["from"] == cutoff.isoformat()
     assert payload["roster"]["period_count"] == 3
+
+
+# ─── fold: coverage gaps proven by injection during PR review ────────────
+
+
+@pytest.mark.asyncio
+async def test_35_length_days_is_the_inclusive_span(session_factory):
+    """Fold (coverage gap C2). ``length_days`` was unfenced end to end.
+
+    Both an off-by-one (dropping ``_roster_length_days``' inclusive ``+ 1``)
+    and a hardcoded ``None`` passed the entire backend suite, because the
+    only assertion on the field anywhere was ``is None`` on the roster tail —
+    which both wrong implementations also satisfy. The frontend renders
+    ``${length_days} days`` with no assertion either, so a silently
+    off-by-one period length would have shipped visible on every row.
+    """
+    seeded = await _seed_org(
+        session_factory,
+        periods=[
+            (_d(-90), _d(-61)),   # closed: 30 days inclusive
+            (_d(-60), _d(-60)),   # closed, a SINGLE day: 1, never 0
+            (_d(-40), _d(-50)),   # end before start -> `invalid`
+            (_d(-10), None),      # roster tail: `effective_end` is null
+        ],
+    )
+    thirty, one_day, invalid, tail = seeded["period_ids"]
+
+    status_code, payload = _get(session_factory, seeded)
+    assert status_code == 200
+    rows = _by_id(payload)
+
+    # Inclusive. Dropping the `+ 1` makes this 29.
+    assert rows[thirty]["length_days"] == 30
+    # The one-day row is where an off-by-one is unmistakable: 1, never 0.
+    assert rows[one_day]["length_days"] == 1
+    # `invalid` suppresses it: the span is negative and the status already
+    # carries the signal.
+    assert rows[invalid]["status"] == "invalid"
+    assert rows[invalid]["length_days"] is None
+    # Nothing bounds the tail, so there is no span to state.
+    assert rows[tail]["effective_end"] is None
+    assert rows[tail]["length_days"] is None
+
+
+@pytest.mark.asyncio
+async def test_36_analyzed_is_false_when_the_overlap_check_refuses(session_factory):
+    """Fold (coverage gap C3). ``roster.analyzed`` was unfenced.
+
+    Hardcoding it ``True`` passed the whole suite: no route-level test ever
+    produced ``overlap_analysis_skipped``. The wrong value is user-visible on
+    exactly the large corrupted rosters this page exists for — the page
+    renders "Ran"/"Skipped" AND swaps the guarantee sentence, so a hardcoded
+    ``True`` makes the page claim "Checks cover your entire roster" on the one
+    roster where that is false.
+
+    ``analyzed is True`` is fenced on the other side by tests 20/21/25.
+
+    The rows are placed far in the past so a default 12-month window displays
+    NONE of them: the assertion is about analysis, and per-row aggregates on
+    200 displayed rows would cost ~400 queries for nothing.
+    """
+    cap = billing_service.OVERLAP_ANALYSIS_CAP
+    base = -(cap + 500)
+    seeded = await _seed_org(
+        session_factory,
+        # Contiguous one-day rows, so nothing here emits a gap or an overlap
+        # and the skipped marker is unambiguous.
+        periods=[(_d(base + k), _d(base + k)) for k in range(cap + 1)],
+    )
+    assert len(seeded["period_ids"]) == cap + 1
+
+    status_code, payload = _get(session_factory, seeded, months=1)
+    assert status_code == 200
+
+    assert payload["roster"]["period_count"] == cap + 1
+    # ⚠ The fence.
+    assert payload["roster"]["analyzed"] is False
+    # …and it is a RESTATEMENT of a marker the kernel emits, never a second
+    # source of truth, so the marker must be on the wire too.
+    assert [
+        a for a in payload["anomalies"] if a["kind"] == "overlap_analysis_skipped"
+    ] == [
+        {
+            "kind": "overlap_analysis_skipped",
+            "period_count": cap + 1,
+            "cap": cap,
+            "off_window": False,
+        }
+    ]
+    # Every other rule still ran over the complete roster.
+    assert any(a["kind"] == "no_open" for a in payload["anomalies"])
+    assert payload["periods"] == []
+
+
+@pytest.mark.asyncio
+async def test_37_nullable_wire_fields_are_required_not_optional(session_factory):
+    """Fold (backend review, item 1). Every nullable field on this wire is
+    **required-and-nullable**, never optional.
+
+    ``WindowScope.from``/``to`` used to carry Pydantic defaults, which makes
+    them OPTIONAL in the generated OpenAPI schema while every sibling nullable
+    field is required. A generated TS client then types ``window.from`` as
+    ``string | undefined``, and a consumer cannot distinguish §2.5's
+    legitimate empty-display-window case from "the field is absent".
+    """
+    seeded = await _seed_org(session_factory, periods=[(_d(-30), None)])
+    with _client(session_factory, seeded) as client:
+        schemas = client.get("/openapi.json").json()["components"]["schemas"]
+
+    assert set(schemas["WindowScope"]["required"]) == {
+        "from",
+        "to",
+        "displayed_count",
+        "truncated",
+    }
+    # The siblings this was made consistent with.
+    assert {"end_date", "effective_end", "counting_through", "length_days"} <= set(
+        schemas["RosterPeriod"]["required"]
+    )
+    assert {"end_date", "effective_end"} <= set(
+        schemas["ReferencedPeriod"]["required"]
+    )
+    # `roster.first_start` / `last_start` were already required-and-nullable.
+    assert {"first_start", "last_start"} <= set(schemas["RosterScope"]["required"])
+
+
+@pytest.mark.asyncio
+async def test_38_months_bounds_are_documented_without_being_enforced(session_factory):
+    """Fold (backend review, item 2). The clamp is DOCUMENTED in OpenAPI, and
+    documenting it must not turn it into a rejection.
+
+    ``ge``/``le`` on the query param would 422 a ``months=600`` that D6/D8 say
+    to serve as 60, so the bounds live in the description only. This asserts
+    both halves, because adding the constraint would satisfy the first alone.
+    """
+    seeded = await _seed_org(session_factory, periods=[(_d(-30), None)])
+    with _client(session_factory, seeded) as client:
+        spec = client.get("/openapi.json").json()
+    params = spec["paths"]["/api/v1/settings/billing-periods/roster"]["get"][
+        "parameters"
+    ]
+    months = next(p for p in params if p["name"] == "months")
+    assert months["required"] is False
+    assert months["schema"]["default"] == 12
+    assert "1..60" in months["description"]
+    # ⚠ Documented, NOT enforced: no `minimum`/`maximum` may appear, or the
+    # clamp-don't-reject ruling has been inverted.
+    assert "minimum" not in months["schema"]
+    assert "maximum" not in months["schema"]
+
+    # And the behaviour still clamps rather than rejects.
+    for value in (-5, 0, 600, 10**9):
+        status_code, _payload = _get(session_factory, seeded, months=value)
+        assert status_code == 200, value
+    with _client(session_factory, seeded) as client:
+        assert (
+            client.get(
+                "/api/v1/settings/billing-periods/roster", params={"months": "abc"}
+            ).status_code
+            == 422
+        )
