@@ -57,6 +57,13 @@ export const cardTitle =
 export const error =
   "rounded-md bg-danger-dim px-4 py-3 text-sm text-danger";
 
+// Banner sibling of `error` / `success` for caution states that are not
+// failures: the roster page's verdict when nothing is serious but something
+// changes which period a transaction lands in. Same construction as `error`,
+// on the `warning` token family (DESIGN.md "Warning Amber").
+export const warning =
+  "rounded-md bg-warning-dim px-4 py-3 text-sm text-warning";
+
 export const success =
   "rounded-md bg-success-dim px-4 py-3 text-sm text-success";
 

@@ -530,12 +530,26 @@ async def period_effective_end(
 async def period_spend_window_end(
     db: AsyncSession,
     org_id: int,
-    period: BillingPeriod,
+    period: "BillingPeriod | RosterRow",
     *,
     today: datetime.date | None = None,
 ) -> datetime.date | None:
     """:func:`period_effective_end`, then floored at ``today`` — **iff the
     period is open**. The upper bound every SPEND query must use.
+
+    ⚠ **``period`` is structural, not nominal** (TBD-234b spec §2.1, B4).
+    The body reads exactly three attributes — **``.end_date``,
+    ``.start_date`` and ``.id``** (``.id`` solely in the unreachable
+    inversion ``RuntimeError``'s message) — so a :class:`RosterRow` from
+    :func:`load_complete_roster` duck-types perfectly, and the roster route
+    passes one. The annotation is widened rather than left lying, because
+    both alternatives are worse: a second ``select(BillingPeriod)`` to
+    re-materialise ORM entities reintroduces the roster route's two-sources
+    problem (and can 500 or silently drop a row under a concurrent delete),
+    while inlining ``max(end, today)`` at the call site would be a THIRD
+    copy of the floor, against the boundary model's "two derived-end
+    helpers, never collapse them". **A future edit that reaches for a fourth
+    attribute is breaking a contract**, not adding a line.
 
     TBD-240 §2.2 / §2.3. The three clauses below are each load-bearing:
 
