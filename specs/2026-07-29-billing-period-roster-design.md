@@ -1,6 +1,6 @@
 # TBD-234 — read-only billing period roster, and the anomaly kernel
 
-Status: REVISION 6 — 234a MERGED-PENDING (PR #590 review folded)
+Status: REVISION 7 — 234a SHIPPED (PR #590); 234b ready to build
 Date: 2026-07-29
 Jira: TBD-234 (Story, child of TBD-213) — **re-scoped to effort L and SPLIT in two.** **Blocks TBD-233 / TBD-242.**
 
@@ -14,10 +14,12 @@ Related specs: `2026-07-28-open-period-spend-window-design.md`, `2026-07-28-clos
 **This one document covers two tickets.** Round 2 sign-off ruled the work **L, not M**, and ruled it
 must split:
 
-- **TBD-234a — the kernel.** `load_complete_roster`, `find_period_anomalies` and the §2.3 status
-  partition as a `period_status` helper, all in `billing_service.py`. Tests 1-14b. Ships FIRST.
+- **TBD-234a — the kernel. ✅ SHIPPED.** `load_complete_roster`, `find_period_anomalies` and the §2.3
+  status partition as a `period_status` helper, all in `billing_service.py`. Tests 1-14b. **Merged as
+  `15faa922` (PR #590).** Every section labelled **[234a]** below describes CODE THAT EXISTS; read it
+  as a record, never as work to do.
 - **TBD-234b — the route and the page.** Fetching, aggregates, display windowing, gating, the
-  response contract, the page. Tests 15-31. Opens only AFTER 234a merges.
+  response contract, the page. Tests 15-34. **This is the only buildable half.**
 
 Every deliverable below is labelled **[234a]** or **[234b]**. §8 records the split and freezes the
 kernel contract that 234b consumes.
@@ -69,6 +71,26 @@ DOCUMENT'S claims were shown to be empirically false and are corrected in place:
 - **§2.5 and §8.1 contradicted each other** over who owns the ordering ruling; resolved in favour of
   §8.1 (§2.5).
 - **§8.1's freeze omitted four shipped symbols and `period_status`' signature**; both added.
+
+**Revision 7 readies 234b for build, and it changes only 234b sections.** A readiness round run
+against the MERGED kernel found **five blocking defects, all of them in this document, all of them
+before a single line of 234b existed**. None is a design reversal; each is a place where the spec
+mandated something unbuildable, self-contradictory, or satisfiable three incompatible ways:
+
+- **B1 — D7's aggregate window had no bounds and the tail row had no upper bound.** Both columns now
+  bound on `[start_date, counting_through]`, matching §0.3's deep link, one-sided when
+  `counting_through` is `None` (D7).
+- **B2 — D6 said "one fetch, sliced in Python" and then described two SQL sentences from revision 4.**
+  The SQL sentences are deleted and a query-counting fence (test 32) replaces the prose.
+- **B3 — test 16's mechanism 2 was RED against a CORRECT implementation**, and its mechanism 1 became
+  vacuous the moment 234a merged. Both rewritten (§4b).
+- **B4 — `counting_through`'s computation path was unspecified** and the shipped signature admits
+  three incompatible answers, one of which reintroduces B2's two-sources problem (§2.1).
+- **B5 — D8's lookback named neither a column nor an anchor** (D8).
+
+**Revision 7 also folds the 234b design pass** into §1.1, replacing the placeholder layout intent.
+The page is a rail, not a grid; the rulings and their constraints are recorded there, deliberately
+without wireframes.
 
 ⚠ **Line citations in this document are computed against `main` as it stood BEFORE 234a merged.**
 234a adds two imports and eleven docstring lines above `period_effective_end`, shifting every
@@ -163,7 +185,7 @@ route's single `<h1>Settings</h1>` at **`:46`** (and again in its loading branch
 
 One new read-only endpoint, one anomaly kernel, one page, across two tickets.
 
-**[234a]**
+**[234a] — ✅ ALL SHIPPED in `15faa922` (PR #590). Nothing in this list is open work.**
 - **`load_complete_roster`** in `billing_service.py` — the kernel's ONLY constructor (§2.2).
 - **`find_period_anomalies`** in `billing_service.py` — **the named backend deliverable**, not an
   implied UI feature. Both merged specs already assign it here
@@ -195,16 +217,32 @@ affected", which is §0.1's actual complaint. It needs operator-authorized prod 
 different deliverable. **Mint it as a follow-up** rather than letting it disappear; the kernel 234a
 ships is what it will call, and under revision 4 it calls it with no window vocabulary at all.
 
-### 1.1 Layout intent [234b]
+### 1.1 The page [234b]
 
 §2.5's payload maps 1:1 onto a nine-column table, and that is the shape an implementer will reach for
 by default. **It is forbidden.** `DESIGN.md` names it as an explicit anti-reference ("if a screen
 reads like Google Sheets in a wrapper, redesign before shipping") and it violates `PRODUCT.md`'s
 *hierarchy-without-grids*.
 
-**Ruling: 234b owes a design pass and must not ship a raw grid.** The intent, not designed in detail
-here: period rows read as a **timeline** with their anomaly markers **inline on the row they
-concern**, grouped in `card` surfaces.
+**Revision 7 replaces revision 6's placeholder intent with the design pass's rulings**, run against
+`PRODUCT.md`, `DESIGN.md`, `frontend/lib/styles.ts` and `frontend/components/SettingsLayout.tsx`.
+What follows is normative and deliberately compressed: the rulings and the constraints, not the
+wireframes.
+
+**The page is a RAIL, not a grid.** One vertical hairline; each period hangs a node on it; **exactly
+one alignment axis, not nine**. Row heights are deliberately non-uniform, a healthy row short and a
+broken row tall, so roster health is legible from the silhouette alone. **No column headers** (every
+value is self-labelling), no zebra striping, no cell borders, and **no `overflow-x-auto` anywhere**.
+If an implementer adds horizontal scrolling, the design has been rebuilt as the table this section
+forbids.
+
+**A gap renders as a BREAK IN THE RAIL**, an interstitial `<li>` between the two named rows with the
+spine visibly stopping and restarting, never as a badge on a row. `gap` is the only adjacent-pair
+marker (§2.4), which is what makes it the one marker expressible as geometry.
+
+**Three cards, all `<h2>`** (the layout owns the single `<h1>`): **"Roster health"** (the verdict, the
+guarantee sentence, and a roster-facts `<dl>`), a conditional **"Issues not shown on the timeline"**
+band, and **"Timeline"**.
 
 ⚠ **Inline-on-the-row has no story for off-window markers, and under org-wide analysis those now
 exist.** A marker can name a period id the display window does not show (§2.5's
@@ -233,19 +271,121 @@ issues" under copy reading "Checks cover your entire roster."** The same erasure
 
 Test 30 fences the first two classes and is extended in revision 5 to fence the third.
 
-**Heading level, ruled explicitly so the design pass cannot add a second `<h1>`:** `SettingsLayout`
-already renders the route's only `<h1>` (`frontend/components/SettingsLayout.tsx:46`). The roster
-card's heading is an **`<h2>`**, and the summary band's is an `<h2>` sibling, never an `<h1>`.
+⚠ **The three roster-scoped kinds NEVER consult `off_window`, and revision 7 states the mechanism
+rather than the intent.** `off_window` is vacuously `false` on all three (§2.5), so an implementer
+writing `anomalies.filter(a => a.off_window)` for the band **erases `no_open` on the exact org this
+page exists for**. **Normative: the band is driven by an explicit `ROSTER_SCOPED` set of the three
+kinds, unioned with the `off_window === true` markers. Never a truthiness check.**
 
-**Token rulings, so the design pass cannot trip CI:**
+**Heading level, ruled explicitly so the design cannot add a second `<h1>`:** `SettingsLayout`
+already renders the route's only `<h1>` (`frontend/components/SettingsLayout.tsx:46`). All three
+cards' headings are `<h2>` siblings, never an `<h1>`.
 
-- §2.1's "visually differentiated when they diverge" named no token in revision 2. The natural reach
-  is `text-accent`, which breaks **The One Brass Rule** on the first roster carrying three lapsed
-  rows. **Use `badgeWarning`** (`bg-warning-dim text-warning`, `frontend/lib/styles.ts:69-70`) **plus a
-  text label**, which also satisfies "don't rely on color alone".
-- There are **nine marker kinds and five badge variants**, and `badgeSuccess` is inappropriate for
-  an anomaly. **Ruling: the kind rides the text and icon; the color carries severity only.** Without
-  this an implementer invents a hue and trips `frontend/scripts/check-design-tokens.sh`.
+#### Severity, and where colour is allowed to mean anything
+
+**Four tiers over four variants. `badgeSuccess` is excluded from markers entirely**, because no
+marker is good news:
+
+| tier | variant | kinds |
+|---|---|---|
+| error | `badgeError` | `inverted`, `overlap`, `duplicate_open` |
+| warning | `badgeWarning` | `gap`, `lapsed_open`, `no_open`, `overlap_analysis_skipped` |
+| info | `badgeInfo` | `straddling` |
+| neutral | `badgeNeutral` | `overlap_emission_capped` |
+
+**Colour carries severity and nothing else. The KIND rides a mandatory, never-abbreviated text
+label**, plus **one icon per tier** (four glyphs, not nine). If a reviewer insists on the literal
+nine-kinds-nine-signals reading, the recorded escalation is **per-kind icons over the same four
+colour pairs**, never a fifth colour: `frontend/scripts/check-design-tokens.sh` CI-blocks an invented
+hue, and there is no unused semantic token left to take.
+
+⚠ **`overlap_analysis_skipped` is WARNING, not neutral.** It means the overlap check did not run,
+which is the one condition that falsifies the guarantee sentence. ⚠ **`overlap_emission_capped` is
+NEUTRAL**: detection was complete and only the listing is truncated, so nothing is unknown.
+
+**Unknown marker kinds render as `badgeNeutral` carrying the raw `kind` string. Never dropped
+silently** (§2.5 already requires clients to tolerate unknown kinds).
+
+#### The two empty states, and why conflating them is a bug
+
+| state | trigger | copy |
+|---|---|---|
+| **(a) empty roster** | `roster.period_count === 0` | "No billing periods yet." |
+| **(b) empty window** | `period_count > 0` **and** `periods: []` (D8's accepted consequence) | "None of this organization's 400 periods start in the last 12 months. Widen the window to see them. **Every check above still covered all 400.**" |
+
+That last sentence is the guarantee doing real work. Without it, state (b) reads as a broken page on
+precisely the maximally-lapsed org D8 accepts it for.
+
+⚠ **The guarantee sentence is SWAPPED when `roster.analyzed === false`**, to say the overlap check
+was skipped. The unconditional version is a lie in that state, and it is the sentence this page's
+credibility rests on.
+
+#### Brass budget, and the divergence treatment
+
+**Exactly one brass moment on the page: the filled node plus the word "Open" on the ANCHORED open
+row** (the greatest `start_date` among open rows, matching `get_current_period`'s
+`order_by(start_date.desc())` at `billing_service.py:82` and the kernel's straddle anchor). Under
+`duplicate_open` the other open rows get `badgeError`, **not brass**. **No `bg-accent-dim` row tint**:
+it is a second brass surface, and it would change the backdrop under every muted string on that row.
+
+⚠ **A structural fact that pins the divergence treatment, verified in the merged code and never
+stated before revision 7:** `period_spend_window_end` returns a **closed** row's end verbatim and
+applies the `max(end, today)` floor **only when `end_date IS NULL`** (`billing_service.py:607-614`).
+**Therefore `effective_end != counting_through` can only ever occur on an OPEN row**, and under
+`duplicate_open` on several. That is why `text-accent` was the wrong reach for divergence in
+revision 2: three lapsed open rows would put brass in three places, breaking **The One Brass Rule**.
+
+- **Converged rows** render both facts on ONE line in **identical** styling: "Period ends X ·
+  Counting through X". The repetition IS the "these agree" signal and **must not be collapsed into a
+  fused label**.
+- **Diverged rows** move the second fact onto its own line in `badgeWarning`, **with the divergence
+  stated in words inside the chip** ("Counting through {date}, past this period's end"), plus an
+  explanatory sentence. Three independent non-colour signals: position, wording, and the chip.
+
+**`settled_net` is NOT colour-coded.** Signed, `tabular-nums`, muted. On this page colour means
+severity and nothing else.
+
+**Deep link:** the `counting_through` window per §0.3, **omitted entirely when `counting_through` is
+null**. The copy must state that opening a period in Transactions **replaces the user's saved
+transaction filters** (§0.3's recorded localStorage side effect); the link is not read-only and the
+page must not imply it is.
+
+#### The one new primitive, and nothing else
+
+**One addition to `frontend/lib/styles.ts`: a `warning` banner**, same construction as the shipped
+`error` banner (`frontend/lib/styles.ts:57-58`, verified as
+`"rounded-md bg-danger-dim px-4 py-3 text-sm text-danger"`):
+
+```ts
+export const warning =
+  "rounded-md bg-warning-dim px-4 py-3 text-sm text-warning";
+```
+
+Both tokens already exist (`--color-warning`, `--color-warning-dim` in `frontend/app/globals.css:169-171`),
+so `check-design-tokens.sh` stays green. **Verify the pair at AA in BOTH themes before merge.** **No
+other new primitive, no new token, no new colour.**
+
+#### Accessibility
+
+- **`<ol aria-label>` of `<li>`. NOT table or grid ARIA roles**, which would reimpose the shape §1.1
+  forbids at the semantic layer.
+- **Rows are not headings** (200 rows would be 200 headings). `sr-only` per-row headings are the
+  compliant escalation if row jumping is ever wanted.
+- **Every chip carries an `sr-only` "Issue: " prefix**, so it is not heard as another metadata value.
+- **Icons are always `aria-hidden`.**
+- **`role="status" aria-live="polite"` on the WINDOW CAPTION ONLY.** The verdict does not change with
+  the window, so live-regioning it would announce an unchanged sentence on every interaction.
+- **Never colour alone, anywhere: a monochrome screenshot must lose no signal.**
+
+#### Explicitly rejected, with reasons, so a later round does not re-propose them
+
+- **Proportional Gantt bars on a time axis.** Rosters span years while periods are monthly, so the
+  interesting rows compress to nothing; gaps and overlaps would be encoded by geometry alone; and it
+  drags a diagnostic page into the dataviz register.
+- **Any repair affordance.** TBD-235 owns repair, D11 forbids writes, and the page's own copy says it
+  reads only.
+- **Sort, filter or search controls.** Sorting off chronological order destroys the adjacency that
+  makes a rail break legible, which is the page's single strongest signal.
 
 No migration. No schema change. No write path. ⚠ **"Nothing existing is edited" was literally false
 and is reworded: no existing behaviour changes.** 234a does edit `billing_service.py` (three new
@@ -264,11 +404,40 @@ anchors stubs on the open period's `start_date`, not on today (`billing_service.
 `:159-164`) — while `period_spend_window_end` floors at today (`:600-601`). So a naive roster
 renders an "Open" period that *ended in May* while `/budgets` bills spend through July.
 
-**Ruling: render both, explicitly labelled.** A "Period ends" column (derived) and a "Counting
-through" column (spend window), with the two visually differentiated only when they diverge, via
-`badgeWarning` plus a text label (§1.1). Ship one number and this page becomes the one that proves
-the app is lying; ship both and the divergence *is* the diagnostic. This is a deliberately-accepted
-residual of TBD-240 §7, surfaced rather than introduced.
+**Ruling: render both, explicitly labelled.** "Period ends" (derived) and "Counting through" (spend
+window), differentiated only when they diverge, per §1.1's divergence treatment. Ship one number and
+this page becomes the one that proves the app is lying; ship both and the divergence *is* the
+diagnostic. This is a deliberately-accepted residual of TBD-240 §7, surfaced rather than introduced.
+
+⚠ **Divergence is possible on OPEN rows ONLY** (§1.1, verified at `billing_service.py:607-614`): a
+closed row's end is returned verbatim before any floor, so `effective_end == counting_through`
+identically on every closed row. A design or a test that expects divergence on a closed row is
+testing something that cannot happen.
+
+#### ⚠ B4 — how `counting_through` is computed, pinned in revision 7
+
+Revision 6 named the field and never said how the route obtains it, and the **shipped** signature
+admits three incompatible answers:
+
+```python
+async def period_spend_window_end(db, org_id, period: BillingPeriod, *, today) -> datetime.date | None
+```
+
+The annotation says `BillingPeriod`, but the body reads only **`.end_date`, `.start_date` and
+`.id`** (`.id` solely in the unreachable inversion `RuntimeError`'s message), so a `RosterRow`
+duck-types perfectly. The three answers, and why two are wrong:
+
+| path | verdict |
+|---|---|
+| a second `select(BillingPeriod)` to re-materialise ORM entities | **REJECTED.** It reintroduces D6's two-sources problem, and it can 500 or silently drop a row under a concurrent delete |
+| pass the `RosterRow` as-is | **works, but violates the annotation and is unpinned** |
+| inline `max(end, today)` in the route | **REJECTED.** A third copy of the floor, against the boundary model's "two derived-end helpers, never collapse them" |
+
+**Ruling: widen `period_spend_window_end`'s type annotation to accept either** (a small structural
+`Protocol`, or `BillingPeriod | RosterRow`), **pass the roster row**, and **add a docstring note
+naming the three attributes the body reads**, so a future edit that reaches for a fourth attribute
+knows it is breaking a contract. Fenced by test 32's query counter (D6), which goes red against the
+rejected second `SELECT`.
 
 ### 2.2 The complete roster, and the derived end [234a]
 
@@ -769,10 +938,23 @@ repo's service-layer convention (verified: `cc_cycle_service.py:31`, `budget_reb
 `loan_service.py:103` all return `@dataclass(frozen=True)`, and there are **no** `NamedTuple` or
 `TypedDict` declarations anywhere in `backend/app/services/`).
 
-A **discriminated Pydantic union** is the house pattern only at the **wire boundary**
-(`backend/app/schemas/dashboard.py` uses `Literal` tags at `:96-141` plus `Field(discriminator="type")`
-at `:173`). That is **234b's response model**, built over the kernel's dataclasses without the kernel
-importing Pydantic at all.
+A **discriminated Pydantic union** is the house pattern only at the **wire boundary**. That is
+**234b's response model**, built over the kernel's dataclasses without the kernel importing Pydantic
+at all.
+
+⚠ **Revision 7 corrects the cited precedent.** Revision 6 cited `backend/app/schemas/dashboard.py`,
+which is a **weak** precedent twice over: it is an **INPUT** union (a layout the client sends), and
+**every variant carries identical fields** (`type` plus `config`, over a shared base). It says
+nothing about a nine-variant RESPONSE union whose variants have genuinely different field sets.
+**Cite `backend/app/schemas/report_layout.py`** (nine widget variants, `Field(discriminator="type")`
+at `:260`) **or `backend/app/schemas/scenario.py`** (`:304`, `:329` — two nested discriminated
+unions over variants with materially different fields) instead.
+
+⚠ **The kind→model mapping must be PER-KIND EXPLICIT, never a `dataclasses.asdict` sweep.** The
+shipped payloads are not uniform: `no_open` carries `period_ids=()` (`billing_service.py`, the
+`kind="no_open"` emission) while **both refusal markers carry `period_ids=None`**, by defaulting.
+A sweep serialises the two indistinguishably, or emits every `None` field on every variant, which is
+the nine-column table arriving through the wire format.
 
 ```python
 @dataclass(frozen=True)
@@ -818,6 +1000,12 @@ OVERLAP_EMISSION_CAP = 5000         # §2.4a's emission ceiling
 ⚠ **`AnomalyKind`'s declaration order IS the sort order.** Reordering the `Literal` silently
 reorders every response; it is contract, not formatting.
 
+⚠ **The nine kinds are already written down TWICE in shipped code** (`AnomalyKind` and `_KIND_ORDER`,
+which encodes the same nine in the same order), and **234b's Pydantic union would be a THIRD copy**.
+**Normative: 234b's union is DERIVED from `AnomalyKind`, or ASSERTED against it by a test that fails
+when the two sets differ.** A hand-typed third list drifts the moment a tenth kind lands, and it
+drifts silently: an unknown kind still serialises through §2.5's tolerate-unknown rule.
+
 #### Marker payloads, one row per kind, all nine, frozen in 234a
 
 Revision 3 exemplified three of them and left the rest to be invented at render time. The schema is
@@ -861,9 +1049,12 @@ frozen in 234a, so it cannot be left to 234b.
     { "kind": "overlap", "from_period_id": 12, "to_period_id": 17,
       "from_date": "2023-04-01", "to_date": "2023-09-30", "off_window": true }
   ],
-  "referenced_periods": {              // one entry per id ANY marker names
+  "referenced_periods": {              // one entry per id ANY marker names,
+                                       // in-window ids INCLUDED (see below)
     "12": { "id": 12, "start_date": "2023-01-01", "end_date": "2023-09-30",
-            "effective_end": "2023-09-30", "status": "past" }
+            "effective_end": "2023-09-30", "status": "past" },
+    "41": { "id": 41, "start_date": "2026-07-25", "end_date": null,
+            "effective_end": "2026-08-24", "status": "open" }
   }
 }
 ```
@@ -875,12 +1066,27 @@ frozen in 234a, so it cannot be left to 234b.
 | `roster` | **org-wide**, the anomaly domain | `period_count`, `first_start`, `last_start`, `analyzed` |
 | `window` | **display only** | `from` (min displayed `start_date`), `to` (null, no upper bound), `displayed_count`, `truncated` |
 
+⚠ **Null cases, stated in revision 7 because two of these fields had no value on legitimate
+responses:**
+
+- **`window.from` is `null` when `periods` is empty**, which D8 accepts as legitimate. There is no
+  minimum displayed `start_date` to report.
+- **`roster.first_start` and `roster.last_start` are BOTH `null` on a zero-period org.**
+- **`window.to` is permanently `null`.** D8 gives the window no upper bound, so nothing can ever
+  populate it. **It is kept for schema stability and is dead**; a reader should not go hunting for
+  the code that sets it.
+- **`months` is NOT in the response, deliberately.** §1.1's copy needs `N`, and the **page owns the
+  query param** it sent, so it already has it. Stated explicitly so nobody invents a `window.months`
+  field to close a gap that does not exist.
+
 **`referenced_periods` is required, not optional.** With org-wide analysis a marker can name a period
-id the displayed page does not carry. Every id any marker references appears here, keyed by id as a
-string. **`effective_end` is mandatory on each entry**, or the page cannot render an off-window open
-row's gap bounds without recomputing what the kernel already knew. **`off_window` is emitted per
-marker**, true when any id it references is absent from `periods`; a client could derive it by
-set-difference, and the field exists so it does not have to.
+id the displayed page does not carry. **Every id ANY marker references appears here, in-window ids
+included** (the example above carries one of each; revision 6's example showed only the off-window
+id, which read as an off-window-only map). Keyed by id as a string. **`effective_end` is mandatory on
+each entry**, or the page cannot render an off-window open row's gap bounds without recomputing what
+the kernel already knew. **`off_window` is emitted per marker**, true when any id it references is
+absent from `periods`; a client could derive it by set-difference, and the field exists so it does
+not have to.
 
 ⚠ **`off_window` is `false` on every roster-scoped marker, and that is meaningless rather than
 reassuring** (F5). `no_open` carries an empty `period_ids` and `overlap_analysis_skipped` /
@@ -908,6 +1114,12 @@ Remaining rules:
   `analyzed = not any(a.kind == "overlap_analysis_skipped" for a in anomalies)`.** It is a scope-level
   restatement of a marker the kernel already emits, not a second source of truth, and it is stated
   here so an implementer does not add a return value to the frozen signature to carry it.
+
+  ⚠ **`analyzed` names a roster-wide property and derives from an OVERLAP-ONLY refusal.**
+  `analyzed=false` means **the overlap analysis was skipped**; the other eight rules always ran
+  (§2.4a suppresses `overlap` alone, precisely so `duplicate_open` survives on the 1000+ row orgs
+  where that corruption hides). §1.1's swapped guarantee sentence must say exactly that, not
+  "checks did not run".
 - ⚠ **Anomaly list ORDERING is pinned, and revision 4 left it unspecified.** Unordered, 234b's
   rendering is nondeterministic across equivalent rosters and every test asserting a list is
   accidentally order-sensitive. **Ruling: `anomalies` is sorted by `kind` in the `Literal` declaration
@@ -979,7 +1191,7 @@ this page targets.**
 
 ⚠ **N must be capped explicitly.** `POST /billing-period` accepts arbitrary starts, so an org can
 hold hundreds of rows. Ruling: **`months` is clamped to 1..60** (house pattern at
-`routers/settings.py:467`), and the **display** query carries **`LIMIT 200`**, reported as
+`routers/settings.py:467`), and the **display slice** is capped at **200 rows**, reported as
 `window.truncated`.
 
 ⚠ **The display window is SLICED from `load_complete_roster`'s result in Python, not re-SELECTed.**
@@ -992,11 +1204,26 @@ window, the `LIMIT 200` truncation and `window.from` / `window.displayed_count` 
 are all computed over `roster.rows`.** The per-row aggregate queries below are unaffected; they are
 keyed on the sliced ids.
 
-⚠ **The cap's truncation DIRECTION is normative: the cap selects the NEWEST rows.** The naive
-composition of `LIMIT 200` with §2.5's ASC ordering is `ORDER BY start_date ASC LIMIT 200`, returning
-the **oldest** 200 and discarding the open row, every stub and every recent boundary. The query is
-`ORDER BY start_date DESC LIMIT 200`, re-sorted ASC for the body; `window.from` reports the
-**truncated** lower bound, not the requested lookback bound.
+⚠ **B2, revision 7: revision 6 ruled "one fetch" and then, ten lines away, described the display
+window as a second SQL query** ("the display query carries `LIMIT 200`"; "the query is
+`ORDER BY start_date DESC LIMIT 200`, re-sorted ASC for the body"). **Those were stale revision-4
+sentences the subtraction failed to remove, and they are DELETED.** An implementer following them
+literally adds a second `select(BillingPeriod).order_by(start_date.desc()).limit(200)` and **every
+test still passes**: test 22 asserts `period_count` against `COUNT(*)` plus an off-window anomaly,
+and both stay green when the SECOND query is what produced the display slice.
+
+⚠ **The cap's truncation DIRECTION is normative, restated in SLICE vocabulary: the cap keeps the
+NEWEST rows.** `roster.rows` is already `start_date` ASC, so the display slice is **the LAST 200 of
+the in-window slice**, which needs no re-sorting at all. The naive alternative, taking the FIRST 200,
+keeps the oldest rows and discards the open row, every stub and every recent boundary.
+`window.from` reports the **truncated** lower bound, not the requested lookback bound.
+
+⚠ **The fence is a QUERY COUNTER, not prose (test 32).** **Normative: the request issues NO `SELECT`
+against `billing_periods` other than `load_complete_roster`'s.** Implement by counting statements
+through a SQLAlchemy `before_cursor_execute` event, the pattern already shipped at
+`backend/tests/services/test_admin_orgs_service.py:333-342` (registered on the sync engine, removed
+in a `finally`). It is also B4's fence: a route that re-materialises ORM entities to feed
+`period_spend_window_end` trips the same counter.
 
 ⚠ **Truncation is now display-only and cannot hide an anomaly.** Under revision 3 this cap was also
 the analysis domain, which is why its direction was round 2's only unanimous blocker. Under revision
@@ -1004,9 +1231,13 @@ the analysis domain, which is why its direction was round 2's only unanimous blo
 with the off-window ones in `referenced_periods`. The direction ruling is kept because a timeline
 starting five years ago is still a bad page, not because correctness depends on it.
 
-**Query budget, accepted not hidden.** At `LIMIT 200` with two aggregates per row the worst case is
-**~400 round trips**, plus one `load_complete_roster` fetch. ⚠ DO App Platform applies a request
-timeout, so an org near the cap hits it first; the fix is the alternative below, not a raised cap.
+**Query budget, accepted not hidden.** At the 200-row display cap: **1** `load_complete_roster` fetch
++ **≤400** aggregates (two per displayed row) + **~1 per OPEN row** for `counting_through` ≈ **402
+round trips**. ⚠ **`period_effective_end` costs ZERO queries on a closed row** (it returns
+`period.end_date` before touching the DB), so `period_spend_window_end` only queries on open rows,
+and revision 6's worry about "N extra queries" for the second end was wrong: on a healthy roster it
+is exactly one. ⚠ DO App Platform applies a request timeout, so an org near the cap hits it first;
+the fix is the alternative below, not a raised cap.
 **Recorded alternative, legitimate but not mandated:** a single
 `JOIN billing_periods ON <bucketing date> BETWEEN start_date AND effective_end` emits one row per
 (period, transaction) pair, **natively satisfying D6's every-containing-period requirement** in one
@@ -1017,8 +1248,27 @@ query rather than 400, so it is not the rejected `CASE` shape. It **must be meas
 right indexes and then mandated one predicate shape for both columns, which **defeats the very index
 it claims each column uses**. Both reviewers caught it. Corrected:
 
+⚠ **B1, revision 7: the window `[a, b]` both columns bound on was NEVER DEFINED, and the tail row had
+no upper bound at all.** Two candidates exist and §2.5 carries both, `effective_end` and
+`counting_through`. **Ruling: both aggregate columns bound on `[start_date, counting_through]`,
+matching §0.3's deep link.**
+
+*Why, and it is not a preference.* §0.3 rules the deep link uses `counting_through`. Bounding the
+aggregates on `effective_end` instead makes the rendered count differ from the linked-to page's count
+**on every lapsed org**, destroying the "the count and the deep link agree by construction" property
+the `UNION ALL` below exists for. Concretely: open row `effective_end` 2026-05-31, `today` 2026-07-29
+→ `counting_through` 2026-07-29. Two months of settled rows sit in the link's set and are absent
+from the count beside it, on the page whose subject is numbers that disagree.
+
+⚠ **A `null` `counting_through` yields a ONE-SIDED predicate**, `>= start_date` with **no upper
+bound**, on the settled-net query and on **BOTH branches** of the `UNION ALL` below. This is the
+roster **tail**, where `effective_end` and `counting_through` are both `None` (§2.5), and revision
+6's "plain `BETWEEN`, no `OR`, no `coalesce`" wording forbade the only correct shape by omission. The
+one-sided form keeps the index range intact; it simply drops the trailing bound. Fenced by test 33.
+
 - **Settled net — `reportable_transaction_filter()` + `status = SETTLED` + plain
-  `settled_date BETWEEN a AND b`.** No `OR`, no `coalesce`. That is a clean three-column range on
+  `settled_date BETWEEN start_date AND counting_through`** (one-sided `>= start_date` when
+  `counting_through` is null). No `OR`, no `coalesce`. That is a clean three-column range on
   `ix_transactions_org_settled_date` = `(org_id, status, settled_date)`. The `settled_date IS NULL`
   disjunct revision 1 mandated is **dead code here**, and adding it removes the range from the
   trailing key part, collapsing the plan to `(org_id, status)`.
@@ -1035,8 +1285,10 @@ it claims each column uses**. Both reviewers caught it. Corrected:
   `reportable_transaction_filter` and a filtered count would not match click-through. With no status
   predicate, `ix_transactions_org_settled_date` is unreachable (its `status` column sits in the
   middle) and a top-level `OR` across two columns degrades to an `org_id` prefix scan. **Ruling: a
-  two-branch `UNION ALL`** — one branch `settled_date BETWEEN …`, one branch
-  `settled_date IS NULL AND date BETWEEN …` (which does use `ix_transactions_org_date`). If the
+  two-branch `UNION ALL`** — one branch `settled_date BETWEEN start_date AND counting_through`, one
+  branch `settled_date IS NULL AND date BETWEEN start_date AND counting_through` (which does use
+  `ix_transactions_org_date`); **both branches go one-sided together** when `counting_through` is
+  null, never one and not the other. If the
   implementer measures that a plain `coalesce(...) BETWEEN` scan is acceptable at the capped N, that
   is a legitimate alternative — **but it must be recorded as an accepted org-scan, with the cost
   stated, not presented as sargable.**
@@ -1050,7 +1302,23 @@ it claims each column uses**. Both reviewers caught it. Corrected:
 
 **D8 [234b] — Display window semantics, and nothing else.** `?months` (default 12, clamped 1..60) is
 a **calendar lookback from today**, with **no upper bound**, so future stubs always appear as
-`upcoming`. Then `LIMIT 200`, newest-first (D6).
+`upcoming`. Then the newest-200 slice (D6).
+
+⚠ **B5, revision 7: "a calendar lookback from today" named neither a COLUMN nor an ANCHOR**, leaving
+open whether a period starting 13 months ago but ending this month is in-window, and whether the
+cutoff is a relative date or the first of that month. **Ruling, both halves normative:**
+
+```python
+cutoff = today - relativedelta(months=months)   # not the 1st of that month
+in_window = row.start_date >= cutoff            # start_date only; end is irrelevant
+```
+
+So a period that starts before `cutoff` is out of window however late it ends. That is deliberate:
+the window is a display concern with no correctness weight (below), and predicating on `start_date`
+is what makes the slice a contiguous suffix of `roster.rows`. **Fenced from BOTH sides (test 34):** a
+row starting exactly at `cutoff` is present, a row starting one day earlier is absent. A prior round
+found exactly this both-sides gate missing in 234a (§4a's T2), and the same gate is written down here
+before the code exists rather than after.
 
 ⚠ **Revision 3's set-union window is DELETED in all its parts:** the newest-12 floor, the
 `end_date IS NULL` union term, and the `floored` response field. Every one of them existed to drag
@@ -1113,6 +1381,11 @@ labelled none, and three of its "fences" could not fail. Revision 2 labelled the
 still wrong. Revision 3 fixed those and shipped a **new** vacuous one. Revision 4's test 2 was
 labelled a fence and **empirically was not** (round 4's F2, relabelled below). This programme's
 vacuous-test defect has now been caught **FIFTEEN times** — eleven in sign-off, and four more in the PR review of 234a's implementation, where the pattern shifted from *tests that could not fail* to **guards that could not guard** (§7's PR review round).
+
+⚠ **Revision 7 adds the INVERSE, and it is the same root cause: test 16's mechanism 2 was RED against
+a correct implementation** (§7's readiness round, B3). A label is not a result. **Every fence below
+is owed the same gate in both directions: build the correct implementation and confirm GREEN, then
+revert the fix and confirm RED.**
 
 ### 4a. Kernel — `tests/services/test_period_anomalies.py` [TBD-234a]
 
@@ -1260,22 +1533,33 @@ detector that fires on nothing — and green is what both look like.
 
 ### 4b. Endpoint — `tests/routers/test_billing_period_roster.py` [TBD-234b]
 
+⚠ **Fixture plumbing, recorded in revision 7 so it is not discovered mid-build. There is NO
+`backend/tests/routers/conftest.py`** (verified: `backend/tests/conftest.py` is the only `conftest.py`
+under `backend/tests/`, and it carries no DB fixture). **Every router test file builds its own
+FastAPI app, its own StaticPool engine and its own dependency overrides.** Copy that block from a
+neighbour rather than expecting to inherit one; `backend/tests/routers/test_admin_org_members.py` is
+a close fit and already registers an `Engine` `connect` listener for `PRAGMA foreign_keys=ON`.
+
 | # | Ticket | Test | Kind |
 |---|---|---|---|
 | 15 | 234b | The route **emits** `status` on every period, with the values `period_status` returns | guard — thin; the partition itself is fenced by test 12 |
-| 16 | 234b | **⭐ The D4 fence.** `effective_end` and `counting_through` **diverge** on a lapsed roster and **agree** on a converged one. See the mechanism note below; this test is load-bearing three times over | **fence** |
+| 16 | 234b | **⭐ The D4 fence.** `effective_end` and `counting_through` **diverge** on a lapsed roster and **agree** on a converged one. ⚠ **Both mechanisms REWRITTEN in revision 7 (B3); the note below is normative and supersedes revision 6's** | **fence** |
 | 17 | 234b | Overlapping periods: one transaction appears in the count of **every** row containing it | **fence** — kills the `CASE` shape |
 | 18 | 234b | Count is unfiltered (a transfer leg counts); settled net is filtered (it does not) | **fence** |
 | 19 | 234b | Future stubs render as `upcoming` (no upper bound) | **fence** |
 | 20 | 234b | **Off-window markers.** An org whose corruption sits entirely **outside** the display window still reports it: the marker is present, `off_window` is `true`, and `referenced_periods` carries every named id **including `effective_end`** | **fence** — red against any residue of window-scoped analysis, and red against dropping `effective_end` from the referenced entries |
 | 21 | 234b | `months=0` and `months=999` are clamped, not rejected; past `LIMIT 200`, `window.truncated` is true and the surviving rows are the **newest** ones (`window.from` equals the truncated lower bound, not the lookback bound); **`roster.period_count` still reports the full count and the anomaly set is unchanged by truncation** | **fence** — the last clause is what proves display truncation no longer touches analysis |
 | 22 | 234b | **Scope separation belt** (§2.2 amendment 2): `roster.period_count` equals `SELECT COUNT(*) WHERE org_id = ?`, and `window.displayed_count` equals `len(periods)`, on an org where the two differ. ⚠ **Plus the revision-5 clause that makes it bite: assert an anomaly whose subject lies entirely outside the display window is still emitted**, so the test cannot pass on a route that counts correctly from one query and analyses a windowed list from another | **fence** — ⚠ the first two clauses alone are a **guard**; revision 4 labelled the whole test a fence and it was not one (round 4, non-blocking 11) |
-| 23 | 234b | Non-admin → 403 | **fence** |
+| 23 | 234b | Non-admin → 403. ⚠ **The fixture user must be a PLAIN MEMBER**, not merely a non-superadmin: `_require_admin` passes anyone whose `role` is `OWNER` or `ADMIN` **or** who has `is_superadmin` (`routers/settings.py:48-53`), so a non-superadmin admin gets 200 and the test would prove nothing | **fence** |
 | 24 | 234b | The route creates **no** `BillingPeriod` on an org with no open row; period count unchanged; response reports `no_open` | **fence** — fails if anyone reaches for `get_current_period` |
 | 25 | 234b | Org with zero periods → 200, `periods: []`, `referenced_periods: {}`, `no_open` | **fence** |
 | 26 | 234b | `GET /billing-periods` response shape unchanged | guard (regression net; nothing here touches it) |
+| 32 | 234b | **The single-fetch fence** (D6/B2): with a `before_cursor_execute` counter registered on the test engine, one request issues **exactly one** `SELECT` against `billing_periods`, `load_complete_roster`'s. Register on the sync engine and `event.remove` in a `finally`, per `backend/tests/services/test_admin_orgs_service.py:333-342` | **fence** — ⚠ **added in revision 7.** Red against a second windowed `SELECT` for the display slice (B2's attack, which every other test passes), and red against B4's rejected ORM re-materialisation for `counting_through` |
+| 33 | 234b | **The tail row's unbounded aggregate window** (D7/B1): on a roster whose tail is the open row (`effective_end` and `counting_through` both `null`), a **future-dated settled transaction IS counted** in that row's `transaction_count` and included in its `settled_net` | **fence** — ⚠ **added in revision 7.** Red against a `BETWEEN` with a coalesced or fabricated upper bound, and red against dropping the row's aggregates entirely |
+| 34 | 234b | **The lookback boundary, BOTH sides** (D8/B5): a period starting **exactly at** `today - relativedelta(months=months)` is in `periods`; one starting **one day earlier** is not | **fence** — ⚠ **added in revision 7.** Red against a first-of-month cutoff and against a strict `>` |
 
-**⚠ Test 16's mechanism is normative. It absorbs, and replaces, revision 3's test 9.**
+**⚠ Test 16's mechanism is normative and was REWRITTEN in revision 7. It absorbs, and replaces,
+revision 3's test 9.**
 
 Revision 3 carried a separate kernel-level "clock independence of the structural set" test that was
 **vacuous BY CONSTRUCTION**: the kernel is sync and holds no session, so `period_spend_window_end` is
@@ -1283,15 +1567,39 @@ unreachable from it and a kernel-level test can no longer fail. **Test 16 alread
 clock-independence fence**, and it lives in 234b where both helpers are genuinely reachable. Three
 mechanisms are folded into it, all normative:
 
-1. **Straddle the derived end.** Two frozen clocks `T1`, `T2` with
-   `T1 <= period_effective_end(open) < T2`. Under the prohibited wiring the floored helper yields
-   **no** overlap at `T1` (`max(E, T1) = E`, and `S1.start = E + 1 > E`) and **an** overlap at `T2`
-   (`max(E, T2) = T2 >= E + 1`), so the payloads differ and the test is RED. Under the correct wiring
-   `effective_end` is identical at both clocks and it is GREEN.
-2. **Compare full payloads including dates.** Combined with §2.5's pinned overlap semantics (the LEFT
-   row's end) this is a genuine second independent red, not a restatement of mechanism 1.
-3. **Assert the concrete expected value**, never merely "the two responses are equal". Equality-only
-   assertions are the family this programme keeps getting burned by.
+⚠ **B3: revision 6's mechanism 2 was RED AGAINST A CORRECT IMPLEMENTATION, and its mechanism 1 went
+vacuous the moment 234a merged.** Both defects are structural, not fixture-level:
+
+- **Mechanism 2 mandated "compare full payloads including dates" across two frozen clocks.** But
+  `lapsed_open` fires iff `anchor_end < today` (`billing_service.py:1737`), and the mandated fixture
+  is `T1 <= period_effective_end(open) < T2`. **A correct route therefore returns no `lapsed_open` at
+  `T1` and one at `T2`**, so the anomaly lists legitimately differ and any literal implementation of
+  "compare full payloads" fails against correct code. This is round 4's F1 defect class **inverted**:
+  not a test that cannot fail, but one that **must** fail.
+- **Mechanism 1 is now vacuous.** Post-`15faa922` the kernel derives its own ends from
+  `load_complete_roster`'s raw columns; the only clock it sees is the `today` kwarg; and injecting
+  floored ends would require a **second `CompleteRoster` construction site**, which test 14's merged
+  AST guard forbids anywhere in `backend/app/`. **Overlap payloads are clock-invariant by
+  construction in every buildable 234b**, so no fixture can make mechanism 1 bite.
+
+**The four mechanisms, all normative, replacing revision 6's three:**
+
+1. **Structural-set equality across the two clocks, with the marker set named EXPLICITLY and
+   `lapsed_open` EXCLUDED.** Assert equality over the structural markers (§2.4's table: `gap`,
+   `overlap`, `duplicate_open`, `no_open`, `inverted`, `straddling`), full payloads including dates.
+   An explicit exclusion list, never a filter written as "everything except the temporal ones".
+2. **`lapsed_open` LEGITIMATELY DIFFERS across the two clocks, and the test asserts that it does:**
+   absent at `T1`, present at `T2` naming the anchored open row. This is a genuine fence for the
+   route **forwarding its resolved clock** (D8a) into `find_period_anomalies`; a route that passes a
+   stale or defaulted clock is red here.
+3. **The `effective_end` response field is computed from `period_effective_end` semantics, NOT from
+   `period_spend_window_end`, and the route does not apply the floor itself.** That is the
+   actually-reachable red condition post-234a: collapsing §2.1's two columns into one. **Mandate a
+   revert-the-fix gate: wire `effective_end = counting_through`, run the suite, confirm RED.** A
+   green suite under that wiring means this test does not exist yet, whatever it is called.
+4. **Assert CONCRETE EXPECTED VALUES, never merely "the two responses are equal".** Equality-only
+   assertions are the family this programme keeps getting burned by, and they are what let both of
+   revision 6's mechanisms read as fences.
 
 It must also **freeze the clock**, not only pass a `today=` kwarg: `period_spend_window_end` defaults
 `today` to `date.today()` internally (`billing_service.py:600`), so a route that wires in the floored
@@ -1304,8 +1612,8 @@ helper and does not forward `today` is unaffected by a kwarg alone.
 | # | Ticket | Test | Kind |
 |---|---|---|---|
 | 27 | 234b | Page renders under `SettingsLayout` with the Organization tab active, by passing the literal `activeTab="/settings/organization"` | **fence** — ⚠ (§0.4) red if the page passes `activeTab="/settings/organization/periods"`, which un-highlights every tab |
-| 28 | 234b | Anomaly markers render inline; the overlap note shows when any row overlaps | **fence** |
-| 29 | 234b | Both end columns render; the divergence is visually distinguished only when they differ, via `badgeWarning` **plus a text label** (§1.1) | **fence** |
+| 28 | 234b | Row-scoped markers render inline on the row they name; a `gap` renders as an interstitial rail break between its two named rows, **not** as a chip on either (§1.1); the overlap note shows when any row overlaps | **fence** |
+| 29 | 234b | Both ends render on every row; on a CONVERGED row they share one line in identical styling; on a DIVERGED row the second fact moves to its own line in `badgeWarning` with the divergence stated **in words inside the chip** (§1.1). ⚠ The diverged fixture's row must be OPEN, since a closed row cannot diverge (§2.1) | **fence** |
 | 30 | 234b | **The summary band** (§1.1) renders every `off_window: true` marker from `referenced_periods`, on a response whose `periods` array does not contain the referenced ids; and the page renders exactly **one** `<h1>`, `SettingsLayout`'s. ⚠ **Extended in revision 5 for the roster-scoped class (F5), two further cases, both normative: (i) `no_open` renders in the band on a response with `periods: []` and a non-zero `roster.period_count`; (ii) `overlap_analysis_skipped` renders in the band likewise.** Both carry `off_window: false` | **fence** — red against inline-only marker rendering, and red against a band that filters on `off_window == true`, which erases both roster-scoped markers on the exact rosters D10 and test 24 exist to report |
 | 31 | 234b | A non-admin deep-linking the page is redirected, matching `settings/organization/page.tsx:106,128` | **fence** |
 
@@ -1317,9 +1625,10 @@ Additive: one new GET, one new page, in that order across two tickets. No existi
 component changes, so nothing that works today can move. Worst case the new page renders wrong numbers
 on a surface nobody depended on yesterday.
 
-**234a merges caller-less, for exactly one ticket.** Four service helpers plus their tests, invisible
-to users, so the kernel contract (§8) is merged, reviewed and frozen before any consumer exists to
-constrain it. ⚠ **This is tolerable ONLY because 234b is committed, not optional.**
+**234a merged caller-less, for exactly one ticket.** Four service helpers plus their tests, invisible
+to users, so the kernel contract (§8) was merged, reviewed and frozen before any consumer existed to
+constrain it. ⚠ **That was tolerable ONLY because 234b is committed, not optional. The debt is now
+outstanding: `15faa922` is in `main` with no production caller until 234b lands.**
 
 ⚠ **Revision 4 justified this by calling `period_effective_end` "one uncalled helper defended by a
 docstring". That framing is struck; see §0.1's correction C1.** `period_effective_end` is reachable in
@@ -1532,6 +1841,48 @@ with no positive control, a boundary pinned only on the side a fixture happened 
 that never executed the branch most likely to grow a clock. **Revert-the-fix-and-confirm-red is
 still the only reliable gate, and it must be run against the GUARD as well as against the code.**
 
+### 234b readiness round — revision 6's 234b sections, read against the MERGED kernel
+
+2026-07-29, after `15faa922`. **Five blocking defects, eleven non-blocking items, plus a design pass.
+Every one of the five was found BEFORE a single line of 234b existed**, which is the round's point:
+the four earlier rounds each found the spec's defects by building against it, and this one found them
+by reading the spec against code that had already shipped. **No design ruling was challenged, for the
+sixth consecutive round.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| B1 | D7's aggregate window bounds `a` and `b` were **never defined**, and the roster **tail** had no upper bound at all while the prose forbade the fix by omission ("plain `BETWEEN`, no `OR`, no `coalesce`") | **ADOPTED.** Both columns bound on `[start_date, counting_through]`, matching §0.3's deep link; a `null` `counting_through` yields a **one-sided** predicate on the settled-net query and on **both** `UNION ALL` branches. **Test 33** |
+| B2 | D6 ruled "one fetch, sliced in Python" and then described the display window as a **second SQL query**, ten lines away. Stale revision-4 sentences the subtraction missed | **ADOPTED.** Sentences deleted, truncation direction restated in slice vocabulary, and a **query-counting fence (test 32)** added because every existing test passes against the two-query wiring |
+| B3 | Test 16's mechanism 2 was **RED against a CORRECT implementation** (`lapsed_open` legitimately differs across the mandated clocks, `billing_service.py:1737`), and mechanism 1 went **vacuous** the moment the kernel merged (overlap payloads are clock-invariant by construction; injecting floored ends needs a second `CompleteRoster` site, which test 14's AST guard forbids) | **ADOPTED.** Four mechanisms replace three: structural-set equality with `lapsed_open` explicitly excluded; `lapsed_open` asserted to **differ**; the reachable red condition restated (`effective_end` computed from the spend-window helper); concrete expected values. **Revert-the-fix gate mandated** |
+| B4 | `counting_through`'s computation path was unspecified, and the shipped signature admits **three incompatible answers** (a second `SELECT`, passing the `RosterRow`, or an inline third copy of the floor) | **ADOPTED.** Annotation widened to accept either shape, the roster row is passed, and a docstring note names the three attributes the body reads. Fenced by test 32 |
+| B5 | D8's lookback named **neither a column nor an anchor**: `start_date >= cutoff` or containment, and `today - relativedelta` or the first of that month | **ADOPTED.** `cutoff = today - relativedelta(months=months)`, predicate on `start_date`. **Test 34, both sides**, the same gate a prior round found missing in 234a |
+
+**⚠ B3 is this programme's signature defect INVERTED, and that is worth naming.** Fifteen times over
+five rounds the finding was *a test that cannot fail*. B3 is *a test that must fail against correct
+code*, the same root cause (a fence asserted rather than executed) pointing the other way. **Both
+are caught by the same gate**: build the correct implementation, run the test, and read the result
+instead of the label.
+
+**Non-blocking, all eleven folded:** `window.from` null on an empty `periods`; `roster.first_start` /
+`last_start` null on a zero-period org; `months` is the page's query param and not a response field;
+`window.to` recorded as permanently dead; `analyzed=false` scoped to **overlap** analysis only;
+test 23's fixture pinned to a plain member (`_require_admin` passes `is_superadmin`);
+`referenced_periods`' example given an in-window id; the union precedent moved off `schemas/dashboard.py`
+(an INPUT union whose variants have identical fields) onto `report_layout.py` / `scenario.py`, with a
+per-kind explicit mapping mandated because `no_open` carries `period_ids=()` while both refusal
+markers carry `None`; the absent `backend/tests/routers/conftest.py` recorded; 234b's Pydantic union
+required to derive from or assert against `AnomalyKind` (`_KIND_ORDER` is already a second copy); and
+the query budget stated at ~402 round trips, with revision 6's "N extra queries" worry corrected
+(`period_effective_end` costs zero queries on a closed row).
+
+**The design pass**, run against `PRODUCT.md`, `DESIGN.md`, `frontend/lib/styles.ts` and
+`SettingsLayout.tsx`, is folded into **§1.1** and replaces the placeholder layout intent. Its
+load-bearing discovery is structural rather than visual: **`effective_end != counting_through` can
+only occur on an OPEN row** (`billing_service.py:607-614`), and under `duplicate_open` on several,
+which is why `text-accent` was always the wrong reach for the divergence treatment. One new
+primitive (a `warning` banner), no new token, no new colour, and three explicit rejections recorded
+with their reasons so a later round does not re-propose them.
+
 ---
 
 ## 8. The split and the frozen kernel contract
@@ -1550,9 +1901,9 @@ one side or the other.
 |---|---|---|
 | **Deliverables** | `load_complete_roster`, `kernel_derived_end`, `find_period_anomalies`, `period_status`, the `PeriodAnomaly` / `CompleteRoster` / `RosterRow` types, the `AnomalyKind` / `PeriodStatus` literals, `OVERLAP_ANALYSIS_CAP` / `OVERLAP_EMISSION_CAP`, the marker payload schema, the anomaly ordering, the `CompleteRoster` AST guard, the `ORDER BY` source guard, residual R1 | the route, D6/D7/D8/D8a display windowing and aggregates, D9 gating, the §2.5 response body, `referenced_periods`, the page |
 | **Sections** | §2.2, §2.3, §2.4, §2.4a, §2.5's kernel types and marker table, D2, D4, D5 | §1.1, §2.1, §2.5's response body, D1, D3, D6, D7, D8, D8a, D9, D10 |
-| **Tests** | 1-13, 13a-13e, 14, 14a, 14b | 15-31 |
+| **Tests** | 1-13, 13a-13e, 14, 14a, 14b | 15-26, 27-31, **32-34** (added in revision 7) |
 | **Contains** | no route, no page, no display window, no aggregates, **no window vocabulary** | no changes to the kernel |
-| **Order** | ships FIRST | opens only AFTER 234a merges |
+| **Order** | ✅ **SHIPPED, `15faa922`** | open now |
 
 **⚠ Never run the two in parallel.** 234b's tests consume 234a's contract as frozen. Parallel work
 against an unfrozen signature is exactly how a contract drifts, and a drifted kernel signature is
