@@ -22,7 +22,10 @@ actually builds.
 """
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import AsyncIterator
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -150,10 +153,24 @@ class _FakeAsyncClient:
 
     Returns canned responses for the token-exchange POST and the
     userinfo GET. Tests parametrize the userinfo email to drive the
-    "Google identity matches the seeded user" branch."""
+    "Google identity matches the seeded user" branch.
 
-    def __init__(self, *, userinfo_email: str):
+    `hang_on` ("post", "get" or "both") makes the named call sleep
+    `delay_s` first, which is how the aggregate-timeout tests drive the
+    bound. The sleep is `await asyncio.sleep(...)` and never
+    `time.sleep(...)`: the fake runs on the TestClient's event loop, so
+    a blocking sleep would wedge the suite rather than time out."""
+
+    def __init__(
+        self,
+        *,
+        userinfo_email: str,
+        hang_on: str | None = None,
+        delay_s: float = 0.0,
+    ):
         self._userinfo_email = userinfo_email
+        self._hang_on = hang_on
+        self._delay_s = delay_s
 
     def __init__call(self, *_args, **_kwargs):
         return self
@@ -165,9 +182,13 @@ class _FakeAsyncClient:
         return False
 
     async def post(self, *_args, **_kwargs):
+        if self._hang_on in ("post", "both"):
+            await asyncio.sleep(self._delay_s)
         return _FakeResponse({"access_token": "fake-google-access-token"})
 
     async def get(self, *_args, **_kwargs):
+        if self._hang_on in ("get", "both"):
+            await asyncio.sleep(self._delay_s)
         return _FakeResponse(
             {
                 "email": self._userinfo_email,
@@ -176,7 +197,13 @@ class _FakeAsyncClient:
         )
 
 
-def _patch_httpx_for_email(monkeypatch, email: str) -> None:
+def _patch_httpx_for_email(
+    monkeypatch,
+    email: str,
+    *,
+    hang_on: str | None = None,
+    delay_s: float = 0.0,
+) -> None:
     """Make the auth module's `httpx.AsyncClient(...)` build our fake.
 
     The router calls `httpx.AsyncClient(timeout=...)` then uses it as a
@@ -184,7 +211,9 @@ def _patch_httpx_for_email(monkeypatch, email: str) -> None:
     that yields a fresh fake on every call."""
 
     def factory(*_args, **_kwargs):
-        return _FakeAsyncClient(userinfo_email=email)
+        return _FakeAsyncClient(
+            userinfo_email=email, hang_on=hang_on, delay_s=delay_s
+        )
 
     monkeypatch.setattr(auth_module.httpx, "AsyncClient", factory)
 
@@ -599,3 +628,274 @@ async def test_stepup_callback_missing_code_and_error_redirects_with_token_code(
     rows = await _stepup_failure_rows(session_factory)
     assert len(rows) == 1
     assert rows[0].detail == {"reason": "missing_code"}
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — the aggregate Google-exchange timeout at the step-up site.
+#
+# Step-up guards email change and first-password-set, so its failure
+# path has its own audit event type, its own query param, its own cookie
+# path and its own actor_email. These tests pin all four on the timeout
+# branch: a "shared failure helper" that collapsed step-up onto the
+# login site's `auth.google.callback.failed` event would silently empty
+# the step-up half of /admin/audit with every other test still green.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stepup_token_post_timeout_redirects_and_audits_timeout(
+    session_factory, google_config, monkeypatch
+):
+    """S1. Google never answers the step-up token POST.
+
+    The aggregate bound must fire, audit `reason: "timeout"` under the
+    step-up event type with the acting user's email attached, hand the
+    user the existing `token` banner copy, and — critically — mint no
+    step-up token. A step-up token issued on a failed exchange would be
+    a bypass of the whole re-authentication gate.
+    """
+    user_id = await _seed_user(session_factory, email="alice@acme.io")
+    app = _make_app(session_factory, user_id)
+    monkeypatch.setattr(auth_module, "GOOGLE_OAUTH_TOTAL_TIMEOUT_S", 0.05)
+    _patch_httpx_for_email(monkeypatch, "alice@acme.io", hang_on="post", delay_s=2.0)
+
+    started = time.monotonic()
+    with TestClient(app) as client:
+        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        assert init.status_code == 200
+        state = init.cookies.get("oauth_state")
+        client.cookies.set("oauth_state", state)
+
+        res = client.get(
+            "/api/v1/auth/sso-stepup/callback",
+            params={"code": "fake-google-code", "state": state},
+            follow_redirects=False,
+        )
+    elapsed = time.monotonic() - started
+
+    assert res.status_code == 307, res.text
+    location = res.headers.get("location", "")
+    assert location.endswith("/settings?sso_stepup_error=token"), location
+    assert elapsed < 1.0, elapsed
+
+    rows = await _stepup_failure_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].detail["reason"] == "timeout"
+    assert rows[0].actor_email == "alice@acme.io"
+
+    async with session_factory() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        assert user.stepup_token is None
+
+
+@pytest.mark.asyncio
+async def test_stepup_userinfo_get_timeout_records_last_phase(
+    session_factory, google_config, monkeypatch
+):
+    """S2. The step-up token POST lands and the userinfo GET is wedged.
+
+    A bound covering only the POST passes S1 and fails here.
+    `last_phase` is what tells an operator which Google endpoint is
+    stuck.
+    """
+    user_id = await _seed_user(session_factory, email="alice@acme.io")
+    app = _make_app(session_factory, user_id)
+    monkeypatch.setattr(auth_module, "GOOGLE_OAUTH_TOTAL_TIMEOUT_S", 0.05)
+    _patch_httpx_for_email(monkeypatch, "alice@acme.io", hang_on="get", delay_s=2.0)
+
+    started = time.monotonic()
+    with TestClient(app) as client:
+        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        assert init.status_code == 200
+        state = init.cookies.get("oauth_state")
+        client.cookies.set("oauth_state", state)
+
+        res = client.get(
+            "/api/v1/auth/sso-stepup/callback",
+            params={"code": "fake-google-code", "state": state},
+            follow_redirects=False,
+        )
+    elapsed = time.monotonic() - started
+
+    assert res.status_code == 307, res.text
+    assert res.headers.get("location", "").endswith(
+        "/settings?sso_stepup_error=token"
+    )
+    assert elapsed < 1.0, elapsed
+
+    rows = await _stepup_failure_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].detail["reason"] == "timeout"
+    assert rows[0].detail["last_phase"] == "token_ok"
+
+
+@pytest.mark.asyncio
+async def test_stepup_two_individually_fast_calls_trip_the_shared_deadline(
+    session_factory, google_config, monkeypatch
+):
+    """S3. The step-up bound is aggregate, not per call.
+
+    Budget 0.6s; POST sleeps 0.4s and GET sleeps 0.4s. Neither call
+    alone exceeds the budget, so a `timeout_at` reopened around each
+    call lets both finish and the callback mints a step-up token. The
+    0.4 / 0.6 ratio is load-bearing (50% headroom per call): tighten it
+    and the wrong implementation times out too, and this test silently
+    stops fencing anything.
+    """
+    user_id = await _seed_user(session_factory, email="alice@acme.io")
+    app = _make_app(session_factory, user_id)
+    monkeypatch.setattr(auth_module, "GOOGLE_OAUTH_TOTAL_TIMEOUT_S", 0.6)
+    _patch_httpx_for_email(monkeypatch, "alice@acme.io", hang_on="both", delay_s=0.4)
+
+    with TestClient(app) as client:
+        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        assert init.status_code == 200
+        state = init.cookies.get("oauth_state")
+        client.cookies.set("oauth_state", state)
+
+        res = client.get(
+            "/api/v1/auth/sso-stepup/callback",
+            params={"code": "fake-google-code", "state": state},
+            follow_redirects=False,
+        )
+
+    location = res.headers.get("location", "")
+    assert "sso_stepup_error=" in location, location
+    assert "#stepup_token=" not in location, location
+
+    rows = await _stepup_failure_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].detail["reason"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_stepup_timeout_honours_the_security_return_target(
+    session_factory, google_config, monkeypatch
+):
+    """S4. The timeout redirect must route through the same
+    `_resolve_return_path(state)` every other step-up failure uses.
+
+    A timeout branch that built its redirect inline with the hard-coded
+    default would dump a user who started on /settings/security back on
+    /settings, where no banner is listening — and would be the shape
+    most likely to also drop the `oauth_state` cookie deletion, leaving
+    the retry to fail with `state`.
+    """
+    user_id = await _seed_user(session_factory, email="alice@acme.io")
+    app = _make_app(session_factory, user_id)
+    monkeypatch.setattr(auth_module, "GOOGLE_OAUTH_TOTAL_TIMEOUT_S", 0.05)
+    _patch_httpx_for_email(monkeypatch, "alice@acme.io", hang_on="post", delay_s=2.0)
+
+    with TestClient(app) as client:
+        init = client.post(
+            "/api/v1/auth/sso-stepup/initiate",
+            json={"return_to": "security"},
+        )
+        assert init.status_code == 200
+        state = init.cookies.get("oauth_state")
+        client.cookies.set("oauth_state", state)
+
+        res = client.get(
+            "/api/v1/auth/sso-stepup/callback",
+            params={"code": "fake-google-code", "state": state},
+            follow_redirects=False,
+        )
+
+    assert res.status_code == 307, res.text
+    location = res.headers.get("location", "")
+    assert location.endswith("/settings/security?sso_stepup_error=token"), location
+
+
+EXCHANGE_TIMEOUT_EVENT = "auth.google.callback.exchange_timeout"
+
+
+def _exchange_timeout_warnings(logger_mock) -> list[dict]:
+    """The kwargs of every `_LOGGER.warning(EXCHANGE_TIMEOUT_EVENT, ...)`
+    call, in order. Same seam the breadcrumb tests use."""
+    return [
+        call.kwargs
+        for call in logger_mock.warning.call_args_list
+        if call.args and call.args[0] == EXCHANGE_TIMEOUT_EVENT
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stepup_exchange_timeout_emits_the_ungated_warning(
+    session_factory, google_config, monkeypatch
+):
+    """Fence for the ungated timeout warning at `/sso-stepup/callback`.
+
+    *Kills:* deleting the `_LOGGER.warning(...)` call from the step-up
+    site's `except TimeoutError` clause.
+
+    The two sites emit the same event name and are distinguished only
+    by the `flow` field, so the step-up half is exactly the half a
+    refactor can drop while the login fence stays green. `flow` is
+    asserted for that reason: it is what lets an operator tell a wedged
+    sign-in from a wedged email-change or first-password-set, and
+    step-up is the security-sensitive one.
+
+    `auth_debug_logging` is pinned False to prove the warning is
+    ungated. `timeout_s` is asserted against the constant read back
+    from `auth_module`, not a literal, so the test pins "the emitter
+    reports the budget it actually used" without coupling to the
+    harness value.
+    """
+    user_id = await _seed_user(session_factory, email="alice@acme.io")
+    app = _make_app(session_factory, user_id)
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    monkeypatch.setattr(auth_module, "GOOGLE_OAUTH_TOTAL_TIMEOUT_S", 0.05)
+    _patch_httpx_for_email(monkeypatch, "alice@acme.io", hang_on="get", delay_s=2.0)
+
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        with TestClient(app) as client:
+            init = client.post("/api/v1/auth/sso-stepup/initiate")
+            assert init.status_code == 200
+            state = init.cookies.get("oauth_state")
+            client.cookies.set("oauth_state", state)
+
+            res = client.get(
+                "/api/v1/auth/sso-stepup/callback",
+                params={"code": "fake-google-code", "state": state},
+                follow_redirects=False,
+            )
+
+    assert res.status_code == 307, res.text
+
+    calls = _exchange_timeout_warnings(logger_mock)
+    assert len(calls) == 1, calls
+    extra = calls[0]["extra"]
+    assert extra["flow"] == "stepup"
+    assert extra["last_phase"] == "token_ok"
+    assert extra["timeout_s"] == auth_module.GOOGLE_OAUTH_TOTAL_TIMEOUT_S
+
+
+@pytest.mark.asyncio
+async def test_stepup_exchange_timeout_warning_fires_on_the_timeout_path_only(
+    session_factory, google_config, monkeypatch
+):
+    """Negative control: a successful step-up emits no timeout warning.
+
+    *Kills:* the step-up emitter hoisted out of its `except
+    TimeoutError` clause onto the main line or into a shared `finally`.
+    """
+    user_id = await _seed_user(session_factory, email="alice@acme.io")
+    app = _make_app(session_factory, user_id)
+    _patch_httpx_for_email(monkeypatch, "alice@acme.io")
+
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        with TestClient(app) as client:
+            init = client.post("/api/v1/auth/sso-stepup/initiate")
+            assert init.status_code == 200
+            state = init.cookies.get("oauth_state")
+            client.cookies.set("oauth_state", state)
+
+            res = client.get(
+                "/api/v1/auth/sso-stepup/callback",
+                params={"code": "fake-google-code", "state": state},
+                follow_redirects=False,
+            )
+
+    assert res.status_code == 302, res.text
+    assert _exchange_timeout_warnings(logger_mock) == []
