@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -140,11 +141,29 @@ async def _stepup_failure_rows(factory) -> list[AuditEvent]:
 
 
 class _FakeResponse:
-    def __init__(self, payload: dict, status_code: int = 200):
+    """Canned httpx-style response.
+
+    `payload` is typed `Any`, not `dict`: the payload-validation fences
+    drive bodies that are lists and scalars, which is precisely the
+    shape the handler used to assume could never arrive. `json_exc`,
+    when supplied, is raised from `.json()` instead of a body being
+    returned — the "200 carrying an HTML error page" case.
+    """
+
+    def __init__(
+        self,
+        payload: Any = None,
+        status_code: int = 200,
+        *,
+        json_exc: BaseException | None = None,
+    ):
         self._payload = payload
         self.status_code = status_code
+        self._json_exc = json_exc
 
-    def json(self) -> dict:
+    def json(self) -> Any:
+        if self._json_exc is not None:
+            raise self._json_exc
         return self._payload
 
 
@@ -161,8 +180,18 @@ class _FakeAsyncClient:
     `time.sleep(...)`: the fake runs on the TestClient's event loop, so
     a blocking sleep would wedge the suite rather than time out.
 
-    `raise_exc` makes the token POST raise instead of answering, which
-    is how S5 drives a non-timeout exception into the bounded block."""
+    `raise_exc` makes the call named by `raise_exc_on` ("post", the
+    default, or "get") raise instead of answering, which is how S5 and
+    S9 drive a non-timeout exception into each bounded block.
+
+    `token_payload` / `userinfo_payload` override the canned bodies
+    outright. They are resolved with an explicit `is None` check, never
+    truthiness: `{}` and `[]` are falsy and are exactly the bodies the
+    payload-validation fences stub, so a truthiness default would
+    rewrite them into a usable body and the fence would pass against
+    unmodified code — vacuously. `userinfo_payload` supersedes
+    `userinfo_email`.
+    """
 
     def __init__(
         self,
@@ -171,11 +200,21 @@ class _FakeAsyncClient:
         hang_on: str | None = None,
         delay_s: float = 0.0,
         raise_exc: BaseException | None = None,
+        raise_exc_on: str = "post",
+        token_payload: Any = None,
+        token_json_exc: BaseException | None = None,
+        userinfo_payload: Any = None,
+        userinfo_json_exc: BaseException | None = None,
     ):
         self._userinfo_email = userinfo_email
         self._hang_on = hang_on
         self._delay_s = delay_s
         self._raise_exc = raise_exc
+        self._raise_exc_on = raise_exc_on
+        self._token_payload = token_payload
+        self._token_json_exc = token_json_exc
+        self._userinfo_payload = userinfo_payload
+        self._userinfo_json_exc = userinfo_json_exc
 
     def __init__call(self, *_args, **_kwargs):
         return self
@@ -189,18 +228,28 @@ class _FakeAsyncClient:
     async def post(self, *_args, **_kwargs):
         if self._hang_on in ("post", "both"):
             await asyncio.sleep(self._delay_s)
-        if self._raise_exc is not None:
+        if self._raise_exc is not None and self._raise_exc_on == "post":
             raise self._raise_exc
-        return _FakeResponse({"access_token": "fake-google-access-token"})
+        return _FakeResponse(
+            self._token_payload
+            if self._token_payload is not None
+            else {"access_token": "fake-google-access-token"},
+            json_exc=self._token_json_exc,
+        )
 
     async def get(self, *_args, **_kwargs):
         if self._hang_on in ("get", "both"):
             await asyncio.sleep(self._delay_s)
+        if self._raise_exc is not None and self._raise_exc_on == "get":
+            raise self._raise_exc
         return _FakeResponse(
-            {
+            self._userinfo_payload
+            if self._userinfo_payload is not None
+            else {
                 "email": self._userinfo_email,
                 "verified_email": True,
-            }
+            },
+            json_exc=self._userinfo_json_exc,
         )
 
 
@@ -211,6 +260,11 @@ def _patch_httpx_for_email(
     hang_on: str | None = None,
     delay_s: float = 0.0,
     raise_exc: BaseException | None = None,
+    raise_exc_on: str = "post",
+    token_payload: Any = None,
+    token_json_exc: BaseException | None = None,
+    userinfo_payload: Any = None,
+    userinfo_json_exc: BaseException | None = None,
 ) -> None:
     """Make the auth module's `httpx.AsyncClient(...)` build our fake.
 
@@ -224,6 +278,11 @@ def _patch_httpx_for_email(
             hang_on=hang_on,
             delay_s=delay_s,
             raise_exc=raise_exc,
+            raise_exc_on=raise_exc_on,
+            token_payload=token_payload,
+            token_json_exc=token_json_exc,
+            userinfo_payload=userinfo_payload,
+            userinfo_json_exc=userinfo_json_exc,
         )
 
     monkeypatch.setattr(auth_module.httpx, "AsyncClient", factory)
@@ -984,3 +1043,264 @@ async def test_stepup_non_timeout_exception_is_not_swallowed(
             )
 
     assert await _stepup_failure_rows(session_factory) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 7 (TBD-267) — Google 200-body shape validation at the step-up site.
+#
+# The twin of the login-site fences in
+# test_auth_google_callback_errors.py. What is *not* shared is what
+# these pin: the step-up half keeps its own audit `event_type`, its own
+# `?sso_stepup_error=` query param, its own `oauth_state` cookie path,
+# its own `_resolve_return_path` target and its own `actor_email`. A
+# "shared failure helper" collapsing the two sites would pass the login
+# fences and silently empty the step-up half of /admin/audit. Routing
+# through the existing `_stepup_failure` is what inherits all five.
+# ---------------------------------------------------------------------------
+
+
+async def _stepup_user(session_factory) -> tuple[int, "FastAPI"]:
+    user_id = await _seed_user(session_factory, email="alice@acme.io")
+    return user_id, _make_app(session_factory, user_id)
+
+
+def _drive_stepup_callback(app, client_kwargs: dict | None = None):
+    """Run initiate → callback with a real, matching state cookie.
+
+    The state cookie is minted by `sso_stepup_initiate` rather than
+    hand-built: the callback parses `stepup:{user_id}:{nonce}:{target}`
+    and looks the user up from slot 2, so a hand-built state that
+    drifted from the real encoding would send every one of these tests
+    down the `state` branch and never reach the exchange at all.
+    """
+    with TestClient(app) as client:
+        init = client.post(
+            "/api/v1/auth/sso-stepup/initiate", **(client_kwargs or {})
+        )
+        assert init.status_code == 200, init.text
+        state = init.cookies.get("oauth_state")
+        client.cookies.set("oauth_state", state)
+        return client.get(
+            "/api/v1/auth/sso-stepup/callback",
+            params={"code": "fake-google-code", "state": state},
+            follow_redirects=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_stepup_token_200_without_access_token_redirects_and_audits(
+    session_factory, google_config, monkeypatch
+):
+    """S6. Google answered the step-up token POST 200 with no token.
+
+    Pre-fix: `tokens['access_token']` → `KeyError` → bare 500. On the
+    flow that guards email change and first-password-set, that meant no
+    audit row for a failed re-authentication attempt and App Platform's
+    error splash instead of the settings banner.
+
+    Four things are pinned beyond the redirect, and each is something a
+    hand-rolled failure branch would drop while the login-site fences
+    stayed green: the step-up `event_type`, the acting user's
+    `actor_email` (the login site has no email at this point and
+    correctly records `""` — the asymmetry is deliberate), the
+    `oauth_state` deletion at the step-up cookie path, and above all
+    that NO step-up token is minted. A token issued on a failed
+    exchange would bypass the entire re-authentication gate.
+
+    `stepup_token_expires_at` is asserted alongside `stepup_token`: a
+    half-written row with an expiry but no token is the shape a
+    partially-applied fix leaves behind, and checking only the token
+    would miss it.
+    """
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    user_id, app = await _stepup_user(session_factory)
+    _patch_httpx_for_email(
+        monkeypatch,
+        "alice@acme.io",
+        token_payload={"error": "invalid_grant", "error_description": "Bad Request"},
+    )
+
+    res = _drive_stepup_callback(app)
+
+    assert res.status_code == 307, res.text
+    location = res.headers.get("location", "")
+    assert location.endswith("/settings?sso_stepup_error=token"), location
+
+    set_cookies = res.headers.get_list("set-cookie")
+    cleared = [c for c in set_cookies if c.startswith('oauth_state=""')]
+    assert len(cleared) == 1, set_cookies
+    assert "Path=/api/v1/auth/sso-stepup" in cleared[0], cleared[0]
+
+    rows = await _stepup_failure_rows(session_factory)
+    assert len(rows) == 1, rows
+    assert rows[0].event_type == "auth.google.sso_stepup.callback.failed"
+    assert rows[0].actor_email == "alice@acme.io"
+    assert rows[0].detail == {
+        "reason": "token_payload",
+        "body": "no_access_token",
+        "google_error": "invalid_grant",
+    }
+
+    async with session_factory() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        assert user.stepup_token is None
+        assert user.stepup_token_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_stepup_userinfo_200_with_a_non_object_body_redirects_and_audits(
+    session_factory, google_config, monkeypatch
+):
+    """S7. The step-up half of the unreachable defect.
+
+    `google_user.get("email")` at the step-up site sits *after* the
+    `try/except`, exactly as it does at the login site. A userinfo 200
+    decoding to a list raises `AttributeError` on the main line, where
+    no `except` clause of any width — present or added — can reach it.
+    No exception-handling change can make this test pass; only shape
+    validation can.
+    """
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    user_id, app = await _stepup_user(session_factory)
+    _patch_httpx_for_email(
+        monkeypatch, "alice@acme.io", userinfo_payload=["x"]
+    )
+
+    res = _drive_stepup_callback(app)
+
+    assert res.status_code == 307, res.text
+    location = res.headers.get("location", "")
+    assert location.endswith("/settings?sso_stepup_error=userinfo"), location
+
+    rows = await _stepup_failure_rows(session_factory)
+    assert len(rows) == 1, rows
+    assert rows[0].actor_email == "alice@acme.io"
+    assert rows[0].detail == {"reason": "userinfo_payload", "body": "not_object"}
+
+    async with session_factory() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        assert user.stepup_token is None
+        assert user.stepup_token_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_stepup_token_payload_failure_honours_the_security_return_target(
+    session_factory, google_config, monkeypatch
+):
+    """S8. The redirect target must come from state, not a default.
+
+    *Kills:* a guard that hand-rolls its own `RedirectResponse` with
+    the default `/settings` target instead of returning through
+    `_stepup_failure`. S6 cannot catch that — S6 initiates with no
+    `return_to`, so the default target and the resolved target are the
+    same string, and a hard-coded default passes it.
+
+    A user who started the step-up from /settings/security and lands
+    back on /settings sees no banner at all (that page's copy dict is a
+    different one) and loses the context of what they were doing.
+    Routing through `_stepup_failure` is what preserves
+    `_resolve_return_path(state)`.
+    """
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    _user_id, app = await _stepup_user(session_factory)
+    _patch_httpx_for_email(
+        monkeypatch,
+        "alice@acme.io",
+        token_payload={"error": "invalid_grant"},
+    )
+
+    res = _drive_stepup_callback(app, {"json": {"return_to": "security"}})
+
+    assert res.status_code == 307, res.text
+    location = res.headers.get("location", "")
+    assert location.endswith("/settings/security?sso_stepup_error=token"), location
+
+
+@pytest.mark.asyncio
+async def test_stepup_programmer_error_at_the_userinfo_call_is_not_swallowed(
+    session_factory, google_config, monkeypatch
+):
+    """S9. S5's twin, at the *second* bounded block of the step-up site.
+
+    *Kills:* an `except Exception` added around the userinfo half of
+    the step-up exchange. S5 drives its programmer error from the token
+    POST, so a widened clause reachable only after the token phase
+    would leave S5 green.
+    """
+    _user_id, app = await _stepup_user(session_factory)
+    _patch_httpx_for_email(
+        monkeypatch,
+        "alice@acme.io",
+        raise_exc=_ProgrammerBug("not a timeout"),
+        raise_exc_on="get",
+    )
+
+    with TestClient(app) as client:
+        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        assert init.status_code == 200
+        state = init.cookies.get("oauth_state")
+        client.cookies.set("oauth_state", state)
+
+        with pytest.raises(_ProgrammerBug):
+            client.get(
+                "/api/v1/auth/sso-stepup/callback",
+                params={"code": "fake-google-code", "state": state},
+                follow_redirects=False,
+            )
+
+    assert await _stepup_failure_rows(session_factory) == []
+
+
+INVALID_PAYLOAD_EVENT = "auth.google.callback.invalid_payload"
+
+
+def _invalid_payload_warnings(logger_mock) -> list[dict]:
+    """The kwargs of every `_LOGGER.warning(INVALID_PAYLOAD_EVENT, ...)`
+    call, in order. Same seam as `_exchange_timeout_warnings`."""
+    return [
+        call.kwargs
+        for call in logger_mock.warning.call_args_list
+        if call.args and call.args[0] == INVALID_PAYLOAD_EVENT
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stepup_invalid_payload_emits_the_ungated_warning(
+    session_factory, google_config, monkeypatch
+):
+    """S10. L10's twin, asserting `flow == "stepup"`.
+
+    The two sites emit the same event name and are distinguished only
+    by `flow`, so the step-up half is exactly the half a refactor can
+    drop while the login fence stays green — the same argument that
+    earned the timeout warning its own step-up fence.
+
+    After this change a malformed Google body is a quiet 307 rather
+    than a 5xx stack trace, so this warning is the *only* remaining
+    production signal for the class. `auth_debug_logging` is pinned
+    False to prove it is ungated.
+    """
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    _user_id, app = await _stepup_user(session_factory)
+    _patch_httpx_for_email(
+        monkeypatch,
+        "alice@acme.io",
+        token_payload={"error": "invalid_grant"},
+    )
+
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        res = _drive_stepup_callback(app)
+
+    assert res.status_code == 307, res.text
+
+    calls = _invalid_payload_warnings(logger_mock)
+    assert len(calls) == 1, calls
+    fields = calls[0]
+    assert "extra" not in fields, fields
+    assert set(fields) == {"flow", "phase", "body", "google_error"}, fields
+    assert fields["flow"] == "stepup"
+    assert fields["phase"] == "token"
+    assert fields["body"] == "no_access_token"
+    assert fields["google_error"] == "invalid_grant"
