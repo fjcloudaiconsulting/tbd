@@ -10,6 +10,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import { Loader2 } from "lucide-react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { isOpenPeriod } from "@/lib/billingPeriodStatus";
 import {
   mapBillingCycleError,
   mapBillingPeriodCloseError,
@@ -537,12 +538,12 @@ export default function OrganizationSettingsPage() {
                     real API cannot produce.
                   */}
                   <p className="text-xs text-text-muted">
-                    {currentPeriod.end_date
+                    {!isOpenPeriod(currentPeriod)
                       ? "Closed. This period's window is fixed at these dates. Transactions are still counted by the date they settled, so editing a transaction can move it in or out."
                       : "Open. New transactions are being recorded in this period."}
                   </p>
                 </div>
-                {!currentPeriod.end_date && (
+                {isOpenPeriod(currentPeriod) && (
                   <button
                     type="button"
                     onClick={handleClosePeriod}

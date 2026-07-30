@@ -25,12 +25,21 @@
  *   counting a marker the page never shows.
  */
 
-export type PeriodStatus =
-  | "open"
-  | "upcoming"
-  | "current_by_calendar"
-  | "past"
-  | "invalid";
+/**
+ * TBD-242: re-exported, not redeclared. This page's status vocabulary and the
+ * app-wide classifier must name the same five things, and the whole point of
+ * TBD-242 is that a second hand-written copy is how they stop doing so. The
+ * canonical union — and the `periodStatus()` port that produces it — lives in
+ * `@/lib/billingPeriodStatus`, which is pinned to the backend `PeriodStatus`
+ * Literal by a generated contract fixture.
+ *
+ * ⚠ The values here still arrive from the SERVER (this page reads the roster
+ * endpoint's `status` field); the shared type is the vocabulary, not the
+ * source. `statusWord()` below still tolerates an unknown string, because
+ * §2.5 requires clients to survive a kind this build does not know.
+ */
+export type { PeriodStatus } from "@/lib/billingPeriodStatus";
+import type { PeriodStatus } from "@/lib/billingPeriodStatus";
 
 export interface RosterScope {
   period_count: number;

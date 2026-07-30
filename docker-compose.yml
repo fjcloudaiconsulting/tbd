@@ -52,6 +52,13 @@ services:
       # repo-root .github/workflows/deploy.yml and .do/app.yaml.
       - ./.github:/app/.github:ro
       - ./.do:/app/.do:ro
+      # Read-only mount so test_period_status_frontend_contract.py can READ
+      # the cross-language period-status fixture that lives on the frontend
+      # side. Without it that whole module is red in every container while
+      # staying green in CI. Read-only on purpose: the fixture is regenerated
+      # deliberately, on the host, by
+      # `cd backend && python -m scripts.gen_period_status_vectors`.
+      - ./frontend/tests/fixtures:/app/frontend/tests/fixtures:ro
       # Read-only .git so the lifespan branch guard in app.main can
       # detect the host checkout's branch and refuse to migrate from
       # a non-main feature branch (the same drift class PFV_MIGRATE_OK_OFF_MAIN

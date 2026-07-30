@@ -32,6 +32,7 @@
  */
 
 import { useEffect, useState, type ReactNode } from "react";
+import { selectCurrentPeriod } from "@/lib/billingPeriodStatus";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
@@ -207,11 +208,29 @@ function RosterView({
   // `badgeError`, never brass.
   // Carries the ROW, not the id: an id would have to be resolved back through
   // `periods.find` on every step, making an O(n) scan O(n²).
-  const anchoredOpen = periods.reduce<RosterPeriod | null>((acc, p) => {
-    if (p.status !== "open") return acc;
-    if (acc === null) return p;
-    return p.start_date >= acc.start_date ? p : acc;
-  }, null);
+  // TBD-242: the shared selector, not a fourth hand-rolled copy. It keys off
+  // `end_date === null`, which on this page is exactly the rows the SERVER
+  // marked `status === "open"` (the backend derives that status from the same
+  // column), so the brass anchor is unchanged — but the tie-break is now the
+  // app-wide one instead of this file's private `>=` last-wins.
+  //
+  // ⚠ Two separate claims, and they have different answers.
+  //
+  // The SUBSTITUTION — swapping this file's private reducer for the shared
+  // selector — IS fenced, by a pre-existing test: "renders the recessive line
+  // and puts the single brass dot on the newest open row" in
+  // `tests/app/settings-organization-periods-page.test.tsx`. Its fixture
+  // carries two open rows and asserts exactly one brass dot, on the
+  // max-`start_date` row. Verified by injection: a first-open reducer here
+  // turns it red.
+  //
+  // The TIE-BREAK ITSELF (equal `start_date`, and the `invalid` exclusion) is
+  // UNREACHABLE through this endpoint and therefore unfenced: two open rows
+  // can never share a `start_date` (`uq_billing_period_org_start`), and an
+  // open row can never be `invalid` (the backend's branch 1 requires a
+  // non-null `end_date`). Recorded rather than fenced — minting a test for an
+  // unreachable branch is how a vacuous-by-construction fence gets written.
+  const anchoredOpen = selectCurrentPeriod(periods);
   const anchoredOpenId = anchoredOpen?.id ?? null;
 
   return (

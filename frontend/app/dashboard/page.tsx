@@ -14,6 +14,7 @@ import CustomDashboard from "@/components/dashboard/CustomDashboard";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount, formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
+import { periodStatus, selectCurrentPeriodIndex } from "@/lib/billingPeriodStatus";
 import { btnSecondary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 
@@ -267,10 +268,12 @@ function LegacyDashboard() {
   // Past = closed and ended before today. Future = scheduled stub
   // whose start is still ahead. Past + future both warrant different
   // CTAs (or none) than current — same scope rule as the Budgets page.
+  // TBD-242: one classifier, one LOCAL clock (`todayISO`), never UTC.
   const _today = todayISO();
-  const isCurrentSelectedPeriod = selectedPeriod?.end_date === null;
-  const isPastSelectedPeriod = !!(selectedPeriod?.end_date && selectedPeriod.end_date < _today);
-  const isFutureSelectedPeriod = !!(selectedPeriod && selectedPeriod.start_date > _today);
+  const _selectedStatus = selectedPeriod ? periodStatus(selectedPeriod, _today) : null;
+  const isCurrentSelectedPeriod = _selectedStatus === "open";
+  const isPastSelectedPeriod = _selectedStatus === "past";
+  const isFutureSelectedPeriod = _selectedStatus === "upcoming";
   // monthFrom drives transaction date filters (which don't go through
   // resolve_period), so the calendar fallback is fine there.
   const monthFrom = realPeriodStart ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
@@ -295,8 +298,8 @@ function LegacyDashboard() {
     if (per) setPeriod(per);
     const pl = plist ?? [];
     setPeriods(pl);
-    // Default to current period (open = no end_date), not index 0
-    const currentIdx = pl.findIndex((p) => p.end_date === null);
+    // Default to the current period (TBD-242), not index 0.
+    const currentIdx = selectCurrentPeriodIndex(pl);
     if (currentIdx >= 0) setPeriodIdx(currentIdx);
   }, []);
 
@@ -764,9 +767,9 @@ function LegacyDashboard() {
               <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30" aria-label="Next period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
               </button>
-              {selectedPeriod?.end_date === null && <span className="ml-1 rounded bg-success-dim px-2 py-0.5 text-[10px] font-semibold text-success">CURRENT</span>}
-              {selectedPeriod?.end_date !== null && (
-                <button onClick={() => { const idx = periods.findIndex((p) => p.end_date === null); if (idx >= 0) { setPeriodIdx(idx); setChartFilter(null); } }} className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">Today</button>
+              {isCurrentSelectedPeriod && <span className="ml-1 rounded bg-success-dim px-2 py-0.5 text-[10px] font-semibold text-success">CURRENT</span>}
+              {!isCurrentSelectedPeriod && (
+                <button onClick={() => { const idx = selectCurrentPeriodIndex(periods); if (idx >= 0) { setPeriodIdx(idx); setChartFilter(null); } }} className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">Today</button>
               )}
             </div>
             <Link href="/transactions" className="text-xs text-text-secondary underline underline-offset-2 hover:text-text-primary">View All Transactions</Link>
@@ -859,7 +862,7 @@ function LegacyDashboard() {
                       hasAnyAccounts={activeAccounts.length > 0}
                       hasError={accountMonthEndForecastError}
                       onJumpToCurrent={() => {
-                        const idx = periods.findIndex((p) => p.end_date === null);
+                        const idx = selectCurrentPeriodIndex(periods);
                         if (idx >= 0) {
                           setPeriodIdx(idx);
                           setChartFilter(null);
