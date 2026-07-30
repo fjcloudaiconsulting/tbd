@@ -40,6 +40,7 @@ from app.services import (
     forecast_service,
     recurring_service,
 )
+from app.services.billing_service import current_cycle_window
 from app.services.loan_forecast_service import due_loan_payment_dates
 from app.services.loan_service import compute_pmt
 
@@ -310,18 +311,19 @@ async def test_f4_forecast_net_conserved_across_generate_on_late_successor(db_se
     Also red against ``main``, where the template is conserved at ZERO and the
     two anti-vacuity asserts (projected before / materialised after) fail.
 
-    ⚠ **Scope of the conservation claim.** This fence pins conservation for a
-    template due in the FUTURE (``next_due_date > today``), which is the only
-    case one window conserves. It is NOT a general property of the surface. An
-    OVERDUE template (``next_due_date <= today``) is excluded from
-    ``recurring_*`` by ``forecast_service``'s own ``> today`` gate but IS
-    materialised into ``pending_*`` by ``generate_due_transactions``, so
-    ``forecast_net`` moves regardless of the window — measured 0 -> -100.00 on
-    BOTH this design and ``main`` (see
-    ``test_g2_guard_overdue_template_breaks_conservation_on_both_designs``).
-    That third case is inherited, not introduced, and it does not rescue the
-    split: the split adds a SEPARATE break, on a FUTURE-dated template, that
-    one window does not have and that this fence catches.
+    ⚠ **Scope of the conservation claim (widened by TBD-260).** Conservation is
+    now GENERAL, not narrow. This fence pins the FUTURE-dated case
+    (``next_due_date > today``), which is what the one-window decision buys;
+    ``test_g2_overdue_template_conserves_forecast_net_on_both_rosters`` pins the
+    OVERDUE case (``next_due_date <= today``), which the occurrence bound buys.
+    Together they cover the whole grid: ``recurring_*`` projects exactly the
+    un-materialised occurrences in ``[p_start, window_end]`` and
+    ``pending_*``/``executed_*`` count exactly the materialised ones, so
+    ``generate_due_transactions`` can only move an amount BETWEEN buckets.
+
+    The two are still separate fences. This one is the only one that catches the
+    split design, whose extra break is on a FUTURE-dated template and which G2's
+    fixture cannot see.
     """
     today = datetime.date.today()
     # Cycle day <= 28 (BillingCycleUpdate's own bound) anchored on today, so
@@ -463,15 +465,37 @@ async def test_f7b_floor_fires_when_today_is_one_day_past_derived_end(db_session
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# F8 — GUARD ONLY. The healthy on-grid fleet does not move.
+# F8 — fence (was a guard). The healthy on-grid payload is CLOCK-INDEPENDENT.
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_f8_guard_healthy_on_grid_period_is_unchanged(db_session):
-    """GUARD, not a fence — it passes under almost every implementation and
-    must never be counted as coverage.
+    """FENCE (promoted from guard by TBD-260).
 
-    Named fields only. A full-payload dict comparison across two clock reads is
-    the over-specification defect (``reference_over_specified_test_false_red``).
+    The named-field asserts below are the original guard: the healthy on-grid
+    fleet's settled/pending buckets do not move. Those alone pass under almost
+    every implementation and are not coverage.
+
+    The FENCE is the field-by-field equality of the two payloads. TBD-260
+    removed the last clock predicate from the recurring path (the query is now
+    bound on ``window_end`` alone), so on a roster where the ``max(derived,
+    today)`` floor is demonstrably inert, ``compute_forecast`` is a pure
+    function of the data — the same call with ``today`` at the period start and
+    at the period end must return the SAME payload, byte for byte.
+
+    Wrong implementations killed:
+      * any residual ``today`` predicate in the recurring selection or the
+        occurrence walk — structurally, not merely by value. The shipped
+        ``next_due_date > today`` gate makes ``at_end["recurring_expense"]``
+        0 while ``at_start``'s is 20;
+      * the ticket's proposed ``next_due_date >= p_start`` bound is NOT killed
+        here (it is clock-free too) — F13 in
+        ``test_forecast_overdue_recurring.py`` is its fence.
+
+    ⚠ This is a payload equality across two values of ONE INJECTED clock, not
+    across two wall-clock reads. The over-specification defect
+    (``reference_over_specified_test_false_red``) is a full-payload comparison
+    whose two sides are allowed to differ; here they are required to be
+    identical, and that requirement IS the deliverable.
     """
     p_start = datetime.date.today()
     calendar_end = _calendar_fallback(p_start)
@@ -509,11 +533,28 @@ async def test_f8_guard_healthy_on_grid_period_is_unchanged(db_session):
         assert Decimal(fc["pending_expense"]) == Decimal("50")
         assert Decimal(fc["executed_income"]) == Decimal("0")
 
-    # The recurring bucket is clock-driven by design (`next_due > today`), not
-    # window-driven: at p_start the instance is still upcoming, at the calendar
-    # end it is not. Both values are what `main` produces for the same clock.
+    # The recurring bucket is window-driven, and clock-independent except
+    # through `window_end`. The instance due `p_start + 5` is an occurrence of
+    # this period whether it is asked about on the first day of the period or
+    # the last: it has not been materialised either way, and the obligation
+    # does not stop existing because the calendar moved past it.
     assert Decimal(at_start["recurring_expense"]) == Decimal("20")
-    assert Decimal(at_end["recurring_expense"]) == Decimal("0")
+    assert Decimal(at_end["recurring_expense"]) == Decimal("20")
+
+    # Fixture precondition for the equality below: the derived end and the
+    # calendar fallback coincide, and BOTH injected clock values sit at or
+    # before it — so `max(derived, today)` is demonstrably INERT and any
+    # difference between the two payloads is the recurring path reading the
+    # clock, not the window floor moving under the test.
+    assert p_start <= calendar_end
+    assert at_start["period_end"] == at_end["period_end"] == calendar_end.isoformat()
+
+    # THE FENCE. Every named field, plus the breakdown.
+    named = [k for k in at_start if k != "categories"]
+    assert len(named) == 12, named   # the payload is not silently empty
+    for key in named:
+        assert at_start[key] == at_end[key], key
+    assert at_start["categories"] == at_end["categories"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -683,7 +724,8 @@ async def test_f11_loan_already_paid_probe_uses_the_window(db_session):
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_f12_window_end_is_inclusive_for_every_bucket(db_session):
-    """FENCE. Pins nine upper bounds from the TOP, in one fixture.
+    """FENCE. Pins nine upper bounds from the TOP and the recurring LOWER bound
+    from both sides, in one fixture.
 
     A systematic sweep that flips ``<= window_end`` to ``< window_end`` one
     site at a time left EIGHT of the eleven bounds green before this test:
@@ -694,14 +736,32 @@ async def test_f12_window_end_is_inclusive_for_every_bucket(db_session):
     is not pinned.
 
     Roster: off-grid with a LATE successor, so ``window_end`` is the derived
-    end ``T+19`` (in the FUTURE — required, or the recurring gate's own
-    ``next_due_date > today`` makes the recurring bounds untestable). Every
-    bucket gets one row ON ``window_end`` and one row on ``window_end + 1``.
+    end ``T+19`` (in the FUTURE). Every bucket gets one row ON ``window_end``
+    and one row on ``window_end + 1``.
 
-    Wrong implementation killed: ``<`` for ``<=`` at any of
-    ``forecast_service.py`` settled-income / settled-expense / pending-income /
-    pending-expense / recurring-gate / recurring-loop / category-executed /
-    category-pending / category-recurring.
+    ⚠ Until TBD-260 this test pinned NINE upper bounds and ZERO lower bounds.
+    Two YEARLY templates now pin the recurring lower bound from both sides: one
+    whose only occurrence lands exactly ON ``p_start`` (must count) and one
+    whose grid genuinely misses the window (must not).
+
+    YEARLY, not monthly, for BOTH of them, and deliberately:
+      * a monthly template at ``p_start`` on this 60-day-wide fixture has a
+        second occurrence whose position relative to ``window_end`` swings with
+        month length — a date bomb;
+      * a monthly template at ``p_start - 1 day`` has an occurrence a month
+        later that lands INSIDE the window, so the right answer and the wrong
+        answer agree and the fence is vacuous.
+
+    Wrong implementations killed:
+      * ``<`` for ``<=`` at any of ``forecast_service.py`` settled-income /
+        settled-expense / pending-income / pending-expense / the recurring
+        query gate / the occurrence walk's upper bound / category-executed /
+        category-pending / category-recurring;
+      * ``while d <= start`` for ``while d < start`` in
+        ``occurrences_in_window``'s fast-forward — the 29.00 ON ``p_start`` is
+        skipped and its next occurrence is a year out (52 -> 23);
+      * no lower bound at all on the occurrence walk — the 997.00 template
+        dated ``p_start - 1`` leaks in (52 -> 1049).
     """
     today = datetime.date.today()
     p_start = today - datetime.timedelta(days=40)
@@ -727,12 +787,30 @@ async def test_f12_window_end_is_inclusive_for_every_bucket(db_session):
         _pending(seed, "19.00", window_end),
         _pending(seed, "500.00", over),
     ])
-    db_session.add(RecurringTransaction(
-        org_id=seed["org_id"], account_id=seed["account_id"],
-        category_id=seed["cat_id"], description="rent",
-        amount=Decimal("23.00"), type="expense", frequency="monthly",
-        next_due_date=window_end, auto_settle=False, is_active=True,
-    ))
+    db_session.add_all([
+        # ON the upper bound.
+        RecurringTransaction(
+            org_id=seed["org_id"], account_id=seed["account_id"],
+            category_id=seed["cat_id"], description="rent",
+            amount=Decimal("23.00"), type="expense", frequency="monthly",
+            next_due_date=window_end, auto_settle=False, is_active=True,
+        ),
+        # ON the lower bound — its only occurrence in a year is p_start.
+        RecurringTransaction(
+            org_id=seed["org_id"], account_id=seed["account_id"],
+            category_id=seed["cat_id"], description="insurance",
+            amount=Decimal("29.00"), type="expense", frequency="yearly",
+            next_due_date=p_start, auto_settle=False, is_active=True,
+        ),
+        # One day BELOW the lower bound, and its grid genuinely misses the
+        # window: the next occurrence is `p_start - 1 + 1 year`.
+        RecurringTransaction(
+            org_id=seed["org_id"], account_id=seed["account_id"],
+            category_id=seed["cat_id"], description="tax",
+            amount=Decimal("997.00"), type="expense", frequency="yearly",
+            next_due_date=p_start - DAY, auto_settle=False, is_active=True,
+        ),
+    ])
     await db_session.commit()
 
     fc = await forecast_service.compute_forecast(
@@ -744,13 +822,14 @@ async def test_f12_window_end_is_inclusive_for_every_bucket(db_session):
     assert Decimal(fc["executed_expense"]) == Decimal("13")
     assert Decimal(fc["pending_income"]) == Decimal("17")
     assert Decimal(fc["pending_expense"]) == Decimal("19")
-    assert Decimal(fc["recurring_expense"]) == Decimal("23")
+    # 23 on window_end + 29 on p_start; the 997 one day below is excluded.
+    assert Decimal(fc["recurring_expense"]) == Decimal("52")
 
     by_cat = {c["category_id"]: c for c in fc["categories"]}
     row = by_cat.get(seed["cat_id"], {"executed": "0", "pending": "0", "recurring": "0"})
     assert Decimal(row["executed"]) == Decimal("13")
     assert Decimal(row["pending"]) == Decimal("19")
-    assert Decimal(row["recurring"]) == Decimal("23")
+    assert Decimal(row["recurring"]) == Decimal("52")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -835,48 +914,55 @@ async def test_g1_cc_phantom_payments_multiply_per_cycle_on_lapsed_roster(db_ses
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# G2 — GUARD. An OVERDUE template breaks conservation on BOTH designs.
+# G2 — fence (was a guard). An OVERDUE template conserves on BOTH rosters.
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def test_g2_guard_overdue_template_breaks_conservation_on_both_designs(db_session):
-    """GUARD, not a fence.
+async def test_g2_overdue_template_conserves_forecast_net_on_both_rosters(db_session):
+    """FENCE (promoted from guard by TBD-260). The third case F4 does not reach.
 
-    F4 fences conservation for a template due in the FUTURE. It does not hold
-    in general, and the design's §2 dichotomy ("either in ``(today, W]`` before
-    and ``[start, W]`` after, or beyond ``W`` on both sides") omits a third
-    case: ``[p_start, today]``.
+    F4 fences conservation for a template due in the FUTURE. This one fences the
+    case the TBD-243 design explicitly declined to fix and handed off:
+    ``next_due_date <= today``, i.e. an OVERDUE template.
 
-    An OVERDUE template (``next_due_date <= today``) is excluded from
-    ``recurring_*`` by ``forecast_service``'s ``> today`` gate, but
-    ``generate_due_transactions`` materialises it into ``pending_*`` anyway.
-    ``forecast_net`` therefore moves 0 -> -100.00 with no user action —
-    independently of the window, on the healthy on-grid roster where this PR is
-    byte-identical to ``main``, and on the lapsed roster this PR widens.
+    ``generate_due_transactions`` materialises an overdue template regardless of
+    the roster — its catch-up loop has no lower bound and its window is
+    ``current_cycle_window``, which is roster-independent. So the obligation
+    must ALREADY be in ``recurring_*`` before generation runs, or the scheduler
+    moves ``forecast_net`` every 900 seconds with no user action. It is, now:
+    the recurring path bounds the OCCURRENCE by ``[p_start, window_end]`` and
+    carries no clock predicate at all.
 
-    Recorded here rather than left to be rediscovered. It is INHERITED, not
-    introduced, and it does not rescue the split design: the split adds a
-    separate break on a future-dated template that one window does not have.
+    Wrong implementations killed:
+      * the shipped ``next_due_date > today`` gate — the template is in NEITHER
+        bucket before and in ``pending_*`` after: ``(0, -100.00)``;
+      * the ticket's proposed ``next_due_date >= p_start`` — same numbers here
+        (``next_due`` is ``T-3``, which IS ``>= p_start`` on both rosters, so
+        this fixture does not discriminate it; F13 in
+        ``test_forecast_overdue_recurring.py`` does);
+      * no probe at all — ``(−100.00, −200.00)`` after, the occurrence counted
+        in ``recurring_*`` and again in ``pending_*``.
 
-    Read the two sub-cases separately — they are green on ``main`` for
-    DIFFERENT reasons, and only one of them is evidence of inheritance:
+    ⚠ **Assert the VALUE, never just ``before == after``.** On ``main`` the
+    lapsed arm returns ``(0, 0)`` — it conserves by not looking, because its
+    stale window drops the materialised row entirely. A pure ``before == after``
+    assertion is green on that, which is why the tuple below is pinned to
+    ``(−100.00, −100.00)`` on both arms.
 
-      * **(a) healthy on-grid** — ``main`` moves 0 -> -100.00 here too, and
-        this PR is byte-identical to ``main`` on this roster. THIS is the
-        inheritance proof.
-      * **(b) lapsed** — ``main`` reports 0 -> 0 on this roster, but only
-        because its stale window drops the materialised row entirely, which is
-        the very staleness defect this PR repairs. Conserving by not looking is
-        not conserving. Recorded so the two are never conflated.
+    ⚠ **Both roster preconditions are asserted explicitly.** The forecast
+    window (``window_end``) and the materialisation window
+    (``current_cycle_window``) COINCIDE on the on-grid arm and DIVERGE on the
+    lapsed arm. A design that conserved only when the two coincide passes the
+    on-grid arm alone.
     """
     today = datetime.date.today()
+    due = today - datetime.timedelta(days=3)
 
     async def _net_move(seed: dict) -> tuple[Decimal, Decimal]:
         db_session.add(RecurringTransaction(
             org_id=seed["org_id"], account_id=seed["account_id"],
             category_id=seed["cat_id"], description="rent",
             amount=Decimal("100.00"), type="expense", frequency="monthly",
-            next_due_date=today - datetime.timedelta(days=3),
-            auto_settle=False, is_active=True,
+            next_due_date=due, auto_settle=False, is_active=True,
         ))
         await db_session.commit()
         before = await forecast_service.compute_forecast(
@@ -888,36 +974,50 @@ async def test_g2_guard_overdue_template_breaks_conservation_on_both_designs(db_
         after = await forecast_service.compute_forecast(
             db_session, seed["org_id"], today=today
         )
-        # Anti-vacuity: the template must be in NEITHER bucket before (the
-        # `> today` gate excluded it) and in `pending` after.
-        assert Decimal(before["recurring_expense"]) == Decimal("0")
+        # Anti-vacuity: the 100 must be PROJECTED before and MATERIALISED
+        # after, and it must be in EXACTLY ONE bucket on each side.
+        assert Decimal(before["recurring_expense"]) == Decimal("100")
         assert Decimal(before["pending_expense"]) == Decimal("0")
         assert Decimal(after["pending_expense"]) == Decimal("100")
+        assert Decimal(after["recurring_expense"]) == Decimal("0")
         return Decimal(before["forecast_net"]), Decimal(after["forecast_net"])
 
-    # (a) healthy on-grid — this PR is byte-identical to `main` here, so the
-    #     break is demonstrably inherited.
-    on_grid_start = today - datetime.timedelta(days=5)
-    calendar_end = _calendar_fallback(on_grid_start)
+    # (a) healthy on-grid: the forecast window IS the materialisation window.
+    on_grid_cycle_day = min((today - datetime.timedelta(days=5)).day, 28)
+    cs, ce = current_cycle_window(on_grid_cycle_day, today)
+    calendar_end = _calendar_fallback(cs)
     on_grid = await _seed(
         db_session,
-        open_start=on_grid_start,
+        open_start=cs,
         closed_windows=((calendar_end + DAY, calendar_end + datetime.timedelta(days=30)),),
-        cycle_day=min(on_grid_start.day, 28),
+        cycle_day=on_grid_cycle_day,
     )
-    assert await _net_move(on_grid) == (Decimal("0"), Decimal("-100.00"))
+    # Precondition (a): window_end == ce > today, and the overdue occurrence
+    # is inside the period.
+    fc = await forecast_service.compute_forecast(db_session, on_grid["org_id"], today=today)
+    assert fc["period_end"] == ce.isoformat()
+    assert cs <= due < today < ce
+    assert await _net_move(on_grid) == (Decimal("-100.00"), Decimal("-100.00"))
 
-    # (b) lapsed — the population this PR widens.
+    # (b) lapsed: the forecast window stops at today, the materialisation
+    #     window runs weeks past it. The two DIVERGE.
+    lapsed_cycle_day = min(today.day, 28)
+    _, lapsed_ce = current_cycle_window(lapsed_cycle_day, today)
+    lapsed_start = today - datetime.timedelta(days=90)
     lapsed = await _seed(
         db_session,
-        open_start=today - datetime.timedelta(days=90),
+        open_start=lapsed_start,
         closed_windows=(
             (today - datetime.timedelta(days=60), today - datetime.timedelta(days=31)),
             (today - datetime.timedelta(days=30), today - DAY),
         ),
-        cycle_day=min(today.day, 28),
+        cycle_day=lapsed_cycle_day,
     )
-    assert await _net_move(lapsed) == (Decimal("0"), Decimal("-100.00"))
+    # Precondition (b): window_end == today < ce.
+    fc = await forecast_service.compute_forecast(db_session, lapsed["org_id"], today=today)
+    assert fc["period_end"] == today.isoformat()
+    assert lapsed_start <= due < today < lapsed_ce
+    assert await _net_move(lapsed) == (Decimal("-100.00"), Decimal("-100.00"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -958,12 +1058,28 @@ async def test_f10a_injected_clock_bounds_the_settled_window(db_session):
 
 
 async def test_f10b_recurring_gate_consumes_the_same_injected_clock(db_session):
-    """FENCE (pair b). The recurring gate reads the SAME resolved value.
+    """FENCE (pair b). The recurring projection is bound to the SAME window the
+    injected clock produced.
 
-    Wrong implementation killed: leaving a bare ``datetime.date.today()`` where
-    the recurring query is built (the two-clocks straddle) — the template due
-    ``T+5`` fails ``next_due_date > today`` against the real wall clock (T+40)
-    and the whole recurring contribution silently disappears.
+    ⚠ **Re-aimed by TBD-260.** This test used to kill "a bare
+    ``datetime.date.today()`` where the recurring query is built". That wrong
+    implementation is now UNEXPRESSIBLE: the recurring query references no clock
+    at all, only ``window_end``. Leaving the old docstring in place would claim
+    protection the code shape no longer permits — worse than deleting the test.
+
+    What survives, and what this now kills, is the ONE remaining route by which
+    a clock reaches the recurring bucket — ``window_end``:
+
+      * a SECOND ``window_end`` computed for the recurring query (e.g. left on
+        the pre-TBD-243 calendar fallback ``p_start + 1 month - 1 day``, which
+        here runs to ``T-20 + 1 month ~ T+10``, past the derived end ``T+9``);
+      * ``today=today`` dropped on the ``period_spend_window_end`` call at the
+        top — the window then floors at the real wall clock (``T+40``), the
+        reported ``period_end`` is wrong, and the successor's window is
+        swallowed.
+
+    The body is unchanged. ``period_end`` is asserted alongside the amount
+    precisely because the amount alone no longer distinguishes them.
     """
     today = datetime.date.today() - datetime.timedelta(days=40)
     p_start = today - datetime.timedelta(days=20)

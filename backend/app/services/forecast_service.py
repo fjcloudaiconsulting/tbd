@@ -14,10 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.billing import BillingPeriod
 from app.models.category import Category
-from app.models.recurring import Frequency, RecurringTransaction
+from app.models.recurring import RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services.billing_service import get_current_period, period_spend_window_end
-from app.services.date_utils import advance_date
+from app.services.date_utils import occurrences_in_window
 from app.services.transaction_filters import (
     effective_period_date_expr,
     reportable_transaction_filter,
@@ -35,12 +35,17 @@ async def compute_forecast(
 
     ``today`` is keyword-only and injectable because the period window floors
     at the wall clock (see ``window_end`` below). It is resolved ONCE here and
-    every clock consumer in this function reads that same value — the recurring
-    gate below used to call ``date.today()`` a second time, and two independent
-    clock reads inside one computation is the straddle trap TBD-240 D6 exists
-    to prevent. ``test_forecast_parity_after_generate`` asserts a conservation
-    invariant ACROSS two calls; a bucket that moves because the clock ticked
-    between two reads would break it.
+    is consumed at exactly ONE site — the ``period_spend_window_end`` call that
+    derives ``window_end``. Everything downstream, including the whole recurring
+    projection, is bound to ``window_end`` and never re-reads the clock: two
+    independent clock reads inside one computation is the straddle trap
+    TBD-240 D6 exists to prevent, and
+    ``test_forecast_parity_after_generate`` asserts a conservation invariant
+    ACROSS two calls that a mid-computation tick would break.
+
+    Signature note: ``period_start`` stays positional-with-default and ``today``
+    stays keyword-only. ``test_ai_forecast_refine_service``'s fakes implement
+    ``(db, org_id, period_start=None)`` and are never called with ``today=``.
 
     Returns:
         executed_income: sum of settled income
@@ -155,29 +160,78 @@ async def compute_forecast(
     ) or Decimal("0")
 
     # ── Upcoming recurring (not yet generated for this period) ────────────
-    # `today` is the ONE value resolved at the top of this function. Do not
-    # re-read the clock here.
+    # The invariant (TBD-260): `recurring_*` projects exactly the occurrences
+    # of each active template that fall in `[p_start, window_end]` and have NOT
+    # already been materialised; `pending_*`/`executed_*` count exactly the
+    # materialised ones. The two sets partition the same occurrence grid, so
+    # `generate_due_transactions` moves an amount between buckets and never
+    # into or out of the total.
+    #
+    # There is deliberately NO clock predicate here. The bound is on the
+    # OCCURRENCE, not on `next_due_date`: `next_due_date` is a FRONTIER (the
+    # next un-materialised occurrence), not an occurrence date, so a template
+    # whose frontier sits before `p_start` still has occurrences inside the
+    # window — and `generate_due_transactions`, whose catch-up loop has no
+    # lower bound at all, materialises every one of them. Gating the template
+    # out by its stale frontier (`next_due_date > today`, which is what shipped,
+    # or `next_due_date >= p_start`) drops real in-window obligations and
+    # `forecast_expense` then moves the moment the scheduler ticks.
+    # `specs/2026-07-30-forecast-overdue-recurring-design.md` traces all four
+    # candidate bounds.
     result = await db.execute(
         select(RecurringTransaction).where(
             RecurringTransaction.org_id == org_id,
             RecurringTransaction.is_active == True,
             RecurringTransaction.next_due_date <= window_end,
-            RecurringTransaction.next_due_date > today,
         )
     )
     recurring_items = list(result.scalars().all())
 
+    # Anti-double-count probe. The predicate is generation's OWN create-
+    # condition, negated: `generate_due_transactions` matches on
+    # (org_id, recurring_id, date) with NO status, NO reportability and NO
+    # effective-date term, and takes the `exists` branch — skip, advance.
+    # This probe must therefore ask exactly one question: "does a row for
+    # this occurrence already exist?" Narrowing it (a reportable filter, or
+    # bounding on effective_period_date_expr) projects occurrences generation
+    # will never materialise, and the value then moves on its own at the next
+    # scheduler tick — the defect this ticket removes.
+    # The date bounds below are a NARROWING ONLY: every projected occurrence
+    # is inside [p_start, window_end] by construction, so the key equality
+    # already carries the semantics. Do not read meaning into them.
+    materialised: set[tuple[int, datetime.date]] = set()
+    if recurring_items:
+        rows = await db.execute(
+            select(Transaction.recurring_id, Transaction.date).where(
+                Transaction.org_id == org_id,
+                Transaction.recurring_id.in_([r.id for r in recurring_items]),
+                Transaction.date >= p_start,
+                Transaction.date <= window_end,
+            )
+        )
+        materialised = {(rid, d) for rid, d in rows.all()}
+
     recurring_income = Decimal("0")
     recurring_expense = Decimal("0")
+    # Populated by the SAME walk as the totals below. Splitting them into two
+    # loops is how the breakdown and the totals came to disagree on suppressed
+    # occurrences; `ai_forecast_refine_service` reads this breakdown as the
+    # baseline it hands the model, and F3 asserts it sums to the totals.
+    cat_recurring: dict[int, Decimal] = {}
 
     for r in recurring_items:
-        d = r.next_due_date
-        while d <= window_end:
+        for d in occurrences_in_window(
+            r.next_due_date, r.frequency, p_start, window_end
+        ):
+            if (r.id, d) in materialised:
+                continue
             if r.type == "income":
                 recurring_income += r.amount
             else:
                 recurring_expense += r.amount
-            d = advance_date(d, r.frequency)
+                cat_recurring[r.category_id] = (
+                    cat_recurring.get(r.category_id, Decimal("0")) + r.amount
+                )
 
     # ── Per-category breakdown ────────────────────────────────────────────
     # Executed by category (uses settled_date for period assignment).
@@ -214,14 +268,8 @@ async def compute_forecast(
     )
     cat_pending = {row[0]: Decimal(str(row[1])) for row in cat_pend_result.all()}
 
-    # Recurring by category
-    cat_recurring: dict[int, Decimal] = {}
-    for r in recurring_items:
-        if r.type == "expense":
-            d = r.next_due_date
-            while d <= window_end:
-                cat_recurring[r.category_id] = cat_recurring.get(r.category_id, Decimal("0")) + r.amount
-                d = advance_date(d, r.frequency)
+    # `cat_recurring` was built above, inside the one occurrence walk that
+    # produced `recurring_expense`. Do not re-walk here.
 
     # Merge all category IDs
     all_cat_ids = set(cat_executed.keys()) | set(cat_pending.keys()) | set(cat_recurring.keys())

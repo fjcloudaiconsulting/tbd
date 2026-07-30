@@ -16,7 +16,7 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.models.user import Organization
 from app.schemas.recurring import RecurringCreate, RecurringResponse, RecurringUpdate
 from app.services.billing_service import current_cycle_window
-from app.services.date_utils import advance_date
+from app.services.date_utils import MAX_OCCURRENCE_ITERATIONS, advance_date
 from app.services.exceptions import NotFoundError, ValidationError
 from app.services.transaction_service import (
     apply_balance,
@@ -28,7 +28,14 @@ from app.services.transaction_service import (
 logger = structlog.stdlib.get_logger()
 
 # Defensive cap so a pathologically stale template can't spin an unbounded loop.
-MAX_CATCHUP_ITERATIONS = 500
+#
+# An ALIAS of ``date_utils.MAX_OCCURRENCE_ITERATIONS``, deliberately not a
+# second literal. ``forecast_service`` projects the occurrences this loop has
+# not yet materialised, walking the same grid from the same origin; if the two
+# budgets drifted, a stale template would be truncated at different points by
+# the projection and by generation, and ``forecast_net`` would move with no
+# user action. ``test_forecast_overdue_recurring.py`` F17 pins the equality.
+MAX_CATCHUP_ITERATIONS = MAX_OCCURRENCE_ITERATIONS
 
 
 def _load_opts():
