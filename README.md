@@ -29,7 +29,7 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2 |
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS, Recharts |
 | Database | MySQL 8.0 (self-hosted on a single DO droplet in production) |
-| Cache | Valkey 8 / Redis-compatible (containerized in dev, self-hosted on the same droplet in production) |
+| Cache | Redis 7 (containerized in dev via `redis:7-alpine`, self-hosted `redis-server` on the same droplet in production) |
 | Auth | JWT (access + refresh), bcrypt, TOTP (pyotp), Google OAuth2 (with step-up for sensitive flows) |
 | Email | Mailgun (production), structlog (development) |
 | Proxy | nginx (development), DO App Platform ingress (production) |
@@ -74,11 +74,11 @@ Every part of the project has a single authoritative document. Start with the ro
 
 | Doc | When you need it |
 |---|---|
-| [infra/README.md](infra/README.md) | End-to-end topology of both clouds. DigitalOcean App Platform + data droplet (MySQL + Valkey) for the app surface, AWS (S3 + CloudFront + ACM + IAM OIDC) for the apex landing surface. TFC workspace layout, OIDC overview, DNS split between Cloudflare (app subdomain) and Route 53 (apex). |
+| [infra/README.md](infra/README.md) | End-to-end topology of both clouds. DigitalOcean App Platform + data droplet (MySQL + Redis) for the app surface, AWS (S3 + CloudFront + ACM + IAM OIDC) for the apex landing surface. TFC workspace layout, OIDC overview, DNS split between Cloudflare (app subdomain) and Route 53 (apex). |
 | [infra/MIGRATION.md](infra/MIGRATION.md) | Production data-plane migration runbook. Used during the move from DO managed services to the self-hosted droplet, retained as the reference for any future host migration. |
 | [infra/terraform/README.md](infra/terraform/README.md) | Day-2 reference for the `FlamaCorp/pfv` TFC workspace (DO data droplet). Variables, working dir, manual Confirm-and-Apply convention. |
 | [infra/terraform/apex/README.md](infra/terraform/apex/README.md) | Day-2 reference for the `FlamaCorp/pfv-apex` TFC workspace (AWS apex landing). Bootstrap path B (static keys for one apply, then flip to OIDC), GitHub Actions deploy role, ACM in `us-east-1` rationale. |
-| [infra/ansible/README.md](infra/ansible/README.md) | Configuration management for the data droplet (`pfv-data-01`). MySQL + Valkey roles, cloud-firewall coexistence, common role tasks. |
+| [infra/ansible/README.md](infra/ansible/README.md) | Configuration management for the data droplet (`pfv-data-01`). MySQL + Redis roles, cloud-firewall coexistence, common role tasks. |
 
 ### Product + design
 
@@ -100,7 +100,7 @@ Every part of the project has a single authoritative document. Start with the ro
 Browser
   --> app.thebetterdecision.com (DO App Platform ingress)
         --> /api/*  --> backend  (FastAPI, port 8000)  --> MySQL  (pfv-data-01:3306)
-        |                                              --> Valkey (pfv-data-01:6379)
+        |                                              --> Redis (pfv-data-01:6379)
         --> /*      --> frontend (Next.js, port 3000)
   --> thebetterdecision.com (Route 53 -> CloudFront -> S3)
         --> static landing export (auth-free, no app code in bundle)
