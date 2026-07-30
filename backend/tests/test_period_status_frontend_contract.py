@@ -48,6 +48,16 @@ def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
     — which made this whole module red for every developer and every agent
     stack while staying green in CI. Both marker directories are mounted at
     `/app` (see the `.github` / `.do` read-only mounts in docker-compose.yml).
+
+    ⚠ **This walk is DEVELOPER-gated, not CI-gated. CI does not protect it.**
+    Reverting to `parents[2]` is red in the container and GREEN in CI:
+    `.github/workflows/test.yml` runs pytest on a plain `actions/checkout`
+    host tree with `working-directory: backend`, where this file is
+    `<repo>/backend/tests/…` and `parents[2]` IS the repo root. Verified both
+    sides this session — host `parents[2]` resolves to the repo root with the
+    fixture present, container `parents[2]` resolves to `/` with it absent.
+    A regression here therefore reaches `main` with every required check
+    green and only surfaces the next time a human runs the suite locally.
     """
     for candidate in [start, *start.parents]:
         if (candidate / ".github" / "workflows" / "deploy.yml").exists() and (

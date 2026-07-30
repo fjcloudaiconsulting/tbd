@@ -207,6 +207,35 @@ expect(screen.queryByText("2020-01-01")).toBeNull();     // negative half is loa
 Over-specification guard: assert only which `start_date` the nav shows. Do **not** assert the
 `current` pill (clock-dependent), `periodIdx` directly, or markup shape.
 
+### Fence F2b — the SAME defect at the ensure-future call site (added in the fold)
+
+The F2a fence pins only the INITIAL seed. `ForecastPlansClient.tsx`'s ensure-future refresh has a
+second `-1` fallback that runs the same rule, and the byte-identical mutant
+(`fresh.findIndex((q) => q.end_date === null)`) survived the full suite there with the identical
+consequence. Fixture: mount on an open row that the refreshed roster does NOT contain (so the
+`start_date` lookup misses and the fallback branch is taken), refresh returning
+`[OLDER_OPEN, NEWER_OPEN]` in oldest-first order. Assert the nav lands on `NEWER_OPEN` and not on
+`OLDER_OPEN`. Verified RED under injection, with all 31 other tests in that file green — which is
+exactly why it was needed.
+
+### Fences D1a / D1b / D1c — the headline decision, on all three screens (added in the fold)
+
+§1 spends 28 lines defending `open` shadowing `upcoming` and NOTHING pinned it. Reverting it to a
+second raw-clock rule survived the full suite on every screen it changes. Three fences, all on a
+roster whose OPEN row has `start_date = today + 1`, all anchored to `todayISO()`:
+
+- **budgets** (`tests/app/budgets-next-period.test.tsx`) — the row is `current` and not `next`; the
+  next-period seed block, `Copy this period` and `AI draft from trends` are absent while the
+  current-period empty state and `+ Add Budget` are present. F6d does not cover this: it asserts
+  which rows are in the list, never which CTAs the open row shows.
+- **dashboard page** (`tests/app/dashboard-open-future-start.test.tsx`) —
+  `AIForecastRefineToggle` renders (it is gated `!isPast && !isFuture`) and `OnTrackTile` carries
+  `aria-label="No plan for this period"`, not its future-period `"Plan ahead"` panel.
+- **`DashboardDataProvider`** (`tests/components/dashboard/dashboard-data-provider.test.tsx`) — the
+  context flags directly: `isFutureSelectedPeriod` false, `isCurrentSelectedPeriod` true. The
+  pre-existing future-period test uses a CLOSED future stub, where both rules agree, so it fences
+  nothing here.
+
 ### Fence F1a — Today button hidden when no row is open
 
 Kills: deleting `&& hasCurrentPeriod` at `ForecastPlansClient.tsx:1037`.
@@ -230,9 +259,20 @@ one side is not pinned.**
 
 Fixture `[OPEN_FUTURE_START(start = today+1, end = null), CLOSED_STUB(start = today+2, end = today+40), CLOSED_PAST]`.
 Assert `pl[0]` is `CLOSED_STUB`, and that `OPEN_FUTURE_START` is still present and is what
-`selectCurrentPeriodIndex` selects. Injecting the current `past`/`future` split goes red **twice**:
-wrong `pl[0]`, and the stub absent entirely. Anchor to `todayISO()`, not literals
-(`reference_wall_clock_date_bomb_tests`).
+`selectCurrentPeriodIndex` selects.
+
+⚠ **Corrected on injection.** This paragraph originally claimed the old `past`/`future` split goes
+red **twice** — wrong `pl[0]` AND the stub absent. **False.** Under that split `future =
+[OPEN_FUTURE_START, CLOSED_STUB]` sorted ascending, `future[0]` takes the OPEN row, so
+`pl = [OPEN_FUTURE_START, CLOSED_PAST]`, `selectCurrentPeriodIndex(pl) === 0`, and the page opens
+on the open row: the `pl[0]` assertion **passes**. Observed `1 failed | 1 passed`, failing only on
+the stub. The two assertions are each load-bearing but against **different** mutants — the open-row
+assertion is the fence against the naive complement `rest = filter(status === "past")` (which drops
+the open row entirely and fails that assertion, verified by injection), not against the old split.
+This is the fourth banner in this programme to assert coverage its fixture does not deliver; the
+lesson is that a banner's red-count is a claim like any other and must be injected, not reasoned.
+
+Anchor to `todayISO()`, not literals (`reference_wall_clock_date_bomb_tests`).
 
 ### The over-claiming banner at `tests/app/forecast-plans-page.test.tsx:186`
 
@@ -242,6 +282,26 @@ genuinely fence — while sitting over the whole `describe`. Label each test ind
 or `guard`, and **every banner must name the wrong implementation it kills and nothing else.** This
 is the third instance in this programme of a banner asserting coverage its fixture does not
 deliver.
+
+### What is deliberately UNFENCED, and why — "untestable in this suite", not "covered"
+
+Recorded so a future reader does not mistake the fences above for coverage of these two:
+
+- **`isCurrentPeriod` computed outside the deferred clock.** Its only observable is a one-tick
+  pill flash on the first committed frame. RTL flushes effects inside `act`, so the pre-effect
+  frame is never inspectable — a test would only ever see the settled tree, which is identical
+  either way.
+- **The deferred clock itself (§3).** Its observable is that the *server* pass and the *first
+  client* pass agree. jsdom runs one pass in one timezone; there is no second render under a
+  different clock to compare against.
+
+Both are known and intentional. Neither has a test, and neither should get a manufactured one —
+that is how a vacuous-by-construction fence gets written. The reviewer is the gate on these.
+
+Fenced-elsewhere note for the same file: the RSC seed in `forecast-plans/page.tsx` IS observable
+(the plan fetch is keyed on the chosen period) and is fenced in
+`tests/app/forecast-plans-page-rsc.test.tsx`, both the newest-open selection and the
+`?? periods[0]` fallback.
 
 ## 5. D5 — scope
 

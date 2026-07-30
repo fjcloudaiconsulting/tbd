@@ -137,8 +137,20 @@ describe("budgets display window on a lapsed roster (TBD-242)", () => {
     // takes the complement as the rest, so it is total by construction: no
     // row can vanish.
     //
-    // Injecting the old split goes red twice over: the stub is absent, and
-    // `pl[0]` is the wrong row.
+    // ⚠ Injecting the old split goes red ONCE, on the stub's absence — NOT
+    // "twice over", as an earlier draft of this banner claimed. Verified by
+    // injection: under the old split `future = [OPEN_FUTURE_START,
+    // CLOSED_STUB]` sorted ascending, `future[0]` takes the OPEN row, so
+    // `pl = [OPEN_FUTURE_START, CLOSED_PAST]`, `selectCurrentPeriodIndex(pl)`
+    // is 0, and the page opens on the open row — the first assertion PASSES.
+    // Result: `1 failed | 1 passed`, failing at the stub step below.
+    //
+    // The first assertion is not redundant; it fences a DIFFERENT mutant —
+    // the naive complement `rest = filter(status === "past")` in place of
+    // `filter(!isNext)`. That drops the open row from the list entirely
+    // (it is neither `upcoming` nor `past`), `selectCurrentPeriodIndex`
+    // returns -1, and the page opens on the stub. Verified by injection:
+    // fails at the first assertion, not the second.
     render(<BudgetsPage />);
 
     // The open row is still present and is what `selectCurrentPeriodIndex`
@@ -155,5 +167,79 @@ describe("budgets display window on a lapsed roster (TBD-242)", () => {
         screen.getByText(`${CLOSED_STUB.start_date} – ${CLOSED_STUB.end_date}`),
       ).toBeInTheDocument(),
     );
+  });
+});
+
+describe("budgets D1 — `open` shadows `upcoming` (TBD-242)", () => {
+  // The headline decision of TBD-242 §1: `periodStatus`'s `open` branch
+  // precedes `upcoming`, so an OPEN row whose `start_date` is still in the
+  // future is `open` and NOTHING ELSE. `main` decided the two questions with
+  // two different rules and satisfied BOTH on this roster, rendering the
+  // `current` pill and the `next` pill on the same row and offering
+  // "Copy this period" — a button that copied the period onto itself.
+  //
+  // Roster is anchored to `todayISO()`, never to literals
+  // (`reference_wall_clock_date_bomb_tests`): the rule under test reads the
+  // local clock, so fixed dates would be a date bomb.
+  const OPEN_FUTURE_START = {
+    id: 40, start_date: isoOffset(1), end_date: null,
+  };
+  const CLOSED_PAST = {
+    id: 41, start_date: isoOffset(-60), end_date: isoOffset(-30),
+  };
+  const GROCERIES = {
+    id: 10, name: "Groceries", type: "expense", parent_id: null,
+    parent_name: null, description: null, slug: "groceries",
+    is_system: false, transaction_count: 0,
+  };
+
+  beforeEach(() => {
+    vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+      if (url.includes("ensure-future")) return [] as never;
+      if (url.startsWith("/api/v1/categories")) return [GROCERIES] as never;
+      if (url.startsWith("/api/v1/settings/billing-periods")) {
+        return [OPEN_FUTURE_START, CLOSED_PAST] as never;
+      }
+      if (url.startsWith("/api/v1/budgets")) return [] as never;
+      return null as never;
+    });
+  });
+
+  it("fence: an open row with a future start is `current`, never `next` — no next-period seed CTAs", async () => {
+    // Kills: reverting `isNextPeriod` to a second, raw-clock rule —
+    //   const isNextPeriod = selectedPeriod.start_date > todayISO();
+    // which is what `main` did. Under that revert this row satisfies BOTH
+    // predicates, the `next` pill joins the `current` pill, and the empty
+    // list renders the next-period SEED block instead of the current-period
+    // empty state — including "Copy this period", whose source
+    // (`selectCurrentPeriod(periods)`) IS the selected row.
+    //
+    // The F6d fence above pins which rows are in the list and in what order.
+    // It says nothing about which CTAs the open row shows, which is the half
+    // D1 actually decides.
+    render(<BudgetsPage />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/No budgets set/)).toBeInTheDocument(),
+    );
+
+    // Ruled state: `current`, and NOT `next`.
+    expect(screen.getByText("current")).toBeInTheDocument();
+    expect(screen.queryByText("next")).toBeNull();
+
+    // The next-period seed block and its two seeding CTAs are absent.
+    expect(screen.queryByTestId("next-period-seed")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /copy this period/i }),
+    ).toBeNull();
+    expect(screen.queryByTestId("ai-draft-btn")).toBeNull();
+
+    // Positive half — the row is still fully editable, so this is not an
+    // "absent because nothing rendered" pass. `isEditable` is unchanged by
+    // D1; capability does not move, only the seeding shortcut does.
+    expect(
+      screen.getByRole("button", { name: "+ Add Budget" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/closed \(read-only\)/i)).toBeNull();
   });
 });

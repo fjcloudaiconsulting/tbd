@@ -93,6 +93,10 @@ def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
     Same marker walk as `tests/test_deploy_workflow.py`, and here for the same
     reason: `parents[2]` is correct only from a host checkout and resolves to
     `/` when this file sits at `/app/scripts/…` inside the backend container.
+
+    ⚠ Like its twin in `tests/test_period_status_frontend_contract.py`, this
+    is DEVELOPER-gated only. CI runs on a host checkout where `parents[2]` is
+    already the repo root, so a revert here is green on every required check.
     """
     for candidate in [start, *start.parents]:
         if (candidate / ".github" / "workflows" / "deploy.yml").exists() and (

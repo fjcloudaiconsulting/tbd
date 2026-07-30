@@ -289,6 +289,22 @@ export default function ForecastPlansClient({
   //
   // A future refactor that RSC-seeds budgets or the dashboard inherits this
   // hazard and must defer the clock there too.
+  //
+  // ⚠ UNFENCED ON PURPOSE — UNTESTABLE IN THIS SUITE, not "covered".
+  // Two decisions in this block have NO test and cannot get an honest one:
+  //
+  //   1. The deferral itself. Its whole observable is that the SERVER pass
+  //      and the FIRST CLIENT pass agree. jsdom runs one pass in one
+  //      timezone; there is no second render under a different clock to
+  //      compare it against, so any "test" here would assert the post-mount
+  //      state — which is identical with or without the deferral.
+  //   2. `isCurrentPeriod` being computed OUTSIDE the deferral (below). Its
+  //      observable is a one-tick pill flash on the very first committed
+  //      frame. RTL flushes effects inside `act`, so the pre-effect frame is
+  //      never inspectable; a test would only ever see the settled tree.
+  //
+  // Recorded so nobody reads the fences on this file as covering them. If
+  // either is changed, the reviewer is the gate, not the suite.
   const [today, setToday] = useState<string | null>(null);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- deferring the LOCAL clock past hydration is the point: reading it during render would diverge from the server's UTC render on a no_open roster

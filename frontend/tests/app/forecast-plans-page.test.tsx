@@ -229,6 +229,12 @@ describe("ForecastPlansClient — rosters where the period rules diverge (TBD-24
   const NEWER_OPEN: BillingPeriod = {
     id: 93, start_date: "2026-06-01", end_date: null,
   };
+  // Mounted-with row that the ensure-future refresh does NOT return, so the
+  // `findIndex(start_date === currentStart)` lookup misses and the fallback
+  // branch is the one under test.
+  const VANISHED_OPEN: BillingPeriod = {
+    id: 94, start_date: "2021-03-01", end_date: null,
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -267,6 +273,46 @@ describe("ForecastPlansClient — rosters where the period rules diverge (TBD-24
     });
     // The negative half is load-bearing: a component rendering BOTH rows'
     // dates would satisfy the positive alone.
+    expect(screen.queryByText(OLDER_OPEN.start_date)).toBeNull();
+  });
+
+  it("fence: the ensure-future fallback re-selects the newest OPEN row, not the first one in array order", async () => {
+    // Kills: replacing `selectCurrentPeriodIndex(fresh)` in the ensure-future
+    // refresh's `-1` fallback with `fresh.findIndex((q) => q.end_date === null)`.
+    //
+    // This is the SECOND call site of the same rule, and the mutant survives
+    // every other test in the repo including the F2a fence above — that one
+    // only exercises the INITIAL seed. The consequence is identical: on a
+    // duplicate-open roster the user edits a plan against a period
+    // `resolve_period` does not write to.
+    //
+    // The fixture has to defeat the fast path first. The refresh only reaches
+    // the fallback when the currently-selected `start_date` is ABSENT from the
+    // refreshed list, so the mounted row (VANISHED_OPEN) is deliberately not
+    // in the refreshed roster. The refreshed roster is then ordered
+    // OLDEST-first, which is where the two rules diverge.
+    //
+    // Clock-free by construction (every row is open), so fixed literals are
+    // safer here than `today ± 1`.
+    mockApiFetchWithRoster(makePlan(), [OLDER_OPEN, NEWER_OPEN]);
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[VANISHED_OPEN]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    // The refresh has to land first — the mounted row's own date is on screen
+    // until it does, so asserting too early would pass against either rule.
+    await waitFor(() => {
+      expect(screen.queryByText(VANISHED_OPEN.start_date)).toBeNull();
+    });
+    await waitFor(() => {
+      expect(screen.getByText(NEWER_OPEN.start_date)).toBeTruthy();
+    });
+    // The negative half is load-bearing: it is what the first-open mutant
+    // trips on, and a component rendering BOTH dates would satisfy the
+    // positive alone.
     expect(screen.queryByText(OLDER_OPEN.start_date)).toBeNull();
   });
 

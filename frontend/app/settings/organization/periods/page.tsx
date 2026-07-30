@@ -214,11 +214,21 @@ function RosterView({
   // column), so the brass anchor is unchanged — but the tie-break is now the
   // app-wide one instead of this file's private `>=` last-wins.
   //
-  // ⚠ That tie-break change is provably INERT through this endpoint, and no
-  // test pins it because the branch is UNREACHABLE here: two open rows can
-  // never share a `start_date` (`uq_billing_period_org_start`), and an open
-  // row can never be `invalid` (the backend's branch 1 requires a non-null
-  // `end_date`). Recorded rather than fenced — minting a test for an
+  // ⚠ Two separate claims, and they have different answers.
+  //
+  // The SUBSTITUTION — swapping this file's private reducer for the shared
+  // selector — IS fenced, by a pre-existing test: "renders the recessive line
+  // and puts the single brass dot on the newest open row" in
+  // `tests/app/settings-organization-periods-page.test.tsx`. Its fixture
+  // carries two open rows and asserts exactly one brass dot, on the
+  // max-`start_date` row. Verified by injection: a first-open reducer here
+  // turns it red.
+  //
+  // The TIE-BREAK ITSELF (equal `start_date`, and the `invalid` exclusion) is
+  // UNREACHABLE through this endpoint and therefore unfenced: two open rows
+  // can never share a `start_date` (`uq_billing_period_org_start`), and an
+  // open row can never be `invalid` (the backend's branch 1 requires a
+  // non-null `end_date`). Recorded rather than fenced — minting a test for an
   // unreachable branch is how a vacuous-by-construction fence gets written.
   const anchoredOpen = selectCurrentPeriod(periods);
   const anchoredOpenId = anchoredOpen?.id ?? null;

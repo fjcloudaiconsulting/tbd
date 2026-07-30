@@ -33,10 +33,18 @@ import { selectCurrentPeriod } from "@/lib/billingPeriodStatus";
 // ensure-future once-per-session before loading periods.
 
 // TBD-242: this used to be a HAND-REPRODUCTION of the client's rule, with a
-// comment admitting as much. Both sides now call the same helper, so they
-// cannot drift. The `?? periods[0]` fallback is kept: on a `no_open` roster
-// there is no current period, and the RSC still has to seed the client with
-// something to render.
+// comment admitting as much. Both sides now call the same helper. Calling the
+// same helper is not itself enforced by anything — a future edit can inline a
+// second rule here as easily as the first one was written — so the row this
+// picks is pinned from the outside, in
+// `tests/app/forecast-plans-page-rsc.test.tsx`: the plan fetch is keyed on
+// the chosen period, so a duplicate-open roster makes the choice observable
+// in `serverFetch`'s call log. Both halves are fenced there — the newest-open
+// selection AND the `?? periods[0]` fallback below.
+//
+// That fallback is kept deliberately: on a `no_open` roster there is no
+// current period, and the RSC still has to seed the client with something to
+// render.
 function pickCurrentPeriod(periods: BillingPeriod[]): BillingPeriod | null {
   if (periods.length === 0) return null;
   return selectCurrentPeriod(periods) ?? periods[0];
