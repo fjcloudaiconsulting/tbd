@@ -141,4 +141,81 @@ describe("ForecastPlansPage RSC orchestration (PR #288)", () => {
       { id: 1, start_date: "2026-05-01", end_date: null },
     ]);
   });
+
+  it("fence: seeds the plan from the NEWEST open row when two rows are open (TBD-242)", async () => {
+    // Kills: replacing `selectCurrentPeriod(periods)` in `pickCurrentPeriod`
+    // with `periods.find((q) => q.end_date === null)` — first-open-in-array
+    // order instead of newest-start.
+    //
+    // `pickCurrentPeriod` is module-local, so it cannot be unit-tested; but
+    // the row it picks IS observable here, because the plan fetch is keyed on
+    // it. Drift between this seed and the client's own
+    // `selectCurrentPeriodIndex` would paint the RSC's plan under the
+    // client's period label until the first navigation.
+    //
+    // Clock-free by construction (both rows are open), so fixed literals are
+    // safer here than `today ± 1`.
+    const OLDER_OPEN = { id: 92, start_date: "2020-01-01", end_date: null };
+    const NEWER_OPEN = { id: 93, start_date: "2026-06-01", end_date: null };
+
+    getServerSessionResultMock.mockResolvedValue({
+      kind: "authenticated",
+      session: { user: { id: 1 }, accessToken: "TOK" },
+    });
+    serverFetchMock.mockResolvedValueOnce([] as never); // categories
+    serverFetchMock.mockResolvedValueOnce([
+      OLDER_OPEN,
+      NEWER_OPEN,
+    ] as never); // billing periods, OLDEST-first
+    serverFetchMock.mockResolvedValueOnce({ id: 100, items: [] } as never);
+
+    const { default: ForecastPlansPage } = await import(
+      "@/app/forecast-plans/page"
+    );
+    await ForecastPlansPage();
+
+    // `serverFetchMock` is declared with a zero-arg implementation, so its
+    // recorded calls type as `[]`; the real page passes (path, opts).
+    const planCalls = serverFetchMock.mock.calls
+      .map((c) => (c as unknown as string[])[0])
+      .filter((u) => u.startsWith("/api/v1/forecast-plans?"));
+    expect(planCalls).toEqual([
+      `/api/v1/forecast-plans?period_start=${NEWER_OPEN.start_date}`,
+    ]);
+  });
+
+  it("guard: falls back to periods[0] when NO row is open", async () => {
+    // The other half of the pair above. `?? periods[0]` is the `no_open`
+    // roster's only seed; without this, deleting it would leave the RSC
+    // fetching no plan at all and only the fence above would notice —
+    // and it would not, because it never builds a closed roster.
+    const CLOSED_A = {
+      id: 80, start_date: "2026-05-01", end_date: "2026-05-31",
+    };
+    const CLOSED_B = {
+      id: 81, start_date: "2026-04-01", end_date: "2026-04-30",
+    };
+
+    getServerSessionResultMock.mockResolvedValue({
+      kind: "authenticated",
+      session: { user: { id: 1 }, accessToken: "TOK" },
+    });
+    serverFetchMock.mockResolvedValueOnce([] as never);
+    serverFetchMock.mockResolvedValueOnce([CLOSED_A, CLOSED_B] as never);
+    serverFetchMock.mockResolvedValueOnce({ id: 100, items: [] } as never);
+
+    const { default: ForecastPlansPage } = await import(
+      "@/app/forecast-plans/page"
+    );
+    await ForecastPlansPage();
+
+    // `serverFetchMock` is declared with a zero-arg implementation, so its
+    // recorded calls type as `[]`; the real page passes (path, opts).
+    const planCalls = serverFetchMock.mock.calls
+      .map((c) => (c as unknown as string[])[0])
+      .filter((u) => u.startsWith("/api/v1/forecast-plans?"));
+    expect(planCalls).toEqual([
+      `/api/v1/forecast-plans?period_start=${CLOSED_A.start_date}`,
+    ]);
+  });
 });

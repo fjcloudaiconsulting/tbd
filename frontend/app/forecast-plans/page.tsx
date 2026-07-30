@@ -3,6 +3,7 @@ import { getServerSessionResult } from "@/lib/auth-server";
 import { serverFetch } from "@/lib/server-fetch";
 import ForecastPlansClient from "./ForecastPlansClient";
 import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
+import { selectCurrentPeriod } from "@/lib/billingPeriodStatus";
 
 // First consumer of the RSC auth foundation (PR #210 / #211 / #212).
 // `getServerSessionResult()` reads the refresh cookie, validates it
@@ -31,14 +32,22 @@ import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
 // should be idempotent reads, and the existing client already runs
 // ensure-future once-per-session before loading periods.
 
-// The existing client picks the "current" period (the open one with
-// end_date === null) and falls back to index 0 when there isn't one. We
-// reproduce that here so the server-fetched plan matches what the client
-// would have picked on first paint.
+// TBD-242: this used to be a HAND-REPRODUCTION of the client's rule, with a
+// comment admitting as much. Both sides now call the same helper. Calling the
+// same helper is not itself enforced by anything — a future edit can inline a
+// second rule here as easily as the first one was written — so the row this
+// picks is pinned from the outside, in
+// `tests/app/forecast-plans-page-rsc.test.tsx`: the plan fetch is keyed on
+// the chosen period, so a duplicate-open roster makes the choice observable
+// in `serverFetch`'s call log. Both halves are fenced there — the newest-open
+// selection AND the `?? periods[0]` fallback below.
+//
+// That fallback is kept deliberately: on a `no_open` roster there is no
+// current period, and the RSC still has to seed the client with something to
+// render.
 function pickCurrentPeriod(periods: BillingPeriod[]): BillingPeriod | null {
   if (periods.length === 0) return null;
-  const open = periods.find((p) => p.end_date === null);
-  return open ?? periods[0];
+  return selectCurrentPeriod(periods) ?? periods[0];
 }
 
 export default async function ForecastPlansPage() {
