@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.models import Account, AccountType, Category, Organization
+from app.models.account import PaymentStrategy
 from app.models.base import Base
 from app.models.billing import BillingPeriod
 from app.models.category import CategoryType
@@ -39,6 +40,7 @@ from app.services import (
     forecast_service,
     recurring_service,
 )
+from app.services.loan_forecast_service import due_loan_payment_dates
 from app.services.loan_service import compute_pmt
 
 DAY = datetime.timedelta(days=1)
@@ -102,11 +104,14 @@ async def _seed(
     db.add(acct)
     await db.flush()
     cat = Category(org_id=org.id, name="Food", slug="food", type=CategoryType.EXPENSE)
+    cat_income = Category(
+        org_id=org.id, name="Salary", slug="salary", type=CategoryType.INCOME
+    )
     cat_transfer = Category(
         org_id=org.id, name="Transfer", slug="transfer",
         type=CategoryType.BOTH, is_system=True,
     )
-    db.add_all([cat, cat_transfer])
+    db.add_all([cat, cat_income, cat_transfer])
     await db.flush()
 
     if open_start is not None:
@@ -120,6 +125,7 @@ async def _seed(
         "account": acct,
         "account_id": acct.id,
         "cat_id": cat.id,
+        "cat_income": cat_income.id,
         "cat_transfer": cat_transfer.id,
         "account_type_id": at.id,
     }
@@ -303,6 +309,19 @@ async def test_f4_forecast_net_conserved_across_generate_on_late_successor(db_se
     Wrong implementation killed: **the split design** — net 0 -> -100.
     Also red against ``main``, where the template is conserved at ZERO and the
     two anti-vacuity asserts (projected before / materialised after) fail.
+
+    ⚠ **Scope of the conservation claim.** This fence pins conservation for a
+    template due in the FUTURE (``next_due_date > today``), which is the only
+    case one window conserves. It is NOT a general property of the surface. An
+    OVERDUE template (``next_due_date <= today``) is excluded from
+    ``recurring_*`` by ``forecast_service``'s own ``> today`` gate but IS
+    materialised into ``pending_*`` by ``generate_due_transactions``, so
+    ``forecast_net`` moves regardless of the window — measured 0 -> -100.00 on
+    BOTH this design and ``main`` (see
+    ``test_g2_guard_overdue_template_breaks_conservation_on_both_designs``).
+    That third case is inherited, not introduced, and it does not rescue the
+    split: the split adds a SEPARATE break, on a FUTURE-dated template, that
+    one window does not have and that this fence catches.
     """
     today = datetime.date.today()
     # Cycle day <= 28 (BillingCycleUpdate's own bound) anchored on today, so
@@ -498,25 +517,20 @@ async def test_f8_guard_healthy_on_grid_period_is_unchanged(db_session):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# F9 — GUARD ONLY. The announced phantom-projection residual, pinned.
+# F9 — fence. The LOAN SYNTHESIS HORIZON is bound to the window, and the
+#      announced phantom-projection residual is pinned with it.
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def test_f9_guard_lapsed_untracked_loan_projects_at_most_one_payment(db_session):
-    """GUARD, not a fence. Pins the residual announced in the design §5.
+_LOAN_PRINCIPAL = Decimal("12000.00")
+_LOAN_APR = Decimal("6.00")
+_LOAN_TERM = 60
 
-    On a lapsed roster the window widens to ``[p_start, today]`` — months long
-    — and ``due_loan_payment_dates`` has no ``> today`` gate, so an UNTRACKED
-    loan (no recorded payment leg) still projects a past-dated instalment.
-    That phantom is accepted, not fixed here: a past-due but genuinely unpaid
-    instalment must still be projected.
 
-    What this guard pins is that the widened window emits **one** projected
-    payment, not one per scheduled date it now spans. Note: the design table
-    words this row as "no past-dated phantom loan payments emitted"; that is
-    not what the code does, before or after this change, and §5 of the same
-    document says so explicitly. The observable behaviour is pinned here.
-    """
-    today = datetime.date.today()
+async def _seed_lapsed_loan(
+    db_session, *, today: datetime.date, first_payment: datetime.date
+) -> tuple[dict, Account]:
+    """Lapsed roster (open ``[T-90, NULL)``, historic stubs) + an untracked
+    loan whose first scheduled payment is ``first_payment``."""
     p_start = today - datetime.timedelta(days=90)
     seed = await _seed(
         db_session,
@@ -531,17 +545,123 @@ async def test_f9_guard_lapsed_untracked_loan_projects_at_most_one_payment(db_se
     )
     db_session.add(loan_type)
     await db_session.flush()
-    principal, apr, term = Decimal("12000.00"), Decimal("6.00"), 60
-    first_payment = today - datetime.timedelta(days=70)
     loan = Account(
         org_id=seed["org_id"], name="Car Loan", account_type_id=loan_type.id,
         balance=Decimal("-10000.00"), opening_balance=Decimal("-10000.00"),
         currency="EUR", is_default=False,
         payment_source_account_id=seed["account_id"],
-        principal_amount=principal, interest_rate_apr=apr, term_months=term,
+        principal_amount=_LOAN_PRINCIPAL, interest_rate_apr=_LOAN_APR,
+        term_months=_LOAN_TERM,
         origination_date=p_start, first_payment_date=first_payment,
     )
     db_session.add(loan)
+    await db_session.commit()
+    seed["p_start"] = p_start
+    return seed, loan
+
+
+async def test_f9_lapsed_untracked_loan_projects_from_the_widened_window(db_session):
+    """FENCE. The loan synthesis horizon (``p_end=window_end``), plus the
+    phantom-projection residual announced in the design §5.
+
+    The first scheduled payment is placed at ``T-40`` — deliberately PAST the
+    old calendar fallback (``p_start + 1 month - 1 day`` ~ ``T-60``) and inside
+    the widened window ``[T-90, T]``. The window therefore spans TWO scheduled
+    dates (``T-40`` and ``T-40 + 1 month``) while the synthesizer projects only
+    the earliest.
+
+    Wrong implementations killed:
+      * the loan synthesizer left on the calendar fallback
+        (``p_end=p_start + 1 month - 1 day``) -> no scheduled date in-window ->
+        ``loan_payments == []`` and the source keeps its full balance;
+      * a synthesizer that stopped emitting the EARLIEST in-window date;
+      * a widened window that emitted one payment PER scheduled date.
+
+    ⚠ **Why the previous assertion here was worthless.**
+    ``synthesize_account_loan_payment`` returns ``dates[0]`` — a list of 0 or 1
+    elements BY CONSTRUCTION — so the old ``len(payments) == 1`` could never
+    detect the multiplicity it claimed to pin, and with the old fixture
+    (``first_payment = T-70``, inside the calendar fallback) it stayed green
+    with the horizon left on the fallback too. It was the eighteenth instance of
+    this repo's signature defect. The assertions below are stated over values
+    that actually move: the emitted payment list, and the number of scheduled
+    dates the window spans.
+    """
+    today = datetime.date.today()
+    first_payment = today - datetime.timedelta(days=40)
+    seed, loan = await _seed_lapsed_loan(
+        db_session, today=today, first_payment=first_payment
+    )
+    p_start = seed["p_start"]
+    # Fixture preconditions — without these the fence is decoration.
+    assert _calendar_fallback(p_start) < first_payment <= today
+    # The widened window spans MORE than one scheduled date; the synthesizer
+    # collapses them to one. That collapse is the residual, not a fix.
+    spanned = due_loan_payment_dates(first_payment, _LOAN_TERM, p_start, today)
+    assert len(spanned) == 2
+    assert spanned[0] == first_payment
+
+    res = await account_balance_forecast_service.compute_account_balance_forecast(
+        db_session, seed["org_id"], today=today
+    )
+
+    by_id = {a["account_id"]: a for a in res["accounts"]}
+    pmt = compute_pmt(_LOAN_PRINCIPAL, _LOAN_APR, _LOAN_TERM)
+    # Exactly one projected payment, on the EARLIEST in-window date — which is
+    # past-dated, and accepted as such (§5: a past-due but genuinely unpaid
+    # instalment must still be projected; do NOT add a `> today` gate).
+    assert by_id[loan.id]["loan_payments"] == [
+        {"amount": str(pmt), "date": first_payment.isoformat()}
+    ]
+    # And the projection really did move money, so the assertion above is not
+    # passing on an inert payload.
+    source_row = by_id[seed["account_id"]]
+    assert Decimal(source_row["expected_month_end_balance"]) == (
+        Decimal(source_row["balance"]) - pmt
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F11 — fence. The loan ``already_paid`` probe reads the WINDOW, inclusively.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_f11_loan_already_paid_probe_uses_the_window(db_session):
+    """FENCE. The anti-double-count probe at the loan site.
+
+    A recorded payment-in leg dated exactly on ``window_end`` (== today on a
+    lapsed roster) must suppress the projection. Two independent wrong
+    implementations are killed:
+
+      * the probe left on the old calendar fallback
+        (``eff_date <= p_start + 1 month - 1 day``) — the leg is months past
+        that bound, ``already_paid`` stays False, and the loan is projected a
+        SECOND time on top of the leg the user already recorded;
+      * ``<`` written for ``<=`` on the probe's upper bound — the leg dated
+        exactly on the boundary is dropped, same phantom.
+
+    The leg is deliberately placed ON the boundary: a boundary pinned from one
+    side is not pinned.
+    """
+    today = datetime.date.today()
+    first_payment = today - datetime.timedelta(days=40)
+    seed, loan = await _seed_lapsed_loan(
+        db_session, today=today, first_payment=first_payment
+    )
+    # The recorded payment: a reciprocal transfer pair, INCOME on the loan.
+    loan_leg = _tx(
+        seed, account_id=loan.id, category_id=seed["cat_transfer"],
+        amount=Decimal("232.00"), type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED, date=today, settled_date=today,
+    )
+    source_leg = _tx(
+        seed, category_id=seed["cat_transfer"],
+        amount=Decimal("232.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=today, settled_date=today,
+    )
+    db_session.add_all([loan_leg, source_leg])
+    await db_session.flush()
+    loan_leg.linked_transaction_id = source_leg.id
+    source_leg.linked_transaction_id = loan_leg.id
     await db_session.commit()
 
     res = await account_balance_forecast_service.compute_account_balance_forecast(
@@ -549,13 +669,255 @@ async def test_f9_guard_lapsed_untracked_loan_projects_at_most_one_payment(db_se
     )
 
     by_id = {a["account_id"]: a for a in res["accounts"]}
-    payments = by_id[loan.id]["loan_payments"]
-    assert len(payments) == 1
-    assert payments[0]["amount"] == str(compute_pmt(principal, apr, term))
-    # The earliest scheduled date in the widened window — past-dated, and
-    # accepted as such.
-    assert payments[0]["date"] == first_payment.isoformat()
-    assert p_start <= first_payment <= today
+    # Fixture precondition: the leg sits exactly on the reported window end.
+    assert res["period_end"] == today.isoformat()
+    assert by_id[loan.id]["loan_payments"] == []
+    source_row = by_id[seed["account_id"]]
+    assert Decimal(source_row["expected_month_end_balance"]) == Decimal(
+        source_row["balance"]
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F12 — fence. ``window_end`` is the INCLUSIVE upper bound of every bucket.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_f12_window_end_is_inclusive_for_every_bucket(db_session):
+    """FENCE. Pins nine upper bounds from the TOP, in one fixture.
+
+    A systematic sweep that flips ``<= window_end`` to ``< window_end`` one
+    site at a time left EIGHT of the eleven bounds green before this test:
+    ``forecast_service`` settled-income, pending-income, pending-expense, the
+    recurring query gate, the recurring projection loop, and the three
+    per-category equivalents. F3's pending assertions are ``0 == 0`` and cannot
+    detect any of it. This repo's rule is that a boundary pinned from one side
+    is not pinned.
+
+    Roster: off-grid with a LATE successor, so ``window_end`` is the derived
+    end ``T+19`` (in the FUTURE — required, or the recurring gate's own
+    ``next_due_date > today`` makes the recurring bounds untestable). Every
+    bucket gets one row ON ``window_end`` and one row on ``window_end + 1``.
+
+    Wrong implementation killed: ``<`` for ``<=`` at any of
+    ``forecast_service.py`` settled-income / settled-expense / pending-income /
+    pending-expense / recurring-gate / recurring-loop / category-executed /
+    category-pending / category-recurring.
+    """
+    today = datetime.date.today()
+    p_start = today - datetime.timedelta(days=40)
+    successor_start = today + datetime.timedelta(days=20)
+    window_end = successor_start - DAY
+    over = successor_start                      # window_end + 1 day
+    seed = await _seed(
+        db_session,
+        open_start=p_start,
+        closed_windows=((successor_start, successor_start + datetime.timedelta(days=29)),),
+    )
+    # The derived end must be in the FUTURE, or the floor moves the boundary
+    # under the test and the recurring bounds become unreachable.
+    assert window_end > today
+    inc = seed["cat_income"]
+    db_session.add_all([
+        _settled(seed, "11.00", window_end, type=TransactionType.INCOME, category_id=inc),
+        _settled(seed, "500.00", over, type=TransactionType.INCOME, category_id=inc),
+        _settled(seed, "13.00", window_end),
+        _settled(seed, "500.00", over),
+        _pending(seed, "17.00", window_end, type=TransactionType.INCOME, category_id=inc),
+        _pending(seed, "500.00", over, type=TransactionType.INCOME, category_id=inc),
+        _pending(seed, "19.00", window_end),
+        _pending(seed, "500.00", over),
+    ])
+    db_session.add(RecurringTransaction(
+        org_id=seed["org_id"], account_id=seed["account_id"],
+        category_id=seed["cat_id"], description="rent",
+        amount=Decimal("23.00"), type="expense", frequency="monthly",
+        next_due_date=window_end, auto_settle=False, is_active=True,
+    ))
+    await db_session.commit()
+
+    fc = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+
+    assert fc["period_end"] == window_end.isoformat()
+    assert Decimal(fc["executed_income"]) == Decimal("11")
+    assert Decimal(fc["executed_expense"]) == Decimal("13")
+    assert Decimal(fc["pending_income"]) == Decimal("17")
+    assert Decimal(fc["pending_expense"]) == Decimal("19")
+    assert Decimal(fc["recurring_expense"]) == Decimal("23")
+
+    by_cat = {c["category_id"]: c for c in fc["categories"]}
+    row = by_cat.get(seed["cat_id"], {"executed": "0", "pending": "0", "recurring": "0"})
+    assert Decimal(row["executed"]) == Decimal("13")
+    assert Decimal(row["pending"]) == Decimal("19")
+    assert Decimal(row["recurring"]) == Decimal("23")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# G1 — GUARD (and the fence for the CC synthesis horizon). The CC phantom
+#      payments announced in §5 MULTIPLY per cycle on a lapsed roster.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_g1_cc_phantom_payments_multiply_per_cycle_on_lapsed_roster(db_session):
+    """GUARD — pins the ACTUAL behaviour, which is not an aspiration.
+    Doubles as the FENCE for the CC synthesis horizon (``p_end=window_end``).
+
+    On a lapsed roster the window widens to ``[p_start, today]``, months long,
+    and ``due_cycles_in_horizon`` has no ``> today`` gate, so EVERY cycle whose
+    ``payment_date`` falls in that span is projected. This is the same residual
+    §5 announces for loans, but it multiplies: one phantom PER CYCLE rather than
+    one per period. ``main`` projected none (its window ended before the first
+    payment date). ``CreditUtilizationWidget.tsx`` renders "Next payment ... on
+    <date>" from this list, so the user sees a past date.
+
+    The multiplication is BOUNDED by the outstanding balance: ``s_prev`` threads
+    each synthesized outflow forward, so the payments sum to the balance owed at
+    the last projected close, never to a multiple of it. That bound is what
+    makes this acceptable-and-announced rather than a defect. Do NOT add a
+    ``> today`` gate here — §5 explains that it would delete genuinely unpaid
+    past-due obligations.
+
+    Wrong implementation killed: the CC synthesizer left on the old calendar
+    fallback (``p_end=p_start + 1 month - 1 day``) -> ``cc_payments == []`` and
+    the source keeps its full 5000.00.
+    """
+    today = datetime.date.today()
+    p_start = today - relativedelta(months=3)
+    seed = await _seed(
+        db_session,
+        open_start=p_start,
+        closed_windows=(
+            (today - datetime.timedelta(days=60), today - datetime.timedelta(days=31)),
+            (today - datetime.timedelta(days=30), today - DAY),
+        ),
+        balance=Decimal("5000.00"),
+    )
+    cc_type = AccountType(
+        org_id=seed["org_id"], name="Credit Card", slug="credit_card", is_system=True
+    )
+    db_session.add(cc_type)
+    await db_session.flush()
+    cc = Account(
+        org_id=seed["org_id"], name="Visa", account_type_id=cc_type.id,
+        balance=Decimal("-900.00"), opening_balance=Decimal("0.00"),
+        currency="EUR", is_default=False,
+        close_day=10, payment_day=5, payment_day_relative_month=1,
+        payment_source_account_id=seed["account_id"],
+        payment_strategy=PaymentStrategy.FULL_BALANCE,
+    )
+    db_session.add(cc)
+    await db_session.flush()
+    # Three 300.00 charges, one per month of the lapsed span, no payment legs.
+    for k in range(3):
+        on = p_start + datetime.timedelta(days=5) + relativedelta(months=k)
+        db_session.add(_settled(seed, "300.00", on, account_id=cc.id))
+    await db_session.commit()
+
+    res = await account_balance_forecast_service.compute_account_balance_forecast(
+        db_session, seed["org_id"], today=today
+    )
+
+    by_id = {a["account_id"]: a for a in res["accounts"]}
+    payments = by_id[cc.id]["cc_payments"]
+    # MORE THAN ONE phantom, and every one of them past-dated.
+    assert len(payments) == 2
+    assert all(
+        datetime.date.fromisoformat(p["date"]) < today for p in payments
+    )
+    assert [p["date"] for p in payments] == sorted(p["date"] for p in payments)
+    # Bounded by the outstanding balance at the last projected close, NOT a
+    # multiple of it: two 300.00 cycles against 600.00 of charges closed.
+    assert sum(Decimal(p["amount"]) for p in payments) == Decimal("600.00")
+    source_row = by_id[seed["account_id"]]
+    assert Decimal(source_row["balance"]) == Decimal("5000.00")
+    assert Decimal(source_row["expected_month_end_balance"]) == Decimal("4400.00")
+    assert Decimal(by_id[cc.id]["expected_month_end_balance"]) == Decimal("-300.00")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# G2 — GUARD. An OVERDUE template breaks conservation on BOTH designs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_g2_guard_overdue_template_breaks_conservation_on_both_designs(db_session):
+    """GUARD, not a fence.
+
+    F4 fences conservation for a template due in the FUTURE. It does not hold
+    in general, and the design's §2 dichotomy ("either in ``(today, W]`` before
+    and ``[start, W]`` after, or beyond ``W`` on both sides") omits a third
+    case: ``[p_start, today]``.
+
+    An OVERDUE template (``next_due_date <= today``) is excluded from
+    ``recurring_*`` by ``forecast_service``'s ``> today`` gate, but
+    ``generate_due_transactions`` materialises it into ``pending_*`` anyway.
+    ``forecast_net`` therefore moves 0 -> -100.00 with no user action —
+    independently of the window, on the healthy on-grid roster where this PR is
+    byte-identical to ``main``, and on the lapsed roster this PR widens.
+
+    Recorded here rather than left to be rediscovered. It is INHERITED, not
+    introduced, and it does not rescue the split design: the split adds a
+    separate break on a future-dated template that one window does not have.
+
+    Read the two sub-cases separately — they are green on ``main`` for
+    DIFFERENT reasons, and only one of them is evidence of inheritance:
+
+      * **(a) healthy on-grid** — ``main`` moves 0 -> -100.00 here too, and
+        this PR is byte-identical to ``main`` on this roster. THIS is the
+        inheritance proof.
+      * **(b) lapsed** — ``main`` reports 0 -> 0 on this roster, but only
+        because its stale window drops the materialised row entirely, which is
+        the very staleness defect this PR repairs. Conserving by not looking is
+        not conserving. Recorded so the two are never conflated.
+    """
+    today = datetime.date.today()
+
+    async def _net_move(seed: dict) -> tuple[Decimal, Decimal]:
+        db_session.add(RecurringTransaction(
+            org_id=seed["org_id"], account_id=seed["account_id"],
+            category_id=seed["cat_id"], description="rent",
+            amount=Decimal("100.00"), type="expense", frequency="monthly",
+            next_due_date=today - datetime.timedelta(days=3),
+            auto_settle=False, is_active=True,
+        ))
+        await db_session.commit()
+        before = await forecast_service.compute_forecast(
+            db_session, seed["org_id"], today=today
+        )
+        await recurring_service.generate_due_transactions(
+            db_session, seed["org_id"], today=today
+        )
+        after = await forecast_service.compute_forecast(
+            db_session, seed["org_id"], today=today
+        )
+        # Anti-vacuity: the template must be in NEITHER bucket before (the
+        # `> today` gate excluded it) and in `pending` after.
+        assert Decimal(before["recurring_expense"]) == Decimal("0")
+        assert Decimal(before["pending_expense"]) == Decimal("0")
+        assert Decimal(after["pending_expense"]) == Decimal("100")
+        return Decimal(before["forecast_net"]), Decimal(after["forecast_net"])
+
+    # (a) healthy on-grid — this PR is byte-identical to `main` here, so the
+    #     break is demonstrably inherited.
+    on_grid_start = today - datetime.timedelta(days=5)
+    calendar_end = _calendar_fallback(on_grid_start)
+    on_grid = await _seed(
+        db_session,
+        open_start=on_grid_start,
+        closed_windows=((calendar_end + DAY, calendar_end + datetime.timedelta(days=30)),),
+        cycle_day=min(on_grid_start.day, 28),
+    )
+    assert await _net_move(on_grid) == (Decimal("0"), Decimal("-100.00"))
+
+    # (b) lapsed — the population this PR widens.
+    lapsed = await _seed(
+        db_session,
+        open_start=today - datetime.timedelta(days=90),
+        closed_windows=(
+            (today - datetime.timedelta(days=60), today - datetime.timedelta(days=31)),
+            (today - datetime.timedelta(days=30), today - DAY),
+        ),
+        cycle_day=min(today.day, 28),
+    )
+    assert await _net_move(lapsed) == (Decimal("0"), Decimal("-100.00"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
