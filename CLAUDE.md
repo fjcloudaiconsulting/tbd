@@ -11,7 +11,7 @@ The Better Decision is a personal finance management application. FastAPI backen
 - **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2
 - **Frontend:** Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS, SWR
 - **Database:** MySQL 8.0
-- **Auth:** JWT (access + refresh tokens), bcrypt via passlib
+- **Auth:** JWT via PyJWT (access + refresh tokens), password hashing with `bcrypt` directly (no passlib)
 - **Reverse proxy:** nginx (single entry point on port 80)
 - **Dev environment:** Docker Compose + `./pfv` CLI
 
@@ -25,7 +25,9 @@ cp .env.example .env    # First time only
 ./pfv rebuild           # Force rebuild (no cache)
 ./pfv reset             # Destroy all data and start fresh
 ./pfv migrate           # Run pending migrations
-./pfv logs [service]    # View logs (backend, frontend, nginx, mysql)
+./pfv seed              # Seed a repeatable local dataset (see Seeding below)
+./pfv prod              # Run the production compose stack locally
+./pfv logs [service]    # View logs (backend, frontend, nginx, mysql, redis)
 ./pfv status            # Container status
 ./pfv shell [service]   # Shell into a container (default: backend)
 ```
@@ -68,7 +70,7 @@ docker compose -p team-<unique-name> exec backend pytest tests/...
 Every `compose` and `docker exec` call must carry the same `-p team-<name>`
 flag, on every command in the session. A single command that omits it falls
 back to the default `pfv` project name and will write to the user's MySQL
-volume. See `~/.claude/projects/-Users-fjorge-src-pfv/memory/reference_shared_mysql_volume_trap.md`
+volume. See `~/.claude/projects/-Users-flamarion-src-tbd/memory/reference_shared_mysql_volume_trap.md`
 for the 2026-05-09 incident this rule prevents.
 
 `./pfv migrate` is for the user's local stack only. Do not invoke it from an
@@ -108,10 +110,18 @@ backend/app/
 ├── security.py      # JWT encode/decode, bcrypt hash/verify
 ├── deps.py          # FastAPI dependencies: get_db, get_current_user
 ├── logging.py       # structlog JSON setup
+├── rate_limit.py    # slowapi limiter + client-IP resolution (the ONLY IP helper)
 ├── models/          # SQLAlchemy ORM models
 ├── schemas/         # Pydantic request/response models
-└── routers/         # API route handlers
+├── routers/         # API route handlers
+├── services/        # Business logic (the bulk of the backend; ai_adapters/, ai_providers/, scheduler/)
+├── auth/            # Permissions, PAT verification, feature catalog
+├── middleware/      # request_context, security_headers
+└── reports/         # Report engine: sources/, templates
 ```
+
+The tree above names the load-bearing modules, not every file. `backend/scripts/migrate.py`
+(outside `app/`) is the migrate wrapper every migration entrypoint drives.
 
 ### Frontend Structure
 
@@ -119,10 +129,16 @@ backend/app/
 frontend/
 ├── app/             # Next.js App Router pages
 ├── components/      # React components by feature
+├── tests/           # vitest suites (`npm test -- tests/...`)
+├── scripts/         # build-apex.sh, check-design-tokens.sh (both CI gates)
 └── lib/
     ├── api.ts       # Typed fetch wrapper with Bearer token + silent refresh
-    └── types.ts     # Shared TypeScript types
+    ├── types.ts     # Shared TypeScript types
+    ├── styles.ts    # Component style primitives (see DESIGN.md)
+    └── hooks/       # Shared SWR data hooks (use-accounts, use-categories, ...)
 ```
+
+Also non-exhaustive; `lib/` has ~30 more modules.
 
 ## Key Conventions
 
@@ -132,7 +148,7 @@ frontend/
 - **First user is superadmin** — the first registered user gets `is_superadmin=True` automatically. No seed data needed.
 - **Org-scoped data** — all user data is scoped to an organization. Every query must filter by org_id.
 - **API versioning** — all API routes are prefixed with `/api/v1/`. New routers must use `APIRouter(prefix="/api/v1/{resource}")`. Breaking changes go in `/api/v2/` while v1 stays operational.
-- **Auth on every endpoint** — use `get_current_user` dependency. Only /health, /ready, /api/v1/auth/login, /api/v1/auth/register, /api/v1/auth/refresh are public.
+- **Auth on every endpoint** — use the `get_current_user` dependency. The public set is deliberately small and closed: `/health`, `/ready`, the pre-auth and account-recovery half of `/api/v1/auth/*` (`status`, `check-username`, `login`, `register`, `refresh`, `forgot-password`, `reset-password`, `verify-email`, `resend-verification-public`, `google`, `google/callback`, and the `mfa/*` challenge endpoints), `/api/v1/public/founder-count`, `/api/v1/security/csp-report`, and `/api/v1/webhooks/mailgun` (signature-verified, not open). **CONTRIBUTING.md's "Public endpoints" section is the authoritative list — do not add to it without a security review.**
 - **Enum values** — SQLAlchemy enums use `values_callable=lambda x: [e.value for e in x]` to store lowercase values in MySQL
 - **Frontend has two Dockerfiles** — `Dockerfile.dev` for local dev (hot reload with volume mounts), `Dockerfile` for production (multi-stage standalone build, ~slim image)
 - **nginx is the single entry point in dev** — backend and frontend only expose ports internally. `/api/*` routes to FastAPI, everything else to Next.js. FastAPI's Swagger UI is served at `/api/docs` (with `/api/openapi.json`) so `/docs` is free for the public in-app user manual served by Next.js. In production (DO App Platform) ingress takes nginx's role.

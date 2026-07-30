@@ -6,6 +6,13 @@ partition), §2.4 / §2.4a (the anomaly rules and the analysis cap),
 §2.5's kernel types, and §4a's test plan (tests 1-13, 13a-13e, 14, 14a, 14b —
 renumbered in spec revision 6 after the PR-review fold).
 
+Tests 12a, 13f and 13g are TBD-245 and are NOT in §4a: they pin three
+boundaries an adversarial injection audit of the MERGED kernel proved
+unfenced (D05 ``upcoming``, D15 ``lapsed_open``, D17 the emission ceiling).
+Each pins its boundary from BOTH sides and on it — the lesson this file
+already learned twice, at 13c and 13d, is that a boundary pinned from one
+side is not pinned.
+
 ⚠ **Dates here are FULLY FIXED calendar literals, including every injected
 ``today``, and that REVERSES the house rule** (``reference_wall_clock_date_bomb_tests``).
 Spec §4: 234a has no wall clock — §8.1 item 3 makes ``today`` a required
@@ -526,6 +533,56 @@ def test_12_status_partition_is_ordered_and_total():
     assert period_status(past, today=today) == "past"
 
 
+# ── Test 12a [fence] — §2.3 branches 3 and 4, boundaries from BOTH sides ──
+
+
+def test_12a_upcoming_and_current_boundaries_pinned_from_both_sides():
+    """Test 12a — §2.3 branch 3 is ``start_date > today``, never ``>=``.
+
+    ⚠ **This closes proven gap D05 from TBD-245's injection audit.** An
+    adversarial pass replaced branch 3's ``>`` with ``>=`` and the ENTIRE
+    backend suite stayed green. Test 12 cannot see it: its ``upcoming`` row
+    starts ``2026-09-01``, thirty-four days past the injected ``today``, and
+    its ``current`` row starts ``2026-07-01``, twenty-eight days before it.
+    Both operators agree everywhere except on a row starting **exactly
+    today**, and nothing sat there.
+
+    What the defect costs: a period that begins today would be classified
+    ``upcoming`` rather than ``current_by_calendar`` — on its own first day,
+    for every org, and TBD-242 is about to point every "current period" site
+    in the frontend at this exact field.
+
+    Three rows, one per side of the boundary and one **on** it, all sharing
+    an end far in the future so branch 4's own bound cannot interfere. The
+    trailing pair then pins branch 4's ``today <= end_date`` from both sides
+    too — the same operator, the adjacent boundary, equally unfenced by test
+    12, whose ``current`` row ends thirty-three days after ``today``.
+    """
+    today = D(2026, 7, 29)
+    far_end = D(2026, 12, 31)
+
+    day_before = RosterRow(id=125, start_date=D(2026, 7, 28), end_date=far_end)
+    exactly_today = RosterRow(id=126, start_date=today, end_date=far_end)
+    day_after = RosterRow(id=127, start_date=D(2026, 7, 30), end_date=far_end)
+
+    # The boundary itself, spelled out so a fixture edit cannot dissolve it.
+    assert exactly_today.start_date == today
+
+    assert period_status(day_before, today=today) == "current_by_calendar"
+    # ⚠ The fence. `start_date >= today` returns "upcoming" here.
+    assert period_status(exactly_today, today=today) == "current_by_calendar"
+    assert period_status(day_after, today=today) == "upcoming"
+
+    # Branch 4's far bound, same treatment: `today <= end_date`, not `<`.
+    far_start = D(2026, 6, 1)
+    ends_today = RosterRow(id=128, start_date=far_start, end_date=today)
+    ended_yesterday = RosterRow(id=129, start_date=far_start, end_date=D(2026, 7, 28))
+
+    assert ends_today.end_date == today
+    assert period_status(ends_today, today=today) == "current_by_calendar"
+    assert period_status(ended_yesterday, today=today) == "past"
+
+
 # ── Test 13 [fence] ────────────────────────────────────────────────────────
 
 
@@ -675,6 +732,60 @@ def test_13d_straddler_ending_exactly_on_the_anchor_start_is_straddling():
     ]
 
 
+# ── Test 13f [fence] — `lapsed_open`'s boundary, from BOTH sides ───────────
+
+
+def test_13f_lapsed_open_boundary_is_strict_and_pinned_from_both_sides():
+    """Test 13f — ``lapsed_open`` fires on ``anchor_end < today``, never ``<=``.
+
+    ⚠ **This closes proven gap D15 from TBD-245's injection audit, and it is
+    the costliest of the three.** An adversarial pass replaced the temporal
+    comparison with ``<=`` and the ENTIRE backend suite stayed green: every
+    existing fixture sits far from the boundary (test 2's anchor ends
+    ``2026-03-31`` against a ``today`` of ``2026-07-29``, four months away),
+    so both operators agree on all of them.
+
+    What the defect costs: an open period whose derived end **is** today is
+    a perfectly healthy period on its final day. Under ``<=`` every org in
+    the fleet gets its current period reported as an anomaly, once a cycle,
+    on the last day of that cycle — a diagnostic that cries wolf on healthy
+    data is worse than no diagnostic.
+
+    One fixture, three clocks. The anchor is an INTERIOR open row, so its
+    end is DERIVED (``successor.start − 1``) rather than stored, which is
+    the shape the marker actually exists for; the structural set is asserted
+    empty at each clock so no other rule can supply the marker under test.
+    """
+    roster = _roster(
+        (500, D(2026, 1, 1), D(2026, 1, 31)),
+        (501, D(2026, 2, 1), D(2026, 2, 28)),
+        (502, D(2026, 3, 1), None),  # the anchor: OPEN, interior
+        (503, D(2026, 4, 1), D(2026, 4, 30)),  # stub, supplies the derived end
+    )
+    anchor_end = D(2026, 3, 31)
+
+    # The boundary itself, spelled out so a fixture edit cannot dissolve it.
+    assert kernel_derived_end(roster, 2) == anchor_end
+
+    lapsed = PeriodAnomaly(kind="lapsed_open", period_id=502, effective_end=anchor_end)
+
+    # (a) the day BEFORE the end: the period is mid-flight.
+    before = find_period_anomalies(roster, today=D(2026, 3, 30))
+    assert _structural(before) == []
+    assert _of_kind(before, "lapsed_open") == []
+
+    # (b) ⚠ The fence. `today` IS the derived end — the period's final day,
+    # and healthy. `anchor_end <= today` emits `lapsed_open` here.
+    on_the_day = find_period_anomalies(roster, today=anchor_end)
+    assert _structural(on_the_day) == []
+    assert _of_kind(on_the_day, "lapsed_open") == []
+
+    # (c) the day AFTER: genuinely lapsed, and the payload is pinned.
+    after = find_period_anomalies(roster, today=D(2026, 4, 1))
+    assert _structural(after) == []
+    assert _of_kind(after, "lapsed_open") == [lapsed]
+
+
 # ── Test 13a [fence] — the emission ceiling ────────────────────────────────
 
 
@@ -712,6 +823,98 @@ def test_13a_overlap_emission_ceiling_refuses_rather_than_truncating_silently():
         PeriodAnomaly(kind="overlap_emission_capped", overlap_count=5050, cap=5000)
     ]
     assert _of_kind(anomalies, "overlap_analysis_skipped") == []
+
+
+# ── Test 13g [fence] — the emission ceiling's boundary, from BOTH sides ────
+
+
+def _cap_roster(overlap_pairs: int) -> CompleteRoster:
+    """A roster producing EXACTLY ``overlap_pairs`` candidate overlaps.
+
+    Test 13a's clique of ``m`` mutually-containing rows can only reach
+    ``C(m, 2)`` — 4950 at ``m=100``, 5050 at ``m=101`` — and 5000 is not a
+    triangular number, so a clique alone can never land ON the ceiling. The
+    roster is therefore built in two disjoint blocks whose counts add:
+
+    * a **clique** of 100 rows, every one containing every other: 4950 pairs;
+    * a **fan** strictly after the clique's common end — one long row over
+      ``f`` single-day rows that are mutually disjoint: exactly ``f`` pairs.
+
+    Total ``4950 + f``, so ``f`` selects any count in reach of the ceiling one
+    pair at a time. The blocks contribute nothing to each other: the clique
+    ends ``2040-01-01`` and the fan starts ``2041-01-01``. The trailing open
+    row starts ``2050-01-01``, later than every end on the roster, so it adds
+    no pair either — it is present only so ``no_open`` does not fire.
+    """
+    clique_size = 100
+    fan = overlap_pairs - clique_size * (clique_size - 1) // 2
+    assert 0 <= fan, "fan block cannot subtract pairs"
+
+    rows: list[tuple[int, datetime.date, datetime.date | None]] = [
+        (400 + k, D(2020, 1, 1) + datetime.timedelta(days=k), D(2040, 1, 1))
+        for k in range(clique_size)
+    ]
+    rows.append((600, D(2041, 1, 1), D(2041, 12, 31)))  # the fan's long row
+    rows += [
+        (
+            601 + j,
+            D(2041, 2, 1) + datetime.timedelta(days=2 * j),
+            D(2041, 2, 1) + datetime.timedelta(days=2 * j),
+        )
+        for j in range(fan)
+    ]
+    rows.append((900, D(2050, 1, 1), None))
+    return _roster(*rows)
+
+
+def test_13g_emission_ceiling_is_strict_and_pinned_from_both_sides():
+    """Test 13g — the ceiling refuses on ``> cap``, never on ``>= cap``.
+
+    ⚠ **This closes proven gap D17 from TBD-245's injection audit.** An
+    adversarial pass replaced ``overlap_count > OVERLAP_EMISSION_CAP`` with
+    ``>=`` and the ENTIRE backend suite stayed green. Test 13a is the only
+    test that reaches the ceiling and it sits at 5050 pairs, fifty past it,
+    where both operators refuse identically. The source comment right above
+    the comparison states the intended rule in as many words — "at exactly
+    the ceiling nothing was suppressed, so there is nothing to refuse" — and
+    nothing fenced it, the same shape as gap T2 on the ANALYSIS cap that
+    test 13c closed one commit earlier.
+
+    What the defect costs: an ``overlap_emission_capped`` marker on a roster
+    where every single overlap WAS emitted, telling an operator that output
+    is missing when none is.
+
+    Three rosters, one per side of the ceiling and one **on** it. The
+    at-the-ceiling case is the fence; the two flanking cases prove the
+    fixture generator actually moves the count across the boundary rather
+    than the assertion holding for an unrelated reason.
+    """
+    cap = billing_service.OVERLAP_EMISSION_CAP
+    assert cap == 5000
+    today = D(2030, 1, 1)
+
+    # (a) one pair BELOW the ceiling: everything emitted, no refusal.
+    below = find_period_anomalies(_cap_roster(cap - 1), today=today)
+    assert len(_of_kind(below, "overlap")) == cap - 1
+    assert _of_kind(below, "overlap_emission_capped") == []
+
+    # (b) ⚠ The fence. EXACTLY at the ceiling: all 5000 emitted, so nothing
+    # was suppressed and there is nothing to refuse. `>=` refuses here.
+    at = find_period_anomalies(_cap_roster(cap), today=today)
+    assert len(_of_kind(at, "overlap")) == cap
+    assert _of_kind(at, "overlap_emission_capped") == []
+
+    # (c) one pair ABOVE: the marker appears, and carries the count the
+    # roster WOULD have produced rather than the number emitted.
+    above = find_period_anomalies(_cap_roster(cap + 1), today=today)
+    assert len(_of_kind(above, "overlap")) == cap
+    assert _of_kind(above, "overlap_emission_capped") == [
+        PeriodAnomaly(kind="overlap_emission_capped", overlap_count=cap + 1, cap=cap)
+    ]
+
+    # The analysis cap is never what produced any of this.
+    assert len(_cap_roster(cap + 1).rows) < billing_service.OVERLAP_ANALYSIS_CAP
+    assert _of_kind(above, "overlap_analysis_skipped") == []
 
 
 # ── Test 13b [fence] — §2.5's pinned ordering ──────────────────────────────
