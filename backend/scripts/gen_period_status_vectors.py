@@ -1,6 +1,15 @@
 """Regenerate the TBD-242 period-status cross-language contract fixture.
 
-    python backend/scripts/gen_period_status_vectors.py
+    cd backend && python -m scripts.gen_period_status_vectors
+
+⚠ **That is the only invocation that works, and it must run on the HOST.**
+A script PATH puts ``backend/scripts`` on ``sys.path[0]`` and does not add the
+CWD, so both ``python backend/scripts/gen_period_status_vectors.py`` and
+``cd backend && python scripts/gen_period_status_vectors.py`` raise
+``ModuleNotFoundError: No module named 'app'``. And inside the backend
+container the fixture directory is mounted read-only, by design — the mount
+exists so the contract test can READ the fixture, not so a container can
+rewrite a repo file.
 
 EXPLICIT and MANUAL, never invoked from a test — same convention as
 ``regen_feature_catalog_fixture.py``. Unlike that one, the fixture this writes
@@ -76,8 +85,28 @@ CASES: list[tuple[str, str | None]] = [
     ("2026-06-01", "2026-07-28"),  # ended yesterday
 ]
 
+
+def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
+    """Walk upward from `start` until a directory holding both
+    `.github/workflows/deploy.yml` and `.do/app.yaml` is found.
+
+    Same marker walk as `tests/test_deploy_workflow.py`, and here for the same
+    reason: `parents[2]` is correct only from a host checkout and resolves to
+    `/` when this file sits at `/app/scripts/…` inside the backend container.
+    """
+    for candidate in [start, *start.parents]:
+        if (candidate / ".github" / "workflows" / "deploy.yml").exists() and (
+            candidate / ".do" / "app.yaml"
+        ).exists():
+            return candidate
+    raise RuntimeError(
+        "Could not locate repo root containing .github/workflows/deploy.yml "
+        "and .do/app.yaml. Run this generator from a checked-out repo."
+    )
+
+
 OUT = (
-    pathlib.Path(__file__).resolve().parents[2]
+    _find_repo_root(pathlib.Path(__file__).resolve())
     / "frontend"
     / "tests"
     / "fixtures"
@@ -89,8 +118,8 @@ def build() -> dict:
     return {
         "_comment": (
             "TBD-242 cross-language contract. GENERATED from backend "
-            "period_status; do not hand-edit. Regenerate: python "
-            "backend/scripts/gen_period_status_vectors.py"
+            "period_status; do not hand-edit. Regenerate on the host with: "
+            "cd backend && python -m scripts.gen_period_status_vectors"
         ),
         "today": TODAY.isoformat(),
         "statuses": sorted(get_args(PeriodStatus)),

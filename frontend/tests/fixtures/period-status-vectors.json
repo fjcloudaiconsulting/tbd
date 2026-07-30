@@ -1,5 +1,5 @@
 {
-  "_comment": "TBD-242 cross-language contract. GENERATED from backend period_status; do not hand-edit. Regenerate: python backend/scripts/gen_period_status_vectors.py",
+  "_comment": "TBD-242 cross-language contract. GENERATED from backend period_status; do not hand-edit. Regenerate on the host with: cd backend && python -m scripts.gen_period_status_vectors",
   "today": "2026-07-29",
   "statuses": [
     "current_by_calendar",

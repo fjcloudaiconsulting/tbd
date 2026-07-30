@@ -36,20 +36,63 @@ import pytest
 
 from app.services.billing_service import PeriodStatus, RosterRow, period_status
 
+
+def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
+    """Walk upward from `start` until a directory holding both
+    `.github/workflows/deploy.yml` and `.do/app.yaml` is found.
+
+    Same marker walk as `tests/test_deploy_workflow.py`, and here for the same
+    reason: `parents[2]` is correct only from a host checkout. Inside the
+    backend container this file lives at `/app/tests/…`, so `parents[2]`
+    resolved to `/` and the fixture path became `/frontend/tests/fixtures/…`
+    — which made this whole module red for every developer and every agent
+    stack while staying green in CI. Both marker directories are mounted at
+    `/app` (see the `.github` / `.do` read-only mounts in docker-compose.yml).
+    """
+    for candidate in [start, *start.parents]:
+        if (candidate / ".github" / "workflows" / "deploy.yml").exists() and (
+            candidate / ".do" / "app.yaml"
+        ).exists():
+            return candidate
+    raise RuntimeError(
+        "Could not locate repo root containing .github/workflows/deploy.yml "
+        "and .do/app.yaml. Run these tests from a checked-out repo."
+    )
+
+
 FIXTURE = (
-    pathlib.Path(__file__).resolve().parents[2]
+    _find_repo_root(pathlib.Path(__file__).resolve())
     / "frontend"
     / "tests"
     / "fixtures"
     / "period-status-vectors.json"
 )
 
-REGEN = "python backend/scripts/gen_period_status_vectors.py"
+#: ⚠ The ONLY form that works. A script PATH puts `backend/scripts` on
+#: `sys.path[0]` and does NOT add the CWD, so both
+#: `python backend/scripts/gen_period_status_vectors.py` and
+#: `cd backend && python scripts/gen_period_status_vectors.py` raise
+#: `ModuleNotFoundError: No module named 'app'`. `-m` runs it as a module with
+#: the CWD on the path. Pinned byte-for-byte against the generator's
+#: `_comment` by `test_fixture_is_reproducible_from_the_generator`.
+#:
+#: ⚠ Run it on the HOST, not in the backend container: the fixture directory is
+#: mounted read-only there.
+REGEN = "cd backend && python -m scripts.gen_period_status_vectors"
 
 
 def _load() -> dict:
     if not FIXTURE.exists():  # pragma: no cover - guards a moved fixture
-        pytest.fail(f"contract fixture missing at {FIXTURE}; regenerate with: {REGEN}")
+        # ⚠ This FAILS; it never skips. A guard that skips is absent exactly
+        # where a human runs it, and it fails open — the sibling of every
+        # green-and-worthless test this programme has produced.
+        pytest.fail(
+            f"contract fixture missing at {FIXTURE}. If it is missing inside "
+            "the backend container, the read-only mount "
+            "`./frontend/tests/fixtures:/app/frontend/tests/fixtures:ro` is "
+            "gone from docker-compose.yml. Regenerate on the HOST (the mount "
+            f"is read-only) with: {REGEN}"
+        )
     return json.loads(FIXTURE.read_text())
 
 

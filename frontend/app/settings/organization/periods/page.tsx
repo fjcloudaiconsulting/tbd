@@ -213,6 +213,13 @@ function RosterView({
   // marked `status === "open"` (the backend derives that status from the same
   // column), so the brass anchor is unchanged — but the tie-break is now the
   // app-wide one instead of this file's private `>=` last-wins.
+  //
+  // ⚠ That tie-break change is provably INERT through this endpoint, and no
+  // test pins it because the branch is UNREACHABLE here: two open rows can
+  // never share a `start_date` (`uq_billing_period_org_start`), and an open
+  // row can never be `invalid` (the backend's branch 1 requires a non-null
+  // `end_date`). Recorded rather than fenced — minting a test for an
+  // unreachable branch is how a vacuous-by-construction fence gets written.
   const anchoredOpen = selectCurrentPeriod(periods);
   const anchoredOpenId = anchoredOpen?.id ?? null;
 

@@ -110,16 +110,33 @@ export default function BudgetsPage() {
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
     ]);
     setCategories(c ?? []);
-    // Show current + past periods, plus the single nearest FUTURE stub as
-    // the "next" period (design: current + next only, not multi-period).
+    // Show every period the org has, with the single nearest UPCOMING stub
+    // hoisted to slot 0 as the "next" period, so index order stays
+    // newest-first (the nav relies on it): [next, current, prev, ...].
+    //
+    // TBD-242: this used to partition on the raw clock —
+    // `start_date <= today` vs `start_date > today` — six lines below an
+    // `isEditable` that already routes through the classifier, and the two
+    // disagree on a roster whose OPEN row has a future `start_date` (the
+    // server opens a period at ITS UTC date, so a reader west of Greenwich
+    // sees exactly that for up to ~12 hours). There, both the open row and a
+    // genuine closed stub matched `start_date > today`; `future[0]` took the
+    // OPEN row and the stub was DROPPED FROM THE LIST ENTIRELY, so the user
+    // could not budget next period at all.
+    //
+    // `future` and `rest` are complements over one array, so this partition
+    // is TOTAL BY CONSTRUCTION — no row can vanish, whatever the roster. It
+    // is a null diff on every roster the UI itself can create: an upcoming
+    // stub is `upcoming` under both rules, and the current open row has
+    // `start_date <= today` so it was in `past` and is now in `rest`, in the
+    // same position.
     const today = todayISO();
-    const past = (p ?? []).filter((bp) => bp.start_date <= today);
+    const isNext = (bp: BillingPeriod) => periodStatus(bp, today) === "upcoming";
     const future = (p ?? [])
-      .filter((bp) => bp.start_date > today)
+      .filter(isNext)
       .sort((a, b) => a.start_date.localeCompare(b.start_date));
-    // Prepend the next stub so index order stays newest-first (nav relies
-    // on it): [next, current, prev, ...].
-    const pl = future.length > 0 ? [future[0], ...past] : past;
+    const rest = (p ?? []).filter((bp) => !isNext(bp));
+    const pl = future.length > 0 ? [future[0], ...rest] : rest;
     setPeriods(pl);
     // Default to the current period (TBD-242), not the next one.
     const currentIdx = selectCurrentPeriodIndex(pl);
