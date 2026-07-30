@@ -97,6 +97,29 @@ from app.services.mfa_service import (
 
 GOOGLE_OAUTH_TIMEOUT = httpx.Timeout(10.0)
 
+# Aggregate ceiling for the two-call Google exchange (token POST then
+# userinfo GET). ``GOOGLE_OAUTH_TIMEOUT`` above is a *per-phase* bound —
+# connect / write / read / pool each get 10s, sequentially within one
+# request, and ``read`` applies per socket read — so the pair's permitted
+# envelope is ~60s and up, and a drip-feeding server is unbounded. That
+# is the ~30s hang users reported. 20.0s deliberately narrows the
+# envelope to roughly 40x the normal end-to-end latency of the pair
+# (well under 500ms in practice) while sitting below the reported hang,
+# so the bound is observable when it fires.
+#
+# This IS a narrowing, and no value here can be shown "non-narrowing":
+# per-phase also permits a connect and a write per call, so e.g. 3s
+# connect + 9s read then 8s read violates no per-phase bound and still
+# trips 20s. The judgement is that such an exchange is already broken
+# from the user's point of view. Do not restate this constant as
+# provably safe.
+#
+# The one relationship a test does pin is a floor, not a proof: raising
+# ``GOOGLE_OAUTH_TIMEOUT`` without raising this constant would let a
+# single per-phase read budget outrun the aggregate, so healthy-but-slow
+# exchanges start failing as ``?sso_error=token``. Raise both together.
+GOOGLE_OAUTH_TOTAL_TIMEOUT_S = 20.0
+
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
@@ -2909,37 +2932,93 @@ async def google_callback(
         )
         return _google_error_redirect("state")
 
-    # Exchange authorization code for tokens
+    # Exchange authorization code for tokens.
+    #
+    # One *absolute* deadline shared by both awaited HTTP calls is what
+    # makes the bound aggregate: GOOGLE_OAUTH_TIMEOUT caps each phase of
+    # each call, but nothing caps their sum, so a drip-feeding provider
+    # holds this handler open far past any per-phase budget.
+    #
+    # Only the two network awaits sit inside the bounded blocks. The
+    # non-200 branches, the audit writes, the redirects and the client's
+    # own aclose() stay outside, deliberately: a slow non-200 arriving
+    # near the deadline would otherwise be cancelled mid-audit and
+    # rewritten into reason="timeout" — corrupting the forensic signal
+    # exactly during the incident it exists to diagnose, and in some
+    # interleavings writing two audit rows for one request.
+    #
+    # Excluding a region from cancellation does not exclude it from the
+    # budget, but every audit write below is immediately followed by a
+    # return, so no bounded block is ever entered after one.
+    deadline = asyncio.get_running_loop().time() + GOOGLE_OAUTH_TOTAL_TIMEOUT_S
+    progress = {"phase": "start"}
     try:
         async with httpx.AsyncClient(timeout=GOOGLE_OAUTH_TIMEOUT) as client:
-            token_resp = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "code": code,
-                    "client_id": app_settings.google_client_id,
-                    "client_secret": app_settings.google_client_secret,
-                    "redirect_uri": f"{app_settings.app_url}/api/v1/auth/google/callback",
-                    "grant_type": "authorization_code",
-                },
-            )
+            async with asyncio.timeout_at(deadline):
+                token_resp = await client.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={
+                        "code": code,
+                        "client_id": app_settings.google_client_id,
+                        "client_secret": app_settings.google_client_secret,
+                        "redirect_uri": f"{app_settings.app_url}/api/v1/auth/google/callback",
+                        "grant_type": "authorization_code",
+                    },
+                )
             if token_resp.status_code != 200:
                 await _record_google_callback_failure(
                     session_factory, request=request, reason="token"
                 )
                 return _google_error_redirect("token")
             tokens = token_resp.json()
+            progress["phase"] = "token_ok"
 
             # Get user info from Google
-            userinfo_resp = await client.get(
-                "https://www.googleapis.com/oauth2/v2/userinfo",
-                headers={"Authorization": f"Bearer {tokens['access_token']}"},
-            )
+            async with asyncio.timeout_at(deadline):
+                userinfo_resp = await client.get(
+                    "https://www.googleapis.com/oauth2/v2/userinfo",
+                    headers={"Authorization": f"Bearer {tokens['access_token']}"},
+                )
             if userinfo_resp.status_code != 200:
                 await _record_google_callback_failure(
                     session_factory, request=request, reason="userinfo"
                 )
                 return _google_error_redirect("userinfo")
             google_user = userinfo_resp.json()
+    except TimeoutError:
+        # Exactly one name, and never a tuple with httpx.HTTPError.
+        # asyncio.TimeoutError *is* builtin TimeoutError, and none of
+        # httpx's own timeout classes derive from it, so this clause
+        # cannot steal a per-phase httpx timeout — those keep landing
+        # below with reason "token".
+        #
+        # Ungated: _log_google_callback_phase is gated on
+        # AUTH_DEBUG_LOGGING (off in production) and its closure is
+        # defined after this try/except, so a wedged exchange produces
+        # total silence today.
+        #
+        # Fields are passed FLAT, not under ``extra=``: ``_LOGGER`` is a
+        # structlog stdlib BoundLogger, which treats ``extra`` as an
+        # ordinary key and renders it as a nested object, so a log filter
+        # on ``flow:"login"`` would not match. Same shape as
+        # ``_log_google_callback_phase``'s ``**detail``.
+        _LOGGER.warning(
+            "auth.google.callback.exchange_timeout",
+            timeout_s=GOOGLE_OAUTH_TOTAL_TIMEOUT_S,
+            flow="login",
+            last_phase=progress["phase"],
+        )
+        # Audit "timeout" but redirect as "token": "Google rejected the
+        # code" and "Google never answered" need different operator
+        # remediations, while the existing banner copy is already right
+        # for both. Same split the missing_code branch above uses.
+        await _record_google_callback_failure(
+            session_factory,
+            request=request,
+            reason="timeout",
+            detail_extra={"last_phase": progress["phase"]},
+        )
+        return _google_error_redirect("token")
     except httpx.HTTPError:
         await _record_google_callback_failure(
             session_factory, request=request, reason="token"
@@ -3309,10 +3388,23 @@ async def sso_stepup_callback(
     async def _stepup_failure(
         reason: str,
         *,
+        ui_code: str | None = None,
         actor_email: str | None = None,
         detail_extra: dict[str, Any] | None = None,
     ) -> RedirectResponse:
-        """Record the audit row and build the friendly redirect."""
+        """Record the audit row and build the friendly redirect.
+
+        ``ui_code`` defaults to ``reason`` and only differs when the
+        audit needs a precise cause the frontend has no copy for (e.g.
+        ``timeout``), in which case the redirect reuses an existing
+        banner code. Routing that case through here rather than
+        building the redirect inline keeps the ``_resolve_return_path``
+        target and the ``oauth_state`` cookie deletion. The deletion is
+        hygiene, not a retry fix: ``sso_stepup_initiate`` re-issues the
+        cookie at the same name and path on every attempt, so a stale
+        one is overwritten. It is kept because a single-use CSRF nonce
+        should not outlive the exchange it authorised.
+        """
         return_path = _resolve_return_path(state)
         await _record_google_callback_failure(
             session_factory,
@@ -3323,7 +3415,7 @@ async def sso_stepup_callback(
             detail_extra=detail_extra,
         )
         resp = RedirectResponse(
-            url=f"{app_settings.app_url}{return_path}?sso_stepup_error={reason}",
+            url=f"{app_settings.app_url}{return_path}?sso_stepup_error={ui_code or reason}",
             status_code=307,
         )
         resp.delete_cookie("oauth_state", path="/api/v1/auth/sso-stepup")
@@ -3389,30 +3481,56 @@ async def sso_stepup_callback(
         # don't leak which user_ids exist.
         return await _stepup_failure("state")
 
-    # Exchange code → tokens → userinfo, identical shape to /google/callback
+    # Exchange code → tokens → userinfo, identical shape to /google/callback,
+    # including the aggregate bound: one absolute deadline shared by both
+    # awaited HTTP calls, wrapping the network awaits only. See the
+    # matching comment in google_callback for why the non-200 branches,
+    # the audit writes and the client's aclose() stay outside the bound.
+    deadline = asyncio.get_running_loop().time() + GOOGLE_OAUTH_TOTAL_TIMEOUT_S
+    progress = {"phase": "start"}
     try:
         async with httpx.AsyncClient(timeout=GOOGLE_OAUTH_TIMEOUT) as client:
-            token_resp = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "code": code,
-                    "client_id": app_settings.google_client_id,
-                    "client_secret": app_settings.google_client_secret,
-                    "redirect_uri": f"{app_settings.app_url}/api/v1/auth/sso-stepup/callback",
-                    "grant_type": "authorization_code",
-                },
-            )
+            async with asyncio.timeout_at(deadline):
+                token_resp = await client.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={
+                        "code": code,
+                        "client_id": app_settings.google_client_id,
+                        "client_secret": app_settings.google_client_secret,
+                        "redirect_uri": f"{app_settings.app_url}/api/v1/auth/sso-stepup/callback",
+                        "grant_type": "authorization_code",
+                    },
+                )
             if token_resp.status_code != 200:
                 return await _stepup_failure("token", actor_email=user.email)
             tokens = token_resp.json()
+            progress["phase"] = "token_ok"
 
-            userinfo_resp = await client.get(
-                "https://www.googleapis.com/oauth2/v2/userinfo",
-                headers={"Authorization": f"Bearer {tokens['access_token']}"},
-            )
+            async with asyncio.timeout_at(deadline):
+                userinfo_resp = await client.get(
+                    "https://www.googleapis.com/oauth2/v2/userinfo",
+                    headers={"Authorization": f"Bearer {tokens['access_token']}"},
+                )
             if userinfo_resp.status_code != 200:
                 return await _stepup_failure("userinfo", actor_email=user.email)
             google_user = userinfo_resp.json()
+    except TimeoutError:
+        # Flat fields, not ``extra=`` — see the login site's note.
+        _LOGGER.warning(
+            "auth.google.callback.exchange_timeout",
+            timeout_s=GOOGLE_OAUTH_TOTAL_TIMEOUT_S,
+            flow="stepup",
+            last_phase=progress["phase"],
+        )
+        # Audit the precise cause, show the user the existing "token"
+        # banner. ``ui_code`` keeps the two apart without duplicating
+        # the redirect and its cookie deletion.
+        return await _stepup_failure(
+            "timeout",
+            ui_code="token",
+            actor_email=user.email,
+            detail_extra={"last_phase": progress["phase"]},
+        )
     except httpx.HTTPError:
         return await _stepup_failure("token", actor_email=user.email)
 
