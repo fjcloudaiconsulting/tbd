@@ -11,6 +11,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
+import { isOpenPeriod } from "@/lib/billingPeriodStatus";
 import { input, label, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { useAccounts } from "@/lib/hooks/use-accounts";
@@ -267,7 +268,10 @@ function TransactionsPageContent() {
     // Period filter overrides date_from/date_to
     if (filterPeriod) {
       const per = periods.find((pp) => String(pp.id) === filterPeriod);
-      if (per && per.end_date !== null) {
+      // TBD-242: an OPEN period has no end_date to bound the query with, so
+      // the filter is skipped. Only closed periods are offered (below), so
+      // this is defensive rather than reachable.
+      if (per && !isOpenPeriod(per)) {
         url += `&date_from=${per.start_date}`;
         url += `&date_to=${per.end_date}`;
       }
@@ -329,8 +333,10 @@ function TransactionsPageContent() {
     }
   }, [categories, searchParams, setFilterCategory]);
 
+  // TBD-242: the dropdown offers only CLOSED periods — an open period has no
+  // end bound, so it cannot express a date range.
   const closedPeriods = useMemo(
-    () => periods.filter((p) => p.end_date !== null),
+    () => periods.filter((p) => !isOpenPeriod(p)),
     [periods],
   );
 

@@ -11,6 +11,7 @@
  */
 import Link from "next/link";
 
+import { isOpenPeriod } from "@/lib/billingPeriodStatus";
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import TourAnchor from "@/components/tour/TourAnchor";
 
@@ -25,7 +26,9 @@ export default function DashboardPeriodNav() {
     jumpToCurrentPeriod,
   } = useDashboard();
 
-  const isCurrentPeriod = selectedPeriod?.end_date === null;
+  // TBD-242: LABEL only. `open` is the status the period nav badges.
+  const isCurrentPeriod =
+    selectedPeriod !== null && selectedPeriod !== undefined && isOpenPeriod(selectedPeriod);
   const isOldest = periodIdx >= periods.length - 1;
   const isNewest = periodIdx <= 0;
 

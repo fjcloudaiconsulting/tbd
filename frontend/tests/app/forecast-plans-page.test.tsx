@@ -10,6 +10,7 @@ import {
 import ForecastPlansClient from "@/app/forecast-plans/ForecastPlansClient";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import { todayISO } from "@/lib/format";
 import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
 
 // The page itself is now an async Server Component (RSC) — it calls
@@ -180,6 +181,236 @@ function renderClient(plan: ForecastPlan | null) {
     />,
   );
 }
+
+// Like `mockApiFetch`, but the billing-periods re-read that the mount-fired
+// ensure-future pass performs echoes back the SAME roster the component was
+// mounted with. Without this the refresh replaces a hand-built roster with the
+// module-level single `PERIOD` and re-selects a different row, racing the
+// assertion instead of testing the rule.
+function mockApiFetchWithRoster(plan: ForecastPlan, roster: BillingPeriod[]) {
+  (apiFetch as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    (path: string) => {
+      if (path.startsWith("/api/v1/settings/billing-periods/ensure-future")) {
+        return Promise.resolve([]);
+      }
+      if (path === "/api/v1/settings/billing-periods") {
+        return Promise.resolve(roster);
+      }
+      return Promise.resolve(plan);
+    },
+  );
+}
+
+describe("ForecastPlansClient — rosters where the period rules diverge (TBD-242)", () => {
+  // Every OTHER period test in this repo uses a roster whose open row also
+  // calendar-contains today, where all three of the frontend's historical
+  // "current period" rules agree — so those tests pass under every rule and
+  // fence nothing. The rosters below are the ones that separate them.
+  //
+  // Each test carries its OWN banner naming the single wrong implementation it
+  // kills. A banner over the whole describe would claim coverage that no one
+  // fixture delivers.
+  const LAPSED_OPEN: BillingPeriod = {
+    id: 90, start_date: "2020-01-01", end_date: null,
+  };
+  const CONTAINING_STUB: BillingPeriod = {
+    id: 91,
+    start_date: todayISO().slice(0, 8) + "01",
+    end_date: "2999-12-31",
+  };
+  const CLOSED_PAST: BillingPeriod = {
+    id: 89, start_date: "2019-01-01", end_date: "2019-12-31",
+  };
+  // Two OPEN rows. The selection rules diverge only where the first open row
+  // in ARRAY ORDER is not the newest-start one, which is exactly here.
+  const OLDER_OPEN: BillingPeriod = {
+    id: 92, start_date: "2020-01-01", end_date: null,
+  };
+  const NEWER_OPEN: BillingPeriod = {
+    id: 93, start_date: "2026-06-01", end_date: null,
+  };
+  // Mounted-with row that the ensure-future refresh does NOT return, so the
+  // `findIndex(start_date === currentStart)` lookup misses and the fallback
+  // branch is the one under test.
+  const VANISHED_OPEN: BillingPeriod = {
+    id: 94, start_date: "2021-03-01", end_date: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    vi.mocked(useAuth).mockReturnValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      user: { id: 1, role: "owner", is_superadmin: false } as any,
+    } as never);
+  });
+
+  it("fence: selects the newest OPEN row when two rows are open", async () => {
+    // Kills: replacing the `selectCurrentPeriodIndex(initialPeriods)` seed in
+    // ForecastPlansClient with `initialPeriods.findIndex((p) => p.end_date
+    // === null)` — first-open-in-array-order instead of newest-start.
+    //
+    // `selectCurrentPeriodIndex`'s own unit tests cannot kill that mutant: it
+    // lives at the CALL SITE. Neither can the lapsed-roster fixtures below,
+    // where both rules return the same index.
+    //
+    // Why it matters: `resolve_period` writes to the newest open row. Pick the
+    // other one and the user edits a plan against a period the backend does
+    // not write to.
+    //
+    // Clock-free by construction (both rows are open), so fixed literals are
+    // safer here than `today ± 1`.
+    mockApiFetchWithRoster(makePlan(), [OLDER_OPEN, NEWER_OPEN]);
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[OLDER_OPEN, NEWER_OPEN]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText(NEWER_OPEN.start_date)).toBeTruthy();
+    });
+    // The negative half is load-bearing: a component rendering BOTH rows'
+    // dates would satisfy the positive alone.
+    expect(screen.queryByText(OLDER_OPEN.start_date)).toBeNull();
+  });
+
+  it("fence: the ensure-future fallback re-selects the newest OPEN row, not the first one in array order", async () => {
+    // Kills: replacing `selectCurrentPeriodIndex(fresh)` in the ensure-future
+    // refresh's `-1` fallback with `fresh.findIndex((q) => q.end_date === null)`.
+    //
+    // This is the SECOND call site of the same rule, and the mutant survives
+    // every other test in the repo including the F2a fence above — that one
+    // only exercises the INITIAL seed. The consequence is identical: on a
+    // duplicate-open roster the user edits a plan against a period
+    // `resolve_period` does not write to.
+    //
+    // The fixture has to defeat the fast path first. The refresh only reaches
+    // the fallback when the currently-selected `start_date` is ABSENT from the
+    // refreshed list, so the mounted row (VANISHED_OPEN) is deliberately not
+    // in the refreshed roster. The refreshed roster is then ordered
+    // OLDEST-first, which is where the two rules diverge.
+    //
+    // Clock-free by construction (every row is open), so fixed literals are
+    // safer here than `today ± 1`.
+    mockApiFetchWithRoster(makePlan(), [OLDER_OPEN, NEWER_OPEN]);
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[VANISHED_OPEN]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    // The refresh has to land first — the mounted row's own date is on screen
+    // until it does, so asserting too early would pass against either rule.
+    await waitFor(() => {
+      expect(screen.queryByText(VANISHED_OPEN.start_date)).toBeNull();
+    });
+    await waitFor(() => {
+      expect(screen.getByText(NEWER_OPEN.start_date)).toBeTruthy();
+    });
+    // The negative half is load-bearing: it is what the first-open mutant
+    // trips on, and a component rendering BOTH dates would satisfy the
+    // positive alone.
+    expect(screen.queryByText(OLDER_OPEN.start_date)).toBeNull();
+  });
+
+  it("fence: hides the Today button when no row is open at all", async () => {
+    // Kills: deleting `&& hasCurrentPeriod` from the Today button's gate.
+    // On a `no_open` roster `selectCurrentPeriodIndex` returns -1, so an
+    // ungated button renders and its click handler silently does nothing.
+    mockApiFetchWithRoster(makePlan(), [CONTAINING_STUB]);
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[CONTAINING_STUB]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    // Wait for the period nav itself, so the absence below is an absence in a
+    // rendered nav rather than an absence of any render at all.
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Older period" }),
+      ).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: "Today" })).toBeNull();
+  });
+
+  it("fence: keeps the Today button when an open row exists but is not selected", async () => {
+    // Kills: flipping the gate to `!isCurrentPeriod && !hasCurrentPeriod`, and
+    // any over-tightening (`{false && (`) or deletion of the button.
+    //
+    // The negative fence above is satisfied both by "absent because the gate
+    // worked" and by "absent because the button no longer exists". A boundary
+    // pinned from one side is not pinned.
+    mockApiFetchWithRoster(makePlan(), [CLOSED_PAST, LAPSED_OPEN]);
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[CLOSED_PAST, LAPSED_OPEN]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    // Mounts on the open row (index 1). Step one newer, onto the closed one.
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Newer period" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Today" }));
+    await waitFor(() => {
+      expect(screen.getByText(LAPSED_OPEN.start_date)).toBeTruthy();
+    });
+  });
+
+  it("guard: does not label a calendar-containing CLOSED stub as current", () => {
+    // Kills: deciding `isCurrentPeriod` by calendar containment
+    // (`start <= today && (!end || end >= today)`) instead of the classifier's
+    // `open` branch. This stub calendar-contains today but is closed, so the
+    // backend would open a fresh period rather than write here.
+    mockApiFetch(makePlan());
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[CONTAINING_STUB]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    expect(screen.queryByText("current")).toBeNull();
+  });
+
+  it("guard: still labels a genuinely open row as current", () => {
+    // The other half of the pair above: without it, that test would also pass
+    // against a component that never renders the pill at all.
+    mockApiFetch(makePlan());
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[LAPSED_OPEN]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    expect(screen.getByText("current")).toBeTruthy();
+  });
+
+  it("guard: seeds the selected row from the open row, not from index 0", async () => {
+    // Kills: dropping the TBD-242 seed entirely and defaulting `periodIdx` to
+    // 0. Both the old containment rule and the new one agree on this roster,
+    // so this is a guard, not a fence — the fence for the seed is the
+    // two-open-rows test above.
+    mockApiFetch(makePlan());
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={[CONTAINING_STUB, LAPSED_OPEN]}
+        initialCategories={CATEGORIES}
+        initialPlan={null}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText(LAPSED_OPEN.start_date)).toBeTruthy();
+    });
+  });
+});
 
 describe("ForecastPlansClient — dropdown + refresh", () => {
   beforeEach(() => {

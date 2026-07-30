@@ -23,6 +23,7 @@ import { renderWithSWR } from "@/tests/utils/render-with-swr";
 import { DashboardDataProvider, useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import { formatLocalDate, todayISO } from "@/lib/format";
 import * as pagination from "@/lib/pagination";
 import * as usePersistedSortModule from "@/lib/hooks/use-persisted-sort";
 
@@ -459,6 +460,56 @@ describe("DashboardDataProvider — period derivations", () => {
       expect(screen.getByTestId("is-future").textContent).toBe("true"),
     );
     expect(screen.getByTestId("is-current").textContent).toBe("false");
+  });
+
+  it("fence: an OPEN row whose start_date is in the future is current, NOT future (TBD-242 D1)", async () => {
+    // Kills: reverting `isFutureSelectedPeriod` to a second, raw-clock rule —
+    //   const isFutureSelectedPeriod = selectedPeriod.start_date > _today;
+    // which is what `main` did. Spec §1 rules `open` and `upcoming` mutually
+    // exclusive: `periodStatus`'s `open` branch precedes `upcoming`, so this
+    // row is `open` and nothing else. Under the revert it is BOTH, and every
+    // consumer of the flag (OnTrackWidget's "Plan ahead" panel,
+    // BudgetBarsWidget / ForecastBarsWidget empty states) flips to its
+    // future-period variant on the CURRENT period.
+    //
+    // The test above uses a CLOSED future stub, where both rules agree, so it
+    // fences nothing here. The rosters diverge only on an open row whose
+    // start is still ahead — which a reader west of Greenwich sees for up to
+    // ~12 hours after the server opens the period at ITS UTC date.
+    //
+    // Anchored to the local clock, not literals
+    // (`reference_wall_clock_date_bomb_tests`).
+    const today = new Date(`${todayISO()}T00:00:00`);
+    today.setDate(today.getDate() + 1);
+    const OPEN_FUTURE_START = {
+      id: 4,
+      start_date: formatLocalDate(today),
+      end_date: null,
+    };
+
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        periods: [OPEN_FUTURE_START, PAST_PERIOD],
+        period: OPEN_FUTURE_START,
+      }) as never,
+    );
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+
+    // `selectCurrentPeriodIndex` is clock-free, so it seeds onto the open row
+    // regardless — which is what makes the flags below meaningful.
+    expect(screen.getByTestId("month-from").textContent).toBe(
+      OPEN_FUTURE_START.start_date,
+    );
+    expect(screen.getByTestId("is-future").textContent).toBe("false");
+    // Positive half: absent-because-the-rule-worked, not absent because the
+    // provider never classified the row at all.
+    expect(screen.getByTestId("is-current").textContent).toBe("true");
+    expect(screen.getByTestId("is-past").textContent).toBe("false");
   });
 });
 
