@@ -309,12 +309,26 @@ async def _build_response(
     #     run unbounded forward and swallow every future stub's window.
     #
     # ⚠ `populate_from_sources` in this same file uses a THIRD expression
-    # (`p_start + 1 month - 1 day`) and that is deliberate — there `p_end`
-    # doubles as a forward PROJECTION HORIZON for recurring synthesis, and
-    # clamping it to a derived-or-today value would zero the recurring
-    # contribution for exactly the lapsed orgs this ticket is about. Separating
-    # the settled-sum bound from the projection horizon at those sites is a
-    # named follow-up (spec §7); do not unify the two shapes.
+    # (`p_start + 1 month - 1 day`) and still does — but NOT for the reason
+    # this comment used to give, and NOT pending the follow-up it used to
+    # point at. TBD-240 §7 named "separate the settled-sum bound from the
+    # projection horizon" as that follow-up;
+    # `specs/2026-07-30-forecast-period-window-design.md` (TBD-243)
+    # **overrules it**. Splitting the two bounds opens a gap between them that
+    # `generate_due_transactions`' roster-independent materialisation window
+    # reaches into, so an obligation lands in neither bucket before
+    # materialisation and one bucket after, and `forecast_net` moves with no
+    # user action (§2 of that spec reproduces the break). `forecast_service`
+    # and `account_balance_forecast_service` were moved to ONE window instead.
+    #
+    # `populate_from_sources` is deliberately NOT part of that change, for a
+    # reason of its own: it is a WRITE path whose window feeds
+    # `master_monthly["__current__"]`, which is divided by `len(months)` as ONE
+    # month slot. Widening it to today on a lapsed org would count months of
+    # spend as a single month and inflate every `planned_amount`. Weighting the
+    # current slot by elapsed months is a separate design question — see that
+    # spec §3.2, which also records why `:512`'s loop-termination guard must
+    # not be rewired.
     #
     # `today` is injectable (D6) because the window floors at the wall clock.
     # All eleven `_build_response` call sites pass it through from their own

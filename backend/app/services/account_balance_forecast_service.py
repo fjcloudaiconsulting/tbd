@@ -33,7 +33,7 @@ from app.models.account import Account, AccountType
 from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services import cc_forecast_service, loan_forecast_service
-from app.services.billing_service import resolve_period
+from app.services.billing_service import period_spend_window_end, resolve_period
 from app.services.cc_statement_service import load_cc_ledgers
 from app.services.loan_service import compute_pmt
 from app.services.transaction_filters import (
@@ -47,8 +47,12 @@ async def compute_account_balance_forecast(
     org_id: int,
     *,
     period_start: datetime.date | None = None,
+    today: datetime.date | None = None,
 ) -> dict:
     """Compute expected month-end balance per account for a billing period.
+
+    ``today`` is keyword-only and injectable because the period window floors
+    at the wall clock (see ``window_end`` below); it is resolved once, here.
 
     Returns the spec shape:
 
@@ -61,12 +65,33 @@ async def compute_account_balance_forecast(
                         expected_month_end_balance}],
         }
     """
+    today = today if today is not None else datetime.date.today()
+
     period = await resolve_period(db, org_id, period_start)
 
     p_start = period.start_date
-    p_end = period.end_date or (
-        p_start + relativedelta(months=1) - datetime.timedelta(days=1)
-    )
+
+    # ── The period's ONE window (TBD-243) ─────────────────────────────────
+    # Same single value as `forecast_service.compute_forecast`, for the same
+    # reason: it bounds the pending aggregate, the CC synthesis horizon, the
+    # loan already-paid probe, the loan synthesis horizon AND the emitted
+    # `period_end`. Splitting the settled-sum bound from the projection
+    # horizon is rejected by
+    # `specs/2026-07-30-forecast-period-window-design.md` §2 (it breaks
+    # conservation across `generate_due_transactions`), and every
+    # anti-double-count guard here — the loan `already_paid` probe below, CC's
+    # `p_k_owned` — has to sit on the window anyway.
+    #
+    # Closed rows verbatim, never floored (§4 F6). The `None` arm is the
+    # roster tail; the calendar expression there keeps `period_end` non-null
+    # and keeps `col <= window_end` compilable (§4 F5).
+    if period.end_date is not None:
+        window_end = period.end_date
+    else:
+        derived = await period_spend_window_end(db, org_id, period, today=today)
+        window_end = derived if derived is not None else (
+            p_start + relativedelta(months=1) - datetime.timedelta(days=1)
+        )
 
     accounts_result = await db.execute(
         select(Account, AccountType.slug)
@@ -93,7 +118,7 @@ async def compute_account_balance_forecast(
             Transaction.org_id == org_id,
             Transaction.status == TransactionStatus.PENDING,
             Transaction.is_manual_adjustment.is_(False),
-            and_(eff_date >= p_start, eff_date <= p_end),
+            and_(eff_date >= p_start, eff_date <= window_end),
         )
         .group_by(Transaction.account_id, Transaction.type)
     )
@@ -140,9 +165,10 @@ async def compute_account_balance_forecast(
         # guaranteed to be >= its own close_date -- with payment_day <
         # close_day and payment_day_relative_month == 0 (same-month
         # payment), payment_date can fall BEFORE close_date. Bounding the
-        # fetch at p_end would then drop ledger rows in (p_end, close_date]
-        # that balance_at_close(close_date) needs, silently under-counting
-        # outstanding. This matches the pre-refactor inline query, which
+        # fetch at window_end would then drop ledger rows in
+        # (window_end, close_date] that balance_at_close(close_date) needs,
+        # silently under-counting outstanding. This matches the
+        # pre-refactor inline query, which
         # was also unbounded and let balance_at_close's own close_date
         # re-filter do the work.
         ledger_by_account = await load_cc_ledgers(db, org_id, cc_ids)
@@ -167,7 +193,7 @@ async def compute_account_balance_forecast(
             if source.currency != cc.currency:
                 continue  # no FX in V1 -> would desync per-currency totals
             payments = cc_forecast_service.synthesize_account_cc_payments(
-                cc, p_start=p_start, p_end=p_end,
+                cc, p_start=p_start, p_end=window_end,
                 opening_balance=Decimal(str(cc.opening_balance)),
                 ledger=ledger_by_account.get(cc.id, []),
                 credits=credits_by_account.get(cc.id, []),
@@ -215,7 +241,7 @@ async def compute_account_balance_forecast(
                    Transaction.linked_transaction_id.is_not(None),
                    Transaction.type == TransactionType.INCOME,
                    balance_contribution_filter(),
-                   and_(eff_date >= p_start, eff_date <= p_end))
+                   and_(eff_date >= p_start, eff_date <= window_end))
         )).all()
         loan_paid_ids = {aid for (aid,) in loan_paid_rows}
 
@@ -237,7 +263,7 @@ async def compute_account_balance_forecast(
                 balance=Decimal(str(loan.balance)),
                 pmt=pmt,
                 p_start=p_start,
-                p_end=p_end,
+                p_end=window_end,
                 already_paid=loan.id in loan_paid_ids,
                 account_id=loan.id,
             )
@@ -299,7 +325,7 @@ async def compute_account_balance_forecast(
 
     return {
         "period_start": p_start.isoformat(),
-        "period_end": p_end.isoformat(),
+        "period_end": window_end.isoformat(),
         "totals": totals_payload,
         "accounts": accounts_payload,
     }
