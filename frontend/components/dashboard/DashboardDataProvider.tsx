@@ -34,6 +34,11 @@ import {
 import { apiFetch } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
 import { formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
+import {
+  periodStatus,
+  selectCurrentPeriod,
+  selectCurrentPeriodIndex,
+} from "@/lib/billingPeriodStatus";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useAccounts } from "@/lib/hooks/use-accounts";
 import { useBillingPeriods } from "@/lib/hooks/use-billing-periods";
@@ -381,29 +386,36 @@ export function DashboardDataProvider({
   // ── Period derivations ──────────────────────────────────────────────────────
   // periodIdx is derived from the identity-based selection: the selected
   // period is looked up by start_date in the (SWR-owned) periods list; if it
-  // vanished — or the user never navigated — fall back to the current open
-  // period (end_date === null), matching the legacy default.
+  // vanished — or the user never navigated — fall back to the current period
+  // per `selectCurrentPeriod` (TBD-242), matching the legacy default.
+  //
+  // ⚠ The `-1` fallback to index 0 is the `no_open` roster: no row is open, so
+  // there is no current period and the list's first row is shown. That is the
+  // pre-existing behaviour, preserved deliberately; making it visible is
+  // TBD-235's job, not this refactor's.
   const periodIdx = useMemo(() => {
     if (periods.length === 0) return 0;
     if (selectedStart !== null) {
       const idx = periods.findIndex((p) => p.start_date === selectedStart);
       if (idx >= 0) return idx;
     }
-    const currentIdx = periods.findIndex((p) => p.end_date === null);
+    const currentIdx = selectCurrentPeriodIndex(periods);
     return currentIdx >= 0 ? currentIdx : 0;
   }, [periods, selectedStart]);
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
   const realPeriodStart: string | null = selectedPeriod?.start_date ?? null;
 
+  // TBD-242: one classifier, one clock. `_today` is LOCAL (`todayISO`), never
+  // UTC — Forecasts used to compute its own UTC today and disagree with this
+  // file for any user east of Greenwich.
   const _today = todayISO();
-  const isCurrentSelectedPeriod = selectedPeriod?.end_date === null;
-  const isPastSelectedPeriod = !!(
-    selectedPeriod?.end_date && selectedPeriod.end_date < _today
-  );
-  const isFutureSelectedPeriod = !!(
-    selectedPeriod && selectedPeriod.start_date > _today
-  );
+  const selectedStatus = selectedPeriod
+    ? periodStatus(selectedPeriod, _today)
+    : null;
+  const isCurrentSelectedPeriod = selectedStatus === "open";
+  const isPastSelectedPeriod = selectedStatus === "past";
+  const isFutureSelectedPeriod = selectedStatus === "upcoming";
 
   const monthFrom =
     realPeriodStart ??
@@ -433,8 +445,7 @@ export function DashboardDataProvider({
   // identity: a pin would park the user on the then-closed period after a
   // month rollover, the opposite of what "Today" means.
   const jumpToCurrentPeriod = useCallback(() => {
-    const idx = periods.findIndex((p) => p.end_date === null);
-    if (idx >= 0) {
+    if (selectCurrentPeriod(periods) !== null) {
       setSelectedStart(null);
       setChartFilter(null);
     }
