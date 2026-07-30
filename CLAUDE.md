@@ -57,6 +57,16 @@ docker compose exec frontend npm test -- tests/...
 docker compose exec frontend npx tsc --noEmit
 ```
 
+`backend/tests/test_period_status_frontend_contract.py` reads a fixture that lives
+on the frontend side, so `docker-compose.yml` mounts
+`./frontend/tests/fixtures:/app/frontend/tests/fixtures:ro` into the backend
+service. A container built before that mount existed shows those tests red; run
+`docker compose up -d --force-recreate backend` once to pick it up. The mount is
+read-only on purpose — the fixture is regenerated deliberately, **on the host**,
+with `cd backend && python -m scripts.gen_period_status_vectors` (that is the only
+invocation that works; a script path puts `backend/scripts` on `sys.path` and
+fails to import `app`).
+
 ### Running backend tests in parallel agent sessions
 
 When dispatched as a parallel agent, NEVER run backend tests against the user's
@@ -72,6 +82,16 @@ flag, on every command in the session. A single command that omits it falls
 back to the default `pfv` project name and will write to the user's MySQL
 volume. See `~/.claude/projects/-Users-flamarion-src-tbd/memory/reference_shared_mysql_volume_trap.md`
 for the 2026-05-09 incident this rule prevents.
+
+**Anchor every path to the worktree's absolute literal path.** Do NOT derive it
+with `$(git rev-parse --show-toplevel)`: that resolves against the shell's
+*current* directory, so once an agent's cwd drifts into a sibling worktree the
+idiom silently returns the wrong root and "safely derived" absolute paths point
+at another ticket's tree. Prefer `git -C /abs/path/to/worktree ...`, and `pwd`
+before any shell write. This is not hypothetical — on 2026-07-30 an agent
+appended 95 lines to a different ticket's test file this way; it was additive,
+caught, and reverted before any commit. See
+`memory/reference_rev_parse_toplevel_not_a_worktree_anchor.md`.
 
 `./pfv migrate` is for the user's local stack only. Do not invoke it from an
 agent session; it has no `-p` flag and always targets the default project.
