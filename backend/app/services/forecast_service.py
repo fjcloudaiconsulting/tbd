@@ -16,7 +16,7 @@ from app.models.billing import BillingPeriod
 from app.models.category import Category
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
-from app.services.billing_service import get_current_period
+from app.services.billing_service import get_current_period, period_spend_window_end
 from app.services.date_utils import advance_date
 from app.services.transaction_filters import (
     effective_period_date_expr,
@@ -25,9 +25,22 @@ from app.services.transaction_filters import (
 
 
 async def compute_forecast(
-    db: AsyncSession, org_id: int, period_start: datetime.date | None = None
+    db: AsyncSession,
+    org_id: int,
+    period_start: datetime.date | None = None,
+    *,
+    today: datetime.date | None = None,
 ) -> dict:
     """Compute the full forecast for a billing period.
+
+    ``today`` is keyword-only and injectable because the period window floors
+    at the wall clock (see ``window_end`` below). It is resolved ONCE here and
+    every clock consumer in this function reads that same value — the recurring
+    gate below used to call ``date.today()`` a second time, and two independent
+    clock reads inside one computation is the straddle trap TBD-240 D6 exists
+    to prevent. ``test_forecast_parity_after_generate`` asserts a conservation
+    invariant ACROSS two calls; a bucket that moves because the clock ticked
+    between two reads would break it.
 
     Returns:
         executed_income: sum of settled income
@@ -56,9 +69,35 @@ async def compute_forecast(
     else:
         period = await get_current_period(db, org_id)
 
+    today = today if today is not None else datetime.date.today()
+
     p_start = period.start_date
-    # For open periods, project to ~30 days from start
-    p_end = period.end_date or (p_start + relativedelta(months=1) - datetime.timedelta(days=1))
+
+    # ── The period's ONE window (TBD-243) ─────────────────────────────────
+    # `window_end` bounds EVERY backward sum and EVERY forward projection
+    # horizon in this function. There is deliberately no second value and no
+    # second name: the backward sum and the forward projection are two halves
+    # of one total joined by a materialisation event, and
+    # `generate_due_transactions` materialises on `current_cycle_window`,
+    # which is ROSTER-INDEPENDENT. Two windows would open a gap the
+    # materialisation window reaches into — an obligation in neither bucket
+    # before and one bucket after — and `forecast_net` would move with no user
+    # action. `specs/2026-07-30-forecast-period-window-design.md` §2
+    # reproduces that break; §4 F4 fences it.
+    #
+    # Closed rows take `end_date` verbatim and are NEVER floored: flooring one
+    # would re-open reported history for every org (§4 F6). The `None` arm is
+    # the roster tail, where `period_effective_end` is genuinely unbounded;
+    # the calendar expression there is FORCED, not chosen — the
+    # `while d <= window_end` loops below cannot terminate on `None`, and it is
+    # what keeps `period_end` non-null in the response contract (§4 F5).
+    if period.end_date is not None:
+        window_end = period.end_date
+    else:
+        derived = await period_spend_window_end(db, org_id, period, today=today)
+        window_end = derived if derived is not None else (
+            p_start + relativedelta(months=1) - datetime.timedelta(days=1)
+        )
 
     # ── Executed (settled) — uses settled_date for period assignment ─────
     # Transactions count against the period in which they settled,
@@ -74,7 +113,7 @@ async def compute_forecast(
             Transaction.type == TransactionType.INCOME,
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.settled_date >= p_start,
-            Transaction.settled_date <= p_end,
+            Transaction.settled_date <= window_end,
             reportable_transaction_filter(),
         )
     ) or Decimal("0")
@@ -85,7 +124,7 @@ async def compute_forecast(
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.settled_date >= p_start,
-            Transaction.settled_date <= p_end,
+            Transaction.settled_date <= window_end,
             reportable_transaction_filter(),
         )
     ) or Decimal("0")
@@ -99,7 +138,7 @@ async def compute_forecast(
             Transaction.type == TransactionType.INCOME,
             Transaction.status == TransactionStatus.PENDING,
             effective_period_date_expr() >= p_start,
-            effective_period_date_expr() <= p_end,
+            effective_period_date_expr() <= window_end,
             reportable_transaction_filter(),
         )
     ) or Decimal("0")
@@ -110,18 +149,19 @@ async def compute_forecast(
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.PENDING,
             effective_period_date_expr() >= p_start,
-            effective_period_date_expr() <= p_end,
+            effective_period_date_expr() <= window_end,
             reportable_transaction_filter(),
         )
     ) or Decimal("0")
 
     # ── Upcoming recurring (not yet generated for this period) ────────────
-    today = datetime.date.today()
+    # `today` is the ONE value resolved at the top of this function. Do not
+    # re-read the clock here.
     result = await db.execute(
         select(RecurringTransaction).where(
             RecurringTransaction.org_id == org_id,
             RecurringTransaction.is_active == True,
-            RecurringTransaction.next_due_date <= p_end,
+            RecurringTransaction.next_due_date <= window_end,
             RecurringTransaction.next_due_date > today,
         )
     )
@@ -132,7 +172,7 @@ async def compute_forecast(
 
     for r in recurring_items:
         d = r.next_due_date
-        while d <= p_end:
+        while d <= window_end:
             if r.type == "income":
                 recurring_income += r.amount
             else:
@@ -152,7 +192,7 @@ async def compute_forecast(
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.settled_date >= p_start,
-            Transaction.settled_date <= p_end,
+            Transaction.settled_date <= window_end,
             reportable_transaction_filter(),
         ).group_by(Transaction.category_id)
     )
@@ -168,7 +208,7 @@ async def compute_forecast(
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.PENDING,
             effective_period_date_expr() >= p_start,
-            effective_period_date_expr() <= p_end,
+            effective_period_date_expr() <= window_end,
             reportable_transaction_filter(),
         ).group_by(Transaction.category_id)
     )
@@ -179,7 +219,7 @@ async def compute_forecast(
     for r in recurring_items:
         if r.type == "expense":
             d = r.next_due_date
-            while d <= p_end:
+            while d <= window_end:
                 cat_recurring[r.category_id] = cat_recurring.get(r.category_id, Decimal("0")) + r.amount
                 d = advance_date(d, r.frequency)
 
@@ -219,7 +259,7 @@ async def compute_forecast(
 
     return {
         "period_start": p_start.isoformat(),
-        "period_end": p_end.isoformat(),
+        "period_end": window_end.isoformat(),
         "executed_income": str(executed_income),
         "executed_expense": str(executed_expense),
         "executed_net": str(executed_income - executed_expense),
