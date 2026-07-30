@@ -105,9 +105,19 @@ GOOGLE_OAUTH_TIMEOUT = httpx.Timeout(10.0)
 # is the ~30s hang users reported. 20.0s deliberately narrows the
 # envelope to roughly 40x the normal end-to-end latency of the pair
 # (well under 500ms in practice) while sitting below the reported hang,
-# so the bound is observable when it fires. It must stay at or above the
-# sum of the two per-phase read budgets, or healthy-but-slow exchanges
-# start failing as ``?sso_error=token``; a unit test pins that.
+# so the bound is observable when it fires.
+#
+# This IS a narrowing, and no value here can be shown "non-narrowing":
+# per-phase also permits a connect and a write per call, so e.g. 3s
+# connect + 9s read then 8s read violates no per-phase bound and still
+# trips 20s. The judgement is that such an exchange is already broken
+# from the user's point of view. Do not restate this constant as
+# provably safe.
+#
+# The one relationship a test does pin is a floor, not a proof: raising
+# ``GOOGLE_OAUTH_TIMEOUT`` without raising this constant would let a
+# single per-phase read budget outrun the aggregate, so healthy-but-slow
+# exchanges start failing as ``?sso_error=token``. Raise both together.
 GOOGLE_OAUTH_TOTAL_TIMEOUT_S = 20.0
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -2986,13 +2996,17 @@ async def google_callback(
         # AUTH_DEBUG_LOGGING (off in production) and its closure is
         # defined after this try/except, so a wedged exchange produces
         # total silence today.
+        #
+        # Fields are passed FLAT, not under ``extra=``: ``_LOGGER`` is a
+        # structlog stdlib BoundLogger, which treats ``extra`` as an
+        # ordinary key and renders it as a nested object, so a log filter
+        # on ``flow:"login"`` would not match. Same shape as
+        # ``_log_google_callback_phase``'s ``**detail``.
         _LOGGER.warning(
             "auth.google.callback.exchange_timeout",
-            extra={
-                "timeout_s": GOOGLE_OAUTH_TOTAL_TIMEOUT_S,
-                "flow": "login",
-                "last_phase": progress["phase"],
-            },
+            timeout_s=GOOGLE_OAUTH_TOTAL_TIMEOUT_S,
+            flow="login",
+            last_phase=progress["phase"],
         )
         # Audit "timeout" but redirect as "token": "Google rejected the
         # code" and "Google never answered" need different operator
@@ -3385,9 +3399,11 @@ async def sso_stepup_callback(
         ``timeout``), in which case the redirect reuses an existing
         banner code. Routing that case through here rather than
         building the redirect inline keeps the ``_resolve_return_path``
-        target and the ``oauth_state`` cookie deletion — dropping the
-        latter would leave a stale cookie that makes the user's retry
-        fail with ``state``.
+        target and the ``oauth_state`` cookie deletion. The deletion is
+        hygiene, not a retry fix: ``sso_stepup_initiate`` re-issues the
+        cookie at the same name and path on every attempt, so a stale
+        one is overwritten. It is kept because a single-use CSRF nonce
+        should not outlive the exchange it authorised.
         """
         return_path = _resolve_return_path(state)
         await _record_google_callback_failure(
@@ -3499,13 +3515,12 @@ async def sso_stepup_callback(
                 return await _stepup_failure("userinfo", actor_email=user.email)
             google_user = userinfo_resp.json()
     except TimeoutError:
+        # Flat fields, not ``extra=`` — see the login site's note.
         _LOGGER.warning(
             "auth.google.callback.exchange_timeout",
-            extra={
-                "timeout_s": GOOGLE_OAUTH_TOTAL_TIMEOUT_S,
-                "flow": "stepup",
-                "last_phase": progress["phase"],
-            },
+            timeout_s=GOOGLE_OAUTH_TOTAL_TIMEOUT_S,
+            flow="stepup",
+            last_phase=progress["phase"],
         )
         # Audit the precise cause, show the user the existing "token"
         # banner. ``ui_code`` keeps the two apart without duplicating

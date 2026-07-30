@@ -159,7 +159,10 @@ class _FakeAsyncClient:
     `delay_s` first, which is how the aggregate-timeout tests drive the
     bound. The sleep is `await asyncio.sleep(...)` and never
     `time.sleep(...)`: the fake runs on the TestClient's event loop, so
-    a blocking sleep would wedge the suite rather than time out."""
+    a blocking sleep would wedge the suite rather than time out.
+
+    `raise_exc` makes the token POST raise instead of answering, which
+    is how S5 drives a non-timeout exception into the bounded block."""
 
     def __init__(
         self,
@@ -167,10 +170,12 @@ class _FakeAsyncClient:
         userinfo_email: str,
         hang_on: str | None = None,
         delay_s: float = 0.0,
+        raise_exc: BaseException | None = None,
     ):
         self._userinfo_email = userinfo_email
         self._hang_on = hang_on
         self._delay_s = delay_s
+        self._raise_exc = raise_exc
 
     def __init__call(self, *_args, **_kwargs):
         return self
@@ -184,6 +189,8 @@ class _FakeAsyncClient:
     async def post(self, *_args, **_kwargs):
         if self._hang_on in ("post", "both"):
             await asyncio.sleep(self._delay_s)
+        if self._raise_exc is not None:
+            raise self._raise_exc
         return _FakeResponse({"access_token": "fake-google-access-token"})
 
     async def get(self, *_args, **_kwargs):
@@ -203,6 +210,7 @@ def _patch_httpx_for_email(
     *,
     hang_on: str | None = None,
     delay_s: float = 0.0,
+    raise_exc: BaseException | None = None,
 ) -> None:
     """Make the auth module's `httpx.AsyncClient(...)` build our fake.
 
@@ -212,7 +220,10 @@ def _patch_httpx_for_email(
 
     def factory(*_args, **_kwargs):
         return _FakeAsyncClient(
-            userinfo_email=email, hang_on=hang_on, delay_s=delay_s
+            userinfo_email=email,
+            hang_on=hang_on,
+            delay_s=delay_s,
+            raise_exc=raise_exc,
         )
 
     monkeypatch.setattr(auth_module.httpx, "AsyncClient", factory)
@@ -653,6 +664,17 @@ async def test_stepup_token_post_timeout_redirects_and_audits_timeout(
     user the existing `token` banner copy, and — critically — mint no
     step-up token. A step-up token issued on a failed exchange would be
     a bypass of the whole re-authentication gate.
+
+    It must also clear the `oauth_state` cookie at the step-up path,
+    the way every other step-up failure does. That deletion lives in
+    `_stepup_failure` and nothing else in the suite red-gated it —
+    removing the `delete_cookie` line left everything green — so it is
+    pinned here. This is hygiene, not a functional retry fix:
+    `sso_stepup_initiate` re-issues `oauth_state` at the same path on
+    every retry, so a stale cookie would be overwritten rather than
+    break the next attempt. The reason to keep it is that a
+    single-use CSRF nonce should not outlive the exchange it
+    authorised.
     """
     user_id = await _seed_user(session_factory, email="alice@acme.io")
     app = _make_app(session_factory, user_id)
@@ -677,6 +699,11 @@ async def test_stepup_token_post_timeout_redirects_and_audits_timeout(
     location = res.headers.get("location", "")
     assert location.endswith("/settings?sso_stepup_error=token"), location
     assert elapsed < 1.0, elapsed
+
+    set_cookies = res.headers.get_list("set-cookie")
+    cleared = [c for c in set_cookies if c.startswith('oauth_state=""')]
+    assert len(cleared) == 1, set_cookies
+    assert "Path=/api/v1/auth/sso-stepup" in cleared[0], cleared[0]
 
     rows = await _stepup_failure_rows(session_factory)
     assert len(rows) == 1
@@ -779,8 +806,8 @@ async def test_stepup_timeout_honours_the_security_return_target(
     A timeout branch that built its redirect inline with the hard-coded
     default would dump a user who started on /settings/security back on
     /settings, where no banner is listening — and would be the shape
-    most likely to also drop the `oauth_state` cookie deletion, leaving
-    the retry to fail with `state`.
+    most likely to also drop the `oauth_state` cookie deletion that S1
+    pins.
     """
     user_id = await _seed_user(session_factory, email="alice@acme.io")
     app = _make_app(session_factory, user_id)
@@ -841,6 +868,14 @@ async def test_stepup_exchange_timeout_emits_the_ungated_warning(
     from `auth_module`, not a literal, so the test pins "the emitter
     reports the budget it actually used" without coupling to the
     harness value.
+
+    The fields are asserted at the TOP level of the call kwargs, never
+    under an `extra` key. `_LOGGER` is a structlog stdlib BoundLogger,
+    which treats `extra` as an ordinary key and renders it as a nested
+    object, so a DigitalOcean log filter on `flow:"stepup"` would not
+    match one — and `flow` is the only thing separating this site from
+    the login site. Pinning the flat shape is what keeps that
+    distinction usable.
     """
     user_id = await _seed_user(session_factory, email="alice@acme.io")
     app = _make_app(session_factory, user_id)
@@ -865,10 +900,11 @@ async def test_stepup_exchange_timeout_emits_the_ungated_warning(
 
     calls = _exchange_timeout_warnings(logger_mock)
     assert len(calls) == 1, calls
-    extra = calls[0]["extra"]
-    assert extra["flow"] == "stepup"
-    assert extra["last_phase"] == "token_ok"
-    assert extra["timeout_s"] == auth_module.GOOGLE_OAUTH_TOTAL_TIMEOUT_S
+    fields = calls[0]
+    assert "extra" not in fields, fields
+    assert fields["flow"] == "stepup"
+    assert fields["last_phase"] == "token_ok"
+    assert fields["timeout_s"] == auth_module.GOOGLE_OAUTH_TOTAL_TIMEOUT_S
 
 
 @pytest.mark.asyncio
@@ -899,3 +935,52 @@ async def test_stepup_exchange_timeout_warning_fires_on_the_timeout_path_only(
 
     assert res.status_code == 302, res.text
     assert _exchange_timeout_warnings(logger_mock) == []
+
+
+class _ProgrammerBug(Exception):
+    """A bug in our own code, not a transport failure."""
+
+
+@pytest.mark.asyncio
+async def test_stepup_non_timeout_exception_is_not_swallowed(
+    session_factory, google_config, monkeypatch
+):
+    """S5. Fences the *upper* bound of the step-up `except` clause —
+    the twin of L5 in test_auth_google_callback_errors.py.
+
+    *Kills:* `except Exception:` in place of `except TimeoutError:` at
+    the step-up site. Verified by injection: widening only the step-up
+    clause leaves every other test in this file and in the login file
+    green, because nothing else drives a non-timeout, non-httpx
+    exception through this block.
+
+    The concrete cost of that undetected mutation is not hypothetical:
+    `tokens['access_token']` on the line between the two calls raises
+    `KeyError` whenever Google's token payload lacks the key. Under a
+    widened clause that becomes `?sso_stepup_error=token` plus an audit
+    row recording `reason: "timeout"` — a row that blames Google for
+    our own bug, on the flow that guards email change and
+    first-password-set.
+
+    A programmer error must propagate and must leave no audit row.
+    """
+    user_id = await _seed_user(session_factory, email="alice@acme.io")
+    app = _make_app(session_factory, user_id)
+    _patch_httpx_for_email(
+        monkeypatch, "alice@acme.io", raise_exc=_ProgrammerBug("not a timeout")
+    )
+
+    with TestClient(app) as client:
+        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        assert init.status_code == 200
+        state = init.cookies.get("oauth_state")
+        client.cookies.set("oauth_state", state)
+
+        with pytest.raises(_ProgrammerBug):
+            client.get(
+                "/api/v1/auth/sso-stepup/callback",
+                params={"code": "fake-google-code", "state": state},
+                follow_redirects=False,
+            )
+
+    assert await _stepup_failure_rows(session_factory) == []

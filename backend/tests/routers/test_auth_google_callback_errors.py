@@ -721,6 +721,14 @@ async def test_exchange_timeout_emits_the_ungated_warning_at_the_login_site(
     ``auth_module`` rather than a literal, so the test pins "the
     emitter reports the budget it actually used" without coupling to
     the monkeypatched harness value.
+
+    The fields are asserted at the TOP level of the call kwargs, never
+    under an ``extra`` key. ``_LOGGER`` is a structlog stdlib
+    BoundLogger, which treats ``extra`` as an ordinary key and renders
+    it as a nested object, so a DigitalOcean log filter on
+    ``flow:"login"`` would not match one. Pinning the flat shape is what
+    keeps this warning filterable, which is the only reason it is worth
+    emitting.
     """
     await _seed_default_plan(session_factory)
     await _seed_user(session_factory, email="alice@acme.io")
@@ -742,10 +750,11 @@ async def test_exchange_timeout_emits_the_ungated_warning_at_the_login_site(
 
     calls = _exchange_timeout_warnings(logger_mock)
     assert len(calls) == 1, calls
-    extra = calls[0]["extra"]
-    assert extra["flow"] == "login"
-    assert extra["last_phase"] == "start"
-    assert extra["timeout_s"] == auth_module.GOOGLE_OAUTH_TOTAL_TIMEOUT_S
+    fields = calls[0]
+    assert "extra" not in fields, fields
+    assert fields["flow"] == "login"
+    assert fields["last_phase"] == "start"
+    assert fields["timeout_s"] == auth_module.GOOGLE_OAUTH_TOTAL_TIMEOUT_S
 
 
 @pytest.mark.asyncio

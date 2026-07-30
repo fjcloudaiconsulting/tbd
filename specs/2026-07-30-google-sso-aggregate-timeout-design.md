@@ -149,8 +149,18 @@ test updates, **and strictly worse copy**.
 audits (`?sso_stepup_error={reason}`), so calling it with `"timeout"` would emit an unmapped
 code. Add an optional `ui_code: str | None = None` param defaulting to `reason`. This inherits
 the cookie deletion at path `/api/v1/auth/sso-stepup` automatically — building the redirect
-inline instead risks omitting it, leaving a stale `oauth_state` cookie that makes the user's
-**retry** fail with `state`. Do not refactor the existing `missing_code` branch.
+inline instead risks omitting it, leaving a stale `oauth_state` cookie behind.
+
+**Correction (review round).** An earlier draft of this section claimed that stale cookie
+"makes the user's **retry** fail with `state`". **That is false.** `sso_stepup_initiate`
+re-issues `oauth_state` at the same name and the same path on every retry, so a stale cookie
+is simply overwritten and the retry succeeds either way. The real rationale is weaker and
+purely hygienic: a single-use CSRF nonce should not outlive the exchange it authorised, and
+leaving it set widens the window in which a nonce the server has already consumed is still
+sitting in the browser. That is worth keeping and is now fenced by a `set-cookie` assertion
+in **S1** (previously nothing red-gated the `delete_cookie` line). It is not the difference
+between a working and a broken retry, and no argument for the deletion should be built on
+one. Do not refactor the existing `missing_code` branch.
 
 ## 4. The number: `GOOGLE_OAUTH_TOTAL_TIMEOUT_S = 20.0`, a module constant
 
