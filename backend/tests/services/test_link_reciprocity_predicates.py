@@ -2,10 +2,15 @@
 
 THE RULE: a link is a transfer link if, and only if, the partner links back.
 
-Two fences live here:
+The fences here:
 
 * ``is_reciprocal_pair`` -- the "are these two rows ONE transfer pair?"
   predicate. Fails CLOSED.
+* **F19 / F20**: the argument-safety conjunct in EACH predicate, fenced
+  independently. Every other fixture in the repo resolves the partner BY
+  ``tx.linked_transaction_id``, which makes both conjuncts tautologies --
+  measured, deleting either left the whole backend suite green. These two
+  hand in a deliberately WRONG same-org partner drawn from the chain rows.
 * **F17**: parity between ``contributes_to_cached_balance`` (the Python
   sibling) and ``balance_contribution_filter`` (the SQL). Eight shapes.
   The one documented divergence cell is ``xfail(strict=True)`` so the
@@ -260,6 +265,90 @@ async def test_is_reciprocal_pair_is_argument_order_safe_on_a_transient_partner(
     assert transient.id is None
     assert tx.linked_transaction_id is None
     assert is_reciprocal_pair(tx, transient) is False
+
+
+# ── F19 / F20: the argument-safety conjuncts, fenced INDEPENDENTLY ──────────
+#
+# Both predicates carry a term that compares the handed-in partner's id to
+# ``tx.linked_transaction_id``. Every other fixture in the repo resolves the
+# partner BY that column, which makes both terms tautologies there -- measured,
+# deleting either one left the whole backend suite green. The one test that
+# hands in a mismatched partner
+# (``test_is_reciprocal_pair_refuses_a_cross_org_partner_handed_in_directly``)
+# is refused by the ``org_id`` term first, so it masks the conjunct it looks
+# like it covers.
+#
+# The chain rows (7012 -> 7013 -> 7014, all same org, all non-null) supply a
+# WRONG partner that survives every sibling term, which is what makes these
+# two fences independently killing.
+#
+# The two fences need DIFFERENT chain pairs, and that is not cosmetic: the
+# predicates fail in opposite directions, so each needs the partner-vs-link
+# mismatch to land on the opposite side of the back-link test.
+
+
+@pytest.mark.asyncio
+async def test_is_reciprocal_pair_refuses_a_wrong_same_org_partner(db_session):
+    """F19. Kills: ``partner.id == tx.linked_transaction_id`` deleted from
+    ``is_reciprocal_pair``.
+
+    Hands 7013 (whose link points FORWARD at 7014) the chain's previous
+    hop, 7012, as its partner. Every other conjunct passes:
+
+    * ``partner is not None``                    -- 7012 exists
+    * ``tx.linked_transaction_id is not None``   -- 7013 -> 7014
+    * ``partner.id != tx.id``                    -- 7012 != 7013
+    * ``partner.org_id == tx.org_id``            -- both in org A
+    * ``partner.linked_transaction_id == tx.id`` -- 7012 -> 7013, so the
+      BACK-LINK term passes too
+
+    Only the deleted term separates them: 7012 is not what 7013 links at.
+    Under the mutant this reports a transfer pair between two rows that are
+    not one, which is how the delete cascade returns.
+    """
+    await _seed_shapes(db_session)
+    tx = await _load(db_session, 7013)
+    wrong_partner = await _load(db_session, 7012)
+
+    # Every sibling conjunct is satisfied -- assert that, so the fence cannot
+    # go green for an unrelated reason if the fixture drifts.
+    assert tx.linked_transaction_id == 7014
+    assert wrong_partner.id != tx.id
+    assert wrong_partner.org_id == tx.org_id
+    assert wrong_partner.linked_transaction_id == tx.id
+
+    assert is_reciprocal_pair(tx, wrong_partner) is False
+
+
+@pytest.mark.asyncio
+async def test_contributes_to_cached_balance_fails_open_on_a_wrong_partner(db_session):
+    """F20. Kills: ``partner.id != tx.linked_transaction_id`` deleted from
+    ``contributes_to_cached_balance`` (leaving ``if partner is None:``).
+
+    Hands 7012 (which links at 7013) the chain's TAIL, 7014, as its
+    partner. The partner is resolvable and same-org, so the ``partner is
+    None`` half does not fire; only the deleted term does.
+
+    Correct answer is True -- the predicate fails OPEN whenever the partner
+    is unprovable, because nothing ever reverted this row's contribution.
+    Under the mutant control reaches ``partner.linked_transaction_id ==
+    tx.id`` with the WRONG partner (7014 links nowhere) and returns False:
+    a settled row's amount silently leaves the cached balance.
+
+    ⚠ The F19 pair (7013, 7012) does NOT kill this mutant -- there the
+    back-link term happens to be True, so mutant and original agree. The
+    mismatch has to land where the back-link term is False.
+    """
+    await _seed_shapes(db_session)
+    tx = await _load(db_session, 7012)
+    wrong_partner = await _load(db_session, 7014)
+
+    assert tx.linked_transaction_id == 7013
+    assert wrong_partner.id != tx.linked_transaction_id
+    assert wrong_partner.org_id == tx.org_id
+    assert wrong_partner.linked_transaction_id != tx.id
+
+    assert contributes_to_cached_balance(tx, wrong_partner) is True
 
 
 # ── F17: Python sibling vs SQL parity ───────────────────────────────────────
