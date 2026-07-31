@@ -88,15 +88,14 @@ def to_response(tx: Transaction) -> TransactionResponse:
     # else the probe misses and this stays None.
     #
     # Mutuality is required: reconciliation_service._apply_match writes
-    # linked_transaction_id ONE-WAY, and such a row is not a transfer.
+    # linked_transaction_id ONE-WAY, and such a row is not a transfer. The
+    # test lives in is_reciprocal_pair, the one discriminator every link
+    # call site shares (TBD-280). Keep the __dict__ probe around it: the
+    # predicate is pure and reads plain attributes, but resolving the
+    # relationship itself would lazy-load and raise MissingGreenlet.
     partner = tx.__dict__.get("linked_transaction")
     linked_account_name = None
-    if (
-        partner is not None
-        and partner.id != tx.id
-        and partner.org_id == tx.org_id
-        and partner.linked_transaction_id == tx.id
-    ):
+    if is_reciprocal_pair(tx, partner):
         acct = partner.__dict__.get("account")
         linked_account_name = acct.name if acct is not None else None
 
