@@ -30,6 +30,7 @@ state-cookie miss.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -175,11 +176,37 @@ async def _callback_failure_rows(factory, *, event_type: str = "auth.google.call
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, payload: dict[str, Any] | None = None):
-        self.status_code = status_code
-        self._payload = payload or {}
+    """Canned httpx-style response.
 
-    def json(self) -> dict[str, Any]:
+    ``payload`` is typed ``Any``, not ``dict``: the payload-validation
+    fences drive bodies that are lists, strings and numbers, which is
+    exactly what the handler used to assume could never arrive.
+
+    It is also resolved with an explicit ``is None`` check rather than
+    truthiness. ``{}`` and ``[]`` are falsy and are two of the bodies
+    those fences stub, so a ``payload or {...}`` default would silently
+    rewrite them into a usable body and the fence would pass against
+    unmodified code — vacuously.
+
+    ``json_exc``, when supplied, is raised from ``.json()`` instead of a
+    body being returned: the "200 carrying an HTML error page" case,
+    where httpx raises ``json.JSONDecodeError``.
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        payload: Any = None,
+        *,
+        json_exc: BaseException | None = None,
+    ):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self._json_exc = json_exc
+
+    def json(self) -> Any:
+        if self._json_exc is not None:
+            raise self._json_exc
         return self._payload
 
 
@@ -187,11 +214,14 @@ def _patch_httpx(
     monkeypatch,
     *,
     token_status: int = 200,
-    token_payload: dict[str, Any] | None = None,
+    token_payload: Any = None,
+    token_json_exc: BaseException | None = None,
     userinfo_status: int = 200,
-    userinfo_payload: dict[str, Any] | None = None,
+    userinfo_payload: Any = None,
+    userinfo_json_exc: BaseException | None = None,
     raise_on_request: bool = False,
     raise_exc: BaseException | None = None,
+    raise_exc_on: str = "post",
     hang_on: str | None = None,
     delay_s: float = 0.0,
 ) -> None:
@@ -207,10 +237,17 @@ def _patch_httpx(
     Tests keep themselves fast by monkeypatching
     ``auth_module.GOOGLE_OAUTH_TOTAL_TIMEOUT_S`` down, not by waiting.
 
-    ``raise_exc`` raises an arbitrary exception from the token POST.
-    That is deliberately distinct from ``raise_on_request`` so a test
-    can prove the handler's ``except`` clauses do *not* swallow a
-    programmer error.
+    ``raise_exc`` raises an arbitrary exception from the call named by
+    ``raise_exc_on`` (``"post"``, the default, or ``"get"``). That is
+    deliberately distinct from ``raise_on_request`` so a test can prove
+    the handler's ``except`` clauses do *not* swallow a programmer
+    error, at either phase of the exchange.
+
+    ``token_payload`` / ``userinfo_payload`` are resolved with an
+    explicit ``is None`` check so a falsy-but-meaningful body (``{}``,
+    ``[]``) reaches the handler intact — see ``_FakeResponse``.
+    ``token_json_exc`` / ``userinfo_json_exc`` make the matching
+    ``.json()`` raise instead of decoding.
     """
 
     class _FakeClient:
@@ -226,30 +263,38 @@ def _patch_httpx(
         async def post(self, *args: Any, **kwargs: Any) -> _FakeResponse:
             if hang_on in ("post", "both"):
                 await asyncio.sleep(delay_s)
-            if raise_exc is not None:
+            if raise_exc is not None and raise_exc_on == "post":
                 raise raise_exc
             if raise_on_request:
                 import httpx
                 raise httpx.HTTPError("boom")
             return _FakeResponse(
-                token_status, token_payload or {"access_token": "fake-token"}
+                token_status,
+                token_payload
+                if token_payload is not None
+                else {"access_token": "fake-token"},
+                json_exc=token_json_exc,
             )
 
         async def get(self, *args: Any, **kwargs: Any) -> _FakeResponse:
             if hang_on in ("get", "both"):
                 await asyncio.sleep(delay_s)
+            if raise_exc is not None and raise_exc_on == "get":
+                raise raise_exc
             if raise_on_request:
                 import httpx
                 raise httpx.HTTPError("boom")
             return _FakeResponse(
                 userinfo_status,
                 userinfo_payload
-                or {
+                if userinfo_payload is not None
+                else {
                     "email": "alice@acme.io",
                     "verified_email": True,
                     "given_name": "Alice",
                     "family_name": "A",
                 },
+                json_exc=userinfo_json_exc,
             )
 
     monkeypatch.setattr(auth_module.httpx, "AsyncClient", _FakeClient)
@@ -838,6 +883,553 @@ async def test_non_timeout_exception_is_not_swallowed_by_the_timeout_clause(
 
     rows = await _callback_failure_rows(session_factory)
     assert rows == []
+
+
+# ── TBD-267: Google 200-body shape validation ───────────────────────────────
+#
+# Both callback sites trusted a 200 response body without validating
+# its shape. ``tokens['access_token']`` raised ``KeyError`` on a token
+# body without the key; ``google_user.get(...)`` raised
+# ``AttributeError`` on a userinfo body that decoded to a list or a
+# scalar — and that read sits *outside* the ``try``, so no ``except``
+# clause of any width could ever have reached it. Both produced a bare
+# 500: no audit row, and App Platform's error splash instead of the
+# friendly banner.
+#
+# The fix is two pure helpers plus four inline ``audit; return`` guards
+# inside the existing ``try``. The set of exceptions each handler's
+# ``try`` catches is byte-identical before and after — no third
+# ``except`` clause anywhere — so the L5/S5 upper-bound fences stay
+# valid without being re-derived.
+
+
+def _json_decode_error() -> ValueError:
+    """The exact exception httpx raises for a 200 carrying HTML.
+
+    ``Response.json()`` is ``json.loads(self.content)``, so a body that
+    is not JSON surfaces as ``json.JSONDecodeError`` — a ``ValueError``
+    subclass, which is what the helper's narrow ``except`` catches.
+    """
+    return json.JSONDecodeError("Expecting value", "<html>not json</html>", 0)
+
+
+def test_google_json_object_propagates_a_programmer_error() -> None:
+    """U1. Fences the *upper* bound of the helper's own ``except``.
+
+    *Kills:* ``except Exception`` (or a bare ``except``) inside
+    ``_google_json_object``.
+
+    This is the one widened-clause hazard the whole change introduces:
+    L5/S5 fence the handlers' ``try`` blocks, but neither can reach a
+    clause nested inside the helper, because the helper swallows before
+    the handler ever sees it. A helper that ate everything would turn
+    an arbitrary bug in our own decode path into a friendly "try again"
+    banner plus an audit row blaming Google — exactly the failure mode
+    L5/S5 exist to prevent, relocated one frame deeper where they
+    cannot see it.
+
+    ``ValueError`` and nothing wider is the correct width: the only
+    body-dependent failures of ``json.loads`` are ``JSONDecodeError``
+    and ``UnicodeDecodeError``, both ``ValueError``. Anything else out
+    of ``.json()`` is our bug and must keep propagating.
+    """
+    resp = _FakeResponse(200, json_exc=_ProgrammerBug("not a decode failure"))
+    with pytest.raises(_ProgrammerBug):
+        auth_module._google_json_object(resp)
+
+
+@pytest.mark.parametrize(
+    "payload, json_exc, expected",
+    [
+        (None, _json_decode_error(), None),
+        ([], None, None),
+        (["a", "b"], None, None),
+        ("a string", None, None),
+        (7, None, None),
+        (None, None, {}),
+        ({"a": 1}, None, {"a": 1}),
+    ],
+    ids=[
+        "decode-error",
+        "empty-list",
+        "list",
+        "string",
+        "number",
+        "empty-dict",
+        "dict",
+    ],
+)
+def test_google_json_object_returns_none_for_every_non_object_body(
+    payload: Any, json_exc: BaseException | None, expected: Any
+) -> None:
+    """U2. The helper's contract: a dict, or ``None``. Never anything else.
+
+    *Kills two named wrong implementations.*
+
+    (1) A fix that only checks ``"access_token" in tokens``. That
+    handles the ``KeyError`` and leaves the ``AttributeError`` on the
+    userinfo side fully alive, because a list has no ``.get`` and
+    ``in`` on a list is perfectly legal. The userinfo half of the
+    defect is the half no ``except`` clause could ever have caught, so
+    a fix that only closes the token half closes the easy one.
+
+    (2) A helper that returns ``{}`` instead of ``None`` for a
+    non-object body. That reads as harmless — the guards would still
+    fire, since ``{}`` has no ``access_token`` and no ``email`` — but
+    it erases the distinction the audit row is for: ``not_object``
+    ("Google sent us something that is not a JSON object at all")
+    would become indistinguishable from ``no_access_token`` ("Google
+    sent a well-formed object that is missing the field"), which are
+    different incidents with different remediations.
+
+    ``{}`` is deliberately in the table as a *pass-through*: an empty
+    JSON object is still an object, and must come back as itself rather
+    than collapsing into the ``None`` sentinel.
+    """
+    resp = _FakeResponse(200, payload, json_exc=json_exc)
+    result = auth_module._google_json_object(resp)
+    if expected is None:
+        # ``is None``, not ``== None``: ``{}``, ``[]`` and ``0`` all
+        # compare falsy, and collapsing them would be the exact
+        # confusion this helper exists to remove.
+        assert result is None
+    else:
+        assert result == expected
+        assert isinstance(result, dict)
+
+
+def test_google_token_body_detail_never_leaks_a_credential() -> None:
+    """U3. The forensic detail dict is a shape word, not a body dump.
+
+    *Kills:* a future "let me just dump the body so I can debug this"
+    edit to ``_google_token_body_detail``.
+
+    This dict is persisted to ``audit_events.detail`` and rendered in
+    /admin/audit. A token response that fails our usability check can
+    still be *partially* valid — Google may have returned
+    ``refresh_token`` and ``id_token`` alongside an ``access_token`` we
+    rejected — so the body is live credential material. The helper is
+    the only place in the change that reads a field off an untrusted
+    Google token body, which makes it the only place that edit could
+    land.
+
+    The OAuth2 ``error`` code is the one exception and is safe by
+    contract: RFC 6749 §5.2 defines it as a fixed enum of failure
+    codes. It is truncated anyway, because "Google's field is
+    documented as short" is not a bound we control.
+    """
+    detail = auth_module._google_token_body_detail(
+        {
+            "access_token": "s",
+            "refresh_token": "r",
+            "id_token": "i",
+            "error": "invalid_grant",
+        }
+    )
+    assert detail == {"body": "no_access_token", "google_error": "invalid_grant"}
+    assert "refresh_token" not in detail
+    assert "access_token" not in detail
+    assert "id_token" not in detail
+
+    long = auth_module._google_token_body_detail({"error": "x" * 5000})
+    assert long["google_error"] == "x" * 64
+    assert len(long["google_error"]) == 64
+
+    # The ``unusable_access_token`` shape word: a token that is present
+    # but that httpx could not ASCII-encode into the Authorization
+    # header. It still must not appear in the detail.
+    unusable = auth_module._google_token_body_detail(
+        {"access_token": "ünusable-SENTINEL"}
+    )
+    assert unusable == {"body": "unusable_access_token"}
+    assert "SENTINEL" not in str(unusable)
+
+    assert auth_module._google_token_body_detail(None) == {"body": "not_object"}
+
+
+@pytest.mark.asyncio
+async def test_token_200_without_access_token_redirects_and_audits(
+    session_factory, google_config, monkeypatch
+) -> None:
+    """L6. Google answered 200 with an OAuth2 error body, no token.
+
+    Pre-fix this was ``tokens['access_token']`` → ``KeyError`` →
+    bare 500: no audit row at all, and App Platform's "Error / check
+    logs" splash instead of the /login banner. It is the single most
+    likely shape of this defect in production, because a 200 carrying
+    ``{"error": "invalid_grant"}`` is what Google returns for a replayed
+    or expired authorization code.
+
+    The audit ``detail`` is asserted as an EXACT dict, not by key. Two
+    things ride on that. The ``reason``/``body`` split is the
+    vocabulary ops greps on, and an exact match is what stops a later
+    edit widening the row into a body dump — ``error_description`` is
+    free text from Google and is deliberately *not* carried, unlike the
+    provider-error branch above, which carries it because there is no
+    token body in play there.
+    """
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    _patch_httpx(
+        monkeypatch,
+        token_payload={
+            "error": "invalid_grant",
+            "error_description": "Bad Request",
+        },
+    )
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        client.cookies.set("oauth_state", "matching-state")
+        res = client.get(
+            "/api/v1/auth/google/callback",
+            params={"code": "dummy", "state": "matching-state"},
+            follow_redirects=False,
+        )
+
+    assert res.status_code == 307, res.text
+    assert res.headers.get("location") == "http://localhost/login?sso_error=token"
+
+    rows = await _callback_failure_rows(session_factory)
+    assert len(rows) == 1, rows
+    assert rows[0].outcome.value == "failure"
+    assert rows[0].actor_user_id is None
+    assert rows[0].actor_email == ""
+    assert rows[0].detail == {
+        "reason": "token_payload",
+        "body": "no_access_token",
+        "google_error": "invalid_grant",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"token_payload": []},
+        {"token_json_exc": _json_decode_error()},
+    ],
+    ids=["json-array", "not-json-at-all"],
+)
+async def test_token_200_with_a_non_object_body_redirects_and_audits(
+    session_factory, google_config, monkeypatch, kwargs: dict[str, Any]
+) -> None:
+    """L7. The 200 whose body is not a JSON object at all.
+
+    Two real shapes, one branch: a JSON array (a proxy or WAF
+    substituting its own payload) and a body that does not decode as
+    JSON at all (an HTML interstitial served with a 200, which is what
+    a captive portal or a misrouted CDN does).
+
+    Pre-fix the first raised ``TypeError`` on the string subscript and
+    the second raised ``JSONDecodeError`` out of ``.json()`` — different
+    exceptions, same bare 500, same missing audit row.
+
+    ``detail`` is asserted EXACT and must carry no ``google_error``
+    key: there is no object to read an ``error`` field off, and
+    inventing one would make an unparseable body look like a
+    provider-reported OAuth failure in /admin/audit.
+    """
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    _patch_httpx(monkeypatch, **kwargs)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        client.cookies.set("oauth_state", "matching-state")
+        res = client.get(
+            "/api/v1/auth/google/callback",
+            params={"code": "dummy", "state": "matching-state"},
+            follow_redirects=False,
+        )
+
+    assert res.status_code == 307, res.text
+    assert res.headers.get("location") == "http://localhost/login?sso_error=token"
+
+    rows = await _callback_failure_rows(session_factory)
+    assert len(rows) == 1, rows
+    assert rows[0].detail == {"reason": "token_payload", "body": "not_object"}
+
+
+@pytest.mark.asyncio
+async def test_userinfo_200_with_a_non_object_body_redirects_and_audits(
+    session_factory, google_config, monkeypatch
+) -> None:
+    """L8. The half of the defect no ``except`` clause could reach.
+
+    ``google_user.get("email", "")`` sits *after* the ``try/except``
+    block, on the main line. A userinfo 200 whose body decodes to a
+    list raises ``AttributeError`` there, outside every handler the
+    function has. Widening ``except TimeoutError`` to ``except
+    Exception`` would not catch it; neither would adding a third
+    clause. This is the concrete reason the fix is ``isinstance``
+    validation and not exception handling, and this test is what makes
+    that argument executable rather than rhetorical.
+
+    ``sso_error=userinfo`` and ``reason="userinfo_payload"``: the user
+    sees the existing userinfo banner copy (already mapped in all three
+    frontend copy dicts, so no frontend change), while ops can tell a
+    non-200 userinfo response apart from a 200 with a broken body.
+
+    ``actor_email`` stays ``""``: the whole point of this branch is
+    that we never got a readable email, so there is nothing to attach.
+    """
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    _patch_httpx(monkeypatch, userinfo_payload=["not", "a", "dict"])
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        client.cookies.set("oauth_state", "matching-state")
+        res = client.get(
+            "/api/v1/auth/google/callback",
+            params={"code": "dummy", "state": "matching-state"},
+            follow_redirects=False,
+        )
+
+    assert res.status_code == 307, res.text
+    assert res.headers.get("location") == "http://localhost/login?sso_error=userinfo"
+
+    rows = await _callback_failure_rows(session_factory)
+    assert len(rows) == 1, rows
+    assert rows[0].actor_email == ""
+    assert rows[0].detail == {"reason": "userinfo_payload", "body": "not_object"}
+
+
+@pytest.mark.asyncio
+async def test_programmer_error_at_the_userinfo_call_is_not_swallowed(
+    session_factory, google_config, monkeypatch
+) -> None:
+    """L9. L5's twin, at the *second* bounded block.
+
+    *Kills:* an ``except Exception`` added around the userinfo half of
+    the exchange. L5 drives its programmer error from the token POST,
+    so a widened clause reachable only after the token phase — or a
+    ``try`` re-drawn to wrap just the userinfo call — would leave L5
+    green. The two payload guards this change adds both sit after their
+    respective network calls, which makes "just wrap it in a try" the
+    obvious wrong turn at exactly this point in the function.
+    """
+    _patch_httpx(
+        monkeypatch,
+        raise_exc=_ProgrammerBug("not a timeout"),
+        raise_exc_on="get",
+    )
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        client.cookies.set("oauth_state", "matching-state")
+        with pytest.raises(_ProgrammerBug):
+            client.get(
+                "/api/v1/auth/google/callback",
+                params={"code": "dummy", "state": "matching-state"},
+                follow_redirects=False,
+            )
+
+    rows = await _callback_failure_rows(session_factory)
+    assert rows == []
+
+
+INVALID_PAYLOAD_EVENT = "auth.google.callback.invalid_payload"
+
+
+def _invalid_payload_warnings(logger_mock) -> list[dict]:
+    """The kwargs of every ``_LOGGER.warning(INVALID_PAYLOAD_EVENT, ...)``
+    call, in order. Same seam as ``_exchange_timeout_warnings``."""
+    return [
+        call.kwargs
+        for call in logger_mock.warning.call_args_list
+        if call.args and call.args[0] == INVALID_PAYLOAD_EVENT
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invalid_payload_emits_the_ungated_warning_at_the_login_site(
+    session_factory, google_config, monkeypatch
+) -> None:
+    """L10. Fence for the ungated warning on the new guard.
+
+    *Kills:* deleting the ``_LOGGER.warning(...)`` call from the token
+    payload guard.
+
+    This warning is a net-visibility requirement, not decoration.
+    Today this failure class is loud in the worst way: it screams as a
+    5xx stack trace in the platform logs. After the fix it is a quiet
+    307 that looks exactly like an ordinary user-side failure, so
+    shipping the guard *without* the warning would trade a bare 500 for
+    a silent one — a real loss of production signal on a public
+    endpoint, and precisely the kind of unfenced operational machinery
+    a later refactor deletes with the suite still green.
+
+    ``auth_debug_logging`` is pinned False to prove the warning is
+    ungated: the neighbouring ``_log_google_callback_phase``
+    breadcrumbs are gated on that flag and are silent in production.
+
+    Fields are asserted at the TOP level of the call kwargs, never
+    under ``extra``. ``_LOGGER`` is a structlog stdlib BoundLogger,
+    which treats ``extra`` as an ordinary key and renders it nested, so
+    a DigitalOcean log filter on ``flow:"login"`` would not match one.
+
+    The second leg is a credential check with teeth. It drives the
+    ``unusable_access_token`` branch — a token Google really did send,
+    which we reject because httpx would fail to ASCII-encode it into the
+    Authorization header *inside* the bounded block — and asserts the
+    token value never reaches the log line. That is the only stub in
+    which a real credential is in play, so it is the only one that can
+    fence the leak. It is also the branch's sole end-to-end exercise.
+
+    The key set is asserted exactly, in both legs. Structured-log
+    fields are the emitter's contract, and an exact set is what stops a
+    later "add a bit more context here" edit widening the line toward
+    the body.
+    """
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    _patch_httpx(
+        monkeypatch,
+        token_payload={
+            "error": "invalid_grant",
+            "error_description": "Bad Request",
+        },
+    )
+
+    app = _make_app(session_factory)
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        with TestClient(app) as client:
+            client.cookies.set("oauth_state", "matching-state")
+            res = client.get(
+                "/api/v1/auth/google/callback",
+                params={"code": "dummy", "state": "matching-state"},
+                follow_redirects=False,
+            )
+
+    assert res.status_code == 307, res.text
+
+    calls = _invalid_payload_warnings(logger_mock)
+    assert len(calls) == 1, calls
+    fields = calls[0]
+    assert "extra" not in fields, fields
+    assert set(fields) == {"flow", "phase", "body", "google_error"}, fields
+    assert fields["flow"] == "login"
+    assert fields["phase"] == "token"
+    assert fields["body"] == "no_access_token"
+    assert fields["google_error"] == "invalid_grant"
+
+    # Second leg: a real credential is present and must not be logged.
+    secret = "ünusable-SENTINEL-CREDENTIAL"
+    _patch_httpx(monkeypatch, token_payload={"access_token": secret})
+    app = _make_app(session_factory)
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        with TestClient(app) as client:
+            client.cookies.set("oauth_state", "matching-state")
+            res = client.get(
+                "/api/v1/auth/google/callback",
+                params={"code": "dummy", "state": "matching-state"},
+                follow_redirects=False,
+            )
+
+    assert res.status_code == 307, res.text
+    calls = _invalid_payload_warnings(logger_mock)
+    assert len(calls) == 1, calls
+    fields = calls[0]
+    assert set(fields) == {"flow", "phase", "body"}, fields
+    assert fields["body"] == "unusable_access_token"
+    assert "SENTINEL" not in str(fields), fields
+
+    rows = await _callback_failure_rows(session_factory)
+    assert len(rows) == 2, rows
+    assert rows[-1].detail == {
+        "reason": "token_payload",
+        "body": "unusable_access_token",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invalid_payload_warning_fires_on_the_payload_paths_only(
+    session_factory, google_config, monkeypatch
+) -> None:
+    """L11. Negative control for L10.
+
+    *Kills:* the emitter hoisted off the guard — onto the main line,
+    into a ``finally``, or into the ``except`` clauses. Any of those
+    would fill production logs with false ``invalid_payload`` warnings
+    on healthy sign-ins and during ordinary Google outages, destroying
+    the "previously-empty bucket starts filling" signal that is the
+    only reason the warning is worth emitting.
+
+    Four paths that must stay silent, chosen to cover each way the
+    handler can leave the exchange: success, a non-200 token exchange,
+    a transport error, and the aggregate timeout. The timeout leg also
+    re-asserts ``reason="timeout"`` — the guards are inserted between
+    the network calls and their audit writes, so a guard placed one
+    line off could shadow the timeout branch's own audit row (TBD-179's
+    forensic signal) while every timeout test that only checks the
+    status code stayed green.
+    """
+    await _seed_default_plan(session_factory)
+    await _seed_user(session_factory, email="alice@acme.io")
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+
+    # (1) fully successful callback.
+    _patch_httpx(monkeypatch)
+    app = _make_app(session_factory)
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        with TestClient(app) as client:
+            client.cookies.set("oauth_state", "matching-state")
+            res = client.get(
+                "/api/v1/auth/google/callback",
+                params={"code": "dummy", "state": "matching-state"},
+                follow_redirects=False,
+            )
+    assert res.status_code == 302, res.text
+    assert _invalid_payload_warnings(logger_mock) == []
+
+    # (2) non-200 token exchange — the status_code branch, which sits
+    # strictly before the payload guard and must stay untouched.
+    _patch_httpx(monkeypatch, token_status=400)
+    app = _make_app(session_factory)
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        with TestClient(app) as client:
+            client.cookies.set("oauth_state", "matching-state")
+            res = client.get(
+                "/api/v1/auth/google/callback",
+                params={"code": "dummy", "state": "matching-state"},
+                follow_redirects=False,
+            )
+    assert res.status_code == 307, res.text
+    assert _invalid_payload_warnings(logger_mock) == []
+
+    # (3) genuine httpx transport error.
+    _patch_httpx(monkeypatch, raise_on_request=True)
+    app = _make_app(session_factory)
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        with TestClient(app) as client:
+            client.cookies.set("oauth_state", "matching-state")
+            res = client.get(
+                "/api/v1/auth/google/callback",
+                params={"code": "dummy", "state": "matching-state"},
+                follow_redirects=False,
+            )
+    assert res.status_code == 307, res.text
+    assert _invalid_payload_warnings(logger_mock) == []
+
+    # (4) the aggregate timeout — still audits reason="timeout".
+    monkeypatch.setattr(auth_module, "GOOGLE_OAUTH_TOTAL_TIMEOUT_S", 0.05)
+    _patch_httpx(monkeypatch, hang_on="post", delay_s=2.0)
+    app = _make_app(session_factory)
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        with TestClient(app) as client:
+            client.cookies.set("oauth_state", "matching-state")
+            res = client.get(
+                "/api/v1/auth/google/callback",
+                params={"code": "dummy", "state": "matching-state"},
+                follow_redirects=False,
+            )
+    assert res.status_code == 307, res.text
+    assert _invalid_payload_warnings(logger_mock) == []
+
+    timeout_rows = [
+        row
+        for row in await _callback_failure_rows(session_factory)
+        if row.detail and row.detail.get("reason") == "timeout"
+    ]
+    assert len(timeout_rows) == 1, timeout_rows
 
 
 # ── /sso-stepup/callback friendly error tests ───────────────────────────────
