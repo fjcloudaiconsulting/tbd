@@ -269,7 +269,12 @@ async def generate_due_transactions(
     settles instances whose date has passed. Overdue prior-period instances are
     caught up. Idempotent: re-running advances next_due_date past the window end.
 
-    `today` is injectable for tests; production passes None (uses date.today()).
+    `today` is the caller's resolved clock. The scheduler passes the value the
+    runner resolved once for the whole tick (``RecurringGenerationJob.run``), so
+    one tick cannot straddle midnight and materialise rows against a different
+    day than the one it decided was due (TBD-284). Passing None falls back to
+    ``date.today()``; do NOT rely on that from any path that has already
+    resolved a clock.
     Returns {"generated", "settled", "pending", "period_end"}.
     """
     if today is None:
