@@ -584,6 +584,16 @@ async def _apply_match(
     # ``transaction_service.find_duplicate_of_linked_leg`` exists to
     # surface. Only a target that already links back AT ``tx`` is refused.
     if target.linked_transaction_id == tx.id:
+        # Both guards fire only on states the design argues are unreachable.
+        # If one EVER fires in production this event is the only way to find
+        # it. Ids and org only -- no PII.
+        await logger.awarning(
+            "reconcile.match_refused_would_forge_pair",
+            org_id=org_id,
+            guard="target_links_back",
+            transaction_id=tx.id,
+            target_id=target.id,
+        )
         raise ValidationError(
             f"Transaction {target.id} is already matched to transaction {tx.id}; "
             "matching in the opposite direction would make them look like a "
@@ -602,6 +612,14 @@ async def _apply_match(
             )
         )
         if is_reciprocal_pair(tx, current):
+            await logger.awarning(
+                "reconcile.match_refused_would_forge_pair",
+                org_id=org_id,
+                guard="tx_is_transfer_leg",
+                transaction_id=tx.id,
+                target_id=target.id,
+                existing_partner_id=current.id,
+            )
             raise ValidationError(
                 f"Transaction {tx.id} is a transfer leg; unlink the transfer "
                 "before matching it to another transaction."

@@ -1667,6 +1667,24 @@ async def unpair_transactions(
         )
     )
     if not is_reciprocal_pair(preview, preview_partner):
+        # These refusals fire only on states §1's writer census argues are
+        # unproducible (self-link, dangling link, forged mutual link). If one
+        # EVER shows up in production this event is the only way to find it.
+        # ``stage`` distinguishes the two sites: the preview raises first in
+        # the single-threaded case, so a "locked" event means the link went
+        # non-mutual between preview and lock. No PII -- ids and org only.
+        await logger.awarning(
+            "transfers.unpair_refused_non_mutual",
+            org_id=org_id,
+            stage="preview",
+            transaction_id=preview.id,
+            linked_transaction_id=preview.linked_transaction_id,
+            partner_linked_transaction_id=(
+                preview_partner.linked_transaction_id
+                if preview_partner is not None
+                else None
+            ),
+        )
         raise ValidationError("Transaction is not part of a transfer pair")
 
     # Validate fallback categories upfront. NOTE: ``validate_category`` raises
@@ -1730,6 +1748,18 @@ async def unpair_transactions(
             else None
         )
         if not is_reciprocal_pair(subject, locked_partner):
+            await logger.awarning(
+                "transfers.unpair_refused_non_mutual",
+                org_id=org_id,
+                stage="locked",
+                transaction_id=subject.id,
+                linked_transaction_id=subject.linked_transaction_id,
+                partner_linked_transaction_id=(
+                    locked_partner.linked_transaction_id
+                    if locked_partner is not None
+                    else None
+                ),
+            )
             raise ValidationError("Transaction is not part of a transfer pair")
 
     if len(rows) != 2:
