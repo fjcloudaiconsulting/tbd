@@ -1223,24 +1223,25 @@ function LegacyDashboard() {
             </div>
             <div className="divide-y divide-border-subtle">
               {sortedVisibleTxs.map((tx) => {
-                const isTransfer = tx.linked_transaction_id !== null;
                 // TBD-268: the partner is never in the page after the server
                 // collapse, so read its account name off the row itself.
-                // Non-null only for a MUTUAL link, and the arrow direction
-                // comes from `type` so it reads source → destination
-                // whichever leg survived.
+                // Non-null only for a MUTUAL link, so this is the ONE transfer
+                // signal the row renders from — amount styling included. The
+                // raw `linked_transaction_id` also matches a one-way
+                // reconciliation match, which would then render unsigned and
+                // in accent while its subline said plain account name.
                 const isPairedTransfer = tx.linked_account_name != null;
                 const [fromAcct, toAcct] = tx.type === "expense"
                   ? [tx.account_name, tx.linked_account_name]
                   : [tx.linked_account_name, tx.account_name];
-                const amountClass = `text-sm font-medium tabular-nums ${isTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`;
-                const amountText = `${isTransfer ? "" : tx.type === "income" ? "+" : "-"}${formatAmount(tx.amount)}`;
+                const amountClass = `text-sm font-medium tabular-nums ${isPairedTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`;
+                const amountText = `${isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}${formatAmount(tx.amount)}`;
                 const subline = isPairedTransfer ? (
                   <>{fromAcct} &rarr; {toAcct}</>
                 ) : (
                   <>{tx.account_name} &middot; {tx.category_name}</>
                 );
-                const statusPill = !isTransfer ? (
+                const statusPill = !isPairedTransfer ? (
                   <button
                     onClick={async () => {
                       try {

@@ -10,7 +10,26 @@
  * both surfaces. The bulk of the dashboard also renders account/category
  * strips, so text-based counting would over-match.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import React from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+// Recharts' ResponsiveContainer measures its parent, and jsdom reports 0x0 —
+// so every chart in the page renders NOTHING and no bar can be clicked. F8d
+// needs a real click on the Budget Progress bar (the only production path that
+// sets a chart filter naming a category with no matching transaction), so give
+// the container a fixed size. Measured: without this stub the page renders 0
+// `.recharts-bar-rectangle` elements; with it, 2.
+vi.mock("recharts", async () => {
+  const actual = await vi.importActual<typeof import("recharts")>("recharts");
+  return {
+    ...actual,
+    ResponsiveContainer: ({ children }: { children: React.ReactElement }) => (
+      <div style={{ width: 400, height: 300 }}>
+        {React.cloneElement(children, { width: 400, height: 300 } as never)}
+      </div>
+    ),
+  };
+});
 
 import DashboardPage from "@/app/dashboard/page";
 import { apiFetch } from "@/lib/api";
@@ -84,12 +103,15 @@ function collapsedPage() {
 
 let listUrls: string[] = [];
 
-function mockDashboard(rows: ReturnType<typeof tx>[]) {
+function mockDashboard(
+  rows: ReturnType<typeof tx>[],
+  budgets: Record<string, unknown>[] = [],
+) {
   listUrls = [];
   vi.mocked(apiFetch).mockImplementation(((url: string) => {
     if (url === "/api/v1/accounts") return Promise.resolve([]);
     if (url === "/api/v1/categories") return Promise.resolve([]);
-    if (url === "/api/v1/budgets" || url.startsWith("/api/v1/budgets?")) return Promise.resolve([]);
+    if (url === "/api/v1/budgets" || url.startsWith("/api/v1/budgets?")) return Promise.resolve(budgets);
     if (url === "/api/v1/settings/billing-cycle") return Promise.resolve({ billing_cycle_day: 1 });
     if (url === "/api/v1/settings/billing-period")
       return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
@@ -97,10 +119,15 @@ function mockDashboard(rows: ReturnType<typeof tx>[]) {
       return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
     if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
     if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
-    if (url.startsWith("/api/v1/transactions?status=pending"))
-      return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
+    // Record EVERY transactions-list URL, the all-time pending fetch included.
+    // The push used to sit AFTER the status=pending early return, which made
+    // F8b's "the pending fetch must not opt in" assertion true by mock routing
+    // rather than by the code under test — it stayed green with the flag added
+    // to fetchAll. Recording first is what gives that assertion teeth.
     if (url.startsWith("/api/v1/transactions")) {
       listUrls.push(url);
+      if (url.startsWith("/api/v1/transactions?status=pending"))
+        return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
       return Promise.resolve({ items: rows, total: rows.length, limit: 200, offset: 0 });
     }
     return Promise.resolve({});
@@ -155,7 +182,13 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
     });
     // ...but the all-time pending fetch must NOT: each leg of a transfer sits
     // on a different account, so collapsing it would zero an account's pending.
-    expect(listUrls.some((u) => u.includes("status=pending"))).toBe(false);
+    // Asserted as "the pending URLs that WERE issued carry no flag", with an
+    // explicit non-vacuity guard that at least one was issued — the previous
+    // shape ("no pending URL was recorded at all") was satisfied by the mock's
+    // own routing and could never fail.
+    const pending = listUrls.filter((u) => u.includes("status=pending"));
+    expect(pending.length).toBeGreaterThan(0);
+    pending.forEach((u) => expect(u).not.toContain("collapse_transfers"));
   });
 
   it("F8c: the transfer subline reads source -> destination on a surviving income leg", async () => {
@@ -169,15 +202,46 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
     expect(screen.queryByText(/Savings\s*→\s*Checking/)).toBeNull();
   });
 
-  it("F8d: an empty page renders the empty state, not a blank card", async () => {
-    // The empty state used to key off the RAW page array. With the collapse
-    // server-side, a page can legitimately be empty while `transactions` is
-    // not — key it off the rendered list or the card renders blank.
-    mockDashboard([]);
-    render(<DashboardPage />);
+  it("F8d: a chart filter that empties the RENDERED list still shows the empty state", async () => {
+    // VACUITY TRAP this fence was rewritten to avoid: the original passed
+    // `mockDashboard([])`, so `transactions.length === 0` and
+    // `sortedVisibleTxs.length === 0` AGREED and reverting the empty state to
+    // the raw page array stayed green against the whole suite.
+    //
+    // The two disagree exactly when a chart filter names a category with no
+    // matching transaction. The production path is the Budget Progress bar:
+    // a budget can exist for a category nothing was spent on this period.
+    // Clicking it sets chartFilter to that category, so `visibleTxs` (the
+    // snapshot) filters down to nothing while `transactions` still holds a
+    // full page — a blank card under the old keying.
+    const rows = [];
+    for (let i = 1; i <= 4; i++) rows.push(tx({ id: i, description: `Row ${i}` }));
+    mockDashboard(rows, [
+      {
+        id: 1, category_id: 9, category_name: "Rent",
+        amount: "500.00", spent: "300.00", percent_used: 60,
+        period_start: "2026-05-01", period_end: null,
+      },
+    ]);
+    const { container } = render(<DashboardPage />);
+
+    // Pre-state: rows render and there is NO empty state.
+    await screen.findByTestId("dash-settled-1");
+    await waitFor(() => expect(rowCount()).toBe(4));
+    // The tile's empty state renders one of two strings depending on `canAdd`;
+    // this fence is about the BLOCK being present, not which copy it shows.
+    const EMPTY = /No transactions this period|Create accounts and categories first/;
+    expect(screen.queryByText(EMPTY)).toBeNull();
+
+    const bars = container.querySelectorAll(".recharts-bar-rectangle");
+    expect(bars.length).toBeGreaterThan(0);
+    fireEvent.click(bars[0]);
 
     await waitFor(() => {
-      expect(screen.getByText(/No transactions this period|Create accounts and categories first/)).toBeInTheDocument();
+      expect(screen.getByText(/Filtering: Rent/)).toBeInTheDocument();
     });
+    // The rendered list is now empty while the raw page array still holds 4.
+    expect(screen.queryAllByTestId(/^dash-settled-\d+$/)).toHaveLength(0);
+    expect(screen.getByText(EMPTY)).toBeInTheDocument();
   });
 });

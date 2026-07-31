@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -384,6 +384,15 @@ function desktopRowIds(): number[] {
     .map((el) => Number(el.getAttribute("data-testid")!.replace("tx-row-desktop-", "")));
 }
 
+// The mobile card list is a SECOND renderer over the same array — page.tsx
+// mounts both and only CSS hides one. Counting `tx-row-desktop-*` alone leaves
+// that branch unfenced, so re-introducing the client hide on the MOBILE map
+// only would pass every desktop assertion in this file. Every exactly-N fence
+// below asserts both counts.
+function mobileRowCount(): number {
+  return screen.getAllByTestId(/^tx-row-mobile-\d+$/).length;
+}
+
 describe("TransactionsPage — transfer collapse (TBD-268)", () => {
   const useAuthMock = vi.mocked(useAuth);
 
@@ -443,6 +452,9 @@ describe("TransactionsPage — transfer collapse (TBD-268)", () => {
     await waitFor(() => {
       expect(desktopRowCount()).toBe(25);
     });
+    // Same count on the mobile renderer (H2): a hide reintroduced on the
+    // mobile branch alone is invisible to every desktop assertion.
+    expect(mobileRowCount()).toBe(25);
 
     // The request must carry the opt-in, or the server never collapses.
     expect(listUrls().some((u) => u.includes("collapse_transfers=true"))).toBe(true);
@@ -472,6 +484,7 @@ describe("TransactionsPage — transfer collapse (TBD-268)", () => {
     await waitForStableTxList();
 
     await waitFor(() => expect(desktopRowCount()).toBe(25));
+    expect(mobileRowCount()).toBe(25);
     const page1 = desktopRowIds();
 
     fireEvent.click(
@@ -481,6 +494,7 @@ describe("TransactionsPage — transfer collapse (TBD-268)", () => {
       expect(listUrls().some((u) => u.includes("offset=25"))).toBe(true);
     });
     await waitFor(() => expect(desktopRowCount()).toBe(25));
+    expect(mobileRowCount()).toBe(25);
     const page2 = desktopRowIds();
 
     // No id on both pages...
@@ -514,6 +528,7 @@ describe("TransactionsPage — transfer collapse (TBD-268)", () => {
     await screen.findAllByText("Row 1", undefined, { timeout: 8000 });
 
     await waitFor(() => expect(desktopRowCount()).toBe(24));
+    expect(mobileRowCount()).toBe(24);
 
     // The page mounts <Pagination> only when `total > pageSize || page > 0`.
     // 24 collapsed against a page size of 25 means NO pagination bar at all.
@@ -530,6 +545,7 @@ describe("TransactionsPage — transfer collapse (TBD-268)", () => {
     render(<TransactionsPage />);
     await waitForStableTxList();
     await waitFor(() => expect(desktopRowCount()).toBe(25));
+    expect(mobileRowCount()).toBe(25);
 
     // Kills `selectableTxs` not being re-pointed at `transactions`: the old
     // filtered array would have excluded the higher-id survivors, so the bulk
@@ -609,5 +625,53 @@ describe("TransactionsPage — transfer collapse (TBD-268)", () => {
     });
     expect(screen.queryByRole("button", { name: /Unlink transfer: Row 42/i })).toBeNull();
     expect(screen.queryByText(/→/)).toBeNull();
+  });
+
+  it("F7c: a reconcile-matched row renders as an ORDINARY transaction on BOTH renderers", async () => {
+    // U1. The PR first moved only the subline and the Unlink button onto the
+    // mutuality-verified `linked_account_name`, leaving eight other
+    // affordances on the raw `linked_transaction_id` column — so the SAME row
+    // said transfer in five places and not-transfer in two. Every one of them
+    // is asserted here, on the desktop grid AND the mobile card list.
+    //
+    // Non-vacuity: the fixture is a ONE-WAY match (id set, name null). A row
+    // with both null would satisfy all of this trivially.
+    const matched = makeTx({
+      id: 42,
+      description: "Row 42",
+      amount: 42,
+      type: "expense",
+      status: "settled",
+      account_name: "Checking",
+      linked_transaction_id: 7,
+      linked_account_name: null,
+    });
+    setupApiFetch([matched]);
+
+    render(<TransactionsPage />);
+    await screen.findAllByText("Row 42", undefined, { timeout: 8000 });
+    await waitFor(() => expect(desktopRowCount()).toBe(1));
+
+    // 1. Signed amount, not the unsigned accent-coloured transfer amount.
+    //    (Locale-tolerant: formatAmount goes through toLocaleString.)
+    const signed = /^-\d+[.,]\d{2}$/;
+    expect(within(screen.getByTestId("tx-row-desktop-42")).getByText(signed)).toBeInTheDocument();
+    expect(within(screen.getByTestId("tx-row-mobile-42")).getByText(signed)).toBeInTheDocument();
+
+    // 2. A status TOGGLE, not a static badge — one per renderer.
+    expect(screen.getAllByRole("button", { name: "Mark as pending" })).toHaveLength(2);
+
+    // 3. "Mark transfer" offered — one per renderer (the labels differ in
+    //    text but share the aria-label).
+    expect(screen.getAllByRole("button", { name: /Mark as transfer: Row 42/i })).toHaveLength(2);
+
+    // 4. Edit mode labels the picker "Category", and does not constrain it to
+    //    both-only transfer categories.
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit: Row 42$/ })[0]);
+    await waitFor(() => {
+      expect(screen.getAllByRole("combobox", { name: "Category" }).length).toBeGreaterThan(0);
+    });
+    expect(screen.queryAllByRole("combobox", { name: "Transfer category" })).toHaveLength(0);
+    expect(screen.queryByText(/Editing a transfer leg/)).toBeNull();
   });
 });

@@ -61,6 +61,7 @@ type Tx = {
   type: "income" | "expense";
   status: "settled" | "pending";
   linked_transaction_id: number | null;
+  linked_account_name: string | null;
   recurring_id: number | null;
   date: string;
   settled_date: string | null;
@@ -79,6 +80,7 @@ function makeTx(over: Partial<Tx> = {}): Tx {
     type: "expense",
     status: "settled",
     linked_transaction_id: null,
+    linked_account_name: null,
     recurring_id: null,
     date: "2026-05-01",
     settled_date: null,
@@ -193,11 +195,13 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
       id: 200, description: "Move money",
       category_id: CAT_BOTH.id, category_name: CAT_BOTH.name,
       type: "expense", linked_transaction_id: 201,
+      linked_account_name: "Acct B",
     });
     const hiddenLeg = makeTx({
       id: 201, description: "Move money",
       category_id: CAT_BOTH.id, category_name: CAT_BOTH.name,
       type: "income", linked_transaction_id: 200,
+      linked_account_name: ACCT_A.name,
     });
 
     const apiFetchMock = vi.mocked(apiFetch);
@@ -245,7 +249,9 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
     // current page, so startEdit resolves editPartner asynchronously (and
     // here never — the partner fetch returns null). The both-only constraint
     // must NOT depend on editPartner: it is keyed off the synchronously-known
-    // tx.linked_transaction_id (isTransfer). Regression guard for the picker
+    // tx.linked_account_name (isPairedTransfer -- TBD-268 U1 folded every
+    // transfer affordance onto that one mutuality-verified signal). Regression
+    // guard for the picker
     // briefly showing income/expense-only categories during that window.
     const CAT_EXPENSE = {
       id: 11, name: "Groceries", type: "expense" as const,
@@ -271,6 +277,7 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
       id: 200, description: "Move money",
       category_id: CAT_BOTH.id, category_name: CAT_BOTH.name,
       type: "expense", linked_transaction_id: 201,
+      linked_account_name: "Acct B",
     });
 
     const apiFetchMock = vi.mocked(apiFetch);

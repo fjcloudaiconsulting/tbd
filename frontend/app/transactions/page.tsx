@@ -604,7 +604,14 @@ function TransactionsPageContent() {
     setEditRecNextDue(defaultNextDueISO());
     // Hydrate partner for linked rows so the Account select can filter
     // currency-compatible options and the mirror-amount notice can render.
-    if (tx.linked_transaction_id) {
+    //
+    // TBD-268: gated on the same mutuality-verified signal every rendered
+    // affordance uses. A one-way reconciliation match also carries
+    // `linked_transaction_id`, and hydrating its partner would print
+    // "Editing a transfer leg. Changes to amount apply to both rows." above a
+    // form that labels its picker "Category" — the row contradicting itself
+    // again — and would freeze Type on what is an ordinary transaction.
+    if (tx.linked_transaction_id && tx.linked_account_name != null) {
       const visible = transactions.find((t) => t.id === tx.linked_transaction_id);
       if (visible) {
         setEditPartner(visible);
@@ -644,11 +651,15 @@ function TransactionsPageContent() {
     setError("");
     // Capture the row pre-save so we can decide whether the promote step
     // applies (transfer legs and already-recurring rows are excluded).
+    // TBD-268: "transfer leg" is `linked_account_name != null`, matching the
+    // `!editPartner` gate that decides whether the checkbox renders at all —
+    // otherwise a reconcile-matched row shows a checkbox that silently does
+    // nothing when ticked.
     const editingRow = transactions.find((t) => t.id === editingId) ?? null;
     const wantsPromote =
       editPromoteRecurring &&
       editingRow !== null &&
-      editingRow.linked_transaction_id === null &&
+      editingRow.linked_account_name == null &&
       editingRow.recurring_id === null;
     if (wantsPromote && !editRecNextDue) {
       setError("Pick a next due date");
@@ -1105,13 +1116,19 @@ function TransactionsPageContent() {
                   {/* Desktop/tablet grid rows (md+) */}
                   <div className="hidden md:block divide-y divide-border-subtle">
                     {transactions.map((tx) => {
-                      const isTransfer = tx.linked_transaction_id !== null;
-                      // TBD-268: `linked_account_name` is the MUTUALITY-verified
-                      // transfer signal — the server populates it only for a
-                      // reciprocal, same-org pair. `linked_transaction_id` alone
-                      // also matches a one-way reconciliation match, which is
-                      // NOT a transfer and must not be offered an Unlink button
-                      // (unpair_transactions rewrites both rows' category).
+                      // TBD-268: `linked_account_name` is the ONE transfer
+                      // signal this row renders from, and it is
+                      // mutuality-verified — the server populates it only for
+                      // a reciprocal, same-org pair. `linked_transaction_id`
+                      // alone also matches a one-way reconciliation match,
+                      // which is NOT a transfer.
+                      //
+                      // Do NOT re-split this into two signals. Driving some
+                      // affordances off the raw column and others off this one
+                      // makes a reconcile-matched row claim to be a transfer in
+                      // the amount cell, the status cell and the category
+                      // picker while claiming not to be one in the subline and
+                      // the Unlink slot.
                       const isPairedTransfer = tx.linked_account_name != null;
                       // Direction comes from `type`, never from which leg
                       // survived the collapse: pair_existing_transactions and
@@ -1182,9 +1199,9 @@ function TransactionsPageContent() {
                               </select>
                             </div>
                             <div>
-                              <label htmlFor={`edit-cat-${tx.id}`} className={label}>{isTransfer ? "Transfer category" : "Category"}</label>
-                              <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} aria-describedby={isTransfer ? `edit-cat-${tx.id}-help` : undefined} id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => mutateCategories((prev) => [...(prev ?? []), cat], { revalidate: false })} />
-                              {isTransfer && (
+                              <label htmlFor={`edit-cat-${tx.id}`} className={label}>{isPairedTransfer ? "Transfer category" : "Category"}</label>
+                              <CategorySelect aria-label={isPairedTransfer ? "Transfer category" : "Category"} aria-describedby={isPairedTransfer ? `edit-cat-${tx.id}-help` : undefined} id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isPairedTransfer ? undefined : editType} typeFilter={isPairedTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => mutateCategories((prev) => [...(prev ?? []), cat], { revalidate: false })} />
+                              {isPairedTransfer && (
                                 <p id={`edit-cat-${tx.id}-help`} className="mt-1 text-xs text-text-secondary">Transfers only accept categories that work for both income and expense (for example, Transfer).</p>
                               )}
                               {categorizeAi?.entitled && !editPartner ? (
@@ -1405,7 +1422,7 @@ function TransactionsPageContent() {
                           </span>
                           <span className="col-span-1 text-sm text-text-secondary truncate">{tx.category_name}</span>
                           <span className="tx-status-cell col-span-1 text-center">
-                            {isTransfer ? (
+                            {isPairedTransfer ? (
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
                               </span>
@@ -1429,12 +1446,12 @@ function TransactionsPageContent() {
                               </button>
                             )}
                           </span>
-                          <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
-                            {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                          <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isPairedTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                            {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                           </span>
                           <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
                             <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
-                            {!isTransfer && (
+                            {!isPairedTransfer && (
                               <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark transfer</button>
                             )}
                             {isPairedTransfer && (
@@ -1459,10 +1476,10 @@ function TransactionsPageContent() {
                   {/* Mobile card layout (below md) */}
                   <div className="md:hidden flex flex-col gap-3 p-3">
                     {transactions.map((tx) => {
-                      const isTransfer = tx.linked_transaction_id !== null;
-                      // See the desktop renderer above: mutuality-verified
-                      // transfer signal + direction from `type`, not from
-                      // which leg survived the server-side collapse.
+                      // See the desktop renderer above: ONE mutuality-verified
+                      // transfer signal for every affordance, and direction
+                      // from `type`, not from which leg survived the
+                      // server-side collapse.
                       const isPairedTransfer = tx.linked_account_name != null;
                       const [fromAcct, toAcct] = tx.type === "expense"
                         ? [tx.account_name, tx.linked_account_name]
@@ -1505,9 +1522,9 @@ function TransactionsPageContent() {
                                 </select>
                               </div>
                               <div>
-                                <label htmlFor={`edit-cat-mobile-${tx.id}`} className={label}>{isTransfer ? "Transfer category" : "Category"}</label>
-                                <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} aria-describedby={isTransfer ? `edit-cat-mobile-${tx.id}-help` : undefined} id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => mutateCategories((prev) => [...(prev ?? []), cat], { revalidate: false })} />
-                                {isTransfer && (
+                                <label htmlFor={`edit-cat-mobile-${tx.id}`} className={label}>{isPairedTransfer ? "Transfer category" : "Category"}</label>
+                                <CategorySelect aria-label={isPairedTransfer ? "Transfer category" : "Category"} aria-describedby={isPairedTransfer ? `edit-cat-mobile-${tx.id}-help` : undefined} id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isPairedTransfer ? undefined : editType} typeFilter={isPairedTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => mutateCategories((prev) => [...(prev ?? []), cat], { revalidate: false })} />
+                                {isPairedTransfer && (
                                   <p id={`edit-cat-mobile-${tx.id}-help`} className="mt-1 text-xs text-text-secondary">Transfers only accept categories that work for both income and expense (for example, Transfer).</p>
                                 )}
                                 {categorizeAi?.entitled && !editPartner ? (
@@ -1729,8 +1746,8 @@ function TransactionsPageContent() {
                                 Settled {tx.settled_date ?? "—"}
                               </div>
                             </div>
-                            <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
-                              {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                            <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isPairedTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                              {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
@@ -1743,7 +1760,7 @@ function TransactionsPageContent() {
                                 {tx.category_name}
                               </div>
                             )}
-                            {isTransfer ? (
+                            {isPairedTransfer ? (
                               <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
                               </span>
@@ -1780,7 +1797,7 @@ function TransactionsPageContent() {
                             >
                               Edit
                             </button>
-                            {!isTransfer && (
+                            {!isPairedTransfer && (
                               <button
                                 onClick={() => setMarkModalSource(tx)}
                                 aria-label={`Mark as transfer: ${tx.description}`}

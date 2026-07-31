@@ -34,6 +34,7 @@ from sqlalchemy.pool import StaticPool
 from app.models import Account, AccountType, Category, Organization
 from app.models.base import Base
 from app.models.category import CategoryType
+from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services import transaction_service
 
@@ -344,6 +345,14 @@ async def test_b6_self_linked_row_still_returned(db_session):
     assert [t.id for t in items] == [me]
     assert total == 1
 
+    # ...and the RESPONSE must not dress a self-link up as a transfer. The
+    # eager load resolves ``linked_transaction`` to the row itself, so without
+    # ``partner.id != tx.id`` in ``to_response`` this row renders
+    # "Real -> Real" with an Unlink button that would hand
+    # ``unpair_transactions`` a row pointing at itself. Measured with the
+    # self-check removed: ``linked_account_name='Real'``.
+    assert transaction_service.to_response(items[0]).linked_account_name is None
+
 
 # ── B7: cross-org link — fail open, and never leak ─────────────────────────
 
@@ -391,6 +400,16 @@ async def test_b7_cross_org_reciprocal_link_is_not_collapsed(db_session):
     assert [t.id for t in items] == [row_a]
     assert total == 1
     assert row_b not in {t.id for t in items}
+
+    # ...and org B's ACCOUNT NAME must not leak through the response either.
+    # ``selectinload(Transaction.linked_transaction)`` follows the raw FK with
+    # NO org predicate, so the partner object IS loaded here and carries the
+    # other tenant's account. ``partner.org_id == tx.org_id`` in
+    # ``to_response`` is the only thing stopping it: measured with that clause
+    # removed, ``linked_account_name='B acct'``. This is a tenant-isolation
+    # clause, not a cosmetic one, and it is not covered by the predicate
+    # assertions above -- they never call ``to_response``.
+    assert transaction_service.to_response(items[0]).linked_account_name is None
 
 
 # ── B8: paging is a partition, under every sort key ────────────────────────
@@ -451,29 +470,41 @@ async def test_b8_paging_partitions_the_collapsed_set(db_session, sort_by, sort_
 # ── B9: the join asymmetry ─────────────────────────────────────────────────
 
 
-async def test_b9_missing_account_row_survives_account_name_sort(db_session):
-    """B9 — sort_by=account_name with a transaction whose Account row is absent.
+@pytest.mark.parametrize(
+    ("sort_by", "fk_column"),
+    [("account_name", "account_id"), ("category_name", "category_id")],
+)
+async def test_b9_missing_parent_row_survives_name_sort(db_session, sort_by, fk_column):
+    """B9 — a name sort with the joined parent row absent.
 
     Kills: the INNER join that ``page_q`` (and only ``page_q``) attaches for
-    the account_name sort. An inner join silently drops the row from ``items``
-    while ``count_q`` still counts it, so ``total`` stops equalling the number
-    of rows the client renders -- the very guarantee this ticket exists to
-    establish. Unreachable while the FK holds; the guarantee must not depend
-    on referential integrity.
+    the account_name / category_name sorts. An inner join silently drops the
+    row from ``items`` while ``count_q`` still counts it, so ``total`` stops
+    equalling the number of rows the client renders -- the very guarantee this
+    ticket exists to establish. Unreachable while the FK holds (both columns
+    are ``nullable=False``, and the fixture must turn FK enforcement OFF to
+    reach the state at all); the guarantee must not depend on referential
+    integrity.
+
+    PARAMETRIZED over both sorts on purpose. The two joins were changed
+    together under one comment, and with only the account_name case covered,
+    reverting JUST the category_name branch to an inner join was invisible to
+    the entire suite: measured ``items=[1] / total=2``, exactly the
+    items/total divergence B9 exists to forbid.
     """
     org_id, at = await _org(db_session, "A")
     a = await _acct(db_session, org_id, at, "Real")
     cat = await _cat(db_session, org_id, "General", "general")
-    keeper = await _tx(db_session, org_id, a, cat, desc="has account")
+    keeper = await _tx(db_session, org_id, a, cat, desc="has parent")
     await _fk_off(db_session)
     orphan = await _tx(db_session, org_id, a, cat, desc="orphan")
     await db_session.execute(
-        text("UPDATE transactions SET account_id=888888 WHERE id=:i"), {"i": orphan},
+        text(f"UPDATE transactions SET {fk_column}=888888 WHERE id=:i"), {"i": orphan},
     )
     await _fk_on(db_session)
 
     items, total = await transaction_service.list_transactions(
-        db_session, org_id, sort_by="account_name", sort_dir="asc",
+        db_session, org_id, sort_by=sort_by, sort_dir="asc",
         limit=25, offset=0, collapse_transfers=True,
     )
 
@@ -569,6 +600,88 @@ async def test_b12_linked_account_name_none_without_the_flag(db_session):
     assert all(
         transaction_service.to_response(t).linked_account_name is None for t in items
     )
+
+
+async def _tag(db, org_id, name):
+    t = Tag(org_id=org_id, name=name, name_normalized=name.lower())
+    db.add(t)
+    await db.flush()
+    return t.id
+
+
+async def _attach(db, tx_id, tag_id):
+    db.add(TransactionTag(transaction_id=tx_id, tag_id=tag_id))
+    await db.flush()
+
+
+@pytest.mark.parametrize("shape", ["search", "tags", "tags_exclude"])
+async def test_b14_branch5_under_subquery_filters(db_session, shape):
+    """B14 — branch 5 exercised through filters that are NOT ``account_id``.
+
+    Every other branch-5 fence reaches it via ``account_id``, a plain column
+    predicate. ``search`` / ``tags`` / ``tags_exclude`` compile
+    ``filtered_ids`` into a NESTED derived table
+    (``NOT IN (SELECT id FROM (... IN (SELECT transaction_id ...)))``), a
+    different SQL shape that no test exercised. The exactly-one property is
+    safe by construction here -- tag filters are IN-subqueries, not joins, so
+    they cannot duplicate a row -- but the shape itself was untested.
+
+    Fixture excludes the LOWER-id (expense) leg in every case, so the income
+    leg must survive on branch 5 alone: branch 4 cannot rescue it.
+    """
+    org_id, at = await _org(db_session, "A")
+    a = await _acct(db_session, org_id, at, "Account A")
+    b = await _acct(db_session, org_id, at, "Account B")
+    cat = await _cat(db_session, org_id, "General", "general")
+    exp, inc = await _pair(db_session, org_id, cat, acct_from=a, acct_to=b, desc="t")
+    assert inc > exp, "non-vacuity: the surviving leg must be the HIGHER-id one"
+
+    kwargs: dict = {}
+    if shape == "search":
+        # `_pair` names the legs "t out" / "t in"; "t in" matches only the
+        # income leg ("t out" contains no "in").
+        kwargs["search"] = "t in"
+    elif shape == "tags":
+        keep = await _tag(db_session, org_id, "keepme")
+        await _attach(db_session, inc, keep)
+        kwargs["tags"] = ["keepme"]
+    else:
+        drop = await _tag(db_session, org_id, "dropme")
+        await _attach(db_session, exp, drop)
+        kwargs["tags_exclude"] = ["dropme"]
+    await db_session.commit()
+
+    items, total = await transaction_service.list_transactions(
+        db_session, org_id, limit=25, offset=0, collapse_transfers=True, **kwargs,
+    )
+
+    assert [t.id for t in items] == [inc]
+    assert total == 1
+
+
+async def test_b14b_both_legs_inside_a_tag_filtered_set_collapse_to_one(db_session):
+    """B14b — the same nested-derived-table shape with BOTH legs inside the
+    filtered set: exactly one row survives, and it is the lower-id leg.
+
+    Pairs with B14: that fence proves the shape fails OPEN when the partner is
+    excluded, this one proves it still collapses when it is not.
+    """
+    org_id, at = await _org(db_session, "A")
+    a = await _acct(db_session, org_id, at, "Account A")
+    b = await _acct(db_session, org_id, at, "Account B")
+    cat = await _cat(db_session, org_id, "General", "general")
+    exp, inc = await _pair(db_session, org_id, cat, acct_from=a, acct_to=b, desc="t")
+    both = await _tag(db_session, org_id, "both")
+    await _attach(db_session, exp, both)
+    await _attach(db_session, inc, both)
+    await db_session.commit()
+
+    items, total = await transaction_service.list_transactions(
+        db_session, org_id, tags=["both"], limit=25, offset=0, collapse_transfers=True,
+    )
+
+    assert [t.id for t in items] == [exp]
+    assert total == 1
 
 
 async def test_b11b_one_way_link_gets_no_linked_account_name(db_session):

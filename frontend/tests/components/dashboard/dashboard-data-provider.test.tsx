@@ -2239,9 +2239,21 @@ describe("DashboardDataProvider — transfer collapse (TBD-268)", () => {
       expect(urls.some((u) => u.includes("limit=200") && u.includes("collapse_transfers=true"))).toBe(true);
       expect(urls.some((u) => u.includes("offset=0") && u.includes("collapse_transfers=true"))).toBe(true);
     });
-    // The all-time pending list goes through fetchAll (mocked separately) and
-    // must never carry the flag: its consumers key by account_id, and the two
-    // legs of a transfer sit on different accounts.
-    expect(urls.some((u) => u.includes("status=pending"))).toBe(false);
+    // The all-time pending list goes through fetchAll, which this file mocks
+    // at the module boundary — so it never reaches `apiFetch`, and asserting
+    // "apiFetch saw no pending URL" was true by MOCK CONSTRUCTION and could
+    // never fail (proved: adding collapse_transfers=true inside fetchAll left
+    // it green). Assert on the URL the provider actually hands fetchAll, with
+    // a non-vacuity guard that it was handed one at all.
+    //
+    // Complementary coverage: this fence watches the provider's call site;
+    // accounts-pending-visibility F4 drives the REAL fetchAll and therefore
+    // also covers the flag being added inside lib/pagination.ts.
+    const pendingCalls = vi
+      .mocked(pagination.fetchAll)
+      .mock.calls.map((c) => String(c[0]))
+      .filter((u) => u.includes("status=pending"));
+    expect(pendingCalls.length).toBeGreaterThan(0);
+    pendingCalls.forEach((u) => expect(u).not.toContain("collapse_transfers"));
   });
 });

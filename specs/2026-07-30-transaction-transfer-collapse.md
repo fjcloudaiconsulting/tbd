@@ -125,12 +125,19 @@ and in the fence's docstring rather than assumed away.
 The **same clause object** is applied to `page_q` and `count_q`, so `total`
 equals the number of rows the client will render.
 
-Separately fixed: the `account_name` / `category_name` sort attached an
+Separately hardened: the `account_name` / `category_name` sort attached an
 **INNER** join to `page_q` only. An inner join can drop rows from `items` that
 `count_q` still counts, breaking the guarantee this ticket exists to establish.
 Both are now `isouter=True`. Adding the join to `count_q` instead was rejected:
 that would make the count depend on the sort key, which is worse.
 `to_response` already coerces a missing account to `""`.
+
+**State this as hardening, not as a fixed live bug.** The divergence is
+**unreachable in production**: `Transaction.account_id` and
+`Transaction.category_id` are `nullable=False` FKs, and B9 has to turn SQLite's
+`PRAGMA foreign_keys=OFF` to construct the state at all. The point is that a
+guarantee about `items` matching `total` must not silently depend on
+referential integrity holding.
 
 `backend/app/schemas/common.py` was NOT touched: its `ListEnvelope` docstring
 stays literally true because the collapse IS part of the filtered query, and
@@ -359,3 +366,237 @@ image; scan `/proc/*/cmdline` instead.
   is closed; the server guard needs its own ticket.
 - `_apply_transaction_filters(model=...)` parameterisation, if profiling ever
   shows the materialised id subquery is too slow.
+
+## 11. Review fold
+
+Nine findings from review. **Eight of them were coverage holes: a mutation that
+stayed green against the entire suite.** Every fix below was confirmed RED
+against the specific mutation it names, and the mutation re-confirmed RED
+afterwards. Real output, not predicted output.
+
+### 11.1 Coverage holes
+
+**H1 — only one of the two `isouter` joins was pinned.**
+`test_b9` covered `account_name` alone, so reverting **only** the
+`category_name` branch to an inner join was invisible to the whole suite
+(measured `items=[1]` against `total=2` — precisely the items/total divergence
+B9's own docstring says the ticket exists to forbid). Both joins were changed
+together under one comment; only one was fenced. B9 is now parametrized over
+`("account_name", account_id)` and `("category_name", category_id)`.
+
+| Injected | Observed RED |
+| --- | --- |
+| `category_name` join → INNER | `test_b9[category_name-category_id]` — `assert {1} == {1, 2}` |
+| `account_name` join → INNER (control) | `test_b9[account_name-account_id]` — same shape, other param green |
+
+**H2 — the mobile card list had zero row-count coverage.**
+Counting `tx-row-desktop-*` is the right call for the 2× jsdom problem
+(§9 selector notes), but it left `transactions.map` in the **mobile** renderer
+unfenced: reintroducing the exact client hide on that branch alone passed the
+entire frontend suite. Added `mobileRowCount()` and asserted it beside the
+desktop count in every exactly-N fence (F1, F2 both pages, F3, F5) and in F7c.
+
+Injected — client hide on the **mobile** map only:
+
+```
+F1  expected 24 to be 25
+F5  expected 24 to be 25
+F7c Unable to find an element by: [data-testid="tx-row-mobile-42"]
+```
+
+(F2 and F3 do not redden: neither corpus renders a higher-id survivor on the
+asserted page. Recorded rather than papered over — F1/F5/F7c are what kill it.)
+
+**H3 — the org check in `to_response` was unfenced, and it is tenant
+isolation.** B7 builds a cross-org reciprocal pair but never called
+`to_response` on it. `selectinload(Transaction.linked_transaction)` follows the
+raw FK with **no org predicate**, so the other tenant's row IS loaded and
+`partner.org_id == tx.org_id` is the only thing keeping its account name out of
+the response. B7 now asserts `linked_account_name is None`.
+
+Injected — org clause removed from `to_response`: `AssertionError: assert 'B acct' is None`.
+
+**H4 — a fence that could not kill the mutation it named.**
+F8d documented itself as killing "the empty state keyed off the RAW page
+array", but called `mockDashboard([])`, so `transactions.length === 0` and
+`sortedVisibleTxs.length === 0` **agreed**. Reverting the legacy dashboard's
+empty state passed the full suite. Rewritten to the shape F9c already gets
+right: non-empty `transactions`, empty rendered list, driven by a real chart
+filter.
+
+Finding the reachable path took measurement, and the answer is narrower than it
+looks. Under a chart filter `visibleTxs` **is** `allTransactions`, and the
+donut legend's category names are *derived from* `allTransactions` — so those
+two can never disagree. Period navigation calls `setChartFilter(null)`, and
+`<Pagination>` is not mounted while a filter is active. The one production path
+that sets a filter naming a category with **no** matching transaction is the
+**Budget Progress bar**: a budget can exist for a category nothing was spent on
+this period. F8d now clicks it.
+
+That needed a jsdom finding recorded in the test: Recharts' `ResponsiveContainer`
+measures its parent, jsdom reports 0×0, and the page renders **0**
+`.recharts-bar-rectangle` elements — no chart in this repo has ever been
+clickable in a test. Stubbing the container to a fixed size yields **2**, and
+the click sets the filter.
+
+Injected — legacy empty state reverted to `transactions.length === 0`:
+`Unable to find an element with the text: /No transactions this period|Create accounts and categories first/`.
+
+**H5 / H6 — two "must not opt in" assertions were inert, and two of the three
+pending call sites were unfenced.**
+
+- `dashboard-transfer-collapse` F8b routed `?status=pending` to an early
+  `return` **before** `listUrls.push(url)`, so "no pending URL carries the
+  flag" was true by mock routing.
+- `dashboard-data-provider` F9e mocks `@/lib/pagination`, so `fetchAll` never
+  reaches `apiFetch` and the assertion was true by mock construction.
+
+Proof they were inert: appending `collapse_transfers=true` inside `fetchAll`
+left **both** green; only `accounts-pending-visibility` F4 caught it.
+
+Both are now real, each with an explicit non-vacuity guard that a pending URL
+was issued at all. F8b records every transactions URL before routing (it drives
+the **real** `fetchAll`, covering `dashboard/page.tsx`'s call site); F9e asserts
+on the argument the provider hands the mocked `fetchAll` (covering
+`DashboardDataProvider`'s call site). With F4 that is all three call sites, and
+the three are complementary rather than redundant — F4 and F8b would also catch
+the flag being added *inside* `lib/pagination.ts`, F9e would not.
+
+| Injected | Observed RED |
+| --- | --- |
+| `fetchAll` appends the flag | F8b — `expected '/api/v1/transactions?status=pending&l…' not to contain 'collapse_transfers'`; F4 — `expected [ <span></span> ] to have a length of 2 but got 1` |
+| provider's own pending URL carries the flag | F9e — `expected '/api/v1/transactions?status=pending&c…' not to contain 'collapse_transfers'` |
+
+**H7 — `partner.id != tx.id` in `to_response` was unfenced.** B6 pinned the
+predicate against self-links but nothing pinned the response field: with the
+self-check removed a self-linked row renders `linked_account_name` set — "A → A"
+with an Unlink button that would hand `unpair_transactions` a row pointing at
+itself. Three lines added to B6.
+
+Injected — self-check removed: `AssertionError: assert 'Account A' is None`.
+
+**H8 — branch 5 was only ever exercised through `account_id`.** That is a plain
+column predicate. `search` / `tags` / `tags_exclude` compile `filtered_ids` into
+a **nested derived table**, a shape nothing tested. New `test_b14`
+(parametrized over all three) drives branch 5 with the lower-id leg excluded, so
+branch 4 cannot rescue the survivor; new `test_b14b` puts both legs inside a
+tag-filtered set and asserts exactly one survives. The exactly-one property was
+never at risk — tag filters are `IN`-subqueries, not joins — but the shape is
+now covered.
+
+Injected — branch 5 removed: `test_b3` plus all three `test_b14` params RED.
+
+### 11.2 U1 — one row, two stories
+
+The PR moved **two** affordances (the `A → B` subline, and Unlink) onto the
+mutuality-verified `isPairedTransfer` and left the rest on the raw
+`linked_transaction_id` column. A reconcile-matched row surviving the collapse
+therefore rendered its amount **unsigned and in accent**, showed a **static**
+status badge instead of a toggle, offered **no "Mark transfer"**, and labelled
+its edit picker **"Transfer category"** with the category type filter widened to
+both-only — while its subline showed a plain account name and there was no
+"Unlink". Five surfaces said transfer, two said not-transfer.
+
+Every one of them now reads `linked_account_name`. `isTransfer` no longer
+exists in any of the three files.
+
+- `frontend/app/transactions/page.tsx` — both renderers: amount class + sign,
+  status cell, "Mark transfer", the edit-mode category label / `aria-label` /
+  `aria-describedby` / `filterType` / `typeFilter` / help text.
+- `frontend/app/dashboard/page.tsx` and
+  `frontend/components/dashboard/widgets/RecentTransactionsWidget.tsx` —
+  `amountClass`, `amountText`, `statusPill`.
+
+**Two sites beyond the review's list were folded too, and here is why.** The
+review enumerated the render-time uses. Stopping there would have left the edit
+form contradicting *itself*: `startEdit` hydrates `editPartner` for any row with
+a `linked_transaction_id`, and `editPartner` drives the "Editing a transfer leg.
+Changes to amount apply to both rows." notice, the frozen Type field and the
+currency-filtered Account select. A reconcile-matched row would have shown that
+notice above a form labelling its picker "Category". So:
+
+- `startEdit`'s partner hydration is gated on `linked_account_name != null`.
+- `handleSaveEdit`'s `wantsPromote` reads `linked_account_name == null` to match
+  the `!editPartner` gate that decides whether the promote checkbox renders at
+  all — otherwise a reconcile-matched row would show a checkbox that silently
+  does nothing when ticked.
+
+Fence **F7c** (`transactions-server-pagination.test.tsx`) asserts all of it on
+**both** renderers: signed amount, status toggle present, "Mark transfer"
+present, picker labelled "Category" with no "Transfer category" control, and no
+mirror notice. Confirmed RED against the pre-fold code:
+
+```
+Unable to find an element: /^-\d+[.,]\d{2}$/   (the row rendered `42.00`, unsigned)
+```
+
+Two existing fixtures were made faithful rather than worked around: the transfer
+pairs in `transactions-edit-layout-and-settled-date.test.tsx` and
+`transactions-promote-recurring.test.tsx` now carry `linked_account_name`, which
+is what the server returns for a mutual pair under `collapse_transfers=true`.
+
+**Residual, accepted here.** A reconcile-matched row now renders as an ordinary
+transaction, which means it offers "Mark transfer" — and `_link_pair`'s
+already-linked invariant refuses that server-side. It also still cannot be
+unlinked from the UI. Both belong to the deferred `unpair_transactions`
+reciprocity ticket (§10); the server guard is deliberately **not** touched here.
+
+### 11.3 Corrected claims
+
+**"The partner lookup is a primary-key probe" — true of branch 3 only.**
+Branch 3 is a correlated `EXISTS` keyed on `transactions_1.id =
+transactions.linked_transaction_id` (MySQL `EXPLAIN`: `eq_ref PRIMARY, rows=1`).
+Branch 5 is not. Compiled against the MySQL dialect it is:
+
+```sql
+transactions.linked_transaction_id NOT IN (
+  SELECT filtered_tx_ids.id
+  FROM (SELECT transactions.id AS id FROM transactions WHERE transactions.org_id = 1)
+       AS filtered_tx_ids)
+```
+
+— an **uncorrelated materialised subquery over the entire filtered set**, run in
+**both** `page_q` and `count_q`, i.e. twice per request.
+
+Measured on a seeded 20 000-row org, MySQL 8.0.46, `collapse_transfers` off → on:
+
+| Query | Off | On | Factor |
+| --- | --- | --- | --- |
+| unfiltered page | 31.7 ms | **101.7 ms** | 3.2× |
+| `account_id` | 23.0 ms | 51.8 ms | 2.3× |
+| `type=income` | 12.1 ms | 37.4 ms | 3.1× |
+| deep page (offset 5000) | — | 80.6 ms | — |
+
+Acceptable today; scales linearly with org size. Recorded so a future
+regression has a baseline, and so the §3 fallback
+(`_apply_transaction_filters(model=...)`) has a number to beat.
+
+**The `isouter` change is hardening, not a fixed live bug** — see §4.
+
+**Test counts.** The PR body's `3511 passed` is stale — it predates both this
+fold and the `main` merge that brought #601 in. See §11.4.
+
+### 11.4 Gates
+
+Re-measured after the fold, against the branch with `main` (through #601)
+merged in. All five green.
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` | **3565 passed, 12 skipped**, 57 warnings, 1404.71s |
+| `vitest run` (full) | **331 files, 2721 tests passed**, 0 failed |
+| `tsc --noEmit` | exit 0, no output |
+| `eslint . --quiet` | exit 0, no output |
+| `check-design-tokens.sh` | `Design-token check passed.` |
+
+The frontend suite went green first time; the intermittent 10-failed-files
+flake noted during review did not reproduce.
+
+**Process note, worth recording twice because it cost about 45 minutes here.**
+A backgrounded `docker compose exec … pytest` whose local client is killed
+leaves the `pytest` inside the container running. A second full run was started
+believing the first had died — a `/proc/*/cmdline` scan had come back clean
+because the scan's own shell was the only match — and the two then competed,
+dragging throughput down to roughly a third (measured 142 tests/min once the
+duplicate finished, against the crawl before). Count the matches, and exclude
+the scanning shell, before concluding a container is idle.
