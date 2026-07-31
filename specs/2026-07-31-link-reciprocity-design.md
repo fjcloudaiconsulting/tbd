@@ -147,6 +147,16 @@ Three revision-2 corrections, each from a measured finding:
 
 **The `status == SETTLED` conjunction in rows 3 and 4 is not optional.** `contributes_to_cached_balance` has no status term (§4.2). Implemented without it, deleting an ordinary **unlinked PENDING** row reverts an amount that was never applied — the most-travelled delete path in the app, which *(measured)* has **zero test coverage today**.
 
+### 5.0 Fold correction: no adjustment filter on the cascaded partner
+
+The first build of §5 row 4 wrote `if is_reciprocal_pair(row, partner) and not partner.is_manual_adjustment:`. **That clause was deleted in the fold.** It was:
+
+- **unreachable** — `adjust_account_balance` creates adjustment rows unlinked and `convert_and_create_leg` refuses them, so an adjustment can never be a *reciprocal* partner;
+- **asymmetric** — `delete_transaction` has no equivalent, so the two delete paths disagreed on a case neither can reach;
+- **unfenced** — *(measured)* dropping it left ~330 related tests green.
+
+This is the same reasoning §3.1 used to reject the dead org and self clauses in the frozen SQL filter: **do not carry dead code no test can kill.** Track E's adjustment skip still applies to *requested* rows, which is where it is reachable and fenced.
+
 ### 5.1 `unpair_transactions` (TBD-281)
 
 A one-way link is **refused with 400**:
@@ -184,6 +194,19 @@ if tx.linked_transaction_id is not None:
 ```
 
 Deliberately narrower than `_apply_edits`' blanket refusal: refuses only **mutual** links, so re-matching a previously one-way-matched row after a reopen keeps working. Both messages embed both ids because `reconcile_request` is all-or-nothing.
+
+### 5.3 Telemetry on the new refusals *(added in the fold)*
+
+Every new guard fires **only** on states §1's writer census argues are unproducible — self-link, dangling link, forged mutual link. If one ever fires in production there must be something to find it with, so each raise is preceded by `await logger.awarning(...)` carrying `org_id` and the relevant transaction ids. **No PII.**
+
+| event | site | discriminator field |
+|---|---|---|
+| `reconcile.match_refused_would_forge_pair` | `_apply_match` guard 1 | `guard="target_links_back"` |
+| `reconcile.match_refused_would_forge_pair` | `_apply_match` guard 2 | `guard="tx_is_transfer_leg"` |
+| `transfers.unpair_refused_non_mutual` | `unpair_transactions` preview check | `stage="preview"` |
+| `transfers.unpair_refused_non_mutual` | `unpair_transactions` authoritative check | `stage="locked"` |
+
+**Both unpair sites log, not just one, and `stage` is the reason.** The preview raises first single-threaded, so a `stage="locked"` event can only mean the link went non-mutual *between* preview and lock — which is precisely the concurrent case §6.4 says no test can reach. It is the only observability that class of event will ever have.
 
 ---
 
@@ -223,16 +246,33 @@ Deliberately narrower than `_apply_edits`' blanket refusal: refuses only **mutua
 | **F11** | `_apply_match` target guard deleted | match `A`→`B`, then attempt `B`→`A`. Assert 400, `B.linked_transaction_id IS NULL`, both balances unchanged. |
 | **F12** | guard in the wrong direction (`tx.linked == target.id`) | the F11 fixture discriminates **only because `A`→`B` is matched first**. State that in the docstring. |
 | **F13** | target guard over-tightened to `is not None` | real pair `B`↔`C`; match imported `A`→`B`. Assert **success**, `B`↔`C` intact. |
-| **F14** | guard placed **after** the write | **direct unit test on `_apply_match`**, asserting in-memory `tx.linked_transaction_id` after the raise. An API test cannot kill this — the savepoint rolls back either way. |
+| **F14** | guard placed **after** the write | **direct unit test on `_apply_match`**, asserting in-memory `tx.linked_transaction_id` after the raise. ⚠ *(corrected in the fold)* The old claim "an API test cannot kill this" is too strong. *(measured)* the mutant turns three tests red: F14 semantically; **F11 via `sqlalchemy.exc.MissingGreenlet`** from `str(a.id)` on an expired instance — an ORM accident, not a fence; and `test_a_real_transfer_leg_cannot_be_matched` with DID NOT RAISE, which is semantic but about **guard 2**. F14 is still the only fence pinning guard 1's position on purpose. **Do not delete it as redundant.** |
 | **F15** | tx-side guard over-tightened to `is not None` | `A` matched to `B`, then MATCHED→ACCEPTED→PENDING_REVIEW, then matched to `D`. Assert **success**. |
 | **F17** | parity drift, Python sibling vs SQL | table-driven, **EIGHT shapes** (rev 2 added #8). `xfail(strict=True)` on cross-org one-way — non-strict would pass silently if the divergence vanished, making the fence decoration. |
 | **F18** | *(new, rev 2)* baseline delete semantics | unlinked **SETTLED** row → balance reverts. Unlinked **PENDING** row → balance **unchanged**. Kills the missing `status == SETTLED` conjunction (§5). Zero coverage today. |
+| **F19** | *(new, fold)* `partner.id == tx.linked_transaction_id` deleted from `is_reciprocal_pair` | `is_reciprocal_pair(7013, partner=7012)` on the F17 chain → must be `False`. Every sibling conjunct passes, **including the back-link term** (`7012 → 7013`); only the deleted one separates them. |
+| **F20** | *(new, fold)* `partner.id != tx.linked_transaction_id` deleted from `contributes_to_cached_balance` | `contributes_to_cached_balance(7012, partner=7014)` on the same chain → must be `True` (fails OPEN). Mutant returns `False`. |
+| **F21** | *(new, fold)* the **preview** reciprocity check in `unpair_transactions` deleted, alone | router-level one-way unpair with **bogus fallback category ids**. Guard present → 400 `"Transaction is not part of a transfer pair"`; guard gone → 400 `"Invalid category"` *(measured)*, because `validate_category` sits between the two checks. Both are 400: the **detail string** is the discriminator. |
 
 **F17's eight shapes:** link NULL · reciprocal · one-way · self-link · cross-org reciprocal · cross-org one-way *(xfail strict)* · rejected · **chain (`A → B → C`, partner has a link but not back)**.
 
 *(measured)* The chain shape is load-bearing: without it, the mutant `partner.linked_transaction_id is not None` — *mechanism* (partner has a link) instead of *property* (partner links **back**) — passes all seven original shapes. With it, that mutant dies.
 
 *(measured)* Post-fold mutation matrix on §4.2: `not is_reciprocal_pair` → RED (reciprocal, one-way, chain) · drop `partner is None` branch → RED (cross-org reciprocal) · mechanism-not-property → RED (chain) · drop recon-state gate → RED (rejected) · any-link-drops → RED (6 cases).
+
+### 6.1.1 Fold correction: F3 and F7c are PROPERTY fences, not mutant fences
+
+*(measured)* Both stay green against the mutant their docstrings named. Neither is a coverage hole — the mutants die elsewhere — but the docstrings were lying, and a lying docstring is how a real fence gets deleted as redundant. Both were rewritten to say what they do and do not kill, and to **name the covering test by pytest node id**.
+
+| Fence | Named mutant | Fence's own verdict | Actual killer |
+|---|---|---|---|
+| **F3** | `partner.id != tx.id` dropped from `is_reciprocal_pair` | GREEN | `tests/services/test_link_reciprocity_predicates.py::test_is_reciprocal_pair_shapes[self_link-False]` |
+| **F3** | `delete_transaction`'s `to_delete` not id-keyed | GREEN | **nothing.** With the not-self conjunct present, `pair_partner` is never `tx`, so that keying is unkillable repo-wide. Kept for symmetry with the bulk path and as second-line defence — **not** as a fenced property. |
+| **F7c** | bulk `delete_set` not id-keyed | GREEN | `tests/services/test_transaction_service_delete_linked.py::test_bulk_delete_transactions_on_transfer_pair_no_circular_dependency` |
+
+F3 *does* go red against its two named mutants **applied together** *(measured)* — the composition is the property it pins.
+
+⚠ **F7c's cover is fragile and must stay recorded.** That test's stated purpose, in its own docstring and its file's module header, is `CircularDependencyError`. Nothing there says it is also the only thing pinning the bulk delete set's id-keying. Tidy that file, or relax its assertion to "both rows are gone", and the coverage evaporates silently.
 
 ### 6.2 Regression guards (must stay green, unmodified)
 
@@ -250,8 +290,11 @@ Invert the assertion; rewrite the docstring to name `_apply_match` as the produc
 
 - Pruning the partner from `ids_to_lock` (`:840-843`).
 - Deciding reciprocity on the unlocked `preview`.
+- *(added in the fold)* **The AUTHORITATIVE post-`FOR UPDATE` reciprocity check in `unpair_transactions` — §5 row 5's second half.** *(measured)* Deleting it alone leaves every unpair fence green (`6 passed`), F21 included. This is not a gap in the fences; it is structural. Preview and lock read the same rows through the same session in the same request, so **no single-threaded fixture can make them disagree** — the only state that separates them is another transaction mutating the link between the two reads. **§5 row 5's requirement is therefore unverifiable by this suite**, and no test in this PR should be read as covering it. **Do not write a fence for it**; a fence that cannot fail is the vacuous-test pattern this repo has shipped 17+ times.
 
-Both need concurrency to go red. Defend with a site comment and a PR line. **Do not ship a sleep-based test.**
+The three above need concurrency to go red. Defend with a site comment and a PR line. **Do not ship a sleep-based test.**
+
+⚠ The two unpair checks are a **conjunction trap**, not two independent guards. *(measured)* F8 / F9 / F9b / F10 stay fully green when **either** check is deleted; only deleting **both** turns them red. What they actually pin is "some reciprocity check exists somewhere before `validate_category`", not the check each docstring names. **F21 is the one that pins the preview check by position**; nothing pins the authoritative one. Never add a second copy of a guard without asking which fence dies when only one copy goes.
 
 ---
 
@@ -276,5 +319,13 @@ Fixing TBD-293 **in place** here makes the follow-up merge a **provable no-op**:
 ## 9. Verification floor (not skippable)
 
 - Every fence proven RED against its named mutant, then restored. **Paste real output.**
-- **Full backend suite** in an isolated compose project `-p team-tbd280`, never the operator's stack. *(measured)* baseline with helpers present: `3589 passed, 12 skipped, 2 xfailed`.
+- **Full backend suite** in an isolated compose project `-p team-tbd280`, never the operator's stack.
+
+⚠ **Correction (post-build).** Revision 2 quoted a baseline of `3589 passed, 12 skipped, 2 xfailed`. **That number was wrong and should not have been in the spec** — it was reported from a container that still held the sign-off reviewer's uncommitted kernel file (10 passed + 2 xfailed = the 12-test discrepancy). Re-measured on this branch: it collects 3643; excluding the four new test files it collects 3591; the new files contribute exactly 52 (51 passed + 1 xfailed). So the true `main` baseline is **`3579 passed, 12 skipped, 0 xfailed`** — this repo has **zero** pre-existing xfails.
+
+**Post-build actual: `3630 passed, 12 skipped, 1 xfailed`, exit 0.** The single xfail is F17's strict cross-org-one-way divergence cell (§4.2).
+
+**Post-fold actual: `3633 passed, 12 skipped, 1 xfailed`, exit 0** — `+3` exactly, one per new fence (F19, F20, F21). Nothing else moved, which is itself the check that the fold broke no existing fence.
+
+*(measured)* Re-confirmed after the fold, so the fold cannot have loosened them: cascade-on-raw-partner → **4 RED**; `status == SETTLED` dropped from both delete paths → **4 RED**; guard-after-write → **3 RED**.
 - No frontend change in this PR → `tsc` / `vitest` / `check-design-tokens` are **not run**. State that explicitly rather than implying otherwise.
