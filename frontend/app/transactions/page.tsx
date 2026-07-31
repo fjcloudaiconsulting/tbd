@@ -12,7 +12,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
 import { isOpenPeriod } from "@/lib/billingPeriodStatus";
-import { input, label, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
+import { input, label, badgeNeutral, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { useAccounts } from "@/lib/hooks/use-accounts";
 import { useCategories } from "@/lib/hooks/use-categories";
@@ -1130,6 +1130,22 @@ function TransactionsPageContent() {
                       // picker while claiming not to be one in the subline and
                       // the Unlink slot.
                       const isPairedTransfer = tx.linked_account_name != null;
+                      // TBD-289: `isPairedTransfer` above stays the ONE signal
+                      // that decides whether a row RENDERS AS a transfer (arrow
+                      // subline, brass amount, transfer category picker, Unlink).
+                      // This second flag decides something different and must
+                      // not be folded into it: whether the row is linked AT ALL.
+                      //
+                      // A reconcile-matched row (reconciliation_service.
+                      // _apply_match writes `linked_transaction_id` ONE-WAY, so
+                      // `linked_account_name` stays null) is not a transfer, but
+                      // it is linked. `transaction_service._link_pair` invariant
+                      // 7 rejects it with "Expense leg is already linked", so
+                      // offering "Mark transfer" on it is an affordance the
+                      // server always refuses. Gate the offer on link-ness, not
+                      // on transfer-ness.
+                      const isReconcileMatched =
+                        tx.linked_transaction_id != null && !isPairedTransfer;
                       // Direction comes from `type`, never from which leg
                       // survived the collapse: pair_existing_transactions and
                       // convert_and_create_leg link arbitrary rows, so the
@@ -1414,6 +1430,25 @@ function TransactionsPageContent() {
                                 ))}
                               </span>
                             )}
+                            {/* TBD-289: a reconcile-matched row otherwise reads
+                                as an ordinary transaction with no hint that it
+                                is attached to another one — which is also why
+                                "Mark transfer" looked available. Quiet, neutral,
+                                and deliberately NON-interactive: what a matched
+                                row should let a user *do* is a combined ruling
+                                with TBD-292/TBD-295, so this states the fact and
+                                offers no action or link target. */}
+                            {isReconcileMatched && (
+                              <span className="mt-0.5">
+                                <span
+                                  className={badgeNeutral}
+                                  data-testid={`matched-badge-${tx.id}`}
+                                  title="Matched to another transaction during reconciliation."
+                                >
+                                  Matched
+                                </span>
+                              </span>
+                            )}
                           </span>
                           <span className="col-span-2 text-sm text-text-secondary truncate">
                             {isPairedTransfer
@@ -1451,7 +1486,7 @@ function TransactionsPageContent() {
                           </span>
                           <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
                             <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
-                            {!isPairedTransfer && (
+                            {!isPairedTransfer && !isReconcileMatched && (
                               <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark transfer</button>
                             )}
                             {isPairedTransfer && (
@@ -1481,6 +1516,12 @@ function TransactionsPageContent() {
                       // from `type`, not from which leg survived the
                       // server-side collapse.
                       const isPairedTransfer = tx.linked_account_name != null;
+                      // See the desktop renderer: separate flag, separate
+                      // question. Linked-at-all (TBD-289) gates the "Mark
+                      // transfer" offer the server always refuses; transfer-ness
+                      // still gates every transfer *rendering*.
+                      const isReconcileMatched =
+                        tx.linked_transaction_id != null && !isPairedTransfer;
                       const [fromAcct, toAcct] = tx.type === "expense"
                         ? [tx.account_name, tx.linked_account_name]
                         : [tx.linked_account_name, tx.account_name];
@@ -1745,6 +1786,20 @@ function TransactionsPageContent() {
                               >
                                 Settled {tx.settled_date ?? "—"}
                               </div>
+                              {/* TBD-289: mobile twin of the desktop matched
+                                  indicator. Quiet, non-interactive, no link
+                                  target. */}
+                              {isReconcileMatched && (
+                                <div className="mt-1">
+                                  <span
+                                    className={badgeNeutral}
+                                    data-testid={`matched-badge-mobile-${tx.id}`}
+                                    title="Matched to another transaction during reconciliation."
+                                  >
+                                    Matched
+                                  </span>
+                                </div>
+                              )}
                             </div>
                             <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isPairedTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
                               {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
@@ -1797,7 +1852,7 @@ function TransactionsPageContent() {
                             >
                               Edit
                             </button>
-                            {!isPairedTransfer && (
+                            {!isPairedTransfer && !isReconcileMatched && (
                               <button
                                 onClick={() => setMarkModalSource(tx)}
                                 aria-label={`Mark as transfer: ${tx.description}`}
