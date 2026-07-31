@@ -35,7 +35,13 @@ class RecurringGenerationJob:
         return found is not None
 
     async def run(self, db: AsyncSession, org: Organization, today: datetime.date) -> JobResult:
-        result = await generate_due_transactions(db, org.id)
+        # ONE TICK, ONE CLOCK (TBD-284). ``today`` is resolved once per tick by
+        # the runner and handed to both ``is_due`` and ``run``; it MUST be
+        # threaded through here. Omitting it lets the service re-read the wall
+        # clock, so a tick spanning midnight can decide "there is work" for one
+        # day and materialise the rows against the next -- a money row in the
+        # wrong billing period. Same defect class as TBD-240 D6 and TBD-243.
+        result = await generate_due_transactions(db, org.id, today)
         await db.commit()
         generated = int(result.get("generated", 0))
         settled = int(result.get("settled", 0))
