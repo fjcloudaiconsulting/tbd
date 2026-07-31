@@ -102,6 +102,19 @@ async def list_transactions(
     sort_dir: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    collapse_transfers: bool = Query(
+        default=False,
+        description=(
+            "Collapse each MUTUALLY-linked transfer pair to a single row, so a "
+            "page of `limit` rows renders `limit` transfers. The surviving leg is "
+            "the lower-id one when both legs match the filters, otherwise whichever "
+            "leg matches; the other side's account name is returned as "
+            "`linked_account_name`. One-way reconciliation matches are NEVER "
+            "collapsed. Under sort_by=account_name a pair sorts by the surviving "
+            "leg's account. Default false: aggregate callers that sum per account "
+            "need BOTH legs, since each sits on a different account."
+        ),
+    ),
 ):
     tag_list = (
         [t for t in (s.strip() for s in tags.split(",")) if t]
@@ -128,6 +141,7 @@ async def list_transactions(
             sort_dir=sort_dir,
             limit=limit,
             offset=offset,
+            collapse_transfers=collapse_transfers,
         )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.detail) from exc

@@ -190,6 +190,14 @@ export interface Transaction {
   type: "income" | "expense";
   status: "settled" | "pending";
   linked_transaction_id: number | null;
+  // TBD-268: the partner leg's account name. Present only when the request
+  // passed `collapse_transfers=true`, and only for a MUTUALLY-linked pair --
+  // a one-way reconciliation match leaves it null. This is therefore the
+  // mutuality-verified "is a real transfer" signal on the client; do NOT use
+  // `linked_transaction_id !== null` for that, it also matches reconcile
+  // matches. Once the server collapses a pair the partner row is never in the
+  // page, so this is the only way to render "source -> destination".
+  linked_account_name: string | null;
   recurring_id: number | null;
   date: string;
   settled_date: string | null;

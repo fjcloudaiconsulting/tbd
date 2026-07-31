@@ -136,7 +136,6 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   setPageSize: vi.fn(),
   visibleTxs: [],
   sortedVisibleTxs: [],
-  txMap: new Map(),
   dashSort: {
     field: "date" as const,
     dir: "desc" as const,
@@ -638,7 +637,6 @@ describe("RecentTransactionsWidget", () => {
     mockWith({
       transactions: [TX],
       sortedVisibleTxs: [TX],
-      txMap: new Map([[TX.id, TX]]),
       onToggleTransactionStatus,
     });
     renderRecentTx();
@@ -653,7 +651,6 @@ describe("RecentTransactionsWidget", () => {
     mockWith({
       transactions: [TX],
       sortedVisibleTxs: [TX],
-      txMap: new Map([[TX.id, TX]]),
       toggleDashSort,
     });
     renderRecentTx();
@@ -667,7 +664,6 @@ describe("RecentTransactionsWidget", () => {
     mockWith({
       transactions: [TX],
       sortedVisibleTxs: [TX],
-      txMap: new Map([[TX.id, TX]]),
       txTotal: 25,
       page: 0,
       pageSize: 10,
@@ -684,7 +680,6 @@ describe("RecentTransactionsWidget", () => {
     mockWith({
       transactions: [TX],
       sortedVisibleTxs: [TX],
-      txMap: new Map([[TX.id, TX]]),
       txTotal: 25,
       page: 0,
       pageSize: 10,
@@ -702,7 +697,6 @@ describe("RecentTransactionsWidget", () => {
     mockWith({
       transactions: [TX],
       sortedVisibleTxs: [TX],
-      txMap: new Map([[TX.id, TX]]),
       // Fewer rows than a page — the selector must still render so the user can
       // ask for more rows to fill a resized card.
       txTotal: 5,
@@ -725,7 +719,6 @@ describe("RecentTransactionsWidget", () => {
     mockWith({
       transactions: [TX],
       sortedVisibleTxs: [TX],
-      txMap: new Map([[TX.id, TX]]),
       txTotal: 25,
       page: 0,
       pageSize: 10,
@@ -741,7 +734,6 @@ describe("RecentTransactionsWidget", () => {
     mockWith({
       transactions: [],
       sortedVisibleTxs: [],
-      txMap: new Map(),
       txTotal: 0,
       page: 0,
       pageSize: 10,

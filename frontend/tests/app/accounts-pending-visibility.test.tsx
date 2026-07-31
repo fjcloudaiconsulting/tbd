@@ -160,6 +160,51 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
     expect(screen.queryByText(/^Pending:/)).not.toBeInTheDocument();
   });
 
+  it("F4 (TBD-268): the pending fetch must NOT collapse transfers", async () => {
+    // The ABSENCE fence. `fetchAll("/api/v1/transactions?status=pending")` feeds
+    // a pendingByAccount reduce keyed by tx.account_id, and the two legs of a
+    // transfer sit on DIFFERENT accounts — so collapsing here would drop one
+    // leg entirely and zero that account's pending column.
+    //
+    // VACUITY TRAPS this fixture is built around:
+    //  - assert on the account holding the HIGHER-id leg (ING Joint, id 20),
+    //    because a default-on / opted-in collapse drops exactly that one;
+    //  - two DISTINCT accounts and a NON-ZERO amount, because both legs on one
+    //    account net to zero and the right and wrong answers agree.
+    const urls: string[] = [];
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
+      if (url === "/api/v1/accounts") return Promise.resolve(ACCOUNTS);
+      if (url.startsWith("/api/v1/transactions?status=pending")) {
+        urls.push(url);
+        const legs = [
+          // expense leg — LOWER id, on Amex Primary (10)
+          { id: 10, account_id: 10, amount: "50.00", type: "expense", status: "pending", date: "2026-04-15", description: "transfer out", category_id: null, category_name: null, account_name: "Amex Primary", currency: "EUR", linked_transaction_id: 11, linked_account_name: null, is_imported: false, settled_date: null },
+          // income leg — HIGHER id, on ING Joint (20)
+          { id: 11, account_id: 20, amount: "50.00", type: "income", status: "pending", date: "2026-04-15", description: "transfer in", category_id: null, category_name: null, account_name: "ING Joint", currency: "EUR", linked_transaction_id: 10, linked_account_name: null, is_imported: false, settled_date: null },
+        ];
+        // Honour the flag like the real server would, so BOTH assertions below
+        // bite: the URL check catches the param, and the tile check catches
+        // the consequence (ING Joint's pending column silently zeroed).
+        const items = url.includes("collapse_transfers=true")
+          ? legs.filter((l) => l.id < (l.linked_transaction_id ?? Infinity))
+          : legs;
+        return Promise.resolve({ items, total: items.length, limit: 200, offset: 0 });
+      }
+      return Promise.resolve({});
+    }) as never);
+
+    renderWithSWR(<AccountsPage />);
+    await waitFor(() => expect(screen.getAllByText(/ING Joint/).length).toBeGreaterThan(0));
+
+    // Both tiles show their leg. ING Joint holds the HIGHER-id leg, so it is
+    // the one a collapse would silently zero.
+    await waitFor(() => expect(screen.getAllByText(/^Pending: 50\.00$/)).toHaveLength(2));
+
+    expect(urls.length).toBeGreaterThan(0);
+    urls.forEach((u) => expect(u).not.toContain("collapse_transfers"));
+  });
+
   it("aggregates multiple pending charges per account and ignores other accounts", async () => {
     mockAccountsAPI([
       { id: 1, account_id: 10, amount: "120.00", type: "expense", status: "pending", date: "2026-04-15", description: "a", category_id: null, category_name: null, account_name: "Amex Primary", currency: "EUR", linked_transaction_id: null, is_imported: false, settled_date: null },

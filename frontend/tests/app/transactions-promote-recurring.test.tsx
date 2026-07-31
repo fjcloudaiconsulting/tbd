@@ -61,6 +61,7 @@ type Tx = {
   type: "income" | "expense";
   status: "settled" | "pending";
   linked_transaction_id: number | null;
+  linked_account_name: string | null;
   recurring_id: number | null;
   date: string;
   settled_date: string | null;
@@ -79,6 +80,7 @@ function makeTx(over: Partial<Tx> = {}): Tx {
     type: "expense",
     status: "settled",
     linked_transaction_id: null,
+    linked_account_name: null,
     recurring_id: null,
     date: "2026-05-01",
     settled_date: null,
@@ -295,15 +297,19 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
   });
 
   it("transfer-leg row: no recurring controls or chip rendered", async () => {
+    // Both legs carry linked_account_name: the list request passes
+    // collapse_transfers=true, and the server populates that field for every
+    // MUTUALLY-linked pair. It — not the raw linked_transaction_id column — is
+    // what marks a row as a transfer leg (TBD-268 U1).
     const expenseLeg = makeTx({
       id: 80, account_id: ACCT_A.id, account_name: ACCT_A.name,
       type: "expense", amount: 50, description: "Linked out",
-      linked_transaction_id: 81,
+      linked_transaction_id: 81, linked_account_name: "Acct B",
     });
     const incomeLeg = makeTx({
       id: 81, account_id: 200, account_name: "Acct B",
       type: "income", amount: 50, description: "Linked in",
-      linked_transaction_id: 80,
+      linked_transaction_id: 80, linked_account_name: ACCT_A.name,
     });
     setupApiFetch([expenseLeg, incomeLeg]);
     renderWithSWR(<TransactionsPage />);

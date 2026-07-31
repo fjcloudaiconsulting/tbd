@@ -313,8 +313,15 @@ function LegacyDashboard() {
     const forecastUrl = realPeriodStart ? `/api/v1/forecast-plans/current?period_start=${realPeriodStart}` : "/api/v1/forecast-plans/current";
     const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
     const [pageData, allData, bds, fc] = await Promise.all([
-      apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&${dateFilter}`),
-      p === 0 ? apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=200&${dateFilter}`) : null,
+      // collapse_transfers=true on BOTH (TBD-268). The snapshot is not a
+      // one-shot sum source: under a chart filter it BECOMES the rendered
+      // source (see visibleTxs below), so collapsing both lets one memo serve
+      // both instead of forking. Safe for the snapshot's other consumer,
+      // donutDataRaw, which already drops rows with a non-null link — and the
+      // collapse only ever removes rows that have one, so the donut is
+      // bit-identical either way.
+      apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&collapse_transfers=true&${dateFilter}`),
+      p === 0 ? apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=200&collapse_transfers=true&${dateFilter}`) : null,
       p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
       p === 0 ? apiFetch<ForecastPlan | null>(forecastUrl) : null,
     ]);
@@ -516,13 +523,6 @@ function LegacyDashboard() {
   // All active accounts for individual tiles
   const accountsWithBalance = activeAccounts;
 
-  // Precompute tx map for O(1) linked lookups. Memoized so it isn't
-  // rebuilt on every unrelated render (hover, sort toggle, period nav).
-  const txMap = useMemo(
-    () => new Map(allTransactions.map((tx) => [tx.id, tx])),
-    [allTransactions],
-  );
-
   // Pending totals per account, computed from the all-time pending fetch
   // (NOT from the period-filtered allTransactions). Pending CC charges
   // must remain visible regardless of which billing period the user is
@@ -590,17 +590,15 @@ function LegacyDashboard() {
     return list;
   }, [donutDataRaw, totalSpend, spendingSort.field, spendingSort.dir]);
 
-  // When chart filter is active, show from allTransactions; otherwise
-  // paginated. Dedups transfer legs (keep the lower-id half). Memoized so
-  // the Set build + filter don't rerun on every unrelated render.
-  const visibleTxs = useMemo(() => {
-    const txSource = chartFilter ? allTransactions : transactions;
-    const hiddenIds = new Set<number>();
-    for (const tx of txSource) {
-      if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) hiddenIds.add(tx.id);
-    }
-    return txSource.filter((tx) => !hiddenIds.has(tx.id));
-  }, [chartFilter, allTransactions, transactions]);
+  // When a chart filter is active, show from the full snapshot; otherwise the
+  // paginated page. NO client-side dedupe: both requests pass
+  // collapse_transfers=true, so the server already folded each mutually-linked
+  // pair to one leg BEFORE the limit. Removing rows here after a server LIMIT
+  // is what TBD-268 was.
+  const visibleTxs = useMemo(
+    () => (chartFilter ? allTransactions : transactions),
+    [chartFilter, allTransactions, transactions],
+  );
 
   // All budgets feed the "Budget Progress" mini bar chart on the dashboard.
   // Memoizing prevents Recharts from re-laying out the bars every time an
@@ -1225,16 +1223,25 @@ function LegacyDashboard() {
             </div>
             <div className="divide-y divide-border-subtle">
               {sortedVisibleTxs.map((tx) => {
-                const isTransfer = tx.linked_transaction_id !== null;
-                const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
-                const amountClass = `text-sm font-medium tabular-nums ${isTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`;
-                const amountText = `${isTransfer ? "" : tx.type === "income" ? "+" : "-"}${formatAmount(tx.amount)}`;
-                const subline = isTransfer && linkedTx ? (
-                  <>{tx.account_name} &rarr; {linkedTx.account_name}</>
+                // TBD-268: the partner is never in the page after the server
+                // collapse, so read its account name off the row itself.
+                // Non-null only for a MUTUAL link, so this is the ONE transfer
+                // signal the row renders from — amount styling included. The
+                // raw `linked_transaction_id` also matches a one-way
+                // reconciliation match, which would then render unsigned and
+                // in accent while its subline said plain account name.
+                const isPairedTransfer = tx.linked_account_name != null;
+                const [fromAcct, toAcct] = tx.type === "expense"
+                  ? [tx.account_name, tx.linked_account_name]
+                  : [tx.linked_account_name, tx.account_name];
+                const amountClass = `text-sm font-medium tabular-nums ${isPairedTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`;
+                const amountText = `${isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}${formatAmount(tx.amount)}`;
+                const subline = isPairedTransfer ? (
+                  <>{fromAcct} &rarr; {toAcct}</>
                 ) : (
                   <>{tx.account_name} &middot; {tx.category_name}</>
                 );
-                const statusPill = !isTransfer ? (
+                const statusPill = !isPairedTransfer ? (
                   <button
                     onClick={async () => {
                       try {
@@ -1311,7 +1318,11 @@ function LegacyDashboard() {
                   </div>
                 );
               })}
-              {transactions.length === 0 && (
+              {/* Keyed off the RENDERED list, not the raw page array: under a
+                  chart filter the rendered source is the snapshot, so keying
+                  off `transactions` could leave a card with zero rows and no
+                  empty state — a blank tile. */}
+              {sortedVisibleTxs.length === 0 && (
                 <div className="px-5 py-6 text-center text-sm text-text-muted">
                   {!canAdd ? "Create accounts and categories first." : "No transactions this period."}
                 </div>
