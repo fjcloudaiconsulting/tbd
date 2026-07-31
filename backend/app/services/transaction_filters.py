@@ -106,6 +106,35 @@ def balance_contribution_filter():
     So: keep a linked row only if its partner links back to it
     (reciprocal); an unlinked row always contributes. SKIPPED / REJECTED
     rows are still reverted-and-excluded via the state clause.
+
+    FROZEN (TBD-280 ruling). This clause is deliberately NOT reformulated:
+
+    * It has no org clause and no not-self clause. Both would be dead
+      code: the only three writers of ``linked_transaction_id``
+      (``_link_pair``, ``_apply_match``, ``unpair_transactions``) can
+      produce neither a cross-org nor a self link.
+    * A self-link is KEPT here, on purpose. The correlated EXISTS against
+      ``_bcf_partner`` matches a row against itself, so a self-linked row
+      passes. That is the intended polarity: this filter's failure
+      direction must be KEEP-on-uncertainty, because dropping a row that
+      really is in ``accounts.balance`` is the CC carried-balance bug it
+      exists to prevent.
+    * Note the OPPOSITE polarity of the Python predicate
+      ``is_reciprocal_pair`` and of ``transaction_service.
+      _transfer_collapse_clause``: those answer "are these two rows ONE
+      transfer pair?" and must fail CLOSED, so they exclude self-links.
+      This filter answers "is this row's amount inside the cached
+      balance?" and must fail OPEN. Same column, two questions, two
+      polarities. Do not "harmonise" them.
+    * Writing the reciprocity test in the obvious negative form
+      (``partner.linked_transaction_id != Transaction.id``) is NULL-unsafe:
+      when the partner's link is NULL -- the common reconcile-match case --
+      the comparison yields NULL, the EXISTS collapses, and every matched
+      row silently re-enters the balance.
+
+    ``contributes_to_cached_balance()`` below is the Python sibling; keep
+    the two in step (see the parity fence in
+    ``tests/services/test_link_reciprocity_predicates.py``).
     """
     return and_(
         Transaction.reconciliation_state.notin_(_RECON_EXCLUDED_STATES),
@@ -147,3 +176,84 @@ def is_transfer_leg(tx: Transaction) -> bool:
     'reportable' framing.
     """
     return tx.linked_transaction_id is not None
+
+
+# ── Link reciprocity (TBD-280 / 281 / 282 / 293) ─────────────────────────────
+#
+# THE RULE: a link is a transfer link if, and only if, the partner links back.
+#
+# ``linked_transaction_id`` has exactly three writers:
+#   * ``transaction_service._link_pair``          -- BIDIRECTIONAL (real transfer)
+#   * ``reconciliation_service._apply_match``     -- ONE-WAY (reconcile match)
+#   * ``transaction_service.unpair_transactions`` -- clears both sides
+# Every predicate that means "transfer pair" must therefore test mutuality,
+# never non-nullness.
+
+
+def is_reciprocal_pair(tx: Transaction, partner: Transaction | None) -> bool:
+    """True iff (tx, partner) are the two legs of ONE transfer pair.
+
+    THE RULE: a link is a transfer link iff the partner links back.
+
+    Pure. No I/O, no lazy attribute access -- the caller passes both
+    instances; every caller already holds them under FOR UPDATE or from
+    an eager load.
+
+    Self-links are NOT a pair: no writer creates them, so a self-linked
+    row is corrupt data containing exactly one row, and treating it as a
+    pair makes every two-row path double-count it.
+
+    Fails CLOSED: an unproven link is never treated as a pair.
+
+    ``tx.linked_transaction_id is not None`` is LOAD-BEARING, not
+    belt-and-braces: without it a transient (unflushed) partner makes
+    ``None == None`` true and the predicate becomes argument-order
+    sensitive. No call site passes an unflushed row -- keep it anyway.
+    """
+    return (
+        partner is not None
+        and tx.linked_transaction_id is not None
+        and partner.id == tx.linked_transaction_id
+        and partner.id != tx.id
+        and partner.org_id == tx.org_id
+        and partner.linked_transaction_id == tx.id
+    )
+
+
+def contributes_to_cached_balance(
+    tx: Transaction, partner: Transaction | None
+) -> bool:
+    """Python sibling of ``balance_contribution_filter()`` -- the LINK and
+    RECONCILIATION-STATE half of the question only.
+
+    ⚠ NOT a complete answer to "is this row's amount inside
+    accounts.balance". It has NO status term, because the SQL has none
+    either. Pending amounts are never in the cached balance, so every
+    caller MUST conjoin ``tx.status == TransactionStatus.SETTLED``. Every
+    SQL caller already does (see networth.py, cc_statement_service).
+
+    Transcribed branch-for-branch from the SQL. Do NOT rewrite as
+    ``not is_reciprocal_pair(...)``: that inverts the RECIPROCAL case
+    (a real transfer leg would report False, and delete_transaction would
+    skip the revert on BOTH legs of every transfer, drifting each account
+    UP by its leg amount). It happens to give the right answer for a
+    self-link, which is why the obvious fence for it is vacuous.
+
+    Fails OPEN whenever the partner cannot be resolved: an unprovable
+    link keeps its contribution, because nothing ever reverted it.
+
+    DIVERGENCE from the SQL: the predicate disagrees with
+    ``balance_contribution_filter()`` whenever ``partner`` is
+    unresolvable, for ANY reason -- a cross-org one-way link and a
+    dangling link are two known members of an open-ended class. Both are
+    unreachable in production (no writer produces a cross-org link; the
+    MySQL FK ``transactions_ibfk_4`` is ``ON DELETE SET NULL``), and the
+    parity fence pins the known cell with ``xfail(strict=True)``.
+    """
+    if tx.reconciliation_state in _RECON_EXCLUDED_STATES:
+        return False
+    if tx.linked_transaction_id is None:
+        return True
+    if partner is None or partner.id != tx.linked_transaction_id:
+        return True                       # see DIVERGENCE
+    return partner.linked_transaction_id == tx.id
