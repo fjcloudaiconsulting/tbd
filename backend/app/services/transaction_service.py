@@ -36,6 +36,7 @@ from app.services.category_rules_service import learn_from_choice
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
 from app.services.transaction_filters import (
+    contributes_to_cached_balance,
     effective_period_date_expr,
     is_reciprocal_pair,
     is_reportable_transaction,
@@ -838,6 +839,15 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
     if preview is None:
         raise NotFoundError("Transaction")
 
+    # DELIBERATE (TBD-280, design §5 row 2 / §6.4): the LOCK set still pulls
+    # ANY non-null link, not just reciprocal ones. Reciprocity cannot be
+    # evaluated before the partner row has been read, and deciding it on the
+    # UNLOCKED preview would reintroduce the TOCTOU window the lock exists to
+    # close. A superset locked in ascending id order can never deadlock, so
+    # over-locking is free. Do NOT prune the partner here -- the DELETE set is
+    # narrowed below, on the locked rows. Neither this nor the preview
+    # decision is test-killable without real concurrency; this comment is the
+    # defence.
     ids_to_lock = [transaction_id]
     if preview.linked_transaction_id is not None:
         ids_to_lock.append(preview.linked_transaction_id)
@@ -866,29 +876,57 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
     if tx.is_manual_adjustment:
         raise ValidationError("Manual balance adjustments cannot be deleted")
 
-    linked_tx = (
+    # TWO SEPARATE NAMES, on purpose (TBD-280). ``raw_partner`` is whatever
+    # the link points at -- possibly an unrelated canonical row that
+    # ``_apply_match`` matched this row against. ``pair_partner`` is the
+    # partner only when the link is MUTUAL, i.e. a real transfer leg.
+    # Collapsing the two names is exactly how this bug returns: the cascade
+    # keys off pairhood, the balance predicate keys off the raw link.
+    raw_partner = (
         rows.get(tx.linked_transaction_id)
         if tx.linked_transaction_id is not None
         else None
     )
+    pair_partner = raw_partner if is_reciprocal_pair(tx, raw_partner) else None
+
+    # Id-keyed so a self-linked row (corrupt data containing exactly ONE row)
+    # is deleted once, reverted once, and counted once.
+    to_delete: dict[int, Transaction] = {tx.id: tx}
+    if pair_partner is not None:
+        to_delete[pair_partner.id] = pair_partner
+
+    # TBD-293: the revert decision is PER ROW, keyed by id. The old code gated
+    # BOTH legs' reverts on ``tx``'s status alone, which reverted a PENDING
+    # partner's amount (never applied) when ``tx`` was SETTLED, and skipped a
+    # SETTLED partner's amount (still applied) when ``tx`` was PENDING.
+    #
+    # The ``status == SETTLED`` conjunction is NOT optional:
+    # ``contributes_to_cached_balance`` has no status term because the SQL has
+    # none either. Without it, deleting an ordinary unlinked PENDING row
+    # reverts an amount that was never applied.
+    to_revert = [
+        r
+        for r in to_delete.values()
+        if r.status == TransactionStatus.SETTLED
+        and contributes_to_cached_balance(
+            r,
+            rows.get(r.linked_transaction_id)
+            if r.linked_transaction_id is not None
+            else None,
+        )
+    ]
 
     async with db.begin_nested():
-        # For transfers, lock both accounts in deterministic order
-        if linked_tx and tx.status == TransactionStatus.SETTLED:
-            first_id, second_id = sorted([tx.account_id, linked_tx.account_id])
-            first = await get_account_for_update(db, first_id, org_id)
-            second = await get_account_for_update(db, second_id, org_id)
-            tx_acct = first if tx.account_id == first_id else second
-            linked_acct = first if linked_tx.account_id == first_id else second
-            revert_balance(tx_acct, tx.amount, tx.type)
-            revert_balance(linked_acct, linked_tx.amount, linked_tx.type)
-        elif tx.status == TransactionStatus.SETTLED:
-            acct = await get_account_for_update(db, tx.account_id, org_id)
-            revert_balance(acct, tx.amount, tx.type)
+        # Lock every affected account in ascending id order (deadlock-free),
+        # then revert per row against its OWN account.
+        accounts: dict[int, Account] = {}
+        for aid in sorted({r.account_id for r in to_revert}):
+            accounts[aid] = await get_account_for_update(db, aid, org_id)
+        for r in to_revert:
+            revert_balance(accounts[r.account_id], r.amount, r.type)
 
-        if linked_tx:
-            await db.delete(linked_tx)
-        await db.delete(tx)
+        for r in to_delete.values():
+            await db.delete(r)
 
     await db.commit()
 
@@ -899,10 +937,12 @@ async def bulk_delete_transactions(
     """Delete multiple transactions in one atomic commit.
 
     Returns (deleted_count, skipped_ids). Cross-org IDs are silently
-    skipped. Transfer-pair halves cascade: deleting one half also deletes
-    the linked half. Balance reverts applied per transaction for settled rows
-    under SELECT FOR UPDATE locks acquired in sorted-ID order to prevent
-    lost updates and deadlocks.
+    skipped. TRANSFER-pair halves cascade: deleting one half also deletes
+    the linked half -- but only when the link is MUTUAL (TBD-280). A one-way
+    link is a reconcile match, not a transfer, and its target is an unrelated
+    canonical row that must survive. Balance reverts applied per transaction
+    for settled rows under SELECT FOR UPDATE locks acquired in sorted-ID
+    order to prevent lost updates and deadlocks.
     """
     if not ids:
         return (0, [])
@@ -942,30 +982,56 @@ async def bulk_delete_transactions(
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    found = list(result.scalars().all())
-    found_ids = {tx.id for tx in found}
-    skipped_ids = [i for i in requested if i not in found_ids]
+    locked_rows = {tx.id: tx for tx in result.scalars().all()}
+    skipped_ids = [i for i in requested if i not in locked_rows]
 
+    # THE LOCK SET IS NOT THE DELETE SET (TBD-280). ``locked_rows`` above is
+    # deliberately a superset: it pulls every non-null link so reciprocity can
+    # be evaluated on locked state. The DELETE set is the requested rows plus
+    # the RECIPROCAL partners of requested rows -- the documented transfer
+    # cascade survives, while a one-way reconcile match no longer drags its
+    # canonical target to the grave.
+    #
+    # Keyed by id so a self-linked row appears once, not twice.
+    #
     # Track E (architect override): manual balance adjustment rows are
-    # immutable, but bulk delete skips them silently rather than aborting
-    # the whole batch. Drop them from the working set before lock/revert
-    # math so a mixed selection (regular rows + adjustments) succeeds for
-    # the regular rows. Their IDs land in skipped_ids so the caller can
-    # surface "N rows skipped" in the UI.
-    skipped_adjustments = [tx.id for tx in found if tx.is_manual_adjustment]
-    if skipped_adjustments:
-        skipped_ids.extend(
-            i for i in skipped_adjustments if i in requested
+    # immutable, but bulk delete skips them silently rather than aborting the
+    # whole batch. Their IDs land in skipped_ids so the caller can surface
+    # "N rows skipped" in the UI.
+    delete_set: dict[int, Transaction] = {}
+    skipped_adjustments: list[int] = []
+    for rid in requested:
+        row = locked_rows.get(rid)
+        if row is None:
+            continue
+        if row.is_manual_adjustment:
+            skipped_adjustments.append(rid)
+            continue
+        delete_set[row.id] = row
+        partner = (
+            locked_rows.get(row.linked_transaction_id)
+            if row.linked_transaction_id is not None
+            else None
         )
-        found = [tx for tx in found if not tx.is_manual_adjustment]
-        found_ids = {tx.id for tx in found}
+        if is_reciprocal_pair(row, partner) and not partner.is_manual_adjustment:
+            delete_set[partner.id] = partner
+    skipped_ids.extend(skipped_adjustments)
 
-    # Collect distinct account IDs that will need a balance revert
-    account_ids_to_lock = sorted({
-        tx.account_id
-        for tx in found
-        if tx.status == TransactionStatus.SETTLED
-    })
+    # Per-row revert decision, same conjunction as delete_transaction. The
+    # ``status == SETTLED`` term is NOT optional: contributes_to_cached_balance
+    # has no status term because the SQL has none either.
+    to_revert = [
+        r
+        for r in delete_set.values()
+        if r.status == TransactionStatus.SETTLED
+        and contributes_to_cached_balance(
+            r,
+            locked_rows.get(r.linked_transaction_id)
+            if r.linked_transaction_id is not None
+            else None,
+        )
+    ]
+    account_ids_to_lock = sorted({r.account_id for r in to_revert})
 
     async with db.begin_nested():
         # Lock each affected account in sorted order to prevent deadlocks
@@ -973,19 +1039,17 @@ async def bulk_delete_transactions(
         for aid in account_ids_to_lock:
             accounts[aid] = await get_account_for_update(db, aid, org_id)
 
-        # Revert balances for settled rows, then delete every row.
+        for r in to_revert:
+            revert_balance(accounts[r.account_id], r.amount, r.type)
+
         # The Transaction.linked_transaction relationship has post_update=True,
         # so SQLAlchemy emits the necessary UPDATEs to clear the self-referential
         # FK before the DELETEs and the flush won't trip on a topological cycle.
-        for tx in found:
-            if tx.status == TransactionStatus.SETTLED:
-                acct = accounts.get(tx.account_id)
-                if acct is not None:
-                    revert_balance(acct, tx.amount, tx.type)
-            await db.delete(tx)
+        for r in delete_set.values():
+            await db.delete(r)
 
     await db.commit()
-    return (len(found), skipped_ids)
+    return (len(delete_set), skipped_ids)
 
 
 async def bulk_update_transactions(
