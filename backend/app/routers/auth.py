@@ -2088,17 +2088,49 @@ def _google_json_object(resp: Any) -> dict[str, Any] | None:
     exception surface at all, so those fences stay valid without being
     re-derived.
 
-    ``except ValueError`` and nothing wider: httpx's ``.json()`` is
-    ``json.loads(self.content)``, whose only body-dependent failures are
-    ``json.JSONDecodeError`` and ``UnicodeDecodeError``, both
-    ``ValueError``. Anything else out of ``.json()`` is our bug and must
-    keep propagating.
+    ``except (ValueError, RecursionError)`` and nothing wider. httpx's
+    ``.json()`` is ``json.loads(self.content)``, and its body-dependent
+    failures are exactly three: ``json.JSONDecodeError`` and
+    ``UnicodeDecodeError`` (both ``ValueError``) plus
+    ``RecursionError``, which the decoder raises on a deeply nested
+    body and which derives from ``RuntimeError``, not ``ValueError``.
+    Roughly 40 KB of ``[`` is enough. This shipped as
+    ``except ValueError`` on the strength of a two-name claim that was
+    wrong, so that body escaped both call sites and produced the bare
+    500 with no audit row this helper exists to prevent. Anything else
+    out of ``.json()`` is our bug and must keep propagating.
     """
     try:
         payload = resp.json()
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _google_str_field(payload: dict[str, Any], key: str, default: str = "") -> str:
+    """Read a string field off an untrusted Google body.
+
+    ``_google_json_object`` validates the *container*. This validates
+    the *field*, and the two are not the same guard: ``.get(key, "")``
+    substitutes its default only for a **missing key**, never for an
+    explicit ``null``, a list or a number. Those flowed into
+    ``.strip()``, ``" ".join(...)`` and ``len(...)`` on the main line
+    *after* the ``try``, where no ``except`` clause reaches, and raised
+    ``AttributeError`` / ``TypeError``: the same uncaught 500 with no
+    audit row, on a body that passes the shape guard.
+
+    A non-string is treated as absent rather than as its own failure
+    class. For ``email`` that lands the request on the existing
+    ``no_email`` branch (login) or ``email_mismatch`` (step-up), which
+    already audit and redirect correctly and already handle the ``null``
+    spelling of the same thing; a new reason would be a second word for
+    one operator move. For ``given_name`` / ``family_name`` /
+    ``picture`` it is not a failure at all — a wrong-typed display name
+    or avatar is a missing optional field, and blocking a sign-in over
+    one would be worse than dropping it.
+    """
+    value = payload.get(key)
+    return value if isinstance(value, str) and value else default
 
 
 def _google_token_body_detail(tokens: dict[str, Any] | None) -> dict[str, Any]:
@@ -2118,12 +2150,25 @@ def _google_token_body_detail(tokens: dict[str, Any] | None) -> dict[str, Any]:
     clauses. (An ASCII-but-illegal value with embedded CRLF needs no
     check: h11 raises ``httpx.LocalProtocolError``, an
     ``httpx.HTTPError`` subclass, which is already handled.)
+
+    Three shape words, not two. ``bad_access_token_type`` is the token
+    that is *present* but is a number, a list or a nested object. It
+    used to report ``no_access_token``, which told an operator Google
+    returned no token when Google returned one — different first move:
+    "no token" points at credentials and consent, "wrong type" points
+    at whatever is rewriting the body between us and Google. ``null``
+    stays ``no_access_token``, because JSON has no other way to spell
+    an unset field, and so does ``""``, which is the right type and
+    merely empty.
     """
     if tokens is None:
         return {"body": "not_object"}
     value = tokens.get("access_token")
-    if isinstance(value, str) and value and not value.isascii():
-        detail: dict[str, Any] = {"body": "unusable_access_token"}
+    detail: dict[str, Any]
+    if value is not None and not isinstance(value, str):
+        detail = {"body": "bad_access_token_type"}
+    elif isinstance(value, str) and value and not value.isascii():
+        detail = {"body": "unusable_access_token"}
     else:
         detail = {"body": "no_access_token"}
     error = tokens.get("error")
@@ -3160,7 +3205,11 @@ async def google_callback(
 
     _phase("userinfo_ok")
 
-    email = normalize_email(google_user.get("email", ""))
+    # ``_google_str_field``, not ``.get(key, "")``: the shape guard
+    # above proves this is a dict and nothing about what is in it, and
+    # every read from here down is on the main line, past the last
+    # ``except``. See the helper.
+    email = normalize_email(_google_str_field(google_user, "email"))
     if not email:
         await _record_google_callback_failure(
             session_factory, request=request, reason="no_email"
@@ -3187,8 +3236,8 @@ async def google_callback(
             actor_email=email,
         )
         return _google_error_redirect("unverified")
-    first_name = google_user.get("given_name", "")
-    last_name = google_user.get("family_name", "")
+    first_name = _google_str_field(google_user, "given_name")
+    last_name = _google_str_field(google_user, "family_name")
 
     # Check if user already exists by email
     result = await db.execute(select(User).where(User.email == email))
@@ -3227,7 +3276,11 @@ async def google_callback(
         if not user.last_name and last_name:
             user.last_name = last_name
             mutated = True
-        picture = _safe_avatar_url(google_user.get("picture"))
+        # A wrong-typed picture is the one that mutates ORM state before
+        # it fails: a dict has a ``len()`` of 1, so it passes
+        # ``_safe_avatar_url`` unchanged, is assigned here, and dies at
+        # ``commit``.
+        picture = _safe_avatar_url(_google_str_field(google_user, "picture"))
         if not user.avatar_url and picture:
             user.avatar_url = picture
             mutated = True
@@ -3252,7 +3305,7 @@ async def google_callback(
             email=email,
             first_name=first_name,
             last_name=last_name,
-            avatar_url=_safe_avatar_url(google_user.get("picture")),
+            avatar_url=_safe_avatar_url(_google_str_field(google_user, "picture")),
             password_hash=hash_password(secrets.token_urlsafe(32)),
             email_verified=True,  # guaranteed by the verified_email guard
             role=Role.OWNER,
@@ -3694,7 +3747,11 @@ async def sso_stepup_callback(
     except httpx.HTTPError:
         return await _stepup_failure("token", actor_email=user.email)
 
-    google_email = (google_user.get("email") or "").strip().lower()
+    # ``or ""`` rescued only the falsy spellings — an explicit ``null``
+    # — and a list or a number is truthy, so both reached ``.strip()``
+    # here on the main line, past the last ``except``. Same helper and
+    # same reasoning as the login site.
+    google_email = _google_str_field(google_user, "email").strip().lower()
     raw = google_user.get("verified_email")
     if raw is None:
         raw = google_user.get("email_verified", False)

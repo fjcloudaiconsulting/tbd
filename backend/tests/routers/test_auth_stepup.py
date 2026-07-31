@@ -23,6 +23,7 @@ actually builds.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -1087,9 +1088,100 @@ def _drive_stepup_callback(app, client_kwargs: dict | None = None):
         )
 
 
+# Comfortably past CPython's nesting limit, which is a C-stack check
+# and therefore not a fixed number. ~40 KB of brackets.
+_JSON_NEST_DEPTH = 20_000
+
+
+def _json_decode_error() -> ValueError:
+    """The exact exception httpx raises for a 200 carrying HTML.
+
+    `Response.json()` is `json.loads(self.content)`, so a body that is
+    not JSON surfaces as `json.JSONDecodeError` — a `ValueError`
+    subclass. Called per test, never once at import: a parametrize
+    table is built at collection time, so an instance placed in the
+    table is one mutable object shared and re-raised by every leg.
+    """
+    return json.JSONDecodeError("Expecting value", "<html>not json</html>", 0)
+
+
+def _recursion_error() -> RecursionError:
+    """A REAL `RecursionError` out of `json.loads`.
+
+    Produced by decoding a deeply nested body rather than by
+    constructing the class, because the claim under test is a claim
+    about what `json.loads` does. `RecursionError` derives from
+    `RuntimeError`, not `ValueError`, which is why TBD-267's
+    `except ValueError` let it escape `_google_json_object` at both
+    sites. The raise is asserted rather than assumed from the depth:
+    CPython's limit is a C-stack check, so a depth that quietly stopped
+    tripping it would make every fence built on this a silent pass.
+    """
+    body = "[" * _JSON_NEST_DEPTH + "]" * _JSON_NEST_DEPTH
+    try:
+        json.loads(body)
+    except RecursionError as exc:
+        return exc
+    raise AssertionError(
+        f"json.loads did not recurse at depth {_JSON_NEST_DEPTH}: "
+        "raise the depth, or every fence using this factory is vacuous"
+    )
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs_factory, expected_detail",
+    [
+        (
+            lambda: {
+                "token_payload": {
+                    "error": "invalid_grant",
+                    "error_description": "Bad Request",
+                }
+            },
+            {
+                "reason": "token_payload",
+                "body": "no_access_token",
+                "google_error": "invalid_grant",
+            },
+        ),
+        (
+            lambda: {"token_payload": {"access_token": ""}},
+            {"reason": "token_payload", "body": "no_access_token"},
+        ),
+        (
+            lambda: {"token_payload": {"access_token": 12345}},
+            {"reason": "token_payload", "body": "bad_access_token_type"},
+        ),
+        (
+            lambda: {"token_payload": {"access_token": "ünusable-SENTINEL"}},
+            {"reason": "token_payload", "body": "unusable_access_token"},
+        ),
+        (
+            lambda: {"token_payload": []},
+            {"reason": "token_payload", "body": "not_object"},
+        ),
+        (
+            lambda: {"token_json_exc": _json_decode_error()},
+            {"reason": "token_payload", "body": "not_object"},
+        ),
+        (
+            lambda: {"token_json_exc": _recursion_error()},
+            {"reason": "token_payload", "body": "not_object"},
+        ),
+    ],
+    ids=[
+        "oauth-error-body",
+        "empty-token",
+        "number-token",
+        "unusable-token",
+        "json-array",
+        "not-json-at-all",
+        "recursion",
+    ],
+)
 async def test_stepup_token_200_without_access_token_redirects_and_audits(
-    session_factory, google_config, monkeypatch
+    session_factory, google_config, monkeypatch, kwargs_factory, expected_detail
 ):
     """S6. Google answered the step-up token POST 200 with no token.
 
@@ -1111,14 +1203,31 @@ async def test_stepup_token_200_without_access_token_redirects_and_audits(
     half-written row with an expiry but no token is the shape a
     partially-applied fix leaves behind, and checking only the token
     would miss it.
+
+    Parametrized across every shape the login site's L6 and L7 drive,
+    because the step-up token phase saw exactly one of them.
+    `token_json_exc` was plumbed into this harness and passed by no
+    test at all, so the decode half of this guard had zero coverage
+    here and a raw-`.json()`-plus-`isinstance` implementation passed.
+    The four pins above are re-asserted on every leg, which is what
+    the login fences cannot do for this site.
+
+    - `""` / `12345` — the `not access_token` and `isinstance` terms of
+      the guard predicate, neither of which any test reached.
+    - `bad_access_token_type` — a token that is *present* but
+      wrong-typed used to report `no_access_token`, sending an
+      operator after credentials instead of after whatever rewrote the
+      body.
+    - `unusable-token` — the non-ASCII branch was fenced end-to-end at
+      the login site only. It is the branch with a real credential in
+      play, so the exact-dict assertion below is also its leak check.
+    - `recursion` — the `RecursionError` TBD-267's `except ValueError`
+      does not catch, which died here exactly as it did before the
+      change: no row, platform splash.
     """
     monkeypatch.setattr(app_settings, "auth_debug_logging", False)
     user_id, app = await _stepup_user(session_factory)
-    _patch_httpx_for_email(
-        monkeypatch,
-        "alice@acme.io",
-        token_payload={"error": "invalid_grant", "error_description": "Bad Request"},
-    )
+    _patch_httpx_for_email(monkeypatch, "alice@acme.io", **kwargs_factory())
 
     res = _drive_stepup_callback(app)
 
@@ -1135,11 +1244,8 @@ async def test_stepup_token_200_without_access_token_redirects_and_audits(
     assert len(rows) == 1, rows
     assert rows[0].event_type == "auth.google.sso_stepup.callback.failed"
     assert rows[0].actor_email == "alice@acme.io"
-    assert rows[0].detail == {
-        "reason": "token_payload",
-        "body": "no_access_token",
-        "google_error": "invalid_grant",
-    }
+    assert rows[0].detail == expected_detail
+    assert "SENTINEL" not in str(rows[0].detail), rows[0].detail
 
     async with session_factory() as db:
         user = await db.get(User, user_id)
@@ -1149,8 +1255,17 @@ async def test_stepup_token_200_without_access_token_redirects_and_audits(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs_factory",
+    [
+        lambda: {"userinfo_payload": ["x"]},
+        lambda: {"userinfo_json_exc": _json_decode_error()},
+        lambda: {"userinfo_json_exc": _recursion_error()},
+    ],
+    ids=["json-array", "not-json-at-all", "recursion"],
+)
 async def test_stepup_userinfo_200_with_a_non_object_body_redirects_and_audits(
-    session_factory, google_config, monkeypatch
+    session_factory, google_config, monkeypatch, kwargs_factory
 ):
     """S7. The step-up half of the unreachable defect.
 
@@ -1160,23 +1275,107 @@ async def test_stepup_userinfo_200_with_a_non_object_body_redirects_and_audits(
     no `except` clause of any width — present or added — can reach it.
     No exception-handling change can make this test pass; only shape
     validation can.
+
+    The two decode legs close the same gap S6's do, on the other
+    phase: `userinfo_json_exc` reached this harness and no test, so an
+    implementation that skipped the helper here and only
+    `isinstance`-checked a raw `.json()` was green.
+
+    The warning is asserted, not only the redirect and the row. S10
+    covers the token phase exclusively, so the userinfo
+    `_LOGGER.warning` at this site was deletable with the whole suite
+    green — and after this change a malformed body is a quiet 307
+    rather than a 5xx stack trace, which makes that line the only
+    production signal the class has left. `flow` is what separates the
+    two sites in the log stream, so it is pinned here too.
+    """
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    user_id, app = await _stepup_user(session_factory)
+    _patch_httpx_for_email(monkeypatch, "alice@acme.io", **kwargs_factory())
+
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        res = _drive_stepup_callback(app)
+
+    assert res.status_code == 307, res.text
+    location = res.headers.get("location", "")
+    assert location.endswith("/settings?sso_stepup_error=userinfo"), location
+
+    calls = _invalid_payload_warnings(logger_mock)
+    assert len(calls) == 1, calls
+    fields = calls[0]
+    assert "extra" not in fields, fields
+    assert set(fields) == {"flow", "phase", "body"}, fields
+    assert fields["flow"] == "stepup"
+    assert fields["phase"] == "userinfo"
+    assert fields["body"] == "not_object"
+
+    rows = await _stepup_failure_rows(session_factory)
+    assert len(rows) == 1, rows
+    assert rows[0].actor_email == "alice@acme.io"
+    assert rows[0].detail == {"reason": "userinfo_payload", "body": "not_object"}
+
+    async with session_factory() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        assert user.stepup_token is None
+        assert user.stepup_token_expires_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_email",
+    [None, ["alice@acme.io"], 12345, {"address": "alice@acme.io"}, True],
+    ids=["null", "list", "number", "object", "bool"],
+)
+async def test_stepup_non_string_email_lands_on_the_email_mismatch_branch(
+    session_factory, google_config, monkeypatch, bad_email
+):
+    """S11. L12's twin: the shape guard validates the container only.
+
+    *Kills:* reading the email back as `google_user.get("email")` and
+    handing the result to `.strip()`.
+
+    `_google_json_object` proves the userinfo body is a dict; it says
+    nothing about the types inside it. This site already wrote
+    `(google_user.get("email") or "")`, so it survived an explicit
+    `null` — but `or` only rescues *falsy* values, and a list or a
+    number is truthy. Both reached `.strip()` on the main line, outside
+    every `try`, and raised `AttributeError`: bare 500, no audit row,
+    on the flow that guards email change and first-password-set.
+
+    The landing spot is the **existing** `email_mismatch` branch, not
+    `no_email`. Unlike the login site, this handler has no `no_email`
+    branch at all — an unreadable Google email here means the identity
+    could not be shown to match the account being re-authenticated,
+    which is precisely what `email_mismatch` already records. `null`
+    lands there today, so this makes the wrong-typed shapes behave the
+    way the shape JSON actually spells "unset" already does.
+
+    That no step-up token is minted is the assertion that matters: the
+    whole point of this callback is to refuse when the Google identity
+    cannot be shown to be the account's own.
     """
     monkeypatch.setattr(app_settings, "auth_debug_logging", False)
     user_id, app = await _stepup_user(session_factory)
     _patch_httpx_for_email(
-        monkeypatch, "alice@acme.io", userinfo_payload=["x"]
+        monkeypatch,
+        "alice@acme.io",
+        userinfo_payload={"email": bad_email, "verified_email": True},
     )
 
     res = _drive_stepup_callback(app)
 
     assert res.status_code == 307, res.text
     location = res.headers.get("location", "")
-    assert location.endswith("/settings?sso_stepup_error=userinfo"), location
+    assert location.endswith("/settings?sso_stepup_error=email_mismatch"), location
 
     rows = await _stepup_failure_rows(session_factory)
     assert len(rows) == 1, rows
+    assert rows[0].event_type == "auth.google.sso_stepup.callback.failed"
+    assert rows[0].detail == {"reason": "email_mismatch"}
+    # Falls back to the account's own address: there is no readable
+    # Google address to attribute the attempt to.
     assert rows[0].actor_email == "alice@acme.io"
-    assert rows[0].detail == {"reason": "userinfo_payload", "body": "not_object"}
 
     async with session_factory() as db:
         user = await db.get(User, user_id)

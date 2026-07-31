@@ -249,3 +249,210 @@ contained no credential at all, so it could not have fenced a leak either way.
   the new guards. Not touched, not re-indented.
 - **Merging the two sites into a shared failure helper.** §4.
 - **A third `except` clause anywhere.** §2.
+
+---
+
+## 8. Post-merge review fold (TBD-267 follow-up)
+
+Two independent reviews of the merged PR #598 found four correctness defects and six mutations
+that stayed green. Every finding was reproduced by execution before it was fixed, and every fix
+was confirmed RED-then-green. **C1-C3 are pre-existing gaps #598 did not close rather than
+regressions it introduced** — but #598 claimed to close them, so the claim was false in the repo
+until this fold.
+
+### 8.1 C1 — `except ValueError` was too narrow, and its justification was FALSE
+
+The shipped justification — "httpx 0.28's `.json()` is `json.loads(self.content)`, whose only
+body-dependent failures are `JSONDecodeError` and `UnicodeDecodeError`, both `ValueError`" —
+appeared verbatim in three places: the `_google_json_object` docstring, U1's docstring, and the
+merged PR body. It is wrong. A deeply nested JSON body makes `json.loads` raise **`RecursionError`**
+(MRO `RecursionError → RuntimeError → Exception`), which is not a `ValueError`.
+
+Measured in-container, Python 3.12.13 / httpx 0.28.1, `sys.getrecursionlimit() == 1000`:
+
+| nesting depth | body size | result |
+|---|---|---|
+| 200 – 8000 | ≤16 KB | decodes fine |
+| **10000** | 20 KB | **`RecursionError`** |
+| 20000 | 40 KB | `RecursionError` |
+
+The limit is a **C-stack** check, not `sys.getrecursionlimit()`, so the threshold is not a fixed
+number. The fences therefore use depth 20000 and a factory (`_recursion_error()`) that **asserts
+the raise actually happened**; a depth that quietly stopped tripping would otherwise turn every
+fence built on it into a silent pass.
+
+End-to-end at both sites the exception escaped the helper and the handler: **`audit rows == []`**,
+bare 500 — exactly the defect #598 exists to remove.
+
+**Fix:** `except (ValueError, RecursionError)`. Both in-repo copies of the justification corrected
+(helper docstring + U1 docstring); the third copy is the merged PR body and is immutable.
+
+**Evidence.** New fences RED against the un-fixed code:
+
+```
+FAILED test_google_json_object_absorbs_a_real_recursion_error
+FAILED test_google_json_object_returns_none_for_every_non_object_body[recursion-error]
+FAILED test_token_200_with_a_non_object_body_redirects_and_audits[recursion]
+FAILED test_userinfo_200_with_a_non_object_body_redirects_and_audits[recursion]
+FAILED test_stepup_token_200_without_access_token_redirects_and_audits[recursion]
+FAILED test_stepup_userinfo_200_with_a_non_object_body_redirects_and_audits[recursion]
+/usr/local/lib/python3.12/json/decoder.py:354: RecursionError: maximum recursion depth
+  exceeded while decoding a JSON array from a unicode string
+```
+
+Re-narrowing the clause back to `except ValueError` against the fixed code reproduces the same
+six reds (**NARROW**, §8.7). The token-phase legs at both sites are the "307 + a `token_payload`
+audit row" fence C1 asked for.
+
+### 8.2 C2 — the shape guard validated the container, not the fields
+
+`_google_json_object` proves the userinfo body is a `dict`. It says nothing about what is in it, and
+`.get(key, default)` substitutes its default only for a **missing key** — never for an explicit
+`null`, a list or a number. The login site's `google_user.get("email", "")` therefore reached
+`.strip()` on the main line, **past the last `except`**:
+
+| userinfo body | login site | step-up site |
+|---|---|---|
+| `{"email": null}` | `AttributeError: 'NoneType' … 'strip'`, rows `[]` | survives (`or ""`) |
+| `{"email": ["a@b.io"]}` | `AttributeError: 'list' …` | `AttributeError: 'list' …` |
+| `{"email": 12345}` | `AttributeError: 'int' …` | `AttributeError: 'int' …` |
+
+The step-up site's `(google_user.get("email") or "")` rescues only *falsy* values; a list or a number
+is truthy, so it broke on both.
+
+**Fix:** a small local helper, `_google_str_field(payload, key, default="")` — return the value if it
+is a non-empty `str`, else the default. Applied to the email read at **both** sites. No new audit
+reason: a non-string email lands on the **existing** branch each site already has.
+
+⚠ **One correction to the finding as written.** It asked for both sites to land on the existing
+`no_email` branch. The step-up handler **has no `no_email` branch** — its existing branch for an
+unreadable Google email is **`email_mismatch`** (`auth.py:3708`), which is where an explicit `null`
+already landed before this change. So the step-up fence pins `email_mismatch`, not `no_email`; the
+intent (an *existing* branch, no invented reason) is honoured. The step-up `event_type`,
+`_resolve_return_path(state)` target, cookie path and `actor_email` are all preserved by routing
+through the untouched `_stepup_failure`.
+
+**Evidence.** RED against un-fixed code (`L12` × 5, `S11` × 4 — the step-up `null` leg was already
+green, and is reported as green rather than dressed up):
+
+```
+/app/app/services/user_service.py:36: AttributeError: 'NoneType' object has no attribute 'strip'
+/app/app/services/user_service.py:36: AttributeError: 'list' object has no attribute 'strip'
+/app/app/services/user_service.py:36: AttributeError: 'int' object has no attribute 'strip'
+/app/app/services/user_service.py:36: AttributeError: 'dict' object has no attribute 'strip'
+/app/app/services/user_service.py:36: AttributeError: 'bool' object has no attribute 'strip'
+/app/app/routers/auth.py:3697: AttributeError: 'list' object has no attribute 'strip'   (step-up)
+/app/app/routers/auth.py:3697: AttributeError: 'int' object has no attribute 'strip'
+/app/app/routers/auth.py:3697: AttributeError: 'dict' object has no attribute 'strip'
+/app/app/routers/auth.py:3697: AttributeError: 'bool' object has no attribute 'strip'
+```
+
+### 8.3 C3 — the other userinfo fields were still trusted
+
+Three more uncaught 500s at the login site, all outside the `try`, all on a body that **passes** the
+new shape guard:
+
+- `google_user.get("given_name", "")` — `{"given_name": 99, "family_name": 100}` →
+  `TypeError: sequence item 0: expected str instance, int found` inside `_suggest_username`'s
+  `" ".join(parts)` (`auth.py:157`).
+- `_safe_avatar_url(google_user.get("picture"))` — `{"picture": 12345}` →
+  `TypeError: object of type 'int' has no len()`.
+- `{"picture": {"url": "x"}}` — a dict has `len() == 1`, so it passes `_safe_avatar_url`
+  **unchanged**, is assigned to `user.avatar_url`, and dies at commit with
+  `ProgrammingError: type 'dict' is not supported` — **after** mutating ORM state.
+
+**Fix:** the same `_google_str_field` helper on `given_name`, `family_name` and both `picture`
+reads. **No audit reason:** a wrong-typed display name or avatar is a missing optional field, not a
+failure, so the fence asserts the callback **succeeds** with the field dropped and writes **no**
+audit row. Blocking a sign-in over an avatar would be worse than the bug.
+
+The step-up site was checked for the same reads and **has none** — it reads only `email`,
+`verified_email` and `email_verified`, and the last two go through `bool(...)`, which is total.
+
+**Evidence.** L13 RED on both branches (they read the fields at different places, so a fix applied
+to one and not the other passes half the test):
+
+```
+new-user      /app/app/routers/auth.py:157: TypeError: sequence item 0: expected str instance, int found
+existing-user aiosqlite/core.py:105: sqlalchemy.exc.ProgrammingError: (sqlite3.ProgrammingError)
+              Error binding parameter 3: type 'dict' is not supported
+              [SQL: UPDATE users SET first_name=?, last_name=?, avatar_url=? …]
+              [parameters: (99, 100, {'url': 'https://example.test/a.png'}, 1)]
+```
+
+### 8.4 C4 — `_google_token_body_detail` mislabelled a wrong-typed token
+
+`{'access_token': {'nested': 1}}` and `{'access_token': 12345}` both emitted
+`{'body': 'no_access_token'}` — telling an operator Google returned **no** token when it returned
+one. Different first move: "no token" points at credentials and consent, "wrong type" points at
+whatever is rewriting the body between us and Google.
+
+**Fix:** a third shape word, **`bad_access_token_type`**. `null` stays `no_access_token` (JSON has no
+other way to spell an unset field) and so does `""` (right type, merely empty). Pinned in U3 and
+end-to-end at both sites (L6 `number-token` / `object-token`, S6 `number-token`).
+
+**U3's first fixture was also wrong and is fixed.** It asserted `body == "no_access_token"` for
+`{"access_token": "s", …}` — a perfectly usable ASCII token. That describes a state the helper can
+never see in production: it is only ever called *after* the guard rejected the token, and the guard
+accepts `"s"`. Changed to `"access_token": ""`, which is the real shape that reaches the helper with
+other credentials (`refresh_token`, `id_token`) still live alongside it. The asserted value is
+unchanged; it is now honest.
+
+### 8.5 The six previously-green mutations, now RED
+
+Run against the fixed code, one at a time, restored between each. Real output:
+
+| Mutation | What it does | Now fails |
+|---|---|---|
+| **M7b** | delete the userinfo `_LOGGER.warning` at the **login** site | `test_userinfo_200_with_a_non_object_body_redirects_and_audits[json-array]`, `[not-json-at-all]`, `[recursion]` — 3 failed, 92 passed |
+| **M7d** | delete the userinfo `_LOGGER.warning` at the **step-up** site | `test_stepup_userinfo_200_with_a_non_object_body_redirects_and_audits[json-array]`, `[not-json-at-all]`, `[recursion]` — 3 failed, 92 passed |
+| **M12** | drop `or not access_token` from the guard predicate, **both** sites | `test_token_200_without_access_token_redirects_and_audits[empty-token]`, `test_stepup_token_200_without_access_token_redirects_and_audits[empty-token]` — 2 failed, 93 passed |
+| **M17** | step-up token phase decodes raw (`tokens = token_resp.json()`), no shape validation | `test_stepup_token_200_without_access_token_redirects_and_audits[json-array]`, `[not-json-at-all]`, `[recursion]` — 3 failed, 92 passed |
+| **M18** | login userinfo: raw `.json()` + an `isinstance` check | `test_userinfo_200_with_a_non_object_body_redirects_and_audits[not-json-at-all]`, `[recursion]` — 2 failed, 93 passed |
+| **M19** | step-up userinfo: raw `.json()` + an `isinstance` check | `test_stepup_userinfo_200_with_a_non_object_body_redirects_and_audits[not-json-at-all]`, `[recursion]` — 2 failed, 93 passed |
+
+M18/M19 are the reason the decode legs exist: an `isinstance`-only implementation handles a JSON
+array and still 500s on an HTML interstitial, and that implementation used to pass the whole suite.
+
+Two further mutations of the new code, for completeness:
+
+| Mutation | Now fails |
+|---|---|
+| **NARROW** — `except (ValueError, RecursionError)` → `except ValueError` | the six `[recursion]` fences of §8.1 — 6 failed, 89 passed |
+| **NOFIELD** — revert every `_google_str_field` call to its shipped read | L12 × 5, L13 × 2, S11 × 4 — 11 failed, 84 passed |
+
+### 8.6 Coverage added
+
+| Fence | Pins |
+|---|---|
+| **U4** (new) | `json.loads` really raises `RecursionError` on a nested body — asserted `not isinstance(caught.value, ValueError)` — and the helper absorbs it into the `None` sentinel. `.json()` performs a **genuine** decode; stubbing an instance would fence the `except` tuple but not the claim its width rests on, and that claim is what was wrong |
+| **U2** | `recursion-error` leg; exception legs converted to per-call factories |
+| **U3** | `bad_access_token_type` for dict / int / list; `null` and `""` stay `no_access_token`; wrong-type word carries no value; first fixture corrected |
+| **L6** | parametrized: `empty-token`, `number-token`, `object-token` beside the original OAuth-error body |
+| **L7** | `recursion` leg; factories |
+| **L8** | parametrized `json-array` / `not-json-at-all` / `recursion`; **wrapped in `patch.object(auth_module, "_LOGGER")`** with an exact field set and `phase == "userinfo"` |
+| **L12** (new) | non-string email (`null`, list, number, object, bool) → `no_email` branch, exact `detail`, **and no `User` row created** |
+| **L13** (new) | non-string `given_name` / `family_name` / `picture` → callback **succeeds**, field dropped, no audit row; driven on **both** the new-user and existing-user branches |
+| **S6** | parametrized over all seven token-body shapes, re-asserting the four step-up pins on every leg; includes the `unusable_access_token` twin the login site had alone |
+| **S7** | parametrized decode legs; `_LOGGER` patched, exact field set, `flow == "stepup"`, `phase == "userinfo"` |
+| **S11** (new) | non-string email at the step-up site → `email_mismatch`, correct `event_type`/`actor_email`, **no step-up token minted** |
+
+### 8.7 Invariants re-verified after the fold
+
+- **`WRONG-BROAD`** (a new `except Exception:` per handler, given the *right* reason string)
+  re-injected: **4 failed, 91 passed** — L5, L9, S5, S9 all `DID NOT RAISE _ProgrammerBug`.
+  The anti-broadening property is intact. Restored.
+- **L5 and S5 byte-unmodified**, verified by AST extraction and byte comparison against `HEAD`:
+  `L5: BYTE-IDENTICAL (1169 bytes)` · `S5: BYTE-IDENTICAL (1857 bytes)`.
+- **Zero new `except` clauses in either handler.** AST inventory of the fixed file:
+  `google_callback: ['TimeoutError', 'httpx.HTTPError']`,
+  `sso_stepup_callback: ['ValueError', 'TimeoutError', 'httpx.HTTPError']` — both byte-identical to
+  `HEAD`. The only `except` line in the whole diff is the helper's own, widened to
+  `_google_json_object: ['(ValueError, RecursionError)']`.
+
+### 8.8 Also folded in
+
+`_json_decode_error()` was evaluated **once at import**, inside `@pytest.mark.parametrize`, so one
+mutable exception instance was shared and re-raised across every leg using it. The parametrize
+tables now hold **factories** called per test, in both files. U3's redundant
+`"refresh_token" not in detail` assertions were deliberately left: they express intent.
