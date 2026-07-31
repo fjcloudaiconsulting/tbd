@@ -14,10 +14,10 @@ import datetime
 from decimal import Decimal, InvalidOperation
 
 import structlog
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.models.account import Account
 from app.models.category import Category, CategoryType
@@ -77,6 +77,27 @@ def _tag_responses(tx: Transaction) -> list[TagResponse]:
 
 
 def to_response(tx: Transaction) -> TransactionResponse:
+    # TBD-268: surface the partner leg's account name so a COLLAPSED transfer
+    # row can still render "source -> destination" with the partner absent
+    # from the page. Shared by every transaction endpoint, so it must never
+    # trigger a lazy load (MissingGreenlet from the async context): probe the
+    # loaded relationship via __dict__ exactly as _link_pair does. Only
+    # list_transactions(collapse_transfers=True) eager-loads it; everywhere
+    # else the probe misses and this stays None.
+    #
+    # Mutuality is required: reconciliation_service._apply_match writes
+    # linked_transaction_id ONE-WAY, and such a row is not a transfer.
+    partner = tx.__dict__.get("linked_transaction")
+    linked_account_name = None
+    if (
+        partner is not None
+        and partner.id != tx.id
+        and partner.org_id == tx.org_id
+        and partner.linked_transaction_id == tx.id
+    ):
+        acct = partner.__dict__.get("account")
+        linked_account_name = acct.name if acct is not None else None
+
     return TransactionResponse(
         id=tx.id,
         account_id=tx.account_id,
@@ -88,6 +109,7 @@ def to_response(tx: Transaction) -> TransactionResponse:
         type=tx.type.value,
         status=tx.status.value,
         linked_transaction_id=tx.linked_transaction_id,
+        linked_account_name=linked_account_name,
         recurring_id=tx.recurring_id,
         date=tx.date,
         settled_date=tx.settled_date,
@@ -1945,6 +1967,67 @@ def _parse_search_amount(raw: str) -> Decimal | None:
         return None
 
 
+# Self-join alias for the TBD-268 transfer-collapse reciprocity check.
+# Defined once at module level so the correlated EXISTS below can reference
+# it. Mirrors ``transaction_filters._bcf_partner``, which encodes the same
+# mutuality test for balance reconstruction.
+_collapse_partner = aliased(Transaction)
+
+
+def _transfer_collapse_clause(filtered_ids_subq):
+    """Keep exactly ONE row per reciprocally-linked transfer pair that is
+    fully inside the filtered set. See TBD-268.
+
+    A row is KEPT when any of:
+      1. it is not linked at all;
+      2. it is self-linked (corrupt data - never drop a row we cannot pair);
+      3. its partner does not link back (a reconciliation match per
+         reconciliation_service._apply_match, a dangling link, or a
+         cross-org link);
+      4. it is the lower-id leg;
+      5. its partner is not in the filtered set (the partner was excluded by
+         account/type/date/tag filters, so this leg is the transfer's only
+         representative and MUST render, else the row is reachable from
+         nowhere).
+
+    Exactly-one proof: for a reciprocal, same-org, non-self pair (a, b) both
+    inside the filtered set, branches 1/2/3/5 are false for both legs and
+    branch 4 is true for exactly one of them, because ids are a strict total
+    order and a.id != b.id. Nothing here depends on the type/amount pair
+    invariants, so corrupt pair data over-renders (visible, fixable) rather
+    than vanishing.
+
+    ``linked_transaction_id`` is NOT a transfer marker: it has two writers
+    with different semantics. ``_link_pair`` sets it BIDIRECTIONALLY;
+    ``reconciliation_service._apply_match`` sets it ONE-WAY, and that
+    direction is a load-bearing discriminator (see the
+    ``Transaction.linked_transaction_id`` model docstring). Branch 3 is what
+    keeps a reconcile-matched row from being suppressed as a transfer leg.
+
+    The org clause inside the EXISTS is redundant with branch 5 as called from
+    ``list_transactions``: an org-scoped ``filtered_ids_subq`` means a
+    cross-org partner is never in the filtered set, so branch 5 already fails
+    open. It is kept so the EXISTS stands on its own if this builder is ever
+    paired with a differently scoped subquery. Measured, not assumed -- see
+    test_b7_cross_org_reciprocal_link_is_not_collapsed.
+    """
+    return or_(
+        Transaction.linked_transaction_id.is_(None),                       # 1
+        Transaction.linked_transaction_id == Transaction.id,               # 2
+        ~exists().where(                                                   # 3
+            and_(
+                _collapse_partner.id == Transaction.linked_transaction_id,
+                _collapse_partner.org_id == Transaction.org_id,
+                _collapse_partner.linked_transaction_id == Transaction.id,
+            )
+        ),
+        Transaction.id < Transaction.linked_transaction_id,                # 4
+        # NOT IN over a PK column: `select(Transaction.id)` is NOT NULL, so
+        # this can never evaluate to the SQL NULL that silently swallows rows.
+        Transaction.linked_transaction_id.notin_(select(filtered_ids_subq.c.id)),  # 5
+    )
+
+
 def _apply_transaction_filters(
     q,
     org_id: int,
@@ -2083,24 +2166,67 @@ async def list_transactions(
     sort_dir: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    collapse_transfers: bool = False,
 ) -> tuple[list[Transaction], int]:
+    """List one page of transactions plus the total over the same filtered set.
+
+    ``collapse_transfers`` (TBD-268, opt-in) folds each MUTUALLY-linked
+    transfer pair down to a single row BEFORE the LIMIT, so a page of
+    ``limit`` rows renders ``limit`` transfers. Without it the server
+    paginates and the client then hides a leg, which is how a filtered list
+    could render zero rows against a non-zero ``total``.
+
+    Sort caveat (accepted, TBD-268 ruling 9): the surviving leg is chosen by
+    id, never by sort key -- a sort-dependent survivor cannot be expressed in
+    the count query (which has no ordering) and would make LIMIT/OFFSET paging
+    produce gaps and duplicates when a pair's survivor flips between windows.
+    So under ``sort_by=account_name`` a pair spanning two accounts sorts under
+    the SURVIVING leg's account, which may not be where an alphabetical scan
+    expects it. ``amount`` is order-neutral (both legs positive and equal by
+    pair invariant 4) and ``category_name`` is shared by ``_link_pair``.
+    """
     filter_kwargs = dict(
         account_id=account_id, category_id=category_id, tx_type=tx_type,
         status=status, date_from=date_from, date_to=date_to, search=search,
         tags=tags, tags_exclude=tags_exclude, tag_match=tag_match,
     )
 
+    opts = _load_opts()
+    if collapse_transfers:
+        # Gated: the other _load_opts() call sites pay nothing for this.
+        # selectinload batches, so this is two extra queries per page, not N+1.
+        opts.append(
+            selectinload(Transaction.linked_transaction).selectinload(Transaction.account)
+        )
+
     # org_id is supplied twice on purpose: once as the pre-scoped WHERE on the
     # base query, and again as a param so the category/tag subqueries inside
     # _apply_transaction_filters can org-scope their own lookups.
     page_q = _apply_transaction_filters(
-        select(Transaction).options(*_load_opts()).where(Transaction.org_id == org_id),
+        select(Transaction).options(*opts).where(Transaction.org_id == org_id),
         org_id, **filter_kwargs,
     )
     count_q = _apply_transaction_filters(
         select(func.count()).select_from(Transaction).where(Transaction.org_id == org_id),
         org_id, **filter_kwargs,
     )
+
+    if collapse_transfers:
+        # Materialise the filtered id set once by reusing the SAME helper with
+        # the SAME kwargs, so its "page and count see one filtered set"
+        # guarantee is preserved by construction rather than re-derived.
+        #
+        # Fallback if profiling ever disagrees: parameterise
+        # _apply_transaction_filters on `model=` and inline the filters into a
+        # correlated EXISTS. Rejected here because it is a ~12-site mechanical
+        # rewrite of the single function that IS the items/total contract.
+        filtered_ids = _apply_transaction_filters(
+            select(Transaction.id).where(Transaction.org_id == org_id),
+            org_id, **filter_kwargs,
+        ).subquery("filtered_tx_ids")
+        collapse = _transfer_collapse_clause(filtered_ids)
+        page_q = page_q.where(collapse)
+        count_q = count_q.where(collapse)
 
     total = (await db.scalar(count_q)) or 0
 
@@ -2113,9 +2239,19 @@ async def list_transactions(
         "category_name": Category.name,
     }
     if sort_by == "account_name":
-        page_q = page_q.join(Account, Account.id == Transaction.account_id)
+        # isouter: an inner join here can drop rows from `items` that
+        # `count_q` still counts, breaking the TBD-268 guarantee that
+        # `total` equals the number of rows the client will render.
+        # Unreachable while the account_id FK holds, but the guarantee must
+        # not depend on referential integrity. Adding the join to count_q
+        # instead would make the count depend on the sort key, which is worse.
+        page_q = page_q.join(
+            Account, Account.id == Transaction.account_id, isouter=True
+        )
     elif sort_by == "category_name":
-        page_q = page_q.join(Category, Category.id == Transaction.category_id)
+        page_q = page_q.join(
+            Category, Category.id == Transaction.category_id, isouter=True
+        )
 
     order_by = resolve_order_by(
         sort_by, sort_dir, allowed=allowed,

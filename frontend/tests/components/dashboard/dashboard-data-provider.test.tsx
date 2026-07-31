@@ -2181,3 +2181,67 @@ describe("DashboardDataProvider — stalled billing-periods fallback", () => {
     }
   });
 });
+
+// ── TBD-268: the provider must not hide rows the server already collapsed ────
+
+describe("DashboardDataProvider — transfer collapse (TBD-268)", () => {
+  it("F9d: visibleTxs keeps a transfer leg whose id exceeds its partner's", async () => {
+    // The collapse now happens server-side, BEFORE the limit. The provider
+    // therefore receives one leg per pair — and that leg is NOT always the
+    // lower-id one: when a filter or page boundary excluded the partner, the
+    // surviving leg is whichever matched. Re-applying the old
+    // `id > linked_transaction_id` hide here drops it, re-creating TBD-268 one
+    // layer down.
+    const survivor = {
+      ...TX_EXPENSE,
+      id: 99,
+      description: "Transfer in",
+      type: "income" as const,
+      account_name: "Savings",
+      linked_transaction_id: 98, // partner NOT in the page, and LOWER
+      linked_account_name: "Checking",
+    };
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE, survivor], total: 2 },
+      }) as never,
+    );
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("tx-count").textContent).toBe("2"),
+    );
+    // Both rows must render. A restored client hide yields 1.
+    await waitFor(() =>
+      expect(screen.getByTestId("sorted-visible-count").textContent).toBe("2"),
+    );
+  });
+
+  it("F9e: both the page fetch and the snapshot opt in; the pending fetch does not", async () => {
+    const urls: string[] = [];
+    vi.mocked(apiFetch).mockImplementation((async (url: string) => {
+      if (url.startsWith("/api/v1/transactions")) urls.push(url);
+      return makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 1 },
+      })(url);
+    }) as never);
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    await waitFor(() => {
+      expect(urls.some((u) => u.includes("limit=200") && u.includes("collapse_transfers=true"))).toBe(true);
+      expect(urls.some((u) => u.includes("offset=0") && u.includes("collapse_transfers=true"))).toBe(true);
+    });
+    // The all-time pending list goes through fetchAll (mocked separately) and
+    // must never carry the flag: its consumers key by account_id, and the two
+    // legs of a transfer sit on different accounts.
+    expect(urls.some((u) => u.includes("status=pending"))).toBe(false);
+  });
+});

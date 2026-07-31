@@ -23,6 +23,7 @@ function makeLeg(over: Partial<Transaction> = {}): Transaction {
     type: "expense",
     status: "settled",
     linked_transaction_id: null,
+    linked_account_name: null,
     recurring_id: null,
     date: "2026-05-31",
     settled_date: "2026-06-15",

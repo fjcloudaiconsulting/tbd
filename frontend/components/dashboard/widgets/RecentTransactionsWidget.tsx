@@ -46,8 +46,6 @@ function transactionHighlightHref(tx: Transaction) {
 export default function RecentTransactionsWidget() {
   const {
     sortedVisibleTxs,
-    txMap,
-    transactions,
     txTotal,
     page,
     setPage,
@@ -130,11 +128,18 @@ export default function RecentTransactionsWidget() {
       >
         {sortedVisibleTxs.map((tx) => {
           const isTransfer = tx.linked_transaction_id !== null;
-          const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+          // TBD-268: the partner is never in the page after the server
+          // collapse, so read its account name off the row itself. Non-null
+          // only for a MUTUAL link, and the arrow direction comes from `type`
+          // so it reads source → destination whichever leg survived.
+          const isPairedTransfer = tx.linked_account_name != null;
+          const [fromAcct, toAcct] = tx.type === "expense"
+            ? [tx.account_name, tx.linked_account_name]
+            : [tx.linked_account_name, tx.account_name];
           const amountClass = `text-sm font-medium tabular-nums ${isTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`;
           const amountText = `${isTransfer ? "" : tx.type === "income" ? "+" : "-"}${formatAmount(tx.amount)}`;
-          const subline = isTransfer && linkedTx ? (
-            <>{tx.account_name} &rarr; {linkedTx.account_name}</>
+          const subline = isPairedTransfer ? (
+            <>{fromAcct} &rarr; {toAcct}</>
           ) : (
             <>{tx.account_name} &middot; {tx.category_name}</>
           );
@@ -206,7 +211,11 @@ export default function RecentTransactionsWidget() {
             </div>
           );
         })}
-        {transactions.length === 0 && (
+        {/* Keyed off the RENDERED list, not the raw page array: under a chart
+            filter the rendered source is the snapshot, so keying off
+            `transactions` could leave the tile with zero rows and no empty
+            state — a blank card. */}
+        {sortedVisibleTxs.length === 0 && (
           <div className="px-5 py-6 text-center text-sm text-text-muted">
             {!canAdd ? "Create accounts and categories first." : "No transactions this period."}
           </div>

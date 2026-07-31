@@ -66,6 +66,7 @@ function makeTx(over: Partial<{
   type: "income" | "expense";
   status: "settled" | "pending";
   linked_transaction_id: number | null;
+  linked_account_name: string | null;
   recurring_id: number | null;
   date: string;
   settled_date: string | null;
@@ -82,6 +83,7 @@ function makeTx(over: Partial<{
     type: "expense" as const,
     status: "settled" as const,
     linked_transaction_id: null,
+    linked_account_name: null,
     recurring_id: null,
     date: "2026-05-01",
     settled_date: null,
@@ -95,7 +97,16 @@ function makeTx(over: Partial<{
 // safe on plain render() because setupApiFetch returns CONSTANT refs. If you add
 // a case that needs DIFFERENT ref data, switch it to renderWithSWR (fresh cache)
 // or it will silently receive an earlier test's cached refs.
-function setupApiFetch(txs: ReturnType<typeof makeTx>[]) {
+// `listTxs` is what the LIST endpoint returns — i.e. the post-collapse page,
+// since the page requests collapse_transfers=true (TBD-268). `detailTxs`
+// backs GET /api/v1/transactions/{id}, which is how the page hydrates a
+// transfer partner that the collapse left out of the page (startEdit /
+// openUnpairModal both fall back to it). Defaults to `listTxs` so callers
+// without a pair need not pass it.
+function setupApiFetch(
+  listTxs: ReturnType<typeof makeTx>[],
+  detailTxs: ReturnType<typeof makeTx>[] = listTxs,
+) {
   const apiFetchMock = vi.mocked(apiFetch);
   apiFetchMock.mockReset();
   // The page kicks off loadRefs() (3 calls in parallel) and loadTransactions(0).
@@ -104,8 +115,13 @@ function setupApiFetch(txs: ReturnType<typeof makeTx>[]) {
     if (url.startsWith("/api/v1/accounts")) return [ACCT_A, ACCT_B] as never;
     if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
+    const detail = /^\/api\/v1\/transactions\/(\d+)$/.exec(url);
+    if (detail) {
+      const id = Number(detail[1]);
+      return (detailTxs.find((t) => t.id === id) ?? null) as never;
+    }
     if (url.startsWith("/api/v1/transactions"))
-      return { items: txs, total: txs.length, limit: 25, offset: 0 } as never;
+      return { items: listTxs, total: listTxs.length, limit: 25, offset: 0 } as never;
     return null as never;
   });
 }
@@ -203,14 +219,17 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     const expenseLeg = makeTx({
       id: 10, account_id: ACCT_A.id, account_name: ACCT_A.name,
       type: "expense", amount: 50, description: "Transfer out",
-      linked_transaction_id: 11,
+      linked_transaction_id: 11, linked_account_name: ACCT_B.name,
     });
     const incomeLeg = makeTx({
       id: 11, account_id: ACCT_B.id, account_name: ACCT_B.name,
       type: "income", amount: 50, description: "Transfer in",
-      linked_transaction_id: 10,
+      linked_transaction_id: 10, linked_account_name: ACCT_A.name,
     });
-    setupApiFetch([expenseLeg, incomeLeg]);
+    // Collapsed shape (TBD-268): the server returns ONE leg per pair. The
+    // partner stays reachable via the detail route, which is how startEdit
+    // hydrates editPartner.
+    setupApiFetch([expenseLeg], [expenseLeg, incomeLeg]);
 
     render(<TransactionsPage />);
 
@@ -267,14 +286,14 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     const expenseLeg = makeTx({
       id: 30, account_id: ACCT_A.id, account_name: ACCT_A.name,
       type: "expense", amount: 50, description: "Linked out",
-      linked_transaction_id: 31,
+      linked_transaction_id: 31, linked_account_name: ACCT_B.name,
     });
     const incomeLeg = makeTx({
       id: 31, account_id: ACCT_B.id, account_name: ACCT_B.name,
       type: "income", amount: 50, description: "Linked in",
-      linked_transaction_id: 30,
+      linked_transaction_id: 30, linked_account_name: ACCT_A.name,
     });
-    setupApiFetch([expenseLeg, incomeLeg]);
+    setupApiFetch([expenseLeg], [expenseLeg, incomeLeg]);
 
     render(<TransactionsPage />);
 
@@ -387,19 +406,19 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     const linked = makeTx({
       id: 20, account_id: ACCT_A.id, account_name: ACCT_A.name,
       type: "expense", amount: 75, description: "Linked tx",
-      linked_transaction_id: 21,
+      linked_transaction_id: 21, linked_account_name: ACCT_B.name,
     });
     const linkedPartner = makeTx({
       id: 21, account_id: ACCT_B.id, account_name: ACCT_B.name,
       type: "income", amount: 75, description: "Linked partner",
-      linked_transaction_id: 20,
+      linked_transaction_id: 20, linked_account_name: ACCT_A.name,
     });
     const unlinked = makeTx({
       id: 22, account_id: ACCT_A.id, account_name: ACCT_A.name,
       type: "expense", amount: 30, description: "Unlinked tx",
       linked_transaction_id: null,
     });
-    setupApiFetch([linked, linkedPartner, unlinked]);
+    setupApiFetch([linked, unlinked], [linked, linkedPartner, unlinked]);
 
     render(<TransactionsPage />);
 

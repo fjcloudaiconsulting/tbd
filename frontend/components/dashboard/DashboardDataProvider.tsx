@@ -174,7 +174,6 @@ export interface DashboardData {
   setPageSize: (n: number) => void;
   visibleTxs: Transaction[];
   sortedVisibleTxs: Transaction[];
-  txMap: Map<number, Transaction>;
   dashSort: PersistedSort<DashTxSort>;
   toggleDashSort: (field: DashTxSort) => void;
   canAdd: boolean;
@@ -476,8 +475,13 @@ export function DashboardDataProvider({
     const myId = ++snapshotRequestId.current;
     const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
     try {
+      // collapse_transfers=true (TBD-268): the snapshot is not a one-shot sum
+      // source — under a chart filter it becomes the RENDERED source (see
+      // visibleTxs), so it collapses alongside the page fetch and one memo
+      // serves both. donutDataRaw, its other consumer, already drops rows with
+      // a non-null link, and the collapse only removes rows that have one.
       const data = await apiFetch<{ items: Transaction[]; total: number }>(
-        `/api/v1/transactions?limit=200&${dateFilter}`,
+        `/api/v1/transactions?limit=200&collapse_transfers=true&${dateFilter}`,
       );
       if (snapshotRequestId.current !== myId) return;
       setAllTransactions(data?.items ?? []);
@@ -506,7 +510,7 @@ export function DashboardDataProvider({
       const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
       try {
         const data = await apiFetch<{ items: Transaction[]; total: number }>(
-          `/api/v1/transactions?limit=${pageSize}&offset=${p * pageSize}&${dateFilter}`,
+          `/api/v1/transactions?limit=${pageSize}&offset=${p * pageSize}&collapse_transfers=true&${dateFilter}`,
         );
         if (txPageRequestId.current !== myId) return;
         setTransactions(data?.items ?? []);
@@ -887,26 +891,15 @@ export function DashboardDataProvider({
 
   // ── Recent-transactions memos (copied verbatim from LegacyDashboard) ────────
 
-  // O(1) linked-transaction lookups for transfer leg rendering. Built from the
-  // full-period snapshot so a transfer's other half resolves regardless of
-  // which page is visible.
-  const txMap = useMemo(
-    () => new Map(allTransactions.map((tx) => [tx.id, tx])),
-    [allTransactions],
-  );
-
   // When a chart filter is active, show from the full snapshot; otherwise the
-  // paginated page. Dedups transfer legs (keep the lower-id half).
-  const visibleTxs = useMemo(() => {
-    const txSource = chartFilter ? allTransactions : transactions;
-    const hiddenIds = new Set<number>();
-    for (const tx of txSource) {
-      if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) {
-        hiddenIds.add(tx.id);
-      }
-    }
-    return txSource.filter((tx) => !hiddenIds.has(tx.id));
-  }, [chartFilter, allTransactions, transactions]);
+  // paginated page. NO client-side dedupe: both requests pass
+  // collapse_transfers=true, so the server already folded each mutually-linked
+  // pair to one leg BEFORE the limit. Removing rows here after a server LIMIT
+  // is what TBD-268 was.
+  const visibleTxs = useMemo(
+    () => (chartFilter ? allTransactions : transactions),
+    [chartFilter, allTransactions, transactions],
+  );
 
   const { field: dashSortField, dir: dashSortDir, setSort: setDashSort } = dashSort;
 
@@ -1052,7 +1045,6 @@ export function DashboardDataProvider({
     setPageSize,
     visibleTxs,
     sortedVisibleTxs,
-    txMap,
     dashSort,
     toggleDashSort,
     canAdd,
