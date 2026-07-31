@@ -6,6 +6,7 @@ import { apexCanonical, apexUrl, pageSocialMeta, siteName } from "@/lib/site";
 import ComparisonTable from "@/components/landing/ComparisonTable";
 import MarketingShell from "@/components/landing/MarketingShell";
 import ChevronGlyph from "@/components/landing/ChevronGlyph";
+import SecondCta from "@/components/landing/SecondCta";
 import { competitorOrder } from "@/lib/comparison";
 
 const description =
@@ -76,7 +77,9 @@ export default async function ComparePage() {
   const nonceProp = nonce ? { nonce } : {};
   return (
     <MarketingShell>
-    <main className="mx-auto max-w-5xl px-6 py-20 lg:py-24">
+    {/* Bottom padding is deliberately omitted: the closing <SecondCta />
+        carries its own py-20/lg:py-24, matching the homepage rhythm. */}
+    <main className="mx-auto max-w-5xl px-6 pt-20 lg:pt-24">
       {structuredData.map((block, i) => (
         <script
           key={`ld-${i}`}
@@ -139,6 +142,17 @@ export default async function ComparePage() {
           ))}
         </ul>
       </section>
+
+      {/* In-body conversion path, same gap as /features: the nav CTA was the
+          only one, so a visitor who reached the FAQ had to scroll back up.
+          Reports its own cta_location for the GA4 breakdown.
+
+          -mx-6 cancels this page's px-6: SecondCta brings its own px-6 (the
+          homepage renders it in a bare <main>), and nesting the two insets the
+          CTA text column 48px narrower than every other block on mobile. */}
+      <div className="-mx-6">
+        <SecondCta location="compare" />
+      </div>
     </main>
     </MarketingShell>
   );

@@ -15,7 +15,22 @@ export const GA_GATEWAY_PATH =
 
 export const isApexBuild = process.env.NEXT_PUBLIC_BUILD_TARGET === "apex";
 
-export type SignupCtaLocation = "hero" | "topnav" | "second_cta" | "vs_page";
+// One value per DISTINCT signup CTA placement. The GA4 `cta_location`
+// breakdown is only useful when no two placements share a value, so every
+// in-body CTA gets its own literal here. tests/marketing-inbody-cta.test.tsx
+// fences the marketing pages against a copy-pasted location.
+//
+// These literals are the operator-facing contract: they are exactly the union
+// pre-specified in specs/2026-06-21-google-ads-launch-design.md, so the GA4
+// Explore segments built from that spec match what ships. Renaming one here
+// silently empties the corresponding segment — do not.
+export type SignupCtaLocation =
+  | "hero"
+  | "topnav"
+  | "second_cta"
+  | "vs_page"
+  | "features"
+  | "compare";
 
 type GtagFn = (command: string, ...args: unknown[]) => void;
 
