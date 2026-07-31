@@ -83,6 +83,12 @@ class TransactionResponse(BaseModel):
     type: Literal["income", "expense"]
     status: Literal["settled", "pending"]
     linked_transaction_id: Optional[int] = None
+    # TBD-268: the partner leg's account name, so a collapsed transfer row can
+    # render "source -> destination" without the partner being in the page.
+    # Populated ONLY for a MUTUAL, same-org link (a one-way reconciliation
+    # match leaves this None), and only when the caller passed
+    # collapse_transfers=true - the eager load is gated on it.
+    linked_account_name: Optional[str] = None
     recurring_id: Optional[int] = None
     date: datetime.date
     settled_date: datetime.date | None = None

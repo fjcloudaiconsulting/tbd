@@ -165,3 +165,97 @@ def test_invalid_sort_dir_is_400(client):
 def test_limit_zero_rejected(client):
     res = client.get("/api/v1/transactions?limit=0")
     assert res.status_code == 422
+
+
+# ── TBD-268: collapse_transfers is opt-in ──────────────────────────────────
+
+
+async def _seed_pair(factory) -> dict:
+    """Add a second account plus one reciprocally-linked transfer pair.
+
+    Expense leg first, mirroring ``create_transfer``, so the INCOME leg takes
+    the higher id -- the asymmetry that made the reported bug a total blackout
+    under ``?type=income``.
+    """
+    from sqlalchemy import select as _select
+
+    async with factory() as db:
+        org = (await db.execute(_select(Organization))).scalars().first()
+        at = (await db.execute(_select(AccountType))).scalars().first()
+        cat = (await db.execute(_select(Category))).scalars().first()
+        acct_a = (await db.execute(_select(Account))).scalars().first()
+        acct_b = Account(
+            org_id=org.id, name="Acct B", account_type_id=at.id,
+            balance=Decimal("0"), currency="EUR",
+        )
+        db.add(acct_b)
+        await db.flush()
+        exp = Transaction(
+            org_id=org.id, account_id=acct_a.id, category_id=cat.id,
+            description="transfer out", amount=Decimal("50.00"),
+            type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+            date=date(2026, 2, 1), settled_date=date(2026, 2, 1),
+        )
+        db.add(exp)
+        await db.flush()
+        inc = Transaction(
+            org_id=org.id, account_id=acct_b.id, category_id=cat.id,
+            description="transfer in", amount=Decimal("50.00"),
+            type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+            date=date(2026, 2, 1), settled_date=date(2026, 2, 1),
+        )
+        db.add(inc)
+        await db.flush()
+        assert inc.id > exp.id
+        exp.linked_transaction_id = inc.id
+        inc.linked_transaction_id = exp.id
+        await db.commit()
+        return {"expense_id": exp.id, "income_id": inc.id, "acct_b_id": acct_b.id}
+
+
+@pytest_asyncio.fixture
+async def paired(session_factory, client):
+    return await _seed_pair(session_factory)
+
+
+def test_b13_default_returns_both_transfer_legs(client, paired):
+    """B13 — GET /api/v1/transactions with NO ``collapse_transfers`` returns
+    BOTH legs of a transfer pair.
+
+    Kills the default flipping to true. Default-false is load-bearing: this
+    endpoint is reachable by superadmin Personal Access Token, so it is an
+    external contract with unknown consumers, and every aggregate caller that
+    sums per account needs both legs (each sits on a different account).
+    """
+    res = client.get("/api/v1/transactions?limit=200")
+    assert res.status_code == 200
+    ids = {i["id"] for i in res.json()["items"]}
+    assert paired["expense_id"] in ids
+    assert paired["income_id"] in ids
+    # And no caller gets the partner-name field for free.
+    assert all(i["linked_account_name"] is None for i in res.json()["items"])
+
+
+def test_b13b_opt_in_collapses_and_returns_partner_account_name(client, paired):
+    """The opt-in half of B13: the flag is actually plumbed through the router
+    (a param the router accepts but never forwards would pass B13 alone)."""
+    res = client.get("/api/v1/transactions?limit=200&collapse_transfers=true")
+    assert res.status_code == 200
+    body = res.json()
+    ids = [i["id"] for i in body["items"]]
+    assert paired["expense_id"] in ids
+    assert paired["income_id"] not in ids
+    assert body["total"] == len(body["items"])
+    survivor = next(i for i in body["items"] if i["id"] == paired["expense_id"])
+    assert survivor["linked_account_name"] == "Acct B"
+
+
+def test_b13c_income_filter_no_longer_blacks_out(client, paired):
+    """The reported severity, at the HTTP boundary: ``?type=income`` used to
+    hide every returned row client-side because the income leg holds the
+    higher id. The surviving leg must be the income one here."""
+    res = client.get("/api/v1/transactions?type=income&collapse_transfers=true")
+    assert res.status_code == 200
+    body = res.json()
+    assert [i["id"] for i in body["items"]] == [paired["income_id"]]
+    assert body["total"] == 1

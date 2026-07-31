@@ -258,7 +258,12 @@ function TransactionsPageContent() {
   const [editPartner, setEditPartner] = useState<Transaction | null>(null);
 
   const loadTransactions = useCallback(async (p: number) => {
-    let url = `/api/v1/transactions?limit=${pageSize}&offset=${p * pageSize}`;
+    // collapse_transfers=true (TBD-268): the server folds each MUTUALLY-linked
+    // transfer pair to one row BEFORE applying the limit, so a page of
+    // `pageSize` rows is `pageSize` transfers. This replaces a client-side
+    // hide that ran AFTER the server's LIMIT and therefore short-changed every
+    // page — and blanked the list entirely under `type=income`.
+    let url = `/api/v1/transactions?limit=${pageSize}&offset=${p * pageSize}&collapse_transfers=true`;
     url += `&sort_by=${encodeURIComponent(sortField)}&sort_dir=${encodeURIComponent(sortDir)}`;
     if (filterAccount) url += `&account_id=${filterAccount}`;
     if (filterCategory) url += `&category_id=${filterCategory}`;
@@ -425,31 +430,22 @@ function TransactionsPageContent() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedIds.size, confirmBulkDelete, bulkDeleting]);
 
-  // Selection state operates on the VISIBLE rows only (transfer pairs are
-  // rendered as a single row — the hidden half cascades server-side). Using
-  // visibleTxs here keeps allPageSelected / togglePage consistent with what
-  // the user actually sees.
+  // Selection operates on every returned row. The server collapses each
+  // MUTUALLY-linked transfer pair to a single leg (collapse_transfers=true on
+  // the list request), so one row here is one transfer and a page of N rows is
+  // N transfers. Deleting the surviving leg still cascades to its partner
+  // server-side (delete_transaction / bulk_delete_transactions, which also
+  // dedupes ids), so a selection built from these rows deletes whole
+  // transfers, never halves — that cascade is why we can safely offer one row
+  // per pair, NOT why a row would be missing.
   //
-  // Memoized: only the `transactions` array shape matters here, so we
-  // shouldn't rebuild the Set on every keystroke into the filter inputs.
-  const selectionHiddenIds = useMemo(() => {
-    const ids = new Set<number>();
-    for (const t of transactions) {
-      if (t.linked_transaction_id && t.id > t.linked_transaction_id) {
-        ids.add(t.id);
-      }
-    }
-    return ids;
-  }, [transactions]);
-  const selectableTxs = useMemo(
-    () => transactions.filter((t) => !selectionHiddenIds.has(t.id)),
-    [transactions, selectionHiddenIds],
-  );
-
+  // Do NOT reintroduce a client-side hide. It cannot see the partner when a
+  // filter (account_id, type) or a page boundary excludes it, which is exactly
+  // how TBD-268 rendered zero rows against a non-zero total.
   const allPageSelected =
-    selectableTxs.length > 0 && selectableTxs.every((t) => selectedIds.has(t.id));
+    transactions.length > 0 && transactions.every((t) => selectedIds.has(t.id));
   const somePageSelected =
-    selectableTxs.some((t) => selectedIds.has(t.id)) && !allPageSelected;
+    transactions.some((t) => selectedIds.has(t.id)) && !allPageSelected;
 
   function toggleOne(id: number) {
     setSelectedIds((prev) => {
@@ -464,9 +460,9 @@ function TransactionsPageContent() {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (allPageSelected) {
-        selectableTxs.forEach((t) => next.delete(t.id));
+        transactions.forEach((t) => next.delete(t.id));
       } else {
-        selectableTxs.forEach((t) => next.add(t.id));
+        transactions.forEach((t) => next.add(t.id));
       }
       return next;
     });
@@ -554,7 +550,13 @@ function TransactionsPageContent() {
   }
 
   async function openUnpairModal(tx: Transaction) {
-    if (!tx.linked_transaction_id) return;
+    // TBD-268: gate on the MUTUALITY-verified signal, not on the raw column.
+    // A one-way reconciliation match also carries linked_transaction_id, and
+    // unpair_transactions does not check reciprocity — unpairing one would
+    // silently rewrite the unrelated canonical row's category. (The
+    // server-side reciprocity check in unpair_transactions is a separate
+    // ticket; this closes the path that reaches it from the list.)
+    if (!tx.linked_transaction_id || tx.linked_account_name == null) return;
     let partner: Transaction | null =
       transactions.find((t) => t.id === tx.linked_transaction_id) ?? null;
     if (!partner) {
@@ -602,7 +604,14 @@ function TransactionsPageContent() {
     setEditRecNextDue(defaultNextDueISO());
     // Hydrate partner for linked rows so the Account select can filter
     // currency-compatible options and the mirror-amount notice can render.
-    if (tx.linked_transaction_id) {
+    //
+    // TBD-268: gated on the same mutuality-verified signal every rendered
+    // affordance uses. A one-way reconciliation match also carries
+    // `linked_transaction_id`, and hydrating its partner would print
+    // "Editing a transfer leg. Changes to amount apply to both rows." above a
+    // form that labels its picker "Category" — the row contradicting itself
+    // again — and would freeze Type on what is an ordinary transaction.
+    if (tx.linked_transaction_id && tx.linked_account_name != null) {
       const visible = transactions.find((t) => t.id === tx.linked_transaction_id);
       if (visible) {
         setEditPartner(visible);
@@ -642,11 +651,15 @@ function TransactionsPageContent() {
     setError("");
     // Capture the row pre-save so we can decide whether the promote step
     // applies (transfer legs and already-recurring rows are excluded).
+    // TBD-268: "transfer leg" is `linked_account_name != null`, matching the
+    // `!editPartner` gate that decides whether the checkbox renders at all —
+    // otherwise a reconcile-matched row shows a checkbox that silently does
+    // nothing when ticked.
     const editingRow = transactions.find((t) => t.id === editingId) ?? null;
     const wantsPromote =
       editPromoteRecurring &&
       editingRow !== null &&
-      editingRow.linked_transaction_id === null &&
+      editingRow.linked_account_name == null &&
       editingRow.recurring_id === null;
     if (wantsPromote && !editRecNextDue) {
       setError("Pick a next due date");
@@ -763,15 +776,6 @@ function TransactionsPageContent() {
     }
     setPage(0);
   }
-  // Visible rows are the fetched (server-sorted) transactions minus the
-  // cascaded "duplicate" half of any transfer pair. Rows arrive pre-sorted
-  // from the server (sort_by/sort_dir on the list request), so there is no
-  // client-side sort. Memoized so the array reference is stable across
-  // unrelated renders (typing in the new-transaction form, hover, etc.).
-  const visibleTxs = useMemo(
-    () => transactions.filter((t) => !selectionHiddenIds.has(t.id)),
-    [transactions, selectionHiddenIds],
-  );
   const targetTransactionId = useMemo(() => {
     const raw = searchParams.get("transaction_id");
     if (!raw) return null;
@@ -782,7 +786,7 @@ function TransactionsPageContent() {
   useEffect(() => {
     if (
       targetTransactionId === null ||
-      !visibleTxs.some((tx) => tx.id === targetTransactionId)
+      !transactions.some((tx) => tx.id === targetTransactionId)
     ) {
       return;
     }
@@ -794,14 +798,8 @@ function TransactionsPageContent() {
       ? targetDesktopRowRef.current ?? targetMobileRowRef.current
       : targetMobileRowRef.current ?? targetDesktopRowRef.current;
     row?.scrollIntoView({ block: "center", behavior: "auto" });
-  }, [targetTransactionId, visibleTxs]);
+  }, [targetTransactionId, transactions]);
 
-  // Tx lookup map for O(1) linked-row resolution. Recomputed only when the
-  // transactions array itself changes.
-  const txMap = useMemo(
-    () => new Map(transactions.map((t) => [t.id, t] as const)),
-    [transactions],
-  );
   // Bulk "Link as transfer" validation. Server is the source of truth;
   // this is advisory only so we can disable the button + show a tooltip.
   function evaluateLinkSelection(): {
@@ -1113,16 +1111,33 @@ function TransactionsPageContent() {
               </div>
             </div>
             {(() => {
-              // txMap + visibleTxs are memoized at the top of the component
-              // so unrelated renders (typing in filter inputs, hover, edit
-              // mode flips) don't rebuild these on every pass.
               return (
                 <>
                   {/* Desktop/tablet grid rows (md+) */}
                   <div className="hidden md:block divide-y divide-border-subtle">
-                    {visibleTxs.map((tx) => {
-                      const isTransfer = tx.linked_transaction_id !== null;
-                      const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+                    {transactions.map((tx) => {
+                      // TBD-268: `linked_account_name` is the ONE transfer
+                      // signal this row renders from, and it is
+                      // mutuality-verified — the server populates it only for
+                      // a reciprocal, same-org pair. `linked_transaction_id`
+                      // alone also matches a one-way reconciliation match,
+                      // which is NOT a transfer.
+                      //
+                      // Do NOT re-split this into two signals. Driving some
+                      // affordances off the raw column and others off this one
+                      // makes a reconcile-matched row claim to be a transfer in
+                      // the amount cell, the status cell and the category
+                      // picker while claiming not to be one in the subline and
+                      // the Unlink slot.
+                      const isPairedTransfer = tx.linked_account_name != null;
+                      // Direction comes from `type`, never from which leg
+                      // survived the collapse: pair_existing_transactions and
+                      // convert_and_create_leg link arbitrary rows, so the
+                      // income leg can hold the lower id and the arrow used to
+                      // render destination → source.
+                      const [fromAcct, toAcct] = tx.type === "expense"
+                        ? [tx.account_name, tx.linked_account_name]
+                        : [tx.linked_account_name, tx.account_name];
                       const isTarget = targetTransactionId === tx.id;
                       return editingId === tx.id ? (
                         // Desktop edit mode: switched from a single 12-col row
@@ -1184,9 +1199,9 @@ function TransactionsPageContent() {
                               </select>
                             </div>
                             <div>
-                              <label htmlFor={`edit-cat-${tx.id}`} className={label}>{isTransfer ? "Transfer category" : "Category"}</label>
-                              <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} aria-describedby={isTransfer ? `edit-cat-${tx.id}-help` : undefined} id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => mutateCategories((prev) => [...(prev ?? []), cat], { revalidate: false })} />
-                              {isTransfer && (
+                              <label htmlFor={`edit-cat-${tx.id}`} className={label}>{isPairedTransfer ? "Transfer category" : "Category"}</label>
+                              <CategorySelect aria-label={isPairedTransfer ? "Transfer category" : "Category"} aria-describedby={isPairedTransfer ? `edit-cat-${tx.id}-help` : undefined} id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isPairedTransfer ? undefined : editType} typeFilter={isPairedTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => mutateCategories((prev) => [...(prev ?? []), cat], { revalidate: false })} />
+                              {isPairedTransfer && (
                                 <p id={`edit-cat-${tx.id}-help`} className="mt-1 text-xs text-text-secondary">Transfers only accept categories that work for both income and expense (for example, Transfer).</p>
                               )}
                               {categorizeAi?.entitled && !editPartner ? (
@@ -1401,13 +1416,13 @@ function TransactionsPageContent() {
                             )}
                           </span>
                           <span className="col-span-2 text-sm text-text-secondary truncate">
-                            {isTransfer && linkedTx
-                              ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
+                            {isPairedTransfer
+                              ? <>{fromAcct} &rarr; {toAcct}</>
                               : tx.account_name}
                           </span>
                           <span className="col-span-1 text-sm text-text-secondary truncate">{tx.category_name}</span>
                           <span className="tx-status-cell col-span-1 text-center">
-                            {isTransfer ? (
+                            {isPairedTransfer ? (
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
                               </span>
@@ -1431,15 +1446,15 @@ function TransactionsPageContent() {
                               </button>
                             )}
                           </span>
-                          <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
-                            {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                          <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isPairedTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                            {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                           </span>
                           <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
                             <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
-                            {!isTransfer && (
+                            {!isPairedTransfer && (
                               <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark transfer</button>
                             )}
-                            {isTransfer && (
+                            {isPairedTransfer && (
                               <button onClick={() => openUnpairModal(tx)} aria-label={`Unlink transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Unlink</button>
                             )}
                             <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
@@ -1447,7 +1462,7 @@ function TransactionsPageContent() {
                         </div>
                       );
                     })}
-                    {visibleTxs.length === 0 && (
+                    {transactions.length === 0 && (
                       <div className="px-6 py-8 text-center text-sm text-text-muted">
                         {activeAccounts.length === 0
                           ? "Create an account first."
@@ -1460,9 +1475,15 @@ function TransactionsPageContent() {
 
                   {/* Mobile card layout (below md) */}
                   <div className="md:hidden flex flex-col gap-3 p-3">
-                    {visibleTxs.map((tx) => {
-                      const isTransfer = tx.linked_transaction_id !== null;
-                      const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+                    {transactions.map((tx) => {
+                      // See the desktop renderer above: ONE mutuality-verified
+                      // transfer signal for every affordance, and direction
+                      // from `type`, not from which leg survived the
+                      // server-side collapse.
+                      const isPairedTransfer = tx.linked_account_name != null;
+                      const [fromAcct, toAcct] = tx.type === "expense"
+                        ? [tx.account_name, tx.linked_account_name]
+                        : [tx.linked_account_name, tx.account_name];
                       const isTarget = targetTransactionId === tx.id;
                       if (editingId === tx.id) {
                         return (
@@ -1501,9 +1522,9 @@ function TransactionsPageContent() {
                                 </select>
                               </div>
                               <div>
-                                <label htmlFor={`edit-cat-mobile-${tx.id}`} className={label}>{isTransfer ? "Transfer category" : "Category"}</label>
-                                <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} aria-describedby={isTransfer ? `edit-cat-mobile-${tx.id}-help` : undefined} id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => mutateCategories((prev) => [...(prev ?? []), cat], { revalidate: false })} />
-                                {isTransfer && (
+                                <label htmlFor={`edit-cat-mobile-${tx.id}`} className={label}>{isPairedTransfer ? "Transfer category" : "Category"}</label>
+                                <CategorySelect aria-label={isPairedTransfer ? "Transfer category" : "Category"} aria-describedby={isPairedTransfer ? `edit-cat-mobile-${tx.id}-help` : undefined} id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isPairedTransfer ? undefined : editType} typeFilter={isPairedTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => mutateCategories((prev) => [...(prev ?? []), cat], { revalidate: false })} />
+                                {isPairedTransfer && (
                                   <p id={`edit-cat-mobile-${tx.id}-help`} className="mt-1 text-xs text-text-secondary">Transfers only accept categories that work for both income and expense (for example, Transfer).</p>
                                 )}
                                 {categorizeAi?.entitled && !editPartner ? (
@@ -1711,7 +1732,7 @@ function TransactionsPageContent() {
                                 </div>
                               )}
                               <div className="mt-0.5 text-xs text-text-muted tabular-nums">
-                                {tx.date} · {isTransfer && linkedTx ? <>{tx.account_name} &rarr; {linkedTx.account_name}</> : tx.account_name}
+                                {tx.date} · {isPairedTransfer ? <>{fromAcct} &rarr; {toAcct}</> : tx.account_name}
                               </div>
                               {/* Settled date always surfaced on the mobile card
                                   too (effective-date consistency): the operator
@@ -1725,8 +1746,8 @@ function TransactionsPageContent() {
                                 Settled {tx.settled_date ?? "—"}
                               </div>
                             </div>
-                            <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
-                              {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                            <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isPairedTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                              {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
@@ -1739,7 +1760,7 @@ function TransactionsPageContent() {
                                 {tx.category_name}
                               </div>
                             )}
-                            {isTransfer ? (
+                            {isPairedTransfer ? (
                               <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
                               </span>
@@ -1776,7 +1797,7 @@ function TransactionsPageContent() {
                             >
                               Edit
                             </button>
-                            {!isTransfer && (
+                            {!isPairedTransfer && (
                               <button
                                 onClick={() => setMarkModalSource(tx)}
                                 aria-label={`Mark as transfer: ${tx.description}`}
@@ -1786,7 +1807,7 @@ function TransactionsPageContent() {
                                 Mark as transfer…
                               </button>
                             )}
-                            {isTransfer && (
+                            {isPairedTransfer && (
                               <button
                                 onClick={() => openUnpairModal(tx)}
                                 aria-label={`Unlink transfer: ${tx.description}`}
@@ -1808,7 +1829,7 @@ function TransactionsPageContent() {
                         </article>
                       );
                     })}
-                    {visibleTxs.length === 0 && (
+                    {transactions.length === 0 && (
                       <div className="px-4 py-8 text-center text-sm text-text-muted">
                         {activeAccounts.length === 0
                           ? "Create an account first."

@@ -78,7 +78,6 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   setPageSize: vi.fn(),
   visibleTxs: [],
   sortedVisibleTxs: [],
-  txMap: new Map(),
   dashSort: { field: "date", dir: "desc", setSort: vi.fn(), reset: vi.fn(), isDefault: true },
   toggleDashSort: vi.fn(),
   canAdd: true,

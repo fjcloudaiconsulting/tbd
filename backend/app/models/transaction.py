@@ -57,6 +57,19 @@ class Transaction(Base):
     gate CC payment-in legs with ``balance_contribution_filter`` (transaction_filters.py)
     rather than assume every ``linked_transaction_id`` is a transfer leg (the Slice-3 gotcha).
 
+    The SAME two-writer hazard governs list display. ``list_transactions``
+    (``collapse_transfers=True``, TBD-268) folds a transfer pair to one row
+    server-side, BEFORE the LIMIT, and its predicate
+    (``transaction_service._transfer_collapse_clause``) tests MUTUALITY for
+    exactly this reason: a predicate keyed only on ``id >
+    linked_transaction_id`` would suppress reconcile-matched rows as if they
+    were transfer legs. Never collapse or hide a row on the client after a
+    server LIMIT -- that reintroduces short pages, which is TBD-268 itself.
+    Accepted cost: the surviving leg is chosen by id, never by sort key, so
+    under ``sort_by=account_name`` a collapsed pair sorts under the surviving
+    leg's account. A sort-dependent survivor cannot be expressed in the count
+    query and would make paging produce gaps and duplicates.
+
     Reporting semantics: income/expense aggregates treat rows with
     ``linked_transaction_id IS NULL`` as reportable. Use
     ``app.services.transaction_filters.reportable_transaction_filter()``
