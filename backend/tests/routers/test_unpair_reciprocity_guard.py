@@ -308,6 +308,63 @@ async def test_unpair_of_a_self_linked_row_is_400_not_409(session_factory):
     assert s_row.linked_transaction_id == s
 
 
+# ── F21: the PREVIEW check, killed on its own ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_unpair_preview_check_runs_before_category_validation(session_factory):
+    """F21. Kills: the PRE-LOCK PREVIEW reciprocity check deleted, on its
+    own -- with the authoritative post-``FOR UPDATE`` check left in place.
+
+    ⚠ Why this test exists. Measured: F8 / F9 / F9b / F10 above stay fully
+    green when EITHER of the two checks is deleted; only deleting BOTH
+    turns them red. What they actually pin is "some reciprocity check
+    exists somewhere before the mutation", not the check their docstrings
+    name. This one discriminates by POSITION.
+
+    The lever is the fallback category ids: they are bogus, so
+    ``validate_category`` -- which sits BETWEEN the two checks -- refuses
+    the request first if the preview check is not there to refuse it.
+
+    * preview check present  -> 400 "Transaction is not part of a
+      transfer pair"
+    * preview check deleted  -> 400 "Invalid category" *(measured)*,
+      because category validation is now the first thing a one-way link
+      hits; the authoritative post-lock check never gets a say.
+
+    ⚠ Both outcomes are **400** -- ``validate_category`` raises
+    ``ValidationError``, not ``NotFoundError``. The discriminator is
+    therefore the DETAIL STRING, and ``assert res.json()["detail"] ==
+    NOT_A_PAIR`` is the line that kills the mutant. A ``status_code``
+    assertion alone would be vacuous here; do not "simplify" it away.
+
+    (The authoritative post-lock check has no such single-threaded fence
+    and cannot be given one -- see design §6.4.)
+    """
+    seed = await _seed(session_factory)
+    m = await _add(session_factory, seed, tx_id=9051, account_id=seed["a1_id"],
+                   tx_type=TransactionType.EXPENSE, amount="256.00")
+    t = await _add(session_factory, seed, tx_id=9052, account_id=seed["a2_id"],
+                   tx_type=TransactionType.INCOME, amount="256.00")
+    await _link(session_factory, src_id=m, dst_id=t)   # ONE-WAY
+
+    bogus_expense_cat = seed["cat_groceries_id"] + 90_001
+    bogus_income_cat = seed["cat_salary_id"] + 90_002
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            f"/api/v1/transactions/{m}/unpair",
+            json={
+                "expense_fallback_category_id": bogus_expense_cat,
+                "income_fallback_category_id": bogus_income_cat,
+            },
+        )
+
+    assert res.status_code == 400, res.text
+    assert res.json()["detail"] == NOT_A_PAIR
+
+
 # ── The guard must not be too strict ────────────────────────────────────────
 
 
