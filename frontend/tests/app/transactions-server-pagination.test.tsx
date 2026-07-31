@@ -661,9 +661,19 @@ describe("TransactionsPage — transfer collapse (TBD-268)", () => {
     // 2. A status TOGGLE, not a static badge — one per renderer.
     expect(screen.getAllByRole("button", { name: "Mark as pending" })).toHaveLength(2);
 
-    // 3. "Mark transfer" offered — one per renderer (the labels differ in
-    //    text but share the aria-label).
-    expect(screen.getAllByRole("button", { name: /Mark as transfer: Row 42/i })).toHaveLength(2);
+    // 3. TBD-289 SUPERSEDES the original assertion here, which required
+    //    "Mark transfer" to be offered on this row (2 buttons) as part of
+    //    "renders as an ordinary transaction". The row does render as an
+    //    ordinary transaction in every respect asserted above — but it is
+    //    still LINKED, and `transaction_service._link_pair` invariant 7
+    //    refuses it with "Expense leg is already linked". Offering the action
+    //    was offering a guaranteed failure, so it is now suppressed in BOTH
+    //    renderers, and the row instead states the fact quietly and
+    //    non-interactively. Full coverage of the new behaviour lives in
+    //    tests/app/transactions-matched-row-affordances.test.tsx.
+    expect(screen.queryAllByRole("button", { name: /Mark as transfer: Row 42/i })).toHaveLength(0);
+    expect(screen.getByTestId("matched-badge-42")).toBeInTheDocument();
+    expect(screen.getByTestId("matched-badge-mobile-42")).toBeInTheDocument();
 
     // 4. Edit mode labels the picker "Category", and does not constrain it to
     //    both-only transfer categories.
