@@ -1134,16 +1134,36 @@ function TransactionsPageContent() {
                       // that decides whether a row RENDERS AS a transfer (arrow
                       // subline, brass amount, transfer category picker, Unlink).
                       // This second flag decides something different and must
-                      // not be folded into it: whether the row is linked AT ALL.
+                      // not be folded into it: whether the row is linked AT ALL
+                      // without being a mutually-linked transfer.
                       //
-                      // A reconcile-matched row (reconciliation_service.
-                      // _apply_match writes `linked_transaction_id` ONE-WAY, so
-                      // `linked_account_name` stays null) is not a transfer, but
-                      // it is linked. `transaction_service._link_pair` invariant
-                      // 7 rejects it with "Expense leg is already linked", so
-                      // offering "Mark transfer" on it is an affordance the
-                      // server always refuses. Gate the offer on link-ness, not
-                      // on transfer-ness.
+                      // The name is a SHORTHAND, not a claim. Read it as "linked
+                      // but not reciprocally". The one-way reconciliation match
+                      // (reconciliation_service._apply_match writes
+                      // `linked_transaction_id` on one leg only, so
+                      // `linked_account_name` stays null) is the common producer
+                      // but NOT the only one: a self-linked row (linked == id,
+                      // corrupt but real), a cross-org link, and a chain A->B->C
+                      // where the partner links onward all land here too. None of
+                      // those was touched by reconciliation, so the UI copy must
+                      // never say reconciliation caused it.
+                      //
+                      // Whatever the cause, `transaction_service._link_pair`
+                      // invariant 7 rejects the row with "Expense leg is already
+                      // linked", so offering "Mark transfer" on it is an
+                      // affordance the server always refuses. Gate the offer on
+                      // link-ness, not on transfer-ness.
+                      //
+                      // TRAP: this flag is only sound because every row here comes
+                      // from list_transactions(collapse_transfers=true), the one
+                      // caller that eager-loads Transaction.linked_transaction.
+                      // transaction_service._load_opts() omits that selectinload,
+                      // so GET /transactions/{id} and PUT responses carry
+                      // linked_account_name: null even for a GENUINE transfer leg.
+                      // Splicing such a single-row response into `transactions`
+                      // would stamp a false "Matched" badge on both legs of a real
+                      // transfer. Today only `recurring_id` is spliced, so it is
+                      // safe; widen that splice and this flag breaks first.
                       const isReconcileMatched =
                         tx.linked_transaction_id != null && !isPairedTransfer;
                       // Direction comes from `type`, never from which leg
@@ -1430,22 +1450,37 @@ function TransactionsPageContent() {
                                 ))}
                               </span>
                             )}
-                            {/* TBD-289: a reconcile-matched row otherwise reads
-                                as an ordinary transaction with no hint that it
-                                is attached to another one — which is also why
+                            {/* TBD-289: a linked-but-not-reciprocal row otherwise
+                                reads as an ordinary transaction with no hint that
+                                it is attached to another one — which is also why
                                 "Mark transfer" looked available. Quiet, neutral,
-                                and deliberately NON-interactive: what a matched
-                                row should let a user *do* is a combined ruling
-                                with TBD-292/TBD-295, so this states the fact and
-                                offers no action or link target. */}
+                                and deliberately NON-interactive: what such a row
+                                should let a user *do* is a combined ruling with
+                                TBD-292/TBD-295, so this states the fact and
+                                offers no action or link target.
+
+                                The copy says only what the flag knows. Naming
+                                reconciliation here would be false on a
+                                self-linked, cross-org or chained row (see
+                                `isReconcileMatched` above).
+
+                                `title` on a bare <span> is not an accessible
+                                name: most screen readers never announce it, it
+                                never appears on touch, and the span is not
+                                focusable so no keyboard path reaches it. The
+                                sr-only text carries the same sentence into the
+                                accessibility tree (PRODUCT.md WCAG 2.2 AA),
+                                matching MarkerChip in
+                                settings/organization/periods. */}
                             {isReconcileMatched && (
                               <span className="mt-0.5">
                                 <span
                                   className={badgeNeutral}
                                   data-testid={`matched-badge-${tx.id}`}
-                                  title="Matched to another transaction during reconciliation."
+                                  title="Linked to another transaction."
                                 >
                                   Matched
+                                  <span className="sr-only">: linked to another transaction</span>
                                 </span>
                               </span>
                             )}
@@ -1517,9 +1552,14 @@ function TransactionsPageContent() {
                       // server-side collapse.
                       const isPairedTransfer = tx.linked_account_name != null;
                       // See the desktop renderer: separate flag, separate
-                      // question. Linked-at-all (TBD-289) gates the "Mark
-                      // transfer" offer the server always refuses; transfer-ness
-                      // still gates every transfer *rendering*.
+                      // question. Linked-but-not-reciprocally (TBD-289) gates the
+                      // "Mark transfer" offer the server always refuses;
+                      // transfer-ness still gates every transfer *rendering*.
+                      // The name is shorthand — reconciliation is the common
+                      // producer, not the only one — and the flag depends on
+                      // list_transactions eager-loading linked_transaction, which
+                      // _load_opts() does not. Both traps are written out in full
+                      // above the desktop definition.
                       const isReconcileMatched =
                         tx.linked_transaction_id != null && !isPairedTransfer;
                       const [fromAcct, toAcct] = tx.type === "expense"
@@ -1788,15 +1828,18 @@ function TransactionsPageContent() {
                               </div>
                               {/* TBD-289: mobile twin of the desktop matched
                                   indicator. Quiet, non-interactive, no link
-                                  target. */}
+                                  target. `title` is dead weight on touch, so the
+                                  sr-only text is the only path the explanation
+                                  has to a screen-reader user here. */}
                               {isReconcileMatched && (
                                 <div className="mt-1">
                                   <span
                                     className={badgeNeutral}
                                     data-testid={`matched-badge-mobile-${tx.id}`}
-                                    title="Matched to another transaction during reconciliation."
+                                    title="Linked to another transaction."
                                   >
                                     Matched
+                                    <span className="sr-only">: linked to another transaction</span>
                                   </span>
                                 </div>
                               )}

@@ -32,6 +32,18 @@
  * "Matched" indicator (kills shipping only the button-hiding half), and that
  * indicator is NOT a button or a link (kills "make it clickable", which is the
  * deferred TBD-292/295 question).
+ *
+ * And two fences on the WORDS, not the mechanism:
+ *
+ *  - The copy never says "reconciliation". `isReconcileMatched` is shorthand
+ *    for "linked but not reciprocally", which is equally true of a self-linked
+ *    row, a cross-org link and a chain A->B->C. Kills copy that asserts a cause
+ *    the flag cannot know.
+ *  - The explanation is in the accessibility tree, not only in `title`. A bare
+ *    <span>'s `title` is not an accessible name: screen readers largely skip
+ *    it, touch never shows it, and the span is not focusable. Kills shipping
+ *    the explanation where the users who most need it cannot reach it
+ *    (PRODUCT.md WCAG 2.2 AA).
  */
 import React from "react";
 import { render, screen } from "@testing-library/react";
@@ -221,7 +233,19 @@ describe("TBD-289 — reconcile-matched row affordances", () => {
     const mobileBadge = screen.getByTestId(`matched-badge-mobile-${MATCHED.id}`);
 
     for (const badge of [desktopBadge, mobileBadge]) {
-      expect(badge.textContent).toBe("Matched");
+      expect(badge.textContent).toContain("Matched");
+      // The copy must not name reconciliation: the flag is "linked but not
+      // reciprocally", which is also true of a self-linked, cross-org or
+      // chained row that reconciliation never touched.
+      expect(badge.getAttribute("title")).toBe("Linked to another transaction.");
+      expect(badge.textContent).not.toMatch(/reconcil/i);
+      expect(badge.getAttribute("title")).not.toMatch(/reconcil/i);
+      // WCAG 2.2 AA: `title` on a bare <span> has no accessible name — screen
+      // readers largely skip it, touch never shows it, and the span is not
+      // focusable. The explanation must reach the accessibility tree by text.
+      const srOnly = badge.querySelector(".sr-only");
+      expect(srOnly).not.toBeNull();
+      expect(srOnly?.textContent).toMatch(/linked to another transaction/i);
       // Non-interactive: not a button, not a link, no click handler surface.
       // This is the fence on the DEFERRED half of the ticket — a matched row
       // must not grow an action or a navigation target here.
@@ -261,8 +285,16 @@ describe("TBD-289 — reconcile-matched row affordances", () => {
     expect(unlinkButtons(TRANSFER_LEG.description)).toHaveLength(2);
     // Still renders the transfer subline (source -> destination), i.e. the
     // transfer signal was not collateral damage of the new flag.
-    expect(screen.getAllByText(/Checking A/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Savings B/).length).toBeGreaterThan(0);
+    //
+    // Match the COMBINED string, not each name on its own: every account is
+    // rendered unconditionally as an <option> in the account filter, so
+    // /Checking A/ and /Savings B/ both pass with the subline deleted. Only the
+    // arrow form is unique to the subline (same shape as the sibling fence in
+    // transactions-server-pagination.test.tsx).
+    expect(
+      screen.getAllByText(/Checking A\s*→\s*Savings B/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText(/Savings B\s*→\s*Checking A/)).toBeNull();
     // A transfer is NOT "matched" — it already says what it is. This kills
     // over-broadening the new flag to a bare `linked_transaction_id != null`.
     expect(screen.queryByTestId(`matched-badge-${TRANSFER_LEG.id}`)).toBeNull();
