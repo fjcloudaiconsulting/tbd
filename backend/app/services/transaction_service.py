@@ -879,8 +879,14 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
     # the link points at -- possibly an unrelated canonical row that
     # ``_apply_match`` matched this row against. ``pair_partner`` is the
     # partner only when the link is MUTUAL, i.e. a real transfer leg.
-    # Collapsing the two names is exactly how this bug returns: the cascade
-    # keys off pairhood, the balance predicate keys off the raw link.
+    #
+    # Only ``pair_partner`` may drive the CASCADE. The balance predicate asks
+    # a different question and needs the RAW link -- and it needs it PER ROW,
+    # so ``to_revert`` below re-resolves each row's own partner out of
+    # ``rows`` rather than reusing ``raw_partner``. ``raw_partner`` is
+    # ``tx``'s partner and nobody else's; reusing it would gate the partner
+    # leg's revert on ``tx``'s link. Collapsing the two names back into one
+    # is exactly how this bug returns.
     raw_partner = (
         rows.get(tx.linked_transaction_id)
         if tx.linked_transaction_id is not None
@@ -996,7 +1002,14 @@ async def bulk_delete_transactions(
     # Track E (architect override): manual balance adjustment rows are
     # immutable, but bulk delete skips them silently rather than aborting the
     # whole batch. Their IDs land in skipped_ids so the caller can surface
-    # "N rows skipped" in the UI.
+    # "N rows skipped" in the UI. That skip applies to REQUESTED rows only:
+    # the cascaded partner is NOT adjustment-filtered, matching
+    # ``delete_transaction``, which has no such filter either. An adjustment
+    # can never BE a reciprocal partner anyway -- ``adjust_account_balance``
+    # creates them unlinked and ``convert_and_create_leg`` refuses them -- so
+    # a filter there would be dead code no test can kill, which is the same
+    # ground on which §3.1 rejected the dead org/self clauses in the frozen
+    # SQL filter.
     delete_set: dict[int, Transaction] = {}
     skipped_adjustments: list[int] = []
     for rid in requested:
@@ -1012,7 +1025,7 @@ async def bulk_delete_transactions(
             if row.linked_transaction_id is not None
             else None
         )
-        if is_reciprocal_pair(row, partner) and not partner.is_manual_adjustment:
+        if is_reciprocal_pair(row, partner):
             delete_set[partner.id] = partner
     skipped_ids.extend(skipped_adjustments)
 
@@ -1656,7 +1669,11 @@ async def unpair_transactions(
     if not is_reciprocal_pair(preview, preview_partner):
         raise ValidationError("Transaction is not part of a transfer pair")
 
-    # Validate fallback categories upfront (raises NotFoundError on miss).
+    # Validate fallback categories upfront. NOTE: ``validate_category`` raises
+    # ValidationError ("Invalid category") -> 400, NOT NotFoundError -> 404 as
+    # this comment used to claim. F21 turns on that distinction: it separates
+    # the preview reciprocity check from category validation by DETAIL STRING,
+    # because both refusals are 400.
     await validate_category(db, expense_fallback_category_id, org_id)
     await validate_category(db, income_fallback_category_id, org_id)
 
