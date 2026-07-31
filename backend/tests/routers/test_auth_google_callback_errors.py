@@ -903,14 +903,58 @@ async def test_non_timeout_exception_is_not_swallowed_by_the_timeout_clause(
 # valid without being re-derived.
 
 
+# Comfortably past CPython's nesting limit, which is a C-stack check
+# and therefore not a fixed number. ~40 KB of brackets.
+_JSON_NEST_DEPTH = 20_000
+
+
 def _json_decode_error() -> ValueError:
     """The exact exception httpx raises for a 200 carrying HTML.
 
     ``Response.json()`` is ``json.loads(self.content)``, so a body that
     is not JSON surfaces as ``json.JSONDecodeError`` — a ``ValueError``
-    subclass, which is what the helper's narrow ``except`` catches.
+    subclass, which is what the helper's ``except`` catches.
+
+    Called *per test*, never once at import. A parametrize table is
+    built at collection time, so an instance placed directly in the
+    table is one object shared by every test in it, re-raised as many
+    times as there are legs. Exceptions are mutable — ``__traceback__``
+    accumulates on each raise — so a shared instance couples tests that
+    are meant to be independent.
     """
     return json.JSONDecodeError("Expecting value", "<html>not json</html>", 0)
+
+
+def _recursion_error() -> RecursionError:
+    """A REAL ``RecursionError`` out of ``json.loads``.
+
+    Produced by decoding a deeply nested body, never by constructing
+    the class. The claim under test is a claim about what
+    ``json.loads`` does with a hostile body; a hand-built instance
+    would prove only that the ``except`` tuple lists the name.
+
+    ``RecursionError`` derives from ``RuntimeError``, *not* from
+    ``ValueError``. TBD-267 shipped the opposite claim ("the only
+    body-dependent failures are ``JSONDecodeError`` and
+    ``UnicodeDecodeError``, both ``ValueError``") in three places, so
+    ``except ValueError`` let this escape ``_google_json_object`` and
+    land as the bare 500 with no audit row that the change exists to
+    remove.
+
+    The raise is asserted here rather than assumed from the depth:
+    CPython's limit is a C-stack check, so a depth that quietly stopped
+    tripping it would turn every fence built on this factory into a
+    silent pass.
+    """
+    body = "[" * _JSON_NEST_DEPTH + "]" * _JSON_NEST_DEPTH
+    try:
+        json.loads(body)
+    except RecursionError as exc:
+        return exc
+    raise AssertionError(
+        f"json.loads did not recurse at depth {_JSON_NEST_DEPTH}: "
+        "raise the depth, or every fence using this factory is vacuous"
+    )
 
 
 def test_google_json_object_propagates_a_programmer_error() -> None:
@@ -928,20 +972,62 @@ def test_google_json_object_propagates_a_programmer_error() -> None:
     L5/S5 exist to prevent, relocated one frame deeper where they
     cannot see it.
 
-    ``ValueError`` and nothing wider is the correct width: the only
-    body-dependent failures of ``json.loads`` are ``JSONDecodeError``
-    and ``UnicodeDecodeError``, both ``ValueError``. Anything else out
-    of ``.json()`` is our bug and must keep propagating.
+    ``(ValueError, RecursionError)`` and nothing wider is the correct
+    width. TBD-267's original justification for ``ValueError`` alone —
+    "the only body-dependent failures of ``json.loads`` are
+    ``JSONDecodeError`` and ``UnicodeDecodeError``, both
+    ``ValueError``" — was false: a deeply nested body raises
+    ``RecursionError``, a ``RuntimeError`` subclass. See U4, which
+    proves it by decoding rather than by assertion. Those three are the
+    complete body-dependent set; anything else out of ``.json()`` is
+    our bug and must keep propagating.
     """
     resp = _FakeResponse(200, json_exc=_ProgrammerBug("not a decode failure"))
     with pytest.raises(_ProgrammerBug):
         auth_module._google_json_object(resp)
 
 
+def test_google_json_object_absorbs_a_real_recursion_error() -> None:
+    """U4. The *lower* bound of the helper's ``except``, at its second name.
+
+    *Kills:* narrowing the clause back to ``except ValueError``.
+
+    Two claims, both executable, in order. First that ``json.loads``
+    really does answer a deeply nested body with ``RecursionError``
+    rather than any ``ValueError`` — the premise TBD-267 got wrong.
+    Then that the helper absorbs it into the ``None`` sentinel like
+    every other unusable body, instead of letting it escape to the
+    browser as a bare 500 with no audit row.
+
+    ``.json()`` here performs a genuine decode. Stubbing a
+    pre-built exception instance would fence the ``except`` tuple but
+    not the claim about ``json.loads`` that the tuple's width rests on,
+    and that claim is exactly what was wrong.
+    """
+
+    class _RealDecodeResponse:
+        """``json()`` that decodes for real, the way httpx's does."""
+
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def json(self) -> Any:
+            return json.loads(self._text)
+
+    body = "[" * _JSON_NEST_DEPTH + "]" * _JSON_NEST_DEPTH
+    with pytest.raises(RecursionError) as caught:
+        json.loads(body)
+    # Not a ValueError. The whole defect in one assertion.
+    assert not isinstance(caught.value, ValueError)
+
+    assert auth_module._google_json_object(_RealDecodeResponse(body)) is None
+
+
 @pytest.mark.parametrize(
-    "payload, json_exc, expected",
+    "payload, json_exc_factory, expected",
     [
-        (None, _json_decode_error(), None),
+        (None, _json_decode_error, None),
+        (None, _recursion_error, None),
         ([], None, None),
         (["a", "b"], None, None),
         ("a string", None, None),
@@ -951,6 +1037,7 @@ def test_google_json_object_propagates_a_programmer_error() -> None:
     ],
     ids=[
         "decode-error",
+        "recursion-error",
         "empty-list",
         "list",
         "string",
@@ -960,7 +1047,7 @@ def test_google_json_object_propagates_a_programmer_error() -> None:
     ],
 )
 def test_google_json_object_returns_none_for_every_non_object_body(
-    payload: Any, json_exc: BaseException | None, expected: Any
+    payload: Any, json_exc_factory: Any, expected: Any
 ) -> None:
     """U2. The helper's contract: a dict, or ``None``. Never anything else.
 
@@ -985,7 +1072,12 @@ def test_google_json_object_returns_none_for_every_non_object_body(
     ``{}`` is deliberately in the table as a *pass-through*: an empty
     JSON object is still an object, and must come back as itself rather
     than collapsing into the ``None`` sentinel.
+
+    The exception legs are *factories*, called here rather than in the
+    table, so each leg raises its own instance — see
+    ``_json_decode_error``.
     """
+    json_exc = json_exc_factory() if json_exc_factory is not None else None
     resp = _FakeResponse(200, payload, json_exc=json_exc)
     result = auth_module._google_json_object(resp)
     if expected is None:
@@ -1017,10 +1109,18 @@ def test_google_token_body_detail_never_leaks_a_credential() -> None:
     contract: RFC 6749 §5.2 defines it as a fixed enum of failure
     codes. It is truncated anyway, because "Google's field is
     documented as short" is not a bound we control.
+
+    The first fixture carries an *empty* ``access_token``, not a usable
+    one. As shipped it read ``"access_token": "s"`` — a perfectly good
+    ASCII token — and asserted ``no_access_token``, which described a
+    state the helper can never see in production: it is only ever
+    called after the guard rejected the token, and the guard accepts
+    ``"s"``. The empty string is the real shape that reaches here with
+    other credentials still live alongside it.
     """
     detail = auth_module._google_token_body_detail(
         {
-            "access_token": "s",
+            "access_token": "",
             "refresh_token": "r",
             "id_token": "i",
             "error": "invalid_grant",
@@ -1030,6 +1130,30 @@ def test_google_token_body_detail_never_leaks_a_credential() -> None:
     assert "refresh_token" not in detail
     assert "access_token" not in detail
     assert "id_token" not in detail
+
+    # A token that is *present* but of the wrong JSON type gets its own
+    # shape word. Both of these used to report ``no_access_token``,
+    # which tells an operator Google returned no token when it returned
+    # one — the wrong first move, and unfalsifiable from the audit row.
+    assert auth_module._google_token_body_detail(
+        {"access_token": {"nested": 1}}
+    ) == {"body": "bad_access_token_type"}
+    assert auth_module._google_token_body_detail({"access_token": 12345}) == {
+        "body": "bad_access_token_type"
+    }
+    assert auth_module._google_token_body_detail({"access_token": ["a"]}) == {
+        "body": "bad_access_token_type"
+    }
+    # ``null`` is absence, not a type error: JSON has no other way to
+    # spell "the field is not set".
+    assert auth_module._google_token_body_detail({"access_token": None}) == {
+        "body": "no_access_token"
+    }
+    # And the wrong-type word must not carry the value either.
+    leaky = auth_module._google_token_body_detail(
+        {"access_token": {"SENTINEL": "CREDENTIAL"}}
+    )
+    assert "SENTINEL" not in str(leaky)
 
     long = auth_module._google_token_body_detail({"error": "x" * 5000})
     assert long["google_error"] == "x" * 64
@@ -1048,8 +1172,38 @@ def test_google_token_body_detail_never_leaks_a_credential() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "token_payload, expected_detail",
+    [
+        (
+            {"error": "invalid_grant", "error_description": "Bad Request"},
+            {
+                "reason": "token_payload",
+                "body": "no_access_token",
+                "google_error": "invalid_grant",
+            },
+        ),
+        (
+            {"access_token": ""},
+            {"reason": "token_payload", "body": "no_access_token"},
+        ),
+        (
+            {"access_token": 12345},
+            {"reason": "token_payload", "body": "bad_access_token_type"},
+        ),
+        (
+            {"access_token": {"nested": 1}},
+            {"reason": "token_payload", "body": "bad_access_token_type"},
+        ),
+    ],
+    ids=["oauth-error-body", "empty-token", "number-token", "object-token"],
+)
 async def test_token_200_without_access_token_redirects_and_audits(
-    session_factory, google_config, monkeypatch
+    session_factory,
+    google_config,
+    monkeypatch,
+    token_payload: dict[str, Any],
+    expected_detail: dict[str, Any],
 ) -> None:
     """L6. Google answered 200 with an OAuth2 error body, no token.
 
@@ -1067,15 +1221,22 @@ async def test_token_200_without_access_token_redirects_and_audits(
     free text from Google and is deliberately *not* carried, unlike the
     provider-error branch above, which carries it because there is no
     token body in play there.
+
+    Three legs beyond the original OAuth-error body, each pinning a leg
+    of the guard predicate that no test reached:
+
+    - ``""`` — the ``not access_token`` term. An implementation
+      dropping it accepts an empty bearer token and sends
+      ``Authorization: Bearer `` to Google.
+    - ``12345`` / ``{"nested": 1}`` — the ``isinstance`` term, and the
+      ``bad_access_token_type`` shape word. Both used to report
+      ``no_access_token``: an operator reading /admin/audit was told
+      Google returned no token when Google returned one of the wrong
+      type, which points the investigation at credentials instead of at
+      whatever is rewriting the body.
     """
     monkeypatch.setattr(app_settings, "auth_debug_logging", False)
-    _patch_httpx(
-        monkeypatch,
-        token_payload={
-            "error": "invalid_grant",
-            "error_description": "Bad Request",
-        },
-    )
+    _patch_httpx(monkeypatch, token_payload=token_payload)
 
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -1094,35 +1255,39 @@ async def test_token_200_without_access_token_redirects_and_audits(
     assert rows[0].outcome.value == "failure"
     assert rows[0].actor_user_id is None
     assert rows[0].actor_email == ""
-    assert rows[0].detail == {
-        "reason": "token_payload",
-        "body": "no_access_token",
-        "google_error": "invalid_grant",
-    }
+    assert rows[0].detail == expected_detail
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "kwargs",
+    "kwargs_factory",
     [
-        {"token_payload": []},
-        {"token_json_exc": _json_decode_error()},
+        lambda: {"token_payload": []},
+        lambda: {"token_json_exc": _json_decode_error()},
+        lambda: {"token_json_exc": _recursion_error()},
     ],
-    ids=["json-array", "not-json-at-all"],
+    ids=["json-array", "not-json-at-all", "recursion"],
 )
 async def test_token_200_with_a_non_object_body_redirects_and_audits(
-    session_factory, google_config, monkeypatch, kwargs: dict[str, Any]
+    session_factory, google_config, monkeypatch, kwargs_factory
 ) -> None:
     """L7. The 200 whose body is not a JSON object at all.
 
-    Two real shapes, one branch: a JSON array (a proxy or WAF
-    substituting its own payload) and a body that does not decode as
-    JSON at all (an HTML interstitial served with a 200, which is what
-    a captive portal or a misrouted CDN does).
+    Three real shapes, one branch: a JSON array (a proxy or WAF
+    substituting its own payload), a body that does not decode as JSON
+    at all (an HTML interstitial served with a 200, which is what a
+    captive portal or a misrouted CDN does), and a body nested deeply
+    enough that the decoder itself gives up.
 
     Pre-fix the first raised ``TypeError`` on the string subscript and
     the second raised ``JSONDecodeError`` out of ``.json()`` — different
     exceptions, same bare 500, same missing audit row.
+
+    The ``recursion`` leg is the one TBD-267 shipped *without* closing.
+    ``except ValueError`` does not catch ``RecursionError``, so the
+    exchange died exactly as it did before the change: no row, platform
+    splash. About 40 KB of ``[`` is the whole attack. See
+    ``_recursion_error``.
 
     ``detail`` is asserted EXACT and must carry no ``google_error``
     key: there is no object to read an ``error`` field off, and
@@ -1130,7 +1295,7 @@ async def test_token_200_with_a_non_object_body_redirects_and_audits(
     provider-reported OAuth failure in /admin/audit.
     """
     monkeypatch.setattr(app_settings, "auth_debug_logging", False)
-    _patch_httpx(monkeypatch, **kwargs)
+    _patch_httpx(monkeypatch, **kwargs_factory())
 
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -1150,8 +1315,17 @@ async def test_token_200_with_a_non_object_body_redirects_and_audits(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs_factory",
+    [
+        lambda: {"userinfo_payload": ["not", "a", "dict"]},
+        lambda: {"userinfo_json_exc": _json_decode_error()},
+        lambda: {"userinfo_json_exc": _recursion_error()},
+    ],
+    ids=["json-array", "not-json-at-all", "recursion"],
+)
 async def test_userinfo_200_with_a_non_object_body_redirects_and_audits(
-    session_factory, google_config, monkeypatch
+    session_factory, google_config, monkeypatch, kwargs_factory
 ) -> None:
     """L8. The half of the defect no ``except`` clause could reach.
 
@@ -1171,9 +1345,100 @@ async def test_userinfo_200_with_a_non_object_body_redirects_and_audits(
 
     ``actor_email`` stays ``""``: the whole point of this branch is
     that we never got a readable email, so there is nothing to attach.
+
+    Two legs beyond the JSON array pin the *decode* half of this
+    branch, which had no coverage at all: ``userinfo_json_exc`` was
+    plumbed through the harness and passed by no test, so an
+    implementation that called ``userinfo_resp.json()`` raw and only
+    ``isinstance``-checked the result passed the whole suite while
+    still 500ing on an HTML interstitial. The ``recursion`` leg is the
+    ``RecursionError`` TBD-267's ``except ValueError`` misses.
+
+    The warning is asserted here, not just the redirect and the row.
+    L10 covers the token phase exclusively, so the userinfo
+    ``_LOGGER.warning`` at this site was deletable with the suite
+    green — which contradicts the change's own rationale that the
+    warning is the only production signal left once a 5xx becomes a
+    quiet 307. The field set is exact for the same reason it is exact
+    in L10: structured-log fields are the emitter's contract.
     """
     monkeypatch.setattr(app_settings, "auth_debug_logging", False)
-    _patch_httpx(monkeypatch, userinfo_payload=["not", "a", "dict"])
+    _patch_httpx(monkeypatch, **kwargs_factory())
+
+    app = _make_app(session_factory)
+    with patch.object(auth_module, "_LOGGER") as logger_mock:
+        with TestClient(app) as client:
+            client.cookies.set("oauth_state", "matching-state")
+            res = client.get(
+                "/api/v1/auth/google/callback",
+                params={"code": "dummy", "state": "matching-state"},
+                follow_redirects=False,
+            )
+
+    assert res.status_code == 307, res.text
+    assert res.headers.get("location") == "http://localhost/login?sso_error=userinfo"
+
+    calls = _invalid_payload_warnings(logger_mock)
+    assert len(calls) == 1, calls
+    fields = calls[0]
+    assert "extra" not in fields, fields
+    assert set(fields) == {"flow", "phase", "body"}, fields
+    assert fields["flow"] == "login"
+    assert fields["phase"] == "userinfo"
+    assert fields["body"] == "not_object"
+
+    rows = await _callback_failure_rows(session_factory)
+    assert len(rows) == 1, rows
+    assert rows[0].actor_email == ""
+    assert rows[0].detail == {"reason": "userinfo_payload", "body": "not_object"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_email",
+    [None, ["alice@acme.io"], 12345, {"address": "alice@acme.io"}, True],
+    ids=["null", "list", "number", "object", "bool"],
+)
+async def test_non_string_email_lands_on_the_no_email_branch(
+    session_factory, google_config, monkeypatch, bad_email: Any
+) -> None:
+    """L12. The shape guard validates the container, not the fields.
+
+    *Kills:* reading the email back as ``google_user.get("email", "")``.
+
+    ``_google_json_object`` proves the userinfo body is a dict. It says
+    nothing about what is *in* the dict, and ``.get(key, default)``
+    substitutes the default only for a **missing key** — never for an
+    explicit ``null``, a list or a number. Each of those reached
+    ``normalize_email(...).strip()`` on the main line, outside every
+    ``try``, and raised ``AttributeError``: bare 500, no audit row, the
+    platform splash. Which is the same failure TBD-267 was written to
+    remove, one level down, on a body that passes its new guard.
+
+    ``null`` is the shape that matters most. It is what an OIDC
+    provider emits for a claim it has but cannot populate, and it is
+    also the one this site handles *worse* than the step-up site, which
+    already wrote ``(google_user.get("email") or "")``.
+
+    The landing spot is deliberately the **existing** ``no_email``
+    branch rather than a new audit reason. An operator's move is
+    identical either way — the user's Google account gave us no usable
+    address — and a second vocabulary word for it would be one more
+    string to grep with no different remediation behind it.
+
+    No user row may be created: an account keyed on a coerced empty
+    email would be an authentication defect, not a cosmetic one.
+    """
+    monkeypatch.setattr(app_settings, "auth_debug_logging", False)
+    _patch_httpx(
+        monkeypatch,
+        userinfo_payload={
+            "email": bad_email,
+            "verified_email": True,
+            "given_name": "N",
+            "family_name": "E",
+        },
+    )
 
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -1185,12 +1450,96 @@ async def test_userinfo_200_with_a_non_object_body_redirects_and_audits(
         )
 
     assert res.status_code == 307, res.text
-    assert res.headers.get("location") == "http://localhost/login?sso_error=userinfo"
+    assert res.headers.get("location") == "http://localhost/login?sso_error=no_email"
 
     rows = await _callback_failure_rows(session_factory)
     assert len(rows) == 1, rows
+    assert rows[0].detail == {"reason": "no_email"}
     assert rows[0].actor_email == ""
-    assert rows[0].detail == {"reason": "userinfo_payload", "body": "not_object"}
+
+    async with session_factory() as db:
+        assert (await db.scalars(select(User))).all() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True], ids=["new-user", "existing-user"])
+async def test_non_string_profile_fields_do_not_break_the_callback(
+    session_factory, google_config, monkeypatch, existing: bool
+) -> None:
+    """L13. L12's siblings: the *optional* userinfo fields.
+
+    *Kills:* reading ``given_name`` / ``family_name`` / ``picture``
+    straight off the validated dict.
+
+    Three more uncaught 500s lived past the new shape guard, all after
+    the ``try``, all reachable with a body that is a perfectly good
+    JSON object:
+
+    - ``given_name: 99`` → ``TypeError: sequence item 0: expected str
+      instance, int found``, inside ``_suggest_username``'s
+      ``" ".join(parts)``.
+    - ``picture: 12345`` → ``TypeError: object of type 'int' has no
+      len()`` inside ``_safe_avatar_url``.
+    - ``picture: {"url": "x"}`` is the worst of the three. A dict has a
+      ``len()`` of 1, so it passes ``_safe_avatar_url`` *unchanged*, is
+      assigned to ``user.avatar_url``, and dies at ``commit`` with
+      ``ProgrammingError: type 'dict' is not supported`` — after ORM
+      state has already been mutated.
+
+    None of these is a *failure*: a display name or an avatar that
+    arrives wrong-typed is a missing optional field. So the assertion
+    is that the callback **succeeds** with the field dropped, and emits
+    no audit row. Adding a reason here would turn a cosmetic gap into a
+    blocked sign-in.
+
+    Both branches are driven because they read the fields at different
+    places: the existing-user branch backfills onto a live ORM object
+    (the ``commit`` crash above), the new-user branch feeds
+    ``_suggest_username`` and the ``User(...)`` constructor. A fix
+    applied to one and not the other passes half of this test.
+    """
+    await _seed_default_plan(session_factory)
+    if existing:
+        await _seed_user(session_factory, email="alice@acme.io", username="alice")
+    _patch_httpx(
+        monkeypatch,
+        userinfo_payload={
+            "email": "alice@acme.io",
+            "verified_email": True,
+            "given_name": 99,
+            "family_name": 100,
+            "picture": {"url": "https://example.test/a.png"},
+        },
+    )
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        client.cookies.set("oauth_state", "matching-state")
+        res = client.get(
+            "/api/v1/auth/google/callback",
+            params={"code": "dummy", "state": "matching-state"},
+            follow_redirects=False,
+        )
+
+    assert res.status_code == 302, res.text
+    assert res.headers.get("location", "").startswith(
+        "http://localhost/auth/google/callback#token="
+    ), res.headers.get("location")
+
+    assert await _callback_failure_rows(session_factory) == []
+
+    async with session_factory() as db:
+        user = await db.scalar(select(User).where(User.email == "alice@acme.io"))
+        assert user is not None
+        # Dropped, never coerced to the repr of a number or a dict.
+        assert not user.first_name, user.first_name
+        assert not user.last_name, user.last_name
+        assert user.avatar_url is None, user.avatar_url
+        if not existing:
+            # ``_suggest_username`` found no usable name parts and fell
+            # through to the email local part, which is its documented
+            # behaviour for a nameless Google account.
+            assert user.username == "alice"
 
 
 @pytest.mark.asyncio
