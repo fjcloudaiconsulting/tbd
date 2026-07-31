@@ -314,11 +314,35 @@ async def test_matching_an_imported_row_against_a_real_transfer_leg_succeeds(db_
 async def test_target_guard_fires_before_the_write(db_session):
     """F14. Kills: the guard placed AFTER ``tx.linked_transaction_id = ...``.
 
-    This has to be a DIRECT unit test on ``_apply_match``. An API-level
-    test cannot kill it: ``reconcile_request`` wraps the loop in a
-    savepoint that rolls the write back either way, so the persisted
-    state is identical whether the guard ran before or after the write.
-    Only the IN-MEMORY instance discriminates.
+    ⚠ CORRECTED. This used to claim flatly that "an API-level test cannot
+    kill it", because ``reconcile_request`` wraps the loop in a savepoint
+    that rolls the write back either way, leaving the PERSISTED state
+    identical. The persisted-state argument is sound; the flat claim was
+    not. DO NOT DELETE F14 AS REDUNDANT on the strength of that.
+
+    *(measured)* Hoisting the write above both guards turns THREE tests
+    red, and only one of the three reds is about this mutant:
+
+    * ``test_target_guard_fires_before_the_write`` (this test) -- red on
+      its own assertion, ``b.linked_transaction_id is None``. The only
+      SEMANTIC red for the guard-1-after-write mutant.
+    * ``test_matching_back_onto_an_already_matched_partner_is_refused``
+      (F11, API-level) -- red, but with ``sqlalchemy.exc.MissingGreenlet``
+      raised from ``str(a.id)`` at the "detail names both ids" assertion.
+      The extra write expires the instance and re-loading it wants IO in a
+      sync context. That is an ORM accident of this session fixture, not a
+      statement about the guard: it would not survive a refactor that
+      reloads or expunges differently, and it reports the same red for a
+      dozen unrelated mutations.
+    * ``test_a_real_transfer_leg_cannot_be_matched`` -- red with DID NOT
+      RAISE. That one IS semantic, but it is about GUARD 2: with the write
+      hoisted, ``tx.linked_transaction_id`` already equals ``match_id``,
+      so guard 2 resolves the match target as ``current``, finds no
+      back-link, and declines to fire. It says nothing about guard 1.
+
+    So the IN-MEMORY assertion below is still the only fence that pins
+    guard 1's POSITION on purpose rather than by side effect. It has to be
+    a DIRECT unit test on ``_apply_match`` for exactly that reason.
     """
     seed = await _seed(db_session)
     a = await _add_row(db_session, seed, tx_id=8021,

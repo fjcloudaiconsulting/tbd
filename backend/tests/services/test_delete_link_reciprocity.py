@@ -197,12 +197,29 @@ async def test_delete_of_a_one_way_matched_row_leaves_the_partner_balance_alone(
 
 @pytest.mark.asyncio
 async def test_delete_of_a_self_linked_row_moves_the_balance_exactly_once(db_session):
-    """F3. Kills: ``partner.id != tx.id`` dropped from
-    ``is_reciprocal_pair``, AND the delete set not being keyed by id.
+    """F3. A PROPERTY fence, not a single-mutant fence. Read the honest
+    accounting below before trusting the "Kills:" line this used to carry.
 
-    A self-linked row is corrupt data containing exactly ONE row. Every
-    two-row path must therefore treat it as one row: deleted once, and
-    the account moved by 4.00, not 8.00.
+    What it pins: a self-linked row -- corrupt data containing exactly ONE
+    row -- is deleted once and moves the account by 4.00, never 8.00.
+
+    *(measured)* What it does NOT kill, each on its own:
+
+    * ``partner.id != tx.id`` dropped from ``is_reciprocal_pair``: GREEN.
+      ``to_delete`` is id-keyed, so the row lands under its own key twice
+      and the second write is a no-op. Covered instead by
+      ``tests/services/test_link_reciprocity_predicates.py::
+      test_is_reciprocal_pair_shapes[self_link-False]``.
+    * ``to_delete`` changed from ``dict[int, Transaction]`` to a list:
+      GREEN. With the not-self conjunct present, ``pair_partner`` is never
+      ``tx``, so the id-keying in ``delete_transaction`` is unkillable by
+      any test in this repo. It is kept for symmetry with the bulk path,
+      where the same keying IS killable (see F7c), and as second-line
+      defence if the predicate ever loosens. Do not read it as fenced.
+
+    It DOES go red against the two applied TOGETHER *(measured)*, which is
+    the state this test exists to make unreachable: the composition is the
+    property, and no smaller mutant reaches it.
     """
     seed = await _seed(db_session)
     s = await _add(db_session, seed, tx_id=6021, acct="A", amount="4.00",
@@ -464,11 +481,29 @@ async def test_bulk_delete_of_one_leg_still_cascades_to_the_real_partner(db_sess
 
 @pytest.mark.asyncio
 async def test_bulk_delete_of_a_self_linked_row_counts_and_reverts_once(db_session):
-    """F7c. Kills: the bulk delete set not keyed by id.
+    """F7c. Same honesty note as F3: a PROPERTY fence, not a mutant fence.
 
-    A self-linked row would otherwise appear twice in the delete set --
-    once as the requested row, once as its own "partner" -- and be
-    reverted twice, deleted twice, and counted twice.
+    What it pins: a self-linked row goes through ``bulk_delete`` once --
+    deleted once, reverted once (4.00, never 8.00), counted once.
+
+    *(measured)* What it does NOT kill: its own named mutant, the bulk
+    ``delete_set`` changed from ``dict[int, Transaction]`` to a list. This
+    test stays GREEN, because ``is_reciprocal_pair`` already refuses the
+    self-link, so the row is appended exactly once either way.
+
+    ⚠ RECORD THE COVER, because it is neither obvious nor stable. That
+    mutant is killed by exactly one test in the repo:
+
+        tests/services/test_transaction_service_delete_linked.py::
+        test_bulk_delete_transactions_on_transfer_pair_no_circular_dependency
+
+    It requests BOTH ids of a real reciprocal pair, so a list collects four
+    entries and ``deleted_count`` reports 4 instead of 2. Its stated
+    purpose -- in its own docstring and in its file's module header -- is
+    ``CircularDependencyError``; nothing there says it is also the only
+    thing pinning the bulk delete set's id-keying. If that file is tidied,
+    or that assertion relaxed to "both rows are gone", the coverage
+    evaporates silently and F7c will not notice.
     """
     seed = await _seed(db_session)
     s = await _add(db_session, seed, tx_id=6121, acct="A", amount="4.00",
