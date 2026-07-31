@@ -13,8 +13,40 @@ in the docstring) or ``guard`` (regression net only — never counted as
 coverage).
 
 The clock is injected in every test; the services must never read the wall
-clock when ``today`` is supplied. Fixtures are anchored to ``date.today() ± n``
-rather than to literals (``reference_wall_clock_date_bomb_tests``).
+clock when ``today`` is supplied.
+
+Fixture-dating rule, both halves — the first half alone is the half that fails
+(TBD-296):
+
+1. Anchor fixtures to ``date.today() ± n`` rather than to literals
+   (``reference_wall_clock_date_bomb_tests``), AND
+2. choose the fixture geometry so that no assertion swings with day-of-month or
+   month length. ``test_f12`` shows this being done: for its two lower-bound
+   templates it takes YEARLY over monthly, because a monthly occurrence's
+   position relative to ``window_end`` moves with month length. (Its third,
+   upper-bound template IS monthly — safe only because its next occurrence sits
+   a month past ``window_end`` on a 60-day fixture.)
+
+   ⚠ Rule (2) is not the only reason to reject a fixture shape, and ``test_f12``
+   is also the example of the other one: its second YEARLY template is YEARLY
+   because the monthly alternative puts the occurrence INSIDE the window, where
+   the right answer and the wrong answer agree and the fence is vacuous. A shape
+   can be perfectly clock-stable and still prove nothing. Check both.
+
+Where (2) is unreachable — where the quantity under test *is* a function of
+day-of-month — pin a literal, say why, and assert the geometry the literal was
+chosen for. ``G1_CHARGE_MID_CYCLE`` / ``G1_CHARGE_ON_CLOSE_DAY`` are the two
+instances (TBD-278): they sit on either side of a real boundary, and
+``_seed_lapsed_cc_roster`` re-derives and checks that placement on every run.
+
+Rule (1) on its own is what produced TBD-278: a fixture seeded from
+``date.today()`` reddened CI about one day in thirty, because rule (2) was
+never written down.
+
+⚠ The other ``date.today()`` fixtures in this module were swept for day-of-month
+sensitivity when TBD-278 shipped and were clean at that point, but the sweep was
+point-in-time and nothing in CI repeats it. Any edit to a fixture's date
+arithmetic re-opens that lottery with no signal — re-check rule (2) by hand.
 """
 from __future__ import annotations
 
@@ -848,27 +880,66 @@ async def test_f12_window_end_is_inclusive_for_every_bucket(db_session):
 #      payments announced in §5 MULTIPLY per cycle on a lapsed roster.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# TBD-278: these two anchors are FIXED LITERALS, not ``date.today()`` offsets.
-# The fixture derives its charge dates from ``today`` (``p_start + 5 days``, where
-# ``p_start = today - 3 months``), so on a day-of-month of 5 the charges land
-# exactly on ``close_day=10``. Each cycle then closes on the day it is charged,
-# every payment date shifts a month earlier, and a THIRD payment falls inside the
-# window. Both counts are correct; which one you get depended on the wall clock,
-# which reddened CI about one day in thirty. Pinning both sides makes the
-# boundary a fence instead of a lottery.
+# The CC fixture's geometry, named once so the assertions below and the account
+# row they describe cannot drift apart.
+CC_CLOSE_DAY = 10
+CC_PAYMENT_DAY = 5
+CC_CHARGE_OFFSET_DAYS = 5
+CC_LAPSED_SPAN_MONTHS = 3
+
+# TBD-278: these two anchors are FIXED LITERALS, not ``date.today()`` offsets —
+# the module docstring's exemption for a quantity that genuinely IS a function of
+# day-of-month. The fixture derives its charge dates from ``today``
+# (``p_start + timedelta(days=CC_CHARGE_OFFSET_DAYS)``, where
+# ``p_start = today - CC_LAPSED_SPAN_MONTHS months``), so on a day-of-month of 5
+# the charges land exactly on ``close_day``. Each cycle then closes on the day it
+# is charged, every payment date shifts a month earlier, and a THIRD payment
+# falls inside the window. Both counts are correct; which one you get depended on
+# the wall clock, which reddened CI about one day in thirty. Pinning both sides
+# makes the boundary a fence instead of a lottery.
+#
+# TBD-296: the side of the boundary each anchor was chosen for is no longer
+# stated only here — ``_seed_lapsed_cc_roster`` re-derives it and asserts it.
+# ⚠ Scope of that guard, precisely: it defends ``CC_CLOSE_DAY``,
+# ``CC_CHARGE_OFFSET_DAYS`` and the two anchors, because those four determine
+# which side the charges land on. It does NOT defend ``CC_PAYMENT_DAY``,
+# ``CC_LAPSED_SPAN_MONTHS`` or ``payment_day_relative_month`` — editing those
+# still fails, but downstream at G1/G1b's payment-count assertions rather than at
+# the fixture, which is the opaque failure this guard exists to replace. Widen
+# the guard rather than trusting this comment if you add a third anchor.
 G1_CHARGE_MID_CYCLE = datetime.date(2026, 8, 14)      # charges on the 19th, mid-cycle
 G1_CHARGE_ON_CLOSE_DAY = datetime.date(2026, 8, 5)    # charges on the 10th == close_day
 
 
-async def _seed_lapsed_cc_roster(db_session, today):
+async def _seed_lapsed_cc_roster(db_session, today, *, charges_land_on_close_day):
     """Lapsed roster + a CC with three unpaid 300.00 charges, one per month.
 
     ``today`` is a REQUIRED argument, never read from the clock here: the
     projected payment count is a function of ``today``'s day-of-month (see the
     module constants above), so a clock-derived fixture makes every downstream
     assertion day-dependent.
+
+    ``charges_land_on_close_day`` is REQUIRED and keyword-only: it states which
+    side of that boundary the caller believes it is on, and is checked below
+    against the geometry the dates actually produce. A third call site cannot be
+    added without declaring its side.
     """
-    p_start = today - relativedelta(months=3)
+    p_start = today - relativedelta(months=CC_LAPSED_SPAN_MONTHS)
+    # Self-check (TBD-296): the constants defend themselves. Both are derived
+    # from the SAME expressions the fixture builds from, so they cannot drift.
+    first_charge = p_start + datetime.timedelta(days=CC_CHARGE_OFFSET_DAYS)
+    if charges_land_on_close_day:
+        assert first_charge.day == CC_CLOSE_DAY, (
+            f"fixture geometry broken: charges start {first_charge} (day "
+            f"{first_charge.day}), which is NOT close_day {CC_CLOSE_DAY}. This "
+            f"call site exists to pin the ON-close_day side of the boundary."
+        )
+    else:
+        assert first_charge.day != CC_CLOSE_DAY, (
+            f"fixture geometry broken: charges start {first_charge}, landing "
+            f"exactly ON close_day {CC_CLOSE_DAY}. This call site exists to pin "
+            f"the MID-cycle side of the boundary; it now duplicates the other."
+        )
     seed = await _seed(
         db_session,
         open_start=p_start,
@@ -887,7 +958,8 @@ async def _seed_lapsed_cc_roster(db_session, today):
         org_id=seed["org_id"], name="Visa", account_type_id=cc_type.id,
         balance=Decimal("-900.00"), opening_balance=Decimal("0.00"),
         currency="EUR", is_default=False,
-        close_day=10, payment_day=5, payment_day_relative_month=1,
+        close_day=CC_CLOSE_DAY, payment_day=CC_PAYMENT_DAY,
+        payment_day_relative_month=1,
         payment_source_account_id=seed["account_id"],
         payment_strategy=PaymentStrategy.FULL_BALANCE,
     )
@@ -895,7 +967,7 @@ async def _seed_lapsed_cc_roster(db_session, today):
     await db_session.flush()
     # Three 300.00 charges, one per month of the lapsed span, no payment legs.
     for k in range(3):
-        on = p_start + datetime.timedelta(days=5) + relativedelta(months=k)
+        on = first_charge + relativedelta(months=k)
         db_session.add(_settled(seed, "300.00", on, account_id=cc.id))
     await db_session.commit()
     return seed, cc
@@ -924,7 +996,9 @@ async def test_g1_cc_phantom_payments_multiply_per_cycle_on_lapsed_roster(db_ses
     fallback (``p_end=p_start + 1 month - 1 day``) -> ``cc_payments == []`` and
     the source keeps its full 5000.00.
     """
-    seed, cc = await _seed_lapsed_cc_roster(db_session, G1_CHARGE_MID_CYCLE)
+    seed, cc = await _seed_lapsed_cc_roster(
+        db_session, G1_CHARGE_MID_CYCLE, charges_land_on_close_day=False
+    )
 
     res = await account_balance_forecast_service.compute_account_balance_forecast(
         db_session, seed["org_id"], today=G1_CHARGE_MID_CYCLE
@@ -953,40 +1027,85 @@ async def test_g1_cc_phantom_payments_multiply_per_cycle_on_lapsed_roster(db_ses
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_g1b_cc_phantom_payments_when_charges_land_on_the_close_day(db_session):
-    """GUARD — the OTHER side of G1's boundary, and the reason G1 stopped
+    """GUARD, and the FENCE for ``due_cycles_in_horizon``'s upper bound (below)
+    — the OTHER side of G1's boundary, and the reason G1 stopped
     reading the wall clock (TBD-278).
 
     Same roster, same code path, one geometric difference: the charges land
     **exactly on** ``close_day`` rather than mid-cycle. Each cycle then closes on
-    the day it is charged instead of a month later, every payment date shifts a
-    month earlier, and ALL THREE fall inside ``[p_start, today]``.
+    the day it is charged instead of a month later, and every payment date
+    shifts a month earlier.
 
-    Three payments here is CORRECT, for the same reason two is correct in G1:
+    ⚠ FOUR cycles, not three, then have a ``payment_date`` inside
+    ``[p_start, window_end]`` (TBD-296). The fourth is the cycle closing on
+    ``close_day`` of the month four months back (2026-04-10 for this anchor),
+    which pays exactly ON ``p_start``; it is dropped by the ``outflow > 0``
+    filter in ``synthesize_account_cc_payments`` (nothing had been charged before
+    it closed, so its outstanding balance is 0.00), NOT by the window.
+
+    Consequence worth stating so nobody mistakes this for coverage it does not
+    give: **G1b does not distinguish** ``>= p_start`` from ``> p_start`` in
+    ``due_cycles_in_horizon`` — that boundary is inert here, because the cycle
+    sitting on it is discarded downstream for an unrelated reason.
+    **That lower bound is NOT unfenced, it is just not fenced here**: see
+    ``test_cc_forecast_service.py::test_due_cycles_in_horizon_grace_period_close_in_past``,
+    whose only cycle pays exactly on ``P_START``, so flipping ``>=`` to ``>``
+    takes it from 1 to 0. Do not read "inert" as "removable".
+
+    Three PAYMENTS is CORRECT, for the same reason two is correct in G1:
     ``due_cycles_in_horizon`` has no ``> today`` gate, so every cycle whose
     ``payment_date`` lands in the window is projected — and the window is
-    INCLUSIVE of today, which is what the final payment pins.
+    INCLUSIVE of its upper bound, which is what the final payment pins.
 
     The bound still holds, and it is the point: the payments sum to the balance
     owed at the last projected close (900.00 against 900.00 charged), never to a
     multiple of it, and the card lands at exactly 0.00 rather than going positive.
 
-    Wrong implementation killed: a ``payment_date < today`` gate instead of
-    ``<= today`` -> the third payment vanishes, the sum reads 600.00 and
-    ``cc_eom`` reads -300.00.
+    Wrong implementation killed: ``>=`` for ``>`` in ``due_cycles_in_horizon``'s
+    ``if cycle.payment_date > p_end: break`` -> the fourth cycle's payment (dated
+    exactly ``p_end``) vanishes, leaving 2 payments, a sum of 600.00 and
+    ``cc_eom`` of -300.00. This test is the only thing in the file that kills it,
+    which is why the GUARD label above is qualified: on the module's own
+    taxonomy (fence = names a wrong implementation) G1b doubles as the FENCE for
+    that upper bound, exactly as G1 doubles as the fence for the synthesis
+    horizon.
+
+    ⚠ That gate compares against ``p_end``, NOT against ``today``. There is no
+    ``today`` in ``due_cycles_in_horizon`` at all (TBD-296 — G1's docstring makes
+    the narrower claim that it has no ``> today`` gate; the stronger one is true
+    too). Phrasing this boundary in terms of ``today`` is only legitimate because
+    ``p_end == today`` for a lapsed roster, which is a DERIVED fact about the
+    fixture rather than a property of the gate.
+
+    That derived fact is asserted below rather than assumed. The assertion is a
+    DIAGNOSTIC, not a fence, and is deliberately not counted as coverage: every
+    mutation that moves ``period_end`` also moves the payment count, and the one
+    that would not (widening the floor by a day) is already killed by ``test_f7a``
+    and pinned by ``test_f2``. It earns its two lines by localizing the failure —
+    if the window ever stops landing on ``today``, this reports that instead of
+    surfacing as an unexplained payment-count change.
     """
-    seed, cc = await _seed_lapsed_cc_roster(db_session, G1_CHARGE_ON_CLOSE_DAY)
+    seed, cc = await _seed_lapsed_cc_roster(
+        db_session, G1_CHARGE_ON_CLOSE_DAY, charges_land_on_close_day=True
+    )
 
     res = await account_balance_forecast_service.compute_account_balance_forecast(
         db_session, seed["org_id"], today=G1_CHARGE_ON_CLOSE_DAY
     )
 
+    # DIAGNOSTIC, not a fence (see the docstring): the derived fact the ``today``
+    # phrasing rests on. On a lapsed roster the window's upper bound IS today, so
+    # the gate against ``p_end`` and a gate against ``today`` coincide here.
+    assert res["period_end"] == G1_CHARGE_ON_CLOSE_DAY.isoformat()
     by_id = {a["account_id"]: a for a in res["accounts"]}
     payments = by_id[cc.id]["cc_payments"]
     assert len(payments) == 3
     assert [p["date"] for p in payments] == sorted(p["date"] for p in payments)
-    # The boundary itself: the final payment is dated exactly today and is
-    # INCLUDED. This is the assertion G1 could never make while it read the
-    # clock, and it is what pins `<= today` against `< today`.
+    # The boundary itself: the final payment is dated exactly ``p_end`` (which
+    # for this lapsed roster IS today, asserted above) and is INCLUDED. This is
+    # the assertion G1 could never make while it read the clock, and it is what
+    # pins `payment_date > p_end` against `>= p_end`. NOT a `today` gate —
+    # there is none; see the docstring (TBD-296).
     assert datetime.date.fromisoformat(payments[-1]["date"]) == G1_CHARGE_ON_CLOSE_DAY
     assert all(
         datetime.date.fromisoformat(p["date"]) <= G1_CHARGE_ON_CLOSE_DAY
