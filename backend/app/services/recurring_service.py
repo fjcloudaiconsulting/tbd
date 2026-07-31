@@ -16,7 +16,7 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.models.user import Organization
 from app.schemas.recurring import RecurringCreate, RecurringResponse, RecurringUpdate
 from app.services.billing_service import current_cycle_window
-from app.services.date_utils import advance_date
+from app.services.date_utils import MAX_OCCURRENCE_ITERATIONS, advance_date
 from app.services.exceptions import NotFoundError, ValidationError
 from app.services.transaction_service import (
     apply_balance,
@@ -27,8 +27,22 @@ from app.services.transaction_service import (
 
 logger = structlog.stdlib.get_logger()
 
-# Defensive cap so a pathologically stale template can't spin an unbounded loop.
-MAX_CATCHUP_ITERATIONS = 500
+# Defensive per-RUN cap so a pathologically stale template can't spin an
+# unbounded loop inside one scheduler tick.
+#
+# An ALIAS of ``date_utils.MAX_OCCURRENCE_ITERATIONS``, deliberately not a
+# second literal: ``forecast_service`` projects the occurrences this loop has
+# not yet materialised, walking the same grid from the same origin, and sizing
+# the two walks from two literals is how they drift.
+#
+# ⚠ Aliasing does NOT by itself make the two walks truncate at the same place,
+# and no comment here should claim it does. This cap MAKES PROGRESS — it
+# mutates ``next_due_date`` forward, so the next run resumes further along —
+# while a cap on a projection makes none. That asymmetry is why
+# ``occurrences_in_window``'s fast-forward carries no cap at all;
+# ``test_forecast_overdue_recurring.py`` F17 fences the conservation this cap
+# used to break, and pins the alias with an AST guard.
+MAX_CATCHUP_ITERATIONS = MAX_OCCURRENCE_ITERATIONS
 
 
 def _load_opts():
