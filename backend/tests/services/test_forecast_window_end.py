@@ -848,30 +848,26 @@ async def test_f12_window_end_is_inclusive_for_every_bucket(db_session):
 #      payments announced in §5 MULTIPLY per cycle on a lapsed roster.
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def test_g1_cc_phantom_payments_multiply_per_cycle_on_lapsed_roster(db_session):
-    """GUARD — pins the ACTUAL behaviour, which is not an aspiration.
-    Doubles as the FENCE for the CC synthesis horizon (``p_end=window_end``).
+# TBD-278: these two anchors are FIXED LITERALS, not ``date.today()`` offsets.
+# The fixture derives its charge dates from ``today`` (``p_start + 5 days``, where
+# ``p_start = today - 3 months``), so on a day-of-month of 5 the charges land
+# exactly on ``close_day=10``. Each cycle then closes on the day it is charged,
+# every payment date shifts a month earlier, and a THIRD payment falls inside the
+# window. Both counts are correct; which one you get depended on the wall clock,
+# which reddened CI about one day in thirty. Pinning both sides makes the
+# boundary a fence instead of a lottery.
+G1_CHARGE_MID_CYCLE = datetime.date(2026, 8, 14)      # charges on the 19th, mid-cycle
+G1_CHARGE_ON_CLOSE_DAY = datetime.date(2026, 8, 5)    # charges on the 10th == close_day
 
-    On a lapsed roster the window widens to ``[p_start, today]``, months long,
-    and ``due_cycles_in_horizon`` has no ``> today`` gate, so EVERY cycle whose
-    ``payment_date`` falls in that span is projected. This is the same residual
-    §5 announces for loans, but it multiplies: one phantom PER CYCLE rather than
-    one per period. ``main`` projected none (its window ended before the first
-    payment date). ``CreditUtilizationWidget.tsx`` renders "Next payment ... on
-    <date>" from this list, so the user sees a past date.
 
-    The multiplication is BOUNDED by the outstanding balance: ``s_prev`` threads
-    each synthesized outflow forward, so the payments sum to the balance owed at
-    the last projected close, never to a multiple of it. That bound is what
-    makes this acceptable-and-announced rather than a defect. Do NOT add a
-    ``> today`` gate here — §5 explains that it would delete genuinely unpaid
-    past-due obligations.
+async def _seed_lapsed_cc_roster(db_session, today):
+    """Lapsed roster + a CC with three unpaid 300.00 charges, one per month.
 
-    Wrong implementation killed: the CC synthesizer left on the old calendar
-    fallback (``p_end=p_start + 1 month - 1 day``) -> ``cc_payments == []`` and
-    the source keeps its full 5000.00.
+    ``today`` is a REQUIRED argument, never read from the clock here: the
+    projected payment count is a function of ``today``'s day-of-month (see the
+    module constants above), so a clock-derived fixture makes every downstream
+    assertion day-dependent.
     """
-    today = datetime.date.today()
     p_start = today - relativedelta(months=3)
     seed = await _seed(
         db_session,
@@ -902,9 +898,36 @@ async def test_g1_cc_phantom_payments_multiply_per_cycle_on_lapsed_roster(db_ses
         on = p_start + datetime.timedelta(days=5) + relativedelta(months=k)
         db_session.add(_settled(seed, "300.00", on, account_id=cc.id))
     await db_session.commit()
+    return seed, cc
+
+
+async def test_g1_cc_phantom_payments_multiply_per_cycle_on_lapsed_roster(db_session):
+    """GUARD — pins the ACTUAL behaviour, which is not an aspiration.
+    Doubles as the FENCE for the CC synthesis horizon (``p_end=window_end``).
+
+    On a lapsed roster the window widens to ``[p_start, today]``, months long,
+    and ``due_cycles_in_horizon`` has no ``> today`` gate, so EVERY cycle whose
+    ``payment_date`` falls in that span is projected. This is the same residual
+    §5 announces for loans, but it multiplies: one phantom PER CYCLE rather than
+    one per period. ``main`` projected none (its window ended before the first
+    payment date). ``CreditUtilizationWidget.tsx`` renders "Next payment ... on
+    <date>" from this list, so the user sees a past date.
+
+    The multiplication is BOUNDED by the outstanding balance: ``s_prev`` threads
+    each synthesized outflow forward, so the payments sum to the balance owed at
+    the last projected close, never to a multiple of it. That bound is what
+    makes this acceptable-and-announced rather than a defect. Do NOT add a
+    ``> today`` gate here — §5 explains that it would delete genuinely unpaid
+    past-due obligations.
+
+    Wrong implementation killed: the CC synthesizer left on the old calendar
+    fallback (``p_end=p_start + 1 month - 1 day``) -> ``cc_payments == []`` and
+    the source keeps its full 5000.00.
+    """
+    seed, cc = await _seed_lapsed_cc_roster(db_session, G1_CHARGE_MID_CYCLE)
 
     res = await account_balance_forecast_service.compute_account_balance_forecast(
-        db_session, seed["org_id"], today=today
+        db_session, seed["org_id"], today=G1_CHARGE_MID_CYCLE
     )
 
     by_id = {a["account_id"]: a for a in res["accounts"]}
@@ -912,7 +935,8 @@ async def test_g1_cc_phantom_payments_multiply_per_cycle_on_lapsed_roster(db_ses
     # MORE THAN ONE phantom, and every one of them past-dated.
     assert len(payments) == 2
     assert all(
-        datetime.date.fromisoformat(p["date"]) < today for p in payments
+        datetime.date.fromisoformat(p["date"]) < G1_CHARGE_MID_CYCLE
+        for p in payments
     )
     assert [p["date"] for p in payments] == sorted(p["date"] for p in payments)
     # Bounded by the outstanding balance at the last projected close, NOT a
@@ -922,6 +946,57 @@ async def test_g1_cc_phantom_payments_multiply_per_cycle_on_lapsed_roster(db_ses
     assert Decimal(source_row["balance"]) == Decimal("5000.00")
     assert Decimal(source_row["expected_month_end_balance"]) == Decimal("4400.00")
     assert Decimal(by_id[cc.id]["expected_month_end_balance"]) == Decimal("-300.00")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# G1b — GUARD. The other side of G1's boundary: charges landing ON close_day.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_g1b_cc_phantom_payments_when_charges_land_on_the_close_day(db_session):
+    """GUARD — the OTHER side of G1's boundary, and the reason G1 stopped
+    reading the wall clock (TBD-278).
+
+    Same roster, same code path, one geometric difference: the charges land
+    **exactly on** ``close_day`` rather than mid-cycle. Each cycle then closes on
+    the day it is charged instead of a month later, every payment date shifts a
+    month earlier, and ALL THREE fall inside ``[p_start, today]``.
+
+    Three payments here is CORRECT, for the same reason two is correct in G1:
+    ``due_cycles_in_horizon`` has no ``> today`` gate, so every cycle whose
+    ``payment_date`` lands in the window is projected — and the window is
+    INCLUSIVE of today, which is what the final payment pins.
+
+    The bound still holds, and it is the point: the payments sum to the balance
+    owed at the last projected close (900.00 against 900.00 charged), never to a
+    multiple of it, and the card lands at exactly 0.00 rather than going positive.
+
+    Wrong implementation killed: a ``payment_date < today`` gate instead of
+    ``<= today`` -> the third payment vanishes, the sum reads 600.00 and
+    ``cc_eom`` reads -300.00.
+    """
+    seed, cc = await _seed_lapsed_cc_roster(db_session, G1_CHARGE_ON_CLOSE_DAY)
+
+    res = await account_balance_forecast_service.compute_account_balance_forecast(
+        db_session, seed["org_id"], today=G1_CHARGE_ON_CLOSE_DAY
+    )
+
+    by_id = {a["account_id"]: a for a in res["accounts"]}
+    payments = by_id[cc.id]["cc_payments"]
+    assert len(payments) == 3
+    assert [p["date"] for p in payments] == sorted(p["date"] for p in payments)
+    # The boundary itself: the final payment is dated exactly today and is
+    # INCLUDED. This is the assertion G1 could never make while it read the
+    # clock, and it is what pins `<= today` against `< today`.
+    assert datetime.date.fromisoformat(payments[-1]["date"]) == G1_CHARGE_ON_CLOSE_DAY
+    assert all(
+        datetime.date.fromisoformat(p["date"]) <= G1_CHARGE_ON_CLOSE_DAY
+        for p in payments
+    )
+    assert sum(Decimal(p["amount"]) for p in payments) == Decimal("900.00")
+    source_row = by_id[seed["account_id"]]
+    assert Decimal(source_row["balance"]) == Decimal("5000.00")
+    assert Decimal(source_row["expected_month_end_balance"]) == Decimal("4100.00")
+    assert Decimal(by_id[cc.id]["expected_month_end_balance"]) == Decimal("0.00")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
