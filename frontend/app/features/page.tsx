@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import MarketingShell from "@/components/landing/MarketingShell";
 import ChevronGlyph from "@/components/landing/ChevronGlyph";
+import SecondCta from "@/components/landing/SecondCta";
 import { readNonce } from "@/lib/nonce";
 import { apexCanonical, apexUrl, pageSocialMeta, siteName } from "@/lib/site";
 
@@ -145,7 +146,9 @@ export default async function FeaturesPage() {
   const nonceProp = nonce ? { nonce } : {};
   return (
     <MarketingShell>
-    <main className="mx-auto max-w-4xl px-6 py-20 lg:py-24">
+    {/* Bottom padding is deliberately omitted: the closing <SecondCta />
+        carries its own py-20/lg:py-24, matching the homepage rhythm. */}
+    <main className="mx-auto max-w-4xl px-6 pt-20 lg:pt-24">
       {structuredData.map((block, i) => (
         <script
           key={`ld-${i}`}
@@ -224,6 +227,19 @@ export default async function FeaturesPage() {
         </Link>
         .
       </p>
+
+      {/* In-body conversion path. This page is the paid campaign's final URL;
+          without this a visitor who scrolls has to scroll back to the nav to
+          sign up. Reports its own cta_location so the GA4 breakdown can tell
+          this placement apart from the nav and the homepage block.
+
+          SecondCta carries its own px-6 (the homepage renders it in a bare
+          <main>), so the -mx-6 cancels THIS page's px-6 and stops the CTA
+          being inset twice — below the max-width that would double-pad the
+          text column relative to every other block on the page. */}
+      <div className="-mx-6">
+        <SecondCta location="features" />
+      </div>
     </main>
     </MarketingShell>
   );
