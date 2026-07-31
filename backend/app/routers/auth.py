@@ -2070,6 +2070,68 @@ async def _record_google_callback_failure(
     )
 
 
+def _google_json_object(resp: Any) -> dict[str, Any] | None:
+    """Decode a Google 200 body, or ``None`` when it isn't a JSON object.
+
+    Every reader downstream -- ``tokens['access_token']``,
+    ``google_user.get(...)`` -- assumes a dict. A 200 carrying HTML, an
+    empty body, or a JSON scalar/array therefore became an uncaught
+    KeyError / TypeError / AttributeError and a bare 500: no audit row,
+    and the platform error splash instead of the friendly banner. The
+    ``google_user`` case raises *outside* the ``try``, on the main line
+    after the exchange, where no ``except`` clause could ever have
+    reached it -- which is why the fix is validation and not catching.
+
+    Returns rather than raises, deliberately. Both call sites sit inside
+    a ``try`` whose only two clauses are pinned narrow by the
+    non-timeout-exception fences; a value the caller branches on adds no
+    exception surface at all, so those fences stay valid without being
+    re-derived.
+
+    ``except ValueError`` and nothing wider: httpx's ``.json()`` is
+    ``json.loads(self.content)``, whose only body-dependent failures are
+    ``json.JSONDecodeError`` and ``UnicodeDecodeError``, both
+    ``ValueError``. Anything else out of ``.json()`` is our bug and must
+    keep propagating.
+    """
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _google_token_body_detail(tokens: dict[str, Any] | None) -> dict[str, Any]:
+    """Forensic detail for a token response we could not use.
+
+    The ONLY place that reads a field off an untrusted Google token
+    body. Emits a shape word and, when present, the OAuth2 ``error``
+    code, truncated. Never the body and never any other field: a
+    partially-valid token payload carries access_token / refresh_token /
+    id_token, and this dict is persisted to ``audit_events.detail`` and
+    rendered in /admin/audit.
+
+    ``unusable_access_token`` is not pedantry. httpx encodes header
+    values with ``value.encode("ascii")`` while building the request,
+    and that build happens *inside* the bounded block, so a non-ASCII
+    token would raise ``UnicodeEncodeError`` past both ``except``
+    clauses. (An ASCII-but-illegal value with embedded CRLF needs no
+    check: h11 raises ``httpx.LocalProtocolError``, an
+    ``httpx.HTTPError`` subclass, which is already handled.)
+    """
+    if tokens is None:
+        return {"body": "not_object"}
+    value = tokens.get("access_token")
+    if isinstance(value, str) and value and not value.isascii():
+        detail: dict[str, Any] = {"body": "unusable_access_token"}
+    else:
+        detail = {"body": "no_access_token"}
+    error = tokens.get("error")
+    if isinstance(error, str) and error:
+        detail["google_error"] = error[:64]
+    return detail
+
+
 def _google_error_redirect(
     reason: str,
     *,
@@ -2970,21 +3032,77 @@ async def google_callback(
                     session_factory, request=request, reason="token"
                 )
                 return _google_error_redirect("token")
-            tokens = token_resp.json()
+            # A 200 is not a contract. Validate the body's shape before
+            # any reader assumes it, and branch with an ``if`` rather
+            # than an ``except``: the audit-and-return below is the same
+            # shape as the non-200 branch just above, and adding no new
+            # ``except`` clause keeps this ``try``'s caught set exactly
+            # what it was.
+            #
+            # ``access_token`` is hoisted out of the bounded block on
+            # purpose. It used to be evaluated as an argument expression
+            # to the bounded ``client.get`` below -- the only
+            # non-transport-raising expression inside any bounded block
+            # at either site. After the hoist those blocks can raise
+            # only a transport error or TimeoutError, which is the
+            # invariant the aggregate bound was specified with.
+            tokens = _google_json_object(token_resp)
+            access_token = tokens.get("access_token") if tokens is not None else None
+            if (
+                not isinstance(access_token, str)
+                or not access_token
+                or not access_token.isascii()
+            ):
+                body_detail = _google_token_body_detail(tokens)
+                # Ungated: after this guard the failure is a quiet 307
+                # rather than a 5xx stack trace, so without the warning
+                # the fix would be a net loss of production visibility.
+                # Flat kwargs, never ``extra=`` -- see the timeout
+                # clause's note below.
+                _LOGGER.warning(
+                    "auth.google.callback.invalid_payload",
+                    flow="login",
+                    phase="token",
+                    **body_detail,
+                )
+                await _record_google_callback_failure(
+                    session_factory,
+                    request=request,
+                    reason="token_payload",
+                    detail_extra=body_detail,
+                )
+                return _google_error_redirect("token")
             progress["phase"] = "token_ok"
 
             # Get user info from Google
             async with asyncio.timeout_at(deadline):
                 userinfo_resp = await client.get(
                     "https://www.googleapis.com/oauth2/v2/userinfo",
-                    headers={"Authorization": f"Bearer {tokens['access_token']}"},
+                    headers={"Authorization": f"Bearer {access_token}"},
                 )
             if userinfo_resp.status_code != 200:
                 await _record_google_callback_failure(
                     session_factory, request=request, reason="userinfo"
                 )
                 return _google_error_redirect("userinfo")
-            google_user = userinfo_resp.json()
+            # No ``google_error`` on this branch: the userinfo body has
+            # no RFC error contract to read one from, and it does carry
+            # PII.
+            google_user = _google_json_object(userinfo_resp)
+            if google_user is None:
+                _LOGGER.warning(
+                    "auth.google.callback.invalid_payload",
+                    flow="login",
+                    phase="userinfo",
+                    body="not_object",
+                )
+                await _record_google_callback_failure(
+                    session_factory,
+                    request=request,
+                    reason="userinfo_payload",
+                    detail_extra={"body": "not_object"},
+                )
+                return _google_error_redirect("userinfo")
     except TimeoutError:
         # Exactly one name, and never a tuple with httpx.HTTPError.
         # asyncio.TimeoutError *is* builtin TimeoutError, and none of
@@ -3503,17 +3621,59 @@ async def sso_stepup_callback(
                 )
             if token_resp.status_code != 200:
                 return await _stepup_failure("token", actor_email=user.email)
-            tokens = token_resp.json()
+            # Same two guards as the login site, same hoist out of the
+            # bounded block, same "no new ``except`` clause" property.
+            # Routed through ``_stepup_failure`` rather than duplicated:
+            # that is what inherits this site's own event_type, its
+            # ``_resolve_return_path(state)`` target, its
+            # ``/api/v1/auth/sso-stepup`` cookie path and its
+            # ``actor_email``. ``ui_code`` must be passed explicitly --
+            # ``_stepup_failure`` otherwise derives the redirect code
+            # from the audit reason and would emit the unmapped
+            # ``token_payload``, degrading to the fallback banner.
+            tokens = _google_json_object(token_resp)
+            access_token = tokens.get("access_token") if tokens is not None else None
+            if (
+                not isinstance(access_token, str)
+                or not access_token
+                or not access_token.isascii()
+            ):
+                body_detail = _google_token_body_detail(tokens)
+                _LOGGER.warning(
+                    "auth.google.callback.invalid_payload",
+                    flow="stepup",
+                    phase="token",
+                    **body_detail,
+                )
+                return await _stepup_failure(
+                    "token_payload",
+                    ui_code="token",
+                    actor_email=user.email,
+                    detail_extra=body_detail,
+                )
             progress["phase"] = "token_ok"
 
             async with asyncio.timeout_at(deadline):
                 userinfo_resp = await client.get(
                     "https://www.googleapis.com/oauth2/v2/userinfo",
-                    headers={"Authorization": f"Bearer {tokens['access_token']}"},
+                    headers={"Authorization": f"Bearer {access_token}"},
                 )
             if userinfo_resp.status_code != 200:
                 return await _stepup_failure("userinfo", actor_email=user.email)
-            google_user = userinfo_resp.json()
+            google_user = _google_json_object(userinfo_resp)
+            if google_user is None:
+                _LOGGER.warning(
+                    "auth.google.callback.invalid_payload",
+                    flow="stepup",
+                    phase="userinfo",
+                    body="not_object",
+                )
+                return await _stepup_failure(
+                    "userinfo_payload",
+                    ui_code="userinfo",
+                    actor_email=user.email,
+                    detail_extra={"body": "not_object"},
+                )
     except TimeoutError:
         # Flat fields, not ``extra=`` — see the login site's note.
         _LOGGER.warning(

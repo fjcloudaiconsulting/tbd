@@ -347,3 +347,27 @@ Held by, in order of strength:
 
 Runner-up — the `except` swallowing a genuine bug and masking it as a friendly retry banner — is
 held by the narrow single-name clause, the verified-disjoint hierarchies, and test **L5**.
+
+---
+
+## Amendment, 2026-07-30 (TBD-267) — §8's stated reason for deferring the `KeyError` was wrong
+
+§8 lists `tokens['access_token']` KeyError → 500 as OUT, because "opportunistically fixing it would
+require the `except Exception` that §2.2 forbids."
+
+**That justification is false.** The fix requires an `if`, not an `except`: validate that the
+decoded body is a `dict` and that `access_token` is a usable string, then `audit; return` from
+inside the existing `try` — the same shape as the non-200 branch three lines above. TBD-267 shipped
+exactly that, at both sites, adding **zero** `except` clauses. §2.2's prohibition was never in
+tension with fixing it.
+
+Deferring it was still defensible on **scope** — TBD-179 was a timeout ticket, and the payload
+defect turned out to be twice the size of the `KeyError` alone. The stated reason was not, and it
+would have been cited again as precedent for "we cannot fix this here" had it been left standing.
+
+The defect was also understated. Two of the six reachable lines — `google_user.get(...)` at :3045
+and :3537 — sit *outside* the `try` block entirely, so no `except` clause at any width could ever
+have caught them. That half was not merely unfixed by an `except Exception`; it was unreachable by
+one.
+
+→ `specs/2026-07-30-sso-token-payload-validation.md`
