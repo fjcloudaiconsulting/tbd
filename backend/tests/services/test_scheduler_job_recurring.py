@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.models import Base
 from app.models.user import Organization
-from app.services.scheduler.base import OUTCOME_NOOP, OUTCOME_SUCCESS
+from app.services.scheduler.base import OUTCOME_NOOP, OUTCOME_SUCCESS, JobResult
 from app.services.scheduler.jobs.recurring_generation import RecurringGenerationJob
 
 
@@ -79,8 +79,106 @@ async def test_run_success_records_and_notifies(session_factory, monkeypatch):
     assert calls == {"audit": 1, "notify": 1}
 
 
-def _fake_generate(*, generated, settled):
-    async def _f(db, org_id):
+# ─────────────────────────────────────────────────────────────────────────────
+# TBD-284 — ONE TICK, ONE CLOCK.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_run_threads_the_ticks_clock_into_generation(session_factory, monkeypatch):
+    """FENCE — ``run`` must hand the tick's ``today`` to the generation service.
+
+    ``run`` used to call ``generate_due_transactions(db, org.id)`` with no
+    ``today``, so the service re-read the wall clock. A tick that starts at
+    23:59:59 then decides "there is work" against one day and MATERIALISES THE
+    ROWS against the next -- a money row in the wrong billing period.
+
+    The asserted value is a date the wall clock can never equal, so this fence
+    cannot rot into a tautology and cannot become a date bomb.
+
+    Wrong implementation killed: ``generate_due_transactions(db, org.id)``
+    -> the fake records None and this goes red on the value.
+    """
+    seen: list = []
+    job = RecurringGenerationJob()
+    monkeypatch.setattr(
+        "app.services.scheduler.jobs.recurring_generation.generate_due_transactions",
+        _fake_generate(generated=1, settled=0, sink=seen),
+    )
+    monkeypatch.setattr(
+        "app.services.scheduler.jobs.recurring_generation.record_run",
+        _counter({"a": 0}, "a", returns=1),
+    )
+    monkeypatch.setattr(
+        "app.services.scheduler.jobs.recurring_generation.dispatch_notification_to_org_members",
+        _counter({"n": 0}, "n"),
+    )
+    tick_day = datetime.date(2099, 3, 17)
+    async with session_factory() as db:
+        org = Organization(name="Acme", billing_cycle_day=1)
+        db.add(org); await db.commit(); await db.refresh(org)
+        await job.run(db, org, tick_day)
+
+    assert seen == [tick_day], (
+        f"generation ran against {seen!r}, not the tick's clock {tick_day!r}"
+    )
+
+
+async def test_one_tick_hands_the_same_clock_to_is_due_and_run(session_factory):
+    """FENCE — the runner resolves the clock ONCE per tick.
+
+    This is the other half of the straddle: threading ``today`` through ``run``
+    is worthless if the runner resolves a fresh clock between deciding and
+    doing. Uses a stub job so it fences the RUNNER contract, independently of
+    any one job's implementation.
+
+    Wrong implementation killed: ``run_all_due`` calling ``date.today()`` again
+    for the ``run`` leg instead of reusing its ``today`` parameter.
+    """
+    from app.services.scheduler import runner as runner_mod
+
+    received: dict[str, list] = {"is_due": [], "run": []}
+
+    class _SpyJob:
+        job_type = "spy"
+        setting_key = "spy_enabled"
+
+        async def is_due(self, db, org, today):
+            received["is_due"].append(today)
+            return True
+
+        async def run(self, db, org, today):
+            received["run"].append(today)
+            return JobResult.noop()
+
+    factory = session_factory
+    async with factory() as db:
+        org = Organization(name="Acme", billing_cycle_day=1)
+        db.add(org); await db.commit()
+
+    async def _always_on(db, org_id, key):
+        return True
+
+    tick_day = datetime.date(2099, 3, 17)
+    import unittest.mock as _mock
+    with _mock.patch.object(runner_mod.org_settings, "get_bool", _always_on):
+        await runner_mod.run_all_due(
+            tick_day, session_factory=factory, registry=[_SpyJob()]
+        )
+
+    assert received["is_due"] == [tick_day]
+    assert received["run"] == [tick_day]
+    # The property, stated directly: one tick, one clock.
+    assert received["is_due"] == received["run"]
+
+
+def _fake_generate(*, generated, settled, sink=None):
+    # ``today`` defaults to None ON PURPOSE (TBD-284). If the job stops passing
+    # the tick's clock, this fake still accepts the call and records None, so
+    # the fence fails on the VALUE. A fake with a REQUIRED ``today`` would go
+    # red with a TypeError for any signature change and green for a job that
+    # passed the WRONG date -- which is the failure this ticket is about.
+    async def _f(db, org_id, today=None):
+        if sink is not None:
+            sink.append(today)
         return {"generated": generated, "settled": settled, "pending": 0,
                 "period_end": "2026-07-31"}
     return _f
