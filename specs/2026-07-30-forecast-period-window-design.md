@@ -77,8 +77,16 @@ user action.
 > **This break is INHERITED, not introduced.** Measured on `main` at the same commit: 0 → −100.00 on
 > a healthy on-grid roster, where this PR is byte-identical to `main`. Measured on this design:
 > 0 → −100.00 on both a healthy on-grid roster and a lapsed one. It is a property of the `> today`
-> gate, not of the window, and it is pinned by
+> gate, not of the window, and it was pinned by
 > `test_g2_guard_overdue_template_breaks_conservation_on_both_designs`.
+>
+> **⚠ SUPERSEDED by TBD-260** (`specs/2026-07-30-forecast-overdue-recurring-design.md`). The `> today`
+> gate is gone; `recurring_*` now bounds the OCCURRENCE by `[p_start, window_end]` and an
+> anti-double-count probe keyed on `(recurring_id, date)` suppresses occurrences that are already
+> rows. The third case is closed and conservation is **general**. That guard is now the fence
+> `test_g2_overdue_template_conserves_forecast_net_on_both_rosters`, asserting
+> `(−100.00, −100.00)` on both rosters. See the "Accepted residuals" entry below for why both of this
+> section's hand-off claims — "product question" and "bound it below by `p_start`" — were wrong.
 >
 > **This does NOT rescue the split.** The break the split introduces is on a **future-dated**
 > template — the case one window genuinely does conserve and two windows do not — so it is a
@@ -87,6 +95,7 @@ user action.
 > honest statement is: **conservation holds for templates due in the future; it holds under one
 > window and fails under the split. For overdue templates it fails under both, for a reason that
 > predates this PR.** Whether the overdue case is worth repairing is a separate question — see §5.
+> *(TBD-260 answered it: yes. Conservation is now general and the "honest statement" above is history.)*
 
 Both architects proposed a split; both then reproduced the break against their own design.
 
@@ -294,7 +303,11 @@ Three behaviour changes to name explicitly:
 
    In **both** sub-cases the org **loses its forward recurring projection** on the open period
    (100 → 0), because `next_due > today AND <= window_end` is unsatisfiable once `window_end` is not
-   past today. The amount is not destroyed — it appears on the successor's forecast, where it
+   past today. *(TBD-260 removed the `> today` conjunct; the projection is now bounded by
+   `window_end` alone, so on a lapsed roster the open period keeps whatever occurrences fall in
+   `[p_start, window_end]` — which, with `window_end == today`, is the overdue ones. The forward loss
+   described here still holds for occurrences past today; it is the roster boundary, not the clock.)*
+   The amount is not destroyed — it appears on the successor's forecast, where it
    belongs. Both candidate designs paid this identically; it is the unavoidable price of respecting
    the roster boundary at all.
 3. **Roster-tail and closed and healthy on-grid orgs: unchanged.**
@@ -337,16 +350,41 @@ Three behaviour changes to name explicitly:
   > "Next payment … on `<date>`" straight off this list, so a lapsed org sees a payment date weeks
   > in the past. **The PR description must say so.** Still no `> today` gate, for the reason above.
 
-- **An overdue recurring template moves `forecast_net` across `generate_due_transactions`, on any
-  window.** See the §2 correction: the `> today` gate at `forecast_service.py:165` keeps it out of
-  `recurring_*`, while `generate_due_transactions` puts it into `pending_*`. Measured 0 → −100.00 on
-  this design and on `main`. Pinned by G2. **Not fixed here** — it is orthogonal to the window and a
-  fix would have to decide whether an overdue template belongs in `recurring_*` at all, which is a
-  product question about what "upcoming" means, not a bounds question.
+- ~~**An overdue recurring template moves `forecast_net` across `generate_due_transactions`, on any
+  window.**~~ **RESOLVED by TBD-260** → `specs/2026-07-30-forecast-overdue-recurring-design.md`.
 
-  **Worth its own ticket. Follow-up, one line:** *`compute_forecast`'s `> today` recurring gate
-  excludes an overdue template that `generate_due_transactions` will nevertheless materialise, so
-  `forecast_net` moves with no user action the moment generation runs.*
+  The original text: the `> today` gate at `forecast_service.py:165` keeps an overdue template out of
+  `recurring_*` while `generate_due_transactions` puts it into `pending_*`; measured 0 → −100.00 on
+  this design and on `main`; pinned by G2; not fixed here.
+
+  **Two things in that hand-off were wrong, and the follow-up says so:**
+
+  1. *"a product question about what 'upcoming' means, not a bounds question."* It is a **bounds
+     question**, and this very document already ruled the opposite way for the loan and CC surfaces
+     at §5 (*"a past-due but genuinely unpaid instalment must still be projected; do **not** add a
+     `> today` gate"*), while `forecast_plan_service.populate_from_sources:509-536` already ships the
+     clock-free fast-forward. Three surfaces to one. `forecast_service.py:165` was the outlier.
+  2. The follow-up ticket TBD-260 prescribed bounding the query *"below by `p_start`"*
+     (`next_due_date >= p_start`). That is a **null fix**: `next_due_date` is a **frontier**, not an
+     occurrence date, so it leaves the ticket's own headline scenario broken in the same direction
+     and by the same amount (0 → −100.00). The bound has to be on the **occurrence**.
+
+  What shipped: the recurring query lost its lower bound entirely, the occurrence grid is walked
+  iteratively with `date_utils.occurrences_in_window` over `[p_start, window_end]`, and an
+  anti-double-count probe keyed on `(recurring_id, date)` — generation's own create-condition,
+  negated — suppresses occurrences that are already rows. `forecast_net` is now conserved across
+  `generate_due_transactions` on **every** roster, not only for future-dated templates.
+
+  G2 was rewritten from a guard into a fence (`(−100.00, −100.00)` on both rosters, values asserted,
+  never `before == after`). F8 was promoted from guard to fence: with no clock predicate left in the
+  recurring path, the whole payload is now identical across two injected clock values. F4's "scope of
+  the conservation claim" paragraph was rewritten — conservation is general now, not narrow. F12
+  gained the lower-bound coverage it never had (it pinned nine upper bounds and zero lower bounds).
+
+  TBD-260 also fixed a **live double-count on `main`** as a side effect: `promote_to_recurring` sets
+  `tx.recurring_id` on the source row and the UI sends `next_due_date == tx.date` for a future-dated
+  row, so `main` counted such a transaction in `recurring_*` **and** in `pending_*`. Unfenced before;
+  fenced now by F18/F16.
 
 - **`ai_forecast_refine_service` labels an N-month window "monthly". NOT fixed here — it needs a
   design round, exactly like `populate_from_sources` (§3.2).**
