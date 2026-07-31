@@ -119,22 +119,29 @@ async def test_bulk_delete_transactions_on_transfer_pair_no_circular_dependency(
     assert remaining.all() == []
 
 
-async def test_delete_transaction_with_asymmetric_link_does_not_orphan(db_session):
-    """Asymmetric FK case: only one half of the pair carries
-    ``linked_transaction_id`` pointing at the other; the back-pointer
-    is ``NULL``. The model allows it, and after a data-migration or
-    partial import it can show up in the wild. Deleting the side
-    that still carries the FK must cascade through the service's
-    ``linked_tx`` lookup, complete without raising, and leave no
-    orphan row."""
+async def test_delete_transaction_with_asymmetric_link_spares_the_partner(db_session):
+    """Asymmetric FK case: only one half carries ``linked_transaction_id``
+    pointing at the other; the back-pointer is ``NULL``.
+
+    INVERTED for TBD-280. The previous version of this test asserted that
+    BOTH rows disappear, and called the shape a "data-migration or partial
+    import" artifact. It is neither: it is the NORMAL output of
+    ``reconciliation_service._apply_match``, which writes the link ONE-WAY
+    onto the imported duplicate so the canonical row it matched against
+    stays canonical. Cascading the delete through it destroyed a row that
+    was never part of any transfer.
+
+    A link is a transfer link if, and only if, the partner links back.
+    """
     org, src, dst, expense, income = await _seed_pair(db_session)
-    # Break the back-pointer: income no longer references expense.
+    # Break the back-pointer: income no longer references expense. What
+    # remains is a one-way link, exactly as _apply_match writes it.
     income.linked_transaction_id = None
     await db_session.commit()
 
     await transaction_service.delete_transaction(db_session, org.id, expense.id)
 
     remaining = await db_session.scalars(
-        select(Transaction).where(Transaction.id.in_([expense.id, income.id]))
+        select(Transaction.id).where(Transaction.id.in_([expense.id, income.id]))
     )
-    assert remaining.all() == []
+    assert set(remaining.all()) == {income.id}
