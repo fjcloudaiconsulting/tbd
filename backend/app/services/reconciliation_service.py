@@ -55,6 +55,9 @@ from app.services.exceptions import (
     NotFoundError,
     ValidationError,
 )
+# transaction_filters lives in its own module precisely so it can be imported
+# at module scope from anywhere: it depends on models only, never on services.
+from app.services.transaction_filters import is_reciprocal_pair
 
 logger = structlog.get_logger()
 
@@ -550,6 +553,12 @@ async def _apply_match(
     without updating that filter -- doing so silently breaks CC carried-
     balance reconstruction. See the ``Transaction.linked_transaction_id``
     model docstring and ``reference_cc_model_v1`` (Slice 3 gotcha).
+
+    TBD-282: two reciprocity guards run BEFORE the write. Two one-way
+    matches applied in opposite directions manufacture a MUTUAL link out
+    of two reconcile matches, and every downstream predicate then reads
+    the pair as a real transfer -- balance reconstruction included. Both
+    guards are deliberately NARROW; see the comments at each.
     """
     match_id = transition.match_with_transaction_id
     if match_id is None:
@@ -568,6 +577,36 @@ async def _apply_match(
     )
     if target is None:
         raise NotFoundError("Match target transaction")
+
+    # Guard 1 (target side). NARROW ON PURPOSE: ``== tx.id``, never
+    # ``is not None``. Matching an imported row against a leg of a REAL
+    # transfer is a supported flow -- it is what
+    # ``transaction_service.find_duplicate_of_linked_leg`` exists to
+    # surface. Only a target that already links back AT ``tx`` is refused.
+    if target.linked_transaction_id == tx.id:
+        raise ValidationError(
+            f"Transaction {target.id} is already matched to transaction {tx.id}; "
+            "matching in the opposite direction would make them look like a "
+            "transfer pair. Accept or reject one of the two rows instead."
+        )
+
+    # Guard 2 (tx side). Deliberately narrower than ``_apply_edits``'
+    # blanket refusal: it refuses only a MUTUAL link, so re-matching a row
+    # that still carries a stale ONE-WAY link after MATCHED -> ACCEPTED ->
+    # PENDING_REVIEW keeps working (nothing clears the link on reopen).
+    if tx.linked_transaction_id is not None:
+        current = await db.scalar(
+            select(Transaction).where(
+                Transaction.id == tx.linked_transaction_id,
+                Transaction.org_id == org_id,
+            )
+        )
+        if is_reciprocal_pair(tx, current):
+            raise ValidationError(
+                f"Transaction {tx.id} is a transfer leg; unlink the transfer "
+                "before matching it to another transaction."
+            )
+
     tx.linked_transaction_id = match_id
 
 
