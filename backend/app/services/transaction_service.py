@@ -37,6 +37,7 @@ from app.services.exceptions import ConflictError, NotFoundError, ValidationErro
 from app.services.list_query import resolve_order_by
 from app.services.transaction_filters import (
     effective_period_date_expr,
+    is_reciprocal_pair,
     is_reportable_transaction,
 )
 
@@ -1570,6 +1571,28 @@ async def unpair_transactions(
     if preview.linked_transaction_id is None:
         raise ValidationError("Transaction is not part of a transfer pair")
 
+    # TBD-281: non-nullness is NOT pairhood. ``_apply_match`` writes
+    # ``linked_transaction_id`` ONE-WAY onto the imported duplicate, so a
+    # non-null link routinely points at an unrelated canonical row. Unpairing
+    # such a link used to rewrite BOTH rows' category_id.
+    #
+    # This is the CHEAP pre-lock probe -- advisory only, it just avoids the
+    # category round-trips below in the common case. The AUTHORITATIVE check
+    # runs under FOR UPDATE further down.
+    #
+    # 400, not 409: ConflictError means "refresh and retry" and clients may
+    # auto-retry; retrying can never make a one-way link mutual. Same message
+    # as the null case above -- at this layer we know the link is non-mutual,
+    # not why.
+    preview_partner = await db.scalar(
+        select(Transaction).where(
+            Transaction.id == preview.linked_transaction_id,
+            Transaction.org_id == org_id,
+        )
+    )
+    if not is_reciprocal_pair(preview, preview_partner):
+        raise ValidationError("Transaction is not part of a transfer pair")
+
     # Validate fallback categories upfront (raises NotFoundError on miss).
     await validate_category(db, expense_fallback_category_id, org_id)
     await validate_category(db, income_fallback_category_id, org_id)
@@ -1603,6 +1626,32 @@ async def unpair_transactions(
         .execution_options(populate_existing=True)
     )
     rows = list(locked.scalars().all())
+
+    # AUTHORITATIVE reciprocity check (TBD-281), on the LOCKED rows. Its
+    # position is load-bearing and it must stay HERE:
+    #
+    #   * BEFORE the ``len(rows) != 2`` race test -- a self-linked row makes
+    #     ``sorted([id, id])`` collapse to one row, so it would otherwise
+    #     report 409 "Pair partner not found", which is a lie: nothing raced.
+    #   * BEFORE the type-composition test -- ``_apply_match`` does not
+    #     require opposite types, so a same-type one-way link would otherwise
+    #     report 409 "Pair has invalid type composition", blaming the data
+    #     for what is really a bad request.
+    #
+    # ``subject is None`` is deliberately left to fall through: that IS the
+    # genuine race (the subject row disappeared between preview and lock),
+    # and 409 "refresh and retry" is the right answer for it.
+    rows_by_id = {r.id: r for r in rows}
+    subject = rows_by_id.get(transaction_id)
+    if subject is not None:
+        locked_partner = (
+            rows_by_id.get(subject.linked_transaction_id)
+            if subject.linked_transaction_id is not None
+            else None
+        )
+        if not is_reciprocal_pair(subject, locked_partner):
+            raise ValidationError("Transaction is not part of a transfer pair")
+
     if len(rows) != 2:
         raise ConflictError("Pair partner not found; refresh and retry")
 
