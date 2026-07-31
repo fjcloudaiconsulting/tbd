@@ -107,6 +107,43 @@ def _safe_month_anchor(d: datetime.date) -> datetime.date:
     return d
 
 
+async def _skew_ids(db: AsyncSession) -> None:
+    """Insert throwaway rows in a SECOND org so ``org_id``, ``account_id`` and
+    ``category_id`` come out pairwise DISTINCT in the org under test.
+
+    Without this every id in the fixture is ``1``, and
+    ``cat_recurring[r.category_id]`` can be swapped for ``r.account_id`` or
+    ``r.org_id`` with no test red: the name lookup resolves id 1 to "Food"
+    either way. The decoys live on the DECOY org precisely so the skewed ids
+    are NOT valid category ids of the org under test — the name lookup in
+    ``compute_forecast`` filters on ``Category.org_id``, so a mis-keyed
+    breakdown surfaces as ``"Unknown"`` rather than silently resolving.
+    """
+    decoy_org = Organization(name="decoy", billing_cycle_day=1)
+    db.add(decoy_org)
+    await db.flush()
+    decoy_at = AccountType(
+        org_id=decoy_org.id, name="Decoy", slug="decoy", is_system=False
+    )
+    db.add(decoy_at)
+    await db.flush()
+    db.add_all([
+        Account(
+            org_id=decoy_org.id, name=f"decoy-{i}", account_type_id=decoy_at.id,
+            balance=Decimal("0.00"), currency="EUR", is_default=False,
+        )
+        for i in range(4)
+    ])
+    db.add_all([
+        Category(
+            org_id=decoy_org.id, name=f"decoy-{i}", slug=f"decoy-{i}",
+            type=CategoryType.EXPENSE,
+        )
+        for i in range(6)
+    ])
+    await db.flush()
+
+
 async def _seed(
     db: AsyncSession,
     *,
@@ -114,6 +151,7 @@ async def _seed(
     closed_windows: tuple[tuple[datetime.date, datetime.date], ...] = (),
     cycle_day: int = 1,
     balance: Decimal = Decimal("1000.00"),
+    distinct_ids: bool = False,
 ) -> dict:
     """One org, TWO checking accounts, an expense/income/transfer category set,
     a period roster.
@@ -121,7 +159,11 @@ async def _seed(
     Scaffolding mirrors ``test_forecast_window_end._seed``; the second account
     exists so F18 can build a genuine transfer pair (``_link_pair`` refuses two
     legs on the same account).
+
+    ``distinct_ids`` prepends the decoy rows described in ``_skew_ids``.
     """
+    if distinct_ids:
+        await _skew_ids(db)
     org = Organization(name="T", billing_cycle_day=cycle_day)
     db.add(org)
     await db.flush()
@@ -222,7 +264,8 @@ async def _rows(db: AsyncSession, org_id: int) -> list[Transaction]:
 
 
 async def _seed_on_grid(
-    db: AsyncSession, *, today: datetime.date, days_before: int
+    db: AsyncSession, *, today: datetime.date, days_before: int,
+    distinct_ids: bool = False,
 ) -> tuple[dict, datetime.date, datetime.date]:
     """A HEALTHY on-grid org whose open period started ``~days_before`` ago.
 
@@ -241,6 +284,7 @@ async def _seed_on_grid(
         open_start=p_start,
         closed_windows=((window_end + DAY, window_end + datetime.timedelta(days=30)),),
         cycle_day=cycle_day,
+        distinct_ids=distinct_ids,
     )
     assert current_cycle_window(cycle_day, today) == (p_start, window_end)
     return seed, p_start, window_end
@@ -286,10 +330,13 @@ async def test_f13_pre_period_frontier_projects_only_in_window_occurrences(db_se
     seed, p_start, window_end = await _seed_on_grid(db_session, today=today, days_before=5)
     frontier = p_start - relativedelta(months=1)
 
-    # Fixture preconditions — without these the fence is decoration.
+    # Fixture preconditions — without these the fence is decoration. Only the
+    # non-tautological ones are asserted: `p_start + 1 month > window_end`
+    # (i.e. exactly ONE in-window occurrence) holds by construction of
+    # `_safe_month_anchor` + `_calendar_fallback` and asserting it here would be
+    # decoration, not a precondition.
     assert frontier < p_start
     assert advance_date(frontier, Frequency.MONTHLY) == p_start   # a FULL period
-    assert p_start + relativedelta(months=1) > window_end          # only ONE in-window
     assert window_end > today
 
     db_session.add(_template(seed, next_due_date=frontier))
@@ -356,10 +403,10 @@ async def test_f14_weekly_overdue_template_projects_every_in_window_occurrence(d
     seed, p_start, window_end = await _seed_on_grid(db_session, today=today, days_before=10)
     frontier = p_start - datetime.timedelta(days=11)
 
-    # Fixture preconditions.
-    assert p_start + datetime.timedelta(days=24) <= window_end
-    assert p_start + datetime.timedelta(days=31) > window_end
-
+    # Fixture reasoning, NOT asserted: by construction of `_safe_month_anchor`
+    # + `_calendar_fallback`, window_end is p_start + 27..30 days, so
+    # `p_start + 24 <= window_end < p_start + 31` holds always. Asserting it
+    # would be a tautology wearing a precondition's clothes.
     db_session.add(_template(
         seed, amount=Decimal("10.00"), frequency="weekly", next_due_date=frontier,
     ))
@@ -606,61 +653,113 @@ async def test_f16_probe_suppresses_already_materialised_occurrences(db_session)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# F17 — fence. The two walks truncate identically, and both are ITERATED.
+# F17a — fence. The grid is ITERATED, the cap is an ALIAS, and STALENESS DOES
+#        NOT CHANGE THE WINDOW.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_f17_occurrence_walk_matches_generation_walk():
-    """FENCE. One iteration budget, one grid.
+_CAP_NAME = "MAX_CATCHUP_ITERATIONS"
+_ALIASED_NAME = "MAX_OCCURRENCE_ITERATIONS"
 
-    Two claims, both structural:
 
-    1. ``date_utils.MAX_OCCURRENCE_ITERATIONS is
-       recurring_service.MAX_CATCHUP_ITERATIONS``. If they were two independent
-       literals, a pathologically stale template would truncate at different
-       points in the projection and in generation, and ``forecast_net`` would
-       move with no user action — the exact defect TBD-260 removes, reintroduced
-       through the back door.
-    2. ``occurrences_in_window`` walks with ``advance_date``, never closed-form.
+def _cap_binding_rhs(module) -> ast.expr:
+    """The single module-level right-hand side bound to ``MAX_CATCHUP_ITERATIONS``.
 
-    ⚠ **The fixture MUST start on the 31st.** ``advance_date`` is
-    path-dependent at month ends: Jan 31 -> Feb 28 -> Mar 28 -> Apr 28, NOT
-    Mar 31 / Apr 30. A non-month-end fixture makes the closed-form answer and
-    the iterated answer identical and the fence vacuous. The assertion below
-    that ``2026-03-31`` is absent while ``2026-03-28`` is present is what makes
-    that discrimination explicit.
+    Accepts ``X = ...`` and ``X: int = ...``. The original guard looked only at
+    ``ast.Assign``, so a perfectly good ``MAX_CATCHUP_ITERATIONS: int = <alias>``
+    failed it with the misleading message "must be bound exactly once"
+    (``reference_over_specified_test_false_red``).
+    """
+    tree = ast.parse(inspect.getsource(module))
+    bindings: list[ast.expr] = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == _CAP_NAME for t in node.targets
+        ):
+            bindings.append(node.value)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == _CAP_NAME
+            and node.value is not None
+        ):
+            bindings.append(node.value)
+    assert len(bindings) == 1, f"{_CAP_NAME} must be bound exactly once"
+    return bindings[0]
 
-    Fixed literals, not ``today ± n``: this test is about the calendar itself,
-    and 2026 is deliberately a non-leap year so ``Feb 28`` is stable.
+
+def _import_aliases(module) -> dict[str, str]:
+    """``{local name -> original name}`` for every import in ``module``."""
+    tree = ast.parse(inspect.getsource(module))
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                aliases[a.asname or a.name] = a.name.split(".")[-1]
+    return aliases
+
+
+def test_f17a_catchup_cap_is_an_alias_and_the_walk_is_iterated():
+    """FENCE. Three claims, all structural.
+
+    1. **The cap is an ALIAS, not a second literal.** Sizing the projection's
+       walk and generation's walk from two independent ``500``\\ s is how they
+       drift. ⚠ A VALUE comparison cannot see this — they are equal the day it
+       is written — so the equality is backed by an AST guard over
+       ``recurring_service``'s own source. There is no type checker in CI.
+
+       ⚠ **What the alias does NOT buy.** It does not make the two walks
+       truncate at the same place, and the docstrings no longer claim it does:
+       generation's cap MAKES PROGRESS (it advances ``next_due_date``), a
+       projection's cap makes none. F17b is the fence for the conservation that
+       reasoning got wrong.
+
+    2. **The occurrence grid is ITERATED, never closed-form.** ⚠ The fixture
+       MUST start on the 31st: ``advance_date`` is path-dependent at month ends
+       (Jan 31 -> Feb 28 -> Mar 28 -> Apr 28, NOT Mar 31 / Apr 30). A
+       non-month-end fixture makes the closed-form answer and the iterated
+       answer identical and the fence vacuous.
+
+       Fixed literals, not ``today ± n``: this is about the calendar itself,
+       and 2026 is deliberately a non-leap year so ``Feb 28`` is stable.
+
+    3. **Staleness does not change the window.** Two frontiers on the SAME
+       weekly grid — one a single step before ``start``, one 900 steps before —
+       must yield the identical occurrence list. This is the property the
+       fast-forward cap broke: 900 > ``MAX_OCCURRENCE_ITERATIONS``, so under
+       the shared budget the far frontier returned ``[]``.
 
     Wrong implementations killed:
       * a closed-form first-in-window jump (``next_due + ceil(...) months``) —
         yields ``Mar 31 / Apr 30 / May 31``;
-      * ``MAX_CATCHUP_ITERATIONS = 500`` re-declared as its own literal. ⚠ A
-        VALUE comparison cannot see this — the two are equal the day it is
-        written and drift silently later. The equality below is therefore
-        backed by an AST guard over ``recurring_service``'s own source, which
-        asserts the right-hand side of that assignment is a NAME and not a
-        constant. There is no type checker in CI to catch it otherwise.
+      * ``MAX_CATCHUP_ITERATIONS = 500`` re-declared as its own literal, or
+        ``int(500)``;
+      * an iteration budget on the fast-forward loop — claim 3 goes to
+        ``[] != [...]``.
+
+    ⚠ The guard accepts every GENUINE alias form: a bare name, an aliased
+    import (``import ... as _CAP``), a dotted
+    ``date_utils.MAX_OCCURRENCE_ITERATIONS``, and an annotated assignment. It
+    is a fence against a re-declared literal, not against a rename.
     """
     assert recurring_service.MAX_CATCHUP_ITERATIONS == MAX_OCCURRENCE_ITERATIONS
 
-    tree = ast.parse(inspect.getsource(recurring_service))
-    binding = [
-        node for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == "MAX_CATCHUP_ITERATIONS"
-            for t in node.targets
-        )
-    ]
-    assert len(binding) == 1, "MAX_CATCHUP_ITERATIONS must be bound exactly once"
-    rhs = binding[0].value
-    assert isinstance(rhs, ast.Name), (
-        "MAX_CATCHUP_ITERATIONS must ALIAS date_utils.MAX_OCCURRENCE_ITERATIONS, "
-        f"not re-declare a literal (got {ast.dump(rhs)})"
+    rhs = _cap_binding_rhs(recurring_service)
+    assert not any(isinstance(n, ast.Constant) for n in ast.walk(rhs)), (
+        f"{_CAP_NAME} must ALIAS date_utils.{_ALIASED_NAME}, not re-declare a "
+        f"literal (got {ast.dump(rhs)})"
     )
-    assert rhs.id == "MAX_OCCURRENCE_ITERATIONS"
+    aliases = _import_aliases(recurring_service)
+    referenced = {
+        aliases.get(n.id, n.id) for n in ast.walk(rhs) if isinstance(n, ast.Name)
+    } | {
+        n.attr for n in ast.walk(rhs) if isinstance(n, ast.Attribute)
+    }
+    assert _ALIASED_NAME in referenced, (
+        f"{_CAP_NAME} must resolve to date_utils.{_ALIASED_NAME} "
+        f"(got {ast.dump(rhs)})"
+    )
 
+    # ── 2. The grid is iterated ───────────────────────────────────────────
     next_due = datetime.date(2026, 1, 31)
     start = datetime.date(2026, 2, 1)
     end = datetime.date(2026, 5, 31)
@@ -686,12 +785,128 @@ def test_f17_occurrence_walk_matches_generation_walk():
     assert datetime.date(2026, 3, 31) not in got
     assert datetime.date(2026, 3, 28) in got
 
-    # The budget spans BOTH loops from the same origin, so a walk that would
-    # need more steps than the cap truncates rather than running away.
-    capped = occurrences_in_window(
-        next_due, Frequency.MONTHLY, start, end, max_iterations=2,
+    # ── 3. Staleness does not change the window ───────────────────────────
+    w_start = datetime.date(2026, 3, 2)
+    w_end = datetime.date(2026, 3, 30)
+    near = occurrences_in_window(
+        w_start - datetime.timedelta(weeks=1), Frequency.WEEKLY, w_start, w_end
     )
-    assert capped == [datetime.date(2026, 2, 28)]
+    far = occurrences_in_window(
+        w_start - datetime.timedelta(weeks=900), Frequency.WEEKLY, w_start, w_end
+    )
+    assert 900 > MAX_OCCURRENCE_ITERATIONS      # the fixture is genuinely deep
+    assert near == [
+        datetime.date(2026, 3, 2),
+        datetime.date(2026, 3, 9),
+        datetime.date(2026, 3, 16),
+        datetime.date(2026, 3, 23),
+        datetime.date(2026, 3, 30),
+    ]
+    assert far == near
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F17b — fence. A DEEPLY STALE frontier conserves ``forecast_net`` across
+#        generation. The fence the shared iteration budget needed and lacked.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_f17b_deeply_stale_frontier_conserves_forecast_net(db_session):
+    """FENCE. The shared iteration budget was a live conservation defect.
+
+    ``occurrences_in_window`` used to spend ONE budget across its fast-forward
+    and its collect loop. The justification — "the two walks cannot truncate
+    differently, because ``MAX_CATCHUP_ITERATIONS`` is an alias" — is true of a
+    single snapshot and false of the invariant it was offered to support:
+
+      * generation's cap bounds WORK and makes PROGRESS. It advances
+        ``next_due_date`` 500 steps per run, so the origin MOVES;
+      * a cap on the fast-forward bounds VISIBILITY and makes NO progress. On
+        exhaustion the helper returned ``[]``, so in-window occurrences became
+        invisible rather than merely expensive.
+
+    So the two walks truncate at the same ordinal occurrence *from the same
+    origin*, and generation moves the origin.
+
+    The fixture is reachable, not theoretical: ``POST /api/v1/recurring`` has
+    **no past-date guard** on ``next_due_date`` (unlike
+    ``promote_to_recurring``), and a single-digit year typo — 2016 for 2026 —
+    is 521 weekly steps.
+
+    Measured on the shared budget: ``forecast_net`` ran
+    ``0 -> -500.00 -> -500.00 -> -500.00`` across scheduler ticks. It moved with
+    no user action, which is the entire defect TBD-260 exists to remove.
+    Conservation held to 495 steps back and broke at 496.
+
+    Wrong implementations killed:
+      * an iteration budget on the fast-forward loop, shared or separate —
+        ``before.forecast_net`` is 0 instead of -500;
+      * a fast-forward that returns ``[]`` on ANY bound it cannot reach.
+
+    ⚠ The truncation is driven through ``compute_forecast`` and a real
+    ``generate_due_transactions`` run, not through a direct helper call: the
+    defect is the two services disagreeing, and a unit call cannot see that.
+
+    ⚠ **Anti-vacuity: generation's OWN cap must genuinely bite here**, or the
+    fixture is just a slow version of F14. The asserts below pin that run 1
+    materialises exactly ``MAX_CATCHUP_ITERATIONS`` rows and leaves the frontier
+    STILL before ``p_start`` — that intermediate state is the one the old code
+    could not project.
+    """
+    today = datetime.date.today()
+    seed, p_start, window_end = await _seed_on_grid(db_session, today=today, days_before=10)
+    stale_steps = 521
+    frontier = p_start - datetime.timedelta(weeks=stale_steps)
+
+    # Fixture preconditions — each one discriminating.
+    assert stale_steps > MAX_OCCURRENCE_ITERATIONS
+    assert frontier + datetime.timedelta(weeks=stale_steps) == p_start
+    # The in-window count is five: p_start + 0/7/14/21/28. By construction of
+    # `_safe_month_anchor` + `_calendar_fallback`, window_end is p_start + 27..30
+    # days, so this holds without an assert that would be a tautology.
+
+    db_session.add(_template(
+        seed, amount=Decimal("100.00"), frequency="weekly", next_due_date=frontier,
+    ))
+    await db_session.commit()
+
+    before = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+    assert Decimal(before["recurring_expense"]) == Decimal("500")   # 5 x 100, not 0
+    assert Decimal(before["pending_expense"]) == Decimal("0")
+    nets = [Decimal(before["forecast_net"])]
+
+    for tick in range(3):
+        res = await recurring_service.generate_due_transactions(
+            db_session, seed["org_id"], today=today
+        )
+        if tick == 0:
+            # Anti-vacuity: generation's per-run cap really does truncate, and
+            # the frontier is still stale afterwards.
+            assert res["generated"] == recurring_service.MAX_CATCHUP_ITERATIONS
+            template = (await db_session.execute(
+                select(RecurringTransaction).where(
+                    RecurringTransaction.org_id == seed["org_id"]
+                )
+            )).scalar_one()
+            assert template.next_due_date == frontier + datetime.timedelta(
+                weeks=recurring_service.MAX_CATCHUP_ITERATIONS
+            )
+            assert template.next_due_date < p_start
+        fc = await forecast_service.compute_forecast(
+            db_session, seed["org_id"], today=today
+        )
+        nets.append(Decimal(fc["forecast_net"]))
+
+    # THE fence. Not `['0', '-500.00', '-500.00', '-500.00']`.
+    assert nets == [Decimal("-500")] * 4
+
+    # And the amount really did change buckets rather than sitting still.
+    final = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+    assert Decimal(final["recurring_expense"]) == Decimal("0")
+    assert Decimal(final["pending_expense"]) == Decimal("500")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -867,3 +1082,285 @@ async def test_f19_probe_is_not_bounded_on_the_effective_period_date(db_session)
     assert (
         Decimal(this["forecast_expense"]) + Decimal(nxt["forecast_expense"])
     ) == Decimal("100")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F20 — fence. The probe's key is a PAIR. Dimension 1: the DATE, varied while
+#       the ``recurring_id`` is held fixed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_f20_probe_key_varies_by_date_within_one_template(db_session):
+    """FENCE. One template, PARTIALLY materialised — the normal mid-period state.
+
+    Every other fixture in this file is one-occurrence-per-template on a
+    distinct date, so the probe's ``(recurring_id, date)`` key is satisfied by
+    either component alone and the pair is not fenced on this dimension. A
+    mutation audit confirmed the obvious simplification —
+    ``if r.id in materialised_ids: continue`` — is green across the suite while
+    dropping 30.00 of genuinely unmaterialised obligation.
+
+    A weekly 10.00 template with FOUR in-window occurrences
+    (``p_start + 3/10/17/24``), of which exactly ONE (``+10``) is already a row.
+    The remaining three are still owed.
+
+    Wrong implementations killed:
+      * a probe keyed on ``recurring_id`` alone — ``recurring_expense`` is 0
+        instead of 30.00, ``forecast_expense`` 10.00 instead of 40.00, and the
+        three real obligations reappear one scheduler tick later;
+      * no probe at all — 40.00 projected on top of the 10.00 pending: 50.00.
+
+    ⚠ The frontier stays at the FIRST occurrence. If it advanced past the
+    materialised one, the query gate would still select the template but the
+    fast-forward would skip ``+3`` and the partial-materialisation shape would
+    be lost.
+    """
+    today = datetime.date.today()
+    seed, p_start, window_end = await _seed_on_grid(db_session, today=today, days_before=10)
+    frontier = p_start + datetime.timedelta(days=3)
+    occurrences = [frontier + datetime.timedelta(weeks=k) for k in range(4)]
+
+    template = _template(
+        seed, amount=Decimal("10.00"), frequency="weekly", next_due_date=frontier,
+    )
+    db_session.add(template)
+    await db_session.flush()
+    # Exactly ONE of the four, materialised. By construction of
+    # `_safe_month_anchor` + `_calendar_fallback`, window_end is p_start + 27..30
+    # days, so occurrences[3] (= p_start + 24) is in and p_start + 31 is out.
+    db_session.add(_pending(seed, "10.00", occurrences[1], recurring_id=template.id))
+    await db_session.commit()
+
+    fc = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+
+    assert Decimal(fc["recurring_expense"]) == Decimal("30")   # 3 x 10, not 0, not 40
+    assert Decimal(fc["pending_expense"]) == Decimal("10")
+    assert Decimal(fc["forecast_expense"]) == Decimal("40")    # not 10, not 50
+    assert sum(
+        Decimal(c["recurring"]) for c in fc["categories"]
+    ) == Decimal(fc["recurring_expense"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F21 — fence. Dimension 2 of the probe's key: the ``recurring_id``, varied
+#       while the DATE is held fixed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_f21_probe_key_varies_by_template_on_one_shared_date(db_session):
+    """FENCE. Three templates due the SAME day; one of them materialised.
+
+    Rent, gym and insurance all falling on the 1st is ordinary, not exotic. A
+    probe keyed on ``date`` alone suppresses all three the moment any one of
+    them is a row.
+
+    Distinct amounts so a failure names the leak: rent 10.00 (materialised),
+    gym 5.00 and insurance 2.00 (still owed).
+
+    Wrong implementations killed:
+      * a probe keyed on ``Transaction.date`` alone — ``recurring_expense`` is 0
+        instead of 7.00, and 7.00 of real obligation reappears at the next tick;
+      * no probe at all — the rent occurrence is counted twice: 17.00 projected
+        on top of 10.00 pending.
+
+    ⚠ MONTHLY, and the shared date placed so the next occurrence is out of
+    window: one occurrence per template is what makes the shared-date collision
+    the only thing under test.
+    """
+    today = datetime.date.today()
+    seed, p_start, window_end = await _seed_on_grid(db_session, today=today, days_before=5)
+    shared = today + datetime.timedelta(days=3)
+
+    rent = _template(seed, description="rent", amount=Decimal("10.00"), next_due_date=shared)
+    gym = _template(seed, description="gym", amount=Decimal("5.00"), next_due_date=shared)
+    ins = _template(seed, description="ins", amount=Decimal("2.00"), next_due_date=shared)
+    db_session.add_all([rent, gym, ins])
+    await db_session.flush()
+    db_session.add(_pending(seed, "10.00", shared, recurring_id=rent.id))
+    await db_session.commit()
+
+    # Preconditions: all three are inside the window and each has exactly ONE
+    # occurrence in it.
+    assert p_start <= shared <= window_end
+    assert advance_date(shared, Frequency.MONTHLY) > window_end
+
+    fc = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+
+    assert Decimal(fc["recurring_expense"]) == Decimal("7")    # 5 + 2, not 0, not 17
+    assert Decimal(fc["pending_expense"]) == Decimal("10")
+    assert Decimal(fc["forecast_expense"]) == Decimal("17")    # not 10, not 27
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F22 — fence. The category breakdown is keyed by ``category_id``, on a fixture
+#       whose ids are PAIRWISE DISTINCT.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_f22_recurring_breakdown_is_keyed_by_category_id(db_session):
+    """FENCE. A right-and-wrong-agree fixture, repaired.
+
+    Every seed in this file used to hand out ``org_id == account_id ==
+    cat_id == 1``, so ``cat_recurring[r.category_id]`` could be swapped for
+    ``r.account_id`` or ``r.org_id`` with ZERO tests red — the name lookup
+    resolved id 1 to "Food" either way. ``_skew_ids`` makes the three
+    pairwise distinct, and puts the decoys on a DIFFERENT org so a mis-keyed
+    lookup cannot resolve at all.
+
+    Wrong implementations killed:
+      * ``cat_recurring[r.account_id]`` — the breakdown row carries the account
+        id and the name ``"Unknown"``;
+      * ``cat_recurring[r.org_id]`` — same shape, different wrong id;
+      * income fed into ``cat_recurring`` (see F23) — a second row appears.
+    """
+    today = datetime.date.today()
+    seed, p_start, window_end = await _seed_on_grid(
+        db_session, today=today, days_before=5, distinct_ids=True
+    )
+    due = today + datetime.timedelta(days=3)
+
+    # THE precondition. Without it this test is decoration.
+    assert len({seed["org_id"], seed["account_id"], seed["cat_id"]}) == 3, seed
+
+    db_session.add(_template(seed, amount=Decimal("100.00"), next_due_date=due))
+    await db_session.commit()
+
+    assert p_start <= due <= window_end
+    assert advance_date(due, Frequency.MONTHLY) > window_end
+
+    fc = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+
+    assert Decimal(fc["recurring_expense"]) == Decimal("100")
+    assert [
+        (c["category_id"], c["category_name"], c["recurring"]) for c in fc["categories"]
+    ] == [(seed["cat_id"], "Food", "100.00")]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F23 — fence. The INCOME half of the recurring walk. Unfenced repo-wide until
+#       now: ``recurring_income`` was asserted by NO test in ``backend/tests``.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_f23_overdue_income_template_conserves_via_recurring_income(db_session):
+    """FENCE. An overdue INCOME template projects into ``recurring_income``.
+
+    A mutation audit found that summing an income template into
+    ``recurring_expense``, or feeding income into ``cat_recurring``, was green
+    across the entire backend suite. ``forecast_income`` and ``forecast_net``
+    are consumed by ``DashboardDataProvider.tsx``, so the branch is
+    user-visible; this PR's claim that ONE walk feeds both the totals and the
+    breakdown was fenced only on the expense side.
+
+    Same shape as F13 — a monthly frontier a FULL period before ``p_start``,
+    exactly one in-window occurrence — on the income branch.
+
+    Wrong implementations killed:
+      * ``recurring_expense += r.amount`` for an income template — the two
+        by-name asserts below invert, and ``forecast_net`` reads -300 not +300;
+      * ``cat_recurring`` updated for income too — the breakdown is no longer
+        empty, and the expense-only "Forecast by Category" donut grows a
+        phantom row;
+      * the shipped ``next_due_date > today`` gate — ``recurring_income`` is 0
+        and the net moves 0 -> +300 on the scheduler's tick.
+
+    ⚠ ``categories`` is asserted EMPTY, not ``all(... == 0)``: ``all(())`` is
+    True, and the breakdown here is legitimately empty
+    (``reference_self_review_without_copilot``). Emptiness is what
+    discriminates the ``cat_recurring`` leak.
+    """
+    today = datetime.date.today()
+    seed, p_start, window_end = await _seed_on_grid(db_session, today=today, days_before=5)
+    frontier = p_start - relativedelta(months=1)
+
+    assert frontier < p_start
+    assert advance_date(frontier, Frequency.MONTHLY) == p_start   # a FULL period
+
+    db_session.add(_template(
+        seed, description="salary", type="income", category_id=seed["cat_income"],
+        amount=Decimal("300.00"), next_due_date=frontier,
+    ))
+    await db_session.commit()
+
+    before = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+    assert Decimal(before["recurring_income"]) == Decimal("300")
+    assert Decimal(before["recurring_expense"]) == Decimal("0")
+    assert Decimal(before["forecast_income"]) == Decimal("300")
+    assert Decimal(before["forecast_net"]) == Decimal("300")
+    assert before["categories"] == []          # income NEVER enters cat_recurring
+
+    res = await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=today
+    )
+    assert res["generated"] == 2               # frontier + p_start; one is pre-period
+    rows = await _rows(db_session, seed["org_id"])
+    assert [r.type for r in rows] == [TransactionType.INCOME] * 2
+
+    after = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+    assert Decimal(after["pending_income"]) == Decimal("300")
+    assert Decimal(after["recurring_income"]) == Decimal("0")
+    assert Decimal(after["recurring_expense"]) == Decimal("0")
+    assert Decimal(after["forecast_net"]) == Decimal(before["forecast_net"])
+    assert after["categories"] == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F24 — fence. ``is_active`` still gates the projection.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_f24_inactive_templates_are_not_projected(db_session):
+    """FENCE. A paused template is not an obligation.
+
+    Pre-existing coverage gap: dropping ``RecurringTransaction.is_active ==
+    True`` from the recurring query was green across the whole backend suite.
+    This PR rewrote that query, so the predicate gets a fence here.
+
+    An INACTIVE 100.00 template and an ACTIVE 7.00 one, both due on the same
+    in-window date. The active companion is what stops this from being an
+    everything-is-zero test: a projection that returned nothing at all would
+    pass without it.
+
+    Wrong implementation killed: ``is_active`` dropped from the query —
+    ``recurring_expense`` is 107.00 instead of 7.00, and it then FALLS to 7.00
+    at the next tick, because ``generate_due_transactions`` filters on
+    ``is_active`` too and never materialises the paused one.
+    """
+    today = datetime.date.today()
+    seed, p_start, window_end = await _seed_on_grid(db_session, today=today, days_before=5)
+    due = today + datetime.timedelta(days=3)
+
+    db_session.add_all([
+        _template(seed, description="paused", amount=Decimal("100.00"),
+                  next_due_date=due, is_active=False),
+        _template(seed, description="live", amount=Decimal("7.00"), next_due_date=due),
+    ])
+    await db_session.commit()
+
+    assert p_start <= due <= window_end
+    assert advance_date(due, Frequency.MONTHLY) > window_end
+
+    before = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+    assert Decimal(before["recurring_expense"]) == Decimal("7")    # NOT 107
+    assert Decimal(before["forecast_net"]) == Decimal("-7")
+
+    res = await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=today
+    )
+    assert res["generated"] == 1
+    rows = await _rows(db_session, seed["org_id"])
+    assert [r.amount for r in rows] == [Decimal("7.00")]
+
+    after = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+    assert Decimal(after["pending_expense"]) == Decimal("7")
+    assert Decimal(after["recurring_expense"]) == Decimal("0")
+    assert Decimal(after["forecast_net"]) == Decimal("-7")

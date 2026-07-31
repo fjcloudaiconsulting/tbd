@@ -6,12 +6,14 @@ from dateutil.relativedelta import relativedelta
 
 from app.models.recurring import Frequency
 
-# Defensive cap on any walk over a recurring template's occurrence grid.
-# ``recurring_service.MAX_CATCHUP_ITERATIONS`` is an ALIAS of this value, not a
-# second constant: ``generate_due_transactions`` and ``occurrences_in_window``
-# walk the same grid from the same origin, and a forecast that projected
-# occurrences generation truncates away (or vice versa) would move
-# ``forecast_net`` with no user action. One number, two call sites.
+# Defensive cap on how many occurrences one walk may COLLECT out of a single
+# window. ``recurring_service.MAX_CATCHUP_ITERATIONS`` is an ALIAS of this
+# value, not a second literal, so the two walks over a template's occurrence
+# grid are sized by one number rather than by two constants that drift apart.
+#
+# ⚠ It is NOT a cap on how far a walk may travel to REACH the window. The
+# fast-forward loop in ``occurrences_in_window`` is deliberately UNCAPPED; see
+# that docstring for why capping it was a correctness bug and not a safety net.
 MAX_OCCURRENCE_ITERATIONS = 500
 
 
@@ -54,23 +56,53 @@ def occurrences_in_window(
     Clamping it (``max(next_due, start)``) would shift the grid off the
     template's day-of-month and project dates generation never creates.
 
-    The iteration budget is SINGLE and spans both loops from the same origin,
-    so a pathologically stale template truncates here exactly where the
-    generation catch-up loop truncates.
+    **The fast-forward loop carries NO iteration budget, deliberately.** It
+    used to share one budget with the collect loop below, on the claim that
+    "the two walks cannot truncate differently". That claim is true of a single
+    snapshot and FALSE of the invariant it was offered to support, because the
+    two caps are not the same kind of cap:
+
+    * generation's cap bounds WORK and MAKES PROGRESS — the catch-up loop
+      mutates ``next_due_date`` forward on every step, so a run that hits the
+      cap leaves the frontier 500 steps nearer the window and the next run
+      resumes from there;
+    * a cap on this fast-forward bounds VISIBILITY and makes NO progress — on
+      exhaustion it returned an empty list, so in-window occurrences became
+      INVISIBLE rather than merely expensive, and nothing ever recovered them.
+
+    Measured on the shared budget: a weekly template whose frontier sat 521
+    occurrences before ``p_start`` (``POST /api/v1/recurring`` has no past-date
+    guard on ``next_due_date``, so a single-digit year typo reaches it)
+    projected ``recurring_expense == 0``; one scheduler tick advanced the
+    frontier inside the budget and the same window then reported 500.00.
+    ``forecast_net`` moved with no user action — the exact defect TBD-260
+    exists to remove. Conservation held to 495 steps and broke at 496.
+
+    The loop is inherently bounded without a cap: ``advance_date`` moves
+    strictly forward for every frequency, the ``nxt <= d`` no-progress guard
+    below is the real defence against a runaway, and the loop terminates at
+    ``start``. ``forecast_plan_service.populate_from_sources`` already ships
+    exactly this uncapped shape.
+
+    The COLLECT loop keeps ``max_iterations``, and that is a different
+    exposure: it bounds occurrences per WINDOW, and the window comes from the
+    billing-period roster (the open period's start is app-derived from
+    ``current_cycle_window``; closed periods are admin-created through an
+    overlap-validated endpoint), not from an unvalidated user-supplied date.
+    Reaching it needs a single period window longer than 500 steps of the
+    template's frequency — ~9.6 years of weekly. See §11 of
+    ``specs/2026-07-30-forecast-overdue-recurring-design.md``.
     """
     out: list[datetime.date] = []
     d = next_due
-    iterations = 0
 
     while d < start:
-        if iterations >= max_iterations:
-            return out
-        iterations += 1
         nxt = advance_date(d, freq)
         if nxt <= d:
             return out
         d = nxt
 
+    iterations = 0
     while d <= end:
         if iterations >= max_iterations:
             break

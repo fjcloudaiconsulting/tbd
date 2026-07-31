@@ -545,13 +545,24 @@ async def test_f8_guard_healthy_on_grid_period_is_unchanged(db_session):
     # calendar fallback coincide, and BOTH injected clock values sit at or
     # before it — so `max(derived, today)` is demonstrably INERT and any
     # difference between the two payloads is the recurring path reading the
-    # clock, not the window floor moving under the test.
-    assert p_start <= calendar_end
+    # clock, not the window floor moving under the test. (`p_start <=
+    # calendar_end` is NOT asserted: it is a tautology of `_calendar_fallback`,
+    # and a tautology dressed as a precondition is decoration.)
     assert at_start["period_end"] == at_end["period_end"] == calendar_end.isoformat()
 
     # THE FENCE. Every named field, plus the breakdown.
     named = [k for k in at_start if k != "categories"]
-    assert len(named) == 12, named   # the payload is not silently empty
+    # The payload is not silently empty. ⚠ NOT `len(named) == 12`: that reds on
+    # any legitimate new field, which is the inverse defect
+    # (`reference_over_specified_test_false_red`). The floor plus the named
+    # membership is what this needs to say.
+    assert len(named) >= 12, named
+    assert {
+        "period_start", "period_end", "executed_income", "executed_expense",
+        "pending_income", "pending_expense", "recurring_income",
+        "recurring_expense", "forecast_income", "forecast_expense",
+        "forecast_net",
+    } <= set(named), named
     for key in named:
         assert at_start[key] == at_end[key], key
     assert at_start["categories"] == at_end["categories"]
@@ -1067,16 +1078,25 @@ async def test_f10b_recurring_gate_consumes_the_same_injected_clock(db_session):
     at all, only ``window_end``. Leaving the old docstring in place would claim
     protection the code shape no longer permits — worse than deleting the test.
 
-    What survives, and what this now kills, is the ONE remaining route by which
-    a clock reaches the recurring bucket — ``window_end``:
+    What survives, and what this actually kills, is ONE thing:
 
-      * a SECOND ``window_end`` computed for the recurring query (e.g. left on
-        the pre-TBD-243 calendar fallback ``p_start + 1 month - 1 day``, which
-        here runs to ``T-20 + 1 month ~ T+10``, past the derived end ``T+9``);
       * ``today=today`` dropped on the ``period_spend_window_end`` call at the
         top — the window then floors at the real wall clock (``T+40``), the
         reported ``period_end`` is wrong, and the successor's window is
         swallowed.
+
+    ⚠ **It does NOT kill "a SECOND ``window_end`` computed for the recurring
+    query".** An earlier revision of this docstring claimed it did. Injecting
+    exactly that (the pre-TBD-243 calendar fallback ``p_start + 1 month - 1
+    day``, here ``T+10`` against the derived end ``T+9``) leaves this test
+    PASSING: the single monthly occurrence at ``T-35`` sits inside BOTH
+    candidate horizons and the next one is outside both, so the amount cannot
+    discriminate them. Measured, not assumed. That mutation is caught — by
+    ``test_f4``, ``test_f12``, ``test_g2`` and
+    ``test_forecast_overdue_recurring.test_f10c``, all of which place an
+    occurrence in the gap between the two horizons. A fence that names a kill
+    it cannot make is worse than no comment
+    (``reference_over_specified_test_false_red``).
 
     The body is unchanged. ``period_end`` is asserted alongside the amount
     precisely because the amount alone no longer distinguishes them.

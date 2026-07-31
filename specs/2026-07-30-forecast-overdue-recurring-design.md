@@ -148,7 +148,7 @@ are an index-friendly narrowing and nothing else. **F16** nevertheless pins both
 ## 5. `occurrences_in_window` is ITERATED, never closed-form
 
 New pure helper in `date_utils.py`. It fast-forwards `while d < start` and then collects
-`while d <= end`, with a **single** iteration budget spanning both loops from the same origin.
+`while d <= end`. **The fast-forward loop carries no iteration budget; the collect loop does.**
 
 `advance_date` is **path-dependent** at month ends: `Jan 31 → Feb 28 → Mar 28 → Apr 28`, *not*
 `Mar 31 / Apr 30`. `generate_due_transactions` walks the same way from the same origin. A closed-form
@@ -156,10 +156,29 @@ jump to the first in-window date would disagree with the dates generation actual
 conservation is a claim about exactly those dates, not about a count.
 
 `MAX_OCCURRENCE_ITERATIONS = 500` lives in `date_utils.py`; `recurring_service.MAX_CATCHUP_ITERATIONS`
-is an **alias** of it, not a second literal, so a pathologically stale template truncates identically
-in both walks. **F17** pins the grid with a month-end fixture (`next_due = 2026-01-31`) and pins the
-alias with an **AST guard** over `recurring_service`'s source — a value comparison cannot tell an
-alias from a duplicated literal, and there is no type checker in CI.
+is an **alias** of it, not a second literal, so the two walks are sized by one number rather than by
+two constants that drift. **F17a** pins the grid with a month-end fixture (`next_due = 2026-01-31`)
+and pins the alias with an **AST guard** over `recurring_service`'s source — a value comparison cannot
+tell an alias from a duplicated literal, and there is no type checker in CI.
+
+⚠ **The alias does NOT make the two walks truncate at the same place, and the first revision of this
+section said it did.** The two caps are not the same kind of cap:
+
+- generation's cap bounds **work** and **makes progress** — the catch-up loop mutates `next_due_date`
+  forward on every step, so a capped run leaves the frontier 500 steps nearer the window and the next
+  run resumes from there;
+- a cap on the fast-forward bounds **visibility** and makes **no** progress — on exhaustion the helper
+  returned `[]`, so in-window occurrences became *invisible* rather than merely expensive.
+
+The two walks therefore truncate at the same ordinal occurrence *from the same origin*, and generation
+**moves the origin**. Full trace, measurement and fix in §12.
+
+The collect loop keeps its budget, and that is a materially different exposure. It bounds occurrences
+per **window**, and the window comes from the billing-period roster — the open period's start is
+app-derived from `current_cycle_window`, closed periods are admin-created through the
+overlap-validated `settings.py:746` endpoint. `next_due_date`, by contrast, is user-supplied with no
+past-date guard at all. Reaching the collect budget needs a single period window longer than 500 steps
+of the template's frequency (~9.6 years of weekly); see §11.
 
 ## 6. One walk feeds both the totals and the categories
 
@@ -169,8 +188,24 @@ totals came to disagree on suppressed occurrences.
 
 This matters beyond tidiness: `ai_forecast_refine_service` reads `baseline["categories"][*]["forecast"]`
 (which is `str(ex + pe + rc)`) at `:272`, `:314` and `:344-352`. Totals that move without the
-breakdown moving make the AI baseline internally inconsistent, and F3's breakdown-sums-to-totals
-assertions go red.
+breakdown moving make the AI baseline internally inconsistent.
+
+⚠ **An earlier revision said "F3's breakdown-sums-to-totals assertions go red". That is false** — F3
+(`test_f3_off_grid_window_stops_at_successor_including_categories`) seeds **no recurring templates at
+all** and cannot see the recurring breakdown. The real fences for the split-walk mutation are **F16**
+and **F18** (both assert the breakdown while a projection is suppressed), plus **F14** and **F20**,
+which assert `sum(c["recurring"]) == recurring_expense` directly. Verified by injection.
+
+The breakdown key itself is fenced by **F22**, on a fixture whose `org_id`, `account_id` and
+`category_id` are pairwise **distinct**. Every seed in these files previously handed out `1` for all
+three, so `cat_recurring[r.category_id]` could be swapped for `r.account_id` or `r.org_id` with zero
+tests red — the name lookup resolved id 1 to "Food" either way. `_skew_ids` puts the decoy rows on a
+*different* org, so a mis-keyed lookup cannot resolve and surfaces as `"Unknown"`.
+
+The **income** half of the walk is fenced by **F23**. Before it, `recurring_income` was asserted by no
+test anywhere in `backend/tests`: summing an income template into `recurring_expense`, or feeding
+income into `cat_recurring`, was green across the entire backend suite. `forecast_income` and
+`forecast_net` are consumed by `DashboardDataProvider.tsx`, so the branch is user-visible.
 
 `compute_forecast`'s signature is **unchanged** — `(db, org_id, period_start=None, *, today=...)`.
 The fakes at `test_ai_forecast_refine_service.py:162, :202, :271` implement
@@ -222,6 +257,26 @@ it as a side effect. **F18** and **F16** are its fences.
 - Orgs with automation **off** and an overdue template see "Expected spending" rise to include the
   obligation they already owe. That is the fix.
 
+### 9.1 Closed / historical periods now report non-zero `recurring_*`
+
+Undocumented in the first revision, correct, and worth saying out loud.
+
+`GET /api/v1/forecast?period_start=` is **user-facing** — the period picker browses closed periods.
+For any window entirely in the past, `main`'s gate `next_due_date <= window_end AND next_due_date >
+today` was **structurally unsatisfiable**: `window_end < today`, so no row could satisfy both. Closed
+periods therefore reported `recurring_* == 0` by construction, not by fact, and "Expected spending"
+was blank there.
+
+With the gate removed, a closed period reports the occurrences that genuinely fell inside it and were
+never materialised. Browsing a past period now shows an "Expected spending" figure where it used to
+show nothing.
+
+This is the **conserving** direction and therefore correct: an obligation that fell in that window and
+was never generated *was* owed in that window, and `pending_*`/`executed_*` for that same window count
+only the materialised half. Reporting zero was the bug. **F19** exercises the two-period sum directly
+(one obligation, one hundred, across a period boundary) and pins that the amount is not double-counted
+across neighbours.
+
 ## 10. Fences, and the injection evidence
 
 Every fence below was verified by injecting the named wrong implementation and confirming RED.
@@ -240,20 +295,27 @@ Existing coverage that must stay green and unmodified: F1, F2, F3, F6, F7a, F7b,
 | **F10c** | ″ | projecting to `current_cycle_window(...)[1]` instead of `window_end` | A · L: 50 vs 10 |
 | **F15** (`auto_settle`) | ″ | projecting only non-`auto_settle` templates; conservation asserted via `pending_*` alone | A · M: 0 vs 100 |
 | **F16** (probe, frontier rewound) | ″ | no probe (2220); probe `date > p_start` (1120); probe `date < window_end` (2110); split category walk | G: 100.00 · J: 10.00 · K: 1000.00 · O |
-| **F17** (month-end + AST) | ″ | closed-form occurrence grid; `MAX_CATCHUP_ITERATIONS` re-declared as a literal | C · N: `Constant(value=500)` |
+| **F17a** (month-end + AST + staleness) | ″ | closed-form occurrence grid; `MAX_CATCHUP_ITERATIONS` re-declared as a literal; **an iteration budget on the fast-forward** | C · N: `Constant(value=500)` · S: `[] != [5 dates]` |
+| **F17b** (deep staleness, 521 steps) | ″ | **the shared iteration budget**; `> today`; `>= p_start`; fast-forward removed | S: `recurring_expense` 0 vs 500 |
 | **F18** (promote + pair) | ″ | **probe carrying `reportable_transaction_filter()`**; no probe; split category walk | G · H: 100.00 vs 0 · O |
 | **F19** (successor period) | ″ | **probe bounded on `effective_period_date_expr()`**; no probe; no lower bound | C · G · I: 100.00 vs 0 |
+| **F20** (partial materialisation) | ″ | **the probe key reduced to `recurring_id`** — `if r.id in materialised_ids: continue` | 0 vs 30.00 |
+| **F21** (three templates, one shared date) | ″ | **the probe key reduced to `date`** | 0 vs 7.00 |
+| **F22** (distinct ids) | ″ | `cat_recurring` keyed by `r.account_id` or `r.org_id` | breakdown id + `"Unknown"` |
+| **F23** (income) | ″ | income summed into `recurring_expense`; income fed into `cat_recurring`; `> today`; `>= p_start` | 300 vs 0 |
+| **F24** (`is_active`) | ″ | `is_active == True` dropped from the recurring query | 107.00 vs 7.00 |
 
-**Boundary sweep** (flip one bound at a time, confirm RED):
+**Boundary sweep** (flip one bound at a time, confirm RED). Re-measured against the final tree; the
+"RED at" column is the *complete* set of reds, not a sample:
 
 | bound | flip | RED at |
 |---|---|---|
-| query `next_due_date <= window_end` | `<` | F12 (29 vs 52) |
-| helper `while d <= end` | `<` | F12 (29 vs 52) |
-| helper `while d < start` | `<=` | F13 (0 vs 100), F12 (23 vs 52) |
-| helper `while d < start` | removed entirely | F13 (200), F14 (60), F17, F19, F12 (1049) |
-| probe `Transaction.date >= p_start` | `>` | F16 (10.00 leaks) |
-| probe `Transaction.date <= window_end` | `<` | F16 (1000.00 leaks) |
+| query `next_due_date <= window_end` | `<` | F12 |
+| helper `while d <= end` | `<` | F12, F17a |
+| helper `while d < start` | `<=` | F12, F13, F17a, F17b, F23 |
+| helper `while d < start` | removed entirely | F12, F13, F14, F17a, F17b, F19, F23 |
+| probe `Transaction.date >= p_start` | `>` | F16 |
+| probe `Transaction.date <= window_end` | `<` | F16 |
 
 ## 11. Residuals
 
@@ -262,5 +324,129 @@ Existing coverage that must stay green and unmodified: F1, F2, F3, F6, F7a, F7b,
   them.
 - **`ai_forecast_refine_service` still labels an N-month window "monthly".** Untouched; TBD-243 §5
   announced it; it needs its own design round.
-- **A template whose frontier is more than `MAX_OCCURRENCE_ITERATIONS` periods stale** truncates in
-  both walks, identically. F17 pins the identity, not the value; nothing depends on 500 in particular.
+- **The collect loop's `max_iterations` is the same defect class as §12, at a far more extreme
+  fixture, and it is knowingly retained.** If a single forecast window contains more than 500
+  occurrences of one template, the projection truncates while generation — capped per *run*, and
+  making progress across runs — eventually materialises all of them, so `forecast_net` moves. The
+  difference that makes this acceptable where the fast-forward's cap was not: the fast-forward's
+  exposure was bounded by `next_due_date`, which is **user-supplied with no past-date guard** and
+  reachable by a single-digit year typo; the collect loop's exposure is bounded by the **window
+  length**, which comes from the billing-period roster (open period start derived by
+  `current_cycle_window`; closed periods created through the overlap-validated admin endpoint at
+  `settings.py:746`). It needs a single period spanning ~9.6 years of weekly, ~19 years of biweekly,
+  or ~41 years of monthly. Not fenced, deliberately: a fence would pin a limitation rather than a
+  property. If a period roster ever admits multi-year windows, delete the budget — the `nxt <= d`
+  no-progress guard is the real defence, and `forecast_plan_service.populate_from_sources` already
+  ships uncapped.
+- **`recurring_service.MAX_CATCHUP_ITERATIONS` remains an alias.** F17a pins the aliasing, not the
+  value; nothing depends on 500 in particular. The alias is a "sized by one number" claim only — see
+  §5 for what it deliberately no longer claims.
+
+## 12. Review fold — the shared iteration budget, and what a mutation audit added
+
+Two independent reviews landed on the branch after the first revision of this document. Both found
+real defects; neither ticket-style "here is the one-liner" framing survived contact with the code.
+
+### 12.1 The finding: the shared budget broke conservation for deeply-stale frontiers
+
+`date_utils.occurrences_in_window` spent **one** `max_iterations` budget across its fast-forward loop
+and its collect loop. A weekly template whose frontier sat 521 steps before `p_start` produced:
+
+```
+frontier 521w back -> forecast_net across scheduler ticks: ['0', '-500.00', '-500.00', '-500.00']
+```
+
+`forecast_net` moved `0 → −500.00` on a scheduler tick with **no user action** — precisely the defect
+class this PR exists to remove, reintroduced through the helper. Measured threshold: conservation held
+through 495 steps back and broke at 496 (`−400.00 → −500.00`, the collect loop truncated mid-window),
+fully at ≥500. Across a 20-case deep-staleness matrix over all five frequencies, **11/20 broke**;
+weekly (~9.5 years) and biweekly (~19 years) are the realistic ones.
+
+The fixture is reachable. `POST /api/v1/recurring` has **no past-date guard** on `next_due_date`
+(`schemas/recurring.py:15` is a bare `datetime.date`), unlike `promote_to_recurring:733`. A
+single-digit year typo — 2016 for 2026 — is 521 weekly steps.
+
+**Why the alias did not deliver what §5 claimed** is set out in §5 itself: generation's cap makes
+progress and moves the origin; a projection's cap does not. The claim was true of a single snapshot
+and false of the invariant it was offered to support. The wording is corrected in `date_utils.py`,
+`recurring_service.py` and §5.
+
+**The fix:** drop the iteration budget from the fast-forward loop only. That loop is inherently
+bounded — `advance_date` moves strictly forward for every frequency, the `nxt <= d` no-progress guard
+is the real defence, and it terminates at `start`. `forecast_plan_service.py:526` already ships
+exactly this shape (`while d < p_start and d <= p_end`, no cap). The collect loop keeps its budget;
+§11 records why, and what would force its removal.
+
+### 12.2 F17 was fencing the mechanism, not the property
+
+`test_f17_occurrence_walk_matches_generation_walk` asserted `max_iterations=2` behaviour. It pinned
+the *shared-budget mechanism* rather than *conservation under truncation* — so it was the one test
+that went red against the fix, and it was red for the wrong reason. Split and re-aimed:
+
+- **F17a** keeps the AST alias guard and the month-end iterated-grid assertions, and replaces the
+  `max_iterations=2` assertion with the property that actually matters at the unit level: **two
+  frontiers on the same weekly grid, one 1 step back and one 900 steps back, must yield the identical
+  occurrence list.** Under the shared budget the far one returned `[]`.
+- **F17b** is the fence the defect needed: a 521-step-stale weekly frontier, driven through
+  `compute_forecast` and three real `generate_due_transactions` runs, asserting `forecast_net` is
+  `-500` at **every** tick. Anti-vacuity: it asserts run 1 materialises exactly
+  `MAX_CATCHUP_ITERATIONS` rows and leaves the frontier *still* before `p_start` — the intermediate
+  state the old code could not project.
+
+An independent mutation audit instrumented the fast-forward's truncation branch and confirmed it never
+fired for any test on the branch: neutering the cap was green. F17b closes that coverage hole.
+
+### 12.3 What the mutation audit added (~40 mutations)
+
+| # | Gap | Fence added | Injected → RED |
+|---|---|---|---|
+| V1 | the probe's `(recurring_id, date)` key was unfenced on **both** dimensions — every fixture was one occurrence per template on a distinct date | **F20** (one weekly template, 1 of 4 occurrences materialised) and **F21** (three templates on one shared date, one materialised) | `if r.id in materialised_ids` → 0 vs 30.00 · key on `date` alone → 0 vs 7.00 |
+| V2 | a right-and-wrong-agree fixture: every id in every seed was `1`, so `cat_recurring[r.category_id]` was swappable for `r.account_id` / `r.org_id` | **F22** + `_skew_ids`, decoys on a *different* org so a mis-key cannot resolve | both swaps → wrong `category_id`, `"Unknown"` |
+| V3 | `recurring_income` was asserted by **no test in `backend/tests`** | **F23** (overdue income template conserving across generation) | income into `recurring_expense` → 300 vs 0 · income into `cat_recurring` → non-empty breakdown |
+| V4 | `is_active` was unfenced repo-wide (pre-existing; this PR rewrote the query) | **F24** (paused 100.00 + live 7.00, same date) | 107.00 vs 7.00 |
+| V5 | two docstring/spec overclaims | wording only — see below | — |
+| V6 | F17's AST guard was over-specified: three *genuine* aliases went red | widened in F17a | — |
+| V7 | decorative assertions | removed / rewritten | — |
+
+**V5, both verified by execution, both corrected in place:**
+
+- **F10b's docstring** claimed it kills "a SECOND `window_end` computed for the recurring query".
+  Injecting exactly that leaves F10b **passing** — its single monthly occurrence at `T-35` sits inside
+  both candidate horizons and the next is outside both, so the amount cannot discriminate. The
+  mutation *is* caught, by F4, F12, G2 and F10c. Docstring re-aimed at what it actually kills.
+- **§6** claimed "F3's breakdown-sums-to-totals assertions go red". F3 seeds no recurring templates
+  and cannot see the recurring breakdown. Corrected: the real fences are F16, F18, F14 and F20.
+
+**V6** — the AST guard asserted `isinstance(rhs, ast.Name)` and `rhs.id == "MAX_OCCURRENCE_ITERATIONS"`.
+That reds three genuine aliases: `import ... as _CAP`, `date_utils.MAX_OCCURRENCE_ITERATIONS` (an
+`ast.Attribute`), and `MAX_CATCHUP_ITERATIONS: int = ...` (an `ast.AnnAssign`, which failed with the
+misleading "must be bound exactly once"). The inverse defect
+(`reference_over_specified_test_false_red`). Widened: it now resolves import aliases, accepts
+`Attribute` and `AnnAssign`, and fences on the RHS containing **no `ast.Constant`** — which still reds
+a literal `500` and `int(500)`.
+
+**V7** — `F8`'s `assert len(named) == 12` reds on any legitimate new payload field; replaced with a
+floor plus explicit named membership. Tautological "fixture preconditions" (`p_start <= calendar_end`,
+F13's `p_start + 1 month > window_end`, F14's two bounds) hold by construction of `_calendar_fallback`
+/ `_safe_month_anchor`; dropped, with a comment saying so, so the remaining preconditions are all real.
+
+### 12.4 Not folded
+
+- `test_g1_cc_phantom_payments_multiply_per_cycle_on_lapsed_roster` fails on the **5th of every
+  month** (`assert 3 == 2`, `payment_day=5`). Verified byte-identical to `main`; inherited, filed
+  separately, deliberately untouched here.
+
+### 12.5 Test count
+
+Measured against the final tree, full backend suite, isolated compose project:
+
+```
+3547 passed, 12 skipped, 59 warnings in 1403.36s (0:23:23)
+```
+
+⚠ **The pre-fold baselines quoted during review do not reconcile with each other**, and this number
+supersedes all of them. The PR body said `3492 passed`; one reviewer measured `3513 passed, 12
+skipped` on branch head; the mutation audit reported "green across all 3525 backend tests". This fold
+adds five new fences and splits F17 into two, i.e. +6 collected tests — which reconciles with none of
+the three. Only the number above was measured against the tree that is committed; the earlier figures
+should not be carried forward.
