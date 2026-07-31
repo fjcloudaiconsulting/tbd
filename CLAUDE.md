@@ -93,6 +93,18 @@ appended 95 lines to a different ticket's test file this way; it was additive,
 caught, and reverted before any commit. See
 `memory/reference_rev_parse_toplevel_not_a_worktree_anchor.md`.
 
+**Killing a `docker compose exec` kills only the local client — the process keeps
+running inside the container.** Interrupting a long `pytest` leaves it alive,
+consuming CPU and competing with whatever you start next; two agents on
+2026-07-31 each lost a full-suite run this way, one of them to a run whose
+source files were being mutated underneath it. Before trusting any timing or
+result, scan for orphans with `/proc/*/cmdline` (`ps` is not installed in the
+image) and **exclude your own scanning shell from the matches** — a scan that
+matches only itself reads as "idle" and is how the second agent got caught. For
+the same reason, never launch a full suite in the background and then edit or
+inject into the same worktree: a result from a run whose tree changed mid-flight
+is worthless in both directions.
+
 `./pfv migrate` is for the user's local stack only. Do not invoke it from an
 agent session; it has no `-p` flag and always targets the default project.
 
