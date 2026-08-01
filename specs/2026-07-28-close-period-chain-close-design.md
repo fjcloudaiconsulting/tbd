@@ -150,8 +150,8 @@ The order below is therefore **normative**, not illustrative:
 
 ```
 close_period(db, org_id, close_date=None, *, today=None):
- 1. current   = await get_current_period(db, org_id)         # uses db.execute
- 2. today     = today if today is not None else date.today() # D2
+ 1. today     = today if today is not None else date.today() # D2 (see TBD-297 note)
+ 2. current   = await get_current_period(db, org_id, today=today)  # uses db.execute
  3. requested = close_date if not None else today - 1 day
  4. if requested > today:                 raise ValidationError    # D1
  5. if requested < current.start_date:    raise ValidationError    # pre-existing
@@ -284,6 +284,14 @@ straddle midnight and a click cannot straddle its own request; (b) `get_current_
 auto-create branch reads `datetime.date.today()` at `billing_service.py:100` and is **not**
 threaded by D2, so `today=` is not authoritative when no open row exists. Threading it there is
 out of scope; the spec records the gap rather than implying it is closed.
+
+> **CORRECTION (TBD-297).** Residual (b) is now CLOSED. `get_current_period` takes a keyword-only
+> `today=` consumed by its auto-create branch, and `close_period` threads it. Consequently steps 1
+> and 2 above are **swapped** relative to the original normative list: the clock resolves first,
+> because step 2 now needs it. The swap is safe under the ordering rule this section states — the
+> resolution is a pure local rebind that issues no statement, so it cannot participate in autoflush
+> ordering. Residual (a), the manual path reading `date.today()`, still stands, but it is now a
+> single read shared by every callee rather than one of two independent reads.
 
 **D3 — The clamp is the deliverable; the bound is hygiene.** Both production harms (§0) arrive
 with a `close_date` at or before yesterday, which D1 accepts. A change that ships only the bound

@@ -1235,7 +1235,8 @@ async def test_ensure_future_periods_survives_a_concurrent_stub_revival(
     # Pin `base` to the PRE-tick open period, which is what the in-flight
     # caller read. Re-reading it now would return the revived row instead
     # (`get_current_period` orders `start_date DESC`) and hide the race.
-    async def _stale_current(db, org_id):
+    # `today` mirrors the real signature (TBD-297); unused here.
+    async def _stale_current(db, org_id, *, today=None):
         return (
             await db.execute(
                 select(BillingPeriod).where(BillingPeriod.id == open_id)

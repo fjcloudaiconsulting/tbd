@@ -1067,7 +1067,11 @@ async def test_a_racer_that_closed_the_row_before_the_lock_is_not_closed_twice(
         session_factory, org_id, datetime.date(2026, 7, 28), None
     )
 
-    async def _stale_current(db, _org_id):
+    # Accepts `today` because the real `get_current_period` now takes it
+    # (TBD-297). The stub ignores it deliberately: this test is about the F1
+    # lock finding a row a racer already closed, and the auto-create branch
+    # the kwarg feeds is never reached here.
+    async def _stale_current(db, _org_id, *, today=None):
         return (
             await db.execute(
                 select(BillingPeriod).where(BillingPeriod.id == closed_id)
@@ -1474,3 +1478,150 @@ async def test_duplicate_open_rows_floor_overlaps_the_later_open_row(session_fac
         )
         assert window == today
         assert window >= b_start, "the floored window deliberately overlaps open row B"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TBD-297 — `get_current_period`'s auto-create branch must use the CALLER's
+#           clock. The created row's `start_date` is a money-row anchor.
+#
+# Every date below is 2099, which the wall clock cannot equal. That is not
+# decoration: a fence for "uses the injected clock, not `date.today()`" is
+# vacuous the moment the two can coincide, and a near-today literal would make
+# it coincide for one cycle (`reference_wall_clock_date_bomb_tests`, class 2).
+# ─────────────────────────────────────────────────────────────────────────────
+
+INJECTED = datetime.date(2099, 3, 17)
+
+
+async def _seed_org_without_any_period(
+    factory: async_sessionmaker[AsyncSession], *, org_id: int = 1, cycle_day: int = 1
+) -> None:
+    """An org with NO `BillingPeriod` at all — the auto-create precondition."""
+    async with factory() as db:
+        db.add(Organization(id=org_id, name="test-org", billing_cycle_day=cycle_day))
+        await db.commit()
+
+
+async def test_get_current_period_auto_creates_from_the_injected_clock(session_factory):
+    """FENCE — TBD-297.
+
+    Wrong implementation killed: `today = datetime.date.today()` in the
+    auto-create branch (i.e. ignoring the new kwarg). The created row would
+    anchor to the real current cycle instead of 2099-03-01, and this assertion
+    reads the anchor directly rather than any derived quantity.
+    """
+    # cycle_day=15, deliberately NOT 1: `get_current_period`'s no-org fallback
+    # is also 1, so a cycle_day of 1 would let an implementation that ignores
+    # `org.billing_cycle_day` entirely pass this fence by coincidence.
+    await _seed_org_without_any_period(session_factory, cycle_day=15)
+
+    async with session_factory() as db:
+        period = await billing_service.get_current_period(db, 1, today=INJECTED)
+
+    assert period.start_date == datetime.date(2099, 3, 15), (
+        f"auto-created period anchored to {period.start_date}, not to the "
+        f"injected clock's cycle start. The wall clock leaked into a money-row "
+        f"anchor (TBD-297)."
+    )
+
+
+async def test_get_current_period_still_uses_the_wall_clock_when_none_given(
+    session_factory,
+):
+    """GUARD — omitting `today` is a legitimate call (the request handlers do
+    it), and must keep the previous behaviour rather than crash or anchor to
+    something arbitrary.
+    """
+    await _seed_org_without_any_period(session_factory)
+    expected, _ = billing_service.current_cycle_window(1, datetime.date.today())
+
+    async with session_factory() as db:
+        period = await billing_service.get_current_period(db, 1)
+
+    assert period.start_date == expected
+
+
+async def test_get_current_period_ignores_the_clock_when_a_row_already_exists(
+    session_factory,
+):
+    """GUARD — `today` is consumed by the auto-create branch ONLY.
+
+    Pins the docstring's claim that an org with an open row is a pure read.
+    Without this, widening the kwarg's reach later (e.g. re-anchoring an
+    existing row to `today`) would pass every other test in this block.
+    """
+    start = await _seed_org_with_open_period(session_factory, org_id=1)
+
+    async with session_factory() as db:
+        period = await billing_service.get_current_period(db, 1, today=INJECTED)
+
+    assert period.start_date == start
+
+
+async def test_close_period_threads_its_clock_into_the_auto_create(session_factory):
+    """FENCE — TBD-297, the `close_period` half.
+
+    `close_period` resolves `today` once and must hand it to
+    `get_current_period`, or the row it then closes was anchored by a second,
+    independent clock.
+
+    Wrong implementation killed: `get_current_period(db, org_id)` at step 2
+    without `today=`. The auto-created row then anchors to the REAL cycle
+    (2026-08-01 at time of writing) while the close runs against the injected
+    clock, so the org's first period is anchored to a cycle the caller never
+    decided about.
+
+    ⚠ Which assertion does the killing, verified by injection rather than
+    assumed: **only the closed-row assertion at the end**. The
+    `new_period.start_date` assertion PASSES against the wrong implementation —
+    `requested` (2099-03-16) sits far ABOVE the wall-clock anchor, so the
+    lower-bound check at step 5 never fires, `_next_period_start` returns None
+    with a single row, and the successor still opens at 2099-03-17. It is
+    corroborating, not killing. Do not "simplify" this test down to it.
+    """
+    await _seed_org_without_any_period(session_factory)
+
+    async with session_factory() as db:
+        new_period = await billing_service.close_period(db, 1, today=INJECTED)
+
+    # CORROBORATING (see docstring): true under both implementations.
+    assert new_period.start_date == datetime.date(2099, 3, 17)
+
+    async with session_factory() as db:
+        closed = (
+            await db.execute(
+                select(BillingPeriod).where(
+                    BillingPeriod.org_id == 1,
+                    BillingPeriod.end_date.is_not(None),
+                )
+            )
+        ).scalars().all()
+    # THE FENCE: reads the closed row's anchor directly. Un-threaded this is
+    # [2026-08-01] — the wall clock, in a row the injected clock closed.
+    assert [p.start_date for p in closed] == [datetime.date(2099, 3, 1)]
+
+
+async def test_resolve_period_threads_its_clock_into_the_auto_create(session_factory):
+    """FENCE — TBD-297, the `resolve_period` pass-through.
+
+    `resolve_period` is the intermediary that hides `get_current_period`'s
+    auto-create from its callers (`account_balance_forecast_service`,
+    `budget_service`, `forecast_plan_service`, `budget_draft_service`). A caller
+    that resolved a clock and called it looked clock-safe while still anchoring
+    a new period to a second clock.
+
+    Only the fallback arm can auto-create, so that is the arm fenced here.
+
+    Wrong implementation killed: `return await get_current_period(db, org_id)`
+    without `today=` -> the row anchors to the wall clock's cycle instead of
+    2099-03-15.
+    """
+    await _seed_org_without_any_period(session_factory, cycle_day=15)
+
+    async with session_factory() as db:
+        period = await billing_service.resolve_period(db, 1, None, today=INJECTED)
+
+    assert period.start_date == datetime.date(2099, 3, 15), (
+        f"resolve_period's fallback auto-created at {period.start_date}; the "
+        f"caller's clock did not reach get_current_period (TBD-297)"
+    )

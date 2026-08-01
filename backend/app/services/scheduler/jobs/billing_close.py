@@ -29,7 +29,10 @@ class BillingCloseJob:
 
     async def is_due(self, db: AsyncSession, org: Organization, today: datetime.date) -> bool:
         boundary = billing_service.current_cycle_window(org.billing_cycle_day, today)[0]
-        current = await billing_service.get_current_period(db, org.id)
+        # `today=` is load-bearing, not decoration (TBD-297): for an org with no
+        # open row, `get_current_period` auto-creates one, and without the tick's
+        # clock the comparison below is made across two different cycles.
+        current = await billing_service.get_current_period(db, org.id, today=today)
         return current.start_date < boundary
 
     async def run(self, db: AsyncSession, org: Organization, today: datetime.date) -> JobResult:
@@ -84,7 +87,7 @@ class BillingCloseJob:
             # rows this run closes come back through its `closed_ids`
             # out-parameter. `is_due` fetches the closing row only to discard
             # it, so the loop still reads it itself for the progress guard.
-            closing = await billing_service.get_current_period(db, org.id)
+            closing = await billing_service.get_current_period(db, org.id, today=today)
             # SNAPSHOT both attributes as plain values immediately (code review
             # F2). `close_period`'s D4 path calls `db.rollback()`, which expires
             # the whole identity map and then repopulates only the row at
