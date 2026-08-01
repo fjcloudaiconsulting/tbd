@@ -596,9 +596,16 @@ async def period_spend_window_end(
     ``today`` is keyword-only and injectable (D6) because this introduces the
     wall clock into money computation; tests anchor relative to
     ``date.today()`` rather than on literals near the clamp boundary
-    (``reference_wall_clock_date_bomb_tests``). **Callers that resolve a window
-    AND do any other date arithmetic must resolve the clock once themselves and
-    pass a concrete date to both** — see :func:`suggest_rebalance
+    (``reference_wall_clock_date_bomb_tests``) **and choose a fixture geometry
+    whose assertions do not swing with day-of-month or month length** — the
+    second half is not optional, and omitting it is what produced TBD-278. Where
+    the quantity under test genuinely is a function of day-of-month, pin a
+    literal and assert the geometry it was chosen for; see the fixture-dating
+    rule in ``tests/services/test_forecast_window_end.py`` (TBD-296).
+
+    **Callers that resolve a window AND do any other date arithmetic must
+    resolve the clock once themselves and pass a concrete date to both** —
+    see :func:`suggest_rebalance
     <app.services.budget_rebalance_service.suggest_rebalance>`, where letting
     the ``None`` default through to two callees separated by a round-trip would
     reintroduce exactly the two-clocks straddle D6 exists to prevent.
