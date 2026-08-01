@@ -30,12 +30,22 @@ async def session_factory():
 
 
 class _Job:
-    def __init__(self, job_type, setting_key, *, due=True, boom=False, noop=False, log=None):
+    def __init__(
+        self, job_type, setting_key, *,
+        due=True, boom=False, noop=False, log=None, clock=None,
+    ):
         self.job_type = job_type; self.setting_key = setting_key
         self._due = due; self._boom = boom; self._noop = noop
         self._log = log if log is not None else []
-    async def is_due(self, db, org, today): return self._due
+        # `clock` is an opt-in {"is_due": [], "run": []} sink: when given, both
+        # legs record the `today` they were handed. Only the TBD-284 clock
+        # fence passes it, so every other test is unaffected.
+        self._clock = clock
+    async def is_due(self, db, org, today):
+        if self._clock is not None: self._clock["is_due"].append(today)
+        return self._due
     async def run(self, db, org, today):
+        if self._clock is not None: self._clock["run"].append(today)
         if self._boom: raise RuntimeError("kaboom")
         self._log.append(("ran", self.job_type))
         return JobResult.noop() if self._noop else JobResult.ok({})
@@ -272,3 +282,48 @@ async def test_mid_convergence_failure_is_audited_by_the_runner(
     assert len(rows) == 1
     assert rows[0].outcome.value == "failure"
     assert "peer won at new_start" in rows[0].detail["error"]
+
+
+async def test_one_tick_hands_the_same_clock_to_is_due_and_run(
+    session_factory, monkeypatch
+):
+    """FENCE — the runner resolves the clock ONCE per tick (TBD-284).
+
+    Threading ``today`` through a job's ``run`` is worthless if the runner
+    resolves a fresh clock between deciding and doing. Uses the house ``_Job``
+    stub so it fences the RUNNER contract, independently of any one job.
+
+    Relocated here from ``test_scheduler_job_recurring.py`` by TBD-297: it
+    fences ``runner.py``, so it belongs in ``runner``'s own test module where
+    someone editing that file will find it. Behaviour is unchanged; it now uses
+    the shared stub and the house ``monkeypatch`` idiom instead of a
+    function-local re-implementation.
+
+    2099 so the tick's clock can never coincide with the wall clock.
+
+    Wrong implementation killed: ``run_all_due`` calling ``date.today()`` again
+    for the ``run`` leg instead of reusing its ``today`` parameter.
+    """
+    received: dict[str, list] = {"is_due": [], "run": []}
+    monkeypatch.setattr(R, "async_session", session_factory)
+
+    async def _always_on(db, org_id, key):
+        return True
+
+    monkeypatch.setattr(R.org_settings, "get_bool", _always_on)
+    async with session_factory() as db:
+        db.add(Organization(name="Acme", billing_cycle_day=1)); await db.commit()
+
+    tick_day = datetime.date(2099, 3, 17)
+    await R.run_all_due(
+        tick_day,
+        session_factory=session_factory,
+        registry=[_Job("spy", "spy_enabled", noop=True, clock=received)],
+    )
+
+    # Asserted BEFORE the equality below: two empty lists are equal, so
+    # `is_due == run` alone would pass against a runner that never ran.
+    assert received["is_due"] == [tick_day]
+    assert received["run"] == [tick_day]
+    # The property, stated directly: one tick, one clock.
+    assert received["is_due"] == received["run"]

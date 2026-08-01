@@ -35,8 +35,15 @@ async def compute_forecast(
 
     ``today`` is keyword-only and injectable because the period window floors
     at the wall clock (see ``window_end`` below). It is resolved ONCE here and
-    is consumed at exactly ONE site — the ``period_spend_window_end`` call that
-    derives ``window_end``. Everything downstream, including the whole recurring
+    consumed at exactly THREE sites: the two ``get_current_period`` calls that
+    may auto-create the period this function then computes over (TBD-297), and
+    the ``period_spend_window_end`` call that derives ``window_end``.
+
+    ⚠ That count was "exactly ONE site" until TBD-297, and the sentence was
+    load-bearing in the wrong direction: it read as licence to delete the
+    ``today=`` on the two period lookups as redundant. They are not redundant —
+    without them an org with no open row gets its first period anchored by a
+    second, independent clock. Everything downstream, including the whole recurring
     projection, is bound to ``window_end`` and never re-reads the clock: two
     independent clock reads inside one computation is the straddle trap
     TBD-240 D6 exists to prevent, and
@@ -60,6 +67,12 @@ async def compute_forecast(
         executed_net: executed_income - executed_expense
         categories: per-category breakdown with executed + forecast
     """
+    # Clock first (TBD-297): `get_current_period` auto-creates when the org has
+    # no open row, and resolving `today` AFTER that call left the injected clock
+    # governing every part of this computation except the anchor of the period
+    # it computes over.
+    today = today if today is not None else datetime.date.today()
+
     # Get the period
     if period_start:
         result = await db.execute(
@@ -70,11 +83,9 @@ async def compute_forecast(
         )
         period = result.scalar_one_or_none()
         if period is None:
-            period = await get_current_period(db, org_id)
+            period = await get_current_period(db, org_id, today=today)
     else:
-        period = await get_current_period(db, org_id)
-
-    today = today if today is not None else datetime.date.today()
+        period = await get_current_period(db, org_id, today=today)
 
     p_start = period.start_date
 

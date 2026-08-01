@@ -518,10 +518,14 @@ async def suggest_rebalance(
     # two defaults are separated by a `SELECT MIN(start_date)` round-trip, and
     # a request that straddles midnight would take its window from one date
     # and its 3-month trailing split from the next — moving every
-    # `suggested_amount`. One read, one value, both callees.
+    # `suggested_amount`. One read, one value, ALL THREE callees (TBD-297 added
+    # the third: `get_current_period`, below).
     today = today if today is not None else datetime.date.today()
 
-    period = await get_current_period(db, org_id)
+    # Threaded (TBD-297): the comment above says "One read, one value, both
+    # callees" — `get_current_period` is a third callee, and its auto-create
+    # branch was reading its own clock.
+    period = await get_current_period(db, org_id, today=today)
 
     # ── TBD-240 §4 ────────────────────────────────────────────────────────
     #

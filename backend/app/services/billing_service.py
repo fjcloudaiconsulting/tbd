@@ -73,8 +73,36 @@ def next_cycle_window(
     return next_start, following - datetime.timedelta(days=1)
 
 
-async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
-    """Get the currently open period. If none exists, auto-create one."""
+async def get_current_period(
+    db: AsyncSession, org_id: int, *, today: datetime.date | None = None
+) -> BillingPeriod:
+    """Get the currently open period. If none exists, auto-create one.
+
+    ``today`` is keyword-only and is consumed by the **auto-create branch
+    only** — an org that already has an open row is a pure read and the clock
+    never enters. Pass it whenever the caller has already resolved a clock
+    (TBD-297): the auto-created row's ``start_date`` is a money-row anchor, and
+    deriving it from a second, independently-read clock is the one-tick-one-
+    clock violation TBD-284 established the contract against.
+
+    Concretely, without it: ``BillingCloseJob.is_due`` computes its cycle
+    boundary from the tick's ``today = D``, this function auto-creates from
+    ``date.today()``, and a tick crossing midnight anchors the org's very first
+    period to cycle ``D+1`` while the caller decides about cycle ``D``.
+
+    ⚠ Stated precisely, because the unqualified version invites a failed
+    reproduction: the two clocks only produce different *cycles* when ``D+1``
+    is the org's cycle boundary day. That is exactly the day ``BillingCloseJob``
+    acts on, which is what makes it reachable rather than theoretical — but it
+    is not "any midnight straddle".
+
+    Omitting it is legitimate when the caller genuinely has no clock — the
+    request handlers in ``routers/settings.py``, and :func:`ensure_future_periods`,
+    which anchors to the open row rather than to today. **The one omitter to
+    watch is** :func:`resolve_period`: it is an intermediary, so a caller that
+    has resolved a clock and calls it looks clock-safe while still reaching this
+    auto-create. It takes a ``today`` pass-through for that reason; thread it.
+    """
     result = await db.execute(
         select(BillingPeriod).where(
             BillingPeriod.org_id == org_id,
@@ -100,7 +128,7 @@ async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
         org = await db.scalar(select(Organization).where(Organization.id == org_id))
         cycle_day = org.billing_cycle_day if org else 1
 
-        today = datetime.date.today()
+        today = today if today is not None else datetime.date.today()
         start, _ = current_cycle_window(cycle_day, today)
 
         period = BillingPeriod(org_id=org_id, start_date=start)
@@ -126,10 +154,17 @@ async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
 
 async def resolve_period(
     db: AsyncSession, org_id: int, period_start: datetime.date | None,
+    *, today: datetime.date | None = None,
 ) -> BillingPeriod:
     """Resolve a billing period by start_date, or fall back to the current open period.
 
     Raises ValidationError if period_start is given but no matching period exists.
+
+    ``today`` is a pass-through to :func:`get_current_period` and matters only
+    on the fallback arm, which can auto-create (TBD-297). It exists because
+    this function is the *intermediary* that hides that auto-create from its
+    callers: a caller that has resolved a clock and calls ``resolve_period``
+    looks clock-safe while still anchoring a new period to a second clock.
     """
     if period_start:
         # Implemented ON TOP of `_find_period_by_start` (TBD-240 N7) rather
@@ -140,7 +175,7 @@ async def resolve_period(
         if period is None:
             raise ValidationError("Billing period not found")
         return period
-    return await get_current_period(db, org_id)
+    return await get_current_period(db, org_id, today=today)
 
 
 async def list_periods(db: AsyncSession, org_id: int) -> list[BillingPeriod]:
@@ -1002,10 +1037,11 @@ async def close_period(
 
     ``today`` is keyword-only and threaded in by the scheduler (TBD-241 D2), so
     a tick that straddles midnight cannot have its own close date rejected by
-    the D1 bound below. Two honest residuals: the manual path still reads
-    ``date.today()`` here, and ``get_current_period``'s auto-create branch
-    reads it independently, so ``today=`` is not authoritative when no open row
-    exists.
+    the D1 bound below. **It is now authoritative for the whole call** (TBD-297):
+    it is resolved once at step 1 and threaded into ``get_current_period``, so
+    the auto-create branch can no longer anchor a new row to a second clock.
+    One honest residual remains: the manual path supplies no ``today``, so it
+    reads ``date.today()`` here — one read, and every callee below shares it.
 
     ``closed_ids`` is an optional **out-parameter**: when given, the id of the
     row this call actually closed is appended to it. D10 freezes the return
@@ -1017,9 +1053,12 @@ async def close_period(
 
     The step numbering below is normative — see :func:`_apply_close_step`.
     """
-    current = await get_current_period(db, org_id)                          # 1
-
-    today = today if today is not None else datetime.date.today()          # 2
+    # Clock FIRST (TBD-297). This is a pure local resolution with no DB access,
+    # so hoisting it above the fetch cannot disturb the autoflush ordering the
+    # numbering exists to protect — and `get_current_period` needs it, or its
+    # auto-create branch anchors the new row to a second, independent clock.
+    today = today if today is not None else datetime.date.today()          # 1
+    current = await get_current_period(db, org_id, today=today)            # 2
     requested = (                                                          # 3
         close_date
         if close_date is not None

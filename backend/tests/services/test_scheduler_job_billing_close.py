@@ -539,3 +539,66 @@ async def test_convergence_survives_a_close_that_rolled_back_the_identity_map(
 
     assert res.counts["steps"] == 3
     assert res.counts["new_period_start"] == "2026-07-25"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TBD-297 — one tick, one clock, all the way down.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _seed_org_without_any_period(session_factory, cycle_day=1):
+    async with session_factory() as db:
+        org = Organization(name="Acme", billing_cycle_day=cycle_day)
+        db.add(org); await db.commit(); await db.refresh(org)
+        return org
+
+
+async def test_is_due_auto_creates_against_the_ticks_clock_not_the_wall_clock(
+    session_factory, monkeypatch
+):
+    """FENCE — TBD-297, the concrete failure scenario in the ticket.
+
+    An org with NO open period is swept. `is_due` computes its boundary from
+    the tick's `today`, but `get_current_period` auto-creates the org's very
+    first `BillingPeriod` — so if that branch reads its own clock, the
+    comparison is made ACROSS TWO CYCLES and the row is anchored to a cycle
+    this tick never decided about.
+
+    The tick's clock is 2099, which the wall clock cannot equal, so the two
+    sources are always distinguishable.
+
+    Wrong implementation killed: `get_current_period(db, org.id)` without
+    `today=` in `BillingCloseJob.is_due`. The auto-created row then anchors to
+    the real current cycle, which is decades BELOW the 2099 boundary, so
+    `current.start_date < boundary` flips to True.
+
+    ⚠ Honest about what each half proves. The `due is False` assertion is a
+    fence only because this fixture opens a 73-year gap; IN PRODUCTION the two
+    clocks differ by at most a day, so the verdict never flips and no user sees
+    "a brand-new period reported as due". The production-reachable harm is the
+    SECOND assertion: the org's first period gets anchored one cycle forward,
+    skipping a cycle of spend. That is the load-bearing claim here.
+    """
+    _silence_side_effects(monkeypatch)
+    org = await _seed_org_without_any_period(session_factory)
+    job = BillingCloseJob()
+    tick_day = datetime.date(2099, 3, 17)
+
+    async with session_factory() as db:
+        due = await job.is_due(db, org, tick_day)
+
+    assert due is False, (
+        "a period auto-created for the tick's own cycle was reported as due to "
+        "close — the auto-create read a different clock than the boundary "
+        "(TBD-297)"
+    )
+
+    async with session_factory() as db:
+        created = (
+            await db.execute(
+                select(BillingPeriod).where(BillingPeriod.org_id == org.id)
+            )
+        ).scalars().all()
+    assert [p.start_date for p in created] == [datetime.date(2099, 3, 1)], (
+        "the org's first billing period was anchored to the wall clock instead "
+        "of the tick's clock"
+    )

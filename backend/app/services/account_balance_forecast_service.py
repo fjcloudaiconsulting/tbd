@@ -67,7 +67,12 @@ async def compute_account_balance_forecast(
     """
     today = today if today is not None else datetime.date.today()
 
-    period = await resolve_period(db, org_id, period_start)
+    # Threaded (TBD-297): `resolve_period`'s fallback arm reaches
+    # `get_current_period`, which auto-creates. This is the sibling of the same
+    # fix in `forecast_service` — same router, same reachability — and leaving
+    # one of the two forecast surfaces unthreaded is how a ticket ends up
+    # fencing half a problem.
+    period = await resolve_period(db, org_id, period_start, today=today)
 
     p_start = period.start_date
 
