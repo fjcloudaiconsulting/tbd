@@ -213,7 +213,7 @@ For the full router-by-router and service-by-service map, see the live file tree
 - **First user is superadmin.** No bootstrap seed needed.
 - **Org-scoped data.** Every query filters by `org_id`.
 - **API versioned at `/api/v1/`.** Breaking changes ship as `/api/v2/` while v1 stays live.
-- **Auth on every endpoint.** Use `get_current_user`. Public endpoints are listed in `backend/app/deps.py`.
+- **Auth on every endpoint.** Use `get_current_user`. The public set is enumerated under [Public endpoints](#public-endpoints-no-auth-required) below.
 - **Hierarchical categories.** Master categories for budgets, subcategories as transaction tags. Type (income / expense / both) is enforced server-side; once a category is used the UI locks the type.
 - **Transfer category invariant.** Transfer legs require a `CategoryType.BOTH` category (seeded as `Transfer`).
 - **Billing periods.** Org-level month close date. `COALESCE(settled_date, date)` determines which period a transaction counts against.
@@ -265,7 +265,9 @@ All limits are per client IP via slowapi. Production and Docker Compose use Redi
 
 ### Public endpoints (no auth required)
 
-`/health`, `/ready`, `/api/v1/auth/status`, `/api/v1/auth/login`, `/api/v1/auth/register`, `/api/v1/auth/refresh`, `/api/v1/auth/forgot-password`, `/api/v1/auth/reset-password`, `/api/v1/auth/verify-email`, `/api/v1/auth/google`, `/api/v1/auth/google/callback`, plus the `/api/v1/auth/mfa/*` challenge endpoints.
+`/health`, `/ready`, `/api/v1/auth/status`, `/api/v1/auth/check-username`, `/api/v1/auth/login`, `/api/v1/auth/register`, `/api/v1/auth/refresh`, `/api/v1/auth/forgot-password`, `/api/v1/auth/reset-password`, `/api/v1/auth/verify-email`, `/api/v1/auth/resend-verification-public`, `/api/v1/auth/google`, `/api/v1/auth/google/callback`, the `/api/v1/auth/mfa/*` challenge endpoints, `/api/v1/public/founder-count`, `/api/v1/security/csp-report`, and `/api/v1/webhooks/mailgun` (signature-verified, not open).
+
+This list is the authoritative one, and it is deliberately small and closed. Do not add to it without a security review.
 
 All other endpoints require a Bearer access token via the `get_current_user` dependency.
 
