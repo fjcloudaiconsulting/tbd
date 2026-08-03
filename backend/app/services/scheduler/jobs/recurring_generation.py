@@ -10,6 +10,7 @@ from app.models.user import Organization
 from app.services.billing_service import current_cycle_window
 from app.services.notification_service import dispatch_notification_to_org_members
 from app.services.notification_templates import scheduler_recurring_generated
+from app.services.recurring_filters import active_series_filter
 from app.services.recurring_service import generate_due_transactions
 from app.services.scheduler import org_settings
 from app.services.scheduler.audit import record_run
@@ -22,12 +23,19 @@ class RecurringGenerationJob:
     setting_key = org_settings.AUTOMATE_RECURRING_KEY
 
     async def is_due(self, db: AsyncSession, org: Organization, today: datetime.date) -> bool:
+        # This predicate MUST match ``generate_due_transactions``' own row
+        # selection. It has no walk of its own, but it decides whether the tick
+        # wakes at all, so a looser predicate here means the job reports work
+        # forever: an exhausted instalment series keeps ``is_active = True`` and
+        # keeps a ``next_due_date <= period_end``, so a bare ``is_active`` test
+        # would return True on every tick for the life of the org while
+        # generation creates nothing (TBD-275).
         _, period_end = current_cycle_window(org.billing_cycle_day, today)
         found = (
             await db.execute(
                 select(RecurringTransaction.id).where(
                     RecurringTransaction.org_id == org.id,
-                    RecurringTransaction.is_active == True,  # noqa: E712
+                    active_series_filter(),
                     RecurringTransaction.next_due_date <= period_end,
                 ).limit(1)
             )

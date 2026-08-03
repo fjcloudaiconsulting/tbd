@@ -14,6 +14,12 @@ from app.models.recurring import Frequency
 # ⚠ It is NOT a cap on how far a walk may travel to REACH the window. The
 # fast-forward loop in ``occurrences_in_window`` is deliberately UNCAPPED; see
 # that docstring for why capping it was a correctness bug and not a safety net.
+#
+# ⚠ Not to be confused with ``occurrences_in_window``'s ``budget`` argument
+# (TBD-275), which DOES bound the fast-forward. That one is not an iteration
+# cap: it is the instalment series' remaining occurrence count, generation
+# spends it identically, and it therefore removes occurrences rather than
+# hiding them. Same docstring spells out the difference.
 MAX_OCCURRENCE_ITERATIONS = 500
 
 
@@ -39,6 +45,7 @@ def occurrences_in_window(
     end: datetime.date,
     *,
     max_iterations: int = MAX_OCCURRENCE_ITERATIONS,
+    budget: int | None = None,
 ) -> list[datetime.date]:
     """Occurrence dates in ``[start, end]``, walked with ``advance_date`` from
     ``next_due``.
@@ -92,21 +99,61 @@ def occurrences_in_window(
     Reaching it needs a single period window longer than 500 steps of the
     template's frequency — ~9.6 years of weekly. See §11 of
     ``specs/2026-07-30-forecast-overdue-recurring-design.md``.
+
+    ``budget`` (TBD-275) is the instalment series' REMAINING occurrence count,
+    ``None`` for an open-ended series. It is spent by **BOTH loops**, and the
+    fast-forward is the half that matters.
+
+    ⚠ **This is not the cap the paragraphs above forbid, and the distinction is
+    the whole ticket.** They forbid an ITERATION cap on the fast-forward, on
+    the grounds that it bounds VISIBILITY: the occurrences it hides are ones
+    ``generate_due_transactions`` still creates, so hiding them makes
+    ``forecast_net`` move the moment the scheduler ticks. A SERIES BUDGET does
+    the opposite — it makes those occurrences NONEXISTENT, and generation
+    agrees, because ``generate_due_transactions`` spends the same budget on the
+    same occurrences from the same origin. Nothing is hidden, so nothing moves.
+
+    Concretely: the fast-forward's discarded occurrences are REAL. They sit
+    before ``start``, but generation's catch-up loop has no lower bound and
+    materialises every one of them, incrementing ``occurrences_elapsed`` as it
+    goes. A series with 2 instalments left whose frontier is 2 periods before
+    ``start`` therefore has ZERO occurrences inside the window — it spends its
+    last two getting there. Budgeting only the collect loop below reports 2
+    in-window occurrences that generation will never create, and
+    ``forecast_net`` moves across a generation run: precisely the TBD-260
+    defect class.
+
+    ⚠ Do not "simplify" this by clamping a negative budget to zero at the call
+    site; see ``recurring_filters.remaining_occurrences``. The guard is
+    ``<= 0``, never ``!= 0``.
     """
     out: list[datetime.date] = []
     d = next_due
+    remaining = budget
 
+    # FAST-FORWARD. Every pass DISCARDS the occurrence at ``d`` — and discarded
+    # is not the same as never-existed: generation materialises it. So it costs
+    # the series one instalment, exactly as an in-window occurrence does.
     while d < start:
+        if remaining is not None:
+            if remaining <= 0:
+                return out
+            remaining -= 1
         nxt = advance_date(d, freq)
         if nxt <= d:
             return out
         d = nxt
 
+    # COLLECT.
     iterations = 0
     while d <= end:
+        if remaining is not None and remaining <= 0:
+            break
         if iterations >= max_iterations:
             break
         iterations += 1
+        if remaining is not None:
+            remaining -= 1
         out.append(d)
         nxt = advance_date(d, freq)
         if nxt <= d:

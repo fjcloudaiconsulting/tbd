@@ -32,8 +32,9 @@ from app.schemas.forecast_plan import (
     ForecastPlanResponse,
 )
 from app.services.billing_service import period_spend_window_end, resolve_period
-from app.services.date_utils import advance_date
+from app.services.date_utils import occurrences_in_window
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.recurring_filters import active_series_filter, remaining_occurrences
 from app.services.settings_service import (
     FORECAST_GRANULARITY_SUBCATEGORY,
     get_forecast_input_granularity,
@@ -510,7 +511,7 @@ async def populate_from_sources(
     rec_result = await db.execute(
         select(RecurringTransaction).where(
             RecurringTransaction.org_id == org_id,
-            RecurringTransaction.is_active == True,
+            active_series_filter(),
             RecurringTransaction.next_due_date <= p_end,
         )
     )
@@ -521,16 +522,18 @@ async def populate_from_sources(
         if key in existing_keys:
             continue
 
-        total = Decimal("0")
-        d = r.next_due_date
-        while d < p_start and d <= p_end:
-            d = advance_date(d, r.frequency)
-        while d <= p_end:
-            total += r.amount
-            prev = d
-            d = advance_date(d, r.frequency)
-            if d <= prev:
-                break
+        # TBD-275: this WAS a hand-rolled duplicate of ``occurrences_in_window``
+        # -- same fast-forward, same collect, same origin, its own subtly
+        # different loop conditions and no iteration cap on the collect half. A
+        # second copy of the occurrence grid is a second thing to remember to
+        # budget, and it would have been missed. It is now the shared walk, so
+        # this plan source spends instalments exactly as the forecast and
+        # generation do.
+        occs = occurrences_in_window(
+            r.next_due_date, r.frequency, p_start, p_end,
+            budget=remaining_occurrences(r),
+        )
+        total = r.amount * len(occs)
 
         if total > 0:
             recurring_totals[key] = recurring_totals.get(key, Decimal("0")) + total

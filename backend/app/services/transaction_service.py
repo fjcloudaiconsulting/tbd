@@ -813,6 +813,14 @@ async def promote_to_recurring(
             next_due_date=body.next_due_date,
             auto_settle=body.auto_settle,
             is_active=True,
+            occurrence_count=body.occurrence_count,
+            # TBD-275: THE SOURCE TRANSACTION IS INSTALMENT 1. It already
+            # exists, and ``tx.recurring_id`` below makes it part of this
+            # series -- so the series has delivered one occurrence already and
+            # ``next_due_date`` is instalment 2. Seeding 0 (which the direct
+            # ``POST /recurring`` path correctly does, because nothing has been
+            # delivered there) would give a "12 instalments" plan 13 of them.
+            occurrences_elapsed=1,
         )
         db.add(template)
         await db.flush()

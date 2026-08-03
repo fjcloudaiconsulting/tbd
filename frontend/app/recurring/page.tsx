@@ -29,6 +29,23 @@ const FREQ_LABELS: Record<string, string> = {
   yearly: "Yearly",
 };
 
+// Instalment progress, e.g. "3 of 12" (TBD-275). Null for an open-ended
+// series -- `occurrence_count == null` is the overwhelming majority (every
+// template predating this feature) and must render NOTHING, not "0 of 0".
+//
+// The remainder is deliberately not on the wire; the client subtracts. It can
+// legitimately be NEGATIVE (the user shortened a plan below what it had
+// already delivered), so this renders "12 of 8" rather than a clamped lie --
+// and `instalmentDone` still reports the series finished, which it is.
+function instalmentLabel(r: RecurringTransaction): string | null {
+  if (r.occurrence_count == null) return null;
+  return `${r.occurrences_elapsed} of ${r.occurrence_count}`;
+}
+
+function instalmentDone(r: RecurringTransaction): boolean {
+  return r.occurrence_count != null && r.occurrences_elapsed >= r.occurrence_count;
+}
+
 // Sort field identifiers for the recurring tables.
 type SortField =
   | "description"
@@ -231,6 +248,20 @@ function RecurringTable({
                       auto
                     </span>
                   )}
+                  {/* Outline, not a fill: the row uses hover:bg-surface-raised,
+                      so a filled badge would vanish on hover. Quiet-by-default
+                      (PRODUCT.md) -- progress is data, not an alert. */}
+                  {instalmentLabel(r) && (
+                    <span
+                      className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] font-medium tabular-nums ${
+                        instalmentDone(r)
+                          ? "border-border-subtle text-text-muted"
+                          : "border-border text-text-secondary"
+                      }`}
+                    >
+                      {instalmentLabel(r)}
+                    </span>
+                  )}
                 </td>
                 <td className="px-3 py-3 text-sm text-text-secondary">{r.account_name}</td>
                 <td className="px-3 py-3 text-sm text-text-secondary">{r.category_name}</td>
@@ -303,6 +334,9 @@ function RecurringTable({
                 </div>
                 <div className="mt-0.5 text-xs text-text-muted tabular-nums">
                   Next: {r.next_due_date} &middot; {r.account_name}
+                  {instalmentLabel(r) && (
+                    <> &middot; {instalmentLabel(r)}</>
+                  )}
                 </div>
               </div>
               <div

@@ -18,6 +18,7 @@ from app.models.recurring import RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services.billing_service import get_current_period, period_spend_window_end
 from app.services.date_utils import occurrences_in_window
+from app.services.recurring_filters import active_series_filter, remaining_occurrences
 from app.services.transaction_filters import (
     effective_period_date_expr,
     reportable_transaction_filter,
@@ -189,10 +190,17 @@ async def compute_forecast(
     # `forecast_expense` then moves the moment the scheduler ticks.
     # `specs/2026-07-30-forecast-overdue-recurring-design.md` traces all four
     # candidate bounds.
+    #
+    # TBD-275: ``active_series_filter()`` replaces the bare ``is_active`` test.
+    # An exhausted instalment series keeps ``is_active = True`` (exhaustion is
+    # derived, never written -- see ``recurring_filters``), so ``is_active``
+    # alone would project a finished 12-month plan forever while generation
+    # creates nothing. That is the TBD-260 defect with the sign flipped: the
+    # projection stays high and never reconciles.
     result = await db.execute(
         select(RecurringTransaction).where(
             RecurringTransaction.org_id == org_id,
-            RecurringTransaction.is_active == True,
+            active_series_filter(),
             RecurringTransaction.next_due_date <= window_end,
         )
     )
@@ -231,8 +239,15 @@ async def compute_forecast(
     cat_recurring: dict[int, Decimal] = {}
 
     for r in recurring_items:
+        # ``budget`` is spent by the fast-forward as well as the collect loop.
+        # A series whose frontier sits before ``p_start`` burns instalments
+        # just getting to the window, because generation's catch-up loop --
+        # which has no lower bound -- materialises every one of those
+        # occurrences and increments the same counter. Budgeting only what is
+        # collected would project obligations generation will never create.
         for d in occurrences_in_window(
-            r.next_due_date, r.frequency, p_start, window_end
+            r.next_due_date, r.frequency, p_start, window_end,
+            budget=remaining_occurrences(r),
         ):
             if (r.id, d) in materialised:
                 continue

@@ -18,6 +18,10 @@ from app.schemas.recurring import RecurringCreate, RecurringResponse, RecurringU
 from app.services.billing_service import current_cycle_window
 from app.services.date_utils import MAX_OCCURRENCE_ITERATIONS, advance_date
 from app.services.exceptions import NotFoundError, ValidationError
+from app.services.recurring_filters import (
+    active_series_filter,
+    has_remaining_occurrences,
+)
 from app.services.transaction_service import (
     apply_balance,
     get_account_for_update,
@@ -132,6 +136,8 @@ def to_response(r: RecurringTransaction) -> RecurringResponse:
         next_due_date=r.next_due_date,
         auto_settle=r.auto_settle,
         is_active=r.is_active,
+        occurrence_count=r.occurrence_count,
+        occurrences_elapsed=r.occurrences_elapsed,
     )
 
 
@@ -177,6 +183,11 @@ async def create_recurring(
         frequency=Frequency(body.frequency),
         next_due_date=body.next_due_date,
         auto_settle=body.auto_settle,
+        occurrence_count=body.occurrence_count,
+        # A template created directly has delivered NOTHING yet. Contrast
+        # ``promote_to_recurring``, which seeds 1 because its source
+        # transaction IS instalment 1 (TBD-275).
+        occurrences_elapsed=0,
     )
     db.add(r)
     await db.commit()
@@ -218,6 +229,17 @@ async def update_recurring(
     but it means the returned ``next_due_date`` can differ from the one sent.
     On a plain update that does not flip ``is_active`` False->True, the
     supplied date is always kept verbatim.
+
+    ``occurrence_count`` (TBD-275) is editable and may be edited DOWNWARD below
+    what the series has already delivered. That is honoured, not rejected:
+    ``recurring_filters.remaining_occurrences`` goes negative,
+    ``active_series_filter`` drops the template, and the series simply stops.
+    Rejecting it would be worse -- the user's only escape from a runaway
+    instalment plan would be to stop the template, which NULLs the
+    ``recurring_id`` grouping on every row it ever produced.
+
+    ``occurrences_elapsed`` is NOT on ``RecurringUpdate`` and is never
+    user-writable. ``generate_due_transactions`` is its only writer.
     """
     # ONE resolution for the whole request. See the docstring: two consumers
     # downstream, and a raw None makes each of them read the wall separately.
@@ -252,6 +274,8 @@ async def update_recurring(
         r.auto_settle = body.auto_settle
     if body.is_active is not None:
         r.is_active = body.is_active
+    if body.occurrence_count is not None:
+        r.occurrence_count = body.occurrence_count
 
     # Validate the post-update (type, category) pair when either changes.
     # Mirrors update_transaction's pattern: a partial update only touching
@@ -384,6 +408,16 @@ async def _reanchor_frontier_on_resume(
     A frontier already at or after ``p_start`` is left exactly where it is.
     Pausing and resuming inside one cycle is ordinary use and must not cost the
     user that cycle's charge.
+
+    ⚠ **This function must NEVER touch ``occurrences_elapsed``, and its absence
+    here is load-bearing (TBD-275).** The frontier says WHERE the next
+    occurrence lands; the counter says HOW MANY the series still delivers. They
+    are independent, and a counted series therefore never forfeits instalments
+    to a pause: a 12-instalment plan paused for three cycles resumes at the
+    current cycle and still delivers all 12, just later. Advancing the counter
+    alongside the frontier would silently bill the user for three instalments
+    they never received -- and it would look like the obviously-symmetric thing
+    to do, which is why it is called out rather than merely omitted.
     """
     # Same derivation the TBD-283 write-path guard uses, from the same helper:
     # the re-anchor's target and the validator's floor are one number, and a
@@ -500,6 +534,27 @@ async def delete_recurring(db: AsyncSession, org_id: int, recurring_id: int) -> 
 
 # ── Generation ────────────────────────────────────────────────────────────────
 
+def _advance_frontier(r: RecurringTransaction, due: datetime.date) -> None:
+    """Consume the occurrence at ``due``: move the frontier, spend one instalment.
+
+    A helper rather than two inline statements because the catch-up loop has
+    TWO exits that consume an occurrence -- the ``exists`` branch (already
+    materialised: skip and advance) and the create branch -- and TBD-275
+    requires both to spend budget. Splitting the pair across those branches is
+    how one of them comes to advance the frontier without spending, which makes
+    the walk in ``forecast_service`` and the walk here disagree about how many
+    occurrences the series has left, and ``forecast_net`` then moves across a
+    generation run.
+
+    Note this is why the counter is ``occurrences_elapsed`` and not
+    ``occurrences_generated``: the ``exists`` branch increments it while
+    creating no row at all, so the counter is deliberately NOT equal to
+    ``COUNT(*) WHERE recurring_id = r.id``.
+    """
+    r.next_due_date = advance_date(due, r.frequency)
+    r.occurrences_elapsed = (r.occurrences_elapsed or 0) + 1
+
+
 async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) -> int:
     """Promote PENDING transactions that originated from an auto_settle template
     and whose date has now passed (date <= today) to SETTLED, adjusting balance.
@@ -562,7 +617,7 @@ async def generate_due_transactions(
         select(RecurringTransaction)
         .where(
             RecurringTransaction.org_id == org_id,
-            RecurringTransaction.is_active == True,  # noqa: E712
+            active_series_filter(),
             RecurringTransaction.next_due_date <= period_end,
         )
         .with_for_update()
@@ -575,6 +630,14 @@ async def generate_due_transactions(
     for r in due_items:
         iterations = 0
         while r.next_due_date <= period_end:
+            # Series budget (TBD-275). ``active_series_filter`` above dropped
+            # the templates already exhausted at query time; this stops the
+            # ones that exhaust DURING the catch-up walk. Neither subsumes the
+            # other, and this is the arm ``forecast_service`` must agree with —
+            # it spends the same budget over the same grid via
+            # ``occurrences_in_window(budget=...)``.
+            if not has_remaining_occurrences(r):
+                break
             if iterations >= MAX_CATCHUP_ITERATIONS:
                 await logger.awarning(
                     "recurring.generate.catchup_cap",
@@ -594,7 +657,7 @@ async def generate_due_transactions(
                 .limit(1)
             )
             if exists:
-                r.next_due_date = advance_date(due, r.frequency)
+                _advance_frontier(r, due)
                 continue
 
             tx_status = (
@@ -620,7 +683,7 @@ async def generate_due_transactions(
                     acct = await get_account_for_update(db, r.account_id, org_id)
                     apply_balance(acct, r.amount, TransactionType(r.type))
 
-            r.next_due_date = advance_date(due, r.frequency)
+            _advance_frontier(r, due)
             created += 1
             if tx_status == TransactionStatus.SETTLED:
                 created_settled += 1
