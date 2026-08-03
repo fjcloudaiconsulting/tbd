@@ -133,6 +133,16 @@ class PromoteToRecurringRequest(BaseModel):
     UI passes it through so the user's choice is preserved without needing
     a separate POST /recurring round-trip. Out of scope: promoting transfer
     legs, demoting.
+
+    ⚠ ``next_due_date`` carries NO schema-level lower bound, deliberately
+    (TBD-283). It used to reject anything before ``date.today()`` here, which
+    made promote strictly stricter than ``create_recurring`` and
+    ``update_recurring`` on the same field of the same table. The real bound is
+    the org's current billing cycle start, which needs
+    ``org.billing_cycle_day`` and therefore a DB read; a pydantic validator
+    cannot express it and would only ever pre-empt it with a different rule.
+    ``recurring_service.validate_frontier`` is the one enforcement point, and
+    it rejects with 400, not 422.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -140,16 +150,6 @@ class PromoteToRecurringRequest(BaseModel):
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     next_due_date: datetime.date
     auto_settle: bool = False
-
-    @field_validator("next_due_date")
-    @classmethod
-    def _next_due_date_not_past(cls, v: datetime.date) -> datetime.date:
-        # Pydantic-level early reject. Server-side service guard repeats
-        # the comparison so date semantics are enforced even if a caller
-        # bypasses the schema (e.g. internal reuse).
-        if v < datetime.date.today():
-            raise ValueError("Date must be today or later")
-        return v
 
 
 class BulkDeleteResponse(BaseModel):

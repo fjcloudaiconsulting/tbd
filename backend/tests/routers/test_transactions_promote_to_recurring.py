@@ -4,7 +4,11 @@ Service-level invariants are covered by
 tests/services/test_transaction_service_promote_to_recurring.py.
 
 These tests focus on:
-  - HTTP body validation (extra=forbid, frequency enum, past-date 422)
+  - HTTP body validation (extra=forbid, frequency enum). ⚠ NOT a past-date 422:
+    TBD-283 deleted ``PromoteToRecurringRequest._next_due_date_not_past``, so
+    the only lower bound left is the org's current billing cycle start, checked
+    in the service layer and surfaced as a 400 (see
+    ``test_promote_to_recurring_past_date_is_no_longer_a_schema_422``).
   - status mapping for service-domain exceptions (NotFoundError → 404,
     ValidationError → 400)
   - happy-path response shape (TransactionResponse with recurring_id set)
@@ -37,6 +41,7 @@ from app.models.user import Role, User
 from app.routers.recurring import router as recurring_router
 from app.routers.transactions import router as transactions_router
 from app.security import hash_password
+from app.services.billing_service import current_cycle_window
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
@@ -100,9 +105,30 @@ def make_app(session_factory) -> FastAPI:
     return app
 
 
-async def _seed(factory) -> dict:
+def _anchor(today: date) -> tuple[int, date]:
+    """A ``(cycle_day, p_start)`` pair with ``p_start`` STRICTLY behind ``today``.
+
+    ⚠ The frontier-bound test below cannot use the default
+    ``billing_cycle_day=1`` seed. On the 1st of the month ``p_start == today``,
+    so its ACCEPT arm is satisfied by the deleted ``>= today`` rule too and the
+    relaxation goes unfenced for that one day. Five days back, nudged onto a
+    day-of-month that exists in every month so the cycle arithmetic is not
+    month-length dependent; the strictness is ASSERTED, not assumed. Mirrors
+    ``_anchor`` in ``test_recurring_frontier_lower_bound_route.py``.
+    """
+    d = today - timedelta(days=5)
+    while d.day > 28:
+        d -= timedelta(days=1)
+    cycle_day = d.day
+    p_start, _ = current_cycle_window(cycle_day, today)
+    assert p_start == d
+    assert p_start < today
+    return cycle_day, p_start
+
+
+async def _seed(factory, *, cycle_day: int = 1) -> dict:
     async with factory() as db:
-        org = Organization(name="Test Org", billing_cycle_day=1)
+        org = Organization(name="Test Org", billing_cycle_day=cycle_day)
         db.add(org)
         await db.flush()
         user = User(
@@ -274,22 +300,57 @@ async def test_promote_to_recurring_rejects_unknown_frequency(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_promote_to_recurring_rejects_past_date_at_schema(session_factory):
-    seed = await _seed(session_factory)
+async def test_promote_to_recurring_past_date_is_no_longer_a_schema_422(session_factory):
+    """TBD-283 deleted ``PromoteToRecurringRequest._next_due_date_not_past``.
+
+    This test previously asserted 422 for ``today - 1 day``. That validator was
+    the strictest of three disagreeing rules on one column and could not see
+    ``org.billing_cycle_day``, so it was removed rather than left to pre-empt
+    the real bound. Both arms are asserted together: a date inside the open
+    cycle is now accepted, and one before it is refused as a domain 400 — never
+    a 422.
+
+    ⚠ The dates are derived from ``current_cycle_window``, not from
+    ``date.today() - 1``. With ``billing_cycle_day=1``, "yesterday" falls on the
+    far side of the boundary on exactly one day per month, and a literal would
+    have made this a once-a-month red.
+
+    ⚠ And the cycle day comes from ``_anchor``, not from the seed's default of
+    1, for the mirror-image reason: with cycle day 1 the ACCEPT arm sends
+    ``p_start == today`` on the 1st of the month, which the deleted ``>= today``
+    validator would also have accepted. ``_anchor`` asserts ``p_start < today``,
+    so the accepted date is genuinely in the past on every day of the month.
+    """
+    today = date.today()
+    cycle_day, p_start = _anchor(today)
+    seed = await _seed(session_factory, cycle_day=cycle_day)
     tx_id = await _add_tx(
         session_factory,
         org_id=seed["org_id"], account_id=seed["a1_id"],
         category_id=seed["cat_groceries_id"],
     )
+    tx_id_2 = await _add_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a1_id"],
+        category_id=seed["cat_groceries_id"],
+    )
 
-    past = (date.today() - timedelta(days=1)).isoformat()
     app = make_app(session_factory)
     with TestClient(app) as client:
-        res = client.post(
+        accepted = client.post(
             f"/api/v1/transactions/{tx_id}/promote-to-recurring",
-            json={"frequency": "monthly", "next_due_date": past},
+            json={"frequency": "monthly", "next_due_date": p_start.isoformat()},
         )
-    assert res.status_code == 422
+        refused = client.post(
+            f"/api/v1/transactions/{tx_id_2}/promote-to-recurring",
+            json={
+                "frequency": "monthly",
+                "next_due_date": (p_start - timedelta(days=1)).isoformat(),
+            },
+        )
+    assert accepted.status_code == 201, accepted.text
+    # 400 (domain), not 422 (schema) — the status code moved, deliberately.
+    assert refused.status_code == 400, refused.text
 
 
 # ── 404: not found ────────────────────────────────────────────────────────
