@@ -296,7 +296,15 @@ async def register(
             actor_email=normalize_email(body.email),
             target_org_id=None,
             target_org_name=None,
-            request_id=request.headers.get("x-request-id"),
+            # TBD-291: contextvars, NOT the raw header. `RequestContextMiddleware`
+            # length-caps and character-set-validates the inbound `X-Request-Id`
+            # and substitutes a fresh UUID4 when it fails, but it does NOT rewrite
+            # the header — so reading `request.headers` bypasses what that module's
+            # own docstring calls "the real trust boundary". `audit_events.request_id`
+            # is `String(64)`, and `record_audit_event` swallows every exception:
+            # an oversized inbound header therefore silently DROPPED this row on
+            # MySQL, letting a client suppress its own refusals from the numerator.
+            request_id=structlog.contextvars.get_contextvars().get("request_id"),
             ip_address=get_client_ip(request),
             outcome="failure",
             detail={
@@ -361,6 +369,66 @@ async def register(
     # Send verification email in background — don't block registration
     token = create_email_verification_token(user.id, user.email)
     background_tasks.add_task(send_verification_email, user.email, token)
+
+    # TBD-291: registration SUCCESS was unaudited from the day this endpoint
+    # shipped, while its two neighbours were not — `auth.register.captcha_failed`
+    # above records every refusal, and `user.login.success` records every login.
+    # That asymmetry makes the refusal RATE uncomputable from `audit_events`: you
+    # can count rejections exactly and successes not at all, so the denominator
+    # has to be reconstructed from the `users` table by a separate query.
+    #
+    # It is not academic. TBD-291 read 33 `captcha_failed` rows as a seven-week
+    # registration outage and recommended halting ad spend. They were a Tor-based
+    # bot campaign being refused correctly, and the single genuine blocked user in
+    # the set was the row dismissed as noise. A success counter would not have
+    # settled that on its own — only `actor_email` and `ip_address` did — but the
+    # missing denominator is what let a wrong reading survive two prod queries.
+    #
+    # Emitted after the commit and the trial-subscription write, so the row exists
+    # only when the account really does.
+    #
+    # NOT a copy of `user.login.success`'s shape: every other auth audit event in
+    # this module passes `target_org_name=None`, and this one populates it. That is
+    # deliberate — the org name is a sortable column and it survives the org being
+    # deleted, both of which matter for a row whose job is to be counted months
+    # later. It does make `auth.register.success` the only auth event carrying one.
+    #
+    # `detail` records BOTH first-ness flags, because they are different questions
+    # answered by different variables and they diverge:
+    #   * `is_first_user`      <- `is_first_user_setup`, user_count == 0. The
+    #                             captcha-bypass / bootstrap condition.
+    #   * `granted_superadmin` <- `is_first_user`, existing_superadmin == 0. The
+    #                             superadmin-grant condition.
+    # They agree on a normal install, so one can stand in for the other right up
+    # until they don't: users existing with no superadmin among them is a state
+    # where this signup is NOT the bootstrap yet still silently receives
+    # superadmin — the more alert-worthy of the two, and invisible if only the
+    # bootstrap flag is recorded.
+    #
+    # `captcha_required` records which era the row belongs to. With the gate off
+    # there are no refusals to count, so the denominator changes meaning between
+    # environments with nothing on the row saying so; carrying the effective
+    # setting keeps the two eras separable in one query.
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="auth.register.success",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=org.id,
+        target_org_name=org.name,
+        # See the `auth.register.captcha_failed` call above: contextvars, not the
+        # raw header, or an oversized inbound `X-Request-Id` silently drops the row
+        # and the client suppresses itself from the denominator.
+        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={
+            "method": "password",
+            "is_first_user": is_first_user_setup,
+            "granted_superadmin": is_first_user,
+            "captcha_required": app_settings.captcha_required,
+        },
+    )
 
     return _user_response(user, org)
 
