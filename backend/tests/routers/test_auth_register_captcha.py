@@ -33,6 +33,7 @@ from app.captcha import CaptchaVerifyResult, REASON_OK, REASON_PROVIDER_REJECTED
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_session_factory
+from app.middleware.request_context import RequestContextMiddleware
 from app.models import Base
 from app.models.audit_event import AuditEvent
 from app.models.subscription import Plan
@@ -73,6 +74,11 @@ def _make_app(session_factory) -> FastAPI:
     app = FastAPI()
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    # TBD-291: mounted here for the same reason `main.py` mounts it — it is what
+    # sanitizes the inbound `X-Request-Id` and binds the safe value onto structlog
+    # contextvars. Without it every `request_id` the handler records is None, and
+    # the sanitizer fences below could not tell a sanitized value from a raw one.
+    app.add_middleware(RequestContextMiddleware)
 
     async def override_get_db() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
@@ -97,9 +103,23 @@ async def _seed_default_plan(factory: async_sessionmaker[AsyncSession]) -> None:
 
 async def _seed_existing_user(
     factory: async_sessionmaker[AsyncSession],
+    *,
+    is_superadmin: bool = True,
 ) -> None:
     """Seed one user so the next /register call goes through the
     captcha gate (the first-user-setup bypass requires user_count==0).
+
+    ``is_superadmin`` is LOAD-BEARING, not incidental tidiness (TBD-291).
+    The register handler derives two independent "is this the first?"
+    answers: ``is_first_user_setup`` from ``user_count == 0`` (the captcha
+    bypass) and ``is_first_user`` from ``existing_superadmin == 0`` (the
+    superadmin grant). Seeding a superadmin drives BOTH to False, which is
+    what lets the ordinary-signup tests assert
+    ``detail["granted_superadmin"] is False``. Flip this default and those
+    assertions silently invert instead of failing.
+    ``test_register_flags_distinguish_bootstrap_from_superadmin_grant``
+    passes ``is_superadmin=False`` on purpose, to build the state where the
+    two answers disagree.
     """
     async with factory() as db:
         org = Organization(name="Existing Org", billing_cycle_day=1)
@@ -112,7 +132,7 @@ async def _seed_existing_user(
                 email="seed@example.com",
                 password_hash=hash_password("seed-password-1"),
                 role=Role.OWNER,
-                is_superadmin=True,
+                is_superadmin=is_superadmin,
                 is_active=True,
                 email_verified=True,
             )
@@ -175,6 +195,16 @@ async def test_register_skips_verify_when_captcha_required_false(
     # internally — so the tripwire DOES see a call. The point of this
     # test is just that registration completes without a token.
     assert await _count_users(session_factory) == 2
+
+    # TBD-291: the gate-off half of the `detail["captcha_required"]` pin. With
+    # the gate off there are no refusals to count at all, so the refusal rate's
+    # denominator means something different here than it does in the
+    # gate-on tests — and only this field on the row says which era it is from.
+    # Asserted from BOTH sides (True in the gate-on tests) so a hardcoded
+    # literal cannot satisfy the pair.
+    rows = await _register_success_audit_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].detail["captcha_required"] is False
 
 
 @pytest.mark.asyncio
@@ -289,3 +319,344 @@ async def test_register_first_user_setup_bypasses_captcha(
         "verify_captcha must NOT be called for the first-user setup path"
     )
     assert await _count_users(session_factory) == 1
+
+
+# ── TBD-291: registration SUCCESS must be auditable ──────────────────────────
+#
+# `auth.register.captcha_failed` above was, until TBD-291, the ONLY
+# `auth.register.*` audit event in the codebase. Refusals were counted exactly
+# and successes not at all, so the refusal RATE could not be computed from
+# `audit_events` -- the denominator had to be reconstructed from the `users`
+# table by a separate query. Meanwhile `user.login.success` records every
+# login, so the asymmetry was specific to registration rather than a policy.
+
+
+async def _register_success_audit_rows(factory) -> list[AuditEvent]:
+    async with factory() as db:
+        result = await db.execute(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "auth.register.success"
+            )
+        )
+        return list(result.scalars())
+
+
+@pytest.mark.asyncio
+async def test_successful_registration_writes_an_audit_row(
+    session_factory, monkeypatch
+) -> None:
+    """FENCE — a completed registration is recorded.
+
+    Wrong implementation killed: `main`, where the register handler returns
+    without recording anything, so `audit_events` holds refusals and no
+    successes.
+    """
+    monkeypatch.setattr(app_settings, "captcha_required", True)
+    await _seed_default_plan(session_factory)
+    await _seed_existing_user(session_factory)
+
+    async def _ok(token, remote_ip):
+        return CaptchaVerifyResult(ok=True, reason=REASON_OK)
+
+    monkeypatch.setattr(auth_module, "verify_captcha", _ok)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "newuser",
+                "email": "new@example.com",
+                "password": "another-password-1",
+                "captcha_token": "tok",
+            },
+        )
+    assert res.status_code == 201, res.text
+    created = res.json()
+
+    rows = await _register_success_audit_rows(session_factory)
+    assert len(rows) == 1, f"expected exactly one success row, got {len(rows)}"
+
+    row = rows[0]
+    # Identity, not just presence: a row that cannot be tied to the account it
+    # created is no use as a denominator. `is not None` would NOT establish that
+    # tie — an implementation that recorded the SEEDED user's id and org would
+    # satisfy it — so both are asserted equal to the ids in the 201 body.
+    assert row.actor_email == "new@example.com"
+    assert row.actor_user_id == created["id"]
+    assert row.target_org_id == created["org_id"]
+    assert row.target_org_name == created["org_name"]
+    assert row.outcome == "success"
+    assert row.detail["method"] == "password"
+    assert row.detail["is_first_user"] is False
+    # A seeded superadmin already exists, so this signup grants nothing.
+    assert row.detail["granted_superadmin"] is False
+    assert row.detail["captcha_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_refused_registration_writes_no_success_row(
+    session_factory, monkeypatch
+) -> None:
+    """FENCE — the counter must mean what it says.
+
+    Wrong implementation killed: recording the success row BEFORE the captcha
+    gate, or anywhere that runs on a refused request. That would make the two
+    event types overlap and the refusal rate wrong in the safe-looking
+    direction (too low), which is the failure mode hardest to notice.
+
+    Pairs with the existing captcha-refusal test: this asserts the ABSENCE the
+    other's presence implies.
+    """
+    monkeypatch.setattr(app_settings, "captcha_required", True)
+    await _seed_default_plan(session_factory)
+    await _seed_existing_user(session_factory)
+
+    async def _rejected(token, remote_ip):
+        return CaptchaVerifyResult(ok=False, reason=REASON_PROVIDER_REJECTED)
+
+    monkeypatch.setattr(auth_module, "verify_captcha", _rejected)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "newuser",
+                "email": "new@example.com",
+                "password": "another-password-1",
+                "captcha_token": "tok",
+            },
+        )
+    assert res.status_code == 400, res.text
+
+    assert await _register_success_audit_rows(session_factory) == []
+    assert len(await _captcha_failed_audit_rows(session_factory)) == 1
+    assert await _count_users(session_factory) == 1
+
+
+@pytest.mark.asyncio
+async def test_first_user_setup_is_audited_and_flagged(
+    session_factory, monkeypatch
+) -> None:
+    """FENCE — the bootstrap signup is recorded too, and distinguishable.
+
+    The first-user setup path bypasses the captcha gate entirely. If it also
+    bypassed the audit row, the very first account on an install would be
+    invisible; if it were recorded without the flag, it would be
+    indistinguishable from an ordinary signup and would skew the refusal rate
+    it exists to help compute.
+
+    Here `user_count == 0` AND `existing_superadmin == 0`, so BOTH flags are
+    True and this test cannot tell them apart — that is
+    `test_register_flags_distinguish_bootstrap_from_superadmin_grant`'s job.
+
+    Wrong implementation killed: hardcoding `is_first_user: False`, which the
+    test above cannot see because there a seeded user already exists.
+    """
+    monkeypatch.setattr(app_settings, "captcha_required", True)
+    await _seed_default_plan(session_factory)
+    # No seeded user on purpose: user_count == 0 is the bootstrap condition.
+
+    async def _tripwire(token, remote_ip):
+        raise AssertionError("verify_captcha must not run for the first user")
+
+    monkeypatch.setattr(auth_module, "verify_captcha", _tripwire)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "founder",
+                "email": "founder@example.com",
+                "password": "another-password-1",
+            },
+        )
+    assert res.status_code == 201, res.text
+
+    rows = await _register_success_audit_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].detail["is_first_user"] is True
+    # Both conditions hold on a cold DB, so both flags are True here.
+    assert rows[0].detail["granted_superadmin"] is True
+
+
+@pytest.mark.asyncio
+async def test_register_flags_distinguish_bootstrap_from_superadmin_grant(
+    session_factory, monkeypatch
+) -> None:
+    """FENCE — `is_first_user` and `granted_superadmin` are DIFFERENT questions.
+
+    The handler computes two first-ness answers from two different counts:
+    ``is_first_user_setup`` (``user_count == 0``, the captcha bypass) and
+    ``is_first_user`` (``existing_superadmin == 0``, the superadmin grant).
+    Every other test in this file constructs a state where they agree, so any
+    one of them would accept the wrong variable in either slot.
+
+    This is the state where they disagree: a user exists (so this is NOT the
+    bootstrap and the captcha gate DOES run) but no superadmin exists among
+    them (so this signup silently receives superadmin anyway). That is the
+    more alert-worthy of the two events and it is invisible on a row that
+    records only the bootstrap flag.
+
+    Wrong implementation killed: recording ``is_first_user`` (the
+    superadmin-grant variable) under the ``is_first_user`` key, i.e. the code
+    exactly as first written — the two keys then carry the same value and the
+    ``is_first_user is False`` assertion below goes RED.
+    """
+    monkeypatch.setattr(app_settings, "captcha_required", True)
+    await _seed_default_plan(session_factory)
+    await _seed_existing_user(session_factory, is_superadmin=False)
+
+    verify_calls: list[Any] = []
+
+    async def _ok(token, remote_ip):
+        verify_calls.append((token, remote_ip))
+        return CaptchaVerifyResult(ok=True, reason=REASON_OK)
+
+    monkeypatch.setattr(auth_module, "verify_captcha", _ok)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "newuser",
+                "email": "new@example.com",
+                "password": "another-password-1",
+                "captcha_token": "tok",
+            },
+        )
+    assert res.status_code == 201, res.text
+    # Pins the divergent state itself: the gate ran, so this is provably not
+    # the bootstrap path, while the 201 body shows superadmin was granted.
+    assert len(verify_calls) == 1
+    assert res.json()["is_superadmin"] is True
+
+    rows = await _register_success_audit_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].detail["is_first_user"] is False
+    assert rows[0].detail["granted_superadmin"] is True
+
+
+# ── TBD-291: `request_id` must be the SANITIZED value ────────────────────────
+#
+# `RequestContextMiddleware` length-caps (64) and character-set-validates the
+# inbound `X-Request-Id` and generates a fresh UUID4 when it fails — but it
+# does NOT rewrite the header, so a handler reading `request.headers` gets the
+# raw attacker-controlled string and bypasses the trust boundary.
+# `audit_events.request_id` is `String(64)` and `record_audit_event` swallows
+# every exception, so on MySQL an oversized header meant: account created and
+# committed, audit INSERT rejected by strict mode, exception swallowed, 201
+# returned with NO row. A client could therefore delete itself from whichever
+# side of the refusal rate it was on.
+#
+# SQLite does not enforce VARCHAR length, so the dropped row cannot be
+# reproduced here. These fence the PROPERTY that prevents it instead: the
+# recorded id is the sanitized value, never the raw header. The middleware
+# echoes the sanitized value back as the response `X-Request-Id`, which gives
+# an exact expected value rather than a shape assertion.
+
+# 200 chars: blows the 64-char cap. Also contains no character `_SAFE_ID_RE`
+# forbids, so length alone is what rejects it.
+_OVERSIZED_REQUEST_ID = "z" * 200
+# Within the cap but contains characters outside `[\w.\-]`.
+_ILLEGAL_CHAR_REQUEST_ID = "abc$def spa/ce"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_header", [_OVERSIZED_REQUEST_ID, _ILLEGAL_CHAR_REQUEST_ID]
+)
+async def test_success_audit_records_sanitized_request_id(
+    session_factory, monkeypatch, raw_header
+) -> None:
+    """FENCE — the success row carries the middleware's id, not the header.
+
+    Wrong implementation killed: ``request_id=request.headers.get(
+    "x-request-id")``, which stores ``raw_header`` verbatim.
+    """
+    monkeypatch.setattr(app_settings, "captcha_required", True)
+    await _seed_default_plan(session_factory)
+    await _seed_existing_user(session_factory)
+
+    async def _ok(token, remote_ip):
+        return CaptchaVerifyResult(ok=True, reason=REASON_OK)
+
+    monkeypatch.setattr(auth_module, "verify_captcha", _ok)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "newuser",
+                "email": "new@example.com",
+                "password": "another-password-1",
+                "captcha_token": "tok",
+            },
+            headers={"X-Request-Id": raw_header},
+        )
+    assert res.status_code == 201, res.text
+
+    rows = await _register_success_audit_rows(session_factory)
+    assert len(rows) == 1
+    recorded = rows[0].request_id
+    assert recorded != raw_header, (
+        "the raw inbound X-Request-Id reached audit_events; "
+        "RequestContextMiddleware rejected it and the handler read it anyway"
+    )
+    # The sanitized value the middleware actually bound, echoed on the way out.
+    assert recorded == res.headers["x-request-id"]
+    assert len(recorded) <= 64
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_header", [_OVERSIZED_REQUEST_ID, _ILLEGAL_CHAR_REQUEST_ID]
+)
+async def test_captcha_failed_audit_records_sanitized_request_id(
+    session_factory, monkeypatch, raw_header
+) -> None:
+    """FENCE — the REFUSAL row has the same trust boundary.
+
+    Fixing only the success call site would leave the numerator suppressible by
+    the same trick as the denominator, which is worse than either alone: the
+    rate would still be wrong and the two sides would now fail differently.
+
+    Wrong implementation killed: ``request_id=request.headers.get(
+    "x-request-id")`` on the ``auth.register.captcha_failed`` call.
+    """
+    monkeypatch.setattr(app_settings, "captcha_required", True)
+    await _seed_default_plan(session_factory)
+    await _seed_existing_user(session_factory)
+
+    async def _rejected(token, remote_ip):
+        return CaptchaVerifyResult(ok=False, reason=REASON_PROVIDER_REJECTED)
+
+    monkeypatch.setattr(auth_module, "verify_captcha", _rejected)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "newuser",
+                "email": "new@example.com",
+                "password": "another-password-1",
+                "captcha_token": "tok",
+            },
+            headers={"X-Request-Id": raw_header},
+        )
+    assert res.status_code == 400, res.text
+
+    rows = await _captcha_failed_audit_rows(session_factory)
+    assert len(rows) == 1
+    recorded = rows[0].request_id
+    assert recorded != raw_header, (
+        "the raw inbound X-Request-Id reached audit_events; "
+        "RequestContextMiddleware rejected it and the handler read it anyway"
+    )
+    assert recorded == res.headers["x-request-id"]
+    assert len(recorded) <= 64
