@@ -109,8 +109,16 @@ async def create_recurring(db: AsyncSession, org_id: int, body: RecurringCreate)
 
 
 async def update_recurring(
-    db: AsyncSession, org_id: int, recurring_id: int, body: RecurringUpdate
+    db: AsyncSession, org_id: int, recurring_id: int, body: RecurringUpdate,
+    today: datetime.date | None = None,
 ) -> RecurringTransaction:
+    """Update a recurring template.
+
+    ``today`` is the caller's resolved clock, used only when this update
+    REACTIVATES a stopped template (see ``_reanchor_frontier_on_resume``).
+    Passing None falls back to ``date.today()``; do NOT rely on that from any
+    path that has already resolved a clock (TBD-284).
+    """
     result = await db.execute(
         select(RecurringTransaction)
         .options(*_load_opts())
@@ -119,6 +127,10 @@ async def update_recurring(
     r = result.scalar_one_or_none()
     if r is None:
         raise NotFoundError("Recurring transaction")
+
+    # Captured BEFORE any field is applied, so the False->True transition is
+    # detectable below even though `is_active` is written in this same block.
+    was_active = r.is_active
 
     if body.account_id is not None:
         await validate_account(db, body.account_id, org_id)
@@ -150,12 +162,78 @@ async def update_recurring(
         if body.category_id is not None:
             r.category_id = body.category_id
 
+    # TBD-300: re-anchor the frontier when this update REACTIVATES a stopped
+    # template. Must run after `is_active` is applied and before the commit.
+    # Gated on the transition, not on `body.is_active is True`: a no-op update
+    # that re-sends `is_active: true` on an already-active template must not
+    # move the frontier.
+    if body.is_active is True and not was_active:
+        await _reanchor_frontier_on_resume(db, org_id, r, today=today)
+
     await db.commit()
 
     result = await db.execute(
         select(RecurringTransaction).options(*_load_opts()).where(RecurringTransaction.id == r.id)
     )
     return result.scalar_one()
+
+
+# Runaway guard only, not policy: ~23 years of weekly occurrences. A frontier
+# further behind than this is corrupt data, not a paused template.
+_MAX_FRONTIER_ADVANCE_STEPS = 1200
+
+
+async def _reanchor_frontier_on_resume(
+    db: AsyncSession, org_id: int, r: RecurringTransaction,
+    *, today: datetime.date | None = None,
+) -> None:
+    """Advance a resumed template's frontier onto the current billing cycle.
+
+    ``stop_recurring`` freezes ``next_due_date``, and generation filters on
+    ``is_active``, so a paused template's frontier falls one day further behind
+    for every day it is paused. ``stop_recurring`` ALSO nulls ``recurring_id``
+    on every surviving row, settled ones included, which blinds the generation
+    loop's idempotency probe (``recurring_id == r.id AND date == due``).
+
+    Resuming without re-anchoring therefore re-creates every occurrence in the
+    paused gap -- each one written SETTLED when ``auto_settle`` is on, each one
+    applying to the account balance a second time. Reachable in two UI clicks,
+    with no date supplied by anyone (TBD-300).
+
+    ⚠ Never ``next_due_date = today``. That stops the duplication too, so the
+    row-count and balance fences cannot tell the two implementations apart --
+    but it silently RE-ANCHORS the series: a rent template paused on the 1st
+    and resumed on the 17th would bill on the 17th forever. Worse than the bug
+    it replaces, because it is invisible.
+
+    ⚠ ``p_start``, not ``today``: a template resumed mid-cycle must still
+    produce the current cycle's own occurrence. Advancing to ``today`` silently
+    skips a charge the user is genuinely due.
+
+    A frontier already at or after ``p_start`` is left exactly where it is.
+    Pausing and resuming inside one cycle is ordinary use and must not cost the
+    user that cycle's charge.
+    """
+    if today is None:
+        today = datetime.date.today()
+
+    org = await db.scalar(select(Organization).where(Organization.id == org_id))
+    cycle_day = org.billing_cycle_day if org else 1
+    p_start, _ = current_cycle_window(cycle_day, today)
+
+    # Walk the template's OWN grid. `advance_date` carries the month-end
+    # clamping; closed-form arithmetic would lose alignment for day-29/30/31
+    # monthly series.
+    #
+    # The loop condition IS the already-current guard: a frontier at or after
+    # `p_start` makes zero passes and is left exactly where it is, which is what
+    # a pause-and-resume inside one cycle needs. An explicit early-return above
+    # this loop was removed as dead code -- no test could kill it, because the
+    # condition it checked is the negation of the loop's own.
+    steps = 0
+    while r.next_due_date < p_start and steps < _MAX_FRONTIER_ADVANCE_STEPS:
+        r.next_due_date = advance_date(r.next_due_date, r.frequency)
+        steps += 1
 
 
 async def _remove_pending_transactions(
