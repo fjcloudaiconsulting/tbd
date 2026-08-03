@@ -38,6 +38,32 @@ skips a charge the user is genuinely due.
 ⚠ Along the grid, never ``next_due_date = today``. The latter re-anchors the
 series -- a rent template paused on the 1st and resumed on the 17th would bill
 on the 17th forever, which is worse because it is invisible.
+
+## One fixture cannot carry all of this
+
+``CYCLE_DAY = 1`` with ``FIRST_DUE`` on the 5th is the *headline* fixture, and
+it is degenerate in three separate ways that hide real mutants. Each of the
+later tests therefore builds its own:
+
+* ``current_cycle_window(1, today)[0]`` equals ``today.replace(day=1)``, so the
+  whole ``p_start`` derivation is invisible -- hence ``billing_cycle_day = 15``
+  in ``test_reanchor_target_is_the_orgs_cycle_start_not_the_first_of_the_month``.
+* the walk never lands ON ``p_start``, only past it, so ``<`` vs ``<=`` is
+  invisible -- hence the day-1 series in
+  ``test_frontier_landing_exactly_on_the_cycle_start_is_not_advanced_past_it``.
+* ``advance_date``'s month-end clamping is a no-op on the 5th, so iterated vs
+  closed-form is invisible -- hence the Jan-31 series in
+  ``test_resume_lands_on_generations_own_path_dependent_grid``.
+
+That last test is a REPLACEMENT, not an addition (TBD-300 review, N4). It
+previously asserted ``next_due_date.day == FIRST_DUE.day`` on the headline
+fixture, which ``test_resume_still_produces_the_current_cycle_occurrence``
+strictly implies by asserting the exact date -- every mutant it killed, that
+one killed too. It was re-pointed rather than deleted because the property its
+docstring CLAIMED (the series keeps its alignment) turned out to be both false
+as stated and worth fencing in its corrected form: the walk reproduces
+generation's own path-dependent grid. On the month-end fixture that is a
+property nothing else in this file can see.
 """
 from __future__ import annotations
 
@@ -45,6 +71,7 @@ import datetime
 from decimal import Decimal
 
 import pytest_asyncio
+import structlog.testing
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -87,9 +114,30 @@ P_START_AT_T1 = datetime.date(2026, 6, 1)
 FIRST_DUE = datetime.date(2026, 1, 5)
 AMOUNT = Decimal("100.00")
 
+# A day-of-month that makes the walk land EXACTLY on `p_start` (N2), and a
+# cycle day that is not the 1st, so `p_start` is not `today.replace(day=1)`
+# by coincidence (N3). Both are separate fixtures on purpose: CYCLE_DAY = 1
+# plus FIRST_DUE on the 5th makes several distinct derivations agree.
+DAY_ONE_DUE = datetime.date(2026, 1, 1)
+CYCLE_DAY_MID = 15
+P_START_AT_T1_MID = datetime.date(2026, 6, 15)
+# Month-end anchor: the only shape where `advance_date`'s clamping is visible.
+EOM_DUE = datetime.date(2026, 1, 31)
 
-async def _seed(db: AsyncSession) -> dict:
-    org = Organization(name="T", billing_cycle_day=CYCLE_DAY)
+
+async def _seed(
+    db: AsyncSession,
+    *,
+    cycle_day: int = CYCLE_DAY,
+    first_due: datetime.date = FIRST_DUE,
+    frequency: Frequency = Frequency.MONTHLY,
+) -> dict:
+    """One org + account + category + one active template.
+
+    Every call makes its OWN org, so two seeds in one test are two independent
+    universes and `_dates` (org-scoped) never mixes them.
+    """
+    org = Organization(name="T", billing_cycle_day=cycle_day)
     db.add(org)
     await db.flush()
     at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
@@ -107,7 +155,7 @@ async def _seed(db: AsyncSession) -> dict:
     tpl = RecurringTransaction(
         org_id=org.id, account_id=acct.id, category_id=cat.id,
         description="Rent", amount=AMOUNT, type=TransactionType.EXPENSE,
-        frequency=Frequency.MONTHLY, next_due_date=FIRST_DUE,
+        frequency=frequency, next_due_date=first_due,
         auto_settle=True, is_active=True,
     )
     db.add(tpl)
@@ -189,20 +237,56 @@ async def test_resume_does_not_apply_the_paused_gap_to_the_balance(db_session):
     )
 
 
-async def test_resume_advances_the_frontier_onto_its_own_grid(db_session):
-    """FENCE — the fix must preserve the series' alignment.
+async def test_resume_lands_on_generations_own_path_dependent_grid(db_session):
+    """FENCE — the walk must land where GENERATION's walk would have landed.
 
-    Wrong implementation killed: ``next_due_date = today`` on resume. That stops
-    the back-fill too, so the two fences above CANNOT distinguish it — but it
-    silently re-anchors a monthly series from the 5th to the 20th, forever.
+    Re-pointed (TBD-300 review, N4). This test used to assert
+    ``next_due_date.day == FIRST_DUE.day`` on the five-month fixture, which
+    ``test_resume_still_produces_the_current_cycle_occurrence`` strictly
+    implies, and it justified itself as fencing "the series' alignment" — the
+    one property that fixture cannot express, because ``FIRST_DUE`` is the 5th
+    and ``advance_date``'s clamping is a no-op there. See the module docstring.
+
+    The real property, and the one thing here nothing else kills: the walk is
+    ITERATED, over ``advance_date``, so it reproduces generation's own
+    PATH-DEPENDENT grid. A month-end series drifts off its anchor and never
+    returns — Jan 31 -> Feb 28 -> Mar 28 -> ... -> Jun 28, not Jun 30 — and
+    ``generate_due_transactions`` drifts identically because it calls the same
+    function. The re-anchored frontier must therefore be a date generation
+    itself visits.
+
+    Wrong implementation killed: any closed-form jump onto the current cycle
+    (``next_due + relativedelta(months=n)``, or projecting the day-of-month onto
+    ``p_start``'s month). Both give 2026-06-30 here. Every other fence in this
+    file stays GREEN under it, because their series is anchored on the 5th.
+
+    No generation runs before the pause on purpose: one tick would advance the
+    frontier off day 31 to Feb 28 and destroy the property under test.
     """
-    seed = await _paused_across_five_months(db_session)
+    paused = await _seed(db_session, first_due=EOM_DUE)
+    await recurring_service.stop_recurring(
+        db_session, paused["org_id"], paused["template_id"]
+    )
+    await _resume(db_session, paused, at=T1)
+    frontier = (await _template(db_session, paused["template_id"])).next_due_date
 
-    tpl = await _template(db_session, seed["template_id"])
-    assert tpl.next_due_date.day == FIRST_DUE.day, (
-        f"frontier landed on {tpl.next_due_date} (day {tpl.next_due_date.day}); "
-        f"the series is anchored on day {FIRST_DUE.day} and resume must not "
-        f"re-anchor it"
+    # The control is the SAME template in its own org, never paused. Its rows
+    # are the grid generate_due_transactions actually walks — not a re-derivation
+    # of it here, which would only restate advance_date to itself.
+    control = await _seed(db_session, first_due=EOM_DUE)
+    await recurring_service.generate_due_transactions(
+        db_session, control["org_id"], today=T1
+    )
+    grid = await _dates(db_session, control["org_id"])
+
+    assert frontier == datetime.date(2026, 6, 28), (
+        f"frontier {frontier}: walking Jan 31 monthly to the first occurrence "
+        f">= {P_START_AT_T1} lands on 2026-06-28; 2026-06-30 means the walk was "
+        f"replaced by closed-form arithmetic"
+    )
+    assert frontier in grid, (
+        f"frontier {frontier} is not a date generation produces ({grid}); the "
+        f"re-anchor must land ON generation's grid, not beside it"
     )
 
 
@@ -247,3 +331,153 @@ async def test_pause_and_resume_inside_one_cycle_leaves_the_frontier_alone(db_se
 
     tpl = await _template(db_session, seed["template_id"])
     assert tpl.next_due_date == frontier_before
+
+
+async def test_reanchor_is_gated_on_the_transition_not_on_the_field(db_session):
+    """FENCE — ``and not was_active`` in the gate (N1).
+
+    The gate reads ``body.is_active is True and not was_active``. The second
+    conjunct was asserted by a comment ("a no-op update that re-sends
+    ``is_active: true`` on an already-active template must not move the
+    frontier") and by nothing else: every other test here reaches the gate
+    through ``stop_recurring``, so ``was_active`` is already False and deleting
+    the conjunct changes none of their outcomes.
+
+    Wrong implementation killed: dropping ``and not was_active``, i.e. gating on
+    ``body.is_active is True`` alone.
+
+    This is not hypothetical traffic. ``PATCH`` bodies are partial, and any
+    client that round-trips the template it just read back re-sends
+    ``is_active: true`` on an active template. Under the mutant that silently
+    fast-forwards the frontier — skipping the occurrences between it and the
+    cycle start, which is a MISSING charge, the mirror image of the defect this
+    ticket fixes.
+
+    The template here is active and has never generated, so its frontier sits
+    on ``FIRST_DUE``, five months behind ``p_start`` — the mutant has somewhere
+    to move it to.
+    """
+    seed = await _seed(db_session)
+    tpl = await _template(db_session, seed["template_id"])
+    assert tpl.is_active is True, "fixture precondition: already active"
+    assert tpl.next_due_date == FIRST_DUE and FIRST_DUE < P_START_AT_T1, (
+        "fixture precondition: frontier is behind p_start, so a mutant that "
+        "re-anchors unconditionally has room to move it"
+    )
+
+    # Byte-for-byte the Resume request — sent at a template that was never
+    # stopped.
+    await _resume(db_session, seed, at=T1)
+
+    tpl = await _template(db_session, seed["template_id"])
+    assert tpl.next_due_date == FIRST_DUE, (
+        f"frontier moved to {tpl.next_due_date} on a no-op is_active:true; only "
+        f"a False->True TRANSITION may re-anchor"
+    )
+
+
+async def test_frontier_landing_exactly_on_the_cycle_start_is_not_advanced_past_it(db_session):
+    """FENCE — the ``<`` in ``while r.next_due_date < p_start`` (N2).
+
+    Wrong implementation killed: ``<=``. The boundary was pinned from one side
+    only (a frontier strictly after ``p_start``, by
+    ``test_pause_and_resume_inside_one_cycle_leaves_the_frontier_alone``); the
+    landing-exactly-on case was unfenced.
+
+    The consequence is severe and needs no unusual config — MONTHLY on the 1st
+    with the DEFAULT ``billing_cycle_day = 1``. Correct: the walk stops on
+    2026-06-01 and June's rent is created. Under ``<=``: one more step to
+    2026-07-01, past the period end, and **June's rent is silently never
+    created**. Both the row-count and the frontier are asserted, because the
+    off-by-one is only visible as a missing row a cycle later.
+    """
+    seed = await _seed(db_session, first_due=DAY_ONE_DUE)
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=T0)
+    await recurring_service.stop_recurring(db_session, seed["org_id"], seed["template_id"])
+    await _resume(db_session, seed, at=T1)
+
+    tpl = await _template(db_session, seed["template_id"])
+    assert tpl.next_due_date == P_START_AT_T1, (
+        f"frontier {tpl.next_due_date}: a walk that reaches p_start "
+        f"({P_START_AT_T1}) exactly must STOP there, not take one more step"
+    )
+
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=T1)
+    assert await _dates(db_session, seed["org_id"]) == [DAY_ONE_DUE, P_START_AT_T1], (
+        "the current cycle's charge, due on the cycle start itself, was skipped"
+    )
+
+
+async def test_reanchor_target_is_the_orgs_cycle_start_not_the_first_of_the_month(db_session):
+    """FENCE — the ``p_start`` derivation itself (N3).
+
+    Every other test in this file runs at ``CYCLE_DAY = 1``, where
+    ``current_cycle_window(1, today)[0]`` and ``today.replace(day=1)`` agree.
+    So the org lookup and the ``current_cycle_window`` call were untested:
+    replacing both with ``p_start = today.replace(day=1)`` left all five green.
+
+    Wrong implementation killed: exactly that substitution.
+
+    With ``billing_cycle_day = 15`` the current cycle at T1 is
+    [2026-06-15, 2026-07-14], so the series' 2026-06-05 occurrence belongs to
+    the PREVIOUS cycle — it is part of the paused gap and must not be
+    back-filled. The first occurrence in the current cycle is 2026-07-05.
+    Under the mutant ``p_start`` is 2026-06-01, the walk stops on 2026-06-05,
+    and the next tick writes that gap charge SETTLED against the balance.
+    """
+    seed = await _seed(db_session, cycle_day=CYCLE_DAY_MID)
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=T0)
+    await recurring_service.stop_recurring(db_session, seed["org_id"], seed["template_id"])
+    await _resume(db_session, seed, at=T1)
+
+    tpl = await _template(db_session, seed["template_id"])
+    assert tpl.next_due_date == datetime.date(2026, 7, 5), (
+        f"frontier {tpl.next_due_date}: with billing_cycle_day="
+        f"{CYCLE_DAY_MID} the cycle starts {P_START_AT_T1_MID} and the first "
+        f"occurrence at or after it is 2026-07-05; 2026-06-05 means p_start was "
+        f"derived as the 1st of the month instead of from the org"
+    )
+
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=T1)
+    assert datetime.date(2026, 6, 5) not in await _dates(db_session, seed["org_id"]), (
+        "a previous-cycle gap occurrence was back-filled"
+    )
+
+
+async def test_reanchor_cap_exhaustion_is_not_silent(db_session):
+    """FENCE — the ``_MAX_FRONTIER_ADVANCE_STEPS`` arm logs (N6).
+
+    On exhaustion the loop falls through, the caller commits, and the template
+    is left ACTIVE with a frontier still behind ``p_start`` — whereupon the next
+    tick back-fills up to ``MAX_CATCHUP_ITERATIONS`` rows, each SETTLED, against
+    the balance. That is precisely the defect this ticket removes, re-entered.
+    Its sibling in ``generate_due_transactions`` warns
+    (``recurring.generate.catchup_cap``); this arm was silent.
+
+    A weekly template anchored in 2000 is ~1378 steps behind the 2026 cycle
+    start, so the 1200-step cap fires and the frontier is left short.
+    """
+    seed = await _seed(
+        db_session, first_due=datetime.date(2000, 1, 5), frequency=Frequency.WEEKLY
+    )
+    await recurring_service.stop_recurring(db_session, seed["org_id"], seed["template_id"])
+
+    with structlog.testing.capture_logs() as logs:
+        await _resume(db_session, seed, at=T1)
+
+    tpl = await _template(db_session, seed["template_id"])
+    assert tpl.next_due_date < P_START_AT_T1, (
+        "fixture precondition: the cap must actually be reached, leaving the "
+        "frontier short of the cycle start"
+    )
+    assert tpl.is_active is True, (
+        "the template is left ACTIVE and behind — which is why silence here is "
+        "not acceptable"
+    )
+
+    capped = [e for e in logs if e.get("event") == "recurring.resume.reanchor_cap"]
+    assert len(capped) == 1, f"expected one cap warning, got {logs}"
+    assert capped[0]["log_level"] == "warning"
+    assert capped[0]["org_id"] == seed["org_id"]
+    assert capped[0]["recurring_id"] == seed["template_id"]
+    assert capped[0]["next_due_date"] == str(tpl.next_due_date)

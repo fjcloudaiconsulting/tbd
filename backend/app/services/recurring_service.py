@@ -118,6 +118,17 @@ async def update_recurring(
     REACTIVATES a stopped template (see ``_reanchor_frontier_on_resume``).
     Passing None falls back to ``date.today()``; do NOT rely on that from any
     path that has already resolved a clock (TBD-284).
+
+    ⚠ On that same reactivation, a supplied ``body.next_due_date`` EARLIER than
+    the current billing cycle start is SILENTLY OVERWRITTEN. Fields are applied
+    first, then the re-anchor walks the frontier forward from whatever it now
+    holds, so a past date is walked up onto the current cycle exactly as a
+    frozen one would be. A supplied date at or after the cycle start survives
+    untouched -- the walk makes zero passes. This is deliberate (a
+    client-supplied past date IS the back-fill TBD-300 removes) and correct,
+    but it means the returned ``next_due_date`` can differ from the one sent.
+    On a plain update that does not flip ``is_active`` False->True, the
+    supplied date is always kept verbatim.
     """
     result = await db.execute(
         select(RecurringTransaction)
@@ -180,6 +191,24 @@ async def update_recurring(
 
 # Runaway guard only, not policy: ~23 years of weekly occurrences. A frontier
 # further behind than this is corrupt data, not a paused template.
+#
+# ⚠ Deliberately its OWN literal, NOT an alias of
+# ``date_utils.MAX_OCCURRENCE_ITERATIONS`` -- which the ``MAX_CATCHUP_ITERATIONS``
+# comment above otherwise insists every walk over a template's occurrence grid
+# be sized by. A reader who took that comment at face value would expect a
+# third alias here, so: the alias rule is about walks that must TRUNCATE
+# TOGETHER. Generation materialises occurrences and forecast projects the ones
+# it has not yet materialised; they walk one grid from one origin, and two
+# literals are how they come to disagree about it. This walk has no
+# counterpart to agree with -- nothing else re-anchors a frontier -- and it
+# bounds a different quantity: staleness of ONE template at ONE resume, not
+# occurrences per window. Aliasing would tie "500 occurrences in a billing
+# period" to "23 years behind", two numbers with no reason to move together.
+#
+# Exhausting it is NOT benign, and the loop logs when it happens: the template
+# is left active with a frontier still behind ``p_start``, so the next tick
+# back-fills up to ``MAX_CATCHUP_ITERATIONS`` rows. See
+# ``recurring.resume.reanchor_cap``.
 _MAX_FRONTIER_ADVANCE_STEPS = 1200
 
 
@@ -191,14 +220,25 @@ async def _reanchor_frontier_on_resume(
 
     ``stop_recurring`` freezes ``next_due_date``, and generation filters on
     ``is_active``, so a paused template's frontier falls one day further behind
-    for every day it is paused. ``stop_recurring`` ALSO nulls ``recurring_id``
-    on every surviving row, settled ones included, which blinds the generation
-    loop's idempotency probe (``recurring_id == r.id AND date == due``).
+    for every day it is paused. Resuming without re-anchoring therefore hands
+    the catch-up loop the entire paused gap, and it materialises EVERY
+    occurrence in it -- each one written SETTLED when ``auto_settle`` is on,
+    each one applying to the account balance. Reachable in two UI clicks, with
+    no date supplied by anyone (TBD-300). Frozen frontier + ``is_active``
+    filter => back-fill on resume: that is the whole causal chain, and it is
+    the only thing this function is here to break.
 
-    Resuming without re-anchoring therefore re-creates every occurrence in the
-    paused gap -- each one written SETTLED when ``auto_settle`` is on, each one
-    applying to the account balance a second time. Reachable in two UI clicks,
-    with no date supplied by anyone (TBD-300).
+    ⚠ The idempotency probe is NOT part of that chain. An earlier version of
+    this docstring joined the two with a "therefore" and the "therefore" was
+    unearned. ``stop_recurring`` does null ``recurring_id`` on every surviving
+    row, settled ones included, which blinds the generation loop's probe
+    (``recurring_id == r.id AND date == due``) -- but the gap occurrences were
+    never materialised at all (generation was off for the whole pause), so
+    there are no rows at those dates for the probe to find or miss. The
+    nulling matters on a DIFFERENT and still-open path: dates materialised
+    BEFORE the pause become re-creatable once the frontier is moved backward
+    onto them, which takes an explicit backward ``next_due_date`` write that no
+    UI affordance issues today. Tracked as TBD-283, out of scope here.
 
     ⚠ Never ``next_due_date = today``. That stops the duplication too, so the
     row-count and balance fences cannot tell the two implementations apart --
@@ -221,9 +261,23 @@ async def _reanchor_frontier_on_resume(
     cycle_day = org.billing_cycle_day if org else 1
     p_start, _ = current_cycle_window(cycle_day, today)
 
-    # Walk the template's OWN grid. `advance_date` carries the month-end
-    # clamping; closed-form arithmetic would lose alignment for day-29/30/31
-    # monthly series.
+    # Walk the template's OWN grid, iterated, never closed-form.
+    #
+    # NOT because `advance_date` preserves the series' alignment -- it does the
+    # opposite. It is PATH-DEPENDENT for month-end templates (Jan 31 -> Feb 28
+    # -> Mar 28, never back to 31; `date_utils.advance_date` is
+    # `current + relativedelta(months=1)` and the clamping is destructive). This
+    # walk inherits every bit of that drift.
+    #
+    # The point is that it inherits EXACTLY that drift. `generate_due_transactions`
+    # advances its own frontier with the identical `advance_date` call, so
+    # walking Jan 31 -> Feb 28 -> ... -> Jun 28 lands on precisely the frontier
+    # main's back-fill loop would have reached while materialising those same
+    # rows. Same grid, same drift, same landing point -- the fix introduces no
+    # NEW misalignment, which is the only alignment claim available here. A
+    # closed-form jump (Jan 31 + 5 months = Jun 30) would land on a date
+    # generation never visits. `occurrences_in_window` argues this for the same
+    # reason (`date_utils.py`).
     #
     # The loop condition IS the already-current guard: a frontier at or after
     # `p_start` makes zero passes and is left exactly where it is, which is what
@@ -231,7 +285,18 @@ async def _reanchor_frontier_on_resume(
     # this loop was removed as dead code -- no test could kill it, because the
     # condition it checked is the negation of the loop's own.
     steps = 0
-    while r.next_due_date < p_start and steps < _MAX_FRONTIER_ADVANCE_STEPS:
+    while r.next_due_date < p_start:
+        # Mirrors generation's own cap arm (`recurring.generate.catchup_cap`).
+        # Falling through leaves the template ACTIVE with a frontier still
+        # behind `p_start`, so the next tick back-fills up to
+        # MAX_CATCHUP_ITERATIONS rows -- this ticket's defect, re-entered. It
+        # must not be silent.
+        if steps >= _MAX_FRONTIER_ADVANCE_STEPS:
+            await logger.awarning(
+                "recurring.resume.reanchor_cap",
+                org_id=org_id, recurring_id=r.id, next_due_date=str(r.next_due_date),
+            )
+            break
         r.next_due_date = advance_date(r.next_due_date, r.frequency)
         steps += 1
 
