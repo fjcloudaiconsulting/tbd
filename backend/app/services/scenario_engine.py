@@ -663,10 +663,16 @@ async def build_world_state(
 
     recurring_rows = (
         await db.execute(
-            select(RecurringTransaction).where(
+            select(RecurringTransaction)
+            .where(
                 RecurringTransaction.org_id == org_id,
                 active_series_filter(),
             )
+            # Deterministic order. ``WorldState.recurring`` is a LIST, and both
+            # the engine's projection queue and its fixtures index into it;
+            # without an ORDER BY the order is the storage engine's choice, so
+            # a test reading ``state.recurring[0]`` is a coin flip (TBD-275).
+            .order_by(RecurringTransaction.id)
         )
     ).scalars().all()
     recurring = [

@@ -238,6 +238,11 @@ async def update_recurring(
     instalment plan would be to stop the template, which NULLs the
     ``recurring_id`` grouping on every row it ever produced.
 
+    ⚠ An UPWARD edit that un-exhausts a finished series re-anchors the frontier
+    exactly as a reactivation does, and for the same reason. See the comment on
+    ``unexhausted`` below; the ``next_due_date``-is-silently-overwritten caveat
+    two paragraphs up applies verbatim to that path too.
+
     ``occurrences_elapsed`` is NOT on ``RecurringUpdate`` and is never
     user-writable. ``generate_due_transactions`` is its only writer.
     """
@@ -255,9 +260,10 @@ async def update_recurring(
     if r is None:
         raise NotFoundError("Recurring transaction")
 
-    # Captured BEFORE any field is applied, so the False->True transition is
-    # detectable below even though `is_active` is written in this same block.
+    # Captured BEFORE any field is applied, so the False->True transitions are
+    # detectable below even though both fields are written in this same block.
     was_active = r.is_active
+    had_remaining = has_remaining_occurrences(r)
 
     if body.account_id is not None:
         await validate_account(db, body.account_id, org_id)
@@ -296,7 +302,26 @@ async def update_recurring(
     # Gated on the transition, not on `body.is_active is True`: a no-op update
     # that re-sends `is_active: true` on an already-active template must not
     # move the frontier.
-    if body.is_active is True and not was_active:
+    resumed_by_activation = body.is_active is True and not was_active
+    # TBD-275: an UPWARD `occurrence_count` edit is the SECOND resume door, and
+    # it is the one this ticket opened. An exhausted series keeps
+    # `is_active = True` by design (`recurring_filters`), so it never trips the
+    # transition above -- but it has been excluded from generation by
+    # `active_series_filter` for however long it has been finished, and its
+    # frontier has been frozen for exactly as long. Raising the count
+    # un-exhausts it and hands the catch-up loop (which has no lower bound) the
+    # whole finished stretch: a 12-instalment `auto_settle` plan last
+    # materialised in January and raised to 14 in August back-fills two SETTLED
+    # rows into closed periods and moves the account balance by 2x amount.
+    # Same causal chain as TBD-300 -- frozen frontier + a filter that resumes --
+    # so it takes the same re-anchor.
+    unexhausted = has_remaining_occurrences(r) and not had_remaining
+    # ⚠ ONE call, never two. Both transitions can fire in a single request (a
+    # paused AND exhausted template reactivated with a higher count); a second
+    # walk would start from the frontier the first one already left at or after
+    # `p_start`, make zero passes and be harmless -- but "harmless today"
+    # is not a reason to write it twice.
+    if resumed_by_activation or unexhausted:
         await _reanchor_frontier_on_resume(db, org_id, r, today=today)
 
     # TBD-283: the frontier lower bound, on the POST-WRITE state.
@@ -374,6 +399,13 @@ async def _reanchor_frontier_on_resume(
     no date supplied by anyone (TBD-300). Frozen frontier + ``is_active``
     filter => back-fill on resume: that is the whole causal chain, and it is
     the only thing this function is here to break.
+
+    ⚠ ``is_active`` is not the only filter that resumes. ``active_series_filter``
+    ALSO excludes an exhausted series from generation while its frontier stays
+    frozen, and an upward ``occurrence_count`` edit un-excludes it (TBD-275) --
+    the identical chain with a different gate, so ``update_recurring`` calls
+    this on that transition too. Everything below applies unchanged; "paused"
+    reads as "excluded from generation" throughout.
 
     ⚠ The idempotency probe is NOT part of that chain. An earlier version of
     this docstring joined the two with a "therefore" and the "therefore" was

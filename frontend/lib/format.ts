@@ -55,6 +55,48 @@ export function projectedPeriodEnd(startISO: string, cycleDay: number): string |
   return formatLocalDate(next);
 }
 
+/**
+ * Advance an ISO `YYYY-MM-DD` date by ONE recurring period (TBD-275).
+ *
+ * The mirror of `backend/app/services/date_utils.advance_date`, and
+ * deliberately ONE STEP ONLY. It exists so promote-to-recurring can honour the
+ * "`next_due_date` is the NEXT occurrence, not the one that just happened"
+ * invariant without a round-trip: the FAB's date defaults to today, so sending
+ * the transaction's own date made the frontier land ON the source row, which
+ * generation's idempotency probe then consumed as an instalment.
+ *
+ * ⚠ **Do NOT grow this into a grid walker.** `occurrences_in_window` is the one
+ * walk over a template's occurrence grid and it lives on the server; a second
+ * copy on the client is a second thing to keep in step. This computes a single
+ * seed value that the server then stores verbatim and walks from itself, so
+ * there is no ongoing agreement to maintain.
+ *
+ * Month arithmetic clamps to the last valid day of the target month, matching
+ * `dateutil.relativedelta` (Jan 31 + 1 month = Feb 28, never Mar 3, which is
+ * what a naive `setMonth` overflow produces). Returns the input unchanged when
+ * it does not parse.
+ */
+export function advanceISO(iso: string, frequency: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const y = Number(m[1]);
+  const mon = Number(m[2]) - 1;
+  const day = Number(m[3]);
+  if (frequency === "weekly" || frequency === "biweekly") {
+    const d = new Date(y, mon, day);
+    d.setDate(d.getDate() + (frequency === "weekly" ? 7 : 14));
+    return formatLocalDate(d);
+  }
+  const months =
+    frequency === "quarterly" ? 3 : frequency === "yearly" ? 12 : 1;
+  // Day 0 of month N+1 is the LAST day of month N, which is how the clamp is
+  // read without a leap-year table.
+  const lastDayOfTarget = new Date(y, mon + months + 1, 0).getDate();
+  return formatLocalDate(
+    new Date(y, mon + months, Math.min(day, lastDayOfTarget)),
+  );
+}
+
 /** Compare two decimal-string amounts for equality without float math. */
 export function equalsAmount(a: string, b: string): boolean {
   return normalizeAmount(a) === normalizeAmount(b);

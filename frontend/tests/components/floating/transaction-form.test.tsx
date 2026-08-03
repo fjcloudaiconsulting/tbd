@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import TransactionForm from "@/components/floating/TransactionForm";
 import { apiFetch } from "@/lib/api";
-import { todayISO } from "@/lib/format";
+import { advanceISO, todayISO } from "@/lib/format";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -1001,5 +1001,171 @@ describe("TransactionForm", () => {
       String(url).includes("/promote-to-recurring"),
     );
     expect(promoteCalls).toHaveLength(0);
+  });
+
+  // ── TBD-275: instalment count on the quick-add FAB ────────────────────────
+
+  /** Render the FAB form, fill the required fields, tick Repeats, run the
+   *  optional extra setup, submit, and hand back the parsed promote body
+   *  (or null when no promote call was made). */
+  async function submitWithRepeat(
+    extra?: () => void,
+  ): Promise<Record<string, unknown> | null> {
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      return {} as never;
+    });
+
+    render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Klarna" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "49.00" },
+    });
+    fireEvent.click(screen.getByLabelText("Repeats"));
+    extra?.();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    const promoteCalls = apiFetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url === "/api/v1/transactions/42/promote-to-recurring" &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+    if (promoteCalls.length === 0) return null;
+    return JSON.parse(
+      String((promoteCalls[0][1] as RequestInit | undefined)?.body),
+    ) as Record<string, unknown>;
+  }
+
+  it("OMITS occurrence_count entirely when the payments field is blank", async () => {
+    // FENCE. Blank means open-ended, which is what every repeat was before
+    // TBD-275. `occurrence_count: null` and `occurrence_count: 0` are both
+    // wrong on the wire -- the schema is `Optional[int] = Field(gt=0)`, so 0
+    // is a 422 and null is a noisier spelling of absent.
+    //
+    // ⚠ `toBeUndefined()` alone would be GREEN against a body that sends
+    // `null`, because `JSON.parse('{"occurrence_count":null}').occurrence_count`
+    // is null, not undefined -- and `null == undefined`. The key-presence
+    // assertion is the discriminating one.
+    const body = await submitWithRepeat();
+    expect(body).not.toBeNull();
+    expect(Object.keys(body as object)).not.toContain("occurrence_count");
+    // The rest of the promote body is untouched by this field.
+    expect(body!.frequency).toBe("monthly");
+  });
+
+  it("threads a filled-in payments count through to the promote body as a number", async () => {
+    // FENCE. The whole point of the field. A string "4" would 422 on some
+    // shapes and is not what the schema declares, so the number-ness is
+    // asserted, not just the value.
+    const body = await submitWithRepeat(() => {
+      fireEvent.change(screen.getByLabelText("Number of payments"), {
+        target: { value: "4" },
+      });
+    });
+    expect(body!.occurrence_count).toBe(4);
+    expect(typeof body!.occurrence_count).toBe("number");
+  });
+
+  it("REJECTS zero and non-numeric payment counts before the transaction POST", async () => {
+    // FENCE. Rejected client-side, and rejected EARLY: a count validated
+    // between the POST and the promote would leave the user with a saved
+    // transaction, no recurring series, and an error that reads like the save
+    // failed. So the base POST must not happen at all.
+    //
+    // ⚠ "abc" is in this list on purpose and is why the input is
+    // `type="text"`. A `type="number"` input COERCES it to the empty string,
+    // which reads as blank, which means open-ended -- a 4-payment plan turned
+    // into a forever plan with no message and no way for the user to know.
+    // The same input shape is what makes this fence non-vacuous for "0" and
+    // "2.5" too: with `min`/`step` on a number input, jsdom's native
+    // constraint validation blocks the submit before the handler runs, so the
+    // test would pass without any guard in the component at all.
+    for (const bad of ["0", "-1", "2.5", "abc"]) {
+      const apiFetchMock = vi.mocked(apiFetch);
+      apiFetchMock.mockReset();
+      apiFetchMock.mockImplementation(
+        async (url: string, init?: RequestInit) => {
+          if (url === "/api/v1/transactions" && init?.method === "POST") {
+            return { id: 42 } as never;
+          }
+          return {} as never;
+        },
+      );
+
+      const { unmount } = render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText("Description"), {
+        target: { value: "Klarna" },
+      });
+      fireEvent.change(screen.getByLabelText("Amount"), {
+        target: { value: "49.00" },
+      });
+      fireEvent.click(screen.getByLabelText("Repeats"));
+      fireEvent.change(screen.getByLabelText("Number of payments"), {
+        target: { value: bad },
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+      });
+
+      expect(
+        screen.getByText(/Number of payments must be a whole number/i),
+        `value=${bad}`,
+      ).toBeInTheDocument();
+      // ⭐ Nothing was written. Not the transaction, not the series.
+      expect(postCalls(apiFetchMock), `value=${bad}`).toHaveLength(0);
+      unmount();
+    }
+  });
+
+  it("sends the NEXT occurrence as next_due_date, not the transaction's own date", async () => {
+    // FENCE. The default FAB entry is dated today and used to promote with
+    // `next_due_date = today` -- the frontier landing ON the source row.
+    // Generation's idempotency probe (`recurring_id == r.id AND date == due`,
+    // no status term, no lower bound) matches that row and spends an
+    // instalment for it, so a 4-payment plan delivered 3 while the UI read
+    // "4 of 4". The frontier must be the transaction's date advanced by one
+    // period.
+    //
+    // A FUTURE date, so the today-floor cannot be what produces the answer --
+    // with a back-dated row both the correct and the broken implementation
+    // return today and the fence is vacuous. (The floor itself is fenced by
+    // "bumps a back-dated recurring next_due_date forward to today" above.)
+    const future = "2099-01-31";
+    const body = await submitWithRepeat(() => {
+      fireEvent.change(screen.getByLabelText("Date"), {
+        target: { value: future },
+      });
+    });
+    // ⭐ Advanced, and month-end CLAMPED (2099 is not a leap year), matching
+    // `relativedelta`. Not "2099-01-31", and not "2099-03-03".
+    expect(body!.next_due_date).toBe("2099-02-28");
+    expect(body!.next_due_date).not.toBe(future);
+    expect(body!.next_due_date).toBe(advanceISO(future, "monthly"));
   });
 });

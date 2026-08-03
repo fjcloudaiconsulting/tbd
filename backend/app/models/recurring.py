@@ -58,6 +58,13 @@ class RecurringTransaction(Base):
     # template created before this column existed is (no backfill, and none is
     # possible -- an open-ended template has no count to recover).
     #
+    # Intent, not a constant: it is immutable only AS THE SERIES RUNS.
+    # ``update_recurring`` writes it, in both directions -- a downward edit
+    # below ``occurrences_elapsed`` is honoured and simply stops the series,
+    # and an upward edit on a FINISHED series un-exhausts it and therefore
+    # re-anchors the frontier exactly as a resume does. Nothing else may
+    # change it.
+    #
     # ``occurrences_elapsed`` is the series' PROGRESS, and it is STORED, never
     # counted. It is deliberately NOT named ``occurrences_generated``: a name
     # with "generated" in it invites verification by

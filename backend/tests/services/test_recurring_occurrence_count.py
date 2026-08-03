@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.models import Account, AccountType, Category, Organization
+from app.models.account import PaymentStrategy
 from app.models.base import Base
 from app.models.billing import BillingPeriod
 from app.models.category import CategoryType
@@ -62,6 +63,9 @@ from app.services import (
     recurring_service,
     scenario_engine,
     transaction_service,
+)
+from app.services.account_balance_forecast_service import (
+    compute_account_balance_forecast,
 )
 from app.services.billing_service import current_cycle_window
 from app.services.date_utils import advance_date, occurrences_in_window
@@ -481,13 +485,25 @@ async def test_fc_three_instalments_across_six_cycles_produce_exactly_three_rows
     ``{p_start, p_start+1mo, p_start+2mo}`` pins the right ones.
 
     Wrong implementations killed:
-      * no series budget anywhere in generation -- 6 rows;
-      * ``remaining >= 0`` for ``> 0`` -- 4 rows;
+      * no series budget anywhere in generation (neither the query filter nor
+        the in-loop guard) -- 6 rows;
       * ``occurrences_elapsed`` incremented before the create instead of with
         the frontier -- 2 rows;
       * ``active_series_filter`` missing from ``generate_due_transactions`` and
         the in-loop guard doing all the work, or vice versa -- both give 3
         here, which is why F-A and F-D fence the two arms separately.
+
+    ⚠ **``remaining >= 0`` for ``> 0`` does NOT give 4 rows here**, and an
+    earlier version of this list said it did. This template is MONTHLY, so the
+    catch-up loop holds one occurrence per window and the SQL
+    ``active_series_filter`` (``elapsed < count``, unmutated) drops the
+    exhausted template at query time before the in-loop guard is ever
+    consulted -- the row count and the date list are both unchanged. The
+    mutant IS killed here, but only by the trailing
+    ``has_remaining_occurrences(t) is False``, a direct predicate check. Its
+    BEHAVIOURAL kill is F-A (``forecast_net`` -40.00 for -30) and F-H
+    (``recurring_expense`` 40.00 for 30), which are WEEKLY and put several
+    occurrences inside one window.
     """
     today = datetime.date.today()
     p_start = _safe_month_anchor(today - datetime.timedelta(days=5))
@@ -861,19 +877,45 @@ def _selects_single_template(call: ast.Call) -> bool:
 
 
 def test_fg_every_recurring_read_site_carries_the_series_filter():
-    """FENCE. Structural guard: a SIXTH read site cannot skip the filter.
+    """FENCE. Structural guard over the five gate modules' ``select().where()``
+    chains.
 
-    Five modules read ``RecurringTransaction`` to project or materialise
-    occurrences, and all five must agree about exhaustion. Nothing in CI can
-    see a sixth being added -- there is no type checker, and a new site that
-    forgets ``active_series_filter()`` is green in every functional test that
-    does not happen to exercise it. So the guard is over the SOURCE.
+    The five modules listed in ``_GATED_MODULES`` read
+    ``RecurringTransaction`` to project or materialise occurrences, and all
+    five must agree about exhaustion. Nothing in CI can see one of them
+    reverting to a bare ``is_active`` predicate -- there is no type checker,
+    and such a site is green in every functional test that does not happen to
+    exercise it. So the guard is over the SOURCE.
 
     ⚠ A value/behaviour test cannot replace this. The failure mode is a site
     that does not exist yet, and the whole point is to fail the moment somebody
     writes one.
 
-    Every ``select(RecurringTransaction…).where(…)`` in those modules must
+    ⚠ **SCOPE, stated narrowly on purpose.** This guard sees exactly one
+    shape: a ``.where(...)`` whose receiver chain bottoms out in
+    ``select(<... RecurringTransaction ...>)``, inside one of the five modules
+    named in ``_GATED_MODULES``. It is structurally BLIND to:
+
+      * **join-shaped reads.** ``recurring_service._settle_due_auto`` selects
+        ``Transaction`` and JOINs ``RecurringTransaction``;
+        ``_is_recurring_select`` inspects only the ``select()`` args, so that
+        site is invisible here. It is CORRECTLY ungated -- it promotes rows
+        that generation already created, and filtering it would strand
+        already-materialised pending rows of a finished plan forever -- but
+        the exemption is a fact about the code, not something this test
+        checked;
+      * **every other module.** ``reports/sources/recurring.py`` reads
+        templates and is not in ``_GATED_MODULES``; nothing here would notice
+        it, or a sixth module added tomorrow. The set is a hand-maintained
+        list, and widening it is a deliberate edit;
+      * **ORM attribute traversal, ``db.get``, relationship loads, and raw
+        SQL.** None of them are a ``select().where()`` chain.
+
+    So the guarantee is: "no gate site in these five modules loses the filter
+    from a select-where chain." It is NOT "every read of
+    ``RecurringTransaction`` in the codebase is gated."
+
+    Within that scope, every ``select(RecurringTransaction…).where(…)`` must
     either call ``active_series_filter()``, constrain
     ``RecurringTransaction.id`` (single-row CRUD), or be named in
     ``_UNFILTERED_READ_SITES`` -- a pinned set of one, with its reason recorded
@@ -881,7 +923,9 @@ def test_fg_every_recurring_read_site_carries_the_series_filter():
 
     Wrong implementations killed:
       * any of the five gate sites reverting to a bare
-        ``RecurringTransaction.is_active == True``;
+        ``RecurringTransaction.is_active == True`` (verified: mutating
+        ``build_world_state`` and ``generate_due_transactions`` each fail here
+        by name);
       * a new unfiltered projection site added to any of the five modules.
 
     ⚠ Anti-vacuity: the site inventory itself is asserted non-empty and pinned
@@ -962,10 +1006,21 @@ async def test_fh_credit_card_series_conserves_and_stops(db_session):
     """FENCE. F-A + F-C on a ``credit_card`` account.
 
     Instalment plans are overwhelmingly a CREDIT-CARD product ("12 x 49.00 on
-    the Visa"), so the CC account path is the primary one, not an edge case.
-    It has its own balance handling (liability sign) and its own forecast
-    contributions, and nothing about the series budget may depend on account
-    type.
+    the Visa"), so the CC account path is the one users will actually hit, and
+    this is the WEEKLY conservation + row-count pair run down it.
+
+    ⚠ **Be honest about what "the CC path" means here.** An earlier version of
+    this docstring justified the test by the card's "liability sign" and "its
+    own forecast contributions". Neither is exercised: ``apply_balance`` is
+    account-type-agnostic (``income`` adds, everything else subtracts, with no
+    ``AccountType`` read anywhere), and ``compute_forecast`` contains ZERO
+    account-type references. Structurally this test is F-A with a different
+    FK, and it is worth keeping for exactly that reason -- it pins that the
+    budget does not acquire an account-type dependence -- but it does not
+    reach the credit-card MACHINERY. The fence that does is
+    ``test_fh_cc_projected_payment_plateaus_when_the_series_exhausts`` at the
+    bottom of this file, which drives
+    ``account_balance_forecast_service`` + ``cc_forecast_service`` end to end.
 
     Both halves are asserted on the CC account:
       * conservation of ``forecast_net`` across a generation run (F-A), with
@@ -973,7 +1028,9 @@ async def test_fh_credit_card_series_conserves_and_stops(db_session):
       * exactly ``count`` rows after six cycles (F-C).
 
     Wrong implementations killed:
-      * any budget or filter applied only on a non-liability path;
+      * a budget or filter made conditional on account type;
+      * ``remaining >= 0`` for ``> 0`` -- ``recurring_expense`` reads 40.00
+        for 30 (this is the weekly geometry F-C's monthly one cannot see);
       * the CC account's rows escaping the ``recurring_id`` grouping.
     """
     today = datetime.date.today()
@@ -1094,13 +1151,26 @@ async def test_fi_downward_count_edit_stops_the_series(db_session):
     available".
 
     Wrong implementations killed:
-      * ``!= 0`` guards anywhere in the chain -- generation keeps materialising
-        every cycle and the row count climbs past 3;
-      * ``occurrences_elapsed < occurrence_count`` written as ``<=`` in
-        ``active_series_filter`` -- a 4th row appears;
-      * ``update_recurring`` rejecting a downward edit -- ``ValidationError``,
-        and the user's only escape from a runaway plan would be
-        ``stop_recurring``, which destroys the ``recurring_id`` grouping.
+      * ``update_recurring`` rejecting a downward edit -- ``ValidationError``
+        out of the ``PUT``, and the user's only escape from a runaway plan
+        would be ``stop_recurring``, which destroys the ``recurring_id``
+        grouping. This is the ONE mutant this test kills on its own.
+
+    NOT killed here, recorded rather than claimed (both were listed above
+    until they were injected and survived):
+      * ``!= 0`` guards anywhere in the chain -- the fixture's ``remaining`` is
+        -1, but the SQL ``active_series_filter`` (``elapsed < count``, 3 < 2)
+        drops the template at query time, so neither the in-loop guard nor
+        ``occurrences_in_window``'s budget is ever consulted and the row count
+        stays 3. The unit fence above,
+        ``test_fi_remaining_is_not_clamped_and_guards_test_greater_than_zero``,
+        is the only thing that kills it;
+      * ``elapsed < count`` written as ``<=`` in ``active_series_filter`` --
+        no 4th row appears here (3 <= 2 is False either way, the template is
+        dropped either way). It is killed by
+        ``test_fj_scheduler_is_due_stops_reporting_work_when_exhausted``
+        (elapsed 1, count 1: 1 <= 1 keeps ``is_due`` True) and by the
+        scenario-engine fence.
     """
     today = datetime.date.today()
     p_start = _safe_month_anchor(today - datetime.timedelta(days=5))
@@ -1241,12 +1311,19 @@ async def test_fj_scenario_engine_stops_projecting_an_exhausted_series(db_sessio
     requiring identical balances.
 
     Wrong implementations killed:
-      * ``active_series_filter`` missing from ``build_state`` -- the exhausted
-        template drains the account for the whole horizon;
+      * ``active_series_filter`` missing from ``build_world_state`` -- killed
+        at ``assert len(state.recurring) == 1`` (``[1, 2]``), NOT by any
+        balance assertion. The exhausted template does not "drain the account
+        for the whole horizon", as an earlier version of this list claimed:
+        its snapshot carries ``remaining = 0``, so the monthly walk breaks on
+        pass 1 and the projected balance is unchanged. The membership
+        assertion is the whole kill;
       * no budget in the monthly walk -- the running template posts every month
-        instead of twice;
+        instead of twice, and the final balance reads -200.00 for 800.00
+        (which is what the anti-vacuity block at the end demonstrates
+        directly);
       * the budget mutated on the snapshot -- the second projection posts
-        nothing and the two runs disagree.
+        nothing, the two runs disagree, and ``snap.remaining`` reads 0.
     """
     today = datetime.date.today()
     p_start = _safe_month_anchor(today - datetime.timedelta(days=5))
@@ -1562,3 +1639,475 @@ async def test_fl_exists_branch_spends_budget_too(db_session):
 
     rows = await _rows(db_session, seed["org_id"])
     assert [r.date for r in rows] == [p_start, p_start + datetime.timedelta(days=7)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F-M — fence. PROMOTE with the frontier ON the source row's own date.
+#       ⚠ The shape the Add-Transaction FAB sent for every default entry.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_fm_promote_with_frontier_on_source_date_delivers_the_full_count(
+    db_session,
+):
+    """FENCE. ``occurrences_elapsed = 1`` UNCONDITIONALLY loses an instalment.
+
+    F-K pins the ``next_due_date`` > ``tx.date`` shape, where the source row is
+    instalment 1 and the frontier is instalment 2, so seeding 1 is right. This
+    is the OTHER shape, and until this ticket it was the one the UI produced on
+    every default entry: ``TransactionForm`` defaults the date to today and
+    computed ``next_due_date = max(date, today)``, so a same-day entry promoted
+    with the frontier ON the source row's own date. The FAB now advances by one
+    period first, but the endpoint is public and the today-floor can still
+    produce the equal case, so the backend owns this invariant either way.
+
+    Generation's idempotency probe is ``recurring_id == r.id AND date == due``
+    with NO status term and NO date lower bound, so at ``due == tx.date`` it
+    MATCHES the source row, takes the ``exists`` branch and calls
+    ``_advance_frontier`` -- spending an instalment for the source row. A
+    template seeded with 1 has therefore spent TWO instalments for ONE real
+    occurrence, and a 3-instalment plan materialises 2 rows while the UI reads
+    "3 of 3".
+
+    ⚠ **No conservation fence can see this.** Forecast and generation agree
+    with each other perfectly: both walk the same grid with the same budget,
+    and the budget is simply one short. ``forecast_net`` never moves. Only a
+    fixture that counts the ROWS a promoted series ends up with can tell.
+
+    ⚠ **WEEKLY, so all three occurrences fall inside one billing window.** The
+    promote endpoint rejects a ``next_due_date`` before the WALL-CLOCK today
+    (``PromoteToRecurringRequest._next_due_date_not_past`` plus the service
+    guard), so the source row must be dated today and the grid must start
+    there -- which rules out the ``_safe_month_anchor``'ed monthly grid every
+    other fixture here uses. A weekly grid has no month-length path dependence
+    at all, and the window provably holds all three (asserted below).
+
+    Wrong implementations killed:
+      * ``occurrences_elapsed=1`` unconditionally (this ticket as first
+        committed) -- 2 transactions exist, not 3, and the template reads
+        ``occurrences_elapsed == 3`` having created only one row;
+      * ``occurrences_elapsed=0`` unconditionally -- NOT killed here, and it
+        must not be: 0 IS this fixture's correct seed. F-K kills it, at
+        ``assert template.occurrences_elapsed == 1`` (``0 == 1``). The two are
+        a PAIR covering the two shapes of ``next_due_date`` vs ``tx.date``;
+        neither one alone constrains the seed.
+    """
+    today = datetime.date.today()
+    p_start = _safe_month_anchor(today - datetime.timedelta(days=5))
+    seed = await _seed(db_session, p_start=p_start)
+    count = 3
+    grid = [today + datetime.timedelta(days=7 * k) for k in range(count)]
+
+    window_end = _assert_geometry(seed, today, p_start)
+    # Fixture precondition: the whole 3-occurrence weekly grid is inside ONE
+    # generation window, so a single run settles the question.
+    assert grid[-1] <= window_end
+    assert grid[0] >= p_start
+
+    src = Transaction(
+        org_id=seed["org_id"], account_id=seed["account_id"],
+        category_id=seed["cat_id"], description="instalment 1",
+        amount=Decimal("10.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=today, settled_date=today,
+    )
+    db_session.add(src)
+    await db_session.commit()
+
+    promoted_tx = await transaction_service.promote_to_recurring(
+        db_session, seed["org_id"], src.id,
+        PromoteToRecurringRequest(
+            frequency="weekly",
+            # ⭐ THE fixture property. Equal, not after -- what the FAB sends.
+            next_due_date=today,
+            occurrence_count=count,
+        ),
+    )
+    template_id = promoted_tx.recurring_id
+    template = await _reload(db_session, template_id)
+    assert template.next_due_date == src.date
+    # ⭐ The source row has NOT been counted yet; the ``exists`` branch will
+    # count it, exactly once.
+    assert template.occurrences_elapsed == 0
+    assert remaining_occurrences(template) == count
+
+    res = await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=today
+    )
+    # The source row is consumed by the ``exists`` branch, so generation
+    # CREATES count - 1 and the series still ends up with ``count`` rows.
+    assert res["generated"] == count - 1
+
+    rows = await _rows(db_session, seed["org_id"])
+    # ⭐ THE assertion. Three instalments declared, three rows delivered.
+    assert len(rows) == count, [str(r.date) for r in rows]
+    assert [r.date for r in rows] == grid
+    assert [r.recurring_id for r in rows] == [template_id] * count
+
+    template = await _reload(db_session, template_id)
+    assert template.occurrences_elapsed == count
+    assert has_remaining_occurrences(template) is False
+
+    # ...and it stays at three across later cycles.
+    cycle_start = p_start
+    for _k in range(3):
+        clock = cycle_start + datetime.timedelta(days=5)
+        window_end = _assert_geometry(seed, clock, cycle_start)
+        await recurring_service.generate_due_transactions(
+            db_session, seed["org_id"], today=clock
+        )
+        cycle_start = await _roll_cycle(
+            db_session, seed["org_id"], cycle_start, window_end
+        )
+    assert len(await _rows(db_session, seed["org_id"])) == count
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F-N — fence. An UPWARD count edit is a RESUME. It must not back-fill.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_fn_upward_count_edit_reanchors_instead_of_backfilling(db_session):
+    """FENCE. TBD-300's back-fill, re-entered through the door THIS ticket opens.
+
+    An exhausted series keeps ``is_active = True`` by design, so raising
+    ``occurrence_count`` never trips ``update_recurring``'s ``is_active``
+    False->True transition -- but it un-excludes the template from
+    ``active_series_filter`` after it has been excluded for months, and its
+    frontier has been frozen for exactly as long. Generation's catch-up loop
+    has no lower bound, so the raise hands it the whole finished stretch: with
+    ``auto_settle`` on, every back-filled row is written SETTLED, dated inside
+    a CLOSED billing period, and applied to the account balance.
+
+    Frozen frontier + a filter that resumes is precisely TBD-300's causal
+    chain with a different gate, and it takes the same re-anchor.
+
+    ⚠ **The gap must be several cycles and the anti-degeneracy is asserted.**
+    With the frontier already inside the current cycle the re-anchor walks
+    ZERO steps and the fence cannot tell the implementations apart.
+
+    ⚠ **``auto_settle`` is not decoration.** It is what turns "two extra
+    pending rows" into "two settled rows inside closed periods that moved the
+    balance", and the balance assertion below is what pins that.
+
+    Wrong implementations killed:
+      * no re-anchor on the un-exhaustion transition (this ticket as first
+        committed) -- the two new rows land at ``frozen + 1mo`` and
+        ``frozen + 2mo``, four and three cycles in the past, both SETTLED,
+        both inside closed periods;
+      * the re-anchor gated on ``body.occurrence_count is not None`` rather
+        than on the transition -- NOT killed here (this series IS exhausted, so
+        both spellings fire). The fence for that one is
+        ``test_fn_count_edit_on_a_running_series_leaves_the_frontier_alone``,
+        immediately below, and it had to be written: the field-gated mutant
+        survives every other test in this file;
+      * ``next_due_date = today`` instead of ``p_start`` -- the row lands on
+        the resume day rather than the cycle's own day, and the date equality
+        below fails.
+    """
+    today = datetime.date.today()
+    p_start = _safe_month_anchor(today - datetime.timedelta(days=5))
+    seed = await _seed(db_session, p_start=p_start)
+
+    t = _template(
+        seed, next_due_date=p_start, occurrence_count=2, auto_settle=True,
+    )
+    db_session.add(t)
+    await db_session.commit()
+    template_id = t.id
+
+    acct = await db_session.get(Account, seed["account_id"])
+    opening = Decimal(str(acct.balance))
+
+    # ── Deliver both instalments, then let FOUR more cycles pass. Generation
+    #    is run every cycle: the exhausted series must contribute nothing.
+    cycle_start = p_start
+    for _k in range(6):
+        clock = cycle_start + datetime.timedelta(days=5)
+        window_end = _assert_geometry(seed, clock, cycle_start)
+        await recurring_service.generate_due_transactions(
+            db_session, seed["org_id"], today=clock
+        )
+        cycle_start = await _roll_cycle(
+            db_session, seed["org_id"], cycle_start, window_end
+        )
+
+    t = await _reload(db_session, template_id)
+    frozen_frontier = t.next_due_date
+    settled_before = await _rows(db_session, seed["org_id"])
+    assert len(settled_before) == 2
+    assert t.occurrences_elapsed == 2
+    assert t.is_active is True                       # exhausted, still active
+    assert has_remaining_occurrences(t) is False
+    # ⚠ ANTI-DEGENERACY. The frontier really is several cycles stale, so a
+    # missing re-anchor is visible rather than a zero-step no-op.
+    assert frozen_frontier < cycle_start
+    assert frozen_frontier + relativedelta(months=1) < cycle_start
+
+    await db_session.refresh(acct)
+    balance_before = Decimal(str(acct.balance))
+    assert balance_before == opening - Decimal("20.00")
+
+    # Periods that are ALREADY closed at the moment of the edit, snapshotted as
+    # plain tuples: `_roll_cycle` below closes further periods, and the rows the
+    # resumed series writes into the then-open cycle land inside one of THOSE
+    # legitimately. Only back-filling into a period that was closed BEFORE the
+    # edit is the defect.
+    closed_at_edit = [
+        (p.start_date, p.end_date)
+        for p in (await db_session.execute(
+            select(BillingPeriod).where(
+                BillingPeriod.org_id == seed["org_id"],
+                BillingPeriod.end_date.is_not(None),
+            )
+        )).scalars().all()
+    ]
+    assert closed_at_edit, "fixture never closed a period"
+
+    # ── The upward edit. 2 -> 4.
+    clock = cycle_start + datetime.timedelta(days=5)
+    updated = await recurring_service.update_recurring(
+        db_session, seed["org_id"], template_id,
+        RecurringUpdate(occurrence_count=4), today=clock,
+    )
+    assert updated.occurrence_count == 4
+    assert updated.occurrences_elapsed == 2
+    # ⭐ THE assertion. The frontier is dragged onto the CURRENT cycle, exactly
+    # as a resume does -- not left in the closed past.
+    assert updated.next_due_date == cycle_start
+    # ⚠ Snapshot it. ``updated`` is a LIVE ORM row and generation below advances
+    # ``next_due_date`` on that same identity-mapped instance, so reading the
+    # attribute after the loop yields the FINAL frontier, not the resume point.
+    resume_cycle = cycle_start
+
+    # ── Run the two new instalments out, one per cycle.
+    for _k in range(2):
+        clock = cycle_start + datetime.timedelta(days=5)
+        window_end = _assert_geometry(seed, clock, cycle_start)
+        await recurring_service.generate_due_transactions(
+            db_session, seed["org_id"], today=clock
+        )
+        cycle_start = await _roll_cycle(
+            db_session, seed["org_id"], cycle_start, window_end
+        )
+
+    rows = await _rows(db_session, seed["org_id"])
+    assert len(rows) == 4, [str(r.date) for r in rows]
+    new_rows = [r for r in rows if r.id not in {x.id for x in settled_before}]
+    assert len(new_rows) == 2
+
+    # ⭐ Not one of them is dated before the cycle the edit happened in.
+    assert all(r.date >= resume_cycle for r in new_rows), (
+        [str(r.date) for r in new_rows], str(resume_cycle)
+    )
+    # ...and none of them landed inside a period that was ALREADY closed when
+    # the edit ran, which is the damage the date assertion above is a proxy for.
+    for r in new_rows:
+        assert r.status == TransactionStatus.SETTLED   # auto_settle really is on
+        for p_from, p_to in closed_at_edit:
+            assert not (p_from <= r.date <= p_to), (
+                f"settled row {r.date} back-filled into closed period "
+                f"{p_from}..{p_to}"
+            )
+
+    await db_session.refresh(acct)
+    assert Decimal(str(acct.balance)) == opening - Decimal("40.00")
+    assert (await _reload(db_session, template_id)).occurrences_elapsed == 4
+
+
+async def test_fn_count_edit_on_a_running_series_leaves_the_frontier_alone(
+    db_session,
+):
+    """FENCE. The re-anchor is gated on the TRANSITION, not on the field.
+
+    ``if body.occurrence_count is not None: reanchor()`` looks like the same
+    rule and is not. A series that still has instalments left has never been
+    excluded from generation, so its frontier is wherever the schedule says --
+    and moving it on a count edit silently RESCHEDULES a live plan. A user who
+    corrects "12" to "14" on a template that is a couple of cycles overdue
+    would lose the overdue occurrences: the frontier jumps to the current cycle
+    and the catch-up loop has nothing left to catch up.
+
+    ⚠ **The frontier must start STALE.** With it already inside the current
+    cycle the field-gated mutant walks zero steps and is invisible -- which is
+    exactly why every other test in this file passes against it. The staleness
+    is asserted, not assumed.
+
+    ⚠ Both directions are edited, on two separate templates: UP (12 -> 14) and
+    DOWN (12 -> 8, still above ``occurrences_elapsed``). Both are edits to a
+    RUNNING series and neither may move anything.
+
+    Wrong implementations killed:
+      * the re-anchor gated on ``body.occurrence_count is not None`` -- both
+        frontiers jump to the current cycle start;
+      * the re-anchor gated on ``body.occurrence_count is not None and
+        occurrence_count > old`` -- the upward arm alone still jumps;
+      * ``had_remaining`` captured AFTER the fields are applied -- it would
+        then equal the post-edit value, ``unexhausted`` would be constantly
+        False, and F-N above goes RED instead.
+    """
+    today = datetime.date.today()
+    p_start = _safe_month_anchor(today - datetime.timedelta(days=5))
+    seed = await _seed(db_session, p_start=p_start)
+
+    # Two RUNNING counted templates whose frontiers are three cycles behind the
+    # current one. Overdue is ordinary: generation only runs when the scheduler
+    # ticks or the user hits /generate.
+    stale = p_start - relativedelta(months=3)
+    up = _template(
+        seed, description="up", next_due_date=stale,
+        occurrence_count=12, occurrences_elapsed=2,
+    )
+    down = _template(
+        seed, description="down", category_id=seed["cat_b"], next_due_date=stale,
+        occurrence_count=12, occurrences_elapsed=2,
+    )
+    db_session.add_all([up, down])
+    await db_session.commit()
+
+    # ⚠ ANTI-DEGENERACY. Stale, and still running -- the two properties that
+    # make the mutant observable.
+    assert stale < p_start
+    for t in (up, down):
+        assert has_remaining_occurrences(t) is True
+
+    clock = p_start + datetime.timedelta(days=5)
+    _assert_geometry(seed, clock, p_start)
+
+    raised = await recurring_service.update_recurring(
+        db_session, seed["org_id"], up.id,
+        RecurringUpdate(occurrence_count=14), today=clock,
+    )
+    lowered = await recurring_service.update_recurring(
+        db_session, seed["org_id"], down.id,
+        RecurringUpdate(occurrence_count=8), today=clock,
+    )
+
+    # ⭐ THE assertions. Neither edit touched the schedule.
+    assert raised.next_due_date == stale
+    assert lowered.next_due_date == stale
+    assert raised.occurrence_count == 14
+    assert lowered.occurrence_count == 8
+    assert raised.occurrences_elapsed == 2
+    assert lowered.occurrences_elapsed == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F-H2 — fence. The CC *balance forecast*, end to end. Correctness here is
+#        TRANSITIVE, and this is what pins the transitivity.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_fh_cc_projected_payment_plateaus_when_the_series_exhausts(
+    db_session,
+):
+    """FENCE. The projected credit-card payment PLATEAUS. It must not grow.
+
+    ``cc_forecast_service`` and ``account_balance_forecast_service`` contain
+    zero ``RecurringTransaction`` references, so nothing in this ticket touched
+    them and F-G cannot see them. Their correctness under an instalment plan is
+    therefore TRANSITIVE: generation stops writing rows, the CC ledger stops
+    seeing them, and the projected payment stops climbing. A transitive
+    argument that is never executed is just an argument -- this runs it.
+
+    A 3-instalment WEEKLY ``auto_settle`` series on a real credit card
+    (``close_day`` + ``payment_day`` + ``payment_source_account_id``, so
+    ``compute_account_balance_forecast`` actually synthesises a payment).
+    Every instalment is a SETTLED charge on the card. After the third, the
+    owed amount is frozen at 30.00 and every later cycle must project the same
+    30.00 payment out of the checking account.
+
+    ⚠ **Compare two LATE cycles, not the first two.** Cycle 0 is where the
+    charges land, so its projection legitimately differs from cycle 1's. By
+    cycles 2 and 3 every charge is long past every close date, and the only
+    thing that can move the number is generation creating more.
+
+    ⚠ **The two halves of the final assertion kill DIFFERENT mutants, and the
+    difference was measured, not assumed:**
+
+      * ``== Decimal("30.00")`` (the AMOUNT) kills the missing in-loop
+        ``has_remaining_occurrences`` guard. The query filter still stops the
+        series after the cycle it exhausts in, so the projection settles at a
+        WRONG-BUT-STABLE 50.00 -- ``[0, 30.00, 50.00, 50.00]``. A pure plateau
+        assertion is GREEN against it.
+      * ``projected[-1] == projected[-2]`` (the PLATEAU) kills the case where
+        both gates are gone: ``[0, 30.00, 80.00, 120.00]``, growing without
+        bound. The amount alone would report that too, but the plateau is what
+        names the failure as "still generating".
+
+    Wrong implementations killed:
+      * no in-loop ``has_remaining_occurrences`` guard in
+        ``generate_due_transactions`` -- ``cc.balance`` reads -50.00 and the
+        late-cycle projection reads 50.00;
+      * that guard AND ``active_series_filter`` both missing -- the projection
+        climbs 30 -> 80 -> 120 across cycles.
+
+    NOT killed here, deliberately recorded rather than papered over:
+      * ``active_series_filter`` alone missing from ``generate_due_transactions``
+        (the in-loop guard still stops the walk at the right occurrence, so
+        every number in this fixture is unchanged). F-G catches that one
+        structurally, and it is the only thing that does.
+    """
+    today = datetime.date.today()
+    p_start = _safe_month_anchor(today - datetime.timedelta(days=5))
+    seed = await _seed(db_session, p_start=p_start)
+    count = 3
+
+    cc = await db_session.get(Account, seed["cc_account_id"])
+    # A card that actually bills: closes on the 15th, pays on the 5th of the
+    # following month, out of the checking account seeded above. Both EUR --
+    # cross-currency is a documented no-op in the synthesiser.
+    cc.close_day = 15
+    cc.payment_day = 5
+    cc.payment_day_relative_month = 1
+    cc.payment_source_account_id = seed["account_id"]
+    cc.payment_strategy = PaymentStrategy.FULL_BALANCE
+    cc.opening_balance = Decimal("0.00")
+
+    t = _template(
+        seed, account_id=seed["cc_account_id"], frequency="weekly",
+        next_due_date=p_start, occurrence_count=count, auto_settle=True,
+    )
+    db_session.add(t)
+    await db_session.commit()
+
+    window_end = _assert_geometry(seed, today, p_start)
+    # Anti-vacuity: the window holds strictly more weekly occurrences than the
+    # series has instalments, so the BUDGET is what stops the card's charges.
+    assert len(occurrences_in_window(
+        p_start, Frequency.WEEKLY, p_start, window_end
+    )) >= _WEEKLY_FLOOR > count
+
+    async def _projected_cc_payment(period_start: datetime.date,
+                                    clock: datetime.date) -> Decimal:
+        result = await compute_account_balance_forecast(
+            db_session, seed["org_id"], period_start=period_start, today=clock
+        )
+        row = next(
+            a for a in result["accounts"] if a["account_id"] == seed["cc_account_id"]
+        )
+        return sum(
+            (Decimal(p["amount"]) for p in row["cc_payments"]), Decimal("0")
+        )
+
+    projected: list[Decimal] = []
+    cycle_start = p_start
+    for _k in range(4):
+        clock = cycle_start + datetime.timedelta(days=5)
+        window_end = _assert_geometry(seed, clock, cycle_start)
+        await recurring_service.generate_due_transactions(
+            db_session, seed["org_id"], today=clock
+        )
+        projected.append(await _projected_cc_payment(cycle_start, clock))
+        cycle_start = await _roll_cycle(
+            db_session, seed["org_id"], cycle_start, window_end
+        )
+
+    await db_session.refresh(cc)
+    # The card took exactly three 10.00 charges and no more.
+    assert Decimal(str(cc.balance)) == Decimal("-30.00")
+    rows = await _rows(db_session, seed["org_id"])
+    assert len(rows) == count
+    assert {r.account_id for r in rows} == {seed["cc_account_id"]}
+
+    # ⚠ ANTI-VACUITY. The synthesiser really did project something; a fence
+    # over a list of zeros would pass against every mutant.
+    assert projected[-1] > Decimal("0")
+    # ⭐ THE assertion. Two late cycles, the same number. Not growing.
+    assert projected[-1] == projected[-2] == Decimal("30.00"), projected

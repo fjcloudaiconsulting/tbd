@@ -393,4 +393,33 @@ describe("RecurringPage — instalment progress (TBD-275)", () => {
     await waitFor(() => expect(activeRowOrder().length).toBe(1));
     expect(screen.getAllByText("3 of 2").length).toBeGreaterThan(0);
   });
+
+  it("gives the progress badge an accessible name, not a bare '3 of 12'", async () => {
+    // FENCE. "3 of 12" beside a description is an unlabelled fragment to a
+    // screen reader: the visual context that makes it read as instalment
+    // progress is not conveyed. WCAG 2.2 AA is a product commitment
+    // (PRODUCT.md), and this is the one string on the row with no label of
+    // its own.
+    //
+    // ⚠ The accessible-name query is what discriminates. `getByText("3 of
+    // 12")` is GREEN against an unlabelled span, which is exactly the state
+    // this fence exists to reject.
+    //
+    // Wrong implementations killed:
+    //   * no `aria-label` at all -- `getAllByLabelText` finds nothing;
+    //   * an aria-label that drops the numbers ("instalment progress") --
+    //     the screen-reader user loses the only information in the badge.
+    mockApiWith([
+      rec({ id: 1, description: "Laptop", occurrence_count: 12, occurrences_elapsed: 3 }),
+    ]);
+    render(<RecurringPage />);
+    await waitFor(() => expect(activeRowOrder().length).toBe(1));
+
+    // Both layouts (table row + mobile card) render the badge.
+    const labelled = screen.getAllByLabelText("instalment 3 of 12");
+    expect(labelled.length).toBeGreaterThan(0);
+    for (const el of labelled) {
+      expect(el).toHaveTextContent("3 of 12");
+    }
+  });
 });

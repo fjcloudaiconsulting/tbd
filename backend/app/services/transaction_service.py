@@ -814,13 +814,35 @@ async def promote_to_recurring(
             auto_settle=body.auto_settle,
             is_active=True,
             occurrence_count=body.occurrence_count,
-            # TBD-275: THE SOURCE TRANSACTION IS INSTALMENT 1. It already
-            # exists, and ``tx.recurring_id`` below makes it part of this
-            # series -- so the series has delivered one occurrence already and
-            # ``next_due_date`` is instalment 2. Seeding 0 (which the direct
-            # ``POST /recurring`` path correctly does, because nothing has been
-            # delivered there) would give a "12 instalments" plan 13 of them.
-            occurrences_elapsed=1,
+            # TBD-275: THE SOURCE TRANSACTION IS INSTALMENT 1 -- but only when
+            # ``next_due_date`` is genuinely instalment 2.
+            #
+            # ``tx.recurring_id`` below makes the source row part of this
+            # series, so when the caller schedules the frontier AFTER the
+            # source row's date the series has already delivered one
+            # occurrence and 1 is right: seeding 0 there would give a "12
+            # instalments" plan 13 of them. The direct ``POST /recurring``
+            # path correctly seeds 0, because nothing has been delivered.
+            #
+            # ⚠ ``next_due_date <= tx.date`` is NOT a hypothetical. It is what
+            # the Add-Transaction FAB sent for every same-day entry until
+            # TBD-275 -- next-due default ``max(date, today)`` against a date
+            # defaulting to today -- i.e. the default path. Generation's
+            # idempotency probe (``recurring_id == r.id AND date == due``, no
+            # status term, no lower bound) MATCHES the source row at that
+            # frontier, takes the ``exists`` branch and spends an instalment
+            # for it -- so seeding 1 as well double-counts instalment 1, and a
+            # 4-instalment plan delivers 3 rows while the UI reads "4 of 4".
+            # Seeding 0 lets the ``exists`` branch do the counting exactly
+            # once.
+            #
+            # The FAB now sends ``max(advanceISO(date, frequency), today)`` and
+            # so normally lands in the ``else 1`` arm. This comparison stays
+            # regardless: the endpoint is public, the today-floor still
+            # produces the equal case for a back-dated row whose advanced date
+            # is also in the past, and a client is not where this invariant
+            # belongs.
+            occurrences_elapsed=0 if body.next_due_date <= tx.date else 1,
         )
         db.add(template)
         await db.flush()

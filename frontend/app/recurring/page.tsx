@@ -253,6 +253,12 @@ function RecurringTable({
                       (PRODUCT.md) -- progress is data, not an alert. */}
                   {instalmentLabel(r) && (
                     <span
+                      // "3 of 12" next to a description reads as an unlabelled
+                      // fragment: the visual context that makes it mean
+                      // "instalment progress" is not conveyed to a screen
+                      // reader. WCAG 2.2 AA is a product commitment
+                      // (PRODUCT.md).
+                      aria-label={`instalment ${instalmentLabel(r)}`}
                       className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] font-medium tabular-nums ${
                         instalmentDone(r)
                           ? "border-border-subtle text-text-muted"
@@ -335,7 +341,13 @@ function RecurringTable({
                 <div className="mt-0.5 text-xs text-text-muted tabular-nums">
                   Next: {r.next_due_date} &middot; {r.account_name}
                   {instalmentLabel(r) && (
-                    <> &middot; {instalmentLabel(r)}</>
+                    <>
+                      {" "}
+                      &middot;{" "}
+                      <span aria-label={`instalment ${instalmentLabel(r)}`}>
+                        {instalmentLabel(r)}
+                      </span>
+                    </>
                   )}
                 </div>
               </div>
