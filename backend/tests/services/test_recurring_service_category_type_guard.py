@@ -30,6 +30,15 @@ from app.schemas.recurring import RecurringCreate, RecurringUpdate
 from app.services import recurring_service
 from app.services.exceptions import ValidationError
 
+# TBD-283 put a lower bound on ``next_due_date``: it may not precede the org's
+# current billing cycle start. The org below has ``billing_cycle_day=1``, so on
+# ``_TODAY`` that bound is ``_TODAY`` itself and ``_DUE`` sits exactly on it.
+# The clock is INJECTED so these fixtures stay fixed literals rather than
+# becoming ``date.today()``-relative (reference_wall_clock_date_bomb_tests).
+# Nothing in this module is about dates; the bound just has to be satisfied.
+_TODAY = date(2026, 6, 1)
+_DUE = date(2026, 6, 1)
+
 
 @pytest_asyncio.fixture
 async def db_session():
@@ -105,11 +114,11 @@ async def test_create_recurring_rejects_income_with_expense_category(db_session)
         amount=Decimal("100"),
         type="income",
         frequency="monthly",
-        next_due_date=date(2026, 6, 1),
+        next_due_date=_DUE,
     )
     with pytest.raises(ValidationError):
         await recurring_service.create_recurring(
-            db_session, seed["org_id"], body
+            db_session, seed["org_id"], body, today=_TODAY
         )
 
 
@@ -122,11 +131,11 @@ async def test_create_recurring_rejects_expense_with_income_category(db_session)
         amount=Decimal("500"),
         type="expense",
         frequency="monthly",
-        next_due_date=date(2026, 6, 1),
+        next_due_date=_DUE,
     )
     with pytest.raises(ValidationError):
         await recurring_service.create_recurring(
-            db_session, seed["org_id"], body
+            db_session, seed["org_id"], body, today=_TODAY
         )
 
 
@@ -139,10 +148,10 @@ async def test_create_recurring_accepts_matching_pair(db_session):
         amount=Decimal("500"),
         type="expense",
         frequency="monthly",
-        next_due_date=date(2026, 6, 1),
+        next_due_date=_DUE,
     )
     r = await recurring_service.create_recurring(
-        db_session, seed["org_id"], body
+        db_session, seed["org_id"], body, today=_TODAY
     )
     assert r.id is not None
 
@@ -157,10 +166,10 @@ async def test_create_recurring_accepts_both_category(db_session):
         amount=Decimal("1"),
         type="expense",
         frequency="monthly",
-        next_due_date=date(2026, 6, 1),
+        next_due_date=_DUE,
     )
     r = await recurring_service.create_recurring(
-        db_session, seed["org_id"], body
+        db_session, seed["org_id"], body, today=_TODAY
     )
     assert r.id is not None
 
@@ -177,9 +186,11 @@ async def _create_compatible(db: AsyncSession, seed: dict, *, type_: str = "expe
         amount=Decimal("10"),
         type=type_,
         frequency="monthly",
-        next_due_date=date(2026, 6, 1),
+        next_due_date=_DUE,
     )
-    return await recurring_service.create_recurring(db, seed["org_id"], body)
+    return await recurring_service.create_recurring(
+        db, seed["org_id"], body, today=_TODAY
+    )
 
 
 async def test_update_recurring_rejects_category_only_swap_to_incompatible(db_session):

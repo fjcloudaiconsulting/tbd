@@ -5,7 +5,10 @@ a recurring template:
   - happy path mirrors the tx fields onto the new template and links back
   - cross-org isolation
   - guards against transfer-leg promotion and double-promotion
-  - server-side past-date guard
+  - the frontier lower bound (TBD-283): ``next_due_date`` may not precede the
+    org's current billing cycle start. Strictly LOOSER than the ``>= today``
+    rule this file used to assert, and enforced only here — the schema-level
+    validator was deleted.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import TransactionStatus, TransactionType
 from app.schemas.transaction import PromoteToRecurringRequest
 from app.services import transaction_service
+from app.services.billing_service import current_cycle_window
 from app.services.exceptions import NotFoundError, ValidationError
 
 
@@ -53,8 +57,30 @@ async def db_session():
     await engine.dispose()
 
 
-async def _seed(db: AsyncSession) -> dict:
-    org = Organization(name="Test", billing_cycle_day=1)
+def _anchor(today: date) -> tuple[int, date]:
+    """A ``(cycle_day, p_start)`` pair with ``p_start`` STRICTLY behind ``today``.
+
+    ⚠ The frontier-bound tests below cannot use the default
+    ``billing_cycle_day=1`` seed. On the 1st of the month ``p_start == today``,
+    so ``>= p_start`` and the deleted ``>= today`` rule agree and every
+    "accepts a past date inside the cycle" claim is vacuous for that one day.
+    Five days back, nudged onto a day-of-month that exists in every month so
+    the cycle arithmetic is not month-length dependent. The strictness is
+    ASSERTED here, not assumed by the callers. Mirrors ``_anchor`` in
+    ``tests/routers/test_recurring_frontier_lower_bound_route.py``.
+    """
+    d = today - timedelta(days=5)
+    while d.day > 28:
+        d -= timedelta(days=1)
+    cycle_day = d.day
+    p_start, _ = current_cycle_window(cycle_day, today)
+    assert p_start == d
+    assert p_start < today
+    return cycle_day, p_start
+
+
+async def _seed(db: AsyncSession, *, cycle_day: int = 1) -> dict:
+    org = Organization(name="Test", billing_cycle_day=cycle_day)
     db.add(org)
     await db.flush()
     at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
@@ -320,13 +346,29 @@ async def test_promote_to_recurring_rejects_transfer_leg(db_session):
     assert "transfer" in exc.value.detail.lower()
 
 
-# ── 400: past date (server-side guard) ─────────────────────────────────────
+# ── 400: frontier lower bound (TBD-283) ────────────────────────────────────
 
 
-async def test_promote_to_recurring_rejects_past_date_at_service_layer(db_session):
-    """Service-side guard: when callers bypass the schema (e.g. internal
-    reuse), the past-date semantic must still hold."""
-    seed = await _seed(db_session)
+async def test_promote_to_recurring_rejects_date_before_the_cycle_start(db_session):
+    """The only lower bound promote has left: the org's current cycle start.
+
+    ⚠ This test used to be ``..._rejects_past_date_at_service_layer`` and
+    asserted ``today - 1 day`` was refused with "today or later", mirroring
+    ``PromoteToRecurringRequest._next_due_date_not_past``. TBD-283 deleted that
+    validator and RELAXED the service rule to ``>= p_start``, so ``today - 1``
+    is now normally ACCEPTED (see ``test_..._accepts_a_past_date_inside_the_cycle``
+    below). ``model_construct`` is likewise gone — there is no field validator
+    left to bypass.
+
+    ⚠ The cycle day comes from ``_anchor``, not from the seed's default of 1.
+    With ``billing_cycle_day=1`` this test is vacuous on the 1st of every
+    month: ``p_start == today`` there, so the message assertion below cannot
+    tell ``>= p_start`` apart from the ``>= today`` rule that was deleted.
+    ``_anchor`` asserts ``p_start < today``.
+    """
+    today = date.today()
+    cycle_day, p_start = _anchor(today)
+    seed = await _seed(db_session, cycle_day=cycle_day)
     tx = await _add_tx(
         db_session,
         org_id=seed["org_id"], account_id=seed["a1_id"],
@@ -334,16 +376,44 @@ async def test_promote_to_recurring_rejects_past_date_at_service_layer(db_sessio
     )
     await db_session.commit()
 
-    # Build the request via model_construct to bypass field validators.
-    body = PromoteToRecurringRequest.model_construct(
+    body = PromoteToRecurringRequest(
         frequency="monthly",
-        next_due_date=date.today() - timedelta(days=1),
+        next_due_date=p_start - timedelta(days=1),
     )
     with pytest.raises(ValidationError) as exc:
         await transaction_service.promote_to_recurring(
             db_session, seed["org_id"], tx.id, body
         )
-    assert "today or later" in exc.value.detail.lower()
+    # Condition 3 of the ruling: the boundary date is in the message.
+    assert p_start.isoformat() in exc.value.detail
+
+
+async def test_promote_to_recurring_accepts_a_past_date_inside_the_cycle(db_session):
+    """The relaxation, at the service layer, in the file that owned the old rule.
+
+    Goes RED if the deleted ``>= today`` rule is reinstated at either layer.
+
+    ⚠ That claim is only true because the cycle day comes from ``_anchor``,
+    which asserts ``p_start < today``. Seeded with the default
+    ``billing_cycle_day=1`` this test proves nothing on the 1st of the month,
+    when ``p_start == today`` and the reinstated rule would accept the same
+    date.
+    """
+    today = date.today()
+    cycle_day, p_start = _anchor(today)
+    seed = await _seed(db_session, cycle_day=cycle_day)
+    tx = await _add_tx(
+        db_session,
+        org_id=seed["org_id"], account_id=seed["a1_id"],
+        category_id=seed["cat_groceries_id"],
+    )
+    await db_session.commit()
+
+    result = await transaction_service.promote_to_recurring(
+        db_session, seed["org_id"], tx.id,
+        PromoteToRecurringRequest(frequency="monthly", next_due_date=p_start),
+    )
+    assert result.recurring_id is not None
 
 
 # ── frequency forwarding spot-check ────────────────────────────────────────

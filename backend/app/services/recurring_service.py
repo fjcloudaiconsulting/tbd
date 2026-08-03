@@ -49,6 +49,75 @@ def _load_opts():
     return [selectinload(RecurringTransaction.account), selectinload(RecurringTransaction.category)]
 
 
+# ── Frontier lower bound (TBD-283) ────────────────────────────────────────────
+
+async def frontier_lower_bound(
+    db: AsyncSession, org_id: int, *, today: datetime.date | None = None
+) -> datetime.date:
+    """The earliest date a template's ``next_due_date`` may legally hold.
+
+    ``current_cycle_window(org.billing_cycle_day, today)[0]`` -- ``p_start``,
+    the start of the org's CURRENT billing cycle. One derivation, one caller
+    surface: ``create_recurring``, ``update_recurring``,
+    ``promote_to_recurring`` and ``_reanchor_frontier_on_resume`` all read the
+    bound from here, so the write paths and the re-anchor cannot come to
+    disagree about where the floor is.
+
+    ⚠ Org-dependent, which is exactly why this lives in the service layer and
+    not in a pydantic validator. A schema validator cannot see
+    ``org.billing_cycle_day``; it could only encode some *other* rule
+    (``>= today`` being the obvious one) and would then pre-empt this one on
+    every request, re-creating the three-way disagreement TBD-283 removes.
+
+    ⚠ Not ``today``. ``>= today`` looks equivalent and is not: it forbids
+    anchoring a template anywhere in the already-open cycle, which is a legal
+    and load-bearing position (``test_forecast_overdue_recurring`` F16 rewinds
+    three frontiers onto ``p_start``, five days behind ``today``). On the
+    cycle-start day the two rules coincide -- which is why the rejection
+    message must name the actual boundary date rather than say "in the past".
+    """
+    if today is None:
+        today = datetime.date.today()
+    org = await db.scalar(select(Organization).where(Organization.id == org_id))
+    cycle_day = org.billing_cycle_day if org else 1
+    p_start, _ = current_cycle_window(cycle_day, today)
+    return p_start
+
+
+async def validate_frontier(
+    db: AsyncSession, org_id: int, next_due_date: datetime.date,
+    *, today: datetime.date | None = None,
+) -> datetime.date:
+    """Reject a ``next_due_date`` earlier than the current billing cycle start.
+
+    Lower bound only -- there is deliberately NO upper bound. A far-future
+    frontier costs nothing: generation simply does not select the template
+    until its cycle arrives. A far-PAST frontier is what back-fills closed
+    history, and (because ``stop_recurring`` nulls ``recurring_id`` on every
+    surviving row) can re-materialise dates that were already materialised
+    once, because the generation loop's idempotency probe keys on
+    ``recurring_id`` and no longer sees them.
+
+    Returns ``p_start`` so callers that also need the boundary do not re-read
+    the org.
+
+    ⚠ The message states a REMEDY as well as the boundary. ``update_recurring``
+    validates the post-write PAIR, so a request carrying only
+    ``{"frequency": ...}`` can be refused over a ``next_due_date`` the user
+    never mentioned; naming the boundary alone leaves them with a rejection
+    about a field that is not in their request and no stated way out.
+    """
+    p_start = await frontier_lower_bound(db, org_id, today=today)
+    if next_due_date < p_start:
+        raise ValidationError(
+            f"Next due date cannot be earlier than {p_start.isoformat()}, "
+            "the start of the current billing cycle. Send a next_due_date on "
+            "or after that date; a frequency change on a template whose "
+            "schedule is already behind must carry one."
+        )
+    return p_start
+
+
 def to_response(r: RecurringTransaction) -> RecurringResponse:
     return RecurringResponse(
         id=r.id,
@@ -78,7 +147,15 @@ async def list_recurring(db: AsyncSession, org_id: int) -> list[RecurringTransac
     return list(result.scalars().all())
 
 
-async def create_recurring(db: AsyncSession, org_id: int, body: RecurringCreate) -> RecurringTransaction:
+async def create_recurring(
+    db: AsyncSession, org_id: int, body: RecurringCreate,
+    today: datetime.date | None = None,
+) -> RecurringTransaction:
+    """Create a recurring template.
+
+    ``today`` is the caller's resolved clock, used only to derive the frontier
+    lower bound. Passing None falls back to ``date.today()``.
+    """
     # Validate refs. Category must be type-compatible with the template's
     # transaction type, generate_due_transactions writes Transaction rows
     # directly from the template and would otherwise emit mismatched rows
@@ -87,6 +164,8 @@ async def create_recurring(db: AsyncSession, org_id: int, body: RecurringCreate)
     await validate_category_for_type(
         db, body.category_id, org_id, TransactionType(body.type)
     )
+    # TBD-283: one lower bound, enforced identically by all three write paths.
+    await validate_frontier(db, org_id, body.next_due_date, today=today)
 
     r = RecurringTransaction(
         org_id=org_id,
@@ -114,12 +193,22 @@ async def update_recurring(
 ) -> RecurringTransaction:
     """Update a recurring template.
 
-    ``today`` is the caller's resolved clock, used only when this update
-    REACTIVATES a stopped template (see ``_reanchor_frontier_on_resume``).
-    Passing None falls back to ``date.today()``; do NOT rely on that from any
-    path that has already resolved a clock (TBD-284).
+    ``today`` is the caller's resolved clock. It feeds TWO consumers here --
+    ``_reanchor_frontier_on_resume`` and ``validate_frontier`` -- each of which
+    derives its boundary from ``frontier_lower_bound``. Passing None falls back
+    to ``date.today()``, resolved ONCE below and then threaded; do NOT rely on
+    that fallback from any path that has already resolved a clock (TBD-284).
 
-    ⚠ On that same reactivation, a supplied ``body.next_due_date`` EARLIER than
+    ⚠ That normalisation is load-bearing, not tidiness. ``routers/recurring.py``
+    passes no clock, so None IS the production path. Handing the raw None to
+    both callees would make each resolve ``date.today()`` independently, and a
+    request in flight across midnight would then re-anchor against one cycle
+    start and validate against the next: the re-anchor sees a compliant
+    frontier and walks zero steps, the validator computes a boundary a cycle
+    later and 400s the whole update. Reachable once per cycle per org, on
+    exactly the day that matters.
+
+    ⚠ On a reactivation, a supplied ``body.next_due_date`` EARLIER than
     the current billing cycle start is SILENTLY OVERWRITTEN. Fields are applied
     first, then the re-anchor walks the frontier forward from whatever it now
     holds, so a past date is walked up onto the current cycle exactly as a
@@ -130,6 +219,11 @@ async def update_recurring(
     On a plain update that does not flip ``is_active`` False->True, the
     supplied date is always kept verbatim.
     """
+    # ONE resolution for the whole request. See the docstring: two consumers
+    # downstream, and a raw None makes each of them read the wall separately.
+    if today is None:
+        today = datetime.date.today()
+
     result = await db.execute(
         select(RecurringTransaction)
         .options(*_load_opts())
@@ -180,6 +274,35 @@ async def update_recurring(
     # move the frontier.
     if body.is_active is True and not was_active:
         await _reanchor_frontier_on_resume(db, org_id, r, today=today)
+
+    # TBD-283: the frontier lower bound, on the POST-WRITE state.
+    #
+    # ⚠ GATED, not unconditional. The only PUT the frontend ever issues is
+    # ``{"is_active": true}`` (Resume). Re-checking the stored frontier on every
+    # update would 400 Resume for exactly the long-paused templates users
+    # resume, in a UI that offers no field to fix it with.
+    #
+    # ⚠ The ``frequency`` clause is not decoration. Flipping a stale yearly
+    # template to weekly multiplies its implied occurrences without a
+    # ``next_due_date`` anywhere in the request, so the pair -- not the
+    # supplied field -- is what has to be legal.
+    #
+    # ⚠ AFTER ``_reanchor_frontier_on_resume``, never before. The re-anchor
+    # walks a resumed template's frontier FORWARD onto ``p_start``, so a resume
+    # is compliant by construction; checking first would reject the very state
+    # the re-anchor exists to produce.
+    #
+    # ⚠ "By construction" holds on every arm but ONE: the re-anchor breaks out
+    # at ``_MAX_FRONTIER_ADVANCE_STEPS`` (~23 years of weekly occurrences) and
+    # leaves ``next_due_date`` still behind ``p_start``, logging
+    # ``recurring.resume.reanchor_cap``. On that arm the gate decides the
+    # outcome for one and the same resulting state: ``{"is_active": true}``
+    # keeps the gate closed and commits the illegal frontier with only the
+    # warning, while ``{"is_active": true, "frequency": "weekly"}`` opens it and
+    # 400s. Read this as a gate, not as an invariant that a resume always ends
+    # up compliant.
+    if body.next_due_date is not None or body.frequency is not None:
+        await validate_frontier(db, org_id, r.next_due_date, today=today)
 
     await db.commit()
 
@@ -235,10 +358,18 @@ async def _reanchor_frontier_on_resume(
     (``recurring_id == r.id AND date == due``) -- but the gap occurrences were
     never materialised at all (generation was off for the whole pause), so
     there are no rows at those dates for the probe to find or miss. The
-    nulling matters on a DIFFERENT and still-open path: dates materialised
-    BEFORE the pause become re-creatable once the frontier is moved backward
-    onto them, which takes an explicit backward ``next_due_date`` write that no
-    UI affordance issues today. Tracked as TBD-283, out of scope here.
+    nulling matters on a DIFFERENT path: dates materialised BEFORE the pause
+    become re-creatable once the frontier is moved backward onto them, which
+    takes an explicit backward ``next_due_date`` write.
+
+    ⚠ TBD-283 shipped and BOUNDED that path; it did not remove it, and this
+    docstring's earlier "tracked, out of scope" note is closed.
+    ``validate_frontier`` now floors every ``next_due_date`` write at
+    ``p_start``, so a backward write can no longer reach the closed history
+    where most of the un-probed rows sit. A rewind onto a date inside the OPEN
+    cycle that was already materialised before the pause still re-creates that
+    row. The blast radius is one cycle's occurrences instead of the template's
+    whole lifetime.
 
     ⚠ Never ``next_due_date = today``. That stops the duplication too, so the
     row-count and balance fences cannot tell the two implementations apart --
@@ -254,12 +385,10 @@ async def _reanchor_frontier_on_resume(
     Pausing and resuming inside one cycle is ordinary use and must not cost the
     user that cycle's charge.
     """
-    if today is None:
-        today = datetime.date.today()
-
-    org = await db.scalar(select(Organization).where(Organization.id == org_id))
-    cycle_day = org.billing_cycle_day if org else 1
-    p_start, _ = current_cycle_window(cycle_day, today)
+    # Same derivation the TBD-283 write-path guard uses, from the same helper:
+    # the re-anchor's target and the validator's floor are one number, and a
+    # second derivation here is how they would drift apart.
+    p_start = await frontier_lower_bound(db, org_id, today=today)
 
     # Walk the template's OWN grid, iterated, never closed-form.
     #

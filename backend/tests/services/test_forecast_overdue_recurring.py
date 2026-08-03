@@ -579,12 +579,22 @@ async def test_f16_probe_suppresses_already_materialised_occurrences(db_session)
 
     Once ``recurring_*`` is bounded by the occurrence rather than by the
     frontier, a template whose frontier has NOT advanced past the window is
-    selected even though its occurrence is already a row. ``PATCH /recurring``
+    selected even though its occurrence is already a row. ``PUT /recurring``
     reaches that state directly: ``RecurringUpdate.next_due_date`` has no
-    validator and ``update_recurring`` assigns it verbatim, so a user who
-    rewinds the schedule of a template that already generated re-creates exactly
-    this shape (the same shape
+    schema validator and ``update_recurring`` assigns it verbatim, so a user
+    who rewinds the schedule of a template that already generated re-creates
+    exactly this shape (the same shape
     ``test_recurring_generate_fill_period.test_dedup_guard_...`` uses).
+
+    ⚠ Since TBD-283 the rewind is FLOORED, not free: ``update_recurring`` runs
+    ``validate_frontier`` on the post-write state whenever the request carries
+    ``next_due_date`` or ``frequency``, so a rewind earlier than the org's
+    current cycle start is a 400. The reachability argument survives intact
+    because the shallowest rewind here lands ON ``p_start`` — the lowest date
+    the bound still allows. That is not a coincidence: this test is the reason
+    the bound is ``>= p_start`` and not the obvious ``>= today``, which would
+    400 inside this very fixture (``test_recurring_frontier_lower_bound`` F2
+    pins the same allowance directly, with an injected clock).
 
     Three templates, three materialised occurrences at three positions —
     ``p_start`` (the probe's LOWER bound), an interior date, and ``window_end``
@@ -827,10 +837,26 @@ async def test_f17b_deeply_stale_frontier_conserves_forecast_net(db_session):
     So the two walks truncate at the same ordinal occurrence *from the same
     origin*, and generation moves the origin.
 
-    The fixture is reachable, not theoretical: ``POST /api/v1/recurring`` has
-    **no past-date guard** on ``next_due_date`` (unlike
-    ``promote_to_recurring``), and a single-digit year typo — 2016 for 2026 —
-    is 521 weekly steps.
+    The fixture is reachable, not theoretical — but NOT by the route this
+    docstring used to name. It said ``POST /api/v1/recurring`` had **no
+    past-date guard** on ``next_due_date`` (unlike ``promote_to_recurring``),
+    so a single-digit year typo — 2016 for 2026 — was 521 weekly steps. TBD-283
+    closed that path and inverted the contrast: all three write paths now floor
+    ``next_due_date`` at the org's current cycle start, and promote is the
+    LOOSEST of the three, not the strictest. The typo is a 400.
+
+    What still produces a deeply stale ACTIVE frontier, none of it requiring a
+    bad write:
+      * generation simply not running for the gap — a template anchored legally
+        falls one occurrence further behind per period while the scheduler is
+        off, and generation's own per-run cap means one tick does not close it;
+      * ``_reanchor_frontier_on_resume`` breaking out at
+        ``_MAX_FRONTIER_ADVANCE_STEPS``, which commits a resumed template still
+        behind ``p_start`` (deeper than this fixture's 521 steps, but the same
+        shape);
+      * rows written before the bound existed.
+    The fixture inserts the template directly either way, so the mechanics
+    under test are unchanged.
 
     Measured on the shared budget: ``forecast_net`` ran
     ``0 -> -500.00 -> -500.00 -> -500.00`` across scheduler ticks. It moved with
