@@ -59,6 +59,12 @@ export const HELP_TOOLTIPS = {
     learnMoreSection: "transactions",
     triggerLabel: "What does Auto settle do?",
   },
+  "tx.occurrence-count": {
+    content:
+      "For instalment plans: how many payments there are in total, counting this one. A 4 payment plan creates three more and then stops. Leave blank and it repeats indefinitely, which is what every repeating transaction did before this field existed.",
+    learnMoreSection: "transactions",
+    triggerLabel: "What is Number of payments?",
+  },
   "tx.tags": {
     content:
       "Free form labels you can attach to a transaction. Tags do not replace categories, they live alongside them so you can group across categories (work, vacation, etc).",

@@ -14,6 +14,12 @@ class RecurringCreate(BaseModel):
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     next_due_date: datetime.date
     auto_settle: bool = False
+    # TBD-275: total instalments this series delivers. Omitted / None =
+    # open-ended, which is what every template was before this field existed.
+    # ``le`` is a sanity bound, not policy: 1200 monthly instalments is a
+    # century, and an unbounded count invites a typo that makes every forecast
+    # window walk its full length.
+    occurrence_count: Optional[int] = Field(default=None, gt=0, le=1200)
 
 
 class RecurringUpdate(BaseModel):
@@ -26,6 +32,16 @@ class RecurringUpdate(BaseModel):
     next_due_date: Optional[datetime.date] = None
     auto_settle: Optional[bool] = None
     is_active: Optional[bool] = None
+    # TBD-275. May be edited DOWNWARD below ``occurrences_elapsed``; the series
+    # then simply stops (see ``recurring_service.update_recurring``). There is
+    # deliberately no ``occurrences_elapsed`` field here -- progress is written
+    # by generation only.
+    #
+    # ⚠ Like every other field on this model, ``None`` means "not supplied" and
+    # is indistinguishable from an explicit ``null``, so a counted series
+    # cannot be converted back to open-ended through this endpoint. Raising the
+    # count is the supported escape.
+    occurrence_count: Optional[int] = Field(default=None, gt=0, le=1200)
 
 
 class RecurringResponse(BaseModel):
@@ -41,5 +57,12 @@ class RecurringResponse(BaseModel):
     next_due_date: datetime.date
     auto_settle: bool
     is_active: bool
+    # TBD-275. Progress is exposed as the two STORED numbers; there is
+    # deliberately no ``remaining`` field. A server-computed remainder would be
+    # a third representation of one fact, free to disagree with the pair under
+    # it, and the client's subtraction cannot. It also keeps the wire contract
+    # honest about exhaustion being derived rather than a stored flag.
+    occurrence_count: Optional[int] = None
+    occurrences_elapsed: int = 0
 
     model_config = {"from_attributes": True}

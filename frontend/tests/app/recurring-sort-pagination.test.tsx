@@ -64,6 +64,10 @@ function rec(over: Partial<RecurringTransaction>): RecurringTransaction {
     next_due_date: "2026-01-01",
     auto_settle: false,
     is_active: true,
+    // TBD-275: open-ended by default, matching every template that predates
+    // instalment counts. Tests that care override it.
+    occurrence_count: null,
+    occurrences_elapsed: 0,
     ...over,
   };
 }
@@ -336,5 +340,86 @@ describe("RecurringPage — existing behavior preserved", () => {
     const table = screen.getByTestId("recurring-paused-table");
     const rows = within(table).queryAllByTestId("recurring-row");
     expect(rows.map((r) => r.getAttribute("data-description"))).toEqual(["Paused1", "Paused2"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TBD-275 — instalment progress badge.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("RecurringPage — instalment progress (TBD-275)", () => {
+  it("shows 'elapsed of count' only for a counted series, never for open-ended", async () => {
+    // FENCE. The overwhelming majority of templates are open-ended
+    // (`occurrence_count: null`) -- every one that predates this feature. A
+    // badge that renders unconditionally puts a meaningless "0 of 0", or an
+    // empty outline, on every row in the app.
+    //
+    // Wrong implementations killed:
+    //   * rendering the badge whenever `occurrences_elapsed` is defined --
+    //     the open-ended row grows a badge and the /of/ query matches twice;
+    //   * `occurrence_count ?? 0` -- the open-ended row reads "0 of 0";
+    //   * reading a server-supplied `remaining` field -- there isn't one, and
+    //     the badge would render "undefined".
+    mockApiWith([
+      rec({ id: 1, description: "Laptop", occurrence_count: 12, occurrences_elapsed: 3 }),
+      rec({ id: 2, description: "Rent", occurrence_count: null, occurrences_elapsed: 9 }),
+    ]);
+    render(<RecurringPage />);
+    await waitFor(() => expect(activeRowOrder().length).toBe(2));
+
+    const table = screen.getByTestId("recurring-active-table");
+    const rows = within(table).queryAllByTestId("recurring-row");
+    const laptop = rows.find((r) => r.getAttribute("data-description") === "Laptop")!;
+    const rent = rows.find((r) => r.getAttribute("data-description") === "Rent")!;
+
+    expect(within(laptop).getByText("3 of 12")).toBeInTheDocument();
+    // ⭐ The open-ended row carries NO progress text at all.
+    expect(within(rent).queryByText(/\bof\b/)).toBeNull();
+  });
+
+  it("renders an over-run series honestly rather than clamping it", async () => {
+    // FENCE. `occurrence_count` can be edited DOWN below `occurrences_elapsed`
+    // (5 -> 2 with 3 delivered). The backend keeps both numbers and the
+    // remainder goes negative; the UI must show what actually happened.
+    //
+    // Wrong implementations killed:
+    //   * `Math.min(elapsed, count)` -- reads "2 of 2" and hides the over-run;
+    //   * `Math.max(0, count - elapsed)` rendered as "N left" -- reads "0 left"
+    //     for both an exactly-finished and an over-run series.
+    mockApiWith([
+      rec({ id: 1, description: "Sofa", occurrence_count: 2, occurrences_elapsed: 3 }),
+    ]);
+    render(<RecurringPage />);
+    await waitFor(() => expect(activeRowOrder().length).toBe(1));
+    expect(screen.getAllByText("3 of 2").length).toBeGreaterThan(0);
+  });
+
+  it("gives the progress badge an accessible name, not a bare '3 of 12'", async () => {
+    // FENCE. "3 of 12" beside a description is an unlabelled fragment to a
+    // screen reader: the visual context that makes it read as instalment
+    // progress is not conveyed. WCAG 2.2 AA is a product commitment
+    // (PRODUCT.md), and this is the one string on the row with no label of
+    // its own.
+    //
+    // ⚠ The accessible-name query is what discriminates. `getByText("3 of
+    // 12")` is GREEN against an unlabelled span, which is exactly the state
+    // this fence exists to reject.
+    //
+    // Wrong implementations killed:
+    //   * no `aria-label` at all -- `getAllByLabelText` finds nothing;
+    //   * an aria-label that drops the numbers ("instalment progress") --
+    //     the screen-reader user loses the only information in the badge.
+    mockApiWith([
+      rec({ id: 1, description: "Laptop", occurrence_count: 12, occurrences_elapsed: 3 }),
+    ]);
+    render(<RecurringPage />);
+    await waitFor(() => expect(activeRowOrder().length).toBe(1));
+
+    // Both layouts (table row + mobile card) render the badge.
+    const labelled = screen.getAllByLabelText("instalment 3 of 12");
+    expect(labelled.length).toBeGreaterThan(0);
+    for (const el of labelled) {
+      expect(el).toHaveTextContent("3 of 12");
+    }
   });
 });

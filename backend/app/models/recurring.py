@@ -51,6 +51,37 @@ class RecurringTransaction(Base):
     next_due_date: Mapped[date] = mapped_column(Date, nullable=False)
     auto_settle: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # ── Instalment series (TBD-275) ───────────────────────────────────────
+    # ``occurrence_count`` is the user's declared INTENT: how many occurrences
+    # this series delivers in total. NULL means open-ended, which is what every
+    # template created before this column existed is (no backfill, and none is
+    # possible -- an open-ended template has no count to recover).
+    #
+    # Intent, not a constant: it is immutable only AS THE SERIES RUNS.
+    # ``update_recurring`` writes it, in both directions -- a downward edit
+    # below ``occurrences_elapsed`` is honoured and simply stops the series,
+    # and an upward edit on a FINISHED series un-exhausts it and therefore
+    # re-anchors the frontier exactly as a resume does. Nothing else may
+    # change it.
+    #
+    # ``occurrences_elapsed`` is the series' PROGRESS, and it is STORED, never
+    # counted. It is deliberately NOT named ``occurrences_generated``: a name
+    # with "generated" in it invites verification by
+    # ``COUNT(*) WHERE recurring_id = ...``, and that count is provably wrong.
+    # ``stop_recurring`` NULLs ``recurring_id`` on every surviving row, the user
+    # can delete a materialised row at any time, and the catch-up loop's
+    # ``exists`` branch advances the frontier without creating a row at all.
+    # Each of those makes the row count DROP or DIVERGE while the series has in
+    # fact delivered the occurrence. Only a stored counter survives them.
+    #
+    # Exhaustion is DERIVED (``recurring_filters.remaining_occurrences``), never
+    # written: an exhausted series keeps ``is_active = True`` and keeps its row.
+    # See ``recurring_filters`` for why.
+    occurrence_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    occurrences_elapsed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

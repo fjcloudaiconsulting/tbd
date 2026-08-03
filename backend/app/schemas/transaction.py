@@ -150,6 +150,19 @@ class PromoteToRecurringRequest(BaseModel):
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     next_due_date: datetime.date
     auto_settle: bool = False
+    # TBD-275: total instalments INCLUDING the source transaction. Promotion is
+    # how an instalment plan is normally born ("I just paid the first of 12"),
+    # so the source transaction IS instalment 1.
+    #
+    # ⚠ Whether the template is seeded with ``occurrences_elapsed`` 1 or 0
+    # depends on THIS field's relation to the source row's date, and
+    # ``transaction_service.promote_to_recurring`` is the one place that
+    # decision is written. A ``next_due_date`` strictly AFTER the source date
+    # is instalment 2, so 1. A ``next_due_date`` on or before it IS instalment
+    # 1, which generation's ``exists`` probe consumes, so 0. Seeding 1
+    # unconditionally loses an instalment on the second shape; seeding 0
+    # unconditionally delivers 13 for a 12-instalment plan on the first.
+    occurrence_count: Optional[int] = Field(default=None, gt=0, le=1200)
 
 
 class BulkDeleteResponse(BaseModel):

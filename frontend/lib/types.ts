@@ -232,6 +232,15 @@ export interface RecurringTransaction {
   next_due_date: string;
   auto_settle: boolean;
   is_active: boolean;
+  // Instalment series (TBD-275). `occurrence_count` null = open-ended, which
+  // is what every template created before this feature is.
+  //
+  // There is deliberately NO `remaining` field on the wire: the server would
+  // then carry a third representation of one fact, free to drift from the
+  // pair beneath it. Subtract on the client, and note the difference can be
+  // NEGATIVE when a user shortens a plan below what it has already delivered.
+  occurrence_count: number | null;
+  occurrences_elapsed: number;
 }
 
 export interface Budget {

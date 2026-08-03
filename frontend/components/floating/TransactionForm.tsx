@@ -7,7 +7,7 @@ import TagChipInput from "@/components/transactions/TagChipInput";
 import CategorySelect from "@/components/ui/CategorySelect";
 import HelpTooltip from "@/components/help/HelpTooltip";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { todayISO } from "@/lib/format";
+import { advanceISO, todayISO } from "@/lib/format";
 import {
   btnPrimary,
   btnSecondary,
@@ -123,6 +123,12 @@ export default function TransactionForm({
   const [repeat, setRepeat] = useState(false);
   const [frequency, setFrequency] = useState("monthly");
   const [autoSettle, setAutoSettle] = useState(false);
+  // TBD-275: total instalments this series delivers, INCLUDING this
+  // transaction. Blank = open-ended, which is what every repeat was before
+  // this field existed — so blank must OMIT the key from the promote body
+  // entirely rather than send null or 0, both of which the backend schema
+  // rejects (`gt=0`) or would have to special-case.
+  const [occurrenceCount, setOccurrenceCount] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [errMsg, setErrMsg] = useState("");
   // Focus target for the "Save and add new" refocus path. The
@@ -178,6 +184,7 @@ export default function TransactionForm({
     setRepeat(false);
     setFrequency("monthly");
     setAutoSettle(false);
+    setOccurrenceCount("");
     setErrMsg("");
   }
 
@@ -191,6 +198,20 @@ export default function TransactionForm({
         "Expected settlement date must be on or after the transaction date",
       );
       return;
+    }
+    // TBD-275. Validated BEFORE the POST, not between the POST and the
+    // promote: a rejection after the transaction is already committed leaves
+    // the user with a saved-but-not-recurring row and an error that reads like
+    // the save failed. Blank is valid (open-ended); anything else must be a
+    // whole number >= 1. `type="number"` alone does not cover it — a
+    // browser-normalised "1.5" or "0" both arrive here as strings.
+    const trimmedCount = occurrenceCount.trim();
+    if (repeat && trimmedCount !== "") {
+      const parsed = Number(trimmedCount);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        setErrMsg("Number of payments must be a whole number of 1 or more");
+        return;
+      }
     }
     setSubmitting(true);
     setErrMsg("");
@@ -242,12 +263,25 @@ export default function TransactionForm({
     }
     // Promote the new tx to recurring if Repeats is on. Mirrors the former
     // page-level form: promote-to-recurring sets recurring_id on the source
-    // row so a later edit shows the "Recurring" chip. next_due_date must be
-    // today-or-later (server guard); bump a back-dated row to today.
+    // row so a later edit shows the "Recurring" chip.
+    //
+    // ⚠ TBD-275: next_due_date is the NEXT occurrence, so it is the
+    // transaction's date advanced by ONE period — never the date itself. The
+    // row we just created IS this series' first occurrence, and a frontier
+    // sitting on its own date is matched by generation's idempotency probe
+    // (`recurring_id == r.id AND date == due`, no status term, no lower
+    // bound), which consumes it as an instalment. The backend seeds
+    // `occurrences_elapsed` from exactly this comparison, so both shapes are
+    // handled — but the advanced one is the honest wire value.
+    //
+    // Still floored at today, because the server guard rejects a past
+    // next_due_date: a back-dated entry whose advanced date is still behind
+    // today would otherwise 422 after the transaction is already saved.
     let recurringWarning: string | null = null;
     if (repeat && created?.id) {
       const today = todayISO();
-      const nextDue = date < today ? today : date;
+      const advanced = advanceISO(date, frequency);
+      const nextDue = advanced < today ? today : advanced;
       try {
         await apiFetch(
           `/api/v1/transactions/${created.id}/promote-to-recurring`,
@@ -257,6 +291,13 @@ export default function TransactionForm({
               frequency,
               next_due_date: nextDue,
               auto_settle: autoSettle,
+              // Blank OMITS the key. `occurrence_count: null` and
+              // `occurrence_count: 0` are both wrong on the wire: the schema
+              // is `Optional[int] = Field(gt=0)`, so 0 is a 422 and null is
+              // merely a noisier way to spell "absent".
+              ...(trimmedCount !== ""
+                ? { occurrence_count: Number(trimmedCount) }
+                : {}),
             }),
           },
         );
@@ -523,6 +564,43 @@ export default function TransactionForm({
               </select>
               <HelpTooltip k="tx.frequency" />
             </div>
+            {/* TBD-275. Account-agnostic by construction: this block renders
+                for every account type, so "available on checking and credit
+                card accounts" is satisfied without a type branch — and adding
+                one would hide instalment plans on the savings/cash accounts
+                people also put them on. Blank is the common case, so the
+                placeholder carries the meaning rather than a helper line
+                (quiet-by-default, PRODUCT.md). */}
+            <div className="flex items-center gap-1">
+              <label htmlFor="fab-tx-occurrences" className="sr-only">
+                Number of payments
+              </label>
+              <input
+                id="fab-tx-occurrences"
+                // ⚠ type="text", NOT type="number". A number input silently
+                // COERCES unparseable text to the empty string, so "abc" would
+                // read as blank and quietly turn a 4-payment plan into an
+                // open-ended one with no feedback at all. It also moves
+                // rejection into the browser's native constraint bubble, which
+                // means two half-overlapping enforcement points instead of the
+                // one guard in submit() that every other field here uses.
+                type="text"
+                inputMode="numeric"
+                placeholder="Payments (optional)"
+                aria-describedby="fab-tx-occurrences-hint"
+                value={occurrenceCount}
+                onChange={(e) => setOccurrenceCount(e.target.value)}
+                className={`!w-44 ${input}`}
+              />
+              <HelpTooltip k="tx.occurrence-count" />
+            </div>
+            <p
+              id="fab-tx-occurrences-hint"
+              className="w-full text-[10px] text-text-muted"
+            >
+              Leave blank to repeat indefinitely. Counting this one, so a
+              4-payment plan stops after three more.
+            </p>
             <label className="flex items-center gap-2 text-xs text-text-muted">
               <input
                 type="checkbox"

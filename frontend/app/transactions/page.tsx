@@ -159,6 +159,11 @@ function TransactionsPageContent() {
     "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly"
   >("monthly");
   const [editRecNextDue, setEditRecNextDue] = useState("");
+  // TBD-275: total instalments the promoted series delivers, INCLUDING the row
+  // being edited. Blank = open-ended. Kept as a STRING so "not filled in" and
+  // "filled in with 0" stay distinguishable — a `number | ""` state would make
+  // the blank case indistinguishable from a cleared field mid-edit.
+  const [editRecOccurrenceCount, setEditRecOccurrenceCount] = useState("");
 
   // Filters: persisted via localStorage so a navigate-away-and-back, or a
   // tab reload, lands the user back on the same view. Item 6 of the
@@ -602,6 +607,7 @@ function TransactionsPageContent() {
     setEditPromoteRecurring(false);
     setEditRecFrequency("monthly");
     setEditRecNextDue(defaultNextDueISO());
+    setEditRecOccurrenceCount("");
     // Hydrate partner for linked rows so the Account select can filter
     // currency-compatible options and the mirror-amount notice can render.
     //
@@ -669,6 +675,18 @@ function TransactionsPageContent() {
       setError("Date must be today or later");
       return;
     }
+    // TBD-275. Blank is valid (open-ended); anything else must be a whole
+    // number >= 1. Checked BEFORE the PUT, alongside the two guards above, so a
+    // bad count never leaves the user with a committed edit and a
+    // partial-success banner.
+    const trimmedRecCount = editRecOccurrenceCount.trim();
+    if (wantsPromote && trimmedRecCount !== "") {
+      const parsedRecCount = Number(trimmedRecCount);
+      if (!Number.isInteger(parsedRecCount) || parsedRecCount < 1) {
+        setError("Number of payments must be a whole number of 1 or more");
+        return;
+      }
+    }
     try {
       const isLinked = editPartner !== null;
       const body: Record<string, unknown> = {
@@ -712,6 +730,13 @@ function TransactionsPageContent() {
               body: JSON.stringify({
                 frequency: editRecFrequency,
                 next_due_date: editRecNextDue,
+                // TBD-275. Blank OMITS the key entirely — `null` and `0` are
+                // both wrong on the wire (the schema is
+                // `Optional[int] = Field(gt=0)`, so 0 is a 422 and null is a
+                // noisier spelling of "absent").
+                ...(trimmedRecCount !== ""
+                  ? { occurrence_count: Number(trimmedRecCount) }
+                  : {}),
               }),
             },
           );
@@ -1377,6 +1402,24 @@ function TransactionsPageContent() {
                                         onChange={(e) => setEditRecNextDue(e.target.value)}
                                         className={`text-[11px] !w-40 ${input}`}
                                       />
+                                      {/* TBD-275. Blank = repeats indefinitely,
+                                          which every promote did before this
+                                          field existed. */}
+                                      <input
+                                        aria-label="Number of payments"
+                                        // type="text": a number input coerces
+                                        // unparseable text to "", silently
+                                        // turning a counted plan open-ended.
+                                        type="text"
+                                        inputMode="numeric"
+                                        placeholder="Payments (optional)"
+                                        value={editRecOccurrenceCount}
+                                        onChange={(e) =>
+                                          setEditRecOccurrenceCount(e.target.value)
+                                        }
+                                        data-testid={`edit-recurring-count-${tx.id}`}
+                                        className={`text-[11px] !w-40 ${input}`}
+                                      />
                                     </>
                                   )}
                                 </div>
@@ -1750,6 +1793,28 @@ function TransactionsPageContent() {
                                             onChange={(e) => setEditRecNextDue(e.target.value)}
                                             className={`text-sm ${input}`}
                                           />
+                                        </div>
+                                        {/* TBD-275. Blank = repeats
+                                            indefinitely. */}
+                                        <div>
+                                          <label htmlFor={`edit-rec-count-mobile-${tx.id}`} className={label}>Number of payments</label>
+                                          <input
+                                            id={`edit-rec-count-mobile-${tx.id}`}
+                                            aria-label="Number of payments"
+                                            type="text"
+                                            inputMode="numeric"
+                                            placeholder="Optional"
+                                            value={editRecOccurrenceCount}
+                                            onChange={(e) =>
+                                              setEditRecOccurrenceCount(e.target.value)
+                                            }
+                                            data-testid={`edit-recurring-count-mobile-${tx.id}`}
+                                            className={`text-sm ${input}`}
+                                          />
+                                          <p className="mt-1 text-[10px] text-text-muted">
+                                            Counting this one. Leave blank to
+                                            repeat indefinitely.
+                                          </p>
                                         </div>
                                       </div>
                                     )}

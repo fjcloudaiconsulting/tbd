@@ -41,6 +41,7 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.scenario import Scenario, ScenarioType
 from app.models.transaction import Transaction, TransactionType
 from app.services.date_utils import advance_date
+from app.services.recurring_filters import active_series_filter, remaining_occurrences
 from app.services.transaction_filters import effective_period_date_expr
 
 
@@ -79,6 +80,13 @@ class RecurringSnapshot:
     # ``category_ids`` can scope the silencing. Optional because some
     # legacy fixtures may not set it.
     category_id: Optional[int] = None
+    # TBD-275: instalments this series may still deliver, ``None`` =
+    # open-ended. Carried on the snapshot because the projection runs over a
+    # multi-YEAR horizon -- much longer than any billing window -- so a
+    # 12-instalment loan is the difference between a plausible net-worth curve
+    # and one that keeps paying rent for 30 years. Defaulted to None so legacy
+    # fixtures constructing a snapshot positionally are unaffected.
+    remaining: Optional[int] = None
 
 
 @dataclass
@@ -335,9 +343,14 @@ class AnalyticEngine(ScenarioEngine):
             a.account_id: Decimal(a.starting_balance) for a in state.accounts
         }
         starting_balances: dict[int, Decimal] = dict(balances)
-        recurring_queue: list[tuple[RecurringSnapshot, datetime.date]] = [
-            (r, r.next_due_date) for r in state.recurring
-        ]
+        # (snapshot, frontier, remaining-instalments). The budget rides in the
+        # QUEUE, not on the snapshot, because ``state`` is projected once per
+        # scenario and mutating ``snap.remaining`` would drain the shared
+        # snapshot -- the second scenario would start with the first one's
+        # leftovers (TBD-275).
+        recurring_queue: list[
+            tuple[RecurringSnapshot, datetime.date, Optional[int]]
+        ] = [(r, r.next_due_date, r.remaining) for r in state.recurring]
 
         overlays = _build_overlay_events(scenario)
         # PR3 custom-event filter: silences specific recurring rows
@@ -393,13 +406,27 @@ class AnalyticEngine(ScenarioEngine):
             # (1) Apply recurring whose next_due_date falls in [month_date, month_end].
             # PR3: custom-event ``income_off`` / ``expense_off`` filters
             # silence the matching rows for the configured month range.
-            new_queue: list[tuple[RecurringSnapshot, datetime.date]] = []
-            for snap, due in recurring_queue:
+            new_queue: list[
+                tuple[RecurringSnapshot, datetime.date, Optional[int]]
+            ] = []
+            for snap, due, remaining in recurring_queue:
                 next_due = due
                 apply_this_month = recurring_filter.should_apply(
                     snap, snap.category_id, m_index
                 )
                 while next_due <= month_end:
+                    # TBD-275: the budget is spent on the OCCURRENCE, not on
+                    # the posting. This loop's first passes in month 0 are the
+                    # fast-forward (a frontier before ``month_date``), and
+                    # ``apply_this_month`` False is a scenario overlay
+                    # SILENCING the row -- a what-if display choice, not a
+                    # change to the series. Both still consume an instalment,
+                    # exactly as generation would, so the frontier and the
+                    # budget stay in lockstep with no case analysis.
+                    if remaining is not None and remaining <= 0:
+                        break
+                    if remaining is not None:
+                        remaining -= 1
                     if (
                         apply_this_month
                         and next_due >= month_date
@@ -413,7 +440,7 @@ class AnalyticEngine(ScenarioEngine):
                                 balances[snap.account_id] + delta
                             )
                     next_due = advance_date(next_due, snap.frequency)
-                new_queue.append((snap, next_due))
+                new_queue.append((snap, next_due, remaining))
             recurring_queue = new_queue
 
             # (2) Apply scenario overlay events for this month (trip
@@ -636,10 +663,16 @@ async def build_world_state(
 
     recurring_rows = (
         await db.execute(
-            select(RecurringTransaction).where(
+            select(RecurringTransaction)
+            .where(
                 RecurringTransaction.org_id == org_id,
-                RecurringTransaction.is_active.is_(True),
+                active_series_filter(),
             )
+            # Deterministic order. ``WorldState.recurring`` is a LIST, and both
+            # the engine's projection queue and its fixtures index into it;
+            # without an ORDER BY the order is the storage engine's choice, so
+            # a test reading ``state.recurring[0]`` is a coin flip (TBD-275).
+            .order_by(RecurringTransaction.id)
         )
     ).scalars().all()
     recurring = [
@@ -651,6 +684,7 @@ async def build_world_state(
             frequency=r.frequency,
             next_due_date=r.next_due_date,
             category_id=r.category_id,
+            remaining=remaining_occurrences(r),
         )
         for r in recurring_rows
     ]
