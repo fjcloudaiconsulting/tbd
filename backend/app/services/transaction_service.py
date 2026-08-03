@@ -730,6 +730,7 @@ async def promote_to_recurring(
     org_id: int,
     transaction_id: int,
     body: PromoteToRecurringRequest,
+    today: datetime.date | None = None,
 ) -> Transaction:
     """Promote an existing transaction into a recurring template.
 
@@ -743,18 +744,32 @@ async def promote_to_recurring(
       - tx not found / cross-org → NotFoundError
       - tx already has recurring_id → ValidationError
       - tx is a transfer leg (linked_transaction_id) → ValidationError
-      - next_due_date in the past (server-side guard) → ValidationError
+      - next_due_date before the current billing cycle start → ValidationError
+
+    ``today`` is the caller's resolved clock, used only to derive that cycle
+    start. Passing None falls back to ``date.today()``.
+
+    ⚠ TBD-283 RELAXED this path. It used to reject anything before ``today``,
+    at the schema layer, as a 422. The bound is now the org's current billing
+    cycle start — strictly earlier than ``today`` for all but the cycle-start
+    day — and it is enforced in the service layer, as a 400. Deliberate: three
+    write paths onto one frontier had three different rules, and only this one
+    was expressible without reading ``org.billing_cycle_day``.
     """
     # Local import avoids a circular dependency between
     # transaction_service and recurring_service (the latter imports
     # validate_account/validate_category/apply_balance from this module).
     from app.models.recurring import Frequency, RecurringTransaction
+    from app.services import recurring_service
 
-    # Server-side date guard — defense in depth alongside the schema's
-    # field validator. Service callers (or future internal reuse) can't
-    # bypass the date semantic by skipping the schema layer.
-    if body.next_due_date < datetime.date.today():
-        raise ValidationError("Date must be today or later")
+    # The single frontier lower bound, shared with create/update_recurring.
+    # There is no schema-layer counterpart to be defense-in-depth against:
+    # the bound is org-dependent, so pydantic cannot express it, and the
+    # validator that used to sit there was deleted rather than left to
+    # pre-empt this check with a different rule.
+    await recurring_service.validate_frontier(
+        db, org_id, body.next_due_date, today=today
+    )
 
     async with db.begin_nested():
         # Lock the tx row so concurrent promote calls serialize behind
