@@ -869,7 +869,7 @@ function LegacyDashboard() {
                     />
                     <div className="absolute right-3 top-3">
                       <HelpTooltip
-                        content="Each account's current balance plus its pending transactions in this billing period. Recurring activity is not factored in."
+                        content="Each account's current balance plus everything still expected in this billing period: pending transactions, projected card and loan payments, and upcoming recurring activity."
                         learnMoreSection="forecasts"
                         triggerLabel="How is the end of month forecast calculated?"
                       />
