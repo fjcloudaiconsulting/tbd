@@ -23,6 +23,7 @@ from app.services.recurring_filters import (
     has_remaining_occurrences,
 )
 from app.services.transaction_service import (
+    _demote_match_orphans,
     apply_balance,
     get_account_for_update,
     validate_account,
@@ -500,14 +501,97 @@ async def _remove_pending_transactions(
     db: AsyncSession, org_id: int, recurring_id: int,
 ) -> int:
     """Bulk-delete pending future transactions for a recurring template.
-    Returns the number of rows removed."""
+    Returns the number of rows removed.
+
+    THE THIRD DELETE PATH (TBD-294). ``transaction_service`` has two --
+    ``delete_transaction`` and ``bulk_delete_transactions`` -- and this is the
+    third; ``stop_recurring`` and ``delete_recurring`` both reach it. It is
+    not user-CRUD-shaped (no requested id, no cascade, no balance revert,
+    because every row it removes is PENDING) but it destroys rows all the
+    same, and ``transactions.linked_transaction_id`` is ``ON DELETE SET NULL``
+    for these rows exactly as it is for the other two paths.
+
+    ``reconciliation_service._apply_match`` validates its target on org,
+    existence and not-self and NOTHING else -- no status filter, no
+    ``recurring_id`` filter -- so a settled bank row matched against the
+    PENDING recurring row it settles is a legal, and in fact the most natural,
+    reconcile action. Stopping that template used to delete the target, the FK
+    nulled the link, and the matched duplicate re-entered
+    ``balance_contribution_filter`` and ``reportable_transaction_filter``
+    carrying an amount ``accounts.balance`` does not contain.
+
+    So this routes through ``_demote_match_orphans`` -- the SHARED entry
+    point, deliberately not a third copy of the probe. A fourth delete path
+    will appear; it should have one function to call.
+
+    Lock discipline mirrors ``delete_transaction``: an UNLOCKED pre-read to
+    discover the candidate set and its inbound referrers, then ONE ascending-id
+    ``FOR UPDATE`` over the union. A second, separate lock could invert
+    against ``update_transaction`` (which locks {row, link target} sorted) and
+    deadlock. The DELETE set is then RE-DERIVED from the locked rows, so the
+    predicate is evaluated on locked state and the pre-read cannot widen it.
+    """
     today = datetime.date.today()
+    candidate_ids = set(
+        (
+            await db.scalars(
+                select(Transaction.id).where(
+                    Transaction.recurring_id == recurring_id,
+                    Transaction.org_id == org_id,
+                    Transaction.status == TransactionStatus.PENDING,
+                    Transaction.date >= today,
+                )
+            )
+        ).all()
+    )
+    if not candidate_ids:
+        return 0
+
+    referrer_ids = set(
+        (
+            await db.scalars(
+                select(Transaction.id).where(
+                    Transaction.org_id == org_id,
+                    Transaction.linked_transaction_id.in_(candidate_ids),
+                    Transaction.id.notin_(candidate_ids),
+                )
+            )
+        ).all()
+    )
+
+    locked = await db.execute(
+        select(Transaction)
+        .where(
+            Transaction.id.in_(sorted(candidate_ids | referrer_ids)),
+            Transaction.org_id == org_id,
+        )
+        .order_by(Transaction.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    locked_rows = {r.id: r for r in locked.scalars().all()}
+
+    # Re-derived on LOCKED state, never trusted from the pre-read: a row that
+    # settled in between must survive, and a referrer that is itself a doomed
+    # pending row of this template must be in ``deleted_ids`` so the helper's
+    # first ``continue`` takes it rather than demoting a row about to vanish.
+    doomed = {
+        r.id
+        for r in locked_rows.values()
+        if r.recurring_id == recurring_id
+        and r.status == TransactionStatus.PENDING
+        and r.date >= today
+    }
+    if not doomed:
+        return 0
+
+    await _demote_match_orphans(
+        db, org_id, locked_rows=locked_rows, deleted_ids=doomed
+    )
+
     result = await db.execute(
         delete(Transaction).where(
-            Transaction.recurring_id == recurring_id,
-            Transaction.org_id == org_id,
-            Transaction.status == TransactionStatus.PENDING,
-            Transaction.date >= today,
+            Transaction.id.in_(doomed), Transaction.org_id == org_id
         )
     )
     return result.rowcount

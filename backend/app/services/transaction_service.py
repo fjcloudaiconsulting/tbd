@@ -631,9 +631,23 @@ async def update_transaction(
         #
         # ⚠ 4a and 4e are ONE gate in two halves. Gating only one of them is
         # WORSE than gating neither: 4a-only drifts one way, 4e-only the
-        # other. Arms 4b / 4f need no term -- they are already gated on
-        # ``pair_partner is not None``, and a reciprocal partner is by
-        # definition inside the cached balance.
+        # other.
+        #
+        # Arms 4b / 4f are LEFT UNGATED, and the reason is NOT the one an
+        # earlier revision of this comment gave ("a reciprocal partner is by
+        # definition inside the cached balance"). That is FALSE:
+        # ``contributes_to_cached_balance`` tests ``reconciliation_state``
+        # BEFORE reciprocity (``transaction_filters.py``), so a reciprocal
+        # partner sitting in SKIPPED / REJECTED answers False, and 4b would
+        # then revert an amount that is not in ``accounts.balance`` while 4f
+        # applies the new one -- drift by the old amount.
+        #
+        # That hole is REAL but PRE-EXISTING and byte-identical on ``main``:
+        # this ticket changed neither arm. Widening the gate here would mean
+        # changing transfer-edit balance behaviour under a ticket about
+        # matched rows, with no fence in this file able to justify it. Filed
+        # separately instead. The statement of record is: 4b/4f are ungated,
+        # and that is a known gap, not a proof.
         if old_status == TransactionStatus.SETTLED and tx_in_cached_balance:
             revert_balance(accounts[old_account_id], old_amount, old_type)
         # 4b: revert partner if linked + amount-change + partner currently SETTLED
@@ -1054,38 +1068,68 @@ async def _demote_match_orphans(
 
     await db.flush()
 
-    # A single floored UPDATE per batch rather than loading + locking
-    # ``ImportBatch`` rows: these delete paths lock transactions and accounts
-    # only, and a third table in their lock order is avoidable surface.
-    # ``func.greatest`` is MySQL-only, so the floor is a portable CASE.
-    for table_col, deltas in (
-        (ImportBatch.accepted_count, accepted_delta),
-        (ImportBatch.pending_count, pending_delta),
-    ):
-        for batch_id, n in deltas.items():
-            await db.execute(
-                update(ImportBatch)
-                .where(ImportBatch.id == batch_id, ImportBatch.org_id == org_id)
-                .values(
-                    {
-                        table_col: case(
-                            (table_col - n < 0, 0), else_=table_col - n
-                        )
-                    }
-                )
-            )
+    # A floored UPDATE per batch rather than loading + locking ``ImportBatch``
+    # rows. ``func.greatest`` is MySQL-only, so the floor is a portable CASE.
+    #
+    # ⚠ THIS IS A NEW LOCK EDGE AND THE HONEST STATEMENT OF IT (the earlier
+    # claim here -- that a core UPDATE keeps ``import_batches`` out of these
+    # paths' lock order -- was FALSE; an UPDATE takes the same exclusive row
+    # lock a ``SELECT ... FOR UPDATE`` would).
+    #
+    # The delete paths acquire: transactions -> accounts -> import_batches.
+    # ``reconciliation_service.reconcile_request`` acquires:
+    # import_batches -> transactions -> accounts. Those orders invert, so two
+    # transactions can genuinely cycle and InnoDB will 1213 one of them.
+    #
+    # ACCEPTED, deliberately, because the alternative is worse: eliminating
+    # the inversion means locking ``import_batches`` BEFORE the transaction
+    # ``FOR UPDATE``, and the set of batches involved is not knowable until
+    # the inbound referrers have been READ -- i.e. the ordering requirement is
+    # itself cyclic. Any pre-read used to break it is unlocked, so a referrer
+    # appearing in a fourth batch afterwards would be locked out of order
+    # anyway: a TOCTOU we would then have to document instead. The residual
+    # exposure is a transient rollback of ONE side of a rare race (a reconcile
+    # on the same batch, concurrent with a delete demoting into it) -- never
+    # corruption, and never a lost update, because the loser rolls back whole.
+    #
+    # What IS eliminated here: the SELF-inversion between two concurrent
+    # deletes. The counters used to be issued as two separate passes over two
+    # separate dicts in insertion order, so delete X could take batch 5 then
+    # batch 3 while delete Y took 3 then 5. One ascending pass per batch, both
+    # columns in one statement, removes that edge entirely.
+    for batch_id in sorted(set(accepted_delta) | set(pending_delta)):
+        values: dict = {}
+        for table_col, n in (
+            (ImportBatch.accepted_count, accepted_delta.get(batch_id, 0)),
+            (ImportBatch.pending_count, pending_delta.get(batch_id, 0)),
+        ):
+            if n:
+                values[table_col] = case((table_col - n < 0, 0), else_=table_col - n)
+        await db.execute(
+            update(ImportBatch)
+            .where(ImportBatch.id == batch_id, ImportBatch.org_id == org_id)
+            .values(values)
+        )
 
     # Re-evaluate auto-close for every batch whose pending_count just moved.
     # populate_existing so the freshly-UPDATEd counter is what the helper
     # reads, not the stale identity-map copy.
-    for batch_id in pending_delta:
+    #
+    # ``exclude_transaction_ids`` is NOT optional (TBD-294 follow-up): this
+    # runs before the caller's ``db.delete()``, so a PENDING-state row inside
+    # ``deleted_ids`` is still physically present and the belt-and-braces
+    # recount would read it as counter drift, push ``pending_count`` back up,
+    # and strand the batch OPEN with no surviving row able to move it.
+    for batch_id in sorted(pending_delta):
         batch = await db.scalar(
             select(ImportBatch)
             .where(ImportBatch.id == batch_id, ImportBatch.org_id == org_id)
             .execution_options(populate_existing=True)
         )
         if batch is not None:
-            await close_batch_if_complete(db, batch=batch)
+            await close_batch_if_complete(
+                db, batch=batch, exclude_transaction_ids=deleted_ids
+            )
 
     return [r.id for r in demoted]
 
@@ -1125,7 +1169,13 @@ async def delete_transaction(
     # purpose. A second, separate ``FOR UPDATE`` would acquire in an order
     # ``update_transaction`` (which locks {row, its link target} sorted) can
     # take in reverse, and the two would deadlock. One query, one ascending
-    # order, no new lock edge. ``ix_transactions_linked`` covers the probe.
+    # order. ``ix_transactions_linked`` covers the probe.
+    #
+    # ⚠ That claim is about the TRANSACTIONS table only. The demotion itself
+    # DOES add an ``import_batches`` edge to this path's lock order, inverted
+    # against ``reconcile_request``; see the accepted-edge note in
+    # ``_demote_match_orphans``. Do not read this paragraph as "no new lock
+    # edge" -- an earlier revision did say that, and it was wrong.
     ids_to_lock = [transaction_id]
     if preview.linked_transaction_id is not None:
         ids_to_lock.append(preview.linked_transaction_id)
@@ -1450,6 +1500,15 @@ async def bulk_update_transactions(
             else None
         )
         is_transfer = is_reciprocal_pair(row, linked_row)
+        # ⚠ Yes, this is one SELECT per row, on a path capped at 500. It is NOT
+        # replaced by a single ``IN (...)`` prefetch, deliberately:
+        # ``update_transaction`` COMMITS PER ROW, and it cascades a category
+        # change to the reciprocal partner. A partner prefetched before the
+        # loop is therefore stale for every row after the first that touched
+        # it, and reciprocity would be decided on pre-batch state. The per-row
+        # read is what makes each iteration observe the state the previous
+        # iteration committed. Batch it only together with making this path
+        # transactional, which it is not.
         existing_tag_names = [t.name for t in row.tags]  # capture before commits
         applied = False
         row_notes: list[str] = []

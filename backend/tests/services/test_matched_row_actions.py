@@ -45,7 +45,7 @@ Fixture rules (design §6.0, inherited from test_delete_link_reciprocity):
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -68,6 +68,7 @@ from app.models import (
 )
 from app.models.base import Base
 from app.models.category import CategoryType
+from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import TransactionStatus, TransactionType
 from app.schemas.import_reconciliation import (
     ReconcileBatchRequest,
@@ -79,7 +80,11 @@ from app.schemas.transaction import (
     TransactionCreate,
     TransactionUpdate,
 )
-from app.services import reconciliation_service, transaction_service
+from app.services import (
+    reconciliation_service,
+    recurring_service,
+    transaction_service,
+)
 from app.services.exceptions import ValidationError
 from app.services.transaction_filters import balance_contribution_filter
 
@@ -118,13 +123,23 @@ ACCT_C_OPENING = Decimal("250.00")
 TX_DATE = date(2026, 5, 10)
 
 
-async def _seed(db: AsyncSession) -> dict:
-    org = Organization(name="Primary", billing_cycle_day=1)
+async def _seed(
+    db: AsyncSession, *, label: str = "primary", anchor_id: int = 7000
+) -> dict:
+    """Seed one org's world.
+
+    ``label`` / ``anchor_id`` exist so a test can seed a SECOND org whose
+    rows must SURVIVE an operation aimed at the first (F16). They are not
+    cosmetic: the id anchor is an explicit primary key, so two calls with the
+    same anchor collide, and username / email carry uniqueness.
+    """
+    org = Organization(name=f"Org {label}", billing_cycle_day=1)
     db.add(org)
     await db.flush()
 
     user = User(
-        username="seed_user", email="u@example.com", password_hash="x",
+        username=f"seed_user_{label}", email=f"u-{label}@example.com",
+        password_hash="x",
         org_id=org.id, is_superadmin=False,
     )
     at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
@@ -168,7 +183,7 @@ async def _seed(db: AsyncSession) -> dict:
     # SQLite's max(rowid)+1 carry it forward. PENDING and on a third account,
     # so it contributes nothing to any balance reconstruction.
     anchor = Transaction(
-        id=7000, org_id=org.id, account_id=accts["c"].id, category_id=cat.id,
+        id=anchor_id, org_id=org.id, account_id=accts["c"].id, category_id=cat.id,
         description="id-anchor", amount=Decimal("0.01"),
         type=TransactionType.EXPENSE, status=TransactionStatus.PENDING,
         date=TX_DATE,
@@ -196,6 +211,7 @@ async def _create(
     tx_type: TransactionType = TransactionType.EXPENSE,
     status: TransactionStatus = TransactionStatus.SETTLED,
     in_batch: bool = False,
+    tx_date: date | None = None,
 ) -> Transaction:
     """Create through the REAL create path so ``accounts.balance`` is applied
     by production code, and, when asked, enrol the row in the import batch as
@@ -215,8 +231,12 @@ async def _create(
             amount=Decimal(amount),
             type=tx_type.value,
             status=status.value,
-            date=TX_DATE,
-            settled_date=TX_DATE if status == TransactionStatus.SETTLED else None,
+            date=tx_date or TX_DATE,
+            settled_date=(
+                (tx_date or TX_DATE)
+                if status == TransactionStatus.SETTLED
+                else None
+            ),
         ),
     )
     if in_batch:
@@ -286,6 +306,51 @@ async def _make_matched_pair(
     assert dup.id != canonical.id
     assert min(dup.id, canonical.id) > 7000, "id anchor must be in force"
     return dup, canonical
+
+
+async def _make_recurring_pending(
+    db: AsyncSession, seed: dict, *, amount: str, days_ahead: int = 7,
+) -> tuple[RecurringTransaction, Transaction]:
+    """A template plus the PENDING future row it owns -- the shape
+    ``recurring_service._remove_pending_transactions`` destroys.
+
+    The row is built through ``create_transaction`` and then has
+    ``recurring_id`` assigned. That is deliberate and is NOT the same
+    shortcut the fixture rules forbid for ``linked_transaction_id``: the link
+    must come from the real ``_apply_match`` because the PREMISE under test
+    (that the contribution was reverted) is a side effect of that path.
+    ``recurring_id`` has no side effect at all -- generation sets exactly this
+    column on exactly this row shape -- so nothing is untethered by writing it
+    directly, and the alternative (driving ``generate_due_transactions``)
+    would pull the whole billing-cycle frontier into a fence about deletes.
+
+    Dates are relative to ``date.today()``: ``_remove_pending_transactions``
+    reads the wall clock, so a fixed literal here is a date bomb.
+    """
+    due = date.today() + timedelta(days=days_ahead)
+    rec = RecurringTransaction(
+        org_id=seed["org_id"],
+        account_id=seed["acct_b_id"],
+        category_id=seed["cat_id"],
+        description="rent",
+        amount=Decimal(amount),
+        type="expense",
+        frequency=Frequency.MONTHLY,
+        next_due_date=due,
+        auto_settle=False,
+        is_active=True,
+    )
+    db.add(rec)
+    await db.flush()
+
+    row = await _create(
+        db, seed, account_id=seed["acct_b_id"], amount=amount,
+        label="recurring-pending", status=TransactionStatus.PENDING,
+        tx_date=due,
+    )
+    row.recurring_id = rec.id
+    await db.commit()
+    return rec, await _reload(db, row.id)
 
 
 async def _reload(db: AsyncSession, tx_id: int) -> Transaction | None:
@@ -702,6 +767,74 @@ async def test_pending_review_referrer_demotion_decrements_pending_count_and_clo
 
 
 @pytest.mark.asyncio
+async def test_auto_close_recount_ignores_rows_the_caller_is_about_to_delete(
+    db_session,
+):
+    """F11b. ORDERING. ``_demote_match_orphans`` runs BEFORE the caller's
+    ``db.delete()`` -- it has to, since the whole point is to move the
+    discriminator before the FK nulls the link -- so every row in the delete
+    set is still PHYSICALLY PRESENT when ``close_batch_if_complete`` runs its
+    belt-and-braces recount.
+
+    If a row in the delete set is itself in the batch and in a pending state,
+    that recount reads it, concludes "counter drift", writes ``pending_count``
+    back UP and leaves the batch OPEN -- and then the row is deleted, so
+    NOTHING can ever move the counter again. The batch is stranded permanently.
+
+    The drift here is manufactured deliberately and is not artificial: the
+    recount exists precisely to catch "a code path mutated
+    ``reconciliation_state`` without going through ``_reconcile_one``", i.e. a
+    pending row the counter does not know about.
+
+    Kills: dropping ``exclude_transaction_ids=deleted_ids`` from the
+    ``close_batch_if_complete`` call in ``_demote_match_orphans``.
+    """
+    seed = await _seed(db_session)
+    filler = await _create(
+        db_session, seed, account_id=seed["acct_a_id"],
+        amount="1.00", in_batch=True,
+    )
+    dup, canonical = await _make_matched_pair(db_session, seed, amount="16.00")
+    await _reconcile(db_session, seed, _transition(dup.id, ReconciliationState.ACCEPTED))
+    await _reconcile(
+        db_session, seed, _transition(dup.id, ReconciliationState.PENDING_REVIEW),
+    )
+    await _reconcile(
+        db_session, seed, _transition(filler.id, ReconciliationState.ACCEPTED),
+    )
+
+    # THE DRIFT: the canonical joins the batch in a pending state without the
+    # counter following. Actual pending rows = 2, ``pending_count`` = 1.
+    canonical = await _reload(db_session, canonical.id)
+    canonical.import_batch_id = seed["batch_id"]
+    canonical.reconciliation_state = "unmatched"
+    await db_session.commit()
+
+    batch = await db_session.scalar(
+        select(ImportBatch)
+        .where(ImportBatch.id == seed["batch_id"])
+        .execution_options(populate_existing=True)
+    )
+    assert batch.pending_count == 1
+    assert batch.status == ImportBatchStatus.OPEN
+
+    await transaction_service.delete_transaction(
+        db_session, seed["org_id"], canonical.id,
+    )
+
+    batch = await db_session.scalar(
+        select(ImportBatch)
+        .where(ImportBatch.id == seed["batch_id"])
+        .execution_options(populate_existing=True)
+    )
+    assert (await _reload(db_session, dup.id)).reconciliation_state == "rejected"
+    assert await _reload(db_session, canonical.id) is None
+    assert batch.pending_count == 0
+    assert batch.status == ImportBatchStatus.CLOSED
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
 async def test_pending_matched_orphan_moves_no_money(db_session):
     """F12. A PENDING row's amount was never in ``accounts.balance``.
     Demoting it must not invent money in either direction."""
@@ -728,8 +861,14 @@ async def test_pending_matched_orphan_moves_no_money(db_session):
 async def test_reciprocal_partner_delete_still_cascades_and_demotes_nothing(db_session):
     """F13. THE OVER-REACH FENCE for TBD-294. A reciprocal partner IS inside
     the cached balance and is already in the delete set; demoting it would be
-    a state write on a row about to cease existing, and (worse) a fix keyed on
-    "any inbound referrer" would demote a real transfer leg."""
+    a state write on a row about to cease existing.
+
+    NOT claimed here: that a fix keyed on "any inbound referrer" would demote
+    a real transfer leg. It would not -- the reciprocal partner is in
+    ``deleted_ids`` and the helper's FIRST ``continue`` takes it before any
+    predicate runs, which is exactly why M12 survives. This fence pins the
+    cascade and the empty return, nothing more.
+    """
     seed = await _seed(db_session)
     expense = await _create(
         db_session, seed, account_id=seed["acct_a_id"],
@@ -841,27 +980,187 @@ async def test_bulk_delete_demotes_too(db_session):
 
 
 @pytest.mark.asyncio
-async def test_org_wipe_does_not_demote(db_session):
-    """F16 (ruling condition 4). The demotion is USER-INITIATED CRUD only.
-    ``org_data_service.wipe_org_data`` issues an unbounded
-    ``DELETE FROM transactions WHERE org_id = ...`` and never routes through
-    ``delete_transaction`` -- if it did, a wipe would strand on rows demoting
-    each other. This fence pins that separation so a future "unify the delete
-    paths" refactor cannot quietly rejoin them.
+async def test_stop_recurring_demotes_the_match_orphan(db_session):
+    """F15b. THE THIRD DELETE PATH.
+
+    ``recurring_service._remove_pending_transactions`` is a raw bulk
+    ``DELETE`` reached from BOTH ``stop_recurring`` and ``delete_recurring``.
+    It never touched ``_demote_match_orphans``, and it is reachable:
+    ``_apply_match`` validates its target on org, existence and not-self and
+    NOTHING else, so matching an imported bank row against the PENDING
+    recurring row it settles is legal -- and it is the single most natural
+    reconcile action in the product.
+
+    The failure this kills: rent template generates pending ``T``; bank
+    import brings settled ``M``; user matches ``M -> T`` and ``M``'s amount
+    is reverted out of ``accounts.balance``; user later stops the template;
+    ``T`` is deleted, the FK nulls ``M.linked_transaction_id``, and ``M``
+    re-enters BOTH filters carrying an amount the cached balance does not
+    contain.
+
+    Kills: leaving ``_remove_pending_transactions`` as the bare bulk DELETE
+    it was (the state assertion AND the invariant both fail).
+    """
+    seed = await _seed(db_session)
+    rec, pending = await _make_recurring_pending(db_session, seed, amount="1024.00")
+    dup, canonical = await _make_matched_pair(
+        db_session, seed, amount="1024.00", canonical=pending,
+    )
+    assert canonical.id == pending.id
+    assert canonical.status == TransactionStatus.PENDING
+
+    removed = await recurring_service.stop_recurring(
+        db_session, seed["org_id"], rec.id,
+    )
+
+    assert removed == 1
+    assert await _reload(db_session, pending.id) is None
+    orphan = await _reload(db_session, dup.id)
+    assert orphan is not None, "the matched duplicate itself must survive"
+    assert orphan.reconciliation_state == "rejected"
+    assert orphan.linked_transaction_id is None
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_delete_recurring_demotes_the_match_orphan(db_session):
+    """F15c. The SIBLING of F15b, and not redundant with it.
+
+    ``stop_recurring`` and ``delete_recurring`` reach
+    ``_remove_pending_transactions`` by two different routes, and this repo
+    has repeatedly shipped a fix to one sibling and not the other. Kills
+    wiring the demotion into ``stop_recurring`` alone.
+    """
+    seed = await _seed(db_session)
+    rec, pending = await _make_recurring_pending(db_session, seed, amount="2048.00")
+    dup, _ = await _make_matched_pair(
+        db_session, seed, amount="2048.00", canonical=pending,
+    )
+
+    removed = await recurring_service.delete_recurring(
+        db_session, seed["org_id"], rec.id,
+    )
+
+    assert removed == 1
+    assert await _reload(db_session, pending.id) is None
+    orphan = await _reload(db_session, dup.id)
+    assert orphan is not None
+    assert orphan.reconciliation_state == "rejected"
+    assert orphan.linked_transaction_id is None
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_stop_recurring_leaves_a_settled_row_and_its_referrer_alone(db_session):
+    """F15d. THE OVER-REACH FENCE for the third path. Only rows the bulk
+    DELETE actually removes may trigger a demotion.
+
+    A SETTLED row belonging to the same template is outside the delete
+    predicate, so its matched duplicate keeps its link and its state. Kills
+    widening ``_remove_pending_transactions``' re-derived delete set to
+    "every row of this template" -- which would silently demote (and delete)
+    settled history.
+    """
+    seed = await _seed(db_session)
+    rec, pending = await _make_recurring_pending(db_session, seed, amount="512.00")
+
+    # A SETTLED row on the same template, matched by its own duplicate.
+    settled = await _create(
+        db_session, seed, account_id=seed["acct_b_id"], amount="256.00",
+        label="settled-history",
+    )
+    settled.recurring_id = rec.id
+    await db_session.commit()
+    settled_dup, _ = await _make_matched_pair(
+        db_session, seed, amount="256.00", canonical=settled,
+    )
+
+    removed = await recurring_service.stop_recurring(
+        db_session, seed["org_id"], rec.id,
+    )
+
+    assert removed == 1
+    assert await _reload(db_session, pending.id) is None
+    survivor = await _reload(db_session, settled.id)
+    assert survivor is not None
+    kept = await _reload(db_session, settled_dup.id)
+    assert kept.reconciliation_state == "matched"
+    assert kept.linked_transaction_id == settled.id
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_org_wipe_stays_a_bulk_delete_and_stays_org_scoped(db_session):
+    """F16 (ruling condition 4). The demotion is USER-INITIATED CRUD only;
+    ``org_data_service.wipe_org_data`` must keep issuing its unbounded
+    ``DELETE FROM transactions WHERE org_id = ...``.
+
+    ⚠ WHAT THIS CANNOT DO, stated so nobody trusts it for more than it is.
+    "The wipe does not demote" has NO observable consequence when the wipe
+    is total: every row that could carry a demotion is deleted in the same
+    statement, so a wipe that demoted first and a wipe that did not are
+    byte-identical afterwards. The previous revision of this test asserted
+    only "both rows are gone", which is true on unmodified ``main``, true
+    with ``_demote_match_orphans`` deleted, and true of every rewiring it
+    claimed to forbid. It could not fail.
+
+    So this pins the two things that ARE observable, each with a named
+    mutant it kills:
+
+    1. **Rewire the wipe to loop through ``transaction_service.
+       delete_transaction``** -- that path REFUSES a manual balance
+       adjustment (``ValidationError``), so the wipe would raise on an org
+       that contains one. The wipe must succeed and must report the
+       adjustment among the deleted rows.
+    2. **Rewire it through ``bulk_delete_transactions``** -- that path
+       SKIPS manual adjustments silently, so the row would survive an org
+       wipe and the count would be short.
+    3. **Drop ``.where(Transaction.org_id == org_id)``** -- the second org's
+       matched pair, seeded here purely as a survivor, would be destroyed.
+
+    The org-2 pair is NOT evidence about demotion (nothing an org-1 delete
+    does can reach it -- no writer produces a cross-org link). It is the
+    org-scoping survivor, and that is all it is claimed to be.
     """
     from app.services import org_data_service
 
     seed = await _seed(db_session)
-    dup, canonical = await _make_matched_pair(
-        db_session, seed, amount="4.00",
-    )
+    other = await _seed(db_session, label="survivor", anchor_id=8000)
 
-    await org_data_service.wipe_org_data(db_session, org_id=seed["org_id"])
+    dup, canonical = await _make_matched_pair(db_session, seed, amount="4.00")
+    other_dup, other_canonical = await _make_matched_pair(
+        db_session, other, amount="8.00",
+    )
+    other_state_before = other_dup.reconciliation_state
+    assert other_dup.linked_transaction_id == other_canonical.id
+
+    # A manual balance adjustment inside the wiped org. Both CRUD delete
+    # paths treat it specially -- one raises, one skips -- so it is the
+    # discriminator between "bulk DELETE" and "routed through CRUD".
+    adjustment = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="64.00",
+        label="adjustment",
+    )
+    adjustment.is_manual_adjustment = True
     await db_session.commit()
 
-    # Everything is gone: nothing survived to carry a demotion.
+    counts = await org_data_service.wipe_org_data(
+        db_session, org_id=seed["org_id"]
+    )
+    await db_session.commit()
+
+    # anchor + canonical + dup + adjustment
+    assert counts["transactions"] == 4
     assert await _reload(db_session, dup.id) is None
     assert await _reload(db_session, canonical.id) is None
+    assert await _reload(db_session, adjustment.id) is None
+
+    # The other org is untouched, link and state included.
+    survivor = await _reload(db_session, other_dup.id)
+    assert survivor is not None
+    assert survivor.reconciliation_state == other_state_before
+    assert survivor.linked_transaction_id == other_canonical.id
+    assert await _reload(db_session, other_canonical.id) is not None
 
 
 # ══ TBD-295: promote-to-recurring ═══════════════════════════════════════════

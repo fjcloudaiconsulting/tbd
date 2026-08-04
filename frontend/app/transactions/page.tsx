@@ -293,6 +293,15 @@ function TransactionsPageContent() {
   const [editPartner, setEditPartner] = useState<Transaction | null>(null);
 
   const loadTransactions = useCallback(async (p: number) => {
+    // The demotion notice is scoped to the delete that produced it. Without
+    // this it survived filter changes, page changes and edits — it was only
+    // ever cleared by the NEXT delete, so a warning about rows the user can
+    // no longer see stayed on screen indefinitely.
+    //
+    // Safe against its own writers: handleDelete / handleBulkDelete await
+    // this call and set the notice AFTERWARDS, so the clear can never race
+    // ahead of the message it is meant to precede.
+    setNotice("");
     // collapse_transfers=true (TBD-268): the server folds each MUTUALLY-linked
     // transfer pair to one row BEFORE applying the limit, so a page of
     // `pageSize` rows is `pageSize` transfers. This replaces a client-side
@@ -1014,25 +1023,32 @@ function TransactionsPageContent() {
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
 
-      {notice && (
-        <div
-          className="mb-6 rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-text-secondary"
-          role="status"
-          data-testid="transactions-notice"
-        >
-          {notice}
-        </div>
-      )}
+      {/* The LIVE REGION is mounted unconditionally and only its CONTENT
+          changes. `role="status"` on a div that is itself conditionally
+          mounted is unreliable: many screen readers only announce mutations
+          inside a region that already existed when the mutation happened, so
+          a region that appears together with its first message is frequently
+          announced never. The visible box stays conditional (and keeps the
+          testid) — it is the announcer that has to be permanent. */}
+      <div role="status" aria-live="polite" data-testid="transactions-live-region">
+        {notice && (
+          <div
+            className="mb-6 rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-text-secondary"
+            data-testid="transactions-notice"
+          >
+            {notice}
+          </div>
+        )}
 
-      {deepLinkMiss && (
-        <div
-          className="mb-6 rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-text-secondary"
-          role="status"
-          data-testid="deep-link-miss"
-        >
-          {DEEP_LINK_MISS}
-        </div>
-      )}
+        {deepLinkMiss && (
+          <div
+            className="mb-6 rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-text-secondary"
+            data-testid="deep-link-miss"
+          >
+            {DEEP_LINK_MISS}
+          </div>
+        )}
+      </div>
 
       {refreshError && (
         <div
@@ -1623,14 +1639,35 @@ function TransactionsPageContent() {
                                     <span className="sr-only">: {MATCHED_BADGE_SR}</span>
                                   </span>
                                 ) : (
+                                  /* TBD-289 shipped this badge NON-interactive,
+                                     so the touch-target floor did not apply to
+                                     it. Making it a link is what brings the
+                                     floor in — and the floor did not arrive
+                                     with it. Outer <a> = WCAG 2.5.8 hit area,
+                                     inner span = lean badge visual, the same
+                                     split the status pill in this row uses.
+                                     Putting min-h on the badge itself would
+                                     paint a 44px-tall grey block.
+
+                                     `lg:min-h-0` matches the Edit / Mark
+                                     transfer / Unlink controls in this SAME
+                                     row rather than the status pill: the pill
+                                     sits alone in a fixed cell where 44px is
+                                     free, while this badge stacks UNDER the
+                                     description and an unconditional floor
+                                     grows every matched row at every desktop
+                                     width. The mobile twin carries the floor
+                                     unconditionally. */
                                   <Link
                                     href={`/transactions?transaction_id=${tx.linked_transaction_id}`}
-                                    className={`${badgeNeutral} hover:text-text-primary`}
+                                    className="inline-flex min-h-[44px] items-center lg:min-h-0"
                                     data-testid={`matched-badge-${tx.id}`}
                                     title={MATCHED_BADGE_TITLE}
                                   >
-                                    Matched
-                                    <span className="sr-only">: {MATCHED_BADGE_SR}</span>
+                                    <span className={`${badgeNeutral} hover:text-text-primary`}>
+                                      Matched
+                                      <span className="sr-only">: {MATCHED_BADGE_SR}</span>
+                                    </span>
                                   </Link>
                                 )}
                               </span>
@@ -2020,14 +2057,21 @@ function TransactionsPageContent() {
                                       <span className="sr-only">: {MATCHED_BADGE_SR}</span>
                                     </span>
                                   ) : (
+                                    /* Touch-target floor, unconditional here:
+                                       this renderer IS the touch surface. See
+                                       the desktop twin for why the split
+                                       (hit area outside, badge visual inside)
+                                       rather than min-h on the badge. */
                                     <Link
                                       href={`/transactions?transaction_id=${tx.linked_transaction_id}`}
-                                      className={`${badgeNeutral} hover:text-text-primary`}
+                                      className="inline-flex min-h-[44px] items-center"
                                       data-testid={`matched-badge-mobile-${tx.id}`}
                                       title={MATCHED_BADGE_TITLE}
                                     >
-                                      Matched
-                                      <span className="sr-only">: {MATCHED_BADGE_SR}</span>
+                                      <span className={`${badgeNeutral} hover:text-text-primary`}>
+                                        Matched
+                                        <span className="sr-only">: {MATCHED_BADGE_SR}</span>
+                                      </span>
                                     </Link>
                                   )}
                                 </div>

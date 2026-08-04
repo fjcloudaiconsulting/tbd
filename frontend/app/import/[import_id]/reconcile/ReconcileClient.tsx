@@ -560,10 +560,16 @@ function MatchModal({
           </h2>
         </div>
         <form onSubmit={handleSubmit} className="space-y-3 px-6 py-4">
+          {/* TBD-294 made the old copy ("the match is informational") false.
+              It was true while a match had no consequence beyond a badge.
+              Deleting the target now marks THIS row rejected, and rejected is
+              terminal: it is not reachable through any edit screen we offer.
+              The user has to be told before committing, not after. */}
           <p className="text-sm text-text-secondary">
             Enter the ID of the existing transaction this imported row should
-            link to. The match is informational; both rows remain in the
-            ledger.
+            link to. Both rows stay in the ledger, but this one stops counting
+            toward balances and reports. If the transaction you match to is
+            deleted later, this row is marked rejected permanently.
           </p>
           <div>
             <label htmlFor="recon-match-id" className="mb-1 block text-xs text-text-muted">

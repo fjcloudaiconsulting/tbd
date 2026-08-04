@@ -342,4 +342,54 @@ describe("TBD-294 — the delete says what it did", () => {
     });
     expect(screen.queryByTestId("transactions-notice")).toBeNull();
   });
+
+  it("clears the demotion notice on the next list load", async () => {
+    // The notice was only ever cleared by the NEXT delete, so it survived
+    // filter changes, page changes and edits — a warning about rows the user
+    // can no longer see, left on screen indefinitely. Kills setting `notice`
+    // without clearing it in `loadTransactions`.
+    const mock = setupApiFetch([ORDINARY]);
+    mock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url.startsWith("/api/v1/accounts")) return [ACCT_CHECKING, ACCT_SAVINGS] as never;
+      if (url.startsWith("/api/v1/categories")) return [CATEGORY] as never;
+      if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
+      if (opts?.method === "DELETE")
+        return { deleted: true, demoted_ids: [9500] } as never;
+      if (url.startsWith("/api/v1/transactions"))
+        return { items: [ORDINARY], total: 1, limit: 25, offset: 0 } as never;
+      return null as never;
+    });
+    render(<TransactionsPage />);
+    await screen.findAllByText(ORDINARY.description);
+
+    fireEvent.click(screen.getAllByLabelText(`Delete: ${ORDINARY.description}`)[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await screen.findByTestId("transactions-notice");
+
+    // Any list reload: a filter change is the cheapest one.
+    fireEvent.change(screen.getByLabelText("Search transactions"), {
+      target: { value: "bakery" },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("transactions-notice")).toBeNull();
+    });
+  });
+
+  it("mounts the live region unconditionally, message or not", async () => {
+    // `role="status"` on a div that appears TOGETHER WITH its first message
+    // is frequently announced never: many screen readers only announce
+    // mutations inside a region that already existed. Kills moving the role
+    // back onto the conditionally-mounted notice box.
+    setupApiFetch([ORDINARY]);
+    render(<TransactionsPage />);
+    await screen.findAllByText(ORDINARY.description);
+
+    const region = screen.getByTestId("transactions-live-region");
+    expect(region.getAttribute("role")).toBe("status");
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    // No message yet — the region is there anyway.
+    expect(screen.queryByTestId("transactions-notice")).toBeNull();
+    expect(screen.queryByTestId("deep-link-miss")).toBeNull();
+  });
 });

@@ -285,10 +285,56 @@ describe("TBD-289 — reconcile-matched row affordances", () => {
       );
       // Quiet-by-default + No Off-Token: the neutral badge primitive from
       // lib/styles.ts, not the brass accent and not a raw palette colour.
-      expect(badge.className).toContain("bg-surface-raised");
-      expect(badge.className).toContain("text-text-secondary");
+      //
+      // The primitive now sits on the INNER span: the <a> is the WCAG 2.5.8
+      // hit area and the span is the lean visual, the same split the status
+      // pill in this row uses. Putting the 44px floor on the badge itself
+      // would paint a 44px-tall grey block.
+      const visual = badge.firstElementChild as HTMLElement;
+      expect(visual).not.toBeNull();
+      expect(visual.className).toContain("bg-surface-raised");
+      expect(visual.className).toContain("text-text-secondary");
+      expect(visual.className).not.toMatch(/\baccent\b/);
       expect(badge.className).not.toMatch(/\baccent\b/);
     }
+  });
+
+  /**
+   * TBD-289 shipped this badge NON-INTERACTIVE, so the project's touch-target
+   * floor did not apply to it. TBD-295 made it a LINK and did not bring the
+   * floor with it: a bare `badgeNeutral` anchor is ~20px tall, on a page that
+   * states the 44px rule twice in code and applies it to the status pill and
+   * to every action control in the same row.
+   *
+   * jsdom performs no layout, so the hit area is asserted the way this repo
+   * asserts it everywhere else (categories-drag-drop, appshell CTA): on the
+   * class. `getBoundingClientRect` returns zeros here and would fence nothing.
+   */
+  it("gives the Matched link a 44px touch target in both slots", async () => {
+    setupApiFetch([MATCHED]);
+    render(<TransactionsPage />);
+
+    await screen.findAllByText(MATCHED.description);
+
+    const desktopBadge = screen.getByTestId(`matched-badge-${MATCHED.id}`);
+    const mobileBadge = screen.getByTestId(`matched-badge-mobile-${MATCHED.id}`);
+
+    for (const badge of [desktopBadge, mobileBadge]) {
+      // The floor must be on the FOCUSABLE element. A decorative wrapper
+      // around it does not enlarge the pointer target.
+      expect(badge.tagName).toBe("A");
+      expect(badge.className).toContain("min-h-[44px]");
+      expect(badge.className).toContain("items-center");
+    }
+
+    // The desktop table takes the same `lg:min-h-0` escape hatch its own
+    // Edit / Mark transfer / Unlink controls take: this badge stacks UNDER
+    // the description, so an unconditional floor grows every matched row at
+    // every desktop width. The MOBILE renderer is the touch surface and gets
+    // no escape hatch — pinned as an asymmetry, because copying the desktop
+    // class string across to the mobile slot is exactly how the floor is lost.
+    expect(desktopBadge.className).toContain("lg:min-h-0");
+    expect(mobileBadge.className).not.toContain("lg:min-h-0");
   });
 
   it("renders NO link on a self-linked row, in either slot", async () => {
