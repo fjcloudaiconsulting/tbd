@@ -1004,7 +1004,7 @@ async def test_bulk_delete_skips_adjustment_rows(session_factory, seeded):
         await db.commit()
 
     async with session_factory() as db:
-        deleted, skipped = await bulk_delete_transactions(
+        deleted, skipped, _demoted = await bulk_delete_transactions(
             db, seeded["org_id"], [adj_id, regular_id]
         )
         assert deleted == 1

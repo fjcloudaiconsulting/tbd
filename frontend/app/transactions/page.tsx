@@ -25,6 +25,7 @@ import type { Account, BillingPeriod, Category, Transaction } from "@/lib/types"
 const EMPTY_ACCOUNTS: Account[] = [];
 const EMPTY_CATEGORIES: Category[] = [];
 const EMPTY_PERIODS: BillingPeriod[] = [];
+
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import LinkAsTransferModal from "@/components/transactions/LinkAsTransferModal";
 import MarkAsTransferModal from "@/components/transactions/MarkAsTransferModal";
@@ -44,6 +45,32 @@ import { usePersistedFilters } from "@/lib/hooks/use-persisted-filters";
 import { usePersistedSort } from "@/lib/hooks/use-persisted-sort";
 import Pagination from "@/components/ui/Pagination";
 import { pageCount } from "@/lib/hooks/use-table-state";
+
+// TBD-295 copy discipline. A one-way `linked_transaction_id` has producers
+// other than reconciliation (a self-link, a cross-org link, an A->B->C chain),
+// so the copy must never assert reconciliation as the cause. It says what the
+// row IS and what follows from it. Declared once so the desktop and mobile
+// twins cannot drift apart, which is how the mobile slot gets missed.
+const MATCHED_BADGE_TITLE =
+  "Marked as a duplicate of another transaction. It is excluded from balances and reports.";
+const MATCHED_BADGE_SR =
+  "marked as a duplicate of another transaction, excluded from balances and reports";
+// Shown when a `?transaction_id=` deep link points at a row the current page
+// (filters + pagination) does not contain. The effect used to return silently,
+// so following the badge from a filtered list looked like a dead link.
+const DEEP_LINK_MISS =
+  "That transaction isn't on this page. Clear your filters to find it.";
+
+// TBD-294. Deleting a row that another row was marked a duplicate OF marks
+// that other row rejected. REJECTED is terminal and unreachable through the
+// edit API, so the change is irreversible — the user has to be told.
+function demotionNotice(demotedIds: number[]): string {
+  if (demotedIds.length === 0) return "";
+  const n = demotedIds.length;
+  return n === 1
+    ? "1 matched duplicate was marked rejected. It no longer counts toward balances or reports."
+    : `${n} matched duplicates were marked rejected. They no longer count toward balances or reports.`;
+}
 
 
 
@@ -119,6 +146,9 @@ function TransactionsPageContent() {
   const [periodsWaitElapsed, setPeriodsWaitElapsed] = useState(false);
   const canLoadList = periodsSettled || periodsWaitElapsed;
   const [error, setError] = useState("");
+  // TBD-294: a non-error, non-blocking outcome banner. The demotion is a
+  // side effect of a successful delete, so it must not render as an error.
+  const [notice, setNotice] = useState("");
   // Non-blocking refresh-error state for the AppShell post-write event
   // listener. The page keeps the previous list; banner offers a Retry.
   const [refreshError, setRefreshError] = useState(false);
@@ -263,6 +293,15 @@ function TransactionsPageContent() {
   const [editPartner, setEditPartner] = useState<Transaction | null>(null);
 
   const loadTransactions = useCallback(async (p: number) => {
+    // The demotion notice is scoped to the delete that produced it. Without
+    // this it survived filter changes, page changes and edits — it was only
+    // ever cleared by the NEXT delete, so a warning about rows the user can
+    // no longer see stayed on screen indefinitely.
+    //
+    // Safe against its own writers: handleDelete / handleBulkDelete await
+    // this call and set the notice AFTERWARDS, so the clear can never race
+    // ahead of the message it is meant to precede.
+    setNotice("");
     // collapse_transfers=true (TBD-268): the server folds each MUTUALLY-linked
     // transfer pair to one row BEFORE applying the limit, so a page of
     // `pageSize` rows is `pageSize` transfers. This replaces a client-side
@@ -486,9 +525,17 @@ function TransactionsPageContent() {
   async function handleDelete(id: number) {
     setConfirmDeleteId(null);
     setError("");
+    setNotice("");
     try {
-      await apiFetch(`/api/v1/transactions/${id}`, { method: "DELETE" });
+      // TBD-294: the endpoint returns a body now. Deleting a row that another
+      // row was matched against marks that other row rejected, irreversibly
+      // through every API we expose — so it is never silent.
+      const res = await apiFetch<{ deleted: boolean; demoted_ids: number[] }>(
+        `/api/v1/transactions/${id}`,
+        { method: "DELETE" },
+      );
       await loadTransactions(page);
+      setNotice(demotionNotice(res?.demoted_ids ?? []));
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -497,6 +544,7 @@ function TransactionsPageContent() {
   async function handleBulkDelete() {
     setConfirmBulkDelete(false);
     setError("");
+    setNotice("");
     setBulkDeleting(true);
     try {
       const body = { ids: Array.from(selectedIds) };
@@ -504,12 +552,14 @@ function TransactionsPageContent() {
         requested_count: number;
         deleted_count: number;
         skipped_ids: number[];
+        demoted_ids: number[];
       }>("/api/v1/transactions/bulk-delete", {
         method: "POST",
         body: JSON.stringify(body),
       });
       clearSelection();
       await loadTransactions(page);
+      setNotice(demotionNotice(res?.demoted_ids ?? []));
       if (res.skipped_ids.length > 0) {
         setError(
           `Deleted ${res.deleted_count} of ${res.requested_count} transactions. ${res.skipped_ids.length} ${res.skipped_ids.length === 1 ? "was" : "were"} already gone.`,
@@ -665,7 +715,14 @@ function TransactionsPageContent() {
     const wantsPromote =
       editPromoteRecurring &&
       editingRow !== null &&
-      editingRow.linked_account_name == null &&
+      // TBD-295: the RAW column, not `linked_account_name`. The server guard
+      // in `promote_to_recurring` is `linked_transaction_id is not None` --
+      // it asks "may this row seed a repeating series", not "is this a
+      // transfer leg" -- so a matched row is refused there too. Gating on
+      // `linked_account_name` here left the identical hole the render sites
+      // had: a checkbox that ticks and then 400s. Invisible until TBD-292
+      // stopped the edit itself from 409-ing first.
+      editingRow.linked_transaction_id === null &&
       editingRow.recurring_id === null;
     if (wantsPromote && !editRecNextDue) {
       setError("Pick a next due date");
@@ -807,6 +864,21 @@ function TransactionsPageContent() {
     const parsed = Number(raw);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
   }, [searchParams]);
+
+  // TBD-295: the effect below used to `return` silently when the target was
+  // not in the loaded page, which reads as a dead link — and the matched badge
+  // now sends users through this mechanism from a filtered list, where a miss
+  // is the COMMON case, not the edge one.
+  //
+  // DERIVED, not effect state: this is a pure function of the URL param, the
+  // loaded page and the in-flight flag. A useState + useEffect pair would
+  // render one frame stale AND trip `react-hooks/set-state-in-effect`. The
+  // `!fetching` term keeps the message off the first paint, when the list is
+  // legitimately empty only because the request has not landed.
+  const deepLinkMiss =
+    targetTransactionId !== null &&
+    !fetching &&
+    !transactions.some((tx) => tx.id === targetTransactionId);
 
   useEffect(() => {
     if (
@@ -950,6 +1022,33 @@ function TransactionsPageContent() {
       </div>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
+
+      {/* The LIVE REGION is mounted unconditionally and only its CONTENT
+          changes. `role="status"` on a div that is itself conditionally
+          mounted is unreliable: many screen readers only announce mutations
+          inside a region that already existed when the mutation happened, so
+          a region that appears together with its first message is frequently
+          announced never. The visible box stays conditional (and keeps the
+          testid) — it is the announcer that has to be permanent. */}
+      <div role="status" aria-live="polite" data-testid="transactions-live-region">
+        {notice && (
+          <div
+            className="mb-6 rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-text-secondary"
+            data-testid="transactions-notice"
+          >
+            {notice}
+          </div>
+        )}
+
+        {deepLinkMiss && (
+          <div
+            className="mb-6 rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-text-secondary"
+            data-testid="deep-link-miss"
+          >
+            {DEEP_LINK_MISS}
+          </div>
+        )}
+      </div>
 
       {refreshError && (
         <div
@@ -1343,9 +1442,18 @@ function TransactionsPageContent() {
                               </div>
                             )}
                           </div>
-                          {/* Promote-to-recurring (L3.12). Hidden for transfer legs;
-                              shown as a static chip when the row is already recurring. */}
-                          {!editPartner && (
+                          {/* Promote-to-recurring (L3.12). Hidden for ANY linked
+                              row; static chip when the row is already recurring.
+
+                              TBD-295: `!editPartner` alone is not the gate.
+                              `editPartner` is only hydrated for a MUTUAL pair
+                              (startEdit's own TBD-268 gate), so it is null on a
+                              reconcile-matched row and the checkbox rendered
+                              there -- offering an action `promote_to_recurring`
+                              refuses. Gate on the RAW column, matching the
+                              server guard exactly. DESKTOP slot; the mobile
+                              twin below carries the same gate. */}
+                          {!editPartner && tx.linked_transaction_id === null && (
                             <div className="mt-3" data-testid={`edit-recurring-row-${tx.id}`}>
                               {tx.recurring_id !== null ? (
                                 <div className="flex flex-col gap-1">
@@ -1493,38 +1601,75 @@ function TransactionsPageContent() {
                                 ))}
                               </span>
                             )}
-                            {/* TBD-289: a linked-but-not-reciprocal row otherwise
-                                reads as an ordinary transaction with no hint that
-                                it is attached to another one — which is also why
-                                "Mark transfer" looked available. Quiet, neutral,
-                                and deliberately NON-interactive: what such a row
-                                should let a user *do* is a combined ruling with
-                                TBD-292/TBD-295, so this states the fact and
-                                offers no action or link target.
+                            {/* TBD-289 introduced this indicator deliberately
+                                NON-interactive, because what a matched row should
+                                let a user *do* was still an open ruling.
 
-                                The copy says only what the flag knows. Naming
-                                reconciliation here would be false on a
-                                self-linked, cross-org or chained row (see
-                                `isReconcileMatched` above).
+                                ⚠ TBD-295 IS that ruling, and it reverses this
+                                half: the badge now LINKS to the canonical twin.
+                                The TBD-289 fence that pinned "not a button, not a
+                                link" is rewritten in the same PR — a prior fence
+                                encoding the half of the problem its own ticket
+                                did not fix.
 
-                                `title` on a bare <span> is not an accessible
-                                name: most screen readers never announce it, it
-                                never appears on touch, and the span is not
-                                focusable so no keyboard path reaches it. The
-                                sr-only text carries the same sentence into the
-                                accessibility tree (PRODUCT.md WCAG 2.2 AA),
-                                matching MarkerChip in
-                                settings/organization/periods. */}
+                                Two constraints survive from TBD-289:
+                                * NO link on a self-linked row (`linked === id`):
+                                  the target is this row, so the link would be a
+                                  no-op that claims otherwise.
+                                * The copy never says "reconciliation". The flag
+                                  means "linked but not reciprocally", equally
+                                  true of a self-linked, cross-org or chained row
+                                  that reconciliation never touched.
+
+                                `title` on a bare element is not an accessible
+                                name, so the sr-only text carries the sentence
+                                into the accessibility tree (PRODUCT.md WCAG 2.2
+                                AA). An <a> is focusable, so the title now has a
+                                keyboard path too — but the sr-only text stays:
+                                it is what a screen reader actually announces. */}
                             {isReconcileMatched && (
-                              <span className="mt-0.5">
-                                <span
-                                  className={badgeNeutral}
-                                  data-testid={`matched-badge-${tx.id}`}
-                                  title="Linked to another transaction."
-                                >
-                                  Matched
-                                  <span className="sr-only">: linked to another transaction</span>
-                                </span>
+                              <span className="mt-0.5 inline-flex">
+                                {tx.linked_transaction_id === tx.id ? (
+                                  <span
+                                    className={badgeNeutral}
+                                    data-testid={`matched-badge-${tx.id}`}
+                                    title={MATCHED_BADGE_TITLE}
+                                  >
+                                    Matched
+                                    <span className="sr-only">: {MATCHED_BADGE_SR}</span>
+                                  </span>
+                                ) : (
+                                  /* TBD-289 shipped this badge NON-interactive,
+                                     so the touch-target floor did not apply to
+                                     it. Making it a link is what brings the
+                                     floor in — and the floor did not arrive
+                                     with it. Outer <a> = WCAG 2.5.8 hit area,
+                                     inner span = lean badge visual, the same
+                                     split the status pill in this row uses.
+                                     Putting min-h on the badge itself would
+                                     paint a 44px-tall grey block.
+
+                                     `lg:min-h-0` matches the Edit / Mark
+                                     transfer / Unlink controls in this SAME
+                                     row rather than the status pill: the pill
+                                     sits alone in a fixed cell where 44px is
+                                     free, while this badge stacks UNDER the
+                                     description and an unconditional floor
+                                     grows every matched row at every desktop
+                                     width. The mobile twin carries the floor
+                                     unconditionally. */
+                                  <Link
+                                    href={`/transactions?transaction_id=${tx.linked_transaction_id}`}
+                                    className="inline-flex min-h-[44px] items-center lg:min-h-0"
+                                    data-testid={`matched-badge-${tx.id}`}
+                                    title={MATCHED_BADGE_TITLE}
+                                  >
+                                    <span className={`${badgeNeutral} hover:text-text-primary`}>
+                                      Matched
+                                      <span className="sr-only">: {MATCHED_BADGE_SR}</span>
+                                    </span>
+                                  </Link>
+                                )}
                               </span>
                             )}
                           </span>
@@ -1727,9 +1872,11 @@ function TransactionsPageContent() {
                                 </div>
                               )}
                             </div>
-                            {/* Promote-to-recurring (L3.12) — mobile layout. Hidden on
-                                transfer legs; static chip when already recurring. */}
-                            {!editPartner && (
+                            {/* Promote-to-recurring (L3.12) — MOBILE layout. Same
+                                gate as the desktop slot above: hidden on ANY
+                                linked row, static chip when already recurring.
+                                TBD-295 -- the raw column, not `editPartner`. */}
+                            {!editPartner && tx.linked_transaction_id === null && (
                               <div data-testid={`edit-recurring-row-mobile-${tx.id}`}>
                                 {tx.recurring_id !== null ? (
                                   <div className="flex flex-col gap-1">
@@ -1891,21 +2038,42 @@ function TransactionsPageContent() {
                               >
                                 Settled {tx.settled_date ?? "—"}
                               </div>
-                              {/* TBD-289: mobile twin of the desktop matched
-                                  indicator. Quiet, non-interactive, no link
-                                  target. `title` is dead weight on touch, so the
+                              {/* TBD-295: mobile twin of the desktop matched
+                                  indicator, now a LINK to the canonical twin —
+                                  see the full note above the desktop slot,
+                                  including why a self-linked row keeps the inert
+                                  span. `title` is dead weight on touch, so the
                                   sr-only text is the only path the explanation
                                   has to a screen-reader user here. */}
                               {isReconcileMatched && (
                                 <div className="mt-1">
-                                  <span
-                                    className={badgeNeutral}
-                                    data-testid={`matched-badge-mobile-${tx.id}`}
-                                    title="Linked to another transaction."
-                                  >
-                                    Matched
-                                    <span className="sr-only">: linked to another transaction</span>
-                                  </span>
+                                  {tx.linked_transaction_id === tx.id ? (
+                                    <span
+                                      className={badgeNeutral}
+                                      data-testid={`matched-badge-mobile-${tx.id}`}
+                                      title={MATCHED_BADGE_TITLE}
+                                    >
+                                      Matched
+                                      <span className="sr-only">: {MATCHED_BADGE_SR}</span>
+                                    </span>
+                                  ) : (
+                                    /* Touch-target floor, unconditional here:
+                                       this renderer IS the touch surface. See
+                                       the desktop twin for why the split
+                                       (hit area outside, badge visual inside)
+                                       rather than min-h on the badge. */
+                                    <Link
+                                      href={`/transactions?transaction_id=${tx.linked_transaction_id}`}
+                                      className="inline-flex min-h-[44px] items-center"
+                                      data-testid={`matched-badge-mobile-${tx.id}`}
+                                      title={MATCHED_BADGE_TITLE}
+                                    >
+                                      <span className={`${badgeNeutral} hover:text-text-primary`}>
+                                        Matched
+                                        <span className="sr-only">: {MATCHED_BADGE_SR}</span>
+                                      </span>
+                                    </Link>
+                                  )}
                                 </div>
                               )}
                             </div>

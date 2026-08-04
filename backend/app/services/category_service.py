@@ -33,8 +33,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 import structlog
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.budget import Budget
 from app.models.category import Category, CategoryType
@@ -165,8 +166,24 @@ async def _count_incompatible_for_category(
 async def _has_transfer_leg_reference(
     db: AsyncSession, org_id: int, category_id: int,
 ) -> bool:
-    """Any transaction with this category that is part of a transfer pair
-    (``linked_transaction_id IS NOT NULL``) is a hard lock."""
+    """Any transaction with this category that is part of a REAL transfer
+    pair is a hard lock on narrowing the category away from ``BOTH``.
+
+    TBD-292: this used to count ``linked_transaction_id IS NOT NULL``, which
+    is not a transfer marker -- ``reconciliation_service._apply_match``
+    writes that column ONE-WAY on every reconcile match. One matched
+    duplicate therefore froze its category at ``BOTH`` forever, with the
+    message "referenced by a transfer pair", false on both counts.
+
+    Polarity is FAIL-CLOSED, matching
+    ``transaction_service._transfer_collapse_clause`` and NOT
+    ``transaction_filters.balance_contribution_filter``: the question here is
+    "are these two rows ONE transfer pair?", so a self-link (one row, not a
+    pair) and an unresolvable link are NOT pairs and do not lock. The
+    opposite polarity in the frozen balance filter is deliberate -- same
+    column, a different question. Do not harmonise them.
+    """
+    partner = aliased(Transaction)
     count = await db.scalar(
         select(func.count())
         .select_from(Transaction)
@@ -174,6 +191,14 @@ async def _has_transfer_leg_reference(
             Transaction.org_id == org_id,
             Transaction.category_id == category_id,
             Transaction.linked_transaction_id.is_not(None),
+            exists().where(
+                and_(
+                    partner.id == Transaction.linked_transaction_id,
+                    partner.linked_transaction_id == Transaction.id,
+                    partner.id != Transaction.id,
+                    partner.org_id == Transaction.org_id,
+                )
+            ),
         )
     ) or 0
     return count > 0

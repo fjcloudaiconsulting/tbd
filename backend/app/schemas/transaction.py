@@ -165,12 +165,28 @@ class PromoteToRecurringRequest(BaseModel):
     occurrence_count: Optional[int] = Field(default=None, gt=0, le=1200)
 
 
+class DeleteTransactionResponse(BaseModel):
+    """Result of a single delete.
+
+    TBD-294: ``demoted_ids`` lists rows that pointed AT the deleted row and
+    were marked REJECTED so the FK's ``ON DELETE SET NULL`` could not turn
+    them back into ordinary, balance-contributing transactions. REJECTED is
+    terminal and unreachable through ``TransactionUpdate``, so the demotion
+    is irreversible through the API -- it is reported, never silent.
+    """
+
+    deleted: bool = True
+    demoted_ids: list[int] = Field(default_factory=list)
+
+
 class BulkDeleteResponse(BaseModel):
     """Result of a bulk delete."""
 
     requested_count: int
     deleted_count: int
     skipped_ids: list[int]  # IDs that were requested but not found in this org
+    # TBD-294 -- see DeleteTransactionResponse.
+    demoted_ids: list[int] = Field(default_factory=list)
 
 
 class BulkUpdateRequest(BaseModel):

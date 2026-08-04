@@ -831,7 +831,10 @@ async def _reconcile_one(
 
 
 async def close_batch_if_complete(
-    db: AsyncSession, *, batch: ImportBatch
+    db: AsyncSession,
+    *,
+    batch: ImportBatch,
+    exclude_transaction_ids: set[int] | None = None,
 ) -> bool:
     """Flip ``batch.status`` to ``CLOSED`` and stamp ``closed_at`` when
     no row is in a pending state. Returns True iff the batch transitioned
@@ -843,6 +846,15 @@ async def close_batch_if_complete(
     column. A defensive SQL count is run only if the counter is zero --
     a belt-and-braces guard against future code paths that mutate
     ``reconciliation_state`` without going through ``_reconcile_one``.
+
+    ``exclude_transaction_ids`` exists for the delete paths (TBD-294).
+    ``transaction_service._demote_match_orphans`` runs BEFORE the caller's
+    ``db.delete()`` -- it has to, since the point is to move the
+    discriminator out of the column the FK is about to null -- so rows in the
+    delete set are still physically present when this recount runs. Without
+    the exclusion, a PENDING-state row inside that delete set makes the
+    belt-and-braces branch conclude "counter drift", write the counter back
+    up, and leave the batch OPEN with no surviving row able to ever move it.
     """
     if batch.status == ImportBatchStatus.CLOSED:
         return False
@@ -850,12 +862,13 @@ async def close_batch_if_complete(
         return False
 
     # Belt-and-braces re-check against the underlying rows.
-    pending = await db.scalar(
-        select(func.count(Transaction.id)).where(
-            Transaction.import_batch_id == batch.id,
-            Transaction.reconciliation_state.in_(list(PENDING_STATES)),
-        )
+    recount = select(func.count(Transaction.id)).where(
+        Transaction.import_batch_id == batch.id,
+        Transaction.reconciliation_state.in_(list(PENDING_STATES)),
     )
+    if exclude_transaction_ids:
+        recount = recount.where(Transaction.id.notin_(exclude_transaction_ids))
+    pending = await db.scalar(recount)
     if pending and pending > 0:
         # Counter drift -- fix it but stay open.
         batch.pending_count = int(pending)
