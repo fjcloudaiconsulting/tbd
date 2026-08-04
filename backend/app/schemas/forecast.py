@@ -39,6 +39,21 @@ class LoanPaymentLine(BaseModel):
     date: datetime.date
 
 
+class RecurringLine(BaseModel):
+    """One PROJECTED (not yet materialised) recurring occurrence on the
+    per-account forecast line (TBD-198).
+
+    ``amount`` is SIGNED — income positive, expense negative — unlike
+    ``CcPaymentLine`` / ``LoanPaymentLine``, which are always outflows and
+    carry a magnitude. ``date`` is the occurrence's own due date; when that
+    date is behind the clock the delta is booked on ``series_start`` instead
+    (see ``_add_day_delta``).
+    """
+
+    amount: Decimal
+    date: datetime.date
+
+
 class DailyBalancePoint(BaseModel):
     """One END-OF-DAY projected balance (TBD-198).
 
@@ -81,6 +96,7 @@ class AccountBalanceForecastRow(BaseModel):
     expected_month_end_balance: Decimal
     cc_payments: list[CcPaymentLine] = []
     loan_payments: list[LoanPaymentLine] = []
+    recurring_lines: list[RecurringLine] = []
     # TBD-198. Both live on the ROW, never on AccountBalanceForecastTotal:
     # each account has exactly one currency, so a per-account series never
     # sums anything, and `totals` is the one place a cross-currency sum could
@@ -91,6 +107,12 @@ class AccountBalanceForecastRow(BaseModel):
 
 class AccountBalanceForecastResponse(BaseModel):
     period_start: datetime.date
+    # TBD-198. The first day of `daily_balances`, i.e. `max(period_start,
+    # today)` clamped to `period_end`. NOT redundant with `period_start`: every
+    # delta dated before it is FLOORED onto it, so it is the only thing that
+    # tells a client whether day 0 is one day's activity or a pile of re-booked
+    # overdue obligations.
+    series_start: datetime.date
     period_end: datetime.date
     totals: list[AccountBalanceForecastTotal]
     accounts: list[AccountBalanceForecastRow]

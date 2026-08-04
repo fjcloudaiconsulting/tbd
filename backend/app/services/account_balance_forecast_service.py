@@ -96,12 +96,19 @@ async def compute_account_balance_forecast(
 
         {
           "period_start": "YYYY-MM-DD",
+          "series_start": "YYYY-MM-DD",
           "period_end": "YYYY-MM-DD",
           "totals": [{currency, balance, pending_delta, expected_month_end_balance}],
           "accounts": [{account_id, account_name, currency, is_default,
                         account_type_slug, balance, pending_delta,
                         expected_month_end_balance, daily_balances, risk_days}],
         }
+
+    ``series_start`` is ``daily_balances[0].date`` — the day the walk seeds on,
+    which is NOT ``period_start`` once the clock has moved into the period. It
+    is emitted because ``_add_day_delta`` floors every overdue delta onto that
+    day: without it the client cannot tell "day 0 is 200 lower than yesterday"
+    from "day 0 is where three slipped obligations were re-booked".
 
     ``daily_balances`` / ``risk_days`` live on the ACCOUNT rows only. Nothing
     risk-shaped goes on ``totals``: each account has exactly one currency, so a
@@ -207,9 +214,13 @@ async def compute_account_balance_forecast(
     # on each resolved due date the source asset drops and the CC liability
     # moves toward zero. Synthesized HERE (per-account balances include transfer
     # legs), never in forecast_service (reportable aggregate excludes them).
-    # Totals are NOT adjusted (they derive from balance+pending); same-currency
-    # conservation keeps them correct, and cross-currency is skipped so the
-    # per-currency rollup never desyncs.
+    # The synthesis is CONSERVING within a currency (the source drops by exactly
+    # what the liability gains), so it cancels out of the per-currency
+    # ``expected`` total; cross-currency pairs are skipped so the rollup never
+    # desyncs. (Since TBD-198 that total is Σ(rows) rather than
+    # ``balance + pending`` — see ``bucket["expected"]`` below — so the
+    # cancellation is now a property of the numbers rather than of the
+    # expression.)
     accounts_by_id = {acct.id: (acct, slug) for acct, slug in rows}
     cc_accounts = [
         acct for acct, slug in rows
@@ -217,7 +228,6 @@ async def compute_account_balance_forecast(
         and acct.close_day is not None
         and acct.payment_source_account_id is not None
     ]
-    synth_delta_by_account: dict[int, Decimal] = {}
     cc_payments_by_account: dict[int, list[dict]] = {}
 
     if cc_accounts:
@@ -270,8 +280,6 @@ async def compute_account_balance_forecast(
                 per_cycle_amounts=per_cycle_amounts,
             )
             for pay_date, outflow in payments:
-                synth_delta_by_account[source.id] = synth_delta_by_account.get(source.id, Decimal("0")) - outflow
-                synth_delta_by_account[cc.id] = synth_delta_by_account.get(cc.id, Decimal("0")) + outflow
                 _add_day_delta(day_deltas, source.id, pay_date, -outflow, walk_start)
                 _add_day_delta(day_deltas, cc.id, pay_date, outflow, walk_start)
                 cc_payments_by_account.setdefault(cc.id, []).append(
@@ -279,9 +287,9 @@ async def compute_account_balance_forecast(
 
     # ── Loan projected-payment synthesis (Slice 2) ────────────────────────────
     # Same conserving shape as the CC synthesis above (source drops, loan moves
-    # toward zero on the scheduled payment date), accumulated into the SAME
-    # synth_delta_by_account map so a source that funds both a CC and a loan
-    # keeps both deltas. Design A (period-skip): outstanding uses the CURRENT
+    # toward zero on the scheduled payment date), booked into the SAME
+    # ``day_deltas`` map so a source that funds both a CC and a loan keeps both
+    # deltas. Design A (period-skip): outstanding uses the CURRENT
     # balance and we SKIP the period when a loan payment-in leg is already
     # accounted for. See loan_forecast_service for the O2 rationale.
     loan_accounts = [
@@ -340,8 +348,6 @@ async def compute_account_balance_forecast(
                 account_id=loan.id,
             )
             for pay_date, applied in payments:
-                synth_delta_by_account[source.id] = synth_delta_by_account.get(source.id, Decimal("0")) - applied
-                synth_delta_by_account[loan.id] = synth_delta_by_account.get(loan.id, Decimal("0")) + applied
                 _add_day_delta(day_deltas, source.id, pay_date, -applied, walk_start)
                 _add_day_delta(day_deltas, loan.id, pay_date, applied, walk_start)
                 loan_payments_by_account.setdefault(loan.id, []).append(
@@ -391,9 +397,25 @@ async def compute_account_balance_forecast(
         )
         materialised = {(rid, _as_date(d)) for rid, d in materialised_rows.all()}
 
-    # No `recurring_by_account` rollup on purpose: the ONLY consumer of a
-    # projected occurrence is the day map, and a parallel per-account total
-    # would be a second place the same number lives.
+    # No `recurring_by_account` TOTAL on purpose: a per-account sum kept beside
+    # the day map is a second place the same number lives. What IS emitted is
+    # the LINES themselves — one dict per projected occurrence, appended in the
+    # very same statement pair that books the day delta, so the two cannot
+    # drift apart without an edit that deletes one of two adjacent lines.
+    #
+    # They are emitted because ``expected_month_end_balance`` is Σ(all delta
+    # sources) and the card renders a sub-line for the CC and loan halves of
+    # that sum but had none for this half: the user saw a month-end number
+    # 350 below the balance with nothing on screen naming the 350. That is the
+    # exact thing PRODUCT.md's line-item-visibility principle forbids.
+    #
+    # ⚠ The line carries the OCCURRENCE date ``d``, not the day the delta is
+    # booked on. ``_add_day_delta`` floors an overdue occurrence onto
+    # ``walk_start``, so for a slipped occurrence the two differ. The
+    # occurrence date is the honest answer to "what is this line?" (and matches
+    # the CC/loan lines, which also carry their own resolved due date); the
+    # floor is made visible instead by ``series_start`` on the response.
+    recurring_lines_by_account: dict[int, list[dict]] = {}
     for r in recurring_items:
         if r.account_id is None or r.account_id not in accounts_by_id:
             continue  # template on an inactive/unknown account: no row to move
@@ -406,6 +428,9 @@ async def compute_account_balance_forecast(
             amount = Decimal(str(r.amount))
             delta = amount if r.type == "income" else -amount
             _add_day_delta(day_deltas, r.account_id, d, delta, walk_start)
+            recurring_lines_by_account.setdefault(r.account_id, []).append(
+                {"amount": _q(delta), "date": d.isoformat()}
+            )
 
     # ── Day-0 seed correction: future-dated SETTLED rows (TBD-198) ───────────
     # ⚠ ``accounts.balance`` is DATE-AGNOSTIC. It is written at transaction-
@@ -490,6 +515,13 @@ async def compute_account_balance_forecast(
                 "expected_month_end_balance": _q(expected),
                 "cc_payments": cc_payments_by_account.get(account.id, []),
                 "loan_payments": loan_payments_by_account.get(account.id, []),
+                # Sorted by date: the templates are iterated in query order, so
+                # a monthly and a weekly series on the same account would
+                # otherwise interleave arbitrarily on the card.
+                "recurring_lines": sorted(
+                    recurring_lines_by_account.get(account.id, []),
+                    key=lambda line: line["date"],
+                ),
                 "daily_balances": [
                     {"date": d.isoformat(), "balance": _q(b)} for d, b in daily_balances
                 ],
@@ -528,6 +560,7 @@ async def compute_account_balance_forecast(
 
     return {
         "period_start": p_start.isoformat(),
+        "series_start": walk_start.isoformat(),
         "period_end": window_end.isoformat(),
         "totals": totals_payload,
         "accounts": accounts_payload,
@@ -573,8 +606,19 @@ def _add_day_delta(
     frontier lags, a projected CC/loan payment whose due date has passed
     unpaid. Dropping those would make the series' final value disagree with the
     month-end total; booking them on day 0 keeps the total exact and is honest
-    about what day 0 means (end of today, obligations included). It cannot
-    manufacture a false warning: a run containing day 0 is suppressed by R3/R4.
+    about what day 0 means (end of today, obligations included).
+
+    ⚠ **What the floor does and does not guarantee.** It cannot manufacture a
+    warning ON day 0 or before it: a run that contains day 0 starts at or
+    before ``today`` and R3 drops it. It CAN change whether a LATER day is
+    warned, and that is not a bug: a slipped 1,200 outflow dated yesterday is
+    dropped entirely when unfloored, and lowers every day of the series from
+    day 0 onward when floored — so a future day that would have stayed just
+    above zero can now cross it. The obligation is real and outstanding, so the
+    floored answer is the correct one; the earlier claim that the floor "cannot
+    manufacture a false warning" overstated it by ignoring exactly this case.
+    ``series_start`` on the response is what lets a client see that day 0
+    carries re-booked overdue deltas rather than one day's activity.
     """
     if on < walk_start:
         on = walk_start
@@ -633,8 +677,25 @@ def _risk_runs(
       implementation that reports only the global minimum passes a fixture with
       a single run.
 
-    The comparison is STRICT (``< 0``). ``0.00`` is not overdrawn; ``-0.01``
-    is. ``<=`` would flag every account that lands exactly on zero.
+      ⚠ **R4 is defined for the CURRENT period only, and only the current
+      period renders it.** With ``today < p_start`` (a FUTURE period, reachable
+      at the API via ``?period_start=<future>``) the walk seeds on *today's*
+      balance and nothing between today and ``p_start`` is modelled, so an
+      account at −50 today IS reported as a future run — the shape R4 exists to
+      suppress. This is API-contract-only: ``AccountMonthEndForecast`` renders
+      a neutral "current period only" state for any non-current period, so no
+      user ever sees it. It is recorded rather than suppressed because
+      suppressing ``risk_days`` for ``today < p_start`` would delete the ONLY
+      clock under which the ``LIABILITY_SLUGS`` deny-list is discriminable
+      (F6): with ``today == p_start`` every liability run starts on day 0 and
+      R3 suppresses it anyway, which is how F6's first draft came out green
+      against its own mutant.
+
+    The comparison is STRICT (``< 0``) and is made on the QUANTIZED balance,
+    the same 2dp value ``daily_balances`` puts on the wire. ``0.00`` is not
+    overdrawn; ``-0.01`` is. ``<=`` would flag every account that lands exactly
+    on zero, and comparing the raw running total would flag a
+    ``-0.0001`` — a run whose every rendered figure reads ``-0.00``.
     """
     if type_slug in LIABILITY_SLUGS:
         # A negative balance is the NORMAL state of a card or a loan; warning
@@ -644,7 +705,13 @@ def _risk_runs(
 
     runs: list[dict] = []
     current: dict | None = None
-    for day, balance in series:
+    for day, raw in series:
+        # Quantize FIRST: `daily_balances` is `_q`'d on the wire, so a raw
+        # -0.0001 would open a run every one of whose rendered figures is
+        # "-0.00". Unreachable today (every delta source is a 2dp money
+        # column) and one percentage-based payment strategy away from being
+        # reachable.
+        balance = raw.quantize(_TWOPLACES)
         if balance < LOW_BALANCE_THRESHOLD:
             if current is None:
                 current = {
