@@ -728,10 +728,15 @@ function TransactionsPageContent() {
       setError("Pick a next due date");
       return;
     }
-    if (wantsPromote && editRecNextDue < todayISO()) {
-      setError("Date must be today or later");
-      return;
-    }
+    // ⚠ TBD-301: there is deliberately NO "today or later" check here, and no
+    // `min` on either next-due-date input. The server's lower bound is the
+    // start of the org's CURRENT billing cycle (TBD-283), not `today`, so a
+    // client rule keyed on `today` refuses dates the API accepts: every org
+    // whose cycle does not begin today has a legal window this page used to
+    // reject. The bound depends on `billing_cycle_day` and is not derivable
+    // here, so the client defers. The server's 400 names both the boundary
+    // and the remedy, and reaches the user through the partial-success
+    // banner in the promote catch below.
     // TBD-275. Blank is valid (open-ended); anything else must be a whole
     // number >= 1. Checked BEFORE the PUT, alongside the two guards above, so a
     // bad count never leaves the user with a committed edit and a
@@ -818,9 +823,20 @@ function TransactionsPageContent() {
             `Transaction updated, but promote-to-recurring failed: ${reason}. The transaction still reflects your edits.`,
           );
           // Exit edit mode (the edit DID persist) and refresh so the row
-          // shows the saved values; the error banner stays visible.
+          // shows the saved values; the error banner stays visible
+          // (loadTransactions clears `notice`, never `error`).
           closeEdit();
-          await loadTransactions(page);
+          // The refresh must not be allowed to overwrite the message above.
+          // Unguarded it propagates to the outer catch, which replaces
+          // "your edit saved, the repeat did not" with a bare refetch error
+          // -- so a second, lesser failure (a blip, a 401 mid-refresh) would
+          // leave the user unable to tell what persisted. A stale row is
+          // recoverable; a lost partial-success message is not.
+          try {
+            await loadTransactions(page);
+          } catch {
+            // Deliberately swallowed. See above.
+          }
           return;
         }
       }
@@ -1502,10 +1518,14 @@ function TransactionsPageContent() {
                                         <option value="quarterly">Quarterly</option>
                                         <option value="yearly">Yearly</option>
                                       </select>
+                                      {/* TBD-301: no `min`. See handleSaveEdit
+                                          -- the frontier bound is the org's
+                                          cycle start, not today, so a
+                                          today-floored picker greys out legal
+                                          dates. Mirrored in the mobile card. */}
                                       <input
                                         aria-label="Next due date"
                                         type="date"
-                                        min={todayISO()}
                                         value={editRecNextDue}
                                         onChange={(e) => setEditRecNextDue(e.target.value)}
                                         className={`text-[11px] !w-40 ${input}`}
@@ -1931,11 +1951,12 @@ function TransactionsPageContent() {
                                         </div>
                                         <div>
                                           <label htmlFor={`edit-rec-nextdue-mobile-${tx.id}`} className={label}>Next due date</label>
+                                          {/* TBD-301: no `min`, matching the
+                                              desktop row. */}
                                           <input
                                             id={`edit-rec-nextdue-mobile-${tx.id}`}
                                             aria-label="Next due date"
                                             type="date"
-                                            min={todayISO()}
                                             value={editRecNextDue}
                                             onChange={(e) => setEditRecNextDue(e.target.value)}
                                             className={`text-sm ${input}`}
