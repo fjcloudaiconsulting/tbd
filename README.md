@@ -12,7 +12,8 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 - **Hierarchical categories**, master categories for budgets, subcategories for tagging
 - **Budgets** per category per billing period, with inter-budget transfers
 - **Forecast plans**, editable income / expense plans with actual vs planned tracking
-- **Recurring transactions**, templates that auto-generate future transactions
+- **Low-balance warnings**, a per-account daily projection that flags the days an account is expected to go below zero, before it happens
+- **Recurring transactions**, templates that auto-generate future transactions, with an optional instalment count so a fixed-length plan stops on its own
 - **Reports**, a custom report builder over transactions, accounts, recurring, and net-worth-over-time, with charts, Sankey flows, and CSV export
 - **Bank import**, upload CSV / OFX exports, preview with duplicate detection, map categories
 - **Notifications**, in-app and email alerts (billing periods, credit-card statement close, and more)
