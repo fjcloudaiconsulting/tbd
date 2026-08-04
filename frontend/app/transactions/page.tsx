@@ -823,9 +823,20 @@ function TransactionsPageContent() {
             `Transaction updated, but promote-to-recurring failed: ${reason}. The transaction still reflects your edits.`,
           );
           // Exit edit mode (the edit DID persist) and refresh so the row
-          // shows the saved values; the error banner stays visible.
+          // shows the saved values; the error banner stays visible
+          // (loadTransactions clears `notice`, never `error`).
           closeEdit();
-          await loadTransactions(page);
+          // The refresh must not be allowed to overwrite the message above.
+          // Unguarded it propagates to the outer catch, which replaces
+          // "your edit saved, the repeat did not" with a bare refetch error
+          // -- so a second, lesser failure (a blip, a 401 mid-refresh) would
+          // leave the user unable to tell what persisted. A stale row is
+          // recoverable; a lost partial-success message is not.
+          try {
+            await loadTransactions(page);
+          } catch {
+            // Deliberately swallowed. See above.
+          }
           return;
         }
       }

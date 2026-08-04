@@ -995,6 +995,13 @@ describe("TransactionForm", () => {
     // Same helper, same assertions shape, a date the clamp never touched.
     // If `promoteNextDue` were wired to something that cannot vary, this and
     // the fence above could not both hold.
+    //
+    // ⚠ The 2099-01-31 -> 2099-02-28 pair itself is NOT news here: "sends the
+    // NEXT occurrence as next_due_date" below asserts exactly it, through a
+    // different helper, for a different reason (the month-end clamp). What
+    // this test adds is only the variance -- the same helper returning a
+    // DIFFERENT value for a different input than it did one test above. Read
+    // it as an anti-constant control, not as coverage of the clamp.
     const sent = await promoteNextDue("2099-01-31", "monthly");
     expect(sent).toBe("2099-02-28");
     expect(sent).not.toBe(todayISO());
@@ -1052,8 +1059,12 @@ describe("TransactionForm", () => {
       expect(onWarning).toHaveBeenCalledTimes(1);
     });
     const warning = String(onWarning.mock.calls[0][0]);
-    // The server's own sentence, verbatim, boundary date included.
+    // The server's own sentence, verbatim.
     expect(warning).toContain(SERVER_MSG);
+    // ⚠ Strictly implied by the line above -- "2026-08-15" is a substring of
+    // SERVER_MSG, so this cannot fail on its own. Kept only to name, in
+    // isolation, the one token the client provably cannot compute: the
+    // org-relative cycle start. It is documentation, not a second check.
     expect(warning).toContain("2026-08-15");
     // And it is unambiguous that the transaction itself is on disk.
     expect(warning).toMatch(/Transaction saved/);

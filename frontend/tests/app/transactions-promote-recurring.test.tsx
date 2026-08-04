@@ -373,6 +373,63 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     });
   });
 
+  it("a failing refresh does NOT overwrite the partial-success banner", async () => {
+    // ⭐ FENCE (TBD-301). The promote-failure path is newly reachable: this
+    // change removed the client-side clamp that used to guarantee the server
+    // could not refuse. Two failures land together here -- the promote is
+    // refused, and the refresh that follows it fails too -- and the SECOND
+    // one used to win, because it propagated to handleSaveEdit's outer catch
+    // and replaced the message with its own. The user was then shown a bare
+    // refetch error, with no way to learn that the edit itself had persisted.
+    const tx = makeTx({ id: 76, description: "Double fail", recurring_id: null });
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    let listGets = 0;
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
+      if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
+      if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
+      if (url === "/api/v1/transactions/76" && method === "PUT") {
+        return { ...tx, description: "Double fail edited" } as never;
+      }
+      if (url === "/api/v1/transactions/76/promote-to-recurring" && method === "POST") {
+        throw new Error("Next due date cannot be earlier than 2026-08-15");
+      }
+      if (url.startsWith("/api/v1/transactions") && method === "GET") {
+        listGets += 1;
+        // The mount fetch succeeds; the post-promote refresh does not.
+        if (listGets > 1) throw new Error("session expired mid-refresh");
+        return { items: [tx], total: 1, limit: 25, offset: 0 } as never;
+      }
+      return null as never;
+    });
+
+    renderWithSWR(<TransactionsPage />);
+    await waitForStableTxList();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
+    fireEvent.click(screen.getAllByLabelText("Make recurring")[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /^Save$/i })[0]);
+
+    // The refresh really was attempted and really did fail -- without this
+    // the test would pass on a build that never refetches at all.
+    await waitFor(() => {
+      expect(listGets).toBeGreaterThan(1);
+    });
+
+    // ⭐ The surviving message is still the one that says what persisted, and
+    // it still carries the SERVER's reason rather than the refresh's.
+    expect(
+      screen.getByText(/Transaction updated, but promote-to-recurring failed/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Next due date cannot be earlier than 2026-08-15/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/session expired mid-refresh/i),
+    ).not.toBeInTheDocument();
+  });
+
   // ── TBD-301: the client no longer rules on the frontier date ─────────────
   //
   // The lower bound on `next_due_date` is the start of the org's CURRENT
@@ -389,12 +446,24 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
    * maintained by hand.
    *
    * ⚠ Do NOT reach for them positionally. `getAllByLabelText` returns matches
-   * grouped by MATCHING STRATEGY, not in document order: the mobile controls
-   * carry a real `<label htmlFor>` and land in the label-text group, while the
-   * desktop controls are labelled only by `aria-label` and land in a later
-   * group. So index 0 is the MOBILE control and index 1 is the DESKTOP one,
-   * the opposite of source order. Scope by container id instead, which cannot
-   * drift when a `<label>` is added or removed.
+   * grouped by MATCHING STRATEGY, not in document order (verified against
+   * @testing-library/dom 10.4.1, `dist/queries/label-text.js`): elements with
+   * a real `<label>` or `aria-labelledby` are collected first, in document
+   * order, then `aria-label` matches are CONCATENATED as a trailing group and
+   * the whole thing is de-duplicated.
+   *
+   * Which index means which tree therefore depends ON THE CONTROL, and it is
+   * not uniform across this block:
+   *
+   *   - "Next due date" and "Number of payments": index 0 is MOBILE, index 1
+   *     is DESKTOP -- the opposite of source order. Mobile has a real
+   *     `<label htmlFor>`; desktop carries only `aria-label`.
+   *   - "Make recurring": index 0 is DESKTOP, index 1 is MOBILE. BOTH
+   *     checkboxes sit inside an implicit `<label>` wrapper, so both land in
+   *     the first group and source order survives.
+   *
+   * Scope by container id instead, which cannot drift when a `<label>` is
+   * added or removed on either side.
    */
   function treeContainer(id: number, mobile: boolean): HTMLElement {
     return screen.getByTestId(
@@ -490,11 +559,23 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     const yesterday = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     expect(yesterday).not.toBe(todayISO());
 
-    // Run the SAME input through two different orgs. The client no longer
-    // derives the frontier bound, so `billing_cycle_day` must make no
-    // difference whatsoever -- a reintroduced client-side rule keyed on the
-    // cycle day is exactly what this pair catches, and neither run alone
-    // would catch it.
+    // Run the SAME input through two different orgs.
+    //
+    // ⚠ Be honest about what this half can and cannot fail. TODAY it is
+    // TAUTOLOGICAL: neither `app/transactions/page.tsx` nor
+    // `components/floating/TransactionForm.tsx` reads `billing_cycle_day` at
+    // all (their only mentions of it are comments), so the two iterations run
+    // byte-identical code and the second can only agree with the first. It
+    // cannot go RED against any wrong implementation that exists now.
+    //
+    // That is still a legitimate purpose -- it is a REGRESSION detector, and
+    // the thing it detects is specific: someone reintroducing a client-side
+    // rule keyed on the cycle day, which is the exact shape TBD-283 put out
+    // of the client's reach. Neither run alone would catch that.
+    //
+    // What it is NOT is the definition of done. The `expect(sent)` assertion
+    // below, and the two verbatim-wire fences above it, are what establish
+    // that the user's date reaches the API unmodified.
     const sent: string[] = [];
     for (const [i, cycleDay] of [1, 17].entries()) {
       vi.mocked(useAuth).mockReturnValue({
@@ -554,7 +635,16 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     // it greys out every date before today in the picker, which is the same
     // wrong rule wearing a different hat. Asserting the attribute is absent
     // is the only way to fence it.
-    const tx = makeTx({ id: 93, description: "Min check", recurring_id: null });
+    // `status: "pending"` is load-bearing, not decoration: both settled-date
+    // inputs are gated on `editStatus === "pending"`, and `startEdit` seeds
+    // that from the row. With `makeTx`'s default `"settled"` the control at
+    // the bottom of this test matched zero elements and asserted nothing.
+    const tx = makeTx({
+      id: 93,
+      description: "Min check",
+      recurring_id: null,
+      status: "pending",
+    });
     setupApiFetch([tx]);
     renderWithSWR(<TransactionsPage />);
     await waitForStableTxList();
@@ -572,11 +662,14 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
 
     // Control: the transaction-date -> settled-date `min` relationship is a
     // real domain rule and is NOT what this ticket removes. Its presence
-    // proves this assertion can distinguish "no min attribute" from "this
-    // query never finds a min attribute on anything".
-    const settled = screen.queryAllByLabelText(/Expected settlement date/i);
-    if (settled.length > 0) {
-      expect(settled[0].getAttribute("min")).not.toBeNull();
+    // proves the assertions above can distinguish "no min attribute" from
+    // "this query never finds a min attribute on anything". Unconditional on
+    // purpose -- guarded behind `if (settled.length > 0)` it was dead code,
+    // which is precisely the failure a control exists to rule out.
+    const settled = screen.getAllByLabelText(/Expected settlement date/i);
+    expect(settled).toHaveLength(2);
+    for (const [i, el] of settled.entries()) {
+      expect(el.getAttribute("min"), `settled-date input ${i}`).not.toBeNull();
     }
   });
 
