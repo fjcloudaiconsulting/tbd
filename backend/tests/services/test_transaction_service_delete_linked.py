@@ -107,7 +107,7 @@ async def test_bulk_delete_transactions_on_transfer_pair_no_circular_dependency(
     per-row FK null-out were removed."""
     org, src, dst, expense, income = await _seed_pair(db_session)
 
-    deleted, skipped = await transaction_service.bulk_delete_transactions(
+    deleted, skipped, _demoted = await transaction_service.bulk_delete_transactions(
         db_session, org.id, [expense.id, income.id]
     )
 

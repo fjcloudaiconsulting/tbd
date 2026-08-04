@@ -343,7 +343,14 @@ async def test_promote_to_recurring_rejects_transfer_leg(db_session):
         await transaction_service.promote_to_recurring(
             db_session, seed["org_id"], expense_leg.id, body
         )
-    assert "transfer" in exc.value.detail.lower()
+    # TBD-295: the refusal is unchanged, the WORDS changed. One guard serves
+    # every linked row -- transfer leg, reconcile match, self-link, chain hop --
+    # so it may no longer say "transfer leg", which was a lie on three of those
+    # four. It now says only what the guard actually knows: this row is linked.
+    detail = exc.value.detail.lower()
+    assert "linked" in detail
+    assert "another transaction" in detail
+    assert "transfer leg" not in detail
 
 
 # ── 400: frontier lower bound (TBD-283) ────────────────────────────────────

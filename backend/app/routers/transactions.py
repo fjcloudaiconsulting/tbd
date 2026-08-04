@@ -27,6 +27,7 @@ from app.schemas.transaction import (
     BulkUpdateResponse,
     BulkUpdateSkip,
     ConvertToTransferRequest,
+    DeleteTransactionResponse,
     PromoteToRecurringRequest,
     TransactionCreate,
     TransactionPairRequest,
@@ -492,13 +493,25 @@ async def promote_transaction_to_recurring(
     return svc.to_response(tx)
 
 
-@router.delete("/{transaction_id}", status_code=204)
+@router.delete("/{transaction_id}", response_model=DeleteTransactionResponse)
 async def delete_transaction(
     transaction_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await svc.delete_transaction(db, current_user.org_id, transaction_id)
+    """Delete one transaction.
+
+    TBD-294: returns a body (was 204) because the delete can have a
+    user-visible side effect. Any row that pointed AT this one and was
+    excluded from balances only by that link is marked REJECTED, so the FK's
+    ``ON DELETE SET NULL`` cannot silently turn it back into an ordinary
+    transaction. That demotion is irreversible through the API, so the
+    response names the rows it happened to.
+    """
+    demoted_ids = await svc.delete_transaction(
+        db, current_user.org_id, transaction_id
+    )
+    return DeleteTransactionResponse(deleted=True, demoted_ids=demoted_ids)
 
 
 @router.post("/bulk-delete", response_model=BulkDeleteResponse)
@@ -513,13 +526,14 @@ async def bulk_delete_transactions(
     Cap: 500 IDs per request (enforced by Pydantic).
     """
     unique_ids = list(dict.fromkeys(body.ids))
-    deleted_count, skipped_ids = await svc.bulk_delete_transactions(
+    deleted_count, skipped_ids, demoted_ids = await svc.bulk_delete_transactions(
         db, current_user.org_id, unique_ids
     )
     return BulkDeleteResponse(
         requested_count=len(unique_ids),
         deleted_count=deleted_count,
         skipped_ids=skipped_ids,
+        demoted_ids=demoted_ids,
     )
 
 
