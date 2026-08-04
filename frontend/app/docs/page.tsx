@@ -283,9 +283,13 @@ export default async function DocsPage() {
               verdict that anchors on what has actually settled, not
               just what is projected. Below the verdict, a Forecast
               card shows your expected month-end balance per account
-              (current balance plus pending items in the period), and
-              a Forecast by Category card highlights how planned and
-              actual compare for your top expense categories.
+              (current balance plus everything still expected in the
+              period: pending items, projected card and loan payments,
+              and upcoming recurring activity), and a Forecast by
+              Category card highlights how planned and actual compare
+              for your top expense categories. Accounts the forecast
+              expects to drop below zero on a future day are flagged
+              there with a Low balance warning naming the dates.
             </p>
             <p>
               The Dashboard intentionally stays light on technical
