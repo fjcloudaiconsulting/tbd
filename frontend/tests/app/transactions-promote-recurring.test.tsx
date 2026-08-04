@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
@@ -370,6 +370,174 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     await waitFor(() => {
       expect(screen.queryAllByRole("button", { name: /^Save$/i }).length).toBe(0);
     });
+  });
+
+  // ── TBD-301: the client no longer rules on the frontier date ─────────────
+  //
+  // The lower bound on `next_due_date` is the start of the org's CURRENT
+  // billing cycle (TBD-283), not `today`. For any org whose cycle does not
+  // begin today there is a legal window BEFORE today. This page used to
+  // refuse that window twice over: a JS guard in the save handler, and a
+  // `min={todayISO()}` on the date input in BOTH render trees. Both were
+  // stricter than the API, so both are gone; the server's 400 names the
+  // real boundary and reaches the user through the existing
+  // partial-success path.
+
+  /**
+   * The promote block renders TWICE, once per layout, and the two copies are
+   * maintained by hand.
+   *
+   * ⚠ Do NOT reach for them positionally. `getAllByLabelText` returns matches
+   * grouped by MATCHING STRATEGY, not in document order: the mobile controls
+   * carry a real `<label htmlFor>` and land in the label-text group, while the
+   * desktop controls are labelled only by `aria-label` and land in a later
+   * group. So index 0 is the MOBILE control and index 1 is the DESKTOP one,
+   * the opposite of source order. Scope by container id instead, which cannot
+   * drift when a `<label>` is added or removed.
+   */
+  function treeContainer(id: number, mobile: boolean): HTMLElement {
+    return screen.getByTestId(
+      mobile ? `edit-recurring-row-mobile-${id}` : `edit-recurring-row-${id}`,
+    );
+  }
+
+  /** Open the edit row for `id` in the desktop (`mobile:false`) or mobile
+   *  tree, tick "Make recurring", set the next-due date to `nextDue`, Save,
+   *  and return the promote body (null if the promote never fired). */
+  async function promoteWithNextDue(
+    id: number,
+    nextDue: string,
+    { mobile = false }: { mobile?: boolean } = {},
+  ): Promise<Record<string, unknown> | null> {
+    const tx = makeTx({ id, description: "Backdated", recurring_id: null });
+    setupApiFetch([tx], {
+      [`PUT /api/v1/transactions/${id}`]: tx,
+      [`POST /api/v1/transactions/${id}/promote-to-recurring`]: {
+        ...tx,
+        recurring_id: 999,
+      },
+    });
+    renderWithSWR(<TransactionsPage />);
+    await waitForStableTxList();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
+
+    await screen.findAllByLabelText("Make recurring");
+    const tree = within(treeContainer(id, mobile));
+    fireEvent.click(tree.getByLabelText("Make recurring"));
+
+    fireEvent.change(tree.getByLabelText("Next due date"), {
+      target: { value: nextDue },
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Save$/i })[0]);
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    await waitFor(() => {
+      expect(
+        apiFetchMock.mock.calls.some(
+          (c) => c[0] === `/api/v1/transactions/${id}`,
+        ),
+      ).toBe(true);
+    });
+    const promoteCall = apiFetchMock.mock.calls.find(
+      (c) =>
+        c[0] === `/api/v1/transactions/${id}/promote-to-recurring` &&
+        (c[1] as RequestInit | undefined)?.method === "POST",
+    );
+    if (!promoteCall) return null;
+    return JSON.parse(
+      (promoteCall[1] as RequestInit).body as string,
+    ) as Record<string, unknown>;
+  }
+
+  it("does NOT refuse a next_due_date before today, and sends it verbatim (DESKTOP)", async () => {
+    // ⭐ FENCE (TBD-301). RED against the `editRecNextDue < todayISO()` guard,
+    // which returned early with "Date must be today or later" and never
+    // issued the PUT at all.
+    const body = await promoteWithNextDue(90, "2020-03-09");
+    expect(body).not.toBeNull();
+    expect(body!.next_due_date).toBe("2020-03-09");
+    expect(
+      screen.queryByText(/Date must be today or later/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does NOT refuse a next_due_date before today, and sends it verbatim (MOBILE)", async () => {
+    // ⭐ FENCE. The date input is hand-maintained in two render trees; the
+    // save handler is shared. Both halves must agree, and this repo has
+    // shipped a fix to one tree and not the other before.
+    const body = await promoteWithNextDue(91, "2020-03-09", { mobile: true });
+    expect(body).not.toBeNull();
+    expect(body!.next_due_date).toBe("2020-03-09");
+    expect(
+      screen.queryByText(/Date must be today or later/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("CONTROL: the blank-date guard still refuses and still blocks the PUT", async () => {
+    // The two fences above assert an absence, which is the shape that most
+    // easily passes for the wrong reason. This is the same setup driven the
+    // other way: a DIFFERENT client-side rule on the SAME field still fires
+    // and still stops the write, proving the harness can observe a
+    // client-side refusal at all. If this went silent too, the fences above
+    // would be measuring a broken save path rather than a removed date rule.
+    const tx = makeTx({ id: 92, description: "Blank due", recurring_id: null });
+    setupApiFetch([tx]);
+    renderWithSWR(<TransactionsPage />);
+    await waitForStableTxList();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
+    fireEvent.click((await screen.findAllByLabelText("Make recurring"))[0]);
+    fireEvent.change((await screen.findAllByLabelText("Next due date"))[0], {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /^Save$/i })[0]);
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(/Pick a next due date/i).length,
+      ).toBeGreaterThan(0);
+    });
+    const apiFetchMock = vi.mocked(apiFetch);
+    expect(
+      apiFetchMock.mock.calls.filter(
+        (c) =>
+          c[0] === "/api/v1/transactions/92" &&
+          (c[1] as RequestInit | undefined)?.method === "PUT",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("neither render tree constrains the next-due-date input with a `min` floor", async () => {
+    // ⭐ FENCE (TBD-301). The JS guard is shared between the two trees, but
+    // the `min` attribute was written out by hand TWICE. jsdom does not
+    // enforce `min`, so no behavioural test can see it -- in a real browser
+    // it greys out every date before today in the picker, which is the same
+    // wrong rule wearing a different hat. Asserting the attribute is absent
+    // is the only way to fence it.
+    const tx = makeTx({ id: 93, description: "Min check", recurring_id: null });
+    setupApiFetch([tx]);
+    renderWithSWR(<TransactionsPage />);
+    await waitForStableTxList();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
+    fireEvent.click((await screen.findAllByLabelText("Make recurring"))[0]);
+
+    await screen.findAllByLabelText("Next due date");
+    // Named trees, not indices -- see the note on `treeContainer`.
+    for (const mobile of [false, true]) {
+      const el = within(treeContainer(93, mobile)).getByLabelText(
+        "Next due date",
+      );
+      expect(el.getAttribute("min"), mobile ? "mobile" : "desktop").toBeNull();
+    }
+
+    // Control: the transaction-date -> settled-date `min` relationship is a
+    // real domain rule and is NOT what this ticket removes. Its presence
+    // proves this assertion can distinguish "no min attribute" from "this
+    // query never finds a min attribute on anything".
+    const settled = screen.queryAllByLabelText(/Expected settlement date/i);
+    if (settled.length > 0) {
+      expect(settled[0].getAttribute("min")).not.toBeNull();
+    }
   });
 
   it("save without ticking recurring does NOT call promote-to-recurring", async () => {
