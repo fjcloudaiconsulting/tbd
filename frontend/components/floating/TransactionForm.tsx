@@ -274,14 +274,24 @@ export default function TransactionForm({
     // `occurrences_elapsed` from exactly this comparison, so both shapes are
     // handled — but the advanced one is the honest wire value.
     //
-    // Still floored at today, because the server guard rejects a past
-    // next_due_date: a back-dated entry whose advanced date is still behind
-    // today would otherwise 422 after the transaction is already saved.
+    // ⚠ TBD-301: sent UNFLOORED. There used to be a
+    // `advanced < today ? today : advanced` clamp here, justified by "the
+    // server guard rejects a past next_due_date". That justification is
+    // false. TBD-283 moved the server's lower bound off `today` and onto
+    // `current_cycle_window(org.billing_cycle_day, today)[0]` -- the start of
+    // the org's CURRENT billing cycle. For any org whose cycle does not begin
+    // today there is a legal window BEFORE today, and the clamp was silently
+    // re-anchoring the whole series to a date the user never picked, with
+    // nothing on screen to notice.
+    //
+    // The bound is org-relative and not derivable from the date alone, so the
+    // client does not guess it. It sends the honest advanced date and lets the
+    // server rule: a refusal lands in `recurringWarning` below, carrying the
+    // server's own sentence, which names the boundary and the remedy. That is
+    // strictly more actionable than any message this component could compose.
     let recurringWarning: string | null = null;
     if (repeat && created?.id) {
-      const today = todayISO();
-      const advanced = advanceISO(date, frequency);
-      const nextDue = advanced < today ? today : advanced;
+      const nextDue = advanceISO(date, frequency);
       try {
         await apiFetch(
           `/api/v1/transactions/${created.id}/promote-to-recurring`,

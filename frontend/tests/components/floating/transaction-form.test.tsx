@@ -911,7 +911,21 @@ describe("TransactionForm", () => {
     expect(legacyRecurringCalls).toHaveLength(0);
   });
 
-  it("bumps a back-dated recurring next_due_date forward to today", async () => {
+  // ── TBD-301: the client never rewrites the user's date ───────────────────
+  //
+  // This used to be "bumps a back-dated recurring next_due_date forward to
+  // today", asserting the opposite. The floor it fenced was wrong: TBD-283
+  // moved the server's lower bound off `today` and onto the start of the
+  // org's CURRENT billing cycle, so for any org whose cycle does not begin
+  // today the clamp was silently re-anchoring a series to a date the user
+  // never picked, inside a window the API would have accepted.
+
+  /** Fill the form with `date` + `frequency`, tick Repeats, Save, and return
+   *  the `next_due_date` the promote call actually put on the wire. */
+  async function promoteNextDue(
+    date: string,
+    frequency: string,
+  ): Promise<string> {
     const apiFetchMock = vi.mocked(apiFetch);
     apiFetchMock.mockReset();
     apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -921,7 +935,7 @@ describe("TransactionForm", () => {
       return {} as never;
     });
 
-    render(
+    const { unmount } = render(
       <TransactionForm
         accounts={[ACCT]}
         categories={[CAT]}
@@ -936,12 +950,11 @@ describe("TransactionForm", () => {
     fireEvent.change(screen.getByLabelText("Amount"), {
       target: { value: "1200.00" },
     });
-    // Back-date the transaction; the recurring next_due_date must still be
-    // today-or-later (server guard), so it should be bumped to today.
-    fireEvent.change(screen.getByLabelText("Date"), {
-      target: { value: "2020-01-01" },
-    });
+    fireEvent.change(screen.getByLabelText("Date"), { target: { value: date } });
     fireEvent.click(screen.getByLabelText("Repeats"));
+    fireEvent.change(screen.getByLabelText("Frequency"), {
+      target: { value: frequency },
+    });
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
@@ -960,7 +973,101 @@ describe("TransactionForm", () => {
     const promoteBody = JSON.parse(
       String((promoteCalls[0][1] as RequestInit | undefined)?.body),
     );
-    expect(promoteBody.next_due_date).toBe(todayISO());
+    unmount();
+    return promoteBody.next_due_date as string;
+  }
+
+  it("sends a back-dated series' advanced date UNMODIFIED, never floored to today", async () => {
+    // ⭐ FENCE (TBD-301). The load-bearing case: `2020-01-01` + monthly
+    // advances to `2020-02-01`, which is genuinely behind today, so the
+    // removed clamp DID fire on this fixture. A fixture where
+    // `advanced >= today` would pass against the unfixed code and fence
+    // nothing.
+    const sent = await promoteNextDue("2020-01-01", "monthly");
+    expect(sent).toBe("2020-02-01");
+    // Stated separately because it names the exact wrong value: the old
+    // clamp rewrote this to today.
+    expect(sent).not.toBe(todayISO());
+    expect(advanceISO("2020-01-01", "monthly")).toBe("2020-02-01");
+  });
+
+  it("CONTROL: a forward-dated series is also sent unmodified, so the fence above is not measuring a constant", async () => {
+    // Same helper, same assertions shape, a date the clamp never touched.
+    // If `promoteNextDue` were wired to something that cannot vary, this and
+    // the fence above could not both hold.
+    //
+    // ⚠ The 2099-01-31 -> 2099-02-28 pair itself is NOT news here: "sends the
+    // NEXT occurrence as next_due_date" below asserts exactly it, through a
+    // different helper, for a different reason (the month-end clamp). What
+    // this test adds is only the variance -- the same helper returning a
+    // DIFFERENT value for a different input than it did one test above. Read
+    // it as an anti-constant control, not as coverage of the clamp.
+    const sent = await promoteNextDue("2099-01-31", "monthly");
+    expect(sent).toBe("2099-02-28");
+    expect(sent).not.toBe(todayISO());
+  });
+
+  it("surfaces the server's frontier refusal AND says the transaction saved", async () => {
+    // ⭐ FENCE (TBD-301). Removing the clamp means a back-dated promote can
+    // now be refused by the server. That is acceptable ONLY because the
+    // refusal reaches the user with its own text: the server's message names
+    // the org-relative boundary, which is the one thing the client cannot
+    // compute. Swallowing it, or replacing it with a generic string, leaves
+    // the user with a saved transaction, no series, and no way out.
+    const SERVER_MSG =
+      "Next due date cannot be earlier than 2026-08-15, the start of the current billing cycle. Send a next_due_date on or after that date; a frequency change on a template whose schedule is already behind must carry one.";
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      if (url === "/api/v1/transactions/42/promote-to-recurring") {
+        throw new Error(SERVER_MSG);
+      }
+      return {} as never;
+    });
+
+    const onWarning = vi.fn();
+    render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={() => {}}
+        onWarning={onWarning}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Rent" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1200.00" },
+    });
+    fireEvent.change(screen.getByLabelText("Date"), {
+      target: { value: "2020-01-01" },
+    });
+    fireEvent.click(screen.getByLabelText("Repeats"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    await waitFor(() => {
+      expect(onWarning).toHaveBeenCalledTimes(1);
+    });
+    const warning = String(onWarning.mock.calls[0][0]);
+    // The server's own sentence, verbatim.
+    expect(warning).toContain(SERVER_MSG);
+    // ⚠ Strictly implied by the line above -- "2026-08-15" is a substring of
+    // SERVER_MSG, so this cannot fail on its own. Kept only to name, in
+    // isolation, the one token the client provably cannot compute: the
+    // org-relative cycle start. It is documentation, not a second check.
+    expect(warning).toContain("2026-08-15");
+    // And it is unambiguous that the transaction itself is on disk.
+    expect(warning).toMatch(/Transaction saved/);
   });
 
   it("does not promote when Repeats is off", async () => {
@@ -1152,10 +1259,14 @@ describe("TransactionForm", () => {
     // "4 of 4". The frontier must be the transaction's date advanced by one
     // period.
     //
-    // A FUTURE date, so the today-floor cannot be what produces the answer --
-    // with a back-dated row both the correct and the broken implementation
-    // return today and the fence is vacuous. (The floor itself is fenced by
-    // "bumps a back-dated recurring next_due_date forward to today" above.)
+    // A FUTURE date, chosen when a today-floor still stood between this
+    // assertion and the wire: with a back-dated row both the correct and the
+    // broken implementation returned today, making the fence vacuous. TBD-301
+    // removed that floor, so the date no longer has to be future for this to
+    // discriminate -- but it stays future because the month-end clamp below
+    // is the property under test and 2099-01-31 exercises it exactly. The
+    // back-dated direction is now fenced by "sends a back-dated series'
+    // advanced date UNMODIFIED, never floored to today" above.
     const future = "2099-01-31";
     const body = await submitWithRepeat(() => {
       fireEvent.change(screen.getByLabelText("Date"), {
