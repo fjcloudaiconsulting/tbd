@@ -1,10 +1,11 @@
 import React from "react";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import { todayISO } from "@/lib/format";
 import { waitForStableTxList } from "../utils/wait-for-stable-tx-list";
 
 vi.mock("next/navigation", () => ({
@@ -472,6 +473,45 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     expect(
       screen.queryByText(/Date must be today or later/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("sends YESTERDAY verbatim, and identically whichever billing_cycle_day the org has", async () => {
+    // ⭐ FENCE (TBD-301), the definition-of-done case stated directly: a date
+    // inside the org's current cycle but before today reaches the API
+    // unmodified. `2020-03-09` above is far outside any cycle; this one sits
+    // in the window the removed rules were actually eating.
+    //
+    // Anchored to `today - 1` rather than a literal, so it cannot rot into a
+    // date that is no longer in the past. Which cycle it lands in varies by
+    // run date, and that is fine: the asserted property is "unmodified",
+    // which holds on every calendar day.
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    const yesterday = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    expect(yesterday).not.toBe(todayISO());
+
+    // Run the SAME input through two different orgs. The client no longer
+    // derives the frontier bound, so `billing_cycle_day` must make no
+    // difference whatsoever -- a reintroduced client-side rule keyed on the
+    // cycle day is exactly what this pair catches, and neither run alone
+    // would catch it.
+    const sent: string[] = [];
+    for (const [i, cycleDay] of [1, 17].entries()) {
+      vi.mocked(useAuth).mockReturnValue({
+        user: { ...USER, billing_cycle_day: cycleDay } as never,
+        loading: false,
+        needsSetup: false,
+        login: vi.fn(),
+        register: vi.fn(),
+        logout: vi.fn(),
+        refreshMe: vi.fn(),
+      });
+      const body = await promoteWithNextDue(94 + i, yesterday);
+      expect(body, `billing_cycle_day=${cycleDay}`).not.toBeNull();
+      sent.push(body!.next_due_date as string);
+      cleanup();
+    }
+    expect(sent).toEqual([yesterday, yesterday]);
   });
 
   it("CONTROL: the blank-date guard still refuses and still blocks the PUT", async () => {
