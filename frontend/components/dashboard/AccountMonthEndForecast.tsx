@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { TriangleAlert } from "lucide-react";
 
-import { btnLink, card, cardHeader, cardTitle } from "@/lib/styles";
+import { badgeError, btnLink, card, cardHeader, cardTitle } from "@/lib/styles";
 import { formatAmount } from "@/lib/format";
 
 export interface AccountMonthEndForecastTotal {
@@ -25,10 +26,35 @@ export interface AccountMonthEndForecastRow {
   cc_payments?: { amount: string; date: string }[];
   // Loan V1 Slice 2: synthesized loan payment(s) projected in this period.
   loan_payments?: { amount: string; date: string }[];
+  // TBD-198: recurring occurrences PROJECTED into this period but not yet
+  // materialised by the generator. `amount` is SIGNED (income positive,
+  // expense negative), unlike cc_payments / loan_payments which are always
+  // outflows carrying a magnitude.
+  recurring_lines?: { amount: string; date: string }[];
+  // TBD-198: the end-of-day projected balance for every day of the remaining
+  // window. Present so the last point is verifiably the same number as
+  // `expected_month_end_balance`; this component renders the RUNS, not the
+  // series, so nothing here iterates it.
+  daily_balances?: { date: string; balance: string }[];
+  // TBD-198: contiguous below-zero intervals, already filtered to the
+  // strictly-future ones by the backend. One entry per RUN, never per day.
+  risk_days?: LowBalanceRun[];
+}
+
+export interface LowBalanceRun {
+  from: string;
+  through: string;
+  lowest_balance: string;
+  lowest_on: string;
 }
 
 export interface AccountMonthEndForecastResponse {
   period_start: string;
+  // TBD-198: first day of `daily_balances` (= max(period_start, today)).
+  // Optional here because this widget does not consume it; it is on the wire
+  // so a client can tell day 0's re-booked overdue deltas from one day's
+  // activity.
+  series_start?: string;
   period_end: string;
   totals: AccountMonthEndForecastTotal[];
   accounts: AccountMonthEndForecastRow[];
@@ -140,8 +166,16 @@ export default function AccountMonthEndForecast({
               </p>
             ))}
           </div>
+          {/* TBD-198. This caption used to read "Current balance plus pending
+              items in this period", which was literally true when the number
+              was `balance + pending_delta`. It is now the sum of the daily
+              walk, which also carries projected card and loan payments and
+              upcoming recurring occurrences — so the old caption named three
+              of the numbers on screen and silently excluded the rest, and a
+              row could show Balance 1000, "-200 pending" and a 450 forecast
+              with nothing accounting for the difference. */}
           <p className="text-xs text-text-muted">
-            Current balance plus pending items in this period.
+            Current balance plus everything still expected in this period.
           </p>
         </div>
       )}
@@ -164,6 +198,7 @@ export default function AccountMonthEndForecast({
             const sign = pendingNum > 0 ? "+" : "-";
             const pendingMagnitude = formatAmount(Math.abs(pendingNum));
             const pendingCurrencySymbol = currencySymbol(row.currency);
+            const riskDays = row.risk_days ?? [];
             return (
               <div
                 key={row.account_id}
@@ -175,6 +210,30 @@ export default function AccountMonthEndForecast({
                     {row.is_default && (
                       <span className="rounded border border-border px-1.5 py-0.5 text-[9px] font-semibold text-text-secondary">
                         DEFAULT
+                      </span>
+                    )}
+                    {/* TBD-198. `badgeError` DIRECTLY, not via badgeForTone():
+                        the BadgeTone union has no danger member and widening
+                        it for one caller is scope this ticket does not need.
+                        Colour is never the only signal (DESIGN.md, PRODUCT.md,
+                        WCAG 2.2 AA) — the icon is aria-hidden and the visible
+                        "Low balance" text carries the meaning, with an sr-only
+                        prefix so the chip is not heard as another metadata
+                        value on the row. Same construction as MarkerChip on
+                        /settings/organization/periods. */}
+                    {riskDays.length > 0 && (
+                      <span
+                        // `shrink-0`: this sits in a flex row beside a
+                        // `truncate` account name and the DEFAULT chip, inside
+                        // a `minmax(0,2fr)` grid column. Without it a long
+                        // account name squeezes the badge and "Low balance"
+                        // wraps or clips.
+                        className={`${badgeError} shrink-0`}
+                        data-testid={`low-balance-badge-${row.account_id}`}
+                      >
+                        <span className="sr-only">Warning: </span>
+                        <TriangleAlert className="h-3 w-3" aria-hidden="true" />
+                        Low balance
                       </span>
                     )}
                   </p>
@@ -194,6 +253,22 @@ export default function AccountMonthEndForecast({
                       {pendingMagnitude} pending
                     </p>
                   )}
+                  {/* TBD-198. The dated sub-line, in the SAME visual slot the
+                      CC/loan payment lines occupy — quiet by default, and
+                      absent entirely when there is nothing to say. One line
+                      per RUN: a line per day would turn a fortnight's
+                      overdraft into fourteen identical rows. */}
+                  {riskDays.map((r) => (
+                    <p
+                      key={`risk-${r.from}`}
+                      data-testid={`low-balance-line-${row.account_id}`}
+                      className="text-[10px] tabular-nums text-danger"
+                    >
+                      {r.from === r.through
+                        ? `Below zero on ${r.from} (${signedMoney(r.lowest_balance, pendingCurrencySymbol)})`
+                        : `Below zero ${r.from} to ${r.through}, lowest ${signedMoney(r.lowest_balance, pendingCurrencySymbol)} on ${r.lowest_on}`}
+                    </p>
+                  ))}
                   {(row.cc_payments ?? []).map((p, i) => (
                     <p
                       key={`${p.date}-${i}`}
@@ -234,6 +309,23 @@ export default function AccountMonthEndForecast({
                       )}
                     </p>
                   ))}
+                  {/* TBD-198. Upcoming recurring occurrences, in the SAME
+                      visual slot the CC / loan payment lines occupy. Without
+                      this the forecast could sit hundreds below the balance
+                      with nothing on screen naming the difference: the CC and
+                      loan halves of the sum each got a line, this half got
+                      none. Signed, because a recurring template can be income;
+                      quiet by default, i.e. absent entirely when empty. */}
+                  {(row.recurring_lines ?? []).map((p, i) => (
+                    <p
+                      key={`recurring-${p.date}-${i}`}
+                      data-testid={`recurring-line-${row.account_id}`}
+                      className="text-[10px] tabular-nums text-text-muted"
+                    >
+                      Recurring {signedMoney(p.amount, pendingCurrencySymbol)}{" "}
+                      on {p.date}
+                    </p>
+                  ))}
                 </div>
               </div>
             );
@@ -242,6 +334,14 @@ export default function AccountMonthEndForecast({
       </div>
     </section>
   );
+}
+
+// `{sign}{symbol}{magnitude}` — the convention the pending sub-line already
+// uses ("Includes -€600.00 pending"). The naive `${symbol}${formatAmount(v)}`
+// renders "€-100.00" four lines away from it (TBD-198 review, N8).
+function signedMoney(value: number | string, symbol: string): string {
+  const n = Number(value);
+  return `${n < 0 ? "-" : "+"}${symbol}${formatAmount(Math.abs(n))}`;
 }
 
 // Best-effort symbol mapping. Falls back to the ISO code so unknown

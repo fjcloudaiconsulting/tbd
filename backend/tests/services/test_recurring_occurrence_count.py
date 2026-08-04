@@ -2,14 +2,24 @@
 
 ``RecurringTransaction`` grows two columns -- ``occurrence_count`` (declared
 intent, NULL = open-ended) and ``occurrences_elapsed`` (stored progress) -- and
-FIVE sites that read templates must agree about how many occurrences the series
-has left. They are:
+the sites that read templates must all agree about how many occurrences the
+series has left. They are:
 
     forecast_service.compute_forecast                 (projects)
     recurring_service.generate_due_transactions       (materialises)
     forecast_plan_service.populate_from_sources       (projects)
     scenario_engine.build_state / _project            (projects)
     scheduler/jobs/recurring_generation.is_due        (decides to wake)
+    account_balance_forecast_service
+        .compute_account_balance_forecast             (projects; TBD-198)
+
+⚠ The last one was added by TBD-198, AFTER this file was written. It is listed
+here, and gated by F-G below, because the guard is a hand-maintained roster:
+a new projection site that nobody adds to ``_GATED_MODULES`` is invisible to
+it, and F-G's own docstring names that hole. TBD-198's site projects recurring
+occurrences onto a daily balance series, so a bare ``is_active`` predicate
+there would put a finished 12-instalment plan back on the dashboard's headline
+number and on its low-balance warning, with every test still green.
 
 The governing invariant is TBD-260's, unchanged: the occurrences a projection
 counts and the occurrences generation creates are the SAME SET. So a budget
@@ -58,6 +68,7 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.schemas.recurring import RecurringCreate, RecurringUpdate
 from app.schemas.transaction import PromoteToRecurringRequest
 from app.services import (
+    account_balance_forecast_service,
     forecast_plan_service,
     forecast_service,
     recurring_service,
@@ -775,7 +786,7 @@ async def test_ff_resume_reanchors_frontier_without_spending_instalments(db_sess
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# F-G — fence. A SIXTH read site cannot be added without the filter.
+# F-G — fence. A NEW read site cannot be added without the filter.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _GATED_MODULES = (
@@ -784,10 +795,15 @@ _GATED_MODULES = (
     forecast_plan_service,
     scenario_engine,
     recurring_generation,
+    # TBD-198. Added when `compute_account_balance_forecast` grew its own
+    # `select(RecurringTransaction…).where(…)` projection. Registering a new
+    # site here is the deliberate edit this roster exists to force -- it is
+    # hand-maintained, and an unregistered module is simply not looked at.
+    account_balance_forecast_service,
 )
 
 # Functions that read ``RecurringTransaction`` WITHOUT the series filter, on
-# purpose. Pinned by name so adding a sixth unfiltered read site is a
+# purpose. Pinned by name so adding another unfiltered read site is a
 # deliberate edit to this set, reviewed, rather than an omission.
 #
 #   list_recurring   -- the CRUD listing. An exhausted instalment plan MUST
@@ -877,12 +893,12 @@ def _selects_single_template(call: ast.Call) -> bool:
 
 
 def test_fg_every_recurring_read_site_carries_the_series_filter():
-    """FENCE. Structural guard over the five gate modules' ``select().where()``
+    """FENCE. Structural guard over the gate modules' ``select().where()``
     chains.
 
-    The five modules listed in ``_GATED_MODULES`` read
-    ``RecurringTransaction`` to project or materialise occurrences, and all
-    five must agree about exhaustion. Nothing in CI can see one of them
+    The modules listed in ``_GATED_MODULES`` read
+    ``RecurringTransaction`` to project or materialise occurrences, and all of
+    them must agree about exhaustion. Nothing in CI can see one of them
     reverting to a bare ``is_active`` predicate -- there is no type checker,
     and such a site is green in every functional test that does not happen to
     exercise it. So the guard is over the SOURCE.
@@ -893,7 +909,7 @@ def test_fg_every_recurring_read_site_carries_the_series_filter():
 
     ⚠ **SCOPE, stated narrowly on purpose.** This guard sees exactly one
     shape: a ``.where(...)`` whose receiver chain bottoms out in
-    ``select(<... RecurringTransaction ...>)``, inside one of the five modules
+    ``select(<... RecurringTransaction ...>)``, inside one of the modules
     named in ``_GATED_MODULES``. It is structurally BLIND to:
 
       * **join-shaped reads.** ``recurring_service._settle_due_auto`` selects
@@ -906,13 +922,17 @@ def test_fg_every_recurring_read_site_carries_the_series_filter():
         checked;
       * **every other module.** ``reports/sources/recurring.py`` reads
         templates and is not in ``_GATED_MODULES``; nothing here would notice
-        it, or a sixth module added tomorrow. The set is a hand-maintained
-        list, and widening it is a deliberate edit;
+        it, or a module added tomorrow. The set is a hand-maintained list, and
+        widening it is a deliberate edit. ⚠ This is not hypothetical: TBD-198
+        added a sixth projection site (``account_balance_forecast_service``)
+        and the guard did not see it until the module was registered above.
+        Adding a ``select(RecurringTransaction…)`` anywhere means adding the
+        module HERE in the same change;
       * **ORM attribute traversal, ``db.get``, relationship loads, and raw
         SQL.** None of them are a ``select().where()`` chain.
 
-    So the guarantee is: "no gate site in these five modules loses the filter
-    from a select-where chain." It is NOT "every read of
+    So the guarantee is: "no gate site in the registered modules loses the
+    filter from a select-where chain." It is NOT "every read of
     ``RecurringTransaction`` in the codebase is gated."
 
     Within that scope, every ``select(RecurringTransaction…).where(…)`` must
@@ -922,16 +942,16 @@ def test_fg_every_recurring_read_site_carries_the_series_filter():
     beside it.
 
     Wrong implementations killed:
-      * any of the five gate sites reverting to a bare
+      * any of the gate sites reverting to a bare
         ``RecurringTransaction.is_active == True`` (verified: mutating
-        ``build_world_state`` and ``generate_due_transactions`` each fail here
-        by name);
-      * a new unfiltered projection site added to any of the five modules.
+        ``build_world_state``, ``generate_due_transactions`` and
+        ``compute_account_balance_forecast`` each fail here by name);
+      * a new unfiltered projection site added to any registered module.
 
     ⚠ Anti-vacuity: the site inventory itself is asserted non-empty and pinned
-    to the five known projection/materialisation sites, so a refactor that
-    renames ``.where`` chains out of existence fails here rather than silently
-    checking nothing (``all(())`` is ``True``).
+    to the known projection/materialisation sites, so a refactor that renames
+    ``.where`` chains out of existence fails here rather than silently checking
+    nothing (``all(())`` is ``True``).
     """
     filtered: set[tuple[str, str]] = set()
     total_sites = 0
@@ -965,6 +985,7 @@ def test_fg_every_recurring_read_site_carries_the_series_filter():
         ("forecast_plan_service", "populate_from_sources"),
         ("scenario_engine", "build_world_state"),
         ("recurring_generation", "is_due"),
+        ("account_balance_forecast_service", "compute_account_balance_forecast"),
     }, filtered
     assert total_sites >= len(filtered)
 
@@ -1999,12 +2020,24 @@ async def test_fh_cc_projected_payment_plateaus_when_the_series_exhausts(
 ):
     """FENCE. The projected credit-card payment PLATEAUS. It must not grow.
 
-    ``cc_forecast_service`` and ``account_balance_forecast_service`` contain
-    zero ``RecurringTransaction`` references, so nothing in this ticket touched
-    them and F-G cannot see them. Their correctness under an instalment plan is
-    therefore TRANSITIVE: generation stops writing rows, the CC ledger stops
-    seeing them, and the projected payment stops climbing. A transitive
-    argument that is never executed is just an argument -- this runs it.
+    ``cc_forecast_service`` contains zero ``RecurringTransaction`` references
+    and is not in ``_GATED_MODULES``, so F-G cannot see it at all. Its
+    correctness under an instalment plan is therefore TRANSITIVE: generation
+    stops writing rows, the CC ledger stops seeing them, and the projected
+    payment stops climbing. A transitive argument that is never executed is
+    just an argument -- this runs it.
+
+    ⚠ ``account_balance_forecast_service`` used to be in the same position and
+    NO LONGER IS. TBD-198 gave it its own
+    ``select(RecurringTransaction…).where(active_series_filter(), …)``
+    projection, and F-G now covers it (it is registered in ``_GATED_MODULES``).
+    What is still transitive here is the CC leg specifically: the amounts this
+    test asserts on come from ``cc_payments``, which is synthesised from the
+    LEDGER, and the recurring projection added by TBD-198 books day deltas
+    without touching ``cc_payments``. So the numbers below are unchanged by
+    that port -- which is why this test kept passing across it -- but the
+    reason is "the recurring port does not feed this field", not "the module
+    never reads templates".
 
     A 3-instalment WEEKLY ``auto_settle`` series on a real credit card
     (``close_day`` + ``payment_day`` + ``payment_source_account_id``, so
