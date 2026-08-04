@@ -34,6 +34,14 @@ from app.models.transaction import Transaction
 # state transition. Keep in sync with ``reconciliation_service``.
 _RECON_EXCLUDED_STATES: tuple[str, ...] = ("skipped", "rejected")
 
+# Public alias of the SAME tuple, for callers outside aggregate filtering
+# that need to ask "has this row's balance contribution already been
+# reverted, and is it out of every reportable aggregate?" -- e.g.
+# ``transaction_service.promote_to_recurring``'s guard and
+# ``delete_transaction``'s orphan demotion (TBD-292 / TBD-294). One roster,
+# two names; do NOT fork it into a second literal.
+REVERTED_RECONCILIATION_STATES = _RECON_EXCLUDED_STATES
+
 # Self-join alias for ``balance_contribution_filter()``'s reciprocity
 # check. Defined once at module level so the correlated EXISTS subquery
 # below can reference it.

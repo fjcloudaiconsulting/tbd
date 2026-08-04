@@ -406,7 +406,12 @@ async def test_promote_to_recurring_rejects_transfer_leg(session_factory):
             json={"frequency": "monthly", "next_due_date": _future_date()},
         )
     assert res.status_code == 400
-    assert "transfer" in res.json()["detail"].lower()
+    # TBD-295: still a 400, new wording. One guard serves every linked row, so
+    # it may no longer claim "transfer leg" -- see the service-level twin.
+    detail = res.json()["detail"].lower()
+    assert "linked" in detail
+    assert "another transaction" in detail
+    assert "transfer leg" not in detail
 
 
 @pytest.mark.asyncio

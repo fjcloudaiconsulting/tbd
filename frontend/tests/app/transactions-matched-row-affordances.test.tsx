@@ -151,6 +151,16 @@ const MATCHED = makeTx({
   linked_account_name: null,
 });
 
+// A self-linked row: `linked_transaction_id === id`. Corrupt but real; no
+// writer produces it, which is exactly why nothing downstream may assume the
+// target is a DIFFERENT row.
+const SELF_LINKED = makeTx({
+  id: 9005,
+  description: "Self linked oddity",
+  linked_transaction_id: 9005,
+  linked_account_name: null,
+});
+
 // An ordinary row: neither field set.
 const ORDINARY = makeTx({
   id: 9002,
@@ -222,7 +232,24 @@ describe("TBD-289 — reconcile-matched row affordances", () => {
     expect(markTransferButtons(MATCHED.description)).toHaveLength(0);
   });
 
-  it("renders a quiet, NON-interactive 'Matched' indicator on a reconcile-matched row", async () => {
+  /**
+   * ⚠ REWRITTEN BY TBD-295, deliberately.
+   *
+   * TBD-289 shipped this indicator NON-interactive and fenced that choice
+   * here, because "what should a matched row let a user DO" was an open
+   * ruling. TBD-295 IS that ruling and it answers: link to the canonical
+   * twin. So the fence that pinned "not a button, not a link" had to be
+   * rewritten, not extended — a prior fence encoding the half of the problem
+   * its own ticket did not fix.
+   *
+   * What survives verbatim from TBD-289 and must not be lost in the rewrite:
+   *   - the copy never says "reconciliation";
+   *   - the explanation reaches the accessibility tree by TEXT, not `title`;
+   *   - the styling is the quiet neutral badge primitive, never the brass
+   *     accent and never a raw palette colour;
+   *   - both the desktop and the mobile slot are asserted.
+   */
+  it("renders a 'Matched' indicator that LINKS to the canonical twin, in both slots", async () => {
     setupApiFetch([MATCHED]);
     render(<TransactionsPage />);
 
@@ -234,31 +261,82 @@ describe("TBD-289 — reconcile-matched row affordances", () => {
 
     for (const badge of [desktopBadge, mobileBadge]) {
       expect(badge.textContent).toContain("Matched");
+      // TBD-295: the row is a DUPLICATE and is out of balances and reports.
+      // The old copy ("Linked to another transaction.") said neither.
+      expect(badge.getAttribute("title")).toBe(
+        "Marked as a duplicate of another transaction. It is excluded from balances and reports.",
+      );
       // The copy must not name reconciliation: the flag is "linked but not
       // reciprocally", which is also true of a self-linked, cross-org or
       // chained row that reconciliation never touched.
-      expect(badge.getAttribute("title")).toBe("Linked to another transaction.");
       expect(badge.textContent).not.toMatch(/reconcil/i);
       expect(badge.getAttribute("title")).not.toMatch(/reconcil/i);
-      // WCAG 2.2 AA: `title` on a bare <span> has no accessible name — screen
-      // readers largely skip it, touch never shows it, and the span is not
-      // focusable. The explanation must reach the accessibility tree by text.
+      // WCAG 2.2 AA: `title` alone has no accessible name on touch and is
+      // largely skipped by screen readers. The explanation must reach the
+      // accessibility tree by text — still true now the element is focusable.
       const srOnly = badge.querySelector(".sr-only");
       expect(srOnly).not.toBeNull();
-      expect(srOnly?.textContent).toMatch(/linked to another transaction/i);
-      // Non-interactive: not a button, not a link, no click handler surface.
-      // This is the fence on the DEFERRED half of the ticket — a matched row
-      // must not grow an action or a navigation target here.
-      expect(badge.tagName).toBe("SPAN");
-      expect(badge.closest("a")).toBeNull();
-      expect(badge.closest("button")).toBeNull();
-      expect(badge.getAttribute("role")).toBeNull();
+      expect(srOnly?.textContent).toMatch(/duplicate of another transaction/i);
+      expect(srOnly?.textContent).toMatch(/balances and reports/i);
+      // THE REVERSAL: it is a link, and it points at the canonical twin.
+      expect(badge.tagName).toBe("A");
+      expect(badge.getAttribute("href")).toBe(
+        `/transactions?transaction_id=${MATCHED.linked_transaction_id}`,
+      );
       // Quiet-by-default + No Off-Token: the neutral badge primitive from
       // lib/styles.ts, not the brass accent and not a raw palette colour.
       expect(badge.className).toContain("bg-surface-raised");
       expect(badge.className).toContain("text-text-secondary");
       expect(badge.className).not.toMatch(/\baccent\b/);
     }
+  });
+
+  it("renders NO link on a self-linked row, in either slot", async () => {
+    // `linked_transaction_id === id`: the target IS this row, so a link would
+    // be a no-op that claims otherwise. Kills rendering the <a> unconditionally.
+    setupApiFetch([SELF_LINKED]);
+    render(<TransactionsPage />);
+
+    await screen.findAllByText(SELF_LINKED.description);
+
+    for (const testid of [
+      `matched-badge-${SELF_LINKED.id}`,
+      `matched-badge-mobile-${SELF_LINKED.id}`,
+    ]) {
+      const badge = screen.getByTestId(testid);
+      // Still says it is matched — the row IS linked-but-not-reciprocally.
+      expect(badge.textContent).toContain("Matched");
+      // But inert: no anchor, and no href anywhere inside it.
+      expect(badge.tagName).toBe("SPAN");
+      expect(badge.closest("a")).toBeNull();
+      expect(badge.querySelector("a")).toBeNull();
+    }
+  });
+
+  it("still offers Edit and the status pill on a matched row (TBD-292 regression fence)", async () => {
+    // TBD-292 made the matched row editable server-side. This stops a future
+    // agent from "fixing" a matched-row bug by hiding Edit instead — the
+    // affordances must stay, in BOTH slots.
+    setupApiFetch([MATCHED]);
+    render(<TransactionsPage />);
+
+    await screen.findAllByText(MATCHED.description);
+
+    // ByROLE, not ByLabelText: an element carrying `hidden` (or aria-hidden)
+    // is still returned by ByLabelText, so a "hide it instead of fixing it"
+    // change would slip past a label query. The role query reads the
+    // accessibility tree, which is what a user actually gets.
+    expect(
+      screen.getAllByRole("button", { name: `Edit: ${MATCHED.description}` }),
+    ).toHaveLength(2);
+    // The status pill is the interactive toggle, not the inert transfer chip:
+    // a matched row is NOT a transfer, so it keeps the button.
+    expect(
+      screen.getAllByRole("button", { name: "Mark as pending" }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByRole("button", { name: `Delete: ${MATCHED.description}` }),
+    ).toHaveLength(2);
   });
 
   it("STILL offers 'Mark transfer' on an ordinary unlinked row (over-reach fence)", async () => {

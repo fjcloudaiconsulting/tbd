@@ -14,7 +14,7 @@ import datetime
 from decimal import Decimal, InvalidOperation
 
 import structlog
-from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
@@ -36,6 +36,7 @@ from app.services.category_rules_service import learn_from_choice
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.list_query import resolve_order_by
 from app.services.transaction_filters import (
+    REVERTED_RECONCILIATION_STATES,
     contributes_to_cached_balance,
     effective_period_date_expr,
     is_reciprocal_pair,
@@ -512,14 +513,54 @@ async def update_transaction(
     if tx.linked_transaction_id is not None and tx.linked_transaction_id not in rows:
         raise ConflictError("Transaction state changed; refresh and retry")
 
-    partner = rows.get(tx.linked_transaction_id) if tx.linked_transaction_id is not None else None
+    # THREE NAMES, on purpose (TBD-292) -- the same discipline
+    # ``delete_transaction`` documents at "TWO SEPARATE NAMES", with one more
+    # name because this path also has to answer the balance question.
+    #
+    #   ``linked_row``   -- whatever the link points at. RAW. It may be an
+    #                       unrelated canonical row that
+    #                       ``reconciliation_service._apply_match`` matched
+    #                       this row against, a chain hop (A -> B -> C), or
+    #                       the real other leg of a transfer.
+    #   ``pair_partner`` -- the partner ONLY when the link is MUTUAL, i.e. a
+    #                       real transfer leg. Every transfer-shaped rule
+    #                       below (type immutability, account/currency
+    #                       guards, amount mirror, post-edit pair
+    #                       invariants) keys off this and nothing else.
+    #   ``tx_in_cached_balance`` -- "is this row's amount inside
+    #                       ``accounts.balance`` right now". It takes the RAW
+    #                       link, NOT ``pair_partner``.
+    #
+    # ⚠ THE TRAP: ``contributes_to_cached_balance(tx, None)`` returns True --
+    # it fails OPEN by design. So passing ``pair_partner`` here (which is
+    # None for every matched row) makes the gate vacuously true, the 409
+    # disappears, and the balance silently drifts instead. Collapsing these
+    # three names back into fewer is exactly how that returns.
+    #
+    # Computed ONCE, before the mutation block, and provably invariant across
+    # the edit: its only inputs are ``linked_transaction_id`` and
+    # ``reconciliation_state``, and ``TransactionUpdate``
+    # (``extra="forbid"``) can set neither.
+    linked_row = (
+        rows.get(tx.linked_transaction_id)
+        if tx.linked_transaction_id is not None
+        else None
+    )
+    pair_partner = linked_row if is_reciprocal_pair(tx, linked_row) else None
+    tx_in_cached_balance = contributes_to_cached_balance(tx, linked_row)
 
-    # Bidirectional integrity: the link must be symmetric.
-    if partner is not None and partner.linked_transaction_id != tx.id:
-        raise ConflictError("Transfer pair link integrity violated; refresh and retry")
+    # NOTE (TBD-292): there is deliberately NO "the partner must link back"
+    # guard here. It used to raise ConflictError("Transfer pair link integrity
+    # violated; refresh and retry") on ANY asymmetric link -- which is what
+    # ``_apply_match`` writes on EVERY reconcile match, by design. The message
+    # was a lie in every reachable case: retrying can never symmetrise a
+    # one-way link, so a matched row was uneditable forever. The genuine race
+    # the guard was written for (a concurrent pair landing between the
+    # unlocked preview and the locked SELECT) is caught above, by the
+    # "link not in lock set" check, which is unchanged.
 
     # 2. Linked-row schema-level guards
-    if partner is not None:
+    if pair_partner is not None:
         if body.type is not None:
             raise ValidationError("Type is immutable on transfer legs")
         if body.account_id is not None:
@@ -530,13 +571,13 @@ async def update_transaction(
             )
             if new_acct is None:
                 raise ValidationError("Account not found")
-            if new_acct.id == partner.account_id:
+            if new_acct.id == pair_partner.account_id:
                 raise ValidationError("Account must differ from partner's account")
-            if new_acct.currency != partner.account.currency:
+            if new_acct.currency != pair_partner.account.currency:
                 raise ValidationError("New account currency must match partner's currency")
 
     # Validate references regardless of linked status
-    if body.account_id is not None and body.account_id != tx.account_id and partner is None:
+    if body.account_id is not None and body.account_id != tx.account_id and pair_partner is None:
         await validate_account(db, body.account_id, org_id)
 
     old_account_id = tx.account_id
@@ -562,7 +603,7 @@ async def update_transaction(
     # same rule create_transfer/_link_pair enforce). validate_category_for_type
     # above would happily accept an expense-only category on an expense leg, so
     # the transfer-specific guard is required on the edit path too.
-    if partner is not None and body.category_id is not None:
+    if pair_partner is not None and body.category_id is not None:
         await validate_transfer_category(db, new_category_id, org_id)
 
     # 3. Lock affected accounts in sorted ID order
@@ -570,9 +611,9 @@ async def update_transaction(
     if old_status == TransactionStatus.SETTLED or new_status == TransactionStatus.SETTLED:
         account_ids_to_lock.add(old_account_id)
         account_ids_to_lock.add(new_account_id)
-    if partner is not None and body.amount is not None:
-        if partner.status == TransactionStatus.SETTLED:
-            account_ids_to_lock.add(partner.account_id)
+    if pair_partner is not None and body.amount is not None:
+        if pair_partner.status == TransactionStatus.SETTLED:
+            account_ids_to_lock.add(pair_partner.account_id)
     accounts: dict[int, Account] = {}
     for aid in sorted(account_ids_to_lock):
         accounts[aid] = await get_account_for_update(db, aid, org_id)
@@ -581,12 +622,23 @@ async def update_transaction(
     pre_edit_amount = old_amount  # for telemetry
 
     async with db.begin_nested():
-        # 4a: revert this leg if currently SETTLED
-        if old_status == TransactionStatus.SETTLED:
+        # 4a: revert this leg if currently SETTLED **and its amount is
+        # actually inside accounts.balance**. TBD-292: a reconcile-matched
+        # row, and a SKIPPED / REJECTED row (TBD-302), already had their
+        # contribution reverted at the state transition -- reverting again
+        # here drifts the account by the amount, in whichever direction the
+        # edit happens to take.
+        #
+        # ⚠ 4a and 4e are ONE gate in two halves. Gating only one of them is
+        # WORSE than gating neither: 4a-only drifts one way, 4e-only the
+        # other. Arms 4b / 4f need no term -- they are already gated on
+        # ``pair_partner is not None``, and a reciprocal partner is by
+        # definition inside the cached balance.
+        if old_status == TransactionStatus.SETTLED and tx_in_cached_balance:
             revert_balance(accounts[old_account_id], old_amount, old_type)
         # 4b: revert partner if linked + amount-change + partner currently SETTLED
-        if partner is not None and amount_was_changed and partner.status == TransactionStatus.SETTLED:
-            revert_balance(accounts[partner.account_id], partner.amount, partner.type)
+        if pair_partner is not None and amount_was_changed and pair_partner.status == TransactionStatus.SETTLED:
+            revert_balance(accounts[pair_partner.account_id], pair_partner.amount, pair_partner.type)
 
         # 4c: apply per-leg field updates
         _apply_field_updates(tx, body)
@@ -595,8 +647,8 @@ async def update_transaction(
             # Both transfer legs share one category. Mirror the change to the
             # partner leg here so editing the single visible row (the partner
             # is hidden in the list) keeps the pair consistent.
-            if partner is not None:
-                partner.category_id = body.category_id
+            if pair_partner is not None:
+                pair_partner.category_id = body.category_id
         if body.account_id is not None and body.account_id != old_account_id:
             tx.account_id = body.account_id
         if body.status is not None:
@@ -638,37 +690,38 @@ async def update_transaction(
             raise ValidationError("settled_date must be on or after date")
 
         # 4d: amount mirror to partner
-        if partner is not None and amount_was_changed:
-            partner.amount = body.amount
+        if pair_partner is not None and amount_was_changed:
+            pair_partner.amount = body.amount
 
-        # 4e: apply this leg with new state if SETTLED
-        if tx.status == TransactionStatus.SETTLED:
+        # 4e: apply this leg with new state if SETTLED -- same gate as 4a.
+        # See the note there: these two are one decision, not two.
+        if tx.status == TransactionStatus.SETTLED and tx_in_cached_balance:
             apply_balance(accounts[tx.account_id], tx.amount, tx.type)
         # 4f: apply partner with new state if linked + amount change + partner SETTLED
-        if partner is not None and amount_was_changed and partner.status == TransactionStatus.SETTLED:
-            apply_balance(accounts[partner.account_id], partner.amount, partner.type)
+        if pair_partner is not None and amount_was_changed and pair_partner.status == TransactionStatus.SETTLED:
+            apply_balance(accounts[pair_partner.account_id], pair_partner.amount, pair_partner.type)
 
         await db.flush()
 
         # 5. Post-update invariant re-check (only when linked)
-        if partner is not None:
-            if tx.org_id != partner.org_id:
+        if pair_partner is not None:
+            if tx.org_id != pair_partner.org_id:
                 raise ValidationError("Pair org mismatch after edit")
-            if tx.account_id == partner.account_id:
+            if tx.account_id == pair_partner.account_id:
                 raise ValidationError("Pair on same account after edit")
-            if abs(tx.amount) != abs(partner.amount):
+            if abs(tx.amount) != abs(pair_partner.amount):
                 raise ValidationError("Pair amount mismatch after edit")
-            if {tx.type, partner.type} != {TransactionType.EXPENSE, TransactionType.INCOME}:
+            if {tx.type, pair_partner.type} != {TransactionType.EXPENSE, TransactionType.INCOME}:
                 raise ValidationError("Pair must have opposite types after edit")
-            if tx.account.currency != partner.account.currency:
+            if tx.account.currency != pair_partner.account.currency:
                 raise ValidationError("Pair currencies differ after edit")
 
-        if amount_was_changed and partner is not None:
+        if amount_was_changed and pair_partner is not None:
             await logger.ainfo(
                 "transfers.edit_mirrored",
                 org_id=org_id,
                 edited_id=tx.id,
-                partner_id=partner.id,
+                partner_id=pair_partner.id,
                 old_amount=str(pre_edit_amount),
                 new_amount=str(tx.amount),
             )
@@ -743,7 +796,10 @@ async def promote_to_recurring(
     Rejects:
       - tx not found / cross-org → NotFoundError
       - tx already has recurring_id → ValidationError
-      - tx is a transfer leg (linked_transaction_id) → ValidationError
+      - tx is linked to another transaction (``linked_transaction_id``,
+        whichever writer set it) → ValidationError
+      - tx is SKIPPED / REJECTED (contribution already reverted) →
+        ValidationError
       - next_due_date before the current billing cycle start → ValidationError
 
     ``today`` is the caller's resolved clock, used only to derive that cycle
@@ -788,8 +844,27 @@ async def promote_to_recurring(
         tx = result.scalar_one_or_none()
         if tx is None:
             raise NotFoundError("Transaction")
+        # TBD-295: the refusal STAYS, and it deliberately does NOT get the
+        # mutuality treatment the rest of this ticket applies. This guard is
+        # not asking "is this a transfer leg?" -- it is asking "may this row
+        # seed a repeating template?", and a row that asserts *I am the same
+        # event as another row* must not, whichever writer made the link.
+        # Only the MESSAGE changes: it was a lie on a reconcile-matched row,
+        # a self-linked row and a chain hop, none of which is a transfer leg.
         if tx.linked_transaction_id is not None:
-            raise ValidationError("Cannot promote a transfer leg to recurring")
+            raise ValidationError(
+                "Cannot make a linked transaction recurring: this row is tied "
+                "to another transaction. Unlink it first."
+            )
+        # TBD-295: a SKIPPED or REJECTED row -- including one demoted by
+        # TBD-294's orphan handling -- had its balance contribution reverted
+        # and sits outside every reportable aggregate. Seeding a repeating
+        # series from it would manufacture money the ledger says was never
+        # there.
+        if tx.reconciliation_state in REVERTED_RECONCILIATION_STATES:
+            raise ValidationError(
+                "Cannot make a skipped or rejected transaction recurring."
+            )
         # Track E: manual adjustments are one-shot delta corrections; a
         # repeating "set my balance to X every month" template would
         # silently rewrite real balances on every cycle.
@@ -869,7 +944,160 @@ def _apply_field_updates(tx: Transaction, body: TransactionUpdate) -> None:
         tx.date = body.date
 
 
-async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int) -> None:
+async def _demote_match_orphans(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    locked_rows: dict[int, Transaction],
+    deleted_ids: set[int],
+) -> list[int]:
+    """TBD-294. Mark every row that points AT a row we are about to delete,
+    and whose amount is NOT inside ``accounts.balance``, as REJECTED.
+
+    THE HOLE THIS CLOSES. ``transactions.linked_transaction_id`` is
+    ``ON DELETE SET NULL``. A reconcile-matched duplicate ``M -> T`` had its
+    contribution reverted at match time and is excluded from balance
+    reconstruction and from reports SOLELY because of that link's direction.
+    Delete ``T`` and the FK erases the discriminator: ``M`` becomes
+    byte-identical to an ordinary row, re-enters
+    ``balance_contribution_filter`` (so reconstruction counts an amount that
+    is not in ``accounts.balance``) AND ``reportable_transaction_filter`` (so
+    budgets and reports are wrong too).
+
+    THE FIX IS A STATE WRITE, NOT A REFUSAL. ``REJECTED`` is in
+    ``_RECON_EXCLUDED_STATES``, which BOTH of those filters consult. One
+    write moves the discriminator out of a column the FK erases and into one
+    it cannot touch, at the instant of erasure. No migration, and the delete
+    still succeeds -- refusing it would strand the user with a row they
+    cannot remove.
+
+    ``contributes_to_cached_balance(R, target)`` is the discriminator, not
+    "is the link one-way": a RECIPROCAL partner is inside the balance and its
+    own delete is already handled by the transfer cascade, so it must be left
+    alone. Rows already in a reverted state are skipped -- their
+    contribution is already out of both filters, and REJECTED is terminal, so
+    rewriting SKIPPED to REJECTED would burn a state for nothing.
+
+    Caller MUST have locked every row in ``locked_rows`` FOR UPDATE, in the
+    same ascending-id query that locked the delete set. Mutates state in
+    place and adjusts the owning ``ImportBatch`` counters; the caller owns
+    the transaction scope.
+    """
+    from app.services.reconciliation_service import (
+        PENDING_STATES,
+        close_batch_if_complete,
+    )
+    from app.models.import_batch import ImportBatch
+
+    demoted: list[Transaction] = []
+    for r in locked_rows.values():
+        if r.id in deleted_ids:
+            continue
+        if r.linked_transaction_id not in deleted_ids:
+            continue
+        if r.reconciliation_state in REVERTED_RECONCILIATION_STATES:
+            continue
+        # DEFENCE IN DEPTH, and NOT test-killable -- deliberately kept, on the
+        # same ground as the TBD-280 lock-set comment in ``delete_transaction``.
+        # Given the two ``continue``s above, the only inbound referrer that
+        # could answer True here is a RECIPROCAL one, and a reciprocal partner
+        # of a deleted row is always itself in ``deleted_ids`` (both delete
+        # paths cascade it), so the first ``continue`` has already taken it.
+        # The clause is the statement of WHY a referrer is demoted -- its
+        # amount is not inside ``accounts.balance`` -- rather than a
+        # link-shaped proxy for it, and it is what keeps a future widening of
+        # the cascade rules from silently demoting a real transfer leg.
+        if contributes_to_cached_balance(r, locked_rows.get(r.linked_transaction_id)):
+            continue
+        demoted.append(r)
+
+    if not demoted:
+        return []
+
+    # Counter deltas per batch, computed BEFORE the state write.
+    #
+    # ⚠ ``pending_count`` is NOT hypothetical here. ACCEPTED -> PENDING_REVIEW
+    # is a legal reopen (``reconciliation_service.ALLOWED_TRANSITIONS``) and
+    # ``_apply_match`` Guard 2 states outright that nothing clears the link on
+    # reopen -- so a PENDING_REVIEW row carrying a live one-way link is a
+    # documented, supported state. Demoting it moves it OUT of
+    # ``PENDING_STATES``, and a batch whose counter is never decremented never
+    # auto-closes.
+    accepted_delta: dict[int, int] = {}
+    pending_delta: dict[int, int] = {}
+    for r in demoted:
+        prior = r.reconciliation_state
+        if r.import_batch_id is not None:
+            if prior == "accepted":
+                accepted_delta[r.import_batch_id] = (
+                    accepted_delta.get(r.import_batch_id, 0) + 1
+                )
+            elif prior in PENDING_STATES:
+                pending_delta[r.import_batch_id] = (
+                    pending_delta.get(r.import_batch_id, 0) + 1
+                )
+        r.reconciliation_state = "rejected"
+        # NOT SILENT (ruling condition 2). REJECTED is terminal and
+        # ``reconciliation_state`` is not settable through ``TransactionUpdate``,
+        # so this demotion is irreversible through every API we expose. Ids and
+        # org only -- no PII -- matching the forensic pattern in
+        # ``reconciliation_service._apply_balance_for_transition``.
+        await logger.ainfo(
+            "transactions.match_orphan_rejected",
+            org_id=org_id,
+            deleted_transaction_id=r.linked_transaction_id,
+            demoted_transaction_id=r.id,
+            prior_state=prior,
+            amount=str(r.amount),
+            tx_type=r.type.value,
+        )
+
+    await db.flush()
+
+    # A single floored UPDATE per batch rather than loading + locking
+    # ``ImportBatch`` rows: these delete paths lock transactions and accounts
+    # only, and a third table in their lock order is avoidable surface.
+    # ``func.greatest`` is MySQL-only, so the floor is a portable CASE.
+    for table_col, deltas in (
+        (ImportBatch.accepted_count, accepted_delta),
+        (ImportBatch.pending_count, pending_delta),
+    ):
+        for batch_id, n in deltas.items():
+            await db.execute(
+                update(ImportBatch)
+                .where(ImportBatch.id == batch_id, ImportBatch.org_id == org_id)
+                .values(
+                    {
+                        table_col: case(
+                            (table_col - n < 0, 0), else_=table_col - n
+                        )
+                    }
+                )
+            )
+
+    # Re-evaluate auto-close for every batch whose pending_count just moved.
+    # populate_existing so the freshly-UPDATEd counter is what the helper
+    # reads, not the stale identity-map copy.
+    for batch_id in pending_delta:
+        batch = await db.scalar(
+            select(ImportBatch)
+            .where(ImportBatch.id == batch_id, ImportBatch.org_id == org_id)
+            .execution_options(populate_existing=True)
+        )
+        if batch is not None:
+            await close_batch_if_complete(db, batch=batch)
+
+    return [r.id for r in demoted]
+
+
+async def delete_transaction(
+    db: AsyncSession, org_id: int, transaction_id: int
+) -> list[int]:
+    """Delete one transaction (cascading to a RECIPROCAL partner only).
+
+    Returns the ids of any rows demoted to REJECTED because the row they
+    pointed at is being deleted (TBD-294). See ``_demote_match_orphans``.
+    """
     # Unlocked pre-read to discover any transfer pair, then acquire tx-row
     # locks in one FOR UPDATE query ordered by ascending id. This matches
     # the order update_transaction and bulk_delete_transactions use, so
@@ -892,10 +1120,32 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
     # narrowed below, on the locked rows. Neither this nor the preview
     # decision is test-killable without real concurrency; this comment is the
     # defence.
+    #
+    # TBD-294 folds the INBOUND-referrer probe into this SAME lock set, on
+    # purpose. A second, separate ``FOR UPDATE`` would acquire in an order
+    # ``update_transaction`` (which locks {row, its link target} sorted) can
+    # take in reverse, and the two would deadlock. One query, one ascending
+    # order, no new lock edge. ``ix_transactions_linked`` covers the probe.
     ids_to_lock = [transaction_id]
     if preview.linked_transaction_id is not None:
         ids_to_lock.append(preview.linked_transaction_id)
-    ids_to_lock.sort()
+    # The probe covers BOTH ids, not just the requested one. A row may be
+    # matched against a leg of a REAL transfer -- ``_apply_match`` Guard 1
+    # calls that a supported flow and ``find_duplicate_of_linked_leg`` exists
+    # to surface it -- so deleting either leg orphans a referrer of the OTHER
+    # leg, which the transfer cascade is about to delete too.
+    ids_to_lock.extend(
+        (
+            await db.scalars(
+                select(Transaction.id).where(
+                    Transaction.org_id == org_id,
+                    Transaction.linked_transaction_id.in_(ids_to_lock),
+                    Transaction.id.notin_(ids_to_lock),
+                )
+            )
+        ).all()
+    )
+    ids_to_lock = sorted(set(ids_to_lock))
 
     # populate_existing=True refreshes the preview's ORM instances with the
     # locked DB state so we revert balances from the current row values, not
@@ -975,18 +1225,28 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
         for r in to_revert:
             revert_balance(accounts[r.account_id], r.amount, r.type)
 
+        # TBD-294: demote BEFORE the delete, so the discriminator has moved
+        # into ``reconciliation_state`` by the time ON DELETE SET NULL erases
+        # the link.
+        demoted_ids = await _demote_match_orphans(
+            db, org_id, locked_rows=rows, deleted_ids=set(to_delete)
+        )
+
         for r in to_delete.values():
             await db.delete(r)
 
     await db.commit()
+    return demoted_ids
 
 
 async def bulk_delete_transactions(
     db: AsyncSession, org_id: int, ids: list[int]
-) -> tuple[int, list[int]]:
+) -> tuple[int, list[int], list[int]]:
     """Delete multiple transactions in one atomic commit.
 
-    Returns (deleted_count, skipped_ids). Cross-org IDs are silently
+    Returns (deleted_count, skipped_ids, demoted_ids) -- the third element is
+    TBD-294's match-orphan demotion, see ``_demote_match_orphans``.
+    Cross-org IDs are silently
     skipped. TRANSFER-pair halves cascade: deleting one half also deletes
     the linked half -- but only when the link is MUTUAL (TBD-280). A one-way
     link is a reconcile match, not a transfer, and its target is an unrelated
@@ -995,7 +1255,7 @@ async def bulk_delete_transactions(
     order to prevent lost updates and deadlocks.
     """
     if not ids:
-        return (0, [])
+        return (0, [], [])
 
     # Dedupe input — caller may select both halves of a transfer
     requested = list(dict.fromkeys(ids))
@@ -1018,9 +1278,22 @@ async def bulk_delete_transactions(
         for tx in preview
         if tx.linked_transaction_id is not None
     }
+    # TBD-294: inbound referrers join the SAME lock query -- see the note in
+    # delete_transaction on why a second FOR UPDATE would deadlock.
+    if all_ids_to_lock:
+        all_ids_to_lock |= set(
+            (
+                await db.scalars(
+                    select(Transaction.id).where(
+                        Transaction.org_id == org_id,
+                        Transaction.linked_transaction_id.in_(all_ids_to_lock),
+                    )
+                )
+            ).all()
+        )
 
     if not all_ids_to_lock:
-        return (0, list(requested))
+        return (0, list(requested), [])
 
     # populate_existing=True refreshes the preview's ORM instances with the
     # locked DB state — otherwise SQLAlchemy returns the identity-map copy
@@ -1099,6 +1372,13 @@ async def bulk_delete_transactions(
         for r in to_revert:
             revert_balance(accounts[r.account_id], r.amount, r.type)
 
+        # TBD-294: demote before the delete, same reason as delete_transaction.
+        # A batch that contains BOTH M and T demotes nothing -- M is in
+        # ``deleted_ids`` and skipped by the helper's first clause.
+        demoted_ids = await _demote_match_orphans(
+            db, org_id, locked_rows=locked_rows, deleted_ids=set(delete_set)
+        )
+
         # The Transaction.linked_transaction relationship has post_update=True,
         # so SQLAlchemy emits the necessary UPDATEs to clear the self-referential
         # FK before the DELETEs and the flush won't trip on a topological cycle.
@@ -1106,7 +1386,7 @@ async def bulk_delete_transactions(
             await db.delete(r)
 
     await db.commit()
-    return (len(delete_set), skipped_ids)
+    return (len(delete_set), skipped_ids, demoted_ids)
 
 
 async def bulk_update_transactions(
@@ -1154,7 +1434,22 @@ async def bulk_update_transactions(
             skipped.append((tx_id, "Manual balance adjustments cannot be edited"))
             continue
 
-        is_transfer = row.linked_transaction_id is not None
+        # TBD-292: mutuality, never non-nullness. A reconcile-matched row
+        # carries a ONE-WAY ``linked_transaction_id``; treating it as a
+        # transfer silently dropped status / account / tags from the batch
+        # and told the user "not applied to transfers", which is false on
+        # both counts. Same discriminator the single-row edit path uses.
+        linked_row = (
+            await db.scalar(
+                select(Transaction).where(
+                    Transaction.id == row.linked_transaction_id,
+                    Transaction.org_id == org_id,
+                )
+            )
+            if row.linked_transaction_id is not None
+            else None
+        )
+        is_transfer = is_reciprocal_pair(row, linked_row)
         existing_tag_names = [t.name for t in row.tags]  # capture before commits
         applied = False
         row_notes: list[str] = []

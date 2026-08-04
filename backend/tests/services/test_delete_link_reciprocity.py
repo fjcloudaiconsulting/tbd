@@ -442,7 +442,7 @@ async def test_bulk_delete_of_a_one_way_matched_row_spares_the_partner(db_sessio
                    tx_type=TransactionType.INCOME)
     await _link(db_session, m, t.id)
 
-    deleted, skipped = await transaction_service.bulk_delete_transactions(
+    deleted, skipped, _demoted = await transaction_service.bulk_delete_transactions(
         db_session, seed["org_id"], [m.id]
     )
 
@@ -468,7 +468,7 @@ async def test_bulk_delete_of_one_leg_still_cascades_to_the_real_partner(db_sess
     await _link(db_session, e, i.id)
     await _link(db_session, i, e.id)
 
-    deleted, skipped = await transaction_service.bulk_delete_transactions(
+    deleted, skipped, _demoted = await transaction_service.bulk_delete_transactions(
         db_session, seed["org_id"], [e.id]
     )
 
@@ -510,7 +510,7 @@ async def test_bulk_delete_of_a_self_linked_row_counts_and_reverts_once(db_sessi
                    tx_type=TransactionType.EXPENSE)
     await _link(db_session, s, s.id)
 
-    deleted, skipped = await transaction_service.bulk_delete_transactions(
+    deleted, skipped, _demoted = await transaction_service.bulk_delete_transactions(
         db_session, seed["org_id"], [s.id]
     )
 
@@ -536,7 +536,7 @@ async def test_bulk_delete_reverts_per_row_across_mixed_statuses(db_session):
     skipped_row = await _add(db_session, seed, tx_id=6133, acct="C", amount="4.00",
                              status=TransactionStatus.SETTLED, recon="skipped")
 
-    deleted, skipped = await transaction_service.bulk_delete_transactions(
+    deleted, skipped, _demoted = await transaction_service.bulk_delete_transactions(
         db_session, seed["org_id"], [settled.id, pending.id, skipped_row.id]
     )
 
