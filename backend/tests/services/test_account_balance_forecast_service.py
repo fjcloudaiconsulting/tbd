@@ -16,7 +16,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, select
+from sqlalchemy import event, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -37,6 +37,7 @@ from app.models.base import Base
 from app.models.billing import BillingPeriod
 from app.models.category import CategoryType
 from app.models.cc_cycle_payment import CcCyclePayment
+from app.models.recurring import RecurringTransaction
 from app.models.transaction import TransactionStatus, TransactionType
 from app.schemas.forecast import AccountBalanceForecastResponse
 from app.services import cc_statement_service as css
@@ -1463,3 +1464,467 @@ async def test_loan_synth_out_of_period_payment_does_not_suppress(db_session: As
     result = await compute_account_balance_forecast(db_session, seed["org_id"], period_start=PERIOD_START)
     loan_row = {a["account_id"]: a for a in result["accounts"]}[loan.id]
     assert loan_row["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TBD-198 — Low balance day warning
+#
+# The month-end number is now the LAST POINT of a daily series rather than a
+# separate expression, and `risk_days` is a READ of that series. Every fence
+# below was proven RED against a NAMED wrong implementation; the mutant is
+# stated in each docstring.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# The clock, injected. Anchored ON `PERIOD_START` so `walk_start == p_start`
+# and the series spans the whole period: with a mid-period clock the first
+# days collapse into the day-0 seed and the fixtures below would be pinning a
+# shorter series than they read.
+TODAY_IN_PERIOD = PERIOD_START
+
+
+def _daily(row) -> list[tuple[str, str]]:
+    return [(p["date"], p["balance"]) for p in row["daily_balances"]]
+
+
+async def test_f1_daily_series_last_point_is_the_month_end_total(
+    db_session: AsyncSession,
+):
+    """F1. `daily_balances[-1].balance == expected_month_end_balance`, per account.
+
+    Mutant killed: `expected = balance + delta + synth` (the pre-TBD-198
+    expression) computed BESIDE the walk instead of taken FROM it. That mutant
+    silently drops the recurring projection, so the card's headline and the
+    series it draws disagree on the same row.
+
+    NON-VACUITY: the fixture carries ONE OF EACH delta source, and each is
+    pinned by its own assertion before the conservation loop runs --
+      * a PENDING row               -> `pending_delta == -200.00`
+      * an UN-MATERIALISED recurring occurrence
+      * a synthesized CC payment    -> `cc_payments == [500.00 on 2026-05-01]`
+    A pending-only fixture passes this test even with the recurring port
+    omitted entirely, which is why the -50.00 assertion (1000 - 200 - 350 - 500)
+    is load-bearing: it is the ONLY assertion that fails when the recurring
+    projection is missing.
+    """
+    seed = await _seed_cc(db_session)
+    cc, source = seed["cc"], seed["source"]
+    # (1) CC source: one settled charge before the 04-25 close -> a 500.00
+    #     payment projected on 2026-05-01.
+    db_session.add(_charge(seed, cc, amount="500.00", on=datetime.date(2026, 4, 10)))
+    cc.balance = Decimal("-500.00")
+    # (2) pending source.
+    db_session.add(_new_tx(
+        org_id=seed["org_id"], account_id=source.id, category_id=seed["cat_expense"],
+        amount=Decimal("200.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.PENDING, date=datetime.date(2026, 5, 20),
+    ))
+    # (3) recurring source, NEVER materialised (no row carries this
+    #     recurring_id) -- the occurrence generation has not created yet.
+    db_session.add(RecurringTransaction(
+        org_id=seed["org_id"], account_id=source.id, category_id=seed["cat_expense"],
+        description="rent", amount=Decimal("350.00"), type="expense",
+        frequency="monthly", next_due_date=datetime.date(2026, 5, 10),
+        auto_settle=False, is_active=True,
+    ))
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START, today=TODAY_IN_PERIOD
+    )
+    by_id = {a["account_id"]: a for a in result["accounts"]}
+    src_row, cc_row = by_id[source.id], by_id[cc.id]
+
+    # Precondition: nothing materialised this template.
+    assert (await db_session.execute(
+        select(func.count()).select_from(Transaction)
+        .where(Transaction.recurring_id.is_not(None))
+    )).scalar() == 0
+
+    # All three sources present and each individually visible.
+    assert src_row["pending_delta"] == "-200.00"
+    assert cc_row["cc_payments"] == [{"amount": "500.00", "date": "2026-05-01"}]
+    # 1000 - 200 (pending) - 350 (recurring) - 500 (CC payment) = -50.00.
+    # This is the assertion the recurring port owns.
+    assert src_row["expected_month_end_balance"] == "-50.00"
+
+    # THE INVARIANT, for every account.
+    for row in result["accounts"]:
+        assert row["daily_balances"], row["account_name"]
+        assert row["daily_balances"][-1]["date"] == "2026-05-31"
+        assert (
+            row["daily_balances"][-1]["balance"]
+            == row["expected_month_end_balance"]
+        ), row["account_name"]
+
+
+async def test_f2_threshold_is_strict_zero_is_not_overdrawn(
+    db_session: AsyncSession,
+):
+    """F2. Two ADJACENT days, one landing on exactly 0.00 and one on -0.01.
+
+    Mutant killed: `balance <= LOW_BALANCE_THRESHOLD` for `<` in `_risk_runs`.
+
+    NON-VACUITY: the amounts are chosen so the balance lands EXACTLY on 0.00
+    (1000.00 - 1000.00), never on 0.004 -- a fixture that only gets near zero
+    cannot tell the two operators apart. Injecting `<=` flips EXACTLY ONE of
+    the two assertions below: `len(risk) == 1` still holds (05-10 simply joins
+    the same contiguous run), and `from == 2026-05-11` becomes
+    `from == 2026-05-10`. Both assertions are therefore required; either alone
+    is survivable.
+    """
+    seed = await _seed(db_session)
+    primary = seed["accounts"]["primary"]
+    db_session.add_all([
+        _new_tx(
+            org_id=seed["org_id"], account_id=primary.id,
+            category_id=seed["cat_expense"], amount=Decimal("1000.00"),
+            type=TransactionType.EXPENSE, status=TransactionStatus.PENDING,
+            date=datetime.date(2026, 5, 10),
+        ),
+        _new_tx(
+            org_id=seed["org_id"], account_id=primary.id,
+            category_id=seed["cat_expense"], amount=Decimal("0.01"),
+            type=TransactionType.EXPENSE, status=TransactionStatus.PENDING,
+            date=datetime.date(2026, 5, 11),
+        ),
+    ])
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START, today=TODAY_IN_PERIOD
+    )
+    row = next(a for a in result["accounts"] if a["account_id"] == primary.id)
+
+    # The geometry the fence depends on: exactly 0.00, then exactly -0.01.
+    daily = dict(_daily(row))
+    assert daily["2026-05-10"] == "0.00"
+    assert daily["2026-05-11"] == "-0.01"
+
+    risk = row["risk_days"]
+    assert len(risk) == 1
+    assert risk[0]["from"] == "2026-05-11"       # NOT 05-10: 0.00 is not overdrawn
+    assert risk[0]["through"] == "2026-05-31"
+    assert risk[0]["lowest_balance"] == "-0.01"
+
+
+async def test_f3_risk_is_per_account_and_never_crosses_currencies(
+    db_session: AsyncSession,
+):
+    """F3. A EUR account at -100 is flagged; a USD account at +5000 is not, and
+    `totals[]` carries no risk field at all.
+
+    Mutant killed: evaluating the risk series on the per-currency `totals`
+    rollup (or on any cross-account sum) instead of per account.
+
+    NON-VACUITY: the USD balance is 5000, deliberately large enough that a
+    NAIVE cross-currency sum stays POSITIVE (5000 - 100 = 4900) and therefore
+    flags nothing. With a small USD balance the naive sum is also negative,
+    the broken implementation flags EUR too, and the test passes against it.
+    """
+    seed = await _seed(db_session, second_currency=True)
+    primary = seed["accounts"]["primary"]
+    usd = seed["accounts"]["usd"]
+    usd.balance = Decimal("5000.00")
+    db_session.add(_new_tx(
+        org_id=seed["org_id"], account_id=primary.id,
+        category_id=seed["cat_expense"], amount=Decimal("1100.00"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.PENDING,
+        date=datetime.date(2026, 5, 12),
+    ))
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START, today=TODAY_IN_PERIOD
+    )
+    by_id = {a["account_id"]: a for a in result["accounts"]}
+
+    eur_row = by_id[primary.id]
+    assert eur_row["currency"] == "EUR"
+    assert eur_row["expected_month_end_balance"] == "-100.00"
+    assert len(eur_row["risk_days"]) == 1
+    assert eur_row["risk_days"][0]["from"] == "2026-05-12"
+    assert eur_row["risk_days"][0]["lowest_balance"] == "-100.00"
+
+    usd_row = by_id[usd.id]
+    assert usd_row["currency"] == "USD"
+    assert usd_row["expected_month_end_balance"] == "5000.00"
+    assert usd_row["risk_days"] == []
+
+    # The one place a cross-currency sum could enter. It must stay closed.
+    for total in result["totals"]:
+        assert "risk_days" not in total
+        assert "daily_balances" not in total
+
+
+async def test_f5_future_dated_settled_row_does_not_pre_spend_day_zero(
+    db_session: AsyncSession,
+):
+    """F5. A SETTLED expense dated `window_end` is already inside
+    `accounts.balance` today -- `accounts.balance` is date-agnostic and nothing
+    validates a transaction's date against the clock. Day 0 must therefore ADD
+    it back, and the walk must lay it down again on its own date.
+
+    Mutant killed: seeding day 0 with `account.balance` verbatim and never
+    querying future-dated settled rows -- which is what the code did before
+    TBD-198 and what a builder writes by default.
+
+    NON-VACUITY: BOTH ends are asserted, and they are not interchangeable.
+    Under that mutant the FINAL value is 1000.00 either way, so the last-day
+    assertion passes; only the day-0 assertion (1300.00 vs 1000.00)
+    discriminates.
+    """
+    seed = await _seed(db_session)
+    primary = seed["accounts"]["primary"]
+    # `primary.balance` stays 1000.00: the row below is ALREADY counted in it.
+    db_session.add(_new_tx(
+        org_id=seed["org_id"], account_id=primary.id,
+        category_id=seed["cat_expense"], amount=Decimal("300.00"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=PERIOD_END, settled_date=PERIOD_END,
+    ))
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START, today=TODAY_IN_PERIOD
+    )
+    row = next(a for a in result["accounts"] if a["account_id"] == primary.id)
+    daily = _daily(row)
+
+    assert row["balance"] == "1000.00"
+    assert daily[0] == ("2026-05-01", "1300.00")      # un-spent: THE fence
+    assert daily[-1] == ("2026-05-31", "1000.00")     # re-spent on its own day
+    assert row["expected_month_end_balance"] == "1000.00"
+    # The day before it lands is still the un-spent figure.
+    assert dict(daily)["2026-05-30"] == "1300.00"
+
+
+async def test_f6_credit_cards_and_loans_are_never_flagged(
+    db_session: AsyncSession,
+):
+    """F6. A CC at -1,200 and a loan at -40,000 produce ZERO risk days: a
+    negative balance is the NORMAL state of a liability, so an implementation
+    without the deny-list warns on them every single day.
+
+    Mutant killed: dropping the `LIABILITY_SLUGS` guard in `_risk_runs`.
+
+    ⚠ THE CLOCK IS BEFORE `PERIOD_START` HERE, DELIBERATELY, and this test is
+    vacuous without it. With `today == PERIOD_START` a liability that is
+    already below zero on day 0 sits inside a run that STARTS on day 0, and R3
+    ("strictly future") suppresses that run on its own -- so the deny-list can
+    be deleted and the test still passes. Measured, not theorised: the first
+    draft of this fence was GREEN against its own mutant for exactly that
+    reason. Moving the clock one week earlier makes every run start strictly
+    after `today`, which leaves the deny-list as the ONLY thing that can
+    suppress them.
+
+    NON-VACUITY, three ways:
+      * a CONTROL account -- an ordinary `checking` row at -50.00 under the
+        identical clock and window -- IS flagged, proving R3 is not doing the
+        suppressing;
+      * the CC carries BOTH `close_day` AND `payment_source_account_id`, so CC
+        synthesis genuinely runs (asserted via a non-empty `cc_payments`);
+        without those the account is skipped for an UNRELATED reason;
+      * both liability day-0 balances are asserted below zero, so the guard has
+        real work to do.
+    """
+    seed = await _seed_cc(db_session)
+    cc, source = seed["cc"], seed["source"]
+    db_session.add(_charge(seed, cc, amount="500.00", on=datetime.date(2026, 4, 10)))
+    cc.balance = Decimal("-1200.00")
+    # The control: a NON-liability account, below zero on the very same days.
+    control = seed["accounts"]["secondary"]
+    control.balance = Decimal("-50.00")
+    before_period = datetime.date(2026, 4, 24)
+
+    loan_type = AccountType(
+        org_id=seed["org_id"], name="Loan", slug="loan", is_system=True
+    )
+    db_session.add(loan_type)
+    await db_session.flush()
+    loan = Account(
+        org_id=seed["org_id"], name="Mortgage", account_type_id=loan_type.id,
+        balance=Decimal("-40000.00"), currency="EUR", is_default=False,
+        payment_source_account_id=source.id, opening_balance=Decimal("-40000.00"),
+        principal_amount=_LOAN_PRINCIPAL, interest_rate_apr=_LOAN_APR,
+        term_months=_LOAN_TERM, origination_date=datetime.date(2026, 5, 1),
+        first_payment_date=IN_PERIOD,
+    )
+    db_session.add(loan)
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START, today=before_period
+    )
+    by_id = {a["account_id"]: a for a in result["accounts"]}
+    cc_row, loan_row = by_id[cc.id], by_id[loan.id]
+    control_row = by_id[control.id]
+
+    # Non-vacuity: synthesis ran, and both accounts really are below zero.
+    assert cc_row["cc_payments"] == [{"amount": "500.00", "date": "2026-05-01"}]
+    assert loan_row["loan_payments"] == [{"amount": str(_LOAN_PMT), "date": "2026-05-15"}]
+    assert Decimal(cc_row["daily_balances"][0]["balance"]) < 0
+    assert Decimal(loan_row["daily_balances"][0]["balance"]) < 0
+
+    # Non-vacuity: the CONTROL, on the same clock and the same window, IS
+    # flagged from the first day of the series. Anything that suppresses the
+    # two rows below would have suppressed this one too.
+    assert control_row["account_type_slug"] == "checking"
+    assert len(control_row["risk_days"]) == 1
+    assert control_row["risk_days"][0]["from"] == "2026-05-01"
+
+    assert cc_row["risk_days"] == []
+    assert loan_row["risk_days"] == []
+
+
+async def test_f7_runs_not_days_two_separate_dips(db_session: AsyncSession):
+    """F7 (R2). Each contiguous below-zero interval is ONE entry.
+
+    Mutants killed:
+      * one entry per below-zero DAY (this fixture would report 14);
+      * reporting only the GLOBAL MINIMUM (would report 1).
+
+    NON-VACUITY: the fixture dips, RECOVERS, and dips AGAIN, so the correct
+    answer is TWO. A single-run fixture passes against the global-minimum
+    implementation and proves nothing. The trough of run 1 (-300 on 05-11) is
+    deliberately LOWER than run 2's (-50), so an implementation that keeps only
+    the deepest run also fails.
+    """
+    seed = await _seed(db_session)
+    primary = seed["accounts"]["primary"]
+    org_id = seed["org_id"]
+
+    def _p(amount, on, kind=TransactionType.EXPENSE):
+        return _new_tx(
+            org_id=org_id, account_id=primary.id,
+            category_id=seed["cat_expense"] if kind == TransactionType.EXPENSE
+            else seed["cat_income"],
+            amount=Decimal(amount), type=kind,
+            status=TransactionStatus.PENDING, date=on,
+        )
+
+    db_session.add_all([
+        _p("1200.00", datetime.date(2026, 5, 10)),                        # -> -200
+        _p("100.00", datetime.date(2026, 5, 11)),                         # -> -300
+        _p("500.00", datetime.date(2026, 5, 12), TransactionType.INCOME),  # -> +200
+        _p("250.00", datetime.date(2026, 5, 20)),                         # -> -50
+    ])
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, org_id, period_start=PERIOD_START, today=TODAY_IN_PERIOD
+    )
+    row = next(a for a in result["accounts"] if a["account_id"] == primary.id)
+
+    # The recovery is real, not an artefact of the assertions below.
+    assert dict(_daily(row))["2026-05-12"] == "200.00"
+
+    assert row["risk_days"] == [
+        {
+            "from": "2026-05-10",
+            "through": "2026-05-11",
+            "lowest_balance": "-300.00",
+            "lowest_on": "2026-05-11",
+        },
+        {
+            "from": "2026-05-20",
+            "through": "2026-05-31",
+            "lowest_balance": "-50.00",
+            "lowest_on": "2026-05-20",
+        },
+    ]
+
+
+async def test_f7b_already_negative_account_is_re_warned_not_warned(
+    db_session: AsyncSession,
+):
+    """F7b (R3 + R4). An account below zero TODAY is not warned about today --
+    that is current state and the Balance column already shows it, exactly.
+    Only a SUBSEQUENT, genuinely new crossing is reported.
+
+    Mutant killed: emitting every run regardless of its start date (i.e.
+    dropping the `r["from"] > today` filter). That mutant reports TWO runs
+    here, the first of which restates the balance the user is already looking
+    at.
+
+    NON-VACUITY: day 0 is asserted to be BELOW zero, so the suppressed run
+    genuinely exists; and the account RECOVERS before dipping again, so there
+    is a second run for the rule to let through. Without the recovery the
+    single run is suppressed and `[] == []` proves nothing.
+    """
+    seed = await _seed(db_session)
+    primary = seed["accounts"]["primary"]
+    primary.balance = Decimal("-100.00")
+    db_session.add_all([
+        _new_tx(
+            org_id=seed["org_id"], account_id=primary.id,
+            category_id=seed["cat_income"], amount=Decimal("500.00"),
+            type=TransactionType.INCOME, status=TransactionStatus.PENDING,
+            date=datetime.date(2026, 5, 8),
+        ),
+        _new_tx(
+            org_id=seed["org_id"], account_id=primary.id,
+            category_id=seed["cat_expense"], amount=Decimal("600.00"),
+            type=TransactionType.EXPENSE, status=TransactionStatus.PENDING,
+            date=datetime.date(2026, 5, 20),
+        ),
+    ])
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START, today=TODAY_IN_PERIOD
+    )
+    row = next(a for a in result["accounts"] if a["account_id"] == primary.id)
+    daily = dict(_daily(row))
+
+    # The suppressed run is real: below zero today, recovering on the 8th.
+    assert daily["2026-05-01"] == "-100.00"
+    assert daily["2026-05-07"] == "-100.00"
+    assert daily["2026-05-08"] == "400.00"
+
+    assert len(row["risk_days"]) == 1
+    assert row["risk_days"][0]["from"] == "2026-05-20"
+    assert row["risk_days"][0]["lowest_balance"] == "-200.00"
+
+
+async def test_f_wire_risk_day_key_is_from_after_response_model_round_trip(
+    db_session: AsyncSession,
+):
+    """The wire contract, at the API boundary rather than in the service dict.
+
+    `from` is a Python keyword, so `RiskDayRun` spells the field `from_date`
+    with an alias. FastAPI serialises response models with `by_alias=True`, so
+    the JSON key the frontend reads must come back out as `from`.
+
+    Mutant killed: declaring the field as plain `from_date` with no alias --
+    the service dict still says `from`, pydantic silently drops the unknown
+    key, and the widget's dated sub-line renders `undefined` with every
+    backend test still green.
+    """
+    seed = await _seed(db_session)
+    primary = seed["accounts"]["primary"]
+    db_session.add(_new_tx(
+        org_id=seed["org_id"], account_id=primary.id,
+        category_id=seed["cat_expense"], amount=Decimal("1500.00"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.PENDING,
+        date=datetime.date(2026, 5, 12),
+    ))
+    await db_session.commit()
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], period_start=PERIOD_START, today=TODAY_IN_PERIOD
+    )
+    response = AccountBalanceForecastResponse(**result)
+    row = next(a for a in response.accounts if a.account_id == primary.id)
+
+    assert len(row.risk_days) == 1
+    assert row.risk_days[0].from_date == datetime.date(2026, 5, 12)
+
+    wire = response.model_dump(mode="json", by_alias=True)
+    wire_row = next(a for a in wire["accounts"] if a["account_id"] == primary.id)
+    assert wire_row["risk_days"][0]["from"] == "2026-05-12"
+    assert "from_date" not in wire_row["risk_days"][0]
+
+    # And the invariant survives the round trip.
+    assert (
+        row.daily_balances[-1].balance == row.expected_month_end_balance
+    )

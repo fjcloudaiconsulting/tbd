@@ -359,3 +359,174 @@ describe("AccountMonthEndForecast — error state", () => {
     expect(container.firstChild).toBeNull();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TBD-198 — Low balance day warning
+// ═══════════════════════════════════════════════════════════════════════════
+
+// A fully populated fixture: two accounts, a CC payment line, a pending
+// subtext. F9 runs on this SAME shape with `risk_days: []`, so it cannot pass
+// merely because the widget fell into an empty state.
+const POPULATED_WITH_RISK: AccountMonthEndForecastResponse = {
+  period_start: "2026-05-01",
+  period_end: "2026-05-31",
+  totals: [
+    {
+      currency: "EUR",
+      balance: "500.00",
+      pending_delta: "-600.00",
+      expected_month_end_balance: "-100.00",
+    },
+  ],
+  accounts: [
+    {
+      account_id: 1,
+      account_name: "Checking",
+      currency: "EUR",
+      is_default: true,
+      account_type_slug: "checking",
+      balance: "500.00",
+      pending_delta: "-600.00",
+      expected_month_end_balance: "-100.00",
+      daily_balances: [
+        { date: "2026-05-12", balance: "-100.00" },
+        { date: "2026-05-31", balance: "-100.00" },
+      ],
+      risk_days: [
+        {
+          from: "2026-05-12",
+          through: "2026-05-31",
+          lowest_balance: "-100.00",
+          lowest_on: "2026-05-12",
+        },
+      ],
+    },
+    {
+      account_id: 2,
+      account_name: "Visa",
+      currency: "EUR",
+      is_default: false,
+      account_type_slug: "credit_card",
+      balance: "-500.00",
+      pending_delta: "0.00",
+      expected_month_end_balance: "0.00",
+      cc_payments: [{ amount: "500.00", date: "2026-05-01" }],
+      risk_days: [],
+    },
+  ],
+};
+
+function withoutRisk(): AccountMonthEndForecastResponse {
+  return {
+    ...POPULATED_WITH_RISK,
+    accounts: POPULATED_WITH_RISK.accounts.map((a) => ({ ...a, risk_days: [] })),
+  };
+}
+
+describe("AccountMonthEndForecast — low balance warning (TBD-198)", () => {
+  it("F8: the warning is legible without colour — accessible name, not a class", () => {
+    // NON-VACUOUS BY CONSTRUCTION: this asserts on the ACCESSIBLE NAME and on
+    // `aria-hidden` on the icon, never on the class string. A class assertion
+    // (`toContain("bg-danger-dim")`) passes for a colour-only badge, which is
+    // a hard WCAG 2.2 AA fail under DESIGN.md and PRODUCT.md.
+    render(
+      <AccountMonthEndForecast {...defaults({ forecast: POPULATED_WITH_RISK })} />,
+    );
+
+    const badge = screen.getByTestId("low-balance-badge-1");
+    // The text a screen reader announces, with the sr-only prefix.
+    expect(badge).toHaveTextContent(/Warning:\s*Low balance/);
+    // Visible text, not only the sr-only span: strip the prefix and something
+    // must remain.
+    expect(
+      screen.getByText("Low balance", { exact: false, selector: "span" }),
+    ).toBeInTheDocument();
+
+    // The icon carries NO meaning and must not be announced.
+    //
+    // ⚠ SCOPE, MEASURED: deleting the explicit `aria-hidden="true"` from
+    // the JSX does NOT turn this red — lucide-react adds `aria-hidden="true"`
+    // itself whenever an icon has no children and no a11y prop
+    // (`lucide-react.js`, the `hasA11yProp` branch). The explicit prop is kept
+    // because MarkerChip writes it and because a11y must not ride on a library
+    // default, but this assertion's real job is pinning the RENDERED output:
+    // it goes red the moment the icon stops being a hidden lucide glyph — an
+    // inlined raw `<svg>`, or an icon given an `aria-label`. Do not read it as
+    // a fence on the prop.
+    const icon = badge.querySelector("svg");
+    expect(icon).not.toBeNull();
+    expect(icon).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("F8b: the dated sub-line names the day and the trough", () => {
+    render(
+      <AccountMonthEndForecast {...defaults({ forecast: POPULATED_WITH_RISK })} />,
+    );
+    expect(
+      screen.getByText(
+        /Below zero 2026-05-12 to 2026-05-31, lowest €-100\.00 on 2026-05-12/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("F8c: one line per RUN, never one per day", () => {
+    const twoRuns: AccountMonthEndForecastResponse = {
+      ...POPULATED_WITH_RISK,
+      accounts: [
+        {
+          ...POPULATED_WITH_RISK.accounts[0],
+          risk_days: [
+            {
+              from: "2026-05-10",
+              through: "2026-05-11",
+              lowest_balance: "-300.00",
+              lowest_on: "2026-05-11",
+            },
+            {
+              from: "2026-05-20",
+              through: "2026-05-20",
+              lowest_balance: "-50.00",
+              lowest_on: "2026-05-20",
+            },
+          ],
+        },
+        POPULATED_WITH_RISK.accounts[1],
+      ],
+    };
+    render(<AccountMonthEndForecast {...defaults({ forecast: twoRuns })} />);
+    expect(screen.getAllByTestId("low-balance-line-1")).toHaveLength(2);
+    // A one-day run reads as a single date, not as a degenerate range.
+    expect(
+      screen.getByText(/Below zero on 2026-05-20 \(€-50\.00\)/),
+    ).toBeInTheDocument();
+    // Exactly one badge on the row, however many runs it carries.
+    expect(screen.getAllByTestId("low-balance-badge-1")).toHaveLength(1);
+  });
+
+  it("F9: quiet by default — nothing renders when risk_days is empty", () => {
+    // NON-VACUOUS: the fixture is the SAME fully populated one (two accounts,
+    // a cc_payments line, a pending subtext), with only `risk_days` emptied.
+    // Running this on a bare fixture would let it pass because the widget fell
+    // into an empty state rather than because the warning is conditional.
+    render(<AccountMonthEndForecast {...defaults({ forecast: withoutRisk() })} />);
+
+    // Proof the card really did render its content.
+    expect(screen.getByText(/Payment.*€500\.00 on 2026-05-01/)).toBeInTheDocument();
+    expect(screen.getByText(/Includes -€600\.00 pending/)).toBeInTheDocument();
+
+    expect(screen.queryByTestId("low-balance-badge-1")).toBeNull();
+    expect(screen.queryByTestId("low-balance-badge-2")).toBeNull();
+    expect(screen.queryByTestId("low-balance-line-1")).toBeNull();
+    expect(screen.queryByText(/Below zero/)).toBeNull();
+  });
+
+  it("F9b: a row whose risk_days key is absent entirely renders no warning", () => {
+    // The legacy wire shape (and every existing fixture in this file) has no
+    // `risk_days` key at all. `?? []` must hold, not throw.
+    render(
+      <AccountMonthEndForecast {...defaults({ forecast: TWO_ACCOUNTS_EUR })} />,
+    );
+    expect(screen.queryByText(/Below zero/)).toBeNull();
+    expect(screen.queryByTestId("low-balance-badge-1")).toBeNull();
+  });
+});

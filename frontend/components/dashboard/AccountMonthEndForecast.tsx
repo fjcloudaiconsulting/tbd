@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { TriangleAlert } from "lucide-react";
 
-import { btnLink, card, cardHeader, cardTitle } from "@/lib/styles";
+import { badgeError, btnLink, card, cardHeader, cardTitle } from "@/lib/styles";
 import { formatAmount } from "@/lib/format";
 
 export interface AccountMonthEndForecastTotal {
@@ -25,6 +26,21 @@ export interface AccountMonthEndForecastRow {
   cc_payments?: { amount: string; date: string }[];
   // Loan V1 Slice 2: synthesized loan payment(s) projected in this period.
   loan_payments?: { amount: string; date: string }[];
+  // TBD-198: the end-of-day projected balance for every day of the remaining
+  // window. Present so the last point is verifiably the same number as
+  // `expected_month_end_balance`; this component renders the RUNS, not the
+  // series, so nothing here iterates it.
+  daily_balances?: { date: string; balance: string }[];
+  // TBD-198: contiguous below-zero intervals, already filtered to the
+  // strictly-future ones by the backend. One entry per RUN, never per day.
+  risk_days?: LowBalanceRun[];
+}
+
+export interface LowBalanceRun {
+  from: string;
+  through: string;
+  lowest_balance: string;
+  lowest_on: string;
 }
 
 export interface AccountMonthEndForecastResponse {
@@ -164,6 +180,7 @@ export default function AccountMonthEndForecast({
             const sign = pendingNum > 0 ? "+" : "-";
             const pendingMagnitude = formatAmount(Math.abs(pendingNum));
             const pendingCurrencySymbol = currencySymbol(row.currency);
+            const riskDays = row.risk_days ?? [];
             return (
               <div
                 key={row.account_id}
@@ -175,6 +192,25 @@ export default function AccountMonthEndForecast({
                     {row.is_default && (
                       <span className="rounded border border-border px-1.5 py-0.5 text-[9px] font-semibold text-text-secondary">
                         DEFAULT
+                      </span>
+                    )}
+                    {/* TBD-198. `badgeError` DIRECTLY, not via badgeForTone():
+                        the BadgeTone union has no danger member and widening
+                        it for one caller is scope this ticket does not need.
+                        Colour is never the only signal (DESIGN.md, PRODUCT.md,
+                        WCAG 2.2 AA) — the icon is aria-hidden and the visible
+                        "Low balance" text carries the meaning, with an sr-only
+                        prefix so the chip is not heard as another metadata
+                        value on the row. Same construction as MarkerChip on
+                        /settings/organization/periods. */}
+                    {riskDays.length > 0 && (
+                      <span
+                        className={badgeError}
+                        data-testid={`low-balance-badge-${row.account_id}`}
+                      >
+                        <span className="sr-only">Warning: </span>
+                        <TriangleAlert className="h-3 w-3" aria-hidden="true" />
+                        Low balance
                       </span>
                     )}
                   </p>
@@ -194,6 +230,22 @@ export default function AccountMonthEndForecast({
                       {pendingMagnitude} pending
                     </p>
                   )}
+                  {/* TBD-198. The dated sub-line, in the SAME visual slot the
+                      CC/loan payment lines occupy — quiet by default, and
+                      absent entirely when there is nothing to say. One line
+                      per RUN: a line per day would turn a fortnight's
+                      overdraft into fourteen identical rows. */}
+                  {riskDays.map((r) => (
+                    <p
+                      key={`risk-${r.from}`}
+                      data-testid={`low-balance-line-${row.account_id}`}
+                      className="text-[10px] tabular-nums text-danger"
+                    >
+                      {r.from === r.through
+                        ? `Below zero on ${r.from} (${pendingCurrencySymbol}${formatAmount(r.lowest_balance)})`
+                        : `Below zero ${r.from} to ${r.through}, lowest ${pendingCurrencySymbol}${formatAmount(r.lowest_balance)} on ${r.lowest_on}`}
+                    </p>
+                  ))}
                   {(row.cc_payments ?? []).map((p, i) => (
                     <p
                       key={`${p.date}-${i}`}

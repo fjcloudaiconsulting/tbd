@@ -11,7 +11,7 @@ import datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AccountBalanceForecastTotal(BaseModel):
@@ -39,6 +39,37 @@ class LoanPaymentLine(BaseModel):
     date: datetime.date
 
 
+class DailyBalancePoint(BaseModel):
+    """One END-OF-DAY projected balance (TBD-198).
+
+    Emitted on the wire deliberately, not kept private to the service: it is
+    what makes ``daily_balances[-1].balance == expected_month_end_balance``
+    assertable at the API boundary rather than only inside a unit test, and it
+    is the line-item visibility PRODUCT.md asks for — the user can see WHICH
+    day the money runs out, not merely that it does.
+    """
+
+    date: datetime.date
+    balance: Decimal
+
+
+class RiskDayRun(BaseModel):
+    """One contiguous below-zero interval on an account's daily series.
+
+    A RUN, never a day (R2): ``[from .. through]`` inclusive, with the trough
+    and the date it lands on. ``from`` is a Python keyword, so the field is
+    ``from_date`` with a wire alias; FastAPI serialises response models with
+    ``by_alias=True``, so the JSON key is ``from``.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_date: datetime.date = Field(alias="from")
+    through: datetime.date
+    lowest_balance: Decimal
+    lowest_on: datetime.date
+
+
 class AccountBalanceForecastRow(BaseModel):
     account_id: int
     account_name: str
@@ -50,6 +81,12 @@ class AccountBalanceForecastRow(BaseModel):
     expected_month_end_balance: Decimal
     cc_payments: list[CcPaymentLine] = []
     loan_payments: list[LoanPaymentLine] = []
+    # TBD-198. Both live on the ROW, never on AccountBalanceForecastTotal:
+    # each account has exactly one currency, so a per-account series never
+    # sums anything, and `totals` is the one place a cross-currency sum could
+    # enter. Do not "roll up" either field.
+    daily_balances: list[DailyBalancePoint] = []
+    risk_days: list[RiskDayRun] = []
 
 
 class AccountBalanceForecastResponse(BaseModel):
