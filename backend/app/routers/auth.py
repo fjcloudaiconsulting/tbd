@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database import get_db
 from app.auth.pat import require_interactive_session
 from app.deps import get_current_user, get_current_user_optional, get_session_factory
-from app.services.feature_gate import Feature, resolve_feature
+from app.services.feature_gate import Feature, resolve_features
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
 from app.models.user import AVATAR_URL_MAX_LENGTH, Organization, Role, User
@@ -223,21 +223,38 @@ async def auth_status(
 
     ``features`` exposes the resolved on/off state for each named feature
     flag.  When the caller presents a valid bearer token the flags are
-    resolved per-org (OrgSetting → SystemSetting → env-floor).  Without a
-    token the per-org lookup is skipped and resolution falls through to
+    resolved per-org (the operator chain OrgSetting → SystemSetting →
+    env-floor, masked by the org's own ``orgpref.<name>`` opt-out).  Without a
+    token both per-org lookups are skipped and resolution falls through to
     global SystemSetting → env-floor only.
+
+    Batched via ``resolve_features``: five features each reading two keys is
+    fifteen round trips one-at-a-time, on an endpoint hit by every cold load.
     """
     org_id: int | None = user.org_id if user else None
     user_count = await db.scalar(select(func.count()).select_from(User))
+    resolved = await resolve_features(
+        [
+            Feature.REPORTS,
+            Feature.PLANS,
+            Feature.CUSTOM_DASHBOARD,
+            Feature.FORECAST,
+            Feature.BUDGETS,
+        ],
+        org_id,
+        db,
+    )
     return {
         "needs_setup": user_count == 0,
         "captcha_required": app_settings.captcha_required,
         "billing_ui_enabled": app_settings.billing_ui_enabled,
         "feature_reports_v2": app_settings.feature_reports_v2,
         "features": {
-            "reports": await resolve_feature(Feature.REPORTS, org_id, db),
-            "plans": await resolve_feature(Feature.PLANS, org_id, db),
-            "custom_dashboard": await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id, db),
+            "reports": resolved[Feature.REPORTS],
+            "plans": resolved[Feature.PLANS],
+            "custom_dashboard": resolved[Feature.CUSTOM_DASHBOARD],
+            "forecast": resolved[Feature.FORECAST],
+            "budgets": resolved[Feature.BUDGETS],
         },
     }
 

@@ -12,7 +12,8 @@ PUT  /api/v1/admin/features/{feature}
     Upsert (value="on"|"off") or delete (value="inherit") the SystemSetting
     row; audit via ``feature.global.set``.
 GET  /api/v1/admin/orgs/{org_id}/features
-    List per-org overrides + effective resolution for every Feature.
+    List per-org overrides + the org's own opt-out (``org_preference``) +
+    the PLATFORM effective resolution for every Feature.
 PUT  /api/v1/admin/orgs/{org_id}/features/{feature}
     Upsert / delete OrgSetting row; audit via ``feature.org.set``.
 """
@@ -36,10 +37,12 @@ from app.rate_limit import get_client_ip
 from app.services import audit_service
 from app.services.feature_gate import (
     Feature,
+    _resolve_platform_feature,
     env_floor,
     feature_setting_key,
     normalize_onoff,
-    resolve_feature,
+    org_preference_key,
+    upsert_org_setting,
 )
 
 logger = structlog.stdlib.get_logger()
@@ -105,17 +108,21 @@ async def _upsert_system_setting(db: AsyncSession, key: str, value: str) -> None
         db.add(SystemSetting(key=key, value=value))
 
 
-async def _upsert_org_setting(
-    db: AsyncSession, org_id: int, key: str, value: str
-) -> None:
-    """Upsert an OrgSetting row."""
-    existing = await db.scalar(
-        select(OrgSetting).where(OrgSetting.org_id == org_id, OrgSetting.key == key)
+async def _org_preference(db: AsyncSession, org_id: int, feat: Feature) -> str:
+    """Return the org's OWN preference for *feat*: ``"off"`` or ``"inherit"``.
+
+    Surfaced beside ``effective`` so an operator can explain the discrepancy.
+    Without it, an org that opted out reads as ``override: inherit,
+    effective: true`` while the tenant sees the feature closed, and the
+    operator has nothing to look at.
+    """
+    raw = await db.scalar(
+        select(OrgSetting.value).where(
+            OrgSetting.org_id == org_id,
+            OrgSetting.key == org_preference_key(feat),
+        )
     )
-    if existing is not None:
-        existing.value = value
-    else:
-        db.add(OrgSetting(org_id=org_id, key=key, value=value))
+    return "off" if normalize_onoff(raw) == "off" else "inherit"
 
 
 # ─── endpoints ────────────────────────────────────────────────────────────
@@ -216,6 +223,14 @@ async def list_org_features(
     """List per-org feature overrides + effective resolution.
 
     Superadmin only.  Returns 404 when org doesn't exist.
+
+    ``effective`` is the PLATFORM answer (``_resolve_platform_feature``), not
+    the tenant-facing one: this surface exists to show the operator what the
+    operator controls. The org's own opt-out is reported separately as
+    ``org_preference`` (``"off"`` / ``"inherit"``) — conflating the two into a
+    single boolean is what left an operator staring at ``override: inherit,
+    effective: true, global on`` with no way to explain the tenant's closed
+    surface.
     """
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
     if org is None:
@@ -230,9 +245,14 @@ async def list_org_features(
             )
         )
         override = normalize_onoff(override_raw) or "inherit"
-        effective = await resolve_feature(feat, org_id, db)
+        effective = await _resolve_platform_feature(feat, org_id, db)
         result.append(
-            {"feature": feat.value, "override": override, "effective": effective}
+            {
+                "feature": feat.value,
+                "override": override,
+                "org_preference": await _org_preference(db, org_id, feat),
+                "effective": effective,
+            }
         )
     return result
 
@@ -285,14 +305,14 @@ async def set_org_feature(
             )
         )
         new_override = "inherit"
+        await db.commit()
     else:
-        await _upsert_org_setting(db, org_id, key, body.value)
+        # Commits internally, with the unique-key retry.
+        await upsert_org_setting(db, org_id, key, body.value)
         new_override = body.value
 
-    await db.commit()
-
-    # Resolve effective value after the commit
-    effective = await resolve_feature(feat, org_id, db)
+    # Resolve the PLATFORM value after the commit — same reason as the GET.
+    effective = await _resolve_platform_feature(feat, org_id, db)
 
     await audit_service.record_audit_event(
         session_factory,
@@ -307,8 +327,10 @@ async def set_org_feature(
         detail={"feature": feat.value, "old": old_value, "new": body.value},
     )
 
+    # Read and write must not disagree: same field set, same resolver.
     return {
         "feature": feat.value,
         "override": new_override,
+        "org_preference": await _org_preference(db, org_id, feat),
         "effective": effective,
     }

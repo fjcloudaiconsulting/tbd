@@ -28,6 +28,14 @@ from app.schemas.budget_rebalance import BudgetRebalanceResponse
 from app.services import ai_routing_service, audit_service, budget_rebalance_service
 from app.services.ai_feature_map import ui_to_routing
 
+# ⚠ ALIASED, not imported plain. ``app.auth.feature_deps.require_feature``
+# (System 2 — AI entitlements, takes a ``str``, 403s) is already bound above at
+# module scope; a bare ``from app.services.feature_gate import require_feature``
+# would rebind that name and break the existing ``ai.budget`` dep at import
+# time, silently.
+from app.services.feature_gate import Feature
+from app.services.feature_gate import require_feature as require_product_area
+
 # Source the routing name from the canonical map so it can't drift from the
 # entitlement/UI mapping (budget_rebalance_service exposes no ROUTING_KEY).
 _ROUTING_KEY = ui_to_routing("budget")
@@ -36,7 +44,18 @@ _ROUTING_KEY = ui_to_routing("budget")
 logger = structlog.stdlib.get_logger()
 
 
-router = APIRouter(prefix="/api/v1/ai/budget", tags=["ai-budget"])
+# The Budgets product gate goes on the APIRouter CONSTRUCTOR, not beside the
+# ``ai.budget`` dep on the route decorator. FastAPI solves constructor
+# dependencies first, so an org that switched Budgets off gets a 404 rather
+# than a 403 advertising an AI upsell for a product area it just turned off.
+# This ALSO matters for a Pro org: ``ai.budget`` is True there, so without the
+# product gate a Budgets-disabled Pro org could still reach this endpoint.
+# Fenced by F6 (with ``ai.budget`` pinned False) and its F6c control.
+router = APIRouter(
+    prefix="/api/v1/ai/budget",
+    tags=["ai-budget"],
+    dependencies=[Depends(require_product_area(Feature.BUDGETS))],
+)
 
 
 @router.post(

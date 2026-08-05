@@ -160,7 +160,10 @@ export default function DashboardPage() {
 }
 
 function LegacyDashboard() {
-  const { user, loading } = useAuth();
+  const { user, loading, features } = useAuth();
+  // TBD-197. `=== false`, never truthiness: undefined means a booting client
+  // (or a pre-existing test mock) and Budgets ships ON.
+  const budgetsDisabled = features?.budgets === false;
   const router = useRouter();
   const [resetBanner, setResetBanner] = useState(false);
 
@@ -283,10 +286,15 @@ function LegacyDashboard() {
     ?? (monthFrom ? projectedPeriodEnd(monthFrom, billingCycleDay) ?? "" : "");
 
   const loadRefs = useCallback(async () => {
+    // TBD-197: the budgets call sits INSIDE this Promise.all, and a rejection
+    // here does not degrade one tile — it replaces the entire page with
+    // "Failed to load dashboard data" (see the catch on the effect below).
+    // With Budgets gated off the route 404s, so the call must not be made at
+    // all. Fenced by G6.
     const [accts, cats, bds, per, plist, bc] = await Promise.all([
       apiFetch<Account[]>("/api/v1/accounts"),
       apiFetch<Category[]>("/api/v1/categories"),
-      apiFetch<Budget[]>("/api/v1/budgets"),
+      budgetsDisabled ? null : apiFetch<Budget[]>("/api/v1/budgets"),
       apiFetch<BillingPeriod>("/api/v1/settings/billing-period"),
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
       apiFetch<{ billing_cycle_day: number }>("/api/v1/settings/billing-cycle"),
@@ -301,7 +309,7 @@ function LegacyDashboard() {
     // Default to the current period (TBD-242), not index 0.
     const currentIdx = selectCurrentPeriodIndex(pl);
     if (currentIdx >= 0) setPeriodIdx(currentIdx);
-  }, []);
+  }, [budgetsDisabled]);
 
   const loadTransactions = useCallback(async (p: number) => {
     // Omit period_start until refs have loaded a real billing period.
@@ -322,7 +330,7 @@ function LegacyDashboard() {
       // bit-identical either way.
       apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&collapse_transfers=true&${dateFilter}`),
       p === 0 ? apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=200&collapse_transfers=true&${dateFilter}`) : null,
-      p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
+      p === 0 && !budgetsDisabled ? apiFetch<Budget[]>(budgetUrl) : null,
       p === 0 ? apiFetch<ForecastPlan | null>(forecastUrl) : null,
     ]);
     const page_txs = pageData?.items ?? [];
@@ -333,7 +341,7 @@ function LegacyDashboard() {
     // null is a valid response (no plan yet) — set state so empty-state UI renders.
     if (p === 0) setForecast(fc ?? null);
     setFetching(false);
-  }, [monthFrom, monthTo, realPeriodStart]);
+  }, [monthFrom, monthTo, realPeriodStart, budgetsDisabled]);
 
   // All-time pending refetch. Decoupled from loadTransactions so it
   // refreshes on writes regardless of which transaction page is visible:
@@ -1058,7 +1066,12 @@ function LegacyDashboard() {
               )}
             </div>
 
-            {/* Budget progress */}
+            {/* Budget progress — hidden outright when the org switched
+                Budgets off (TBD-197). Its empty state reads "No budgets for
+                this period. Add one", which is both wrong and unactionable
+                here: there are no budgets because the tool is off, and the
+                link it offers now lands on the disabled notice. */}
+            {!budgetsDisabled && (
             <div className={`${card} overflow-hidden`}>
               <div className={`flex items-center justify-between ${cardHeader}`}>
                 <h2 className={cardTitle}>Budget Progress</h2>
@@ -1117,6 +1130,7 @@ function LegacyDashboard() {
                 </div>
               )}
             </div>
+            )}
 
             {/* Forecast comparison — planned vs actual per category */}
             <div className={`${card} overflow-hidden p-5`}>

@@ -14,6 +14,12 @@ import {
   setAccessToken,
 } from "@/lib/api";
 import type { User, TokenResponse, MfaChallengeResponse } from "@/lib/types";
+import {
+  DEFAULT_FEATURES,
+  parseFeatures,
+  type AuthStatusFeatures,
+  type FeatureFlags,
+} from "@/lib/features";
 
 export class MfaRequiredError extends Error {
   constructor(public mfaToken: string) {
@@ -84,17 +90,17 @@ interface AuthContextValue {
   billingUiEnabled?: boolean;
   /**
    * Resolved per-org feature flags from /api/v1/auth/status.
-   * Each key is the RESOLVED value (per-org override → global → env
-   * floor). Defaults to all-false until status resolves — same
-   * "default false until /auth/status" rationale as billingUiEnabled.
+   * Each key is the RESOLVED value (the org's own opt-out mask over:
+   * per-org override → global → env floor). Until status resolves each key
+   * sits at its DEFAULT_FEATURES value, which is deliberately NOT uniform —
+   * see that constant.
    * Re-fetched with a Bearer token once the access token is set so
    * per-org overrides are correctly reflected in the UI.
    * Optional in the interface so existing test mocks that pre-date
-   * this field don't have to be updated; consumers treat ``undefined``
-   * as ``{ reports: false, plans: false, customDashboard: false }``
-   * (the safe default).
+   * this field don't have to be updated; consumers therefore test
+   * ``features?.x === false`` rather than truthiness.
    */
-  features?: { reports: boolean; plans: boolean; customDashboard: boolean };
+  features?: FeatureFlags;
   login: (login: string, password: string) => Promise<void>;
   register: (
     username: string,
@@ -107,6 +113,27 @@ interface AuthContextValue {
   ) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
+  /**
+   * Re-resolve `features` from /api/v1/auth/status and nothing else.
+   *
+   * Deliberately NOT folded into `refreshMe` (which refetches the user object
+   * and has its own retry / terminal-401 contract): a settings toggle wants the
+   * feature answer, not a user reload.
+   *
+   * Every consumer of a feature flag reads it from this provider, which
+   * resolves `features` exactly three times — both boot paths and `login()`.
+   * None of those runs again on a client-side navigation, so without this an
+   * admin who switches Budgets off keeps a stale `budgets: true` for the whole
+   * session: the nav entry survives and links to a page that 404s into an
+   * error banner, and on a legacy dashboard the `/api/v1/budgets` fetch in the
+   * page's `Promise.all` rejects and renders a deliberate setting as "Failed
+   * to load dashboard data".
+   *
+   * Optional in the interface so the ~40 test files that replace this module
+   * with a partial `vi.mock` keep type-checking; call it as
+   * `await refreshFeatures?.()`.
+   */
+  refreshFeatures?: () => Promise<void>;
   /**
    * WHY the user last became unauthenticated, so the /login screen can
    * show the right message and AppShell can decide whether to preserve
@@ -143,10 +170,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // (older API revision) is equivalent to "billing UI hidden" — the
   // safe default for the pre-payment state.
   const [billingUiEnabled, setBillingUiEnabled] = useState(false);
-  // Resolved per-org feature flags. Defaults to all-false until
-  // /auth/status resolves so gated surfaces stay hidden on first render.
-  // Same "default false until /auth/status" rationale as billingUiEnabled.
-  const [features, setFeatures] = useState<{ reports: boolean; plans: boolean; customDashboard: boolean }>({ reports: false, plans: false, customDashboard: false });
+  // Resolved per-org feature flags, seeded from DEFAULT_FEATURES until
+  // /auth/status resolves. NOTE: the "default false until /auth/status" rule
+  // stated for billingUiEnabled above holds only for the OPT-IN flags;
+  // forecast/budgets ship ON. DEFAULT_FEATURES owns that split.
+  const [features, setFeatures] = useState<FeatureFlags>(DEFAULT_FEATURES);
   // WHY the user last became unauthenticated. Drives the /login banner +
   // returnTo decision (see AuthContextValue.authExitReason). Only the two
   // deliberate transitions set it: the terminal-401 ``auth:unauthenticated``
@@ -190,6 +218,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Re-resolve the feature flags alone. Shared by the two authenticated boot /
+  // login refreshes below and by the Planning tools card, so a toggle takes
+  // effect in the session that made it. Throws on failure; callers decide
+  // whether that is fatal (none of them treat it as such today).
+  const refreshFeatures = useCallback(async () => {
+    const authedStatus = await apiFetch<{ features?: AuthStatusFeatures }>(
+      "/api/v1/auth/status",
+    );
+    setFeatures(parseFeatures(authedStatus.features));
+  }, []);
+
   useEffect(() => {
     // Cold-start transient errors during restore (status timed out,
     // refresh hit a 5xx, /me network blip) used to drop the user
@@ -210,15 +249,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           apiFetch<{
             needs_setup: boolean;
             billing_ui_enabled?: boolean;
-            features?: { reports?: boolean; plans?: boolean; custom_dashboard?: boolean };
+            features?: AuthStatusFeatures;
           }>("/api/v1/auth/status"),
         );
         setBillingUiEnabled(Boolean(status.billing_ui_enabled));
-        setFeatures({
-          reports: Boolean(status.features?.reports),
-          plans: Boolean(status.features?.plans),
-          customDashboard: Boolean(status.features?.custom_dashboard),
-        });
+        // One parser, shared with the two authenticated refreshes and
+        // refreshFeatures. The polarity split it applies is deliberately
+        // non-uniform, so a hand-rolled copy per call site is a drift bug
+        // waiting to happen — see lib/features.ts.
+        setFeatures(parseFeatures(status.features));
         if (status.needs_setup) {
           setNeedsSetup(true);
           setLoading(false);
@@ -250,14 +289,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // reaching the app — features stay at the global/env values
         // from the unauthenticated read above.
         try {
-          const authedStatus = await apiFetch<{
-            features?: { reports?: boolean; plans?: boolean; custom_dashboard?: boolean };
-          }>("/api/v1/auth/status");
-          setFeatures({
-            reports: Boolean(authedStatus.features?.reports),
-            plans: Boolean(authedStatus.features?.plans),
-            customDashboard: Boolean(authedStatus.features?.custom_dashboard),
-          });
+          await refreshFeatures();
         } catch {
           // Non-fatal: keep the global/env-level features already set.
         }
@@ -322,14 +354,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Best-effort: failure keeps whatever features were resolved at
     // boot (global/env level).
     try {
-      const authedStatus = await apiFetch<{
-        features?: { reports?: boolean; plans?: boolean; custom_dashboard?: boolean };
-      }>("/api/v1/auth/status");
-      setFeatures({
-        reports: Boolean(authedStatus.features?.reports),
-        plans: Boolean(authedStatus.features?.plans),
-        customDashboard: Boolean(authedStatus.features?.custom_dashboard),
-      });
+      await refreshFeatures();
     } catch {
       // Non-fatal: keep the boot-time global/env-level features.
     }
@@ -371,9 +396,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthExitReason("manual");
     setAccessToken(null);
     setUser(null);
-    // Reset to fail-closed default so a signed-out user doesn't retain
-    // a previous org's per-org feature resolution.
-    setFeatures({ reports: false, plans: false, customDashboard: false });
+    // Reset to the shipped defaults so a signed-out user doesn't retain a
+    // previous org's per-org feature resolution.
+    setFeatures(DEFAULT_FEATURES);
   };
 
   return (
@@ -388,6 +413,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         register,
         logout,
         refreshMe: fetchMe,
+        refreshFeatures,
         authExitReason,
         clearAuthExitReason,
       }}

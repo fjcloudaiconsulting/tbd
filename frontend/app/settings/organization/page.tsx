@@ -20,6 +20,7 @@ import { projectedPeriodEnd } from "@/lib/format";
 import { isAdmin } from "@/lib/auth";
 import DemoDataCard from "@/components/settings/DemoDataCard";
 import SchedulerSettingsCard from "@/components/settings/SchedulerSettingsCard";
+import PlanningToolsCard from "@/components/settings/PlanningToolsCard";
 import MembersSection from "@/components/settings/MembersSection";
 import SmartRulesSection from "@/components/settings/SmartRulesSection";
 import {
@@ -855,6 +856,12 @@ export default function OrganizationSettingsPage() {
           <SmartRulesSection />
         </div>
       )}
+
+      {/* Planning tools (TBD-197) — below the operational cards, above the
+          Danger Zone. Only Budgets ships in PR 1; Forecast joins in PR 2. */}
+      <div className="mt-6">
+        <PlanningToolsCard tools={["budgets"]} />
+      </div>
 
       {isOrgOwner && user && (
         <div className="mt-6">

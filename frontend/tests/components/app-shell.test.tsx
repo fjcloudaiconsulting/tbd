@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { DEFAULT_FEATURES } from "@/lib/features";
 import { ensureFreshAccessToken } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
@@ -201,7 +202,7 @@ describe("AppShell — system nav gating", () => {
       user: BASE_USER as never,
       loading: false,
       needsSetup: false,
-      features: { reports: false, plans: true, customDashboard: false },
+      features: { ...DEFAULT_FEATURES, reports: false, plans: true },
       billingUiEnabled: false,
       login: vi.fn(),
       register: vi.fn(),
@@ -224,7 +225,7 @@ describe("AppShell — system nav gating", () => {
       user: BASE_USER as never,
       loading: false,
       needsSetup: false,
-      features: { reports: true, plans: true, customDashboard: false },
+      features: { ...DEFAULT_FEATURES, reports: true, plans: true },
       billingUiEnabled: false,
       login: vi.fn(),
       register: vi.fn(),
@@ -249,7 +250,7 @@ describe("AppShell — system nav gating", () => {
       user: BASE_USER as never,
       loading: false,
       needsSetup: false,
-      features: { reports: false, plans: false, customDashboard: false },
+      features: { ...DEFAULT_FEATURES, reports: false, plans: false },
       billingUiEnabled: false,
       login: vi.fn(),
       register: vi.fn(),
@@ -274,7 +275,7 @@ describe("AppShell — system nav gating", () => {
       user: BASE_USER as never,
       loading: false,
       needsSetup: false,
-      features: { reports: false, plans: true, customDashboard: false },
+      features: { ...DEFAULT_FEATURES, reports: false, plans: true },
       billingUiEnabled: false,
       login: vi.fn(),
       register: vi.fn(),
@@ -296,7 +297,7 @@ describe("AppShell — system nav gating", () => {
       user: BASE_USER as never,
       loading: false,
       needsSetup: false,
-      features: { reports: true, plans: false, customDashboard: false },
+      features: { ...DEFAULT_FEATURES, reports: true, plans: false },
       billingUiEnabled: false,
       login: vi.fn(),
       register: vi.fn(),
