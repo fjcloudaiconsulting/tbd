@@ -161,11 +161,26 @@ function buildNavItems(features: {
 
   if (!features.reports) return items;
 
-  // Insert Reports just before the Plans item when present; otherwise
-  // insert it after Forecast Plans so the order stays sensible.
+  // Insert Reports just before the Plans item when present; otherwise just
+  // after Forecast Plans, so the order stays sensible.
+  //
+  // ⚠ BOTH anchors are now filterable, and neither was before TBD-197 PR 2.
+  // `/plans` has always been droppable, but `/forecast-plans` only became so
+  // when PR 2 made `features.forecast === false` reachable — PR 1 shipped that
+  // branch with the slug absent from the writable allow-list, so it could never
+  // fire. With Reports on, Plans off and Forecast off — which is production's
+  // configuration (FEATURE_REPORTS_V2 true, FEATURE_PLANS false) plus one admin
+  // switching Forecast off — both findIndex calls return -1 and the old
+  // `forecastIdx + 1` evaluated to 0, splicing Reports ABOVE Dashboard on every
+  // page. Fall back to the end of the list, never to a computed 0.
   const plansIdx = items.findIndex((i) => i.href === "/plans");
   const forecastIdx = items.findIndex((i) => i.href === "/forecast-plans");
-  const insertAt = plansIdx !== -1 ? plansIdx : forecastIdx + 1;
+  const insertAt =
+    plansIdx !== -1
+      ? plansIdx
+      : forecastIdx !== -1
+        ? forecastIdx + 1
+        : items.length;
   return [
     ...items.slice(0, insertAt),
     REPORTS_NAV_ITEM,
