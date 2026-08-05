@@ -2754,13 +2754,14 @@ async def list_transactions(
     tags: list[str] | None = None,
     tags_exclude: list[str] | None = None,
     tag_match: str = "all",
-    category_match: str = "subtree",
-    reportable: bool = False,
     sort_by: str | None = None,
     sort_dir: str | None = None,
     limit: int = 50,
     offset: int = 0,
     collapse_transfers: bool = False,
+    *,
+    category_match: str = "subtree",
+    reportable: bool = False,
 ) -> tuple[list[Transaction], int]:
     """List one page of transactions plus the total over the same filtered set.
 
@@ -2784,6 +2785,13 @@ async def list_transactions(
     clause exactly, so a drilldown into a rollup slice returns that slice and
     not a superset of it. Both go into ``filter_kwargs``, so page, count and
     the collapse subquery see one filtered set by construction.
+
+    They sit AFTER the ``*`` rather than in argument order next to
+    ``category_id``, because this signature already carries seventeen
+    positional-or-keyword params. Every in-repo caller passes at most ``db``
+    and ``org_id`` positionally (verified by AST scan over ``app/`` and
+    ``tests/``), so keyword-only costs nothing today and makes the
+    silent-reordering break structurally impossible for the next param.
     """
     filter_kwargs = dict(
         account_id=account_id, category_id=category_id, tx_type=tx_type,

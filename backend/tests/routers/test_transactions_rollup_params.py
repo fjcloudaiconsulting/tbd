@@ -26,9 +26,26 @@ Fences, per §7:
   REJECTED reconciliation row (and the transfer legs). ``is_manual_adjustment``
   alone is the half-fix: it is already on the wire, so a filter that handles
   only it looks correct and still counts rejected rows.
+* ``B3b`` — FENCE (review fold). ``reportable=true`` with NO ``category_id``.
+  Every B3 case sends a category filter too, so all of them survive a mutant
+  that indents the ``if reportable:`` block inside ``if category_id is not
+  None:`` — which silently makes a PAT-reachable public param a no-op for any
+  caller that does not also filter by category. Measured: that mutant reddens
+  these seven tests and nothing else in the file.
+* ``B2xB3`` — FENCE (review fold). The two params discriminating on ONE query.
+  B2 never sends ``reportable``; B3 runs on a CHILDLESS category where
+  ``exact`` and ``subtree`` coincide. So "honour ``exact`` only when
+  ``reportable`` is false" was a surviving mutant. Measured: it reddens only
+  the two ``test_b2x_b3_*`` tests. (Its converse, "honour ``reportable`` only
+  when not ``exact``", was already caught by B3 — measured, not assumed.)
 * ``B4`` — CONTROL. With both params absent the response bytes are the ones
   ``main`` emits for the same fixture. Green before AND after PR A by
   construction; it goes red only on a change that alters default behaviour.
+  ⚠ VERIFIED, not reasoned: the four snapshots were replayed against ``main``'s
+  ``routers/transactions.py`` + ``services/transaction_service.py`` with this
+  test file unchanged. All four passed while the nine B2/B3 fences went red —
+  the red half proves the replay really was running ``main``'s source, which is
+  what makes the green half evidence rather than a tautology.
 
 All dates are fixed literals, never ``today``-relative. The list endpoint
 never reads the clock, and ``compute_forecast`` does not either once its
@@ -132,9 +149,29 @@ def _make_app(factory, user_id: int) -> FastAPI:
 # Counts are chosen so every assertion below is a distinct number: a filter
 # that silently falls through to another branch cannot land on the right
 # total by coincidence.
-HOME_DIRECT = 90       # rows sitting DIRECTLY on the master category
-UTILITIES_ROWS = 80    # rows on its ONLY subcategory
+HOME_DIRECT = 90       # REPORTABLE rows sitting DIRECTLY on the master
+UTILITIES_ROWS = 80    # REPORTABLE rows on its ONLY subcategory
 FOOD_ROWS = 80         # an unrelated master, no children
+
+# Review fold (B2xB3). One non-reportable row on the master AND one on the
+# sub, so `category_match` and `reportable` are BOTH discriminating on the
+# SAME query. Before these existed every `reportable` test ran on `misc_id`,
+# a CHILDLESS category, where `exact` and `subtree` return the same set --
+# so "honour exact only when reportable is false" (and its converse) were
+# both surviving mutants. See test_b2x_b3_both_params_discriminate_at_once.
+HOME_NONREPORTABLE = 1   # a REJECTED row sitting DIRECTLY on the master
+UTIL_NONREPORTABLE = 1   # a manual adjustment sitting on the SUBcategory
+
+# Every non-reportable description in the fixture, for the no-category-filter
+# fence. `reportable=true` must drop exactly these and nothing else.
+NON_REPORTABLE_DESCRIPTIONS = {
+    "misc adjustment", "misc rejected", "misc leg out", "misc leg in",
+    "home rejected", "util adjustment",
+}
+
+# Absolute row count of the whole fixture, so a later fixture edit that
+# changes what the no-category fence measures cannot pass silently.
+ALL_ROWS = 260
 
 
 async def _seed_rollup_org(factory) -> dict:
@@ -196,6 +233,19 @@ async def _seed_rollup_org(factory) -> dict:
             reconciliation_state="rejected",
         ))
 
+        # Review fold: the two rows that make `exact` and `reportable`
+        # discriminating on ONE query. Both are EXPENSE + SETTLED, so if
+        # `reportable_transaction_filter` ever stopped excluding them they
+        # would land in the rollup and B1's absolute 495.00 would break too.
+        rows.append(_row(
+            home.id, "home rejected", "17.00", day=15,
+            reconciliation_state="rejected",
+        ))
+        rows.append(_row(
+            utilities.id, "util adjustment", "19.00", day=16,
+            is_manual_adjustment=True,
+        ))
+
         # A category whose only row is PENDING: it appears in the rollup with
         # executed="0", so B1 stays an assertion about EXECUTED, not forecast.
         rows.append(_row(
@@ -223,11 +273,13 @@ async def _seed_rollup_org(factory) -> dict:
         leg_b.linked_transaction_id = leg_a.id
 
         await db.commit()
+        # `food` is deliberately absent: its 80 rows are load-bearing for B1's
+        # absolute 495.00 (they are the *3.00 term), but no test filters BY it,
+        # and a returned-but-unread id reads as coverage that does not exist.
         return {
             "user_id": user.id,
             "home_id": home.id,
             "utilities_id": utilities.id,
-            "food_id": food.id,
             "misc_id": misc.id,
         }
 
@@ -297,7 +349,7 @@ def test_b2_exact_returns_only_rows_directly_on_the_master(rollup):
         f"&category_match=exact&limit=1"
     )
     assert res.status_code == 200
-    assert res.json()["total"] == HOME_DIRECT
+    assert res.json()["total"] == HOME_DIRECT + HOME_NONREPORTABLE
 
     body = client.get(
         f"/api/v1/transactions?category_id={seed['home_id']}"
@@ -313,7 +365,9 @@ def test_b2_subtree_returns_the_master_and_its_subs(rollup):
         f"&category_match=subtree&limit=1"
     )
     assert res.status_code == 200
-    assert res.json()["total"] == HOME_DIRECT + UTILITIES_ROWS
+    assert res.json()["total"] == (
+        HOME_DIRECT + HOME_NONREPORTABLE + UTILITIES_ROWS + UTIL_NONREPORTABLE
+    )
 
 
 def test_b2_omitting_the_param_is_subtree(rollup):
@@ -327,7 +381,9 @@ def test_b2_omitting_the_param_is_subtree(rollup):
         f"&category_match=subtree&limit=1"
     )
     assert omitted.status_code == 200
-    assert omitted.json()["total"] == HOME_DIRECT + UTILITIES_ROWS
+    assert omitted.json()["total"] == (
+        HOME_DIRECT + HOME_NONREPORTABLE + UTILITIES_ROWS + UTIL_NONREPORTABLE
+    )
     assert omitted.json() == explicit.json()
 
 
@@ -344,7 +400,7 @@ def test_b2_exact_and_subtree_agree_on_a_leaf_category(rollup):
         f"/api/v1/transactions?category_id={seed['utilities_id']}"
         f"&category_match=subtree&limit=1"
     ).json()
-    assert exact["total"] == UTILITIES_ROWS
+    assert exact["total"] == UTILITIES_ROWS + UTIL_NONREPORTABLE
     assert exact == subtree
 
 
@@ -423,7 +479,14 @@ def test_b3_reportable_total_matches_the_page(rollup):
 
 def test_b3_reportable_composes_with_the_drilldown_query(rollup):
     """The exact URL shape §3 of the design note specifies, minus paging. Its
-    ``total`` must equal the Misc slice of the B1 rollup, in rows AND amount."""
+    ``total`` must equal the Misc slice of the B1 rollup, in rows AND amount.
+
+    ⚠ ``total`` is asserted explicitly (review fold). Summing ``items`` alone
+    proves the PAGE agrees with the slice; the envelope's ``total`` comes from
+    a SECOND query, and "the list exceeds its own total" is the defect shape
+    PR B deletes. A docstring that says "rows AND amount" while the body only
+    ever reads ``items`` is claiming coverage it does not have.
+    """
     client, seed = rollup
     body = client.get(
         f"/api/v1/transactions?category_id={seed['misc_id']}"
@@ -436,6 +499,109 @@ def test_b3_reportable_composes_with_the_drilldown_query(rollup):
     misc = [c for c in forecast["categories"] if c["category_id"] == seed["misc_id"]]
     assert len(misc) == 1
     assert slice_total == Decimal(misc[0]["executed"]) == Decimal("5.00")
+    # ROWS: the envelope's own count, not len(items).
+    assert body["total"] == len(body["items"]) == 1
+
+
+# ── B3b — fence: reportable WITHOUT a category filter (review fold) ────────
+
+
+def _total(client, query: str) -> int:
+    res = client.get(f"/api/v1/transactions?{query}&limit=1")
+    assert res.status_code == 200
+    return res.json()["total"]
+
+
+def test_b3b_reportable_alone_needs_no_category_filter(rollup):
+    """FENCE (review fold). Every other ``reportable`` test in this file also
+    sends ``category_id`` + ``category_match=exact``, so ALL of them stay green
+    against a mutant that indents the ``if reportable:`` block one level, INSIDE
+    ``if category_id is not None:``. That mutant makes a PAT-reachable public
+    param a silent no-op for every caller that does not also filter by category.
+
+    Nothing else in the repo sends ``reportable`` without a category, so this is
+    the only test that can go red on it.
+
+    ⚠ Absence is asserted over ``total``, never over a truncated page: the
+    unfiltered fixture is 260 rows and ``limit`` is capped at 200, so a
+    "description not in items" assertion here would pass for the wrong reason.
+    """
+    client, _ = rollup
+    window = f"date_from={P_START}&date_to={P_END}"
+
+    unfiltered = _total(client, window)
+    assert unfiltered == ALL_ROWS
+    filtered = _total(client, f"{window}&reportable=true")
+    assert filtered == ALL_ROWS - len(NON_REPORTABLE_DESCRIPTIONS)
+
+
+@pytest.mark.parametrize("description", sorted(NON_REPORTABLE_DESCRIPTIONS))
+def test_b3b_each_excluded_kind_without_a_category_filter(rollup, description):
+    """Per-kind half of B3b. ``search`` narrows to a single row so the absence
+    is real and not a paging artefact, and no ``category_id`` is sent -- which
+    is the whole point."""
+    client, _ = rollup
+    q = f"date_from={P_START}&date_to={P_END}&search={description}"
+    assert _total(client, q) == 1
+    assert _total(client, f"{q}&reportable=true") == 0
+
+
+# ── B2xB3 — fence: the two params discriminate on ONE query ────────────────
+
+
+def test_b2x_b3_both_params_discriminate_at_once(rollup):
+    """FENCE (review fold). Kills "honour ``exact`` only when ``reportable`` is
+    false" AND its converse.
+
+    Before this test the two params were never simultaneously discriminating:
+    every B2 case sent ``category_match`` with no ``reportable``, and every B3
+    case sent ``reportable`` on ``misc_id`` -- a CHILDLESS category, where
+    ``exact`` and ``subtree`` return the identical set. So a wiring that
+    honoured one param only in the absence of the other passed the whole file.
+
+    ``home_id`` is a master WITH a sub, and BOTH levels carry a non-reportable
+    row, so all four combinations are distinct integers:
+
+        exact   + reportable ->  90   (direct, reportable only)
+        exact                ->  91   (+ the master's REJECTED row)
+        subtree + reportable -> 170   (+ the sub's reportable rows)
+        subtree              -> 172   (+ the sub's manual adjustment)
+
+    Dropping either param from either position lands on one of the other three.
+    """
+    client, seed = rollup
+    home = seed["home_id"]
+
+    both = _total(client, f"category_id={home}&category_match=exact&reportable=true")
+    exact_only = _total(client, f"category_id={home}&category_match=exact")
+    reportable_only = _total(
+        client, f"category_id={home}&category_match=subtree&reportable=true"
+    )
+    neither = _total(client, f"category_id={home}&category_match=subtree")
+
+    assert both == HOME_DIRECT
+    assert exact_only == HOME_DIRECT + HOME_NONREPORTABLE
+    assert reportable_only == HOME_DIRECT + UTILITIES_ROWS
+    assert neither == (
+        HOME_DIRECT + HOME_NONREPORTABLE + UTILITIES_ROWS + UTIL_NONREPORTABLE
+    )
+    # No two of them coincide, so no mutant can satisfy the fence by landing
+    # on a neighbouring branch.
+    assert len({both, exact_only, reportable_only, neither}) == 4
+
+
+def test_b2x_b3_composed_drilldown_drops_both_levels_non_reportable_rows(rollup):
+    """Row-level companion to the counts above: the master's REJECTED row and
+    the sub's adjustment must BOTH be absent, for two different reasons
+    (``reportable`` drops the first, ``exact`` never admits the second)."""
+    client, seed = rollup
+    got = _descriptions(
+        client,
+        f"category_id={seed['home_id']}&category_match=exact&reportable=true",
+    )
+    assert "home rejected" not in got
+    assert "util adjustment" not in got
+    assert len(got) == HOME_DIRECT
 
 
 # ── B4 — control: default response bytes are main's ────────────────────────

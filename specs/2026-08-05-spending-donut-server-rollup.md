@@ -99,15 +99,38 @@ URL and is how the next TBD-268 gets written.
 ⚠ **Ordering, and a live constraint on any future widening of this query.** The
 URL omits `sort_by`, so the list endpoint applies its default `date desc` over
 `effective_period_date_expr()` — `coalesce(settled_date, date)`. The rollup buckets
-`executed` rows by `settled_date` **alone**. Those are identical for the
-`status=settled` + `reportable=true` rows this query asks for, so the equality
-fence holds as written.
+`executed` rows by `settled_date` **alone** (`forecast_service.py:274-275`). Those
+are identical for the `status=settled` + `reportable=true` rows this query asks
+for, so the equality fence holds as written.
 
-**They stop being identical the moment a pending row enters the query.** A pending
-row has no `settled_date`, so the coalesce falls back to `date` while the rollup
-would not count it in `executed` at all. If a later change adds pending rows to the
-drilldown — to match a donut that shows pending, say — the total equality breaks
-silently. Re-derive the fence before widening; do not assume it survives.
+**Why identical, precisely.** A SETTLED row can never carry a NULL `settled_date`,
+so the `coalesce` can never fall back to `date` for anything this query returns.
+That is not a convention: it is enforced twice — by the flush-time listener
+`_enforce_settled_implies_settled_date` (`models/transaction.py:181-199`, bound to
+`before_insert` and `before_update`), and by the DB CHECK constraint
+`ck_transactions_settled_implies_settled_date`
+(`alembic/versions/036_settled_implies_settled_date.py`). The listener raises a
+typed `ValueError` before the row reaches the database; the CHECK is the backstop
+for any writer that bypasses the ORM. **Both must survive for this equality to
+hold** — a migration that drops the CHECK, or a bulk `UPDATE`/`insert()` core
+statement that never fires the mapper event, reopens the gap.
+
+⚠ **What the real risk is when widening.** It is *not* that pending rows would be
+double-counted through a differing date expression — the rollup's **pending**
+bucket also uses `effective_period_date_expr()` (`forecast_service.py:290-291`),
+so a status-less drilldown compared against `executed + pending` would still
+agree on window membership. The actual asymmetry is narrower and easier to miss:
+**the two buckets use different date expressions only for `executed`**
+(`settled_date` in the rollup vs `coalesce(settled_date, date)` in the list), and
+they are reconcilable today only because the SETTLED-implies-`settled_date`
+invariant above collapses the difference to nothing.
+
+So any widening changes *which* invariant the fence rests on, not merely how many
+rows it covers. Admitting PENDING rows moves the comparison onto a second bucket
+with its own predicate; admitting a `sort_by` moves the list off
+`effective_period_date_expr()` entirely. **Re-derive the equality from both
+queries' actual WHERE clauses before widening. Do not assume it survives, and do
+not assume the reason it holds today is the reason it would hold then.**
 
 ### Grouping: `category_id`, forced not chosen
 
@@ -176,7 +199,20 @@ restore two analysis bounds in one product.
 | B1 | `sum(row.executed for row in categories) == executed_expense` on an org with >200 rows in a period | the rollup and the scalar diverging; this is the DoD made executable |
 | B2 | `category_match=exact` on a master carrying direct rows **and** subs returns only the direct rows | the landmine — default `subtree` would return the superset |
 | B3 | `reportable=true` excludes a manual adjustment and a REJECTED row that `reportable=false` returns | D1; needs **both** row kinds, since `is_manual_adjustment` alone is the half-fix |
+| B3b | `reportable=true` with **no** `category_id` still filters | `if reportable:` nested inside `if category_id is not None:` — the param becomes a silent no-op for every caller that does not also filter by category |
+| B2×B3 | on a master **with** subs, where **both** the master and the sub carry a non-reportable row, all four `category_match`×`reportable` combinations are distinct totals | honouring `exact` only when `reportable` is false. B2 alone never sends `reportable`, and B3 alone runs on a childless category where `exact` ≡ `subtree` |
 | B4 | both params **absent** → byte-identical response to `main` (control) | a change that alters default behaviour on a PAT-reachable endpoint |
+
+⚠ B3b and B2×B3 were added by the review fold, after both mutants were **measured
+surviving** the original B1–B4 set. The lesson generalises past this PR: *a fence
+that always co-sends a second filter cannot fence the first one alone*, and *a
+fence for a subtree-vs-exact distinction is vacuous on a childless category*.
+
+⚠ B4's snapshots were **replayed against `main`** (both source files reverted, the
+test file kept) rather than argued from token-identical query construction: all
+four passed while the nine B2/B3 fences went red. The red half is what makes the
+green half evidence — without it, "4 passed" is equally consistent with the replay
+never having loaded `main`'s source at all.
 
 **Frontend (PR B):**
 
