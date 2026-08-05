@@ -73,8 +73,16 @@ function Switch({
         >
           <span
             aria-hidden="true"
+            // `bg-success`/`bg-border`, matching the six existing switches
+            // (SchedulerSettingsCard, SmartRulesSection, notifications), four of
+            // which render on THIS page. Deliberately NOT `bg-accent`: the switch
+            // form was chosen over the neighbouring aria-pressed button precisely
+            // to keep this control off the brass budget, and both tools default
+            // to enabled, so a brass track would be lit at rest on every load —
+            // a sixth accent moment on a page already carrying five btnPrimary,
+            // against The One Brass Rule's "at most twice, ideally once".
             className={`relative block h-6 w-11 rounded-full transition-colors ${
-              enabled ? "bg-accent" : "bg-border-strong"
+              enabled ? "bg-success" : "bg-border"
             }`}
           >
             {/* Knob fill is the `surface` THEME TOKEN, deliberately — the raw
