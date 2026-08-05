@@ -53,6 +53,7 @@ from app.services.feature_gate import (
     feature_setting_key,
     org_preference_key,
     resolve_feature,
+    upsert_org_setting,
 )
 
 
@@ -411,9 +412,16 @@ async def test_f3_put_writes_then_deletes_only_the_orgpref_row(session_factory):
 async def test_f3b_double_disable_is_idempotent(session_factory):
     """F3b. Two consecutive ``{enabled:false}`` calls → still exactly one row.
 
-    ``org_settings`` carries ``uq_org_settings_org_key``; an upsert without the
-    read-then-insert path (or without the IntegrityError retry copied from
-    ``settings.upsert_setting``) 500s here instead of returning 200.
+    ``org_settings`` carries ``uq_org_settings_org_key``; an upsert that always
+    inserted would violate it and 500 here instead of returning 200. This test
+    pins the read-then-UPDATE branch, and only that branch.
+
+    ⚠ It does NOT pin the ``IntegrityError`` retry, though it used to say it
+    did. The two PUTs are SEQUENTIAL, so the second one's ``select`` finds the
+    row the first committed and takes the update branch — the insert never runs
+    and the constraint is never violated. Deleting the entire ``except
+    IntegrityError`` block from ``upsert_org_setting`` leaves this test, and
+    the whole suite, green. F3c below forces the race instead of hoping for it.
     """
     ids = await _seed(session_factory)
     app = _make_app(session_factory, [settings_router], ids["admin_id"])
@@ -431,6 +439,45 @@ async def test_f3b_double_disable_is_idempotent(session_factory):
     }
 
 
+@pytest.mark.asyncio
+async def test_f3c_upsert_survives_a_lost_unique_key_race(session_factory):
+    """F3c. ``upsert_org_setting`` recovers when its read misses a row that
+    already exists — the ``except IntegrityError`` branch, actually executed.
+
+    F3b cannot reach this branch and no other test in the repo does either. The
+    real shape is two concurrent PUTs whose reads BOTH return ``None``; the
+    loser's INSERT then violates ``uq_org_settings_org_key``. Reproduced here by
+    making the first read — and only the first — answer ``None`` while the row
+    sits committed, which is exactly what the losing request observes.
+
+    Mutant killed: deleting the ``except IntegrityError`` block (the INSERT then
+    raises straight out of the helper and the request 500s), and neutering the
+    retry's ``row.value = value`` assignment (the stale value survives).
+    """
+    ids = await _seed(session_factory)
+    key = org_preference_key(Feature.BUDGETS)
+    # The row the racing WINNER already committed. Seeded with a value the
+    # loser does not write so the retry's assignment is observable, not merely
+    # idempotent.
+    await _write_org_row(session_factory, ids["org_id"], key, "on")
+
+    async with session_factory() as db:
+        real_scalar = db.scalar
+        reads = {"n": 0}
+
+        async def blind_first_read(*args, **kwargs):
+            reads["n"] += 1
+            if reads["n"] == 1:
+                return None
+            return await real_scalar(*args, **kwargs)
+
+        db.scalar = blind_first_read  # type: ignore[method-assign]
+        await upsert_org_setting(db, ids["org_id"], key, "off")
+
+    assert reads["n"] >= 2, "the IntegrityError branch never re-read the row"
+    assert await _org_rows(session_factory, ids["org_id"]) == {key: "off"}
+
+
 # ── F4 — the allow-list is a Literal, not a str ──────────────────────────────
 
 
@@ -438,14 +485,20 @@ async def test_f3b_double_disable_is_idempotent(session_factory):
 async def test_f4_reports_is_not_a_planning_tool(session_factory):
     """F4. ``PUT /api/v1/settings/features/reports`` → **422**.
 
-    The path param is a ``Literal["forecast","budgets"]``. Mutant killed:
-    typing it ``str`` and looking the feature up dynamically, which would hand
-    org admins an opt-out for ``reports`` / ``plans`` / ``custom_dashboard``.
+    The path param is a ``Literal``. Mutant killed: typing it ``str`` and
+    looking the feature up dynamically, which would hand org admins an opt-out
+    for ``reports`` / ``plans`` / ``custom_dashboard``.
+
+    ``forecast`` is in this loop for PR 1 and moves OUT of it in PR 2. PR 1
+    gates no Forecast route, so accepting the slug would hide the nav entry
+    while every route stayed open — and with only the Budgets switch rendered,
+    with no control left to undo it. An allow-list must not run ahead of the
+    gates.
     """
     ids = await _seed(session_factory)
     app = _make_app(session_factory, [settings_router], ids["admin_id"])
     with TestClient(app) as client:
-        for slug in ("reports", "plans", "custom_dashboard"):
+        for slug in ("reports", "plans", "custom_dashboard", "forecast"):
             res = client.put(
                 f"/api/v1/settings/features/{slug}", json={"enabled": False}
             )
@@ -513,6 +566,84 @@ async def test_f5_member_cannot_toggle(session_factory):
         )
     assert res.status_code == 403
     assert await _org_rows(session_factory, ids["org_id"]) == {}
+
+
+@pytest.mark.asyncio
+async def test_f5b_member_gets_403_not_a_422_that_leaks_the_allow_list(
+    session_factory,
+):
+    """F5b. A MEMBER hitting a slug OUTSIDE the allow-list still gets **403**.
+
+    Ordering fence, not an authz fence. ``_require_admin`` called inside the
+    handler body runs only after FastAPI has validated the path param, so a
+    MEMBER asking for ``/features/reports`` is answered 422 — a body that
+    enumerates the whole planning-tool allow-list — instead of "no".
+
+    Mutant killed: moving the admin check from the ``require_settings_admin``
+    dependency back into the handler body. F5 stays GREEN under that mutant
+    (``budgets`` is a valid slug, so validation passes and the body check
+    fires); only an INVALID slug exposes the ordering, which is why this
+    control row exists.
+    """
+    ids = await _seed(session_factory)
+    app = _make_app(session_factory, [settings_router], ids["member_id"])
+    with TestClient(app) as client:
+        for slug in ("reports", "forecast", "not_a_feature"):
+            res = client.put(
+                f"/api/v1/settings/features/{slug}", json={"enabled": False}
+            )
+            assert res.status_code == 403, slug
+        # Control: the same caller as an ADMIN does get the 422 for a bad slug,
+        # so the 403s above are the role check and not a broken route.
+    admin_app = _make_app(session_factory, [settings_router], ids["admin_id"])
+    with TestClient(admin_app) as client:
+        assert (
+            client.put(
+                "/api/v1/settings/features/reports", json={"enabled": False}
+            ).status_code
+            == 422
+        )
+    assert await _org_rows(session_factory, ids["org_id"]) == {}
+
+
+# ── F17 — the reserved namespaces are hidden from the generic LIST ───────────
+
+
+@pytest.mark.asyncio
+async def test_f17_list_settings_hides_the_reserved_namespaces(session_factory):
+    """F17. ``GET /api/v1/settings`` omits ``feature.*`` and ``orgpref.*`` rows.
+
+    Both the generic PUT and the generic DELETE answer 403 for these keys, so
+    listing them renders an Advanced Configuration row with Edit and Delete
+    buttons that can only fail — and after switching Budgets off the admin
+    would see a raw ``orgpref.budgets = off`` row directly under the switch
+    that wrote it: two contradictory controls for one state on one page.
+
+    Mutant killed: dropping the filter from ``list_settings``. The
+    case-permuted keys are the second mutant — ``str.startswith`` is
+    case-sensitive while the MySQL column collation is not, so a filter without
+    ``.lower()`` leaks ``Orgpref.budgets`` and ``FEATURE.reports``.
+    """
+    ids = await _seed(session_factory)
+    org = ids["org_id"]
+    await _write_org_row(session_factory, org, org_preference_key(Feature.BUDGETS), "off")
+    await _write_org_row(session_factory, org, feature_setting_key(Feature.REPORTS), "on")
+    await _write_org_row(session_factory, org, "Orgpref.forecast", "off")
+    await _write_org_row(session_factory, org, "FEATURE.plans", "on")
+    # Controls: ordinary org settings must still come back.
+    await _write_org_row(session_factory, org, "session_lifetime_days", "30")
+    await _write_org_row(session_factory, org, "forecast_input_granularity", "master")
+
+    app = _make_app(session_factory, [settings_router], ids["admin_id"])
+    with TestClient(app) as client:
+        body = client.get("/api/v1/settings").json()
+
+    assert [r["key"] for r in body] == [
+        "forecast_input_granularity",
+        "session_lifetime_days",
+    ]
+    # The rows are HIDDEN, not deleted — the gate still reads them.
+    assert org_preference_key(Feature.BUDGETS) in await _org_rows(session_factory, org)
 
 
 # ── G1 — /auth/status carries all five keys ──────────────────────────────────
@@ -597,3 +728,44 @@ async def test_g3_both_branches_write_one_audit_row_each(session_factory):
     assert [r.detail["new"] for r in rows] == [False, True]
     assert {r.detail["feature"] for r in rows} == {"budgets"}
     assert {r.target_org_id for r in rows} == {ids["org_id"]}
+
+
+@pytest.mark.asyncio
+async def test_g3b_audit_old_uses_the_same_normalizer_as_the_gate(session_factory):
+    """G3b. A non-canonical stored value audits as the state the GATE sees.
+
+    ``_parse_onoff`` strips and lowercases, so ``"OFF"`` and ``" off "`` are
+    real opt-outs to the resolver. Compared raw (``old_raw != "off"``) the audit
+    row calls that org *enabled* before the change — the trail contradicting
+    the behaviour it exists to record, on the one event type an operator would
+    consult to reconstruct who turned what off.
+
+    Mutant killed: ``old_value = old_raw != "off"``.
+    """
+    ids = await _seed(session_factory)
+    org = ids["org_id"]
+    key = org_preference_key(Feature.BUDGETS)
+    await _write_org_row(session_factory, org, key, " OFF ")
+
+    # The gate agrees this org is already opted out — that is the whole premise.
+    async with session_factory() as db:
+        assert await resolve_feature(Feature.BUDGETS, org, db) is False
+
+    app = _make_app(session_factory, [settings_router], ids["admin_id"])
+    with TestClient(app) as client:
+        res = client.put(
+            "/api/v1/settings/features/budgets", json={"enabled": True}
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        row = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "org.config.feature.set"
+                )
+            )
+        ).scalars().one()
+
+    assert row.detail["old"] is False
+    assert row.detail["new"] is True

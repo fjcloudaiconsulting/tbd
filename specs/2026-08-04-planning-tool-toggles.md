@@ -365,6 +365,16 @@ is the rule that would have caught v2's worst defect.
 | G1 | — | `/auth/status` | all five keys, correctly resolved | |
 | G2 | — | `test_feature_service.py` | green, **unmodified** | proves the fail-closed invariant was not spent |
 | G3 | both PUT branches | `audit_events` | one row each | |
+| F3c | row committed, first read forced to miss it | `upsert_org_setting` | 200, row updated | **`except IntegrityError` deleted** — F3b's two SEQUENTIAL PUTs both take the update branch and never reach it |
+| F5b | MEMBER + a slug **outside** the allow-list | PUT | **403, not 422** | admin check in the handler body instead of a dependency (F5 stays green under that mutant) |
+| F17 | `orgpref.*` / `feature.*` rows, incl. case-permuted | `GET /api/v1/settings` | omitted; ordinary keys still listed | list filter absent; filter written without `.lower()` |
+| G3b | `OrgSetting("orgpref.budgets"," OFF ")` | audit `detail.old` | **False** | `old_raw != "off"` compared un-normalized |
+
+⚠ **F3b claimed a fence it did not own.** Its docstring said it pinned the
+`IntegrityError` retry; two sequential PUTs cannot, and that branch had **zero
+coverage repo-wide**. It is not dead code — the retry is reachable from two
+concurrent PUTs — so F3c forces the race rather than deleting the branch. The
+docstring now says what it actually pins.
 
 ⚠ **F6's non-vacuity requires `ai.budget: False`.** Its natural home,
 `test_ai_budget_router.py`, sets `"ai.budget": True` in every test — written there
@@ -401,6 +411,12 @@ adding assertions there.
 | G5 | `FeatureDisabledNotice` renders on `/budgets` when off, contains no `btnPrimary` | |
 | G6 | legacy shell, `budgets:false` → no whole-page error banner | `Promise.all` rejection |
 | F14 | switch has accessible name, `role="switch"`, **both** `aria-checked` states, visible Enabled/Disabled text | colour-only state |
+| **F18** | REAL `AuthProvider` + REAL `AppShell`: a successful `{enabled:false}` re-fetches `/auth/status` and the nav entry disappears **without a remount** | **`handleToggle` updating only local state** — every other frontend fence hand-feeds `useAuth`, which is exactly why this survived |
+
+⚠ **F18 is the only test that does not mock `useAuth`.** The accessible name of
+the switch is the OBJECT ("Budgets"), never the action: `role="switch"` already
+announces state via `aria-checked`, and a name that flips on toggle reads as a
+different control appearing.
 
 ⚠ **F12's positive clause** is suppressed by `loadAccountMonthEndForecast`'s own
 `!realPeriodStart || !isCurrentSelectedPeriod` early return (`:607-612`) — the
@@ -431,6 +447,16 @@ the Planning tools card with one switch.
 
 ⚠ **The mask must land in the same PR as the endpoint**, never before — it changes
 every existing `resolve_feature` caller's behaviour at once.
+
+⚠ **PR 1's allow-list is `Literal["budgets"]`, not the pair.** The `Feature`
+enum, both env floors and both `/status` keys land in PR 1 as above — but the
+*writable* allow-list must not run ahead of the gates. With `"forecast"`
+accepted, `PUT /settings/features/forecast {"enabled": false}` would drop the
+nav entry while every Forecast route stayed open, and since the card renders
+only the Budgets switch the org could not turn it back on from the UI. **PR 2
+widens `schemas/settings.PlanningTool` and `settings._PLANNING_TOOLS` back to
+the pair, and moves `"forecast"` out of F4's 422 loop, in the same commit as the
+Forecast route gates.**
 
 *After PR 1:* Budgets is fully toggleable; Forecast untouched. Shippable alone.
 

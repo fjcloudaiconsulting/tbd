@@ -58,7 +58,13 @@ function Switch({
           type="button"
           role="switch"
           aria-checked={enabled}
-          aria-label={`${enabled ? "Disable" : "Enable"} ${label}`}
+          // The accessible name is the OBJECT, never the action. `role="switch"`
+          // already announces the state through aria-checked, so an
+          // action-phrased name that flips on every toggle ("Disable Budgets" →
+          // "Enable Budgets") makes a screen reader read a control that appears
+          // to have become a different control, and states it twice — once as
+          // the name, once as the checked state, in opposite polarities.
+          aria-label={label}
           disabled={saving}
           onClick={() => onToggle(!enabled)}
           // 44px hit area via padding on an h-11 box; the visible track stays
@@ -93,7 +99,7 @@ export default function PlanningToolsCard({
 }: {
   tools?: PlanningTool[];
 }) {
-  const { features } = useAuth();
+  const { features, refreshFeatures } = useAuth();
   // Local state seeded lazily from the auth context rather than synced through
   // an effect: a prop-to-state reset effect here would fight the write echo
   // (and this repo has a documented flake class for exactly that shape).
@@ -124,6 +130,26 @@ export default function PlanningToolsCard({
       const effective = res?.enabled ?? next;
       setWritten((w) => ({ ...w, [tool]: effective }));
       setLockedByAdmin((l) => ({ ...l, [tool]: next && !effective }));
+      // Push the new answer into the auth context, which is where the REST of
+      // the app reads it: the nav filter, the page notices, the dashboard fetch
+      // skips. AuthProvider resolves `features` only on boot and at login and
+      // never unmounts on a client-side navigation, so without this the admin
+      // who just switched Budgets off keeps a stale `budgets: true` for the
+      // whole session — the nav entry survives, its page 404s into an error
+      // banner instead of the notice, and the legacy dashboard's
+      // `/api/v1/budgets` fetch rejects inside a `Promise.all` and paints
+      // "Failed to load dashboard data" over a deliberate setting. That is the
+      // exact failure the fetch skip exists to prevent, reached through the
+      // happy path.
+      //
+      // Best-effort and AFTER the local echo: the write already succeeded, so a
+      // failed re-resolve must not read as a failed toggle. The user loses only
+      // the cross-surface refresh until the next full load.
+      try {
+        await refreshFeatures?.();
+      } catch {
+        // Non-fatal — see above.
+      }
     } catch (err) {
       setError(extractErrorMessage(err));
     } finally {

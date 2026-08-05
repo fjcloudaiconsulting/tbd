@@ -14,7 +14,12 @@ import {
   setAccessToken,
 } from "@/lib/api";
 import type { User, TokenResponse, MfaChallengeResponse } from "@/lib/types";
-import { DEFAULT_FEATURES, type FeatureFlags } from "@/lib/features";
+import {
+  DEFAULT_FEATURES,
+  parseFeatures,
+  type AuthStatusFeatures,
+  type FeatureFlags,
+} from "@/lib/features";
 
 export class MfaRequiredError extends Error {
   constructor(public mfaToken: string) {
@@ -109,6 +114,27 @@ interface AuthContextValue {
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
   /**
+   * Re-resolve `features` from /api/v1/auth/status and nothing else.
+   *
+   * Deliberately NOT folded into `refreshMe` (which refetches the user object
+   * and has its own retry / terminal-401 contract): a settings toggle wants the
+   * feature answer, not a user reload.
+   *
+   * Every consumer of a feature flag reads it from this provider, which
+   * resolves `features` exactly three times — both boot paths and `login()`.
+   * None of those runs again on a client-side navigation, so without this an
+   * admin who switches Budgets off keeps a stale `budgets: true` for the whole
+   * session: the nav entry survives and links to a page that 404s into an
+   * error banner, and on a legacy dashboard the `/api/v1/budgets` fetch in the
+   * page's `Promise.all` rejects and renders a deliberate setting as "Failed
+   * to load dashboard data".
+   *
+   * Optional in the interface so the ~40 test files that replace this module
+   * with a partial `vi.mock` keep type-checking; call it as
+   * `await refreshFeatures?.()`.
+   */
+  refreshFeatures?: () => Promise<void>;
+  /**
    * WHY the user last became unauthenticated, so the /login screen can
    * show the right message and AppShell can decide whether to preserve
    * the destination:
@@ -192,6 +218,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Re-resolve the feature flags alone. Shared by the two authenticated boot /
+  // login refreshes below and by the Planning tools card, so a toggle takes
+  // effect in the session that made it. Throws on failure; callers decide
+  // whether that is fatal (none of them treat it as such today).
+  const refreshFeatures = useCallback(async () => {
+    const authedStatus = await apiFetch<{ features?: AuthStatusFeatures }>(
+      "/api/v1/auth/status",
+    );
+    setFeatures(parseFeatures(authedStatus.features));
+  }, []);
+
   useEffect(() => {
     // Cold-start transient errors during restore (status timed out,
     // refresh hit a 5xx, /me network blip) used to drop the user
@@ -212,27 +249,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           apiFetch<{
             needs_setup: boolean;
             billing_ui_enabled?: boolean;
-            features?: {
-              reports?: boolean;
-              plans?: boolean;
-              custom_dashboard?: boolean;
-              forecast?: boolean;
-              budgets?: boolean;
-            };
+            features?: AuthStatusFeatures;
           }>("/api/v1/auth/status"),
         );
         setBillingUiEnabled(Boolean(status.billing_ui_enabled));
-        setFeatures({
-          reports: Boolean(status.features?.reports),
-          plans: Boolean(status.features?.plans),
-          customDashboard: Boolean(status.features?.custom_dashboard),
-          // `!== false`, not Boolean(): an absent key means an API revision
-          // that predates these flags, and the shipped polarity for the
-          // table-stakes pair is ON. Boolean(undefined) would silently
-          // close both surfaces for every client during a partial deploy.
-          forecast: status.features?.forecast !== false,
-          budgets: status.features?.budgets !== false,
-        });
+        // One parser, shared with the two authenticated refreshes and
+        // refreshFeatures. The polarity split it applies is deliberately
+        // non-uniform, so a hand-rolled copy per call site is a drift bug
+        // waiting to happen — see lib/features.ts.
+        setFeatures(parseFeatures(status.features));
         if (status.needs_setup) {
           setNeedsSetup(true);
           setLoading(false);
@@ -264,26 +289,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // reaching the app — features stay at the global/env values
         // from the unauthenticated read above.
         try {
-          const authedStatus = await apiFetch<{
-            features?: {
-              reports?: boolean;
-              plans?: boolean;
-              custom_dashboard?: boolean;
-              forecast?: boolean;
-              budgets?: boolean;
-            };
-          }>("/api/v1/auth/status");
-          setFeatures({
-            reports: Boolean(authedStatus.features?.reports),
-            plans: Boolean(authedStatus.features?.plans),
-            customDashboard: Boolean(authedStatus.features?.custom_dashboard),
-            // `!== false`, not Boolean(): an absent key means an API revision
-            // that predates these flags, and the shipped polarity for the
-            // table-stakes pair is ON. Boolean(undefined) would silently
-            // close both surfaces for every client during a partial deploy.
-            forecast: authedStatus.features?.forecast !== false,
-            budgets: authedStatus.features?.budgets !== false,
-          });
+          await refreshFeatures();
         } catch {
           // Non-fatal: keep the global/env-level features already set.
         }
@@ -348,26 +354,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Best-effort: failure keeps whatever features were resolved at
     // boot (global/env level).
     try {
-      const authedStatus = await apiFetch<{
-        features?: {
-              reports?: boolean;
-              plans?: boolean;
-              custom_dashboard?: boolean;
-              forecast?: boolean;
-              budgets?: boolean;
-            };
-      }>("/api/v1/auth/status");
-      setFeatures({
-        reports: Boolean(authedStatus.features?.reports),
-        plans: Boolean(authedStatus.features?.plans),
-        customDashboard: Boolean(authedStatus.features?.custom_dashboard),
-        // `!== false`, not Boolean(): an absent key means an API revision
-        // that predates these flags, and the shipped polarity for the
-        // table-stakes pair is ON. Boolean(undefined) would silently
-        // close both surfaces for every client during a partial deploy.
-        forecast: authedStatus.features?.forecast !== false,
-        budgets: authedStatus.features?.budgets !== false,
-      });
+      await refreshFeatures();
     } catch {
       // Non-fatal: keep the boot-time global/env-level features.
     }
@@ -426,6 +413,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         register,
         logout,
         refreshMe: fetchMe,
+        refreshFeatures,
         authExitReason,
         clearAuthExitReason,
       }}

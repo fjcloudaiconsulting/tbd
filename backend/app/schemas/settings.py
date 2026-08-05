@@ -55,9 +55,18 @@ class ManualBalanceAdjustmentResponse(BaseModel):
 # TBD-197 — the planning-tool allow-list. A closed Literal, deliberately:
 # typed as ``str`` this path parameter would hand an org admin an opt-out for
 # ``reports`` / ``plans`` / ``custom_dashboard``, which are platform rollout
-# flags rather than tenant preferences. Anything outside the pair 422s at the
+# flags rather than tenant preferences. Anything outside the list 422s at the
 # framework boundary, before the handler body runs.
-PlanningTool = Literal["forecast", "budgets"]
+#
+# ⚠ PR 1 ships ``"budgets"`` ALONE, not the pair. PR 1 gates zero Forecast
+# routes, so accepting ``"forecast"`` here would let an admin write
+# ``orgpref.forecast="off"``: the nav entry vanishes while every Forecast route
+# stays wide open — and because the card renders only the Budgets switch there
+# is no control left to turn it back on, so the org cannot recover from the UI.
+# An allow-list must never run ahead of the gates it is an allow-list for.
+# PR 2 widens this back to ``Literal["forecast", "budgets"]`` in the same commit
+# that lands the Forecast route gates (spec §9).
+PlanningTool = Literal["budgets"]
 
 
 class PlanningToolToggle(BaseModel):

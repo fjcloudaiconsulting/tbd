@@ -43,3 +43,43 @@ export const DEFAULT_FEATURES: FeatureFlags = {
   forecast: true,
   budgets: true,
 };
+
+/**
+ * The `features` object as `/api/v1/auth/status` sends it: snake_case, and
+ * every key optional because an older API revision may not carry them.
+ */
+export type AuthStatusFeatures = {
+  reports?: boolean;
+  plans?: boolean;
+  custom_dashboard?: boolean;
+  forecast?: boolean;
+  budgets?: boolean;
+};
+
+/**
+ * Wire payload → `FeatureFlags`. The ONLY place the polarity split is applied.
+ *
+ * `Boolean()` for the opt-in rollout flags; `!== false` for the table-stakes
+ * pair, because an absent key means an API revision that predates them and the
+ * shipped polarity there is ON — `Boolean(undefined)` would silently close
+ * both surfaces for every client during a partial deploy.
+ *
+ * Extracted because AuthProvider hand-rolled this block THREE times (boot
+ * unauthenticated, boot authenticated, `login()`). A mutant that flattened the
+ * polarity in the `login()` copy alone survived every test in the diff: the
+ * two boot copies kept the suite green while every user who signed in
+ * interactively lost Budgets and Forecast. Three copies of a deliberately
+ * non-uniform rule is the "half-fix leaves a door" shape — one copy fixed, the
+ * others left holding the defect.
+ */
+export function parseFeatures(
+  raw: AuthStatusFeatures | undefined,
+): FeatureFlags {
+  return {
+    reports: Boolean(raw?.reports),
+    plans: Boolean(raw?.plans),
+    customDashboard: Boolean(raw?.custom_dashboard),
+    forecast: raw?.forecast !== false,
+    budgets: raw?.budgets !== false,
+  };
+}

@@ -39,6 +39,7 @@ from app.services import audit_service, billing_service
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.feature_gate import (
     Feature,
+    normalize_onoff,
     org_preference_key,
     resolve_feature,
     upsert_org_setting,
@@ -78,8 +79,13 @@ _RESERVED_NAMESPACE_DETAIL = (
 # The allow-list behind PUT /settings/features/{feature}. Kept beside the
 # reserved-prefix note on purpose: these two constants are the whole reason an
 # org admin cannot reach the platform rollout flags.
+#
+# ⚠ Budgets ONLY in PR 1, matching schemas.settings.PlanningTool. Forecast is
+# absent because PR 1 gates no Forecast route: an opt-out here would hide the
+# nav entry while leaving every route open, and with only the Budgets switch
+# rendered there would be no control left to undo it. PR 2 adds
+# ``"forecast": Feature.FORECAST`` in the same commit as the Forecast gates.
 _PLANNING_TOOLS: dict[str, Feature] = {
-    "forecast": Feature.FORECAST,
     "budgets": Feature.BUDGETS,
 }
 
@@ -97,6 +103,23 @@ def _require_admin(user: User) -> None:
         )
 
 
+async def require_settings_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """FastAPI dependency form of :func:`_require_admin`.
+
+    Runs during dependency resolution — i.e. BEFORE the endpoint's own path and
+    body params are validated — so an under-privileged caller always gets 403,
+    never a 422 that leaks the shape of the surface they cannot reach. Called
+    inside the handler body instead, ``PUT /settings/features/reports`` answers
+    a MEMBER with a 422 whose payload enumerates the planning-tool allow-list.
+    Mirrors ``admin_features.require_superadmin``, which is a dependency for
+    exactly this reason.
+    """
+    _require_admin(current_user)
+    return current_user
+
+
 @router.get("", response_model=list[OrgSettingResponse])
 async def list_settings(
     current_user: User = Depends(get_current_user),
@@ -108,8 +131,22 @@ async def list_settings(
         .where(OrgSetting.org_id == current_user.org_id)
         .order_by(OrgSetting.key)
     )
+    # Reserved namespaces are FILTERED OUT, not merely read-only. Both the PUT
+    # and the DELETE above answer 403 for these keys, so listing them hands the
+    # Advanced Configuration table an Edit and a Delete button that can only
+    # ever fail — two contradictory controls for one state on one page. After
+    # switching Budgets off an admin would otherwise see a raw
+    # ``orgpref.budgets = off`` row directly beneath the switch that wrote it.
+    #
+    # ``.lower()``: ``str.startswith`` is case-sensitive but the MySQL column
+    # collation is not, so a row stored as ``Orgpref.budgets`` is the same row
+    # to the database and must not leak through this filter. (The two
+    # pre-existing comparisons above are casefolded by TBD-322, deliberately
+    # not here — this is a NEW comparison and starts out correct.)
     return [
-        OrgSettingResponse(key=s.key, value=s.value) for s in result.scalars().all()
+        OrgSettingResponse(key=s.key, value=s.value)
+        for s in result.scalars().all()
+        if not s.key.lower().startswith(RESERVED_SETTINGS_PREFIX)
     ]
 
 
@@ -226,7 +263,7 @@ async def set_planning_tool(
     feature: PlanningTool,
     body: PlanningToolToggle,
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_settings_admin),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
@@ -235,7 +272,8 @@ async def set_planning_tool(
     ``feature`` is a ``Literal`` allow-list, not a ``str``: an org admin must
     never be able to reach ``reports`` / ``plans`` / ``custom_dashboard``,
     which are platform rollout flags rather than tenant preferences. A typed
-    ``str`` here would hand them all five.
+    ``str`` here would hand them all five. PR 1 narrows the list further, to
+    ``budgets`` alone — see the note on ``_PLANNING_TOOLS``.
 
     Escalation is impossible **by construction** rather than by check: this
     endpoint writes into ``orgpref.<name>``, a namespace whose only meaningful
@@ -245,18 +283,18 @@ async def set_planning_tool(
     exactly how an earlier design silently flipped an org True → False,
     unrecoverably).
 
-    ``_require_admin``, not ``require_org_owner``: ``org_permissions`` reserves
-    OWNER for tenant-scoped *destructive* operations, and nothing is deleted
-    here — the neighbouring manual-balance toggle, which rewrites account
-    balances, is admin-gated too.
+    ``require_settings_admin``, not ``require_org_owner``: ``org_permissions``
+    reserves OWNER for tenant-scoped *destructive* operations, and nothing is
+    deleted here — the neighbouring manual-balance toggle, which rewrites
+    account balances, is admin-gated too. It is a DEPENDENCY rather than a body
+    call so an under-privileged caller gets 403 before param validation can
+    answer 422.
 
     The response carries the RE-RESOLVED effective value, which can disagree
     with the request: a global ``SystemSetting("feature.<name>", "off")`` still
     wins over an org enable. The UI reads that disagreement to show its
     "set by your administrator" state.
     """
-    _require_admin(current_user)
-
     feat = _PLANNING_TOOLS[feature]
     key = org_preference_key(feat)
 
@@ -280,7 +318,12 @@ async def set_planning_tool(
             OrgSetting.org_id == actor_org_id, OrgSetting.key == key
         )
     )
-    old_value = old_raw != "off"
+    # ``normalize_onoff``, not ``!= "off"``: the resolver parses this column
+    # with ``.strip().lower()``, so ``"OFF"`` and ``" off "`` are real opt-outs
+    # to the gate. Compared raw they would resolve as opted-out yet audit as
+    # ``old: True`` — the audit trail contradicting the behaviour it records.
+    # One normalizer, shared with the gate.
+    old_value = normalize_onoff(old_raw) != "off"
 
     if body.enabled:
         await db.execute(

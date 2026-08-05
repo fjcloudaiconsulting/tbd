@@ -50,7 +50,7 @@ vi.mock("@/lib/help/tour", () => ({
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { DEFAULT_FEATURES } from "@/lib/features";
+import { DEFAULT_FEATURES, parseFeatures } from "@/lib/features";
 
 const BASE_USER = {
   id: 1,
@@ -124,5 +124,26 @@ describe("AppShell — planning-tool nav gating (TBD-197)", () => {
     expect(DEFAULT_FEATURES.reports).toBe(false);
     expect(DEFAULT_FEATURES.plans).toBe(false);
     expect(DEFAULT_FEATURES.customDashboard).toBe(false);
+  });
+
+  // F16b — the wire → flags parser. AuthProvider hand-rolled this block three
+  // times (boot unauthenticated, boot authenticated, `login()`); a mutant that
+  // flattened the polarity in the `login()` copy alone survived the entire
+  // suite, so every interactive sign-in would lose Budgets and Forecast while
+  // both boot paths kept the tests green. It is now one function, and this is
+  // its fence.
+  it("F16b: parseFeatures applies the polarity split to an /auth/status payload", () => {
+    // Absent keys = an API revision predating these flags, mid-deploy.
+    expect(parseFeatures(undefined)).toEqual(DEFAULT_FEATURES);
+    expect(parseFeatures({})).toEqual(DEFAULT_FEATURES);
+    // Only an EXPLICIT false closes a table-stakes surface.
+    const off = parseFeatures({ forecast: false, budgets: false });
+    expect(off.forecast).toBe(false);
+    expect(off.budgets).toBe(false);
+    // ...while the opt-in flags are plain truthiness, and snake_case maps over.
+    const on = parseFeatures({ reports: true, custom_dashboard: true });
+    expect(on.reports).toBe(true);
+    expect(on.customDashboard).toBe(true);
+    expect(on.plans).toBe(false);
   });
 });
