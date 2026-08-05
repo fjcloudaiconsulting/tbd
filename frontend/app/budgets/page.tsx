@@ -8,6 +8,7 @@ import HelpAnchor from "@/components/HelpAnchor";
 import HelpTooltip from "@/components/help/HelpTooltip";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
+import FeatureDisabledNotice from "@/components/features/FeatureDisabledNotice";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, todayISO } from "@/lib/format";
 import {
@@ -41,7 +42,11 @@ import BudgetRebalanceModal from "@/components/budgets/BudgetRebalanceModal";
 import BudgetDraftModal from "@/components/budgets/BudgetDraftModal";
 
 export default function BudgetsPage() {
-  const { user, loading } = useAuth();
+  const { user, loading, features } = useAuth();
+  // `=== false`, never truthiness: `features` is undefined on a booting client
+  // and on every pre-existing test mock, and Budgets ships ON. Only an
+  // explicit server `false` closes the page.
+  const budgetsDisabled = features?.budgets === false;
   const router = useRouter();
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -152,16 +157,19 @@ export default function BudgetsPage() {
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial refs fetch: loadRefs() writes categories/periods into state once auth resolves
-    if (!loading && user) loadRefs().catch(() => {});
-  }, [loading, user, loadRefs]);
+    if (!loading && user && !budgetsDisabled) loadRefs().catch(() => {});
+  }, [loading, user, loadRefs, budgetsDisabled]);
 
   useEffect(() => {
-    if (!loading && user) {
+    // Skipped when the org switched Budgets off: the router is gated
+    // server-side, so this would only produce a guaranteed 404 behind a
+    // notice the user is already reading.
+    if (!loading && user && !budgetsDisabled) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- set the fetching flag before the budgets list load kicks off
       setFetching(true);
       loadBudgets().catch(() => setFetching(false));
     }
-  }, [loading, user, loadBudgets]);
+  }, [loading, user, loadBudgets, budgetsDisabled]);
 
   // After a write from the AppShell-level "+ New Transaction" CTA the
   // budgets page reloads its list so per-budget actuals reflect the new
@@ -307,6 +315,17 @@ export default function BudgetsPage() {
       })),
     [budgets],
   );
+
+  // The org switched Budgets off. Every route this page uses now 404s, so
+  // there is nothing to render but the explanation. Nothing is deleted —
+  // re-enabling restores this page and its data untouched.
+  if (budgetsDisabled) {
+    return (
+      <AppShell>
+        <FeatureDisabledNotice featureLabel="Budgets" />
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>

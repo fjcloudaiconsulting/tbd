@@ -4,7 +4,7 @@ from decimal import Decimal
 import structlog
 from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import and_, case, func, or_, select, union_all
+from sqlalchemy import and_, case, delete, func, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -31,9 +31,18 @@ from app.schemas.settings import (
     ManualBalanceAdjustmentToggle,
     OrgSettingResponse,
     OrgSettingUpdate,
+    PlanningTool,
+    PlanningToolResponse,
+    PlanningToolToggle,
 )
 from app.services import audit_service, billing_service
 from app.services.exceptions import ConflictError, ValidationError
+from app.services.feature_gate import (
+    Feature,
+    org_preference_key,
+    resolve_feature,
+    upsert_org_setting,
+)
 from app.services.settings_service import (
     FORECAST_GRANULARITY_VALUES,
     FORECAST_INPUT_GRANULARITY_KEY,
@@ -44,13 +53,35 @@ logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
-# The "feature." prefix is exclusively managed by superadmin endpoints in
-# admin_features.py, which layer per-org OrgSetting overrides at the highest
-# priority in the three-level feature gate (feature_gate.py: per-org >
-# SystemSetting global > env-floor).  Allowing the generic PUT/DELETE here
-# would let any OWNER/ADMIN bypass a globally-disabled feature with no audit
-# trail.  Block the entire namespace from this writer.
-RESERVED_SETTINGS_PREFIX = "feature."
+# Two namespaces are off-limits to the generic org-settings writer, for
+# opposite reasons.  ``str.startswith`` accepts a tuple, so both call sites
+# below work unchanged.
+#
+#   "feature."  — exclusively managed by the superadmin endpoints in
+#       admin_features.py, which layer per-org OrgSetting overrides at the
+#       highest priority of the platform chain (per-org > SystemSetting global
+#       > env-floor).  Allowing the generic PUT/DELETE here would let any
+#       OWNER/ADMIN bypass a globally-disabled feature with no audit trail.
+#
+#   "orgpref." — the tenant opt-out mask read by feature_gate.resolve_feature.
+#       It IS org-owned, but it has exactly one legitimate writer: the
+#       PUT /settings/features/{feature} endpoint below, which audits the
+#       change and can only ever write "off".  The generic writer accepts an
+#       arbitrary value and writes no audit row, so leaving it open would make
+#       the mask a second, silent, un-auditable control surface.
+RESERVED_SETTINGS_PREFIX = ("feature.", "orgpref.")
+_RESERVED_NAMESPACE_DETAIL = (
+    "The 'feature.' and 'orgpref.' settings namespaces are managed by "
+    "dedicated endpoints, not this one"
+)
+
+# The allow-list behind PUT /settings/features/{feature}. Kept beside the
+# reserved-prefix note on purpose: these two constants are the whole reason an
+# org admin cannot reach the platform rollout flags.
+_PLANNING_TOOLS: dict[str, Feature] = {
+    "forecast": Feature.FORECAST,
+    "budgets": Feature.BUDGETS,
+}
 
 
 def _request_id() -> str | None:
@@ -93,7 +124,7 @@ async def upsert_setting(
     if body.key.startswith(RESERVED_SETTINGS_PREFIX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="The 'feature.' settings namespace is managed by platform administrators",
+            detail=_RESERVED_NAMESPACE_DETAIL,
         )
 
     # Per-key bounds validation. Other org settings have no bounds
@@ -173,7 +204,7 @@ async def delete_setting(
     if key.startswith(RESERVED_SETTINGS_PREFIX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="The 'feature.' settings namespace is managed by platform administrators",
+            detail=_RESERVED_NAMESPACE_DETAIL,
         )
 
     result = await db.execute(
@@ -188,6 +219,111 @@ async def delete_setting(
 
     await db.delete(setting)
     await db.commit()
+
+
+@router.put("/features/{feature}", response_model=PlanningToolResponse)
+async def set_planning_tool(
+    feature: PlanningTool,
+    body: PlanningToolToggle,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """TBD-197 — let an org admin switch a planning tool off for their org.
+
+    ``feature`` is a ``Literal`` allow-list, not a ``str``: an org admin must
+    never be able to reach ``reports`` / ``plans`` / ``custom_dashboard``,
+    which are platform rollout flags rather than tenant preferences. A typed
+    ``str`` here would hand them all five.
+
+    Escalation is impossible **by construction** rather than by check: this
+    endpoint writes into ``orgpref.<name>``, a namespace whose only meaningful
+    value is ``"off"``. ``enabled=true`` DELETES the row; it never writes
+    ``"on"`` anywhere, and in particular never touches ``feature.<name>`` —
+    so an org "enable" cannot destroy a superadmin's per-org grant (which is
+    exactly how an earlier design silently flipped an org True → False,
+    unrecoverably).
+
+    ``_require_admin``, not ``require_org_owner``: ``org_permissions`` reserves
+    OWNER for tenant-scoped *destructive* operations, and nothing is deleted
+    here — the neighbouring manual-balance toggle, which rewrites account
+    balances, is admin-gated too.
+
+    The response carries the RE-RESOLVED effective value, which can disagree
+    with the request: a global ``SystemSetting("feature.<name>", "off")`` still
+    wins over an org enable. The UI reads that disagreement to show its
+    "set by your administrator" state.
+    """
+    _require_admin(current_user)
+
+    feat = _PLANNING_TOOLS[feature]
+    key = org_preference_key(feat)
+
+    # Snapshot actor identity before any await on db so a rollback path can't
+    # expire `current_user` and break the audit row.
+    actor_user_id = current_user.id
+    actor_email = current_user.email
+    actor_org_id = current_user.org_id
+    req_id = _request_id()
+    ip = get_client_ip(request)
+
+    org = await db.scalar(
+        select(Organization).where(Organization.id == actor_org_id)
+    )
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    org_name = org.name
+
+    old_raw = await db.scalar(
+        select(OrgSetting.value).where(
+            OrgSetting.org_id == actor_org_id, OrgSetting.key == key
+        )
+    )
+    old_value = old_raw != "off"
+
+    if body.enabled:
+        await db.execute(
+            delete(OrgSetting).where(
+                OrgSetting.org_id == actor_org_id, OrgSetting.key == key
+            )
+        )
+        await db.commit()
+    else:
+        # Commits internally, with the uq_org_settings_org_key retry.
+        await upsert_org_setting(db, actor_org_id, key, "off")
+
+    effective = await resolve_feature(feat, actor_org_id, db)
+
+    await logger.ainfo(
+        "org.config.feature.set",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=actor_org_id,
+        feature=feature,
+        old=old_value,
+        new=body.enabled,
+        effective=effective,
+    )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="org.config.feature.set",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=actor_org_id,
+        target_org_name=org_name,
+        request_id=req_id,
+        ip_address=ip,
+        outcome="success",
+        detail={
+            "feature": feature,
+            "old": old_value,
+            "new": body.enabled,
+            "effective": effective,
+        },
+    )
+
+    return PlanningToolResponse(feature=feature, enabled=effective)
 
 
 @router.get("/billing-cycle")

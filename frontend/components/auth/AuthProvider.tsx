@@ -14,6 +14,7 @@ import {
   setAccessToken,
 } from "@/lib/api";
 import type { User, TokenResponse, MfaChallengeResponse } from "@/lib/types";
+import { DEFAULT_FEATURES, type FeatureFlags } from "@/lib/features";
 
 export class MfaRequiredError extends Error {
   constructor(public mfaToken: string) {
@@ -84,17 +85,17 @@ interface AuthContextValue {
   billingUiEnabled?: boolean;
   /**
    * Resolved per-org feature flags from /api/v1/auth/status.
-   * Each key is the RESOLVED value (per-org override → global → env
-   * floor). Defaults to all-false until status resolves — same
-   * "default false until /auth/status" rationale as billingUiEnabled.
+   * Each key is the RESOLVED value (the org's own opt-out mask over:
+   * per-org override → global → env floor). Until status resolves each key
+   * sits at its DEFAULT_FEATURES value, which is deliberately NOT uniform —
+   * see that constant.
    * Re-fetched with a Bearer token once the access token is set so
    * per-org overrides are correctly reflected in the UI.
    * Optional in the interface so existing test mocks that pre-date
-   * this field don't have to be updated; consumers treat ``undefined``
-   * as ``{ reports: false, plans: false, customDashboard: false }``
-   * (the safe default).
+   * this field don't have to be updated; consumers therefore test
+   * ``features?.x === false`` rather than truthiness.
    */
-  features?: { reports: boolean; plans: boolean; customDashboard: boolean };
+  features?: FeatureFlags;
   login: (login: string, password: string) => Promise<void>;
   register: (
     username: string,
@@ -143,10 +144,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // (older API revision) is equivalent to "billing UI hidden" — the
   // safe default for the pre-payment state.
   const [billingUiEnabled, setBillingUiEnabled] = useState(false);
-  // Resolved per-org feature flags. Defaults to all-false until
-  // /auth/status resolves so gated surfaces stay hidden on first render.
-  // Same "default false until /auth/status" rationale as billingUiEnabled.
-  const [features, setFeatures] = useState<{ reports: boolean; plans: boolean; customDashboard: boolean }>({ reports: false, plans: false, customDashboard: false });
+  // Resolved per-org feature flags, seeded from DEFAULT_FEATURES until
+  // /auth/status resolves. NOTE: the "default false until /auth/status" rule
+  // stated for billingUiEnabled above holds only for the OPT-IN flags;
+  // forecast/budgets ship ON. DEFAULT_FEATURES owns that split.
+  const [features, setFeatures] = useState<FeatureFlags>(DEFAULT_FEATURES);
   // WHY the user last became unauthenticated. Drives the /login banner +
   // returnTo decision (see AuthContextValue.authExitReason). Only the two
   // deliberate transitions set it: the terminal-401 ``auth:unauthenticated``
@@ -210,7 +212,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           apiFetch<{
             needs_setup: boolean;
             billing_ui_enabled?: boolean;
-            features?: { reports?: boolean; plans?: boolean; custom_dashboard?: boolean };
+            features?: {
+              reports?: boolean;
+              plans?: boolean;
+              custom_dashboard?: boolean;
+              forecast?: boolean;
+              budgets?: boolean;
+            };
           }>("/api/v1/auth/status"),
         );
         setBillingUiEnabled(Boolean(status.billing_ui_enabled));
@@ -218,6 +226,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           reports: Boolean(status.features?.reports),
           plans: Boolean(status.features?.plans),
           customDashboard: Boolean(status.features?.custom_dashboard),
+          // `!== false`, not Boolean(): an absent key means an API revision
+          // that predates these flags, and the shipped polarity for the
+          // table-stakes pair is ON. Boolean(undefined) would silently
+          // close both surfaces for every client during a partial deploy.
+          forecast: status.features?.forecast !== false,
+          budgets: status.features?.budgets !== false,
         });
         if (status.needs_setup) {
           setNeedsSetup(true);
@@ -251,12 +265,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // from the unauthenticated read above.
         try {
           const authedStatus = await apiFetch<{
-            features?: { reports?: boolean; plans?: boolean; custom_dashboard?: boolean };
+            features?: {
+              reports?: boolean;
+              plans?: boolean;
+              custom_dashboard?: boolean;
+              forecast?: boolean;
+              budgets?: boolean;
+            };
           }>("/api/v1/auth/status");
           setFeatures({
             reports: Boolean(authedStatus.features?.reports),
             plans: Boolean(authedStatus.features?.plans),
             customDashboard: Boolean(authedStatus.features?.custom_dashboard),
+            // `!== false`, not Boolean(): an absent key means an API revision
+            // that predates these flags, and the shipped polarity for the
+            // table-stakes pair is ON. Boolean(undefined) would silently
+            // close both surfaces for every client during a partial deploy.
+            forecast: authedStatus.features?.forecast !== false,
+            budgets: authedStatus.features?.budgets !== false,
           });
         } catch {
           // Non-fatal: keep the global/env-level features already set.
@@ -323,12 +349,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // boot (global/env level).
     try {
       const authedStatus = await apiFetch<{
-        features?: { reports?: boolean; plans?: boolean; custom_dashboard?: boolean };
+        features?: {
+              reports?: boolean;
+              plans?: boolean;
+              custom_dashboard?: boolean;
+              forecast?: boolean;
+              budgets?: boolean;
+            };
       }>("/api/v1/auth/status");
       setFeatures({
         reports: Boolean(authedStatus.features?.reports),
         plans: Boolean(authedStatus.features?.plans),
         customDashboard: Boolean(authedStatus.features?.custom_dashboard),
+        // `!== false`, not Boolean(): an absent key means an API revision
+        // that predates these flags, and the shipped polarity for the
+        // table-stakes pair is ON. Boolean(undefined) would silently
+        // close both surfaces for every client during a partial deploy.
+        forecast: authedStatus.features?.forecast !== false,
+        budgets: authedStatus.features?.budgets !== false,
       });
     } catch {
       // Non-fatal: keep the boot-time global/env-level features.
@@ -371,9 +409,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthExitReason("manual");
     setAccessToken(null);
     setUser(null);
-    // Reset to fail-closed default so a signed-out user doesn't retain
-    // a previous org's per-org feature resolution.
-    setFeatures({ reports: false, plans: false, customDashboard: false });
+    // Reset to the shipped defaults so a signed-out user doesn't retain a
+    // previous org's per-org feature resolution.
+    setFeatures(DEFAULT_FEATURES);
   };
 
   return (

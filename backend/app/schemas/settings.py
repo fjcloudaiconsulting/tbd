@@ -1,4 +1,5 @@
 import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -48,4 +49,24 @@ class ManualBalanceAdjustmentToggle(BaseModel):
 
 
 class ManualBalanceAdjustmentResponse(BaseModel):
+    enabled: bool
+
+
+# TBD-197 — the planning-tool allow-list. A closed Literal, deliberately:
+# typed as ``str`` this path parameter would hand an org admin an opt-out for
+# ``reports`` / ``plans`` / ``custom_dashboard``, which are platform rollout
+# flags rather than tenant preferences. Anything outside the pair 422s at the
+# framework boundary, before the handler body runs.
+PlanningTool = Literal["forecast", "budgets"]
+
+
+class PlanningToolToggle(BaseModel):
+    enabled: bool
+
+
+class PlanningToolResponse(BaseModel):
+    feature: PlanningTool
+    # The RE-RESOLVED effective value, which may disagree with the request: a
+    # global "off" still wins over an org enable. That disagreement is exactly
+    # what the settings UI reads to render "set by your administrator".
     enabled: bool

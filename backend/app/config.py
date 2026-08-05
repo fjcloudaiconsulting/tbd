@@ -250,6 +250,16 @@ class Settings(BaseSettings):
     # falls back to LegacyDashboard, which is kept for exactly this reason.
     feature_custom_dashboard: bool = True
 
+    # Planning tools — Forecast and Budgets (TBD-197)
+    # Ship ON for every existing and new org. Unlike reports/plans these are
+    # table stakes, not opt-in surfaces: turning one off is a deliberate
+    # per-org choice made by that org's OWN admin (an ``orgpref.<name>=off``
+    # OrgSetting row masked in ``feature_gate.resolve_feature``), not a
+    # rollout flag. These floors exist so an operator can still close the
+    # surface fleet-wide in an incident.
+    feature_forecast: bool = True
+    feature_budgets: bool = True
+
     # Scheduled Tasks (recurring org operations — billing-period close, recurring transactions, etc.)
     # When ``scheduler_enabled`` is False, the tick loop does not run and no
     # scheduled tasks execute. When True, the tick loop runs with an interval

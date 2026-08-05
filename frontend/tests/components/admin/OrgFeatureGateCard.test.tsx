@@ -45,7 +45,10 @@ describe("OrgFeatureGateCard", () => {
     expect(inheritBtn?.getAttribute("aria-pressed")).toBe("true");
 
     // "Reports" effective: true → "Enabled" shown.
-    const rows = screen.getAllByText(/Effective:/i);
+    // TBD-197 renamed this label to "Effective (platform):" — the value shown
+    // is the OPERATOR chain's answer, and an org that opted out in its own
+    // settings can see the surface closed while this still reads Enabled.
+    const rows = screen.getAllByText(/Effective \(platform\):/i);
     // Reports row (first): effective=true
     expect(rows[0].parentElement?.textContent).toMatch(/Enabled/);
     // Plans row (second): effective=false

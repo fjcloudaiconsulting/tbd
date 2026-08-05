@@ -69,6 +69,7 @@ vi.mock("next/navigation", () => ({
 
 import ReportEditorPage from "@/app/reports/[id]/page";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { DEFAULT_FEATURES } from "@/lib/features";
 import * as reportsApi from "@/lib/reports/api";
 
 const BASE_USER = {
@@ -97,7 +98,7 @@ function mockUser(reportsOn = true) {
     user: BASE_USER as never,
     loading: false,
     needsSetup: false,
-    features: { reports: reportsOn, plans: false, customDashboard: false },
+    features: { ...DEFAULT_FEATURES, reports: reportsOn, plans: false },
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),
