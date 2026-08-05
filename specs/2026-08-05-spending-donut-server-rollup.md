@@ -27,7 +27,8 @@ server-side aggregation."* Three corrections:
 ## 2. The three defects, in severity order
 
 **D1 — wrong exclusion filter (live, every org that has used Adjust Balance).**
-The donut filters only `linked_transaction_id == null` (`page.tsx:555-560`).
+The donut filters only `linked_transaction_id == null` (`page.tsx:566`, inside the
+`donutDataRaw` memo opening at `:559`).
 Every server aggregate uses `reportable_transaction_filter()`, which also excludes
 `is_manual_adjustment` and reverted `reconciliation_state`. So a downward balance
 adjustment counts as spending in the donut and **not** in the budget bars beside
@@ -95,6 +96,19 @@ equals the slice. **That equality is the fence.**
 `linked_transaction_id`, a strict superset. Sending both is a contradiction in the
 URL and is how the next TBD-268 gets written.
 
+⚠ **Ordering, and a live constraint on any future widening of this query.** The
+URL omits `sort_by`, so the list endpoint applies its default `date desc` over
+`effective_period_date_expr()` — `coalesce(settled_date, date)`. The rollup buckets
+`executed` rows by `settled_date` **alone**. Those are identical for the
+`status=settled` + `reportable=true` rows this query asks for, so the equality
+fence holds as written.
+
+**They stop being identical the moment a pending row enters the query.** A pending
+row has no `settled_date`, so the coalesce falls back to `date` while the rollup
+would not count it in `executed` at all. If a later change adds pending rows to the
+drilldown — to match a donut that shows pending, say — the total equality breaks
+silently. Re-derive the fence before widening; do not assume it survives.
+
 ### Grouping: `category_id`, forced not chosen
 
 The rollup's identity is the id and the drilldown needs it. `chartFilter` becomes
@@ -138,7 +152,7 @@ behaviour-preserving** and can merge on its own.
 
 ## 6. ⚠ Verification caveat — read before running the reconciliation
 
-`period_spend_window_end`'s own docstring (`billing_service.py:620-625`) records an
+`period_spend_window_end`'s own docstring (`billing_service.py:620-630`) records an
 **accepted residual**: on a lapsed roster the floored window `[start, today]`
 overlaps the historic stubs and double-counts `[derived_end + 1, today]`, widening
 by one day per day while the roster stays unconverged.
