@@ -11,6 +11,19 @@ Tests:
   2. DELETE feature.plans → 403
   3. End-to-end bypass closed: rejected PUT leaves resolve_feature returning False
   4. Positive control: non-feature key PUT still works (no over-block)
+
+TBD-322 — the guard must be CASE-INSENSITIVE.  ``str.startswith`` is
+case-sensitive, but ``org_settings.key`` is ``String(100)`` with no explicit
+collation and production MySQL runs ``utf8mb4_0900_ai_ci``, which is not.  So
+``PUT {"key": "Feature.reports"}`` walked past the guard and its
+``WHERE key = 'Feature.reports'`` then matched the existing lowercase
+``feature.reports`` row on MySQL — updating a superadmin-owned feature override
+with no audit trail.  Every backend test runs SQLite, where ``=`` on TEXT is
+case-sensitive, which is why CI never saw it.
+
+The fences below are deliberately DIALECT-INDEPENDENT: they assert the Python
+guard's 403, not the database's comparison semantics, so they hold on SQLite
+CI and on MySQL alike.  The column-collation pin is TBD-322 part 2.
 """
 from __future__ import annotations
 
@@ -215,3 +228,172 @@ async def test_put_non_feature_key_still_works(session_factory):
     assert resp.status_code == 200
     assert resp.json()["key"] == "session_lifetime_days"
     assert resp.json()["value"] == "30"
+
+
+# ── TBD-322: case-variant bypass of the reserved namespace ───────────────────
+
+#: Every shape an attacker can spell ``feature.`` in.  The lowercase form is
+#: NOT here — it is the control in ``test_put_exact_lowercase_feature_key_
+#: still_returns_403`` below, which proves the fix did not simply move the
+#: guard off the original string.
+CASE_VARIANT_FEATURE_KEYS = [
+    "Feature.reports",       # leading capital
+    "FEATURE.REPORTS",       # all caps
+    "FeAtUrE.reports",       # mixed case
+    "feature.REPORTS",       # suffix-only capitals (prefix already lowercase)
+]
+
+
+@pytest.mark.parametrize("key", CASE_VARIANT_FEATURE_KEYS)
+@pytest.mark.asyncio
+async def test_put_case_variant_feature_key_returns_403(session_factory, key):
+    """PUT with a case-variant of ``feature.`` must be blocked exactly like the
+    lowercase form, and must persist NO row.
+
+    On production MySQL (``utf8mb4_0900_ai_ci``) the upsert's
+    ``WHERE key = 'Feature.reports'`` matches the existing lowercase
+    ``feature.reports`` row, so slipping past the guard rewrites a
+    superadmin-managed feature override in place.
+    """
+    ids = await _seed(session_factory)
+
+    async def resolver(_f):
+        return await _get_user(session_factory, ids["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    resp = client.put("/api/v1/settings", json={"key": key, "value": "on"})
+    assert resp.status_code == 403, (
+        f"{key!r} bypassed the reserved-namespace guard "
+        f"(got {resp.status_code})"
+    )
+
+    # Nothing in the reserved namespace may have been written, under ANY
+    # spelling. Read every row for the org rather than querying by key: on
+    # SQLite an equality filter is itself case-sensitive, so a key-scoped
+    # query would be blind to exactly the row this test exists to catch.
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(OrgSetting).where(OrgSetting.org_id == ids["org_id"])
+            )
+        ).scalars().all()
+    assert not [
+        r for r in rows if r.key.casefold().startswith("feature.")
+    ], f"A rejected PUT of {key!r} still persisted a reserved-namespace row"
+
+
+@pytest.mark.parametrize("key", CASE_VARIANT_FEATURE_KEYS)
+@pytest.mark.asyncio
+async def test_delete_case_variant_feature_key_returns_403(session_factory, key):
+    """DELETE with a case-variant key must 403, and leave the row intact.
+
+    The PUT and DELETE guards were added at the same time but are two separate
+    call sites; a fence on only one leaves the other free to regress.
+    """
+    ids = await _seed(session_factory)
+
+    # Pre-seed the canonical lowercase row a superadmin would have written.
+    async with session_factory() as db:
+        db.add(OrgSetting(org_id=ids["org_id"], key="feature.reports", value="off"))
+        await db.commit()
+
+    async def resolver(_f):
+        return await _get_user(session_factory, ids["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    resp = client.delete(f"/api/v1/settings/{key}")
+    assert resp.status_code == 403, (
+        f"DELETE {key!r} bypassed the reserved-namespace guard "
+        f"(got {resp.status_code})"
+    )
+
+    async with session_factory() as db:
+        row = (
+            await db.execute(
+                select(OrgSetting).where(
+                    OrgSetting.org_id == ids["org_id"],
+                    OrgSetting.key == "feature.reports",
+                )
+            )
+        ).scalar_one_or_none()
+    assert row is not None, "Blocked DELETE must leave the superadmin row intact"
+
+
+@pytest.mark.asyncio
+async def test_put_exact_lowercase_feature_key_still_returns_403(session_factory):
+    """Control: the ORIGINAL lowercase guard must keep firing.
+
+    Without this, a fix that casefolds the *constant* instead of the *input*
+    (or otherwise shifts the comparison) could pass the variant tests above
+    while quietly opening the exact key the guard was written for.
+    """
+    ids = await _seed(session_factory)
+
+    async def resolver(_f):
+        return await _get_user(session_factory, ids["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    resp = client.put(
+        "/api/v1/settings", json={"key": "feature.reports", "value": "on"}
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.parametrize("key", ["mysetting", "Feature_flags", "featureless.mode"])
+@pytest.mark.asyncio
+async def test_put_unrelated_key_still_writes(session_factory, key):
+    """Control: keys outside the reserved namespace must still write with 200.
+
+    Without this, an implementation that 403s everything — or one that
+    casefolds so aggressively it swallows near-miss keys like
+    ``featureless.mode`` — would pass every test above.
+    """
+    ids = await _seed(session_factory)
+
+    async def resolver(_f):
+        return await _get_user(session_factory, ids["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    resp = client.put("/api/v1/settings", json={"key": key, "value": "yes"})
+    assert resp.status_code == 200, f"{key!r} was over-blocked"
+    assert resp.json()["key"] == key
+    assert resp.json()["value"] == "yes"
+
+    async with session_factory() as db:
+        row = (
+            await db.execute(
+                select(OrgSetting).where(
+                    OrgSetting.org_id == ids["org_id"],
+                    OrgSetting.key == key,
+                )
+            )
+        ).scalar_one_or_none()
+    assert row is not None and row.value == "yes"
+
+
+@pytest.mark.asyncio
+async def test_delete_unrelated_key_still_deletes(session_factory):
+    """Control for the DELETE site: a non-reserved key still deletes (204)."""
+    ids = await _seed(session_factory)
+
+    async with session_factory() as db:
+        db.add(OrgSetting(org_id=ids["org_id"], key="mysetting", value="1"))
+        await db.commit()
+
+    async def resolver(_f):
+        return await _get_user(session_factory, ids["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    resp = client.delete("/api/v1/settings/mysetting")
+    assert resp.status_code == 204
+
+    async with session_factory() as db:
+        row = (
+            await db.execute(
+                select(OrgSetting).where(
+                    OrgSetting.org_id == ids["org_id"],
+                    OrgSetting.key == "mysetting",
+                )
+            )
+        ).scalar_one_or_none()
+    assert row is None

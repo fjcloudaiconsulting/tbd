@@ -50,6 +50,13 @@ router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 # SystemSetting global > env-floor).  Allowing the generic PUT/DELETE here
 # would let any OWNER/ADMIN bypass a globally-disabled feature with no audit
 # trail.  Block the entire namespace from this writer.
+#
+# TBD-322: compare CASEFOLDED.  `org_settings.key` is `String(100)` with no
+# explicit collation and production MySQL runs `utf8mb4_0900_ai_ci`, so
+# `WHERE key = 'Feature.reports'` matches the stored lowercase
+# `feature.reports` row.  A case-sensitive `startswith` therefore let an
+# ADMIN rewrite a superadmin-managed override through the generic writer.
+# The constant stays lowercase; the INPUT is what gets folded.
 RESERVED_SETTINGS_PREFIX = "feature."
 
 
@@ -90,7 +97,7 @@ async def upsert_setting(
 ):
     _require_admin(current_user)
 
-    if body.key.startswith(RESERVED_SETTINGS_PREFIX):
+    if body.key.casefold().startswith(RESERVED_SETTINGS_PREFIX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="The 'feature.' settings namespace is managed by platform administrators",
@@ -170,7 +177,7 @@ async def delete_setting(
 ):
     _require_admin(current_user)
 
-    if key.startswith(RESERVED_SETTINGS_PREFIX):
+    if key.casefold().startswith(RESERVED_SETTINGS_PREFIX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="The 'feature.' settings namespace is managed by platform administrators",
