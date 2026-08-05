@@ -70,6 +70,15 @@ router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 #       change and can only ever write "off".  The generic writer accepts an
 #       arbitrary value and writes no audit row, so leaving it open would make
 #       the mask a second, silent, un-auditable control surface.
+#
+# TBD-322: compare CASEFOLDED.  `org_settings.key` is `String(100)` with no
+# explicit collation and production MySQL runs `utf8mb4_0900_ai_ci`, so
+# `WHERE key = 'Feature.reports'` matches the stored lowercase
+# `feature.reports` row.  A case-sensitive `startswith` therefore let an
+# ADMIN rewrite a superadmin-managed override through the generic writer.
+# The constant stays lowercase; the INPUT is what gets folded.  This applies
+# to BOTH entries above: "orgpref." inherits the same protection, and the
+# ``list_settings`` filter below folds for the same reason.
 RESERVED_SETTINGS_PREFIX = ("feature.", "orgpref.")
 _RESERVED_NAMESPACE_DETAIL = (
     "The 'feature.' and 'orgpref.' settings namespaces are managed by "
@@ -138,15 +147,16 @@ async def list_settings(
     # switching Budgets off an admin would otherwise see a raw
     # ``orgpref.budgets = off`` row directly beneath the switch that wrote it.
     #
-    # ``.lower()``: ``str.startswith`` is case-sensitive but the MySQL column
-    # collation is not, so a row stored as ``Orgpref.budgets`` is the same row
-    # to the database and must not leak through this filter. (The two
-    # pre-existing comparisons above are casefolded by TBD-322, deliberately
-    # not here — this is a NEW comparison and starts out correct.)
+    # ``.casefold()``: ``str.startswith`` is case-sensitive but the MySQL
+    # column collation is not, so a row stored as ``Orgpref.budgets`` is the
+    # same row to the database and must not leak through this filter. Same
+    # idiom as the two write guards above, which TBD-322 casefolded for the
+    # same reason — all three comparisons against this constant fold their
+    # input, and a fourth must too.
     return [
         OrgSettingResponse(key=s.key, value=s.value)
         for s in result.scalars().all()
-        if not s.key.lower().startswith(RESERVED_SETTINGS_PREFIX)
+        if not s.key.casefold().startswith(RESERVED_SETTINGS_PREFIX)
     ]
 
 
@@ -158,7 +168,7 @@ async def upsert_setting(
 ):
     _require_admin(current_user)
 
-    if body.key.startswith(RESERVED_SETTINGS_PREFIX):
+    if body.key.casefold().startswith(RESERVED_SETTINGS_PREFIX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=_RESERVED_NAMESPACE_DETAIL,
@@ -238,7 +248,7 @@ async def delete_setting(
 ):
     _require_admin(current_user)
 
-    if key.startswith(RESERVED_SETTINGS_PREFIX):
+    if key.casefold().startswith(RESERVED_SETTINGS_PREFIX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=_RESERVED_NAMESPACE_DETAIL,
