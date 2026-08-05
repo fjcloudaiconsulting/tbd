@@ -1486,6 +1486,32 @@ function TransactionsPageContent() {
                                     Editing the name or category also updates this
                                     recurring series and its upcoming occurrences.
                                   </p>
+                                  {/* TBD-277. The control for the SERIES lives on
+                                      another page, and nothing here said so: a
+                                      user who wants the subscription to stop
+                                      reaches for the occurrence they can see,
+                                      deletes it, and the next one is generated on
+                                      the next run. A hint, not a warning -- muted
+                                      body text, brass only on link hover, so it
+                                      spends no brass moment on an already busy
+                                      screen. There is no per-template route
+                                      (`/recurring` reads no search params), so
+                                      the pointer is to the page. Mirrored in the
+                                      mobile card below. */}
+                                  <p
+                                    className="text-[11px] text-text-muted"
+                                    data-testid={`edit-recurring-series-hint-${tx.id}`}
+                                  >
+                                    Editing or deleting this occurrence leaves the
+                                    series running. Stop the whole series on the{" "}
+                                    <Link
+                                      href="/recurring"
+                                      className="underline underline-offset-2 hover:text-accent"
+                                    >
+                                      Recurring page
+                                    </Link>
+                                    .
+                                  </p>
                                 </div>
                               ) : (
                                 <div className="flex flex-wrap items-center gap-3">
@@ -1912,6 +1938,23 @@ function TransactionsPageContent() {
                                     >
                                       Editing the name or category also updates this
                                       recurring series and its upcoming occurrences.
+                                    </p>
+                                    {/* TBD-277 -- MOBILE twin of the series
+                                        pointer in the desktop row above. Same
+                                        copy, same tokens, same gate. */}
+                                    <p
+                                      className="text-[11px] text-text-muted"
+                                      data-testid={`edit-recurring-series-hint-mobile-${tx.id}`}
+                                    >
+                                      Editing or deleting this occurrence leaves the
+                                      series running. Stop the whole series on the{" "}
+                                      <Link
+                                        href="/recurring"
+                                        className="underline underline-offset-2 hover:text-accent"
+                                      >
+                                        Recurring page
+                                      </Link>
+                                      .
                                     </p>
                                   </div>
                                 ) : (
