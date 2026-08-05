@@ -246,6 +246,10 @@ export function DashboardDataProvider({
   // TBD-197. `=== false`, never truthiness — `features` is undefined on a
   // booting client and in every pre-existing test mock, and Budgets ships ON.
   const budgetsDisabled = features?.budgets === false;
+  // TBD-197 PR 2. Same `=== false` rule. Gates `loadForecastProjection` and
+  // `loadForecastPlan` — and NOT `loadAccountMonthEndForecast`, whose endpoint
+  // stays open server-side (see that loader for why).
+  const forecastDisabled = features?.forecast === false;
 
   // ── Reference data via shared SWR hooks (SWR Phase 2) ───────────────────────
   // Accounts + billing periods come from the shared hooks (bare-path keys) so
@@ -592,6 +596,19 @@ export function DashboardDataProvider({
 
   // ── loadForecastProjection ──────────────────────────────────────────────────
   const loadForecastProjection = useCallback(async () => {
+    // TBD-197 — load-bearing, not an optimisation, and this is the loader that
+    // makes it so. With Forecast gated off `/api/v1/forecast` 404s, `apiFetch`
+    // throws, and the catch below sets `projectionFailed = true`, which
+    // `OnTrackTile` renders as an ERROR WITH A RETRY BUTTON. A deliberate org
+    // setting must never render as a failure. Exiting through the same shape
+    // as the `!realPeriodStart` guard leaves the tile in its EMPTY state.
+    if (forecastDisabled) {
+      projectionRequestId.current += 1;
+      setForecastProjection(null);
+      setProjectionFailed(false);
+      setProjectionLoading(false);
+      return;
+    }
     if (!realPeriodStart) {
       projectionRequestId.current += 1;
       setForecastProjection(null);
@@ -619,10 +636,19 @@ export function DashboardDataProvider({
         setProjectionLoading(false);
       }
     }
-  }, [realPeriodStart]);
+  }, [realPeriodStart, forecastDisabled]);
 
   // ── loadAccountMonthEndForecast ─────────────────────────────────────────────
   const loadAccountMonthEndForecast = useCallback(async () => {
+    // ⚠⚠ NO `forecastDisabled` GUARD HERE, AND THAT IS DELIBERATE (TBD-197).
+    // `/api/v1/forecast/account-balances` is an ACCOUNT-projection engine
+    // (credit-card statement cycles + loan amortization) that merely shares the
+    // /forecast URL prefix; it is ungated server-side, and `LoanPayoffTile` and
+    // `CreditUtilizationWidget` — Credit-Card and Loan surfaces — read its
+    // output. Adding the guard here also produces a PERMANENT FALSE LOADING
+    // STATE, because `AccountMonthEndForecast` renders a bare "Loading…"
+    // forever on null data rather than an empty state. Fenced by F12's
+    // positive clause and by the backend's F7.
     if (!realPeriodStart || !isCurrentSelectedPeriod) {
       accountForecastRequestId.current += 1;
       setAccountMonthEndForecast(null);
@@ -651,6 +677,14 @@ export function DashboardDataProvider({
   // so the provider doesn't need to load transactions.
   // FIX 3: monotonic stale-request guard + try/catch matching sibling loaders.
   const loadForecastPlan = useCallback(async () => {
+    // TBD-197 — `/api/v1/forecast-plans/current` 404s for a disabled org.
+    // `null` is already this loader's "no plan yet" value, so the tiles fall
+    // back to their own existing empty states.
+    if (forecastDisabled) {
+      forecastPlanRequestId.current += 1;
+      setForecast(null);
+      return;
+    }
     const myId = ++forecastPlanRequestId.current;
     const forecastUrl = realPeriodStart
       ? `/api/v1/forecast-plans/current?period_start=${realPeriodStart}`
@@ -664,7 +698,7 @@ export function DashboardDataProvider({
       // Silent — keep last good snapshot on transient failures.
       setForecast(null);
     }
-  }, [realPeriodStart]);
+  }, [realPeriodStart, forecastDisabled]);
 
   // ── Initial load ────────────────────────────────────────────────────────────
   // Accounts + billing periods auto-fetch via the SWR hooks once refsEnabled

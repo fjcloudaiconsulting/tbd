@@ -489,20 +489,58 @@ async def test_f4_reports_is_not_a_planning_tool(session_factory):
     looking the feature up dynamically, which would hand org admins an opt-out
     for ``reports`` / ``plans`` / ``custom_dashboard``.
 
-    ``forecast`` is in this loop for PR 1 and moves OUT of it in PR 2. PR 1
-    gates no Forecast route, so accepting the slug would hide the nav entry
-    while every route stayed open — and with only the Budgets switch rendered,
-    with no control left to undo it. An allow-list must not run ahead of the
-    gates.
+    ``forecast`` sat in this loop for PR 1, which gated no Forecast route:
+    accepting the slug then would have hidden the nav entry while every route
+    stayed open, with only the Budgets switch rendered and so no control left
+    to undo it. PR 2 lands the Forecast gates and moves the slug out of the
+    loop, into F4c below. An allow-list must never run ahead of the gates it is
+    an allow-list for.
     """
     ids = await _seed(session_factory)
     app = _make_app(session_factory, [settings_router], ids["admin_id"])
     with TestClient(app) as client:
-        for slug in ("reports", "plans", "custom_dashboard", "forecast"):
+        for slug in ("reports", "plans", "custom_dashboard"):
             res = client.put(
                 f"/api/v1/settings/features/{slug}", json={"enabled": False}
             )
             assert res.status_code == 422, slug
+    assert await _org_rows(session_factory, ids["org_id"]) == {}
+
+
+# ── F4c — ...and the other half: forecast IS one, from PR 2 on ───────────────
+
+
+@pytest.mark.asyncio
+async def test_f4c_forecast_is_a_planning_tool(session_factory):
+    """F4c (PR 2). ``PUT /api/v1/settings/features/forecast {"enabled": false}``
+    → **200**, writing exactly ``OrgSetting(org, "orgpref.forecast", "off")``.
+
+    PR 2 widens ``PlanningTool`` and ``_PLANNING_TOOLS`` back to the pair, in
+    the same commit as the Forecast route gates. Without this row, narrowing
+    the allow-list back to ``Literal["budgets"]`` passes the whole suite while
+    the Forecast switch on the settings card is dead — and widening only the
+    schema while forgetting ``_PLANNING_TOOLS`` is a KeyError/500 that F4
+    cannot see either.
+
+    Re-enabling deletes the row and writes nothing into ``feature.forecast``:
+    the org slot stays off-only in the widened list too.
+    """
+    ids = await _seed(session_factory)
+    key = org_preference_key(Feature.FORECAST)
+    app = _make_app(session_factory, [settings_router], ids["admin_id"])
+    with TestClient(app) as client:
+        off = client.put(
+            "/api/v1/settings/features/forecast", json={"enabled": False}
+        )
+        assert off.status_code == 200, off.text
+        assert off.json() == {"feature": "forecast", "enabled": False}
+        assert await _org_rows(session_factory, ids["org_id"]) == {key: "off"}
+
+        on = client.put(
+            "/api/v1/settings/features/forecast", json={"enabled": True}
+        )
+        assert on.status_code == 200, on.text
+        assert on.json() == {"feature": "forecast", "enabled": True}
     assert await _org_rows(session_factory, ids["org_id"]) == {}
 
 

@@ -14,8 +14,23 @@ from app.schemas.forecast_plan import (
     ForecastPlanResponse,
 )
 from app.services import forecast_plan_service as svc
+from app.services.feature_gate import Feature
+from app.services.feature_gate import require_feature as require_product_area
 
-router = APIRouter(prefix="/api/v1/forecast-plans", tags=["forecast-plans"])
+# Router-level product gate (TBD-197). An org that switched Forecast off in
+# Settings → Planning tools gets a hard 404 on all twelve handlers, not a 403:
+# the surface is meant to be invisible, and the frontend already hides the nav
+# entry and replaces the page with a one-line notice.
+#
+# Aliased as ``require_product_area`` for consistency with the AI routers,
+# which carry BOTH gating systems: ``app.auth.feature_deps.require_feature``
+# (AI entitlements, takes a ``str``, 403s) is a different function with the
+# same name, and a plain import of either rebinds the other at import time.
+router = APIRouter(
+    prefix="/api/v1/forecast-plans",
+    tags=["forecast-plans"],
+    dependencies=[Depends(require_product_area(Feature.FORECAST))],
+)
 
 
 @router.get("", response_model=ForecastPlanResponse)

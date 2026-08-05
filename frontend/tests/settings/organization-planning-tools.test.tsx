@@ -6,9 +6,13 @@
  * and conflating tenant preference with platform entitlement is the exact fault
  * line this ticket's first two designs fell across.
  *
- * ⚠ SCOPING: `getByRole("switch")` now matches six or more nodes on this page
- * (SchedulerSettingsCard has three, SmartRulesSection one). Never index
- * positionally — TBD-313. Every query below is scoped to the card container.
+ * ⚠ SCOPING: `getByRole("switch")` now matches seven or more nodes on this page
+ * (SchedulerSettingsCard has three, SmartRulesSection one, and PR 2 adds a
+ * second planning-tool switch). Never index positionally — TBD-313. Every
+ * query below is scoped by container id: first to the card, then to the
+ * per-tool ROW. The row scope became load-bearing in PR 2 — with two switches
+ * the card carries two "Enabled"/"Disabled" spans, so a card-level
+ * `getByText("Enabled")` is ambiguous and would throw.
  */
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -82,7 +86,7 @@ function makeUser() {
   };
 }
 
-function setAuth(budgets: boolean) {
+function setAuth(budgets: boolean, forecast = true) {
   vi.mocked(useAuth).mockReturnValue({
     user: makeUser() as never,
     loading: false,
@@ -91,7 +95,7 @@ function setAuth(budgets: boolean) {
       reports: false,
       plans: false,
       customDashboard: false,
-      forecast: true,
+      forecast,
       budgets,
     },
     login: vi.fn(),
@@ -122,6 +126,12 @@ async function planningToolsCard() {
   return within(card);
 }
 
+/** Scope to ONE tool's row — never positional, never card-wide (TBD-313). */
+async function toolRow(tool: "forecast" | "budgets") {
+  const row = await screen.findByTestId(`planning-tool-${tool}`);
+  return within(row);
+}
+
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
   vi.mocked(apiFetch).mockImplementation(baseFixtures() as never);
@@ -132,20 +142,20 @@ describe("OrganizationSettingsPage — Planning tools card (TBD-197 F14)", () =>
     setAuth(true);
     render(<OrganizationSettingsPage />);
 
-    const card = await planningToolsCard();
-    const sw = card.getByRole("switch", { name: /budgets/i });
+    const row = await toolRow("budgets");
+    const sw = row.getByRole("switch", { name: /budgets/i });
     expect(sw.getAttribute("aria-checked")).toBe("true");
-    expect(card.getByText("Enabled")).toBeTruthy();
+    expect(row.getByText("Enabled")).toBeTruthy();
   });
 
   it("renders aria-checked=false and visible Disabled text when Budgets is off", async () => {
     setAuth(false);
     render(<OrganizationSettingsPage />);
 
-    const card = await planningToolsCard();
-    const sw = card.getByRole("switch", { name: /budgets/i });
+    const row = await toolRow("budgets");
+    const sw = row.getByRole("switch", { name: /budgets/i });
     expect(sw.getAttribute("aria-checked")).toBe("false");
-    expect(card.getByText("Disabled")).toBeTruthy();
+    expect(row.getByText("Disabled")).toBeTruthy();
   });
 
   it("clicking the switch PUTs the toggle and flips the visible state, with no confirm dialog", async () => {
@@ -161,8 +171,8 @@ describe("OrganizationSettingsPage — Planning tools card (TBD-197 F14)", () =>
     }) as never);
 
     render(<OrganizationSettingsPage />);
-    const card = await planningToolsCard();
-    const sw = card.getByRole("switch", { name: /budgets/i });
+    const row = await toolRow("budgets");
+    const sw = row.getByRole("switch", { name: /budgets/i });
     fireEvent.click(sw);
 
     await waitFor(() => {
@@ -181,10 +191,10 @@ describe("OrganizationSettingsPage — Planning tools card (TBD-197 F14)", () =>
     // Non-destructive change: immediate mutation, no ConfirmModal in the way.
     await waitFor(() => {
       expect(
-        card.getByRole("switch", { name: /budgets/i }).getAttribute("aria-checked"),
+        row.getByRole("switch", { name: /budgets/i }).getAttribute("aria-checked"),
       ).toBe("false");
     });
-    expect(card.getByText("Disabled")).toBeTruthy();
+    expect(row.getByText("Disabled")).toBeTruthy();
   });
 
   it("shows the administrator badge only when a re-enable comes back still disabled", async () => {
@@ -198,14 +208,84 @@ describe("OrganizationSettingsPage — Planning tools card (TBD-197 F14)", () =>
     }) as never);
 
     render(<OrganizationSettingsPage />);
-    const card = await planningToolsCard();
+    const row = await toolRow("budgets");
     // Not on load — /auth/status returns one resolved boolean and cannot tell
     // "global off" from "org opted out".
-    expect(card.queryByText(/set by your administrator/i)).toBeNull();
+    expect(row.queryByText(/set by your administrator/i)).toBeNull();
 
-    fireEvent.click(card.getByRole("switch", { name: /budgets/i }));
+    fireEvent.click(row.getByRole("switch", { name: /budgets/i }));
     await waitFor(() => {
-      expect(card.getByText(/set by your administrator/i)).toBeTruthy();
+      expect(row.getByText(/set by your administrator/i)).toBeTruthy();
     });
+  });
+
+  // ── PR 2 — the second switch ───────────────────────────────────────────────
+
+  it("F14b: renders a Forecast switch ALONGSIDE Budgets, each reflecting its own flag", async () => {
+    setAuth(true, false);
+    render(<OrganizationSettingsPage />);
+
+    const card = await planningToolsCard();
+    // Two switches on the card, not one. A build that shipped the backend gate
+    // and forgot to widen `tools` leaves the org unable to undo its own opt-out
+    // from the UI — the exact trap PR 1 narrowed the allow-list to avoid.
+    expect(card.getAllByRole("switch")).toHaveLength(2);
+
+    const forecast = await toolRow("forecast");
+    expect(
+      forecast.getByRole("switch", { name: /forecast/i }).getAttribute("aria-checked"),
+    ).toBe("false");
+    expect(forecast.getByText("Disabled")).toBeTruthy();
+
+    // The sibling is independent, in the same render — so a build that read one
+    // flag for both switches cannot pass.
+    const budgets = await toolRow("budgets");
+    expect(
+      budgets.getByRole("switch", { name: /budgets/i }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(budgets.getByText("Enabled")).toBeTruthy();
+  });
+
+  it("F14c: clicking the Forecast switch PUTs /settings/features/forecast and flips only that row", async () => {
+    setAuth(true, true);
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (
+        init?.method === "PUT" &&
+        url === "/api/v1/settings/features/forecast"
+      ) {
+        return Promise.resolve({ feature: "forecast", enabled: false });
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const forecast = await toolRow("forecast");
+    fireEvent.click(forecast.getByRole("switch", { name: /forecast/i }));
+
+    await waitFor(() => {
+      expect(
+        vi
+          .mocked(apiFetch)
+          .mock.calls.some(
+            ([url, init]) =>
+              url === "/api/v1/settings/features/forecast" &&
+              (init as RequestInit | undefined)?.method === "PUT" &&
+              String((init as RequestInit).body).includes('"enabled":false'),
+          ),
+      ).toBe(true);
+    });
+
+    await waitFor(() => {
+      expect(
+        forecast
+          .getByRole("switch", { name: /forecast/i })
+          .getAttribute("aria-checked"),
+      ).toBe("false");
+    });
+    // The Budgets row is untouched: the write echo is keyed per tool.
+    const budgets = await toolRow("budgets");
+    expect(
+      budgets.getByRole("switch", { name: /budgets/i }).getAttribute("aria-checked"),
+    ).toBe("true");
   });
 });

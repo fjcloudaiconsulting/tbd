@@ -58,15 +58,19 @@ class ManualBalanceAdjustmentResponse(BaseModel):
 # flags rather than tenant preferences. Anything outside the list 422s at the
 # framework boundary, before the handler body runs.
 #
-# ⚠ PR 1 ships ``"budgets"`` ALONE, not the pair. PR 1 gates zero Forecast
-# routes, so accepting ``"forecast"`` here would let an admin write
+# ⚠ PR 1 shipped ``"budgets"`` ALONE. It gated zero Forecast routes, so
+# accepting ``"forecast"`` there would have let an admin write
 # ``orgpref.forecast="off"``: the nav entry vanishes while every Forecast route
-# stays wide open — and because the card renders only the Budgets switch there
-# is no control left to turn it back on, so the org cannot recover from the UI.
-# An allow-list must never run ahead of the gates it is an allow-list for.
-# PR 2 widens this back to ``Literal["forecast", "budgets"]`` in the same commit
-# that lands the Forecast route gates (spec §9).
-PlanningTool = Literal["budgets"]
+# stays wide open — and because the card rendered only the Budgets switch there
+# was no control left to turn it back on, so the org could not recover from the
+# UI. An allow-list must never run ahead of the gates it is an allow-list for.
+#
+# PR 2 widens it back to the pair **in the same commit** that lands the Forecast
+# route gates (spec §9), the second switch on the Planning tools card, and the
+# nav/page/fetch handling. Fenced from both sides: F4 pins that the three
+# platform rollout flags still 422, F4c pins that ``forecast`` now writes its
+# ``orgpref.forecast`` row.
+PlanningTool = Literal["forecast", "budgets"]
 
 
 class PlanningToolToggle(BaseModel):

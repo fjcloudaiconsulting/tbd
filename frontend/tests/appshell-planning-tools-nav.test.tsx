@@ -14,7 +14,7 @@
  */
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 
 vi.mock("@/components/auth/AuthProvider", async () => {
   const actual = await vi.importActual<
@@ -104,6 +104,85 @@ describe("AppShell — planning-tool nav gating (TBD-197)", () => {
     expect(screen.queryAllByText("Budgets")).toHaveLength(0);
     // Control within the same render: a sibling base item is untouched.
     expect(screen.queryAllByText("Accounts").length).toBeGreaterThan(0);
+  });
+
+  // F15b / F13b (PR 2). `buildNavItems` already carried the `forecast === false`
+  // filter from PR 1, but PR 1 shipped no fence for it: with the slug absent
+  // from the writable allow-list, `features.forecast` could never BE false in
+  // production, so the branch was unreachable. PR 2 makes it reachable, which
+  // is what makes it worth pinning — in both polarities.
+  it("F15b: hides the Forecast Plans nav item when features.forecast is false", () => {
+    (useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeAuth({ ...DEFAULT_FEATURES, forecast: false }),
+    );
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+    expect(screen.queryAllByText("Forecast Plans")).toHaveLength(0);
+    // Controls within the same render: the sibling planning tool and an
+    // ordinary base item both survive, so this is not a blanket hide.
+    expect(screen.queryAllByText("Budgets").length).toBeGreaterThan(0);
+    expect(screen.queryAllByText("Accounts").length).toBeGreaterThan(0);
+  });
+
+  it("F13b: renders the Forecast Plans nav item when features.forecast is true", () => {
+    (useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeAuth({ ...DEFAULT_FEATURES, forecast: true }),
+    );
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+    expect(screen.queryAllByText("Forecast Plans").length).toBeGreaterThan(0);
+  });
+
+  // F15c. Reports is spliced in relative to an anchor, and BOTH anchors are
+  // filterable. `reports: true` is the load-bearing part of this fixture:
+  // `buildNavItems` returns early when reports is off, so every other nav fence
+  // in this file — all of which spread DEFAULT_FEATURES, where reports is
+  // false — exits before the insertion code runs and cannot see this at all.
+  //
+  // The state is production's own: FEATURE_REPORTS_V2 true and FEATURE_PLANS
+  // false (.do/app.yaml), plus one org admin switching Forecast off. With both
+  // anchors filtered out, a `forecastIdx + 1` fallback evaluates to 0 and
+  // splices Reports ABOVE Dashboard on every page.
+  it("F15c: keeps Dashboard first when Reports is on and BOTH insertion anchors are filtered out", () => {
+    (useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeAuth({
+        ...DEFAULT_FEATURES,
+        reports: true,
+        plans: false,
+        forecast: false,
+      }),
+    );
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+
+    // Scoped to the nav landmark, NOT screen-wide. `getAllByRole("link")` on
+    // the whole document leads with the sr-only "Skip to main content" anchor
+    // (AppShell.tsx:552), so a screen-wide `labels[0]` is never "Dashboard" and
+    // the assertion fails identically whether the ordering is right or wrong —
+    // red for a reason that has nothing to do with what it claims to pin.
+    const labels = within(screen.getAllByRole("navigation")[0])
+      .getAllByRole("link")
+      .map((a) => a.textContent?.trim() ?? "");
+
+    // The property, not a position: Dashboard leads the nav.
+    expect(labels[0]).toBe("Dashboard");
+    // Reports is present but NOT first — asserting only "Dashboard is first"
+    // would pass against an implementation that dropped Reports entirely.
+    expect(labels).toContain("Reports");
+    expect(labels.indexOf("Reports")).toBeGreaterThan(0);
+    // Control: the two filtered anchors really are absent, so this exercises
+    // the both-anchors-missing branch and not some other ordering.
+    expect(labels).not.toContain("Forecast Plans");
+    expect(labels).not.toContain("Plans");
   });
 
   it("F13: renders the Budgets nav item when features.budgets is true", () => {
