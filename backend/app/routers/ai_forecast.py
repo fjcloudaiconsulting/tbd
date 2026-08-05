@@ -47,11 +47,37 @@ from app.services.ai_forecast_refine_service import (
 )
 from app.services.ai_forecast_refine_token_estimate import Scope, _duration_band
 
+# ⚠ ALIASED, not imported plain. ``app.auth.feature_deps.require_feature``
+# (System 2 — AI entitlements, takes a ``str``, 403s) is already bound above at
+# module scope; a bare ``from app.services.feature_gate import require_feature``
+# would rebind that name and break the existing ``ai.forecast`` dep at import
+# time, silently.
+from app.services.feature_gate import Feature
+from app.services.feature_gate import require_feature as require_product_area
+
 
 logger = structlog.stdlib.get_logger()
 
 
-router = APIRouter(prefix="/api/v1/ai/forecast", tags=["ai", "forecast"])
+# The Forecast product gate goes on the APIRouter CONSTRUCTOR. On this router
+# the ``ai.forecast`` gate is a handler SIGNATURE parameter
+# (``_gate: dict = Depends(require_feature("ai.forecast"))``), and FastAPI
+# solves constructor dependencies before those — so an org that switched
+# Forecast off gets a 404 rather than a 403 advertising an AI upsell for a
+# product area it just turned off.
+#
+# It ALSO matters for a Pro org: ``ai.forecast`` is True there, so without the
+# product gate a Forecast-disabled Pro org would still reach
+# ``POST /api/v1/ai/forecast/refine`` (spec §11 records that deletion being
+# proposed and rejected with evidence). Fenced by
+# ``tests/routers/test_ai_forecast_product_gate.py`` — whose ORDERING row pins
+# ``ai.forecast`` False, because with it True both dep placements answer 404
+# and the ordering mutant survives.
+router = APIRouter(
+    prefix="/api/v1/ai/forecast",
+    tags=["ai", "forecast"],
+    dependencies=[Depends(require_product_area(Feature.FORECAST))],
+)
 
 
 @router.post("/refine", response_model=RefinedForecastResponse)

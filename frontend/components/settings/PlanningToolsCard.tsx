@@ -40,7 +40,14 @@ function Switch({
 }) {
   const label = TOOL_LABEL[tool];
   return (
-    <div className="flex items-center justify-between gap-4">
+    // Per-tool container id. With two switches the card carries two
+    // "Enabled"/"Disabled" spans and two `role="switch"` nodes, so every test
+    // query has to scope to ONE row. Never by positional index (TBD-313) —
+    // `getByRole("switch")` matches seven-plus nodes on this page.
+    <div
+      className="flex items-center justify-between gap-4"
+      data-testid={`planning-tool-${tool}`}
+    >
       <div>
         <p className="text-sm font-medium text-text-primary">{label}</p>
         {lockedByAdmin && (
@@ -103,7 +110,7 @@ function Switch({
 }
 
 export default function PlanningToolsCard({
-  tools = ["budgets"],
+  tools = ["forecast", "budgets"],
 }: {
   tools?: PlanningTool[];
 }) {
