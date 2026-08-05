@@ -117,9 +117,14 @@ async def list_budgets(
     ``today`` is injectable (TBD-240 D6) because the spend window floors at the
     wall clock; no production caller threads it, every consumer is
     request-scoped.
+
+    Threaded into ``resolve_period`` (TBD-299): that call's fallback arm reaches
+    ``get_current_period``, which auto-creates. A caller that has resolved a
+    clock and drops it there anchors the org's very first ``BillingPeriod`` — a
+    money-row anchor — to a second, independent clock read.
     """
     try:
-        period = await resolve_period(db, org_id, period_start)
+        period = await resolve_period(db, org_id, period_start, today=today)
     except ValidationError:
         return []
 
@@ -154,7 +159,11 @@ async def create_budget(
     period_start: datetime.date | None = None,
     *, today: datetime.date | None = None,
 ) -> BudgetResponse:
-    """Create a budget for a period. Only master categories allowed."""
+    """Create a budget for a period. Only master categories allowed.
+
+    ``today`` reaches ``resolve_period`` (TBD-299) for the same reason as in
+    :func:`list_budgets`: its fallback arm auto-creates.
+    """
     cat_result = await db.execute(
         select(Category).where(Category.id == body.category_id, Category.org_id == org_id)
     )
@@ -164,7 +173,7 @@ async def create_budget(
     if cat.parent_id is not None:
         raise ValidationError("Budgets can only be set for master categories, not subcategories")
 
-    period = await resolve_period(db, org_id, period_start)
+    period = await resolve_period(db, org_id, period_start, today=today)
 
     existing = await db.scalar(
         select(Budget.id).where(
