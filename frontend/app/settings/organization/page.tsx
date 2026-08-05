@@ -858,9 +858,11 @@ export default function OrganizationSettingsPage() {
       )}
 
       {/* Planning tools (TBD-197) — below the operational cards, above the
-          Danger Zone. Only Budgets ships in PR 1; Forecast joins in PR 2. */}
+          Danger Zone. Both switches ship as of PR 2; PR 1 rendered Budgets
+          alone because it gated no Forecast route, and a switch that can turn
+          a surface off while every route stays open is worse than no switch. */}
       <div className="mt-6">
-        <PlanningToolsCard tools={["budgets"]} />
+        <PlanningToolsCard tools={["forecast", "budgets"]} />
       </div>
 
       {isOrgOwner && user && (

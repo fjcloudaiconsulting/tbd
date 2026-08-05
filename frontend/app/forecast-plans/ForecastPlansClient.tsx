@@ -13,6 +13,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import CategorySelect from "@/components/ui/CategorySelect";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
+import FeatureDisabledNotice from "@/components/features/FeatureDisabledNotice";
 import { isAdmin } from "@/lib/auth";
 import { formatAmount, todayISO } from "@/lib/format";
 import {
@@ -117,8 +118,18 @@ export default function ForecastPlansClient({
   initialPlan,
 }: Props) {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, features } = useAuth();
   const admin = user ? isAdmin(user) : false;
+  // TBD-197. `=== false`, never truthiness: `features` is undefined on a
+  // booting client and in every pre-existing test mock, and Forecast ships ON.
+  // Only an explicit server `false` closes the page.
+  //
+  // The RSC parent (`page.tsx`) takes ZERO changes for this. With the router
+  // gated, `serverFetch`'s null contract turns the 404 into `initialPlan =
+  // null` and this island mounts normally — which is the only reason the
+  // notice can live here at all, rather than in a server component that has no
+  // `useAuth` to read.
+  const forecastDisabled = features?.forecast === false;
 
   // Categories and periods are stable per session — seed once from the
   // server, then evolve locally as the user creates categories via the
@@ -205,9 +216,13 @@ export default function ForecastPlansClient({
   // delete item, activate/revert/discard) push a fresh plan into the cache
   // without an extra network round-trip — we already have the response
   // from the POST.
-  const planKey = periodStart
-    ? `/api/v1/forecast-plans?period_start=${periodStart}`
-    : null;
+  // TBD-197: a null key is how SWR is told not to fetch. Load-bearing, not an
+  // optimisation — the route 404s for a disabled org, and SWR would surface
+  // that as an error state behind a notice the user is already reading.
+  const planKey =
+    periodStart && !forecastDisabled
+      ? `/api/v1/forecast-plans?period_start=${periodStart}`
+      : null;
   const {
     data: planData,
     mutate: mutatePlan,
@@ -349,6 +364,9 @@ export default function ForecastPlansClient({
   const futureEnsured = useRef(false);
   useEffect(() => {
     if (futureEnsured.current) return;
+    // TBD-197: nothing on this page consumes periods when the notice is what
+    // renders, so skip the whole mount-time round trip.
+    if (forecastDisabled) return;
     futureEnsured.current = true;
     (async () => {
       try {
@@ -377,7 +395,7 @@ export default function ForecastPlansClient({
         // Non-fatal — the server-seeded periods are still usable.
       }
     })();
-  }, []);
+  }, [forecastDisabled]);
 
   // Client-side categories recovery (PR #288). Categories are seeded
   // from `initialCategories` only — there is no SWR for the categories
@@ -393,6 +411,8 @@ export default function ForecastPlansClient({
   useEffect(() => {
     if (categoriesRecoveryAttempted.current) return;
     if (categories.length > 0) return;
+    // TBD-197: the category picker this heals is behind the notice.
+    if (forecastDisabled) return;
     categoriesRecoveryAttempted.current = true;
     (async () => {
       try {
@@ -406,7 +426,7 @@ export default function ForecastPlansClient({
         // /api/v1/categories on demand.
       }
     })();
-  }, [categories.length]);
+  }, [categories.length, forecastDisabled]);
 
   // After a write from the AppShell-level "+ New Transaction" CTA the
   // forecast page must reload the plan so per-category actuals and
@@ -851,6 +871,21 @@ export default function ForecastPlansClient({
   // in that window instead of letting buttons act on stale state.
   const fetching =
     planLoading || (periodStart !== "" && !plan);
+
+  // The org switched Forecast off. Every route this page uses now 404s, so
+  // there is nothing to render but the explanation. Nothing is deleted —
+  // re-enabling restores this page and its plans untouched.
+  //
+  // Placed AFTER every hook, deliberately: an early return above `useSWR`
+  // would change the hook order between renders the moment `/auth/status`
+  // resolves and flips the flag.
+  if (forecastDisabled) {
+    return (
+      <AppShell>
+        <FeatureDisabledNotice featureLabel="Forecast" />
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>

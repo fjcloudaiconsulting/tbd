@@ -47,6 +47,11 @@ export default function BudgetsPage() {
   // and on every pre-existing test mock, and Budgets ships ON. Only an
   // explicit server `false` closes the page.
   const budgetsDisabled = features?.budgets === false;
+  // TBD-197 PR 2 — the CROSS-FEATURE flag. Budgets can be fully on while
+  // Forecast is off, and `POST /api/v1/budgets/from-forecast` carries the
+  // Forecast gate as an additional handler-level dependency, so every control
+  // that calls it becomes a button to a 404. Same `=== false` rule as above.
+  const forecastDisabled = features?.forecast === false;
   const router = useRouter();
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -335,7 +340,11 @@ export default function BudgetsPage() {
           <HelpAnchor section="budgets" label="Budgets" />
         </div>
         <div className="flex flex-wrap gap-2">
-          {isCurrentPeriod && (
+          {/* Site 1 of 3 (TBD-197). Hidden, not disabled: a greyed control
+              invites a hover-tooltip explanation for a tool the org
+              deliberately switched off, and the nav absence plus the Settings
+              card already carry that explanation. */}
+          {isCurrentPeriod && !forecastDisabled && (
             <button
               onClick={handleFromForecast}
               className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
@@ -583,9 +592,13 @@ export default function BudgetsPage() {
                       fine-tune each one.
                     </p>
                     <div className="flex flex-wrap justify-center gap-2">
-                      <button onClick={handleFromForecast} className={btnSecondary}>
-                        From forecast
-                      </button>
+                      {/* Site 2 of 3 (TBD-197). The panel's other three seeds
+                          read no ForecastPlan and stay. */}
+                      {!forecastDisabled && (
+                        <button onClick={handleFromForecast} className={btnSecondary}>
+                          From forecast
+                        </button>
+                      )}
                       <button onClick={handleCopyForward} className={btnSecondary}>
                         Copy this period
                       </button>
@@ -603,8 +616,13 @@ export default function BudgetsPage() {
                   </div>
                 ) : (
                   <div className="px-6 py-8 text-center text-sm text-text-muted">
+                    {/* Site 3 of 3 (TBD-197). The prose still says how to add a
+                        budget; it just stops naming a control that is no longer
+                        on the page. */}
                     {isCurrentPeriod
-                      ? <>No budgets set. Use <strong>+ Add Budget</strong> to add one, or <strong>From Forecast</strong> to seed them from your plan.</>
+                      ? forecastDisabled
+                        ? <>No budgets set. Use <strong>+ Add Budget</strong> to add one.</>
+                        : <>No budgets set. Use <strong>+ Add Budget</strong> to add one, or <strong>From Forecast</strong> to seed them from your plan.</>
                       : <>No budgets were set for this period.</>
                     }
                   </div>
