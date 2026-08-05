@@ -13,9 +13,16 @@ hangs off it.
 ``today`` and each dropped it at every ``resolve_period`` call. These fences
 pin the thread at the eight call sites.
 
-Every date below is 2099, which the wall clock cannot equal — a fence for
-"uses the injected clock, not ``date.today()``" is vacuous the moment the two
-can coincide (``reference_wall_clock_date_bomb_tests``, class 2).
+Every *fence* date below is 2099, which the wall clock cannot equal — a fence
+for "uses the injected clock, not ``date.today()``" is vacuous the moment the
+two can coincide (``reference_wall_clock_date_bomb_tests``, class 2).
+
+⚠ There are SEVEN fences and ONE guard, and the distinction matters when
+reading a green run. The ``today=None`` guard at the bottom re-reads
+``date.today()`` on purpose: what it pins is "omitting the argument still
+works", not "the injected clock won". It is green against unmodified ``main``
+by design, so it is not evidence the thread is present. Only the seven 2099
+assertions are.
 
 ``cycle_day`` is 15 everywhere, deliberately NOT 1: ``get_current_period``'s
 no-org fallback is also 1, so a fence anchored at ``cycle_day=1`` passes
