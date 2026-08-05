@@ -89,12 +89,17 @@ _RESERVED_NAMESPACE_DETAIL = (
 # reserved-prefix note on purpose: these two constants are the whole reason an
 # org admin cannot reach the platform rollout flags.
 #
-# ⚠ Budgets ONLY in PR 1, matching schemas.settings.PlanningTool. Forecast is
-# absent because PR 1 gates no Forecast route: an opt-out here would hide the
-# nav entry while leaving every route open, and with only the Budgets switch
-# rendered there would be no control left to undo it. PR 2 adds
-# ``"forecast": Feature.FORECAST`` in the same commit as the Forecast gates.
+# ⚠ Keep this map's keys and ``PlanningTool``'s members in lockstep. A slug the
+# Literal accepts but this map lacks is a KeyError below — a 500, not the 422
+# the Literal exists to produce — and F4's 422 loop cannot see that. F4c pins
+# the ``forecast`` key from the other side.
+#
+# Budgets shipped alone in PR 1, which gated no Forecast route: an opt-out then
+# would have hidden the nav entry while leaving every route open, with only the
+# Budgets switch rendered and so no control left to undo it. PR 2 adds Forecast
+# in the same commit as the Forecast route gates.
 _PLANNING_TOOLS: dict[str, Feature] = {
+    "forecast": Feature.FORECAST,
     "budgets": Feature.BUDGETS,
 }
 
@@ -282,8 +287,8 @@ async def set_planning_tool(
     ``feature`` is a ``Literal`` allow-list, not a ``str``: an org admin must
     never be able to reach ``reports`` / ``plans`` / ``custom_dashboard``,
     which are platform rollout flags rather than tenant preferences. A typed
-    ``str`` here would hand them all five. PR 1 narrows the list further, to
-    ``budgets`` alone — see the note on ``_PLANNING_TOOLS``.
+    ``str`` here would hand them all five. The list is ``forecast`` and
+    ``budgets`` — see the note on ``_PLANNING_TOOLS``.
 
     Escalation is impossible **by construction** rather than by check: this
     endpoint writes into ``orgpref.<name>``, a namespace whose only meaningful

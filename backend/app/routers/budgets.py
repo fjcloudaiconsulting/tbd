@@ -63,7 +63,17 @@ async def update_budget(
     return await svc.update_budget(db, current_user.org_id, budget_id, body)
 
 
-@router.post("/from-forecast", response_model=list[BudgetResponse])
+@router.post(
+    "/from-forecast",
+    response_model=list[BudgetResponse],
+    # TBD-197 — the one CROSS-FEATURE handler on this router. It reads a
+    # ForecastPlan, so it carries the Forecast gate IN ADDITION to the router's
+    # Budgets gate; either opt-out closes it. Additional, never a replacement:
+    # the router-level BUDGETS dep still covers this handler and the other
+    # seven. Fenced by F8 (forecast off + budgets on → 404 here, 200 on the
+    # list) and F8b (budgets off → 404 on both).
+    dependencies=[Depends(require_product_area(Feature.FORECAST))],
+)
 async def create_from_forecast(
     period_start: datetime.date | None = Query(default=None),
     current_user: User = Depends(get_current_user),

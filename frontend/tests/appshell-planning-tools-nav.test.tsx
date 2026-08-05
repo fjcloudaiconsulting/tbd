@@ -106,6 +106,39 @@ describe("AppShell — planning-tool nav gating (TBD-197)", () => {
     expect(screen.queryAllByText("Accounts").length).toBeGreaterThan(0);
   });
 
+  // F15b / F13b (PR 2). `buildNavItems` already carried the `forecast === false`
+  // filter from PR 1, but PR 1 shipped no fence for it: with the slug absent
+  // from the writable allow-list, `features.forecast` could never BE false in
+  // production, so the branch was unreachable. PR 2 makes it reachable, which
+  // is what makes it worth pinning — in both polarities.
+  it("F15b: hides the Forecast Plans nav item when features.forecast is false", () => {
+    (useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeAuth({ ...DEFAULT_FEATURES, forecast: false }),
+    );
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+    expect(screen.queryAllByText("Forecast Plans")).toHaveLength(0);
+    // Controls within the same render: the sibling planning tool and an
+    // ordinary base item both survive, so this is not a blanket hide.
+    expect(screen.queryAllByText("Budgets").length).toBeGreaterThan(0);
+    expect(screen.queryAllByText("Accounts").length).toBeGreaterThan(0);
+  });
+
+  it("F13b: renders the Forecast Plans nav item when features.forecast is true", () => {
+    (useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeAuth({ ...DEFAULT_FEATURES, forecast: true }),
+    );
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+    expect(screen.queryAllByText("Forecast Plans").length).toBeGreaterThan(0);
+  });
+
   it("F13: renders the Budgets nav item when features.budgets is true", () => {
     (useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
       makeAuth({ ...DEFAULT_FEATURES, budgets: true }),

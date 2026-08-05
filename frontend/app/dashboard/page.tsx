@@ -164,6 +164,11 @@ function LegacyDashboard() {
   // TBD-197. `=== false`, never truthiness: undefined means a booting client
   // (or a pre-existing test mock) and Budgets ships ON.
   const budgetsDisabled = features?.budgets === false;
+  // TBD-197 PR 2. Same `=== false` rule. Note what it does NOT cover:
+  // `loadAccountMonthEndForecast` and the AccountMonthEndForecast tile stay
+  // live, because `/forecast/account-balances` is an account-projection engine
+  // (credit-card cycles + loan amortization) that is ungated server-side.
+  const forecastDisabled = features?.forecast === false;
   const router = useRouter();
   const [resetBanner, setResetBanner] = useState(false);
 
@@ -331,7 +336,10 @@ function LegacyDashboard() {
       apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&collapse_transfers=true&${dateFilter}`),
       p === 0 ? apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=200&collapse_transfers=true&${dateFilter}`) : null,
       p === 0 && !budgetsDisabled ? apiFetch<Budget[]>(budgetUrl) : null,
-      p === 0 ? apiFetch<ForecastPlan | null>(forecastUrl) : null,
+      // TBD-197: the forecast-plan call sits INSIDE this Promise.all too, so a
+      // 404 from a gated route replaces the whole page with "Failed to load
+      // dashboard data" rather than degrading one tile. Fenced by G6.
+      p === 0 && !forecastDisabled ? apiFetch<ForecastPlan | null>(forecastUrl) : null,
     ]);
     const page_txs = pageData?.items ?? [];
     setTxTotal(pageData?.total ?? 0);
@@ -341,7 +349,7 @@ function LegacyDashboard() {
     // null is a valid response (no plan yet) — set state so empty-state UI renders.
     if (p === 0) setForecast(fc ?? null);
     setFetching(false);
-  }, [monthFrom, monthTo, realPeriodStart, budgetsDisabled]);
+  }, [monthFrom, monthTo, realPeriodStart, budgetsDisabled, forecastDisabled]);
 
   // All-time pending refetch. Decoupled from loadTransactions so it
   // refreshes on writes regardless of which transaction page is visible:
@@ -368,6 +376,18 @@ function LegacyDashboard() {
   // state instead — and (b) the user can retry from the tile without
   // re-fetching everything else.
   const loadForecastProjection = useCallback(async () => {
+    // TBD-197 — load-bearing. With Forecast gated off `/api/v1/forecast` 404s
+    // and the catch below sets `projectionFailed = true`, which OnTrackTile
+    // renders as an error with a Retry button. A deliberate org setting must
+    // never render as a failure. (The tile itself is hidden below; this keeps
+    // the state clean regardless of render order.)
+    if (forecastDisabled) {
+      projectionRequestId.current += 1;
+      setForecastProjection(null);
+      setProjectionFailed(false);
+      setProjectionLoading(false);
+      return;
+    }
     if (!realPeriodStart) {
       // Bump the id so any in-flight request from a previous period
       // can't commit state after we've cleared it.
@@ -401,7 +421,7 @@ function LegacyDashboard() {
         setProjectionLoading(false);
       }
     }
-  }, [realPeriodStart]);
+  }, [realPeriodStart, forecastDisabled]);
 
   useEffect(() => {
     if (!loading && user) {
@@ -801,6 +821,14 @@ function LegacyDashboard() {
               put HelpTooltip in a sibling flex column so it visibly
               protruded outside the card border (owner bug report
               2026-05-13). */}
+          {/* On Track hero — hidden outright when the org switched Forecast
+              off (TBD-197). Its empty states read "No plan for this period.
+              Set one up →", which is both wrong and unactionable here: there
+              is no plan because the tool is off, and the link it offers now
+              lands on the disabled notice. The AI refine toggle nested inside
+              goes with it — its endpoint is gated too, and it hides only on a
+              403, not on the 404 the product gate returns. */}
+          {!forecastDisabled && (
           <TourAnchor id="dashboard.on-track-tile" as="child">
             <div className="relative">
               <OnTrackTile
@@ -829,6 +857,7 @@ function LegacyDashboard() {
               )}
             </div>
           </TourAnchor>
+          )}
 
           {/* ═══ ROW 2: Accounts sidebar + Forecast card, side-by-side ═══
               Tiles share ONE card with internal divider rows; the
@@ -1132,7 +1161,10 @@ function LegacyDashboard() {
             </div>
             )}
 
-            {/* Forecast comparison — planned vs actual per category */}
+            {/* Forecast comparison — planned vs actual per category. Hidden
+                when Forecast is off (TBD-197): all three of its empty states
+                link to /forecast-plans, which now shows the notice. */}
+            {!forecastDisabled && (
             <div className={`${card} overflow-hidden p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Forecast by Category</h2>
               {(() => {
@@ -1189,6 +1221,7 @@ function LegacyDashboard() {
                 <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over plan</span>
               </div>
             </div>
+            )}
           </div>
 
           {/* Recent transactions */}
