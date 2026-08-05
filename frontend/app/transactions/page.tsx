@@ -1523,6 +1523,40 @@ function TransactionsPageContent() {
                                     Editing the name or category also updates this
                                     recurring series and its upcoming occurrences.
                                   </p>
+                                  {/* TBD-277. The control for the SERIES lives on
+                                      another page, and nothing here said so: a
+                                      user who wants the subscription to stop
+                                      reaches for the occurrence they can see,
+                                      deletes it, and the next one is generated on
+                                      the next run. A hint, not a warning -- muted
+                                      body text, and the link wears the app's
+                                      INLINE-PROSE idiom (text-primary at rest so
+                                      it lifts off the muted sentence, secondary on
+                                      hover), not btnLink's hover:text-accent --
+                                      that one belongs to the standalone row
+                                      actions beside it. Brass is spent on the
+                                      focus ring alone, per DESIGN.md's
+                                      Pressable-Surfaces Rule; there is no global
+                                      :focus-visible reset in globals.css, so
+                                      without it this link falls through to the UA
+                                      default ring. There is no per-template route
+                                      (`/recurring` reads no search params), so
+                                      the pointer is to the page. Mirrored in the
+                                      mobile card below. */}
+                                  <p
+                                    className="text-[11px] text-text-muted"
+                                    data-testid={`edit-recurring-series-hint-${tx.id}`}
+                                  >
+                                    Editing or deleting this occurrence leaves the
+                                    series running. Stop the whole series on the{" "}
+                                    <Link
+                                      href="/recurring"
+                                      className="rounded-sm text-text-primary underline underline-offset-2 hover:text-text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                                    >
+                                      Recurring page
+                                    </Link>
+                                    .
+                                  </p>
                                 </div>
                               ) : (
                                 <div className="flex flex-wrap items-center gap-3">
@@ -1949,6 +1983,23 @@ function TransactionsPageContent() {
                                     >
                                       Editing the name or category also updates this
                                       recurring series and its upcoming occurrences.
+                                    </p>
+                                    {/* TBD-277 -- MOBILE twin of the series
+                                        pointer in the desktop row above. Same
+                                        copy, same tokens, same gate. */}
+                                    <p
+                                      className="text-[11px] text-text-muted"
+                                      data-testid={`edit-recurring-series-hint-mobile-${tx.id}`}
+                                    >
+                                      Editing or deleting this occurrence leaves the
+                                      series running. Stop the whole series on the{" "}
+                                      <Link
+                                        href="/recurring"
+                                        className="rounded-sm text-text-primary underline underline-offset-2 hover:text-text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                                      >
+                                        Recurring page
+                                      </Link>
+                                      .
                                     </p>
                                   </div>
                                 ) : (
