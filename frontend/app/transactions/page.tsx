@@ -1492,9 +1492,17 @@ function TransactionsPageContent() {
                                       reaches for the occurrence they can see,
                                       deletes it, and the next one is generated on
                                       the next run. A hint, not a warning -- muted
-                                      body text, brass only on link hover, so it
-                                      spends no brass moment on an already busy
-                                      screen. There is no per-template route
+                                      body text, and the link wears the app's
+                                      INLINE-PROSE idiom (text-primary at rest so
+                                      it lifts off the muted sentence, secondary on
+                                      hover), not btnLink's hover:text-accent --
+                                      that one belongs to the standalone row
+                                      actions beside it. Brass is spent on the
+                                      focus ring alone, per DESIGN.md's
+                                      Pressable-Surfaces Rule; there is no global
+                                      :focus-visible reset in globals.css, so
+                                      without it this link falls through to the UA
+                                      default ring. There is no per-template route
                                       (`/recurring` reads no search params), so
                                       the pointer is to the page. Mirrored in the
                                       mobile card below. */}
@@ -1506,7 +1514,7 @@ function TransactionsPageContent() {
                                     series running. Stop the whole series on the{" "}
                                     <Link
                                       href="/recurring"
-                                      className="underline underline-offset-2 hover:text-accent"
+                                      className="rounded-sm text-text-primary underline underline-offset-2 hover:text-text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
                                     >
                                       Recurring page
                                     </Link>
@@ -1950,7 +1958,7 @@ function TransactionsPageContent() {
                                       series running. Stop the whole series on the{" "}
                                       <Link
                                         href="/recurring"
-                                        className="underline underline-offset-2 hover:text-accent"
+                                        className="rounded-sm text-text-primary underline underline-offset-2 hover:text-text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
                                       >
                                         Recurring page
                                       </Link>
