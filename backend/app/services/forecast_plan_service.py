@@ -402,8 +402,15 @@ async def get_or_create_plan(
     db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
     *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
-    """Get existing plan for a period, or create a new draft."""
-    period = await resolve_period(db, org_id, period_start)
+    """Get existing plan for a period, or create a new draft.
+
+    ``today`` is threaded into ``resolve_period`` (TBD-299): its fallback arm
+    reaches ``get_current_period``, which auto-creates. Holding a resolved
+    clock and dropping it there anchors the org's very first ``BillingPeriod``
+    — a money-row anchor — to a second, independent clock read. Every
+    ``resolve_period`` call in this module threads it for that reason.
+    """
+    period = await resolve_period(db, org_id, period_start, today=today)
     plan = await _get_or_create_plan_row(db, org_id, period.id)
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
@@ -420,8 +427,12 @@ async def get_plan_for_period(
     plan is present. The Dashboard reads through this so that visiting it
     doesn't pollute the database with empty drafts. The Forecasts page
     keeps using get_or_create_plan because users land there to set one up.
+
+    ⚠ "Side-effect-free" covers the *plan* row only. ``resolve_period``'s
+    fallback still auto-creates the *period*, which is exactly why ``today``
+    has to reach it (TBD-299).
     """
-    period = await resolve_period(db, org_id, period_start)
+    period = await resolve_period(db, org_id, period_start, today=today)
     result = await db.execute(
         select(ForecastPlan).where(
             ForecastPlan.org_id == org_id,
@@ -443,7 +454,7 @@ async def populate_from_sources(
 
     Only adds items for categories not already in the plan.
     """
-    period = await resolve_period(db, org_id, period_start)
+    period = await resolve_period(db, org_id, period_start, today=today)
     plan = await _get_or_create_plan_row(db, org_id, period.id)
     _require_draft(plan)
     await db.refresh(plan, ["billing_period", "items"])
@@ -690,8 +701,13 @@ async def refresh_from_sources(
     Items with source=MANUAL stay untouched — that flag is set whenever
     the user adds an item by hand or edits an auto-generated one, so the
     rule is "user-touched stays, never-touched gets refreshed".
+
+    ⚠ The inner ``populate_from_sources`` call already threaded ``today``,
+    which is what made THIS drop invisible: on the auto-create path the period
+    row is already committed by the time populate runs, so the inner thread
+    could never repair the outer anchor (TBD-299).
     """
-    period = await resolve_period(db, org_id, period_start)
+    period = await resolve_period(db, org_id, period_start, today=today)
     plan = await _get_or_create_plan_row(db, org_id, period.id)
     _require_draft(plan)
     await db.refresh(plan, ["billing_period", "items"])
@@ -952,9 +968,21 @@ async def copy_from_period(
     source_period_start: datetime.date,
     *, today: datetime.date | None = None,
 ) -> ForecastPlanResponse:
-    """Copy plan items from a previous period to the target period."""
-    target_period = await resolve_period(db, org_id, target_period_start)
-    source_period = await resolve_period(db, org_id, source_period_start)
+    """Copy plan items from a previous period to the target period.
+
+    Only the TARGET resolve can auto-create: ``target_period_start`` is
+    optional, so it can take ``resolve_period``'s fallback arm. The SOURCE
+    resolve takes a required, non-optional date and therefore always goes down
+    the lookup-or-``ValidationError`` path — ``today=`` there is defensive
+    consistency, not observable behaviour, and is deliberately unfenced
+    (TBD-299).
+    """
+    target_period = await resolve_period(
+        db, org_id, target_period_start, today=today
+    )
+    source_period = await resolve_period(
+        db, org_id, source_period_start, today=today
+    )
 
     # Get source plan
     source_result = await db.execute(
