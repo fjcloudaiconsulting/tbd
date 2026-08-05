@@ -242,7 +242,10 @@ export function DashboardDataProvider({
   // FIX 5: seed billingCycleDay from the authed user (same as LegacyDashboard)
   // so the initial monthTo calculation is correct before the settings load
   // resolves. `loading` feeds the SWR auth gate below.
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, features } = useAuth();
+  // TBD-197. `=== false`, never truthiness — `features` is undefined on a
+  // booting client and in every pre-existing test mock, and Budgets ships ON.
+  const budgetsDisabled = features?.budgets === false;
 
   // ── Reference data via shared SWR hooks (SWR Phase 2) ───────────────────────
   // Accounts + billing periods come from the shared hooks (bare-path keys) so
@@ -529,6 +532,20 @@ export function DashboardDataProvider({
   // On a transient failure, keep the last good budgets (don't blank them).
   // Stale-request guard matches sibling loaders.
   const loadBudgets = useCallback(async () => {
+    // TBD-197 — load-bearing, not an optimisation. With Budgets gated off the
+    // route 404s, apiFetch throws, and the dashboard would render a deliberate
+    // org setting as a FAILURE. The tiles fall back to their own existing
+    // empty states instead.
+    //
+    // ⚠ Do NOT extend this skip to loadAccountMonthEndForecast: that endpoint
+    // is an account-projection engine (credit-card cycles + loan
+    // amortization) that merely lives under a /forecast URL prefix, and
+    // AccountMonthEndForecast renders a bare "Loading…" forever on null data.
+    if (budgetsDisabled) {
+      budgetsRequestId.current += 1;
+      setBudgets([]);
+      return;
+    }
     const myId = ++budgetsRequestId.current;
     const budgetUrl = realPeriodStart
       ? `/api/v1/budgets?period_start=${realPeriodStart}`
@@ -541,7 +558,7 @@ export function DashboardDataProvider({
       if (budgetsRequestId.current !== myId) return;
       // Silent — keep last good budgets on transient failures.
     }
-  }, [realPeriodStart]);
+  }, [realPeriodStart, budgetsDisabled]);
 
   // ── loadAux ─────────────────────────────────────────────────────────────────
   // The non-SWR settings refs. Accounts + billing periods moved to the shared

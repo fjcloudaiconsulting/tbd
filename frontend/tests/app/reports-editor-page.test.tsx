@@ -73,6 +73,7 @@ import {
   mobileStackHeight,
 } from "@/lib/reports/stack";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { DEFAULT_FEATURES } from "@/lib/features";
 import * as reportsApi from "@/lib/reports/api";
 import type { Widget } from "@/lib/reports/types";
 
@@ -118,7 +119,7 @@ function mockUser(reportsOn = true) {
     user: BASE_USER as never,
     loading: false,
     needsSetup: false,
-    features: { reports: reportsOn, plans: false, customDashboard: false },
+    features: { ...DEFAULT_FEATURES, reports: reportsOn, plans: false },
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),

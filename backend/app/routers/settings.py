@@ -4,7 +4,7 @@ from decimal import Decimal
 import structlog
 from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import and_, case, func, or_, select, union_all
+from sqlalchemy import and_, case, delete, func, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -31,9 +31,19 @@ from app.schemas.settings import (
     ManualBalanceAdjustmentToggle,
     OrgSettingResponse,
     OrgSettingUpdate,
+    PlanningTool,
+    PlanningToolResponse,
+    PlanningToolToggle,
 )
 from app.services import audit_service, billing_service
 from app.services.exceptions import ConflictError, ValidationError
+from app.services.feature_gate import (
+    Feature,
+    normalize_onoff,
+    org_preference_key,
+    resolve_feature,
+    upsert_org_setting,
+)
 from app.services.settings_service import (
     FORECAST_GRANULARITY_VALUES,
     FORECAST_INPUT_GRANULARITY_KEY,
@@ -44,20 +54,49 @@ logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
-# The "feature." prefix is exclusively managed by superadmin endpoints in
-# admin_features.py, which layer per-org OrgSetting overrides at the highest
-# priority in the three-level feature gate (feature_gate.py: per-org >
-# SystemSetting global > env-floor).  Allowing the generic PUT/DELETE here
-# would let any OWNER/ADMIN bypass a globally-disabled feature with no audit
-# trail.  Block the entire namespace from this writer.
+# Two namespaces are off-limits to the generic org-settings writer, for
+# opposite reasons.  ``str.startswith`` accepts a tuple, so both call sites
+# below work unchanged.
+#
+#   "feature."  — exclusively managed by the superadmin endpoints in
+#       admin_features.py, which layer per-org OrgSetting overrides at the
+#       highest priority of the platform chain (per-org > SystemSetting global
+#       > env-floor).  Allowing the generic PUT/DELETE here would let any
+#       OWNER/ADMIN bypass a globally-disabled feature with no audit trail.
+#
+#   "orgpref." — the tenant opt-out mask read by feature_gate.resolve_feature.
+#       It IS org-owned, but it has exactly one legitimate writer: the
+#       PUT /settings/features/{feature} endpoint below, which audits the
+#       change and can only ever write "off".  The generic writer accepts an
+#       arbitrary value and writes no audit row, so leaving it open would make
+#       the mask a second, silent, un-auditable control surface.
 #
 # TBD-322: compare CASEFOLDED.  `org_settings.key` is `String(100)` with no
 # explicit collation and production MySQL runs `utf8mb4_0900_ai_ci`, so
 # `WHERE key = 'Feature.reports'` matches the stored lowercase
 # `feature.reports` row.  A case-sensitive `startswith` therefore let an
 # ADMIN rewrite a superadmin-managed override through the generic writer.
-# The constant stays lowercase; the INPUT is what gets folded.
-RESERVED_SETTINGS_PREFIX = "feature."
+# The constant stays lowercase; the INPUT is what gets folded.  This applies
+# to BOTH entries above: "orgpref." inherits the same protection, and the
+# ``list_settings`` filter below folds for the same reason.
+RESERVED_SETTINGS_PREFIX = ("feature.", "orgpref.")
+_RESERVED_NAMESPACE_DETAIL = (
+    "The 'feature.' and 'orgpref.' settings namespaces are managed by "
+    "dedicated endpoints, not this one"
+)
+
+# The allow-list behind PUT /settings/features/{feature}. Kept beside the
+# reserved-prefix note on purpose: these two constants are the whole reason an
+# org admin cannot reach the platform rollout flags.
+#
+# ⚠ Budgets ONLY in PR 1, matching schemas.settings.PlanningTool. Forecast is
+# absent because PR 1 gates no Forecast route: an opt-out here would hide the
+# nav entry while leaving every route open, and with only the Budgets switch
+# rendered there would be no control left to undo it. PR 2 adds
+# ``"forecast": Feature.FORECAST`` in the same commit as the Forecast gates.
+_PLANNING_TOOLS: dict[str, Feature] = {
+    "budgets": Feature.BUDGETS,
+}
 
 
 def _request_id() -> str | None:
@@ -73,6 +112,23 @@ def _require_admin(user: User) -> None:
         )
 
 
+async def require_settings_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """FastAPI dependency form of :func:`_require_admin`.
+
+    Runs during dependency resolution — i.e. BEFORE the endpoint's own path and
+    body params are validated — so an under-privileged caller always gets 403,
+    never a 422 that leaks the shape of the surface they cannot reach. Called
+    inside the handler body instead, ``PUT /settings/features/reports`` answers
+    a MEMBER with a 422 whose payload enumerates the planning-tool allow-list.
+    Mirrors ``admin_features.require_superadmin``, which is a dependency for
+    exactly this reason.
+    """
+    _require_admin(current_user)
+    return current_user
+
+
 @router.get("", response_model=list[OrgSettingResponse])
 async def list_settings(
     current_user: User = Depends(get_current_user),
@@ -84,8 +140,23 @@ async def list_settings(
         .where(OrgSetting.org_id == current_user.org_id)
         .order_by(OrgSetting.key)
     )
+    # Reserved namespaces are FILTERED OUT, not merely read-only. Both the PUT
+    # and the DELETE above answer 403 for these keys, so listing them hands the
+    # Advanced Configuration table an Edit and a Delete button that can only
+    # ever fail — two contradictory controls for one state on one page. After
+    # switching Budgets off an admin would otherwise see a raw
+    # ``orgpref.budgets = off`` row directly beneath the switch that wrote it.
+    #
+    # ``.casefold()``: ``str.startswith`` is case-sensitive but the MySQL
+    # column collation is not, so a row stored as ``Orgpref.budgets`` is the
+    # same row to the database and must not leak through this filter. Same
+    # idiom as the two write guards above, which TBD-322 casefolded for the
+    # same reason — all three comparisons against this constant fold their
+    # input, and a fourth must too.
     return [
-        OrgSettingResponse(key=s.key, value=s.value) for s in result.scalars().all()
+        OrgSettingResponse(key=s.key, value=s.value)
+        for s in result.scalars().all()
+        if not s.key.casefold().startswith(RESERVED_SETTINGS_PREFIX)
     ]
 
 
@@ -100,7 +171,7 @@ async def upsert_setting(
     if body.key.casefold().startswith(RESERVED_SETTINGS_PREFIX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="The 'feature.' settings namespace is managed by platform administrators",
+            detail=_RESERVED_NAMESPACE_DETAIL,
         )
 
     # Per-key bounds validation. Other org settings have no bounds
@@ -180,7 +251,7 @@ async def delete_setting(
     if key.casefold().startswith(RESERVED_SETTINGS_PREFIX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="The 'feature.' settings namespace is managed by platform administrators",
+            detail=_RESERVED_NAMESPACE_DETAIL,
         )
 
     result = await db.execute(
@@ -195,6 +266,117 @@ async def delete_setting(
 
     await db.delete(setting)
     await db.commit()
+
+
+@router.put("/features/{feature}", response_model=PlanningToolResponse)
+async def set_planning_tool(
+    feature: PlanningTool,
+    body: PlanningToolToggle,
+    request: Request,
+    current_user: User = Depends(require_settings_admin),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """TBD-197 — let an org admin switch a planning tool off for their org.
+
+    ``feature`` is a ``Literal`` allow-list, not a ``str``: an org admin must
+    never be able to reach ``reports`` / ``plans`` / ``custom_dashboard``,
+    which are platform rollout flags rather than tenant preferences. A typed
+    ``str`` here would hand them all five. PR 1 narrows the list further, to
+    ``budgets`` alone — see the note on ``_PLANNING_TOOLS``.
+
+    Escalation is impossible **by construction** rather than by check: this
+    endpoint writes into ``orgpref.<name>``, a namespace whose only meaningful
+    value is ``"off"``. ``enabled=true`` DELETES the row; it never writes
+    ``"on"`` anywhere, and in particular never touches ``feature.<name>`` —
+    so an org "enable" cannot destroy a superadmin's per-org grant (which is
+    exactly how an earlier design silently flipped an org True → False,
+    unrecoverably).
+
+    ``require_settings_admin``, not ``require_org_owner``: ``org_permissions``
+    reserves OWNER for tenant-scoped *destructive* operations, and nothing is
+    deleted here — the neighbouring manual-balance toggle, which rewrites
+    account balances, is admin-gated too. It is a DEPENDENCY rather than a body
+    call so an under-privileged caller gets 403 before param validation can
+    answer 422.
+
+    The response carries the RE-RESOLVED effective value, which can disagree
+    with the request: a global ``SystemSetting("feature.<name>", "off")`` still
+    wins over an org enable. The UI reads that disagreement to show its
+    "set by your administrator" state.
+    """
+    feat = _PLANNING_TOOLS[feature]
+    key = org_preference_key(feat)
+
+    # Snapshot actor identity before any await on db so a rollback path can't
+    # expire `current_user` and break the audit row.
+    actor_user_id = current_user.id
+    actor_email = current_user.email
+    actor_org_id = current_user.org_id
+    req_id = _request_id()
+    ip = get_client_ip(request)
+
+    org = await db.scalar(
+        select(Organization).where(Organization.id == actor_org_id)
+    )
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    org_name = org.name
+
+    old_raw = await db.scalar(
+        select(OrgSetting.value).where(
+            OrgSetting.org_id == actor_org_id, OrgSetting.key == key
+        )
+    )
+    # ``normalize_onoff``, not ``!= "off"``: the resolver parses this column
+    # with ``.strip().lower()``, so ``"OFF"`` and ``" off "`` are real opt-outs
+    # to the gate. Compared raw they would resolve as opted-out yet audit as
+    # ``old: True`` — the audit trail contradicting the behaviour it records.
+    # One normalizer, shared with the gate.
+    old_value = normalize_onoff(old_raw) != "off"
+
+    if body.enabled:
+        await db.execute(
+            delete(OrgSetting).where(
+                OrgSetting.org_id == actor_org_id, OrgSetting.key == key
+            )
+        )
+        await db.commit()
+    else:
+        # Commits internally, with the uq_org_settings_org_key retry.
+        await upsert_org_setting(db, actor_org_id, key, "off")
+
+    effective = await resolve_feature(feat, actor_org_id, db)
+
+    await logger.ainfo(
+        "org.config.feature.set",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=actor_org_id,
+        feature=feature,
+        old=old_value,
+        new=body.enabled,
+        effective=effective,
+    )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="org.config.feature.set",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=actor_org_id,
+        target_org_name=org_name,
+        request_id=req_id,
+        ip_address=ip,
+        outcome="success",
+        detail={
+            "feature": feature,
+            "old": old_value,
+            "new": body.enabled,
+            "effective": effective,
+        },
+    )
+
+    return PlanningToolResponse(feature=feature, enabled=effective)
 
 
 @router.get("/billing-cycle")
