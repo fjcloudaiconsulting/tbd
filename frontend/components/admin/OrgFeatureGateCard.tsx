@@ -9,12 +9,26 @@ import {
   error as errorCls,
 } from "@/lib/styles";
 
-type FeatureName = "reports" | "plans" | "custom_dashboard";
+type FeatureName =
+  | "reports"
+  | "plans"
+  | "custom_dashboard"
+  | "forecast"
+  | "budgets";
 type TriState = "on" | "off" | "inherit";
 
 interface OrgFeatureGate {
   feature: FeatureName;
+  /** The superadmin's per-org override of the PLATFORM answer. */
   override: TriState;
+  /**
+   * The ORG's own opt-out (TBD-197): "off" when that org's admin switched the
+   * tool off in Settings, "inherit" otherwise. Reported separately from
+   * `effective` on purpose — `effective` is the platform answer, so without
+   * this field an opted-out org reads as `override: inherit, effective: true`
+   * and the discrepancy is unexplainable.
+   */
+  org_preference?: "off" | "inherit";
   effective: boolean;
 }
 
@@ -22,6 +36,8 @@ const FEATURE_LABELS: Record<FeatureName, string> = {
   reports: "Reports",
   plans: "Plans",
   custom_dashboard: "Customizable dashboard",
+  forecast: "Forecast",
+  budgets: "Budgets",
 };
 
 interface Props {
@@ -117,11 +133,21 @@ export default function OrgFeatureGateCard({ orgId }: Props) {
                       {FEATURE_LABELS[gate.feature] ?? gate.feature}
                     </span>
                     <span className="text-xs text-text-muted">
-                      Effective:{" "}
+                      Effective (platform):{" "}
                       <span className={`font-medium ${gate.effective ? "text-success" : "text-text-secondary"}`}>
                         {gate.effective ? "Enabled" : "Disabled"}
                       </span>
                     </span>
+                    {/* TBD-197: without this line an opted-out org reads as
+                        "inherit / enabled" here while its users see the
+                        surface closed, and the operator has nothing to look
+                        at. The org's own choice is NOT overridable from this
+                        card — it is the tenant's, by design. */}
+                    {gate.org_preference === "off" && (
+                      <span className="text-xs text-warning">
+                        Org opted out in their own settings
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex flex-col items-start gap-1.5 sm:items-end">

@@ -31,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { DEFAULT_FEATURES } from "@/lib/features";
 import {
   EXTENDED_TOUR_STEPS,
   TOUR_FLAG_KEY,
@@ -132,11 +133,31 @@ const REPORTS_NAV_ITEM = {
 //   Catalog) are different features and are never touched here.
 // - features.reports: when true, Reports is inserted just before the
 //   Plans item (or after Forecast Plans when Plans is hidden).
-function buildNavItems(features: { reports: boolean; plans: boolean }) {
+// - features.budgets / features.forecast (TBD-197): when false, "/budgets" /
+//   "/forecast-plans" are dropped. These two live in `baseNavItems`
+//   UNCONDITIONALLY, so this filter is the ONLY thing standing between a
+//   disabled org and a nav link straight to a 404 — an implementation that
+//   gates every backend route but never touches this function passes the rest
+//   of the suite. Fenced by F15.
+function buildNavItems(features: {
+  reports: boolean;
+  plans: boolean;
+  budgets?: boolean;
+  forecast?: boolean;
+}) {
   // Start from base; optionally drop the Plans item.
-  const items = features.plans
+  let items = features.plans
     ? [...baseNavItems]
     : baseNavItems.filter((i) => i.href !== "/plans");
+
+  // `=== false`, not falsy: an absent key is a caller that predates these
+  // flags, and the shipped polarity for both is ON.
+  if (features.budgets === false) {
+    items = items.filter((i) => i.href !== "/budgets");
+  }
+  if (features.forecast === false) {
+    items = items.filter((i) => i.href !== "/forecast-plans");
+  }
 
   if (!features.reports) return items;
 
@@ -287,7 +308,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     authExitReason,
     clearAuthExitReason,
   } = useAuth();
-  const navItems = buildNavItems(features ?? { reports: false, plans: false });
+  const navItems = buildNavItems(features ?? DEFAULT_FEATURES);
   const router = useRouter();
   const pathname = usePathname();
   // Guards the redirect to fire exactly once per logged-out episode.

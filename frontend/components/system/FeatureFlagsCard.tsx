@@ -9,7 +9,12 @@ import {
   error as errorCls,
 } from "@/lib/styles";
 
-type FeatureName = "reports" | "plans";
+type FeatureName =
+  | "reports"
+  | "plans"
+  | "custom_dashboard"
+  | "forecast"
+  | "budgets";
 type TriState = "on" | "off" | "inherit";
 
 interface FeatureFlag {
@@ -21,6 +26,9 @@ interface FeatureFlag {
 const FEATURE_LABELS: Record<FeatureName, string> = {
   reports: "Reports",
   plans: "Plans",
+  custom_dashboard: "Customizable dashboard",
+  forecast: "Forecast",
+  budgets: "Budgets",
 };
 
 function toTriState(global_value: "on" | "off" | null): TriState {

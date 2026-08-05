@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ReportDraftPage from "@/app/reports/new/page";
 import * as reportsApi from "@/lib/reports/api";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { DEFAULT_FEATURES } from "@/lib/features";
 
 vi.mock("@/lib/reports/api", () => ({
   createReport: vi.fn(),
@@ -92,7 +93,7 @@ function mockUser(reportsOn = true) {
     user: { id: 1 } as never,
     loading: false,
     needsSetup: false,
-    features: { reports: reportsOn, plans: false, customDashboard: false },
+    features: { ...DEFAULT_FEATURES, reports: reportsOn, plans: false },
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),
