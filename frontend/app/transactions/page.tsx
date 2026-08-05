@@ -72,6 +72,45 @@ function demotionNotice(demotedIds: number[]): string {
     : `${n} matched duplicates were marked rejected. They no longer count toward balances or reports.`;
 }
 
+// TBD-290. `deleted_count` counts DB ROWS removed, and deleting one half of a
+// transfer cascades to the other half server-side, so it can exceed
+// `requested_count` (what the user ticked). Reporting it as "Deleted 6 of 4"
+// is nonsense. The share the user can verify is (selected - skipped) OF
+// selected, which can never invert.
+//
+// The DB row total is deliberately NOT quoted. The list request sends
+// collapse_transfers=true, so a transfer pair is ONE row on screen: the user
+// who selected 4 rows never saw 6 of anything, and naming that number puts a
+// database count in front of someone who was working with transactions. The
+// cascade is disclosed in words instead.
+//
+// Note the cascade is NOT detectable as `deleted_count > requested_count`: one
+// skipped row and one cascaded partner cancel out and the two counts match
+// while a row the user never picked was still removed. Compare against the
+// user-facing count instead.
+//
+// Every sentence gates itself, so the helper is correct for any response rather
+// than only inside the call site's `skipped_ids.length > 0` branch.
+function bulkDeleteNotice(res: {
+  requested_count: number;
+  deleted_count: number;
+  skipped_ids: number[];
+}): string {
+  const selected = res.requested_count;
+  const skipped = res.skipped_ids.length;
+  const removed = Math.max(0, selected - skipped);
+  // "of the 1 transaction you selected" reads badly, so the article is dropped
+  // in the singular and the sentence stays natural at either count.
+  const selection = selected === 1 ? "1 transaction" : `the ${selected} transactions`;
+  const parts = [`Deleted ${removed} of ${selection} you selected.`];
+  if (skipped > 0) {
+    parts.push(`${skipped} ${skipped === 1 ? "was" : "were"} already gone.`);
+  }
+  if (res.deleted_count > removed) {
+    parts.push("Transfers come in pairs, so the matching halves went too.");
+  }
+  return parts.join(" ");
+}
 
 
 const DATE_PARAM_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -561,9 +600,7 @@ function TransactionsPageContent() {
       await loadTransactions(page);
       setNotice(demotionNotice(res?.demoted_ids ?? []));
       if (res.skipped_ids.length > 0) {
-        setError(
-          `Deleted ${res.deleted_count} of ${res.requested_count} transactions. ${res.skipped_ids.length} ${res.skipped_ids.length === 1 ? "was" : "were"} already gone.`,
-        );
+        setError(bulkDeleteNotice(res));
       }
     } catch (err) {
       setError(extractErrorMessage(err));
