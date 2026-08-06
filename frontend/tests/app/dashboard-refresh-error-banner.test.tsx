@@ -111,6 +111,19 @@ function makeHandler(opts: { failTxOnSecondCall?: boolean } = {}) {
         categories: [],
       } as never;
     }
+    // TBD-221: the Spending donut's rollup shares the /api/v1/transactions URL
+    // prefix but is a DIFFERENT endpoint with its own failure flag. It must not
+    // consume a `txCalls` slot and must not be the call this test fails —
+    // otherwise the donut renders its own "Retry" and the banner's Retry stops
+    // being unambiguously findable by role.
+    if (url.startsWith("/api/v1/transactions/spending-by-category")) {
+      return {
+        period_start: "2026-05-01",
+        period_end: "2026-05-31",
+        executed_expense: "0",
+        categories: [],
+      } as never;
+    }
     if (url.startsWith("/api/v1/transactions")) {
       txCalls += 1;
       if (opts.failTxOnSecondCall && txCalls >= 2) {

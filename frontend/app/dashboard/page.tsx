@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronsUpDown, RefreshCw } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import HelpTooltip from "@/components/Tooltip";
@@ -11,6 +11,7 @@ import Pagination from "@/components/ui/Pagination";
 import TourAnchor from "@/components/tour/TourAnchor";
 import { useAuth } from "@/components/auth/AuthProvider";
 import CustomDashboard from "@/components/dashboard/CustomDashboard";
+import type { SpendingByCategoryResponse } from "@/components/dashboard/DashboardDataProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount, formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
@@ -68,9 +69,11 @@ interface ForecastPlan {
 
 // Shape returned by GET /api/v1/forecast?period_start=...
 // Generated server-side by backend/app/services/forecast_service.py.
-// Only the fields the OnTrackTile reads are typed strictly; the rest
-// (per-category breakdown, individual line items) we leave as unknown
-// because nothing on the dashboard surface uses them today.
+//
+// TBD-221: `categories` here is NOT the donut's source and must not become it.
+// This route is gated by TBD-197, and the donut is a historical-actuals tile;
+// it reads GET /api/v1/transactions/spending-by-category instead. `unknown[]`
+// keeps that door shut.
 interface ForecastProjection {
   period_start: string;
   period_end: string;
@@ -190,7 +193,10 @@ function LegacyDashboard() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
+  // ⚠ TBD-221 deleted the sibling `allTransactions` (limit=200) snapshot. Its
+  // two consumers — the donut memo and the chart-filter branch of `visibleTxs`
+  // — are both replaced by server work: the rollup and a paginated drilldown.
+  // That is how the 200-row cap dies, by removing the only fetch that had one.
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [period, setPeriod] = useState<BillingPeriod | null>(null);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
@@ -211,6 +217,16 @@ function LegacyDashboard() {
   const [forecastProjection, setForecastProjection] = useState<ForecastProjection | null>(null);
   const [projectionFailed, setProjectionFailed] = useState(false);
   const [projectionLoading, setProjectionLoading] = useState(false);
+  // TBD-221 — the Spending donut's source, and its OWN failure/loading flags.
+  // `/api/v1/transactions/spending-by-category` is ungated; `/api/v1/forecast`
+  // is not. One flag across both would blank a working donut whenever the
+  // forecast failed (or was simply switched off), and blank a working forecast
+  // whenever the rollup failed.
+  const [spendingRollup, setSpendingRollup] =
+    useState<SpendingByCategoryResponse | null>(null);
+  const [rollupFailed, setRollupFailed] = useState(false);
+  const [rollupLoading, setRollupLoading] = useState(false);
+  const rollupRequestId = useRef(0);
   // Per-account expected month-end balance from /api/v1/forecast/account-balances.
   // Distinct from forecastProjection above (which drives the OnTrackTile —
   // reportable income/expense aggregates). This one is per-account balance
@@ -242,7 +258,8 @@ function LegacyDashboard() {
   const [refreshError, setRefreshError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  const [chartFilter, setChartFilter] = useState<string | null>(null);
+  // TBD-221: a category_id (the rollup's identity), not a category name.
+  const [chartFilterId, setChartFilterId] = useState<number | null>(null);
   // Item 6 (system-wide sort persistence): the dashboard transactions table
   // and the Spending by Category card both persist their sort state via
   // localStorage so a navigate-away-and-back lands the user where they were.
@@ -285,10 +302,38 @@ function LegacyDashboard() {
   // monthFrom drives transaction date filters (which don't go through
   // resolve_period), so the calendar fallback is fine there.
   const monthFrom = realPeriodStart ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  // For open periods, compute expected end from billing cycle day
+  // For open periods, compute expected end from billing cycle day.
+  //
+  // ⚠ DISPLAY WINDOW, NEVER AN ANALYSIS BOUND (TBD-221 / TBD-243). The open-
+  // period arm is a client calendar formula; every total on this screen is
+  // bounded server-side by `period_spend_window_end`. `monthTo` may only scope
+  // the UNFILTERED Recent Transactions list, which is a ledger view and sums to
+  // nothing. Anything that produces or drills into a number uses `rollupTo`.
   const monthTo =
     selectedPeriod?.end_date
     ?? (monthFrom ? projectedPeriodEnd(monthFrom, billingCycleDay) ?? "" : "");
+
+  // ── The rollup's own analysis window (TBD-221) ─────────────────────────────
+  // Off the SAME payload as the per-category totals, so window and numbers
+  // arrive together and cannot drift.
+  //
+  // ⚠ READ BACK OFF THE RESPONSE, never `realPeriodStart`: `period_start` on
+  // the request is a hint the server may silently substitute with the current
+  // period (no 404, no 422), so a window built from the value we SENT can
+  // describe a different period from the numbers we got.
+  const rollupFrom = spendingRollup?.period_start ?? null;
+  const rollupTo = spendingRollup?.period_end ?? null;
+
+  // A drilldown is only meaningful while that window is known: the filtered
+  // query has to reproduce the slice's WHERE clause and the window is half of
+  // it. With no rollup the filter reads null and the tile falls back to the
+  // plain period page, rather than guessing a bound from `monthTo`.
+  const chartFilter = rollupFrom && rollupTo ? chartFilterId : null;
+  const setChartFilter = useCallback((c: number | null) => {
+    setChartFilterId(c);
+    // The drilldown is its own paginated result set.
+    setPage(0);
+  }, []);
 
   const loadRefs = useCallback(async () => {
     // TBD-197: the budgets call sits INSIDE this Promise.all, and a rejection
@@ -316,6 +361,37 @@ function LegacyDashboard() {
     if (currentIdx >= 0) setPeriodIdx(currentIdx);
   }, [budgetsDisabled]);
 
+  // ── The recent-tx list query, in its two shapes (TBD-221) ──────────────────
+  //
+  // Plain string, deliberately not a memo: `useCallback` compares deps with
+  // Object.is and two equal strings are Object.is-equal, so `loadTransactions`
+  // keeps a stable identity for as long as the URL it would build is unchanged
+  // — which is what stops the projection landing (rollup window null → known)
+  // re-firing an identical unfiltered page fetch.
+  //
+  //  • UNFILTERED — the "Recent Transactions" ledger view over the DISPLAY
+  //    window. It is a list, not a total; `monthTo` may bound it.
+  //
+  //  • FILTERED — the drilldown into one rollup slice, reproducing that
+  //    slice's WHERE clause exactly so the list cannot show a row the slice
+  //    excluded, nor sum past the number the user clicked.
+  //
+  //    ⚠ `category_match=exact` is NOT optional. `category_id` on the list
+  //    endpoint is master-includes-subs (a 2026-05-13 regression guard) while
+  //    the rollup groups by the row's OWN category_id. Without it a master
+  //    slice opens a list summing to more than itself.
+  //
+  //    ⚠ `collapse_transfers` is deliberately ABSENT: `reportable=true`
+  //    already excludes every non-null `linked_transaction_id`, a strict
+  //    superset of it.
+  const txQueryTail =
+    chartFilter !== null && rollupFrom && rollupTo
+      ? `&category_id=${chartFilter}&category_match=exact&reportable=true`
+        + `&type=expense&status=settled`
+        + `&date_from=${rollupFrom}&date_to=${rollupTo}`
+      : `&collapse_transfers=true&date_from=${monthFrom}`
+        + `${monthTo ? `&date_to=${monthTo}` : ""}`;
+
   const loadTransactions = useCallback(async (p: number) => {
     // Omit period_start until refs have loaded a real billing period.
     // /api/v1/budgets and /api/v1/forecast-plans/current both resolve to
@@ -324,17 +400,8 @@ function LegacyDashboard() {
     // BillingPeriod row (salary-cycle orgs start mid-month).
     const budgetUrl = realPeriodStart ? `/api/v1/budgets?period_start=${realPeriodStart}` : "/api/v1/budgets";
     const forecastUrl = realPeriodStart ? `/api/v1/forecast-plans/current?period_start=${realPeriodStart}` : "/api/v1/forecast-plans/current";
-    const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
-    const [pageData, allData, bds, fc] = await Promise.all([
-      // collapse_transfers=true on BOTH (TBD-268). The snapshot is not a
-      // one-shot sum source: under a chart filter it BECOMES the rendered
-      // source (see visibleTxs below), so collapsing both lets one memo serve
-      // both instead of forking. Safe for the snapshot's other consumer,
-      // donutDataRaw, which already drops rows with a non-null link — and the
-      // collapse only ever removes rows that have one, so the donut is
-      // bit-identical either way.
-      apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&collapse_transfers=true&${dateFilter}`),
-      p === 0 ? apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=200&collapse_transfers=true&${dateFilter}`) : null,
+    const [pageData, bds, fc] = await Promise.all([
+      apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}${txQueryTail}`),
       p === 0 && !budgetsDisabled ? apiFetch<Budget[]>(budgetUrl) : null,
       // TBD-197: the forecast-plan call sits INSIDE this Promise.all too, so a
       // 404 from a gated route replaces the whole page with "Failed to load
@@ -344,12 +411,11 @@ function LegacyDashboard() {
     const page_txs = pageData?.items ?? [];
     setTxTotal(pageData?.total ?? 0);
     setTransactions(page_txs);
-    if (allData) setAllTransactions(allData.items);
     if (bds) setBudgets(bds);
     // null is a valid response (no plan yet) — set state so empty-state UI renders.
     if (p === 0) setForecast(fc ?? null);
     setFetching(false);
-  }, [monthFrom, monthTo, realPeriodStart, budgetsDisabled, forecastDisabled]);
+  }, [txQueryTail, realPeriodStart, budgetsDisabled, forecastDisabled]);
 
   // All-time pending refetch. Decoupled from loadTransactions so it
   // refreshes on writes regardless of which transaction page is visible:
@@ -423,6 +489,46 @@ function LegacyDashboard() {
     }
   }, [realPeriodStart, forecastDisabled]);
 
+  // The Spending donut's rollup (TBD-221).
+  //
+  // ⚠⚠ NO `forecastDisabled` GUARD, AND THAT IS THE POINT OF THE TICKET.
+  // `/api/v1/transactions/spending-by-category` is a historical-actuals rollup
+  // on the transactions router. It is ungated server-side and answers 200 for
+  // an org that has Forecast switched off — which is exactly the org that used
+  // to see "No expense data yet" over a period holding real settled expense.
+  // The sibling loadForecastProjection above DOES carry the guard because its
+  // endpoint genuinely 404s; do not "make them consistent".
+  const loadSpendingRollup = useCallback(async () => {
+    if (!realPeriodStart) {
+      rollupRequestId.current += 1;
+      setSpendingRollup(null);
+      setRollupFailed(false);
+      setRollupLoading(false);
+      return;
+    }
+    const myId = ++rollupRequestId.current;
+    setSpendingRollup(null);
+    setRollupFailed(false);
+    setRollupLoading(true);
+    try {
+      // `period_start` is a HINT. The window comes back off the response.
+      const data = await apiFetch<SpendingByCategoryResponse>(
+        `/api/v1/transactions/spending-by-category?period_start=${realPeriodStart}`,
+      );
+      if (rollupRequestId.current !== myId) return;
+      setSpendingRollup(data);
+      setRollupFailed(false);
+    } catch {
+      if (rollupRequestId.current !== myId) return;
+      setSpendingRollup(null);
+      setRollupFailed(true);
+    } finally {
+      if (rollupRequestId.current === myId) {
+        setRollupLoading(false);
+      }
+    }
+  }, [realPeriodStart]);
+
   useEffect(() => {
     if (!loading && user) {
       // Previously `.catch(() => {})` — any failure here (backend 500,
@@ -465,6 +571,15 @@ function LegacyDashboard() {
       void loadForecastProjection();
     }
   }, [loading, user, realPeriodStart, loadForecastProjection]);
+
+  // Its own effect, not a line inside the projection's: the two must be able
+  // to fail independently.
+  useEffect(() => {
+    if (!loading && user && realPeriodStart) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggers the spending-by-category fetch that loads its result into state
+      void loadSpendingRollup();
+    }
+  }, [loading, user, realPeriodStart, loadSpendingRollup]);
 
   // Per-account month-end balance forecast. Only fetch for the current
   // selected period — past/future periods render a neutral "only
@@ -522,6 +637,7 @@ function LegacyDashboard() {
       loadRefs(),
       loadTransactions(0),
       loadForecastProjection(),
+      loadSpendingRollup(),
       loadPendingTransactions(),
       loadAccountMonthEndForecast(),
     ]);
@@ -533,6 +649,7 @@ function LegacyDashboard() {
     loadRefs,
     loadTransactions,
     loadForecastProjection,
+    loadSpendingRollup,
     loadPendingTransactions,
     loadAccountMonthEndForecast,
   ]);
@@ -552,7 +669,7 @@ function LegacyDashboard() {
   const accountsWithBalance = activeAccounts;
 
   // Pending totals per account, computed from the all-time pending fetch
-  // (NOT from the period-filtered allTransactions). Pending CC charges
+  // (NOT from the period-filtered transaction page). Pending CC charges
   // must remain visible regardless of which billing period the user is
   // viewing — pending is a status, not a date.
   const pendingByAccount = useMemo(
@@ -565,41 +682,57 @@ function LegacyDashboard() {
     [pendingTransactions],
   );
 
-  // Spending by category from all period transactions. Transfer expense
-  // halves carry linked_transaction_id; excluding them here stops transfers
-  // from polluting the Spending by Category donut.
+  // ── Spending by category: the SERVER rollup (TBD-221) ─────────────────────
+  //
+  // `spendingRollup.categories` is grouped in SQL, uncapped, and filtered with
+  // `reportable_transaction_filter()` — the same clause the budget bars beside
+  // it use. The memo this replaced re-derived the figure from a `limit=200`
+  // page of raw rows filtered only on `linked_transaction_id == null`, so it
+  // (a) counted manual balance adjustments and reverted reconciliation rows
+  // that no other tile counted, (b) used a client calendar window, and (c)
+  // dropped the oldest rows of any period past 200.
+  //
+  // `executed` is SETTLED expense — exactly what the donut has always shown.
+  //
+  // ⚠ THE SOURCE IS THE UNGATED ENDPOINT, NOT `forecastProjection.categories`.
+  // Both payloads carry the same per-category numbers, so reading the
+  // forecast's copy compiles and looks right — and blanks the tile for every
+  // org that has Forecast switched off.
+  //
+  // ⚠ NO CLIENT FALLBACK. When the rollup is absent this is empty and the tile
+  // renders its rollup-failed state. Re-aggregating here instead would silently
+  // substitute the wrong number, which IS the defect being deleted —
+  // `is_manual_adjustment` is on the wire and `reconciliation_state` is not, so
+  // a client reconstruction can only ever be half the filter.
   //
   // donutData drives both the donut chart (always rendered in amount-desc
   // order so the largest slice starts at 12 o'clock) and the legend list
   // (sortable by name | percent | amount, persisted via spendingSort).
-  //
-  // Memoized so unrelated parent renders (period nav, filter toggles,
-  // edit-mode flips) don't rebuild the array reference and force Recharts
-  // to re-layout the donut on every render.
   const donutDataRaw = useMemo(() => {
-    if (!Array.isArray(allTransactions)) return [];
-    const spendingByCategory = allTransactions
-      .filter(
-        (tx) =>
-          tx.type === "expense" &&
-          tx.status === "settled" &&
-          tx.linked_transaction_id == null,
-      )
-      .reduce<Record<string, number>>((acc, tx) => {
-        acc[tx.category_name] = (acc[tx.category_name] || 0) + Number(tx.amount);
-        return acc;
-      }, {});
-    return Object.entries(spendingByCategory)
-      .map(([name, value]) => ({ name, value }))
+    const rows = spendingRollup?.categories;
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((r) => ({
+        categoryId: r.category_id,
+        name: r.category_name,
+        value: Number(r.executed),
+      }))
+      .filter((d) => Number.isFinite(d.value) && d.value > 0)
       .sort((a, b) => b.value - a.value);
-  }, [allTransactions]);
+  }, [spendingRollup]);
   const donutData = donutDataRaw;
+  // The sum of the RENDERED slices, so the percentages below add to 100 by
+  // construction. Server-side `executed_expense` is itself the sum of the same
+  // rows and agrees for any all-positive payload; what must never back this
+  // figure is a SECOND source — a client re-aggregation, or
+  // `forecastProjection.executed_expense`, which is null for a forecast-off org.
   const totalSpend = useMemo(
     () => donutDataRaw.reduce((s, d) => s + d.value, 0),
     [donutDataRaw],
   );
   const sortedSpending = useMemo(() => {
     const list = donutDataRaw.map((d, i) => ({
+      categoryId: d.categoryId,
       name: d.name,
       value: d.value,
       pct: totalSpend > 0 ? (d.value / totalSpend) * 100 : 0,
@@ -617,16 +750,6 @@ function LegacyDashboard() {
     });
     return list;
   }, [donutDataRaw, totalSpend, spendingSort.field, spendingSort.dir]);
-
-  // When a chart filter is active, show from the full snapshot; otherwise the
-  // paginated page. NO client-side dedupe: both requests pass
-  // collapse_transfers=true, so the server already folded each mutually-linked
-  // pair to one leg BEFORE the limit. Removing rows here after a server LIMIT
-  // is what TBD-268 was.
-  const visibleTxs = useMemo(
-    () => (chartFilter ? allTransactions : transactions),
-    [chartFilter, allTransactions, transactions],
-  );
 
   // All budgets feed the "Budget Progress" mini bar chart on the dashboard.
   // Memoizing prevents Recharts from re-laying out the bars every time an
@@ -672,6 +795,23 @@ function LegacyDashboard() {
     [forecastExpenseItems],
   );
 
+  // ── Chart-filter label (TBD-221) ──────────────────────────────────────────
+  // The badge reads its name off the rollup rows already in memory, so the
+  // label and the slice it describes have ONE source of truth. Budget and
+  // Forecast bars can filter a category with no settled spend this period and
+  // therefore no rollup row, so those two in-memory lists back the LABEL up;
+  // the NUMBER always comes from the server. Two same-named subcategories
+  // rendering one label is deliberately TBD-326.
+  const chartFilterName = useMemo(() => {
+    if (chartFilter === null) return null;
+    return (
+      donutDataRaw.find((d) => d.categoryId === chartFilter)?.name
+      ?? dashBudgets.find((b) => b.category_id === chartFilter)?.category_name
+      ?? forecastExpenseItems.find((it) => it.category_id === chartFilter)?.category_name
+      ?? null
+    );
+  }, [chartFilter, donutDataRaw, dashBudgets, forecastExpenseItems]);
+
 
   function toggleDashSort(field: DashTxSort) {
     if (dashSortField === field) {
@@ -695,12 +835,21 @@ function LegacyDashboard() {
     }
   }
 
-  // Sort + filter the visible transactions. Memoized on its real inputs so
-  // a hover or AI-toggle flip doesn't re-sort the whole list.
+  // The rendered list is the page the server returned — filtered or not.
+  //
+  // TBD-221 deleted the `tx.category_name === chartFilter` predicate that used
+  // to live here: it compared on a name (not the rollup's identity) over a
+  // capped snapshot (so it could not see rows past 200), which is how the list
+  // could disagree with the slice that opened it. The server filters now.
+  //
+  // ⚠ Copy before sorting. `transactions` is state and `Array.prototype.sort`
+  // mutates in place; the deleted `.filter()` used to hand `.sort()` a fresh
+  // array. NO client-side dedupe either: the unfiltered page passes
+  // collapse_transfers=true and the filtered one passes reportable=true, so the
+  // server folded/dropped transfer legs BEFORE the limit (TBD-268).
   const sortedVisibleTxs = useMemo(
     () =>
-      visibleTxs
-        .filter((tx) => !chartFilter || tx.category_name === chartFilter)
+      [...transactions]
         .sort((a, b) => {
           let cmp = 0;
           if (dashSortField === "date") cmp = a.date.localeCompare(b.date);
@@ -712,7 +861,7 @@ function LegacyDashboard() {
           else if (dashSortField === "amount") cmp = Number(a.amount) - Number(b.amount);
           return dashSortDir === "asc" ? cmp : -cmp;
         }),
-    [visibleTxs, chartFilter, dashSortField, dashSortDir],
+    [transactions, dashSortField, dashSortDir],
   );
 
 
@@ -784,18 +933,18 @@ function LegacyDashboard() {
           <TourAnchor id="dashboard.period-nav" as="child">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30" aria-label="Previous period">
+              <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilterId(null); }} disabled={periodIdx >= periods.length - 1} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30" aria-label="Previous period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
               </button>
               <span className="text-sm font-medium text-text-primary">
                 {monthFrom}{monthTo ? ` – ${monthTo}` : ""}
               </span>
-              <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30" aria-label="Next period">
+              <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilterId(null); }} disabled={periodIdx <= 0} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30" aria-label="Next period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
               </button>
               {isCurrentSelectedPeriod && <span className="ml-1 rounded bg-success-dim px-2 py-0.5 text-[10px] font-semibold text-success">CURRENT</span>}
               {!isCurrentSelectedPeriod && (
-                <button onClick={() => { const idx = selectCurrentPeriodIndex(periods); if (idx >= 0) { setPeriodIdx(idx); setChartFilter(null); } }} className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">Today</button>
+                <button onClick={() => { const idx = selectCurrentPeriodIndex(periods); if (idx >= 0) { setPeriodIdx(idx); setChartFilterId(null); } }} className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">Today</button>
               )}
             </div>
             <Link href="/transactions" className="text-xs text-text-secondary underline underline-offset-2 hover:text-text-primary">View All Transactions</Link>
@@ -900,7 +1049,9 @@ function LegacyDashboard() {
                         const idx = selectCurrentPeriodIndex(periods);
                         if (idx >= 0) {
                           setPeriodIdx(idx);
-                          setChartFilter(null);
+                          // Raw setter: period nav deliberately does NOT reset
+                          // the recent-tx page (fenced).
+                          setChartFilterId(null);
                         }
                       }}
                     />
@@ -920,14 +1071,36 @@ function LegacyDashboard() {
           {/* ═══ ROW 3: Three equal charts ═══ */}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {/* Spending by category (donut) */}
-            <div className={`${card} p-5`}>
+            <div className={`${card} p-5`} data-testid="spending-donut">
               <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
-              {chartFilter && (
+              {chartFilter !== null && (
                 <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">
-                  Filtering: {chartFilter} &times;
+                  Filtering: {chartFilterName ?? "selected category"} &times;
                 </button>
               )}
-              {donutData.length > 0 ? (
+              {/* TBD-221: the numbers on this tile come from the UNGATED
+                  /api/v1/transactions/spending-by-category endpoint. When that
+                  call failed there is no number to show, and the tile says so
+                  rather than falling back to a client aggregation.
+
+                  ⚠ `rollupFailed`, NOT `projectionFailed`. The latter belongs
+                  to /api/v1/forecast — a different, feature-gated request —
+                  and reading it here renders "unavailable" over real settled
+                  expense for any org with Forecast switched off. */}
+              {rollupFailed ? (
+                <div className="flex flex-wrap items-center gap-3 py-6 text-sm text-text-muted">
+                  <span>Spending by category unavailable.</span>
+                  <button
+                    type="button"
+                    onClick={loadSpendingRollup}
+                    disabled={rollupLoading}
+                    className={`${btnSecondary} text-xs disabled:opacity-50`}
+                  >
+                    <RefreshCw className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
+                    Retry
+                  </button>
+                </div>
+              ) : donutData.length > 0 ? (
                 <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
                   <div className="h-40 w-40 shrink-0">
                     <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
@@ -936,13 +1109,16 @@ function LegacyDashboard() {
                           data={donutData} cx="50%" cy="50%" innerRadius={35} outerRadius={65}
                           paddingAngle={2} dataKey="value" stroke="none" cursor="pointer"
                           onClick={(_, idx) => {
-                            const name = donutData[idx]?.name;
-                            setChartFilter(chartFilter === name ? null : name);
+                            // Keyed by category_id (the rollup's identity),
+                            // never by name — names are not unique across
+                            // subcategories.
+                            const cid = donutData[idx]?.categoryId;
+                            if (cid != null) setChartFilter(chartFilter === cid ? null : cid);
                           }}
                         >
                           {donutData.map((d, i) => (
-                            <Cell key={d.name} fill={CHART_SERIES[i % CHART_SERIES.length]}
-                              opacity={chartFilter && chartFilter !== d.name ? 0.3 : 1} />
+                            <Cell key={d.categoryId} fill={CHART_SERIES[i % CHART_SERIES.length]}
+                              opacity={chartFilter !== null && chartFilter !== d.categoryId ? 0.3 : 1} />
                           ))}
                         </Pie>
                         {/* Single-series pie: recharts renders the slice
@@ -1075,8 +1251,8 @@ function LegacyDashboard() {
                       </div>
                     </div>
                     {sortedSpending.slice(0, 10).map((d) => (
-                      <button key={d.name} onClick={() => setChartFilter(chartFilter === d.name ? null : d.name)}
-                        className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-surface-overlay" : ""}`}>
+                      <button key={d.categoryId} onClick={() => setChartFilter(chartFilter === d.categoryId ? null : d.categoryId)}
+                        className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.categoryId ? "bg-surface-overlay" : ""}`}>
                         <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CHART_SERIES[d.origIdx % CHART_SERIES.length] }} />
                         <span className="min-w-0 truncate text-left text-xs text-text-secondary">{d.name}</span>
                         {/* %/amount carry data, so they ride text-secondary
@@ -1129,8 +1305,11 @@ function LegacyDashboard() {
                           <BudgetSpentBarShape {...props} />
                         )}
                         onClick={(_, idx) => {
-                          const name = dashBudgets[idx]?.category_name;
-                          if (name) setChartFilter(chartFilter === name ? null : name);
+                          // TBD-221: the cross-tile filter is a category_id
+                          // now, so the drilldown can reproduce the rollup's
+                          // grouping.
+                          const cid = dashBudgets[idx]?.category_id;
+                          if (cid != null) setChartFilter(chartFilter === cid ? null : cid);
                         }}
                       >
                         {dashBudgets.map((b) => (
@@ -1187,8 +1366,10 @@ function LegacyDashboard() {
                           <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={220}
                             cursor="pointer"
                             onClick={(_, idx) => {
-                              const name = forecastExpenseItems[idx]?.category_name;
-                              if (name) setChartFilter(chartFilter === name ? null : name);
+                              // TBD-221: category_id, matching the rollup's
+                              // identity.
+                              const cid = forecastExpenseItems[idx]?.category_id;
+                              if (cid != null) setChartFilter(chartFilter === cid ? null : cid);
                             }}
                           />
                           <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={220}>
@@ -1299,6 +1480,10 @@ function LegacyDashboard() {
                         await loadTransactions(page);
                         await loadRefs();
                         void loadForecastProjection();
+                        // A settled/pending toggle moves the row in and out of
+                        // the donut's SETTLED bucket, so the rollup must
+                        // refresh alongside the projection.
+                        void loadSpendingRollup();
                         void loadAccountMonthEndForecast();
                         // Independent of `page`: a toggle on page 2
                         // still has to refresh the strip's totals.
@@ -1375,7 +1560,11 @@ function LegacyDashboard() {
                 </div>
               )}
             </div>
-            {!chartFilter && (txTotal > PAGE_SIZE || page > 0) && (
+            {/* TBD-221: the pager no longer hides under a chart filter. The
+                drilldown is a paginated SERVER query now, so hiding it would
+                cap the slice's list at one page while its own total said
+                otherwise — the same silent truncation this ticket removed. */}
+            {(txTotal > PAGE_SIZE || page > 0) && (
               <div className="border-t border-border px-5">
                 <Pagination
                   page={page + 1}

@@ -102,12 +102,15 @@ function collapsedPage() {
 }
 
 let listUrls: string[] = [];
+let projectionCategories: Record<string, unknown>[] = [];
 
 function mockDashboard(
   rows: ReturnType<typeof tx>[],
   budgets: Record<string, unknown>[] = [],
+  categories: Record<string, unknown>[] = [],
 ) {
   listUrls = [];
+  projectionCategories = categories;
   vi.mocked(apiFetch).mockImplementation(((url: string) => {
     if (url === "/api/v1/accounts") return Promise.resolve([]);
     if (url === "/api/v1/categories") return Promise.resolve([]);
@@ -118,7 +121,22 @@ function mockDashboard(
     if (url === "/api/v1/settings/billing-periods")
       return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
     if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
-    if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
+    // TBD-221: the Spending donut and the chart-filter drilldown both read the
+    // UNGATED spending-by-category rollup (and its window), so it can no
+    // longer be null.
+    //
+    // ⚠ This branch MUST precede the generic /api/v1/transactions branch below
+    // — the rollup lives on the transactions router and shares its prefix. It
+    // must also stay OUT of `listUrls`, which exists to fence the shape of the
+    // LIST queries; a rollup URL in there would make F8b's assertions read
+    // against a URL that is not a list query at all.
+    if (url.startsWith("/api/v1/transactions/spending-by-category"))
+      return Promise.resolve({
+        period_start: "2026-05-01",
+        period_end: "2026-05-31",
+        executed_expense: "0",
+        categories: projectionCategories,
+      });
     // Record EVERY transactions-list URL, the all-time pending fetch included.
     // The push used to sit AFTER the status=pending early return, which made
     // F8b's "the pending fetch must not opt in" assertion true by mock routing
@@ -128,6 +146,9 @@ function mockDashboard(
       listUrls.push(url);
       if (url.startsWith("/api/v1/transactions?status=pending"))
         return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
+      // A drilldown into a category with no settled spend this period.
+      if (url.includes("category_id="))
+        return Promise.resolve({ items: [], total: 0, limit: 10, offset: 0 });
       return Promise.resolve({ items: rows, total: rows.length, limit: 200, offset: 0 });
     }
     return Promise.resolve({});
@@ -169,17 +190,21 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
     expect(ids).toContain(103);
   });
 
-  it("F8b: both the page fetch and the limit=200 snapshot opt in", async () => {
+  it("F8b: the unfiltered page fetch opts in; the deleted snapshot is not issued at all", async () => {
     mockDashboard(collapsedPage());
     render(<DashboardPage />);
     await screen.findByTestId("dash-settled-1");
 
-    // The snapshot is not a one-shot sum source — under a chart filter it
-    // becomes the rendered source, so it must collapse alongside the page.
+    // ⚠ INVERTED by TBD-221. This fence used to require the `limit=200`
+    // snapshot to carry collapse_transfers=true, on the grounds that under a
+    // chart filter the snapshot BECAME the rendered source. That coupling is
+    // exactly what this ticket removed: the filtered list is a server query
+    // now, so the snapshot has no consumer and is gone. The unfiltered page
+    // still collapses.
     await waitFor(() => {
       expect(listUrls.some((u) => u.includes("limit=10") && u.includes("collapse_transfers=true"))).toBe(true);
-      expect(listUrls.some((u) => u.includes("limit=200") && u.includes("collapse_transfers=true"))).toBe(true);
     });
+    expect(listUrls.filter((u) => u.startsWith("/api/v1/transactions?limit=200"))).toEqual([]);
     // ...but the all-time pending fetch must NOT: each leg of a transfer sits
     // on a different account, so collapsing it would zero an account's pending.
     // Asserted as "the pending URLs that WERE issued carry no flag", with an
@@ -202,18 +227,16 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
     expect(screen.queryByText(/Savings\s*→\s*Checking/)).toBeNull();
   });
 
-  it("F8d: a chart filter that empties the RENDERED list still shows the empty state", async () => {
-    // VACUITY TRAP this fence was rewritten to avoid: the original passed
-    // `mockDashboard([])`, so `transactions.length === 0` and
-    // `sortedVisibleTxs.length === 0` AGREED and reverting the empty state to
-    // the raw page array stayed green against the whole suite.
+  it("F8d: a Budget bar drilldown re-queries the server and renders ITS answer, empty state included", async () => {
+    // ⚠ REWRITTEN by TBD-221. The original property — "the rendered list can
+    // be empty while the raw page array is full, so key the empty state off
+    // the RENDERED list" — is unreachable now: `sortedVisibleTxs` IS the page
+    // the server returned, so the two arrays cannot disagree. What replaced
+    // it is the reason they cannot: clicking a chart bar changes the QUERY.
     //
-    // The two disagree exactly when a chart filter names a category with no
-    // matching transaction. The production path is the Budget Progress bar:
-    // a budget can exist for a category nothing was spent on this period.
-    // Clicking it sets chartFilter to that category, so `visibleTxs` (the
-    // snapshot) filters down to nothing while `transactions` still holds a
-    // full page — a blank card under the old keying.
+    // Same production path as before — a budget on a category nothing was
+    // spent on this period. The server answers that drilldown with zero rows
+    // while the unfiltered page still holds four.
     const rows = [];
     for (let i = 1; i <= 4; i++) rows.push(tx({ id: i, description: `Row ${i}` }));
     mockDashboard(rows, [
@@ -237,11 +260,23 @@ describe("Dashboard — transfer collapse (TBD-268 F8)", () => {
     expect(bars.length).toBeGreaterThan(0);
     fireEvent.click(bars[0]);
 
+    // The badge label is looked up from data already in memory — here the
+    // budgets list, since Rent has no rollup row this period.
     await waitFor(() => {
       expect(screen.getByText(/Filtering: Rent/)).toBeInTheDocument();
     });
-    // The rendered list is now empty while the raw page array still holds 4.
-    expect(screen.queryAllByTestId(/^dash-settled-\d+$/)).toHaveLength(0);
+    // The drilldown carries the rollup's grouping and the rollup's window.
+    await waitFor(() => {
+      const drill = listUrls.find((u) => u.includes("category_id=9"));
+      expect(drill).toBeTruthy();
+      expect(drill).toContain("category_match=exact");
+      expect(drill).toContain("reportable=true");
+      expect(drill).not.toContain("collapse_transfers");
+    });
+    // …and the server's answer for that slice is what renders.
+    await waitFor(() =>
+      expect(screen.queryAllByTestId(/^dash-settled-\d+$/)).toHaveLength(0),
+    );
     expect(screen.getByText(EMPTY)).toBeInTheDocument();
   });
 });

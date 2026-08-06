@@ -10,10 +10,14 @@
  * the authoritative copy until the canvas fully replaces it.
  *
  * This is the only MUTATION surface on the custom dashboard (the status-pill
- * toggle PUTs /transactions/{id}) and the only consumer of the cross-tile
- * `chartFilter` (set by the chart tiles). The toggle's refresh ordering lives
- * in the provider's `onToggleTransactionStatus` (faithful to legacy); this
- * widget only surfaces a PUT failure inline.
+ * toggle PUTs /transactions/{id}). The toggle's refresh ordering lives in the
+ * provider's `onToggleTransactionStatus` (faithful to legacy); this widget
+ * only surfaces a PUT failure inline.
+ *
+ * TBD-221: it no longer reads `chartFilter` at all. The cross-tile filter used
+ * to switch this tile's rendered source to an in-memory snapshot and hide its
+ * pager; it now changes the provider's QUERY, so the widget just renders
+ * whatever page came back — filtered or not — and always pages it.
  */
 import { useState } from "react";
 import Link from "next/link";
@@ -53,7 +57,6 @@ export default function RecentTransactionsWidget() {
     setPageSize,
     dashSort,
     toggleDashSort,
-    chartFilter,
     canAdd,
     onToggleTransactionStatus,
   } = useDashboard();
@@ -223,7 +226,11 @@ export default function RecentTransactionsWidget() {
           </div>
         )}
       </div>
-      {!chartFilter && txTotal > 0 && (
+      {/* TBD-221: the pager no longer hides under a chart filter. The
+          drilldown is a paginated SERVER query now, so hiding it would cap
+          the slice's list at one page while its own total said otherwise —
+          the same class of silent truncation this ticket removed. */}
+      {txTotal > 0 && (
         <div className="shrink-0 border-t border-border px-5">
           {/* Page-size selector (10–100) lets the user fill a resized card with
               more rows instead of leaving blank space below a fixed 10. Options

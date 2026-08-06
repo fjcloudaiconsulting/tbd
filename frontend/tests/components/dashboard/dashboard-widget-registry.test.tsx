@@ -35,6 +35,9 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   projectionFailed: false,
   projectionLoading: false,
   onRetryProjection: vi.fn(),
+  rollupFailed: false,
+  rollupLoading: false,
+  onRetryRollup: vi.fn(),
   accountMonthEndForecast: null,
   accountMonthEndForecastError: false,
   periods: [],
@@ -48,7 +51,6 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   monthTo: "2026-06-30",
   jumpToCurrentPeriod: vi.fn(),
   // Phase 2b chart data
-  allTransactions: [],
   budgets: [],
   dashBudgets: [],
   budgetChartData: [],
@@ -66,6 +68,7 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   forecastExpenseItems: [],
   forecastChartRows: [],
   chartFilter: null,
+  chartFilterName: null,
   setChartFilter: vi.fn(),
   // Phase 2c recent transactions
   transactions: [],
@@ -74,7 +77,6 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   setPage: vi.fn(),
   pageSize: 10,
   setPageSize: vi.fn(),
-  visibleTxs: [],
   sortedVisibleTxs: [],
   dashSort: {
     field: "date",

@@ -105,6 +105,26 @@ function setupApiFetch() {
     }
     if (url.startsWith("/api/v1/budgets")) return [] as never;
     if (url.startsWith("/api/v1/forecast")) return null as never;
+    // TBD-221: the Spending card is driven by the UNGATED
+    // /api/v1/transactions/spending-by-category rollup, not by aggregating the
+    // transaction list below and not by /api/v1/forecast (which is
+    // feature-gated and returns null here). The rollup mirrors those rows
+    // (Groceries 150, Rent 500) so this file keeps asserting the same card
+    // against its new source.
+    //
+    // ⚠ This branch MUST precede the generic /api/v1/transactions branch: the
+    // rollup lives on the transactions router and shares its URL prefix.
+    if (url.startsWith("/api/v1/transactions/spending-by-category")) {
+      return {
+        period_start: "2026-05-01",
+        period_end: "2026-05-31",
+        executed_expense: "650.00",
+        categories: [
+          { category_id: 11, category_name: "Groceries", parent_id: null, executed: "150.00" },
+          { category_id: 12, category_name: "Rent", parent_id: null, executed: "500.00" },
+        ],
+      } as never;
+    }
     if (url.startsWith("/api/v1/transactions")) {
       const items = [
         tx({ id: 1, amount: "100.00", category_id: 11, category_name: "Groceries", date: "2026-05-02" }),

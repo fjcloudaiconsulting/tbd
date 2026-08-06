@@ -215,8 +215,33 @@ const FORECAST_PROJECTION = {
   forecast_income: "0",
   forecast_expense: "500",
   forecast_net: "-500",
-  categories: [],
+  // ⚠ TBD-221: the donut does NOT read this. `/api/v1/forecast` is
+  // feature-gated (TBD-197) and the donut is a historical-actuals tile, so its
+  // source is SPENDING_ROLLUP below. Keeping a rival rollup here is
+  // deliberate: it makes any regression that reads the forecast's copy show up
+  // as the wrong category ("FromForecast") rather than as an empty tile.
+  categories: [
+    {
+      category_id: 88, category_name: "FromForecast", parent_id: null,
+      executed: "777", pending: "0", recurring: "0", forecast: "777",
+    },
+  ],
 };
+
+// `GET /api/v1/transactions/spending-by-category` — the Spending donut's
+// source. Matches TX_EXPENSE (Groceries, 50) so the pre-existing donut
+// assertions keep asserting the same numbers off their new source.
+const SPENDING_ROLLUP = {
+  period_start: "2026-05-01",
+  period_end: "2026-05-31",
+  executed_expense: "50",
+  categories: [
+    { category_id: 10, category_name: "Groceries", parent_id: null, executed: "50" },
+  ],
+};
+
+// A rollup carrying no per-category spend at all.
+const EMPTY_ROLLUP = { ...SPENDING_ROLLUP, executed_expense: "0", categories: [] };
 
 const ACCOUNT_MONTH_END = {
   period_start: "2026-05-01",
@@ -242,6 +267,10 @@ function makeApiFetchHandler(overrides: Record<string, unknown> = {}) {
       return overrides.accountMonthEnd ?? ACCOUNT_MONTH_END;
     if (url.startsWith("/api/v1/forecast"))
       return overrides.projection ?? FORECAST_PROJECTION;
+    // ⚠ MUST precede the generic /api/v1/transactions branch: the rollup lives
+    // on the transactions router and shares its URL prefix (TBD-221).
+    if (url.startsWith("/api/v1/transactions/spending-by-category"))
+      return overrides.spendingRollup ?? SPENDING_ROLLUP;
     // Phase 2b: transactions snapshot + budgets
     if (url.startsWith("/api/v1/transactions"))
       return overrides.transactions ?? { items: [], total: 0 };
@@ -287,7 +316,7 @@ function Consumer() {
       <button data-testid="refresh" onClick={() => void ctx.refresh()} />
       <button data-testid="set-page-1" onClick={() => ctx.setPage(1)} />
       <button data-testid="set-period-idx-1" onClick={() => ctx.setPeriodIdx(1)} />
-      <button data-testid="set-chart-filter" onClick={() => ctx.setChartFilter("Groceries")} />
+      <button data-testid="set-chart-filter" onClick={() => ctx.setChartFilter(10)} />
       <button data-testid="toggle-dash-sort" onClick={() => ctx.toggleDashSort("date")} />
       <button
         data-testid="toggle-status"
@@ -334,7 +363,7 @@ beforeEach(() => {
 });
 
 describe("DashboardDataProvider — initial fetch", () => {
-  it("fetches refs, projection, account forecast, snapshot and budgets on mount", async () => {
+  it("fetches refs, projection, account forecast and budgets on mount", async () => {
     vi.mocked(apiFetch).mockImplementation(makeApiFetchHandler() as never);
 
     renderProvider();
@@ -359,9 +388,10 @@ describe("DashboardDataProvider — initial fetch", () => {
       expect(calls.some((u) => u.startsWith("/api/v1/forecast?period_start="))).toBe(true);
       expect(calls.some((u) => u.startsWith("/api/v1/forecast/account-balances"))).toBe(true);
       expect(calls.some((u) => u.startsWith("/api/v1/forecast-plans/current"))).toBe(true);
-      // Phase 2b: snapshot + budgets. SWR Phase 2: the budgets call fires
-      // once periods settle and carries period_start (no bare mount fetch).
-      expect(calls.some((u) => u.startsWith("/api/v1/transactions?limit=200"))).toBe(true);
+      // Phase 2b: budgets. SWR Phase 2: the budgets call fires once periods
+      // settle and carries period_start (no bare mount fetch).
+      // ⚠ TBD-221 DELETED the `limit=200` period snapshot that used to be
+      // asserted here; see the inverted fence in the cold-mount describe.
       expect(calls.some((u) => u.startsWith("/api/v1/budgets"))).toBe(true);
     });
   });
@@ -710,7 +740,6 @@ function ConsumerChart() {
   return (
     <div>
       <span data-testid="loading">{String(ctx.loading)}</span>
-      <span data-testid="all-tx-count">{ctx.allTransactions.length}</span>
       <span data-testid="budgets-count">{ctx.budgets.length}</span>
       <span data-testid="dash-budgets-count">{ctx.dashBudgets.length}</span>
       <span data-testid="donut-data-count">{ctx.donutData.length}</span>
@@ -738,7 +767,7 @@ function ConsumerChart() {
       <span data-testid="donut-row-0-value">{firstDonut?.value ?? ""}</span>
       <button
         data-testid="set-chart-filter"
-        onClick={() => ctx.setChartFilter("Groceries")}
+        onClick={() => ctx.setChartFilter(10)}
       />
       <button
         data-testid="clear-chart-filter"
@@ -769,8 +798,14 @@ function renderChartProvider() {
   );
 }
 
-describe("DashboardDataProvider — Phase 2b: snapshot + budgets fetch", () => {
-  it("fetches the period snapshot once realPeriodStart resolves", async () => {
+describe("DashboardDataProvider — Phase 2b: budgets fetch", () => {
+  // ⚠ INVERTED by TBD-221. This slot used to assert "fetches the period
+  // snapshot once realPeriodStart resolves". The snapshot was the only fetch
+  // on this screen bound by the endpoint's `le=200` cap, and it had exactly
+  // two consumers — the donut memo and the chart-filter branch of visibleTxs
+  // — both of which are now server work. Deleting it IS the fix, so the fence
+  // has to point the other way or the cap creeps back in the next refactor.
+  it("never issues the deleted limit=200 period snapshot", async () => {
     vi.mocked(apiFetch).mockImplementation(
       makeApiFetchHandler({
         transactions: { items: [TX_EXPENSE], total: 1 },
@@ -782,14 +817,15 @@ describe("DashboardDataProvider — Phase 2b: snapshot + budgets fetch", () => {
     await waitFor(() =>
       expect(screen.getByTestId("loading").textContent).toBe("false"),
     );
-
-    // Wait for period-scoped loads to complete.
-    await waitFor(() =>
-      expect(screen.getByTestId("all-tx-count").textContent).toBe("1"),
-    );
+    // Non-vacuity guard: the paginated page fetch DID fire, so an empty call
+    // log cannot pass this.
+    await waitFor(() => {
+      const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0] as string);
+      expect(calls.some((u) => u.startsWith("/api/v1/transactions?limit=10"))).toBe(true);
+    });
 
     const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0] as string);
-    expect(calls.some((u) => u.startsWith("/api/v1/transactions?limit=200"))).toBe(true);
+    expect(calls.filter((u) => u.startsWith("/api/v1/transactions?limit=200"))).toEqual([]);
   });
 
   it("fetches budgets once realPeriodStart resolves", async () => {
@@ -811,7 +847,7 @@ describe("DashboardDataProvider — Phase 2b: snapshot + budgets fetch", () => {
     expect(calls.some((u) => u.startsWith("/api/v1/budgets?period_start="))).toBe(true);
   });
 
-  it("refresh() re-fetches snapshot and budgets", async () => {
+  it("refresh() re-fetches the transaction page and budgets", async () => {
     vi.mocked(apiFetch).mockImplementation(makeApiFetchHandler() as never);
     renderChartProvider();
 
@@ -821,7 +857,7 @@ describe("DashboardDataProvider — Phase 2b: snapshot + budgets fetch", () => {
 
     const txCallsBefore = vi
       .mocked(apiFetch)
-      .mock.calls.filter((c) => (c[0] as string).startsWith("/api/v1/transactions?limit=200")).length;
+      .mock.calls.filter((c) => (c[0] as string).startsWith("/api/v1/transactions?limit=10")).length;
 
     const budgetCallsBefore = vi
       .mocked(apiFetch)
@@ -834,7 +870,7 @@ describe("DashboardDataProvider — Phase 2b: snapshot + budgets fetch", () => {
     await waitFor(() => {
       const txCallsAfter = vi
         .mocked(apiFetch)
-        .mock.calls.filter((c) => (c[0] as string).startsWith("/api/v1/transactions?limit=200")).length;
+        .mock.calls.filter((c) => (c[0] as string).startsWith("/api/v1/transactions?limit=10")).length;
       expect(txCallsAfter).toBeGreaterThan(txCallsBefore);
     });
 
@@ -846,7 +882,13 @@ describe("DashboardDataProvider — Phase 2b: snapshot + budgets fetch", () => {
 });
 
 describe("DashboardDataProvider — Phase 2b: donut/spending memos", () => {
-  it("donutData excludes transfer legs and income; totalSpend sums expenses", async () => {
+  // ⚠ REPOINTED by TBD-221. These fences used to assert the donut aggregated
+  // the transaction snapshot client-side (excluding transfer legs and income
+  // by inspecting each row). That work now happens in SQL, inside
+  // reportable_transaction_filter(), and the client only reads the answer —
+  // so the fence has to prove the number comes from the ROLLUP. Transfer legs
+  // and income are still served on the tx list here and still must not appear.
+  it("donutData comes from the rollup, not from the transaction list", async () => {
     vi.mocked(apiFetch).mockImplementation(
       makeApiFetchHandler({
         transactions: {
@@ -862,7 +904,9 @@ describe("DashboardDataProvider — Phase 2b: donut/spending memos", () => {
       expect(screen.getByTestId("loading").textContent).toBe("false"),
     );
 
-    // Only TX_EXPENSE qualifies (settled expense, no linked_transaction_id)
+    // One rollup row (Groceries, executed 50). TX_TRANSFER and TX_INCOME are
+    // on the wire and must not become slices — the server already excluded
+    // them, and nothing here re-adds them.
     await waitFor(() =>
       expect(screen.getByTestId("donut-data-count").textContent).toBe("1"),
     );
@@ -870,7 +914,6 @@ describe("DashboardDataProvider — Phase 2b: donut/spending memos", () => {
     expect(screen.getByTestId("sorted-spending-count").textContent).toBe("1");
 
     // With a single category, its pct must be 100 (it is the entirety of spend).
-    // TX_EXPENSE.category_name="Groceries", amount=50.
     expect(screen.getByTestId("sorted-spending-row-0-pct").textContent).toBe("100");
     expect(screen.getByTestId("sorted-spending-row-0-name").textContent).toBe("Groceries");
     // donutData first row matches.
@@ -878,8 +921,16 @@ describe("DashboardDataProvider — Phase 2b: donut/spending memos", () => {
     expect(screen.getByTestId("donut-row-0-value").textContent).toBe("50");
   });
 
-  it("donutData is empty when allTransactions is empty", async () => {
-    vi.mocked(apiFetch).mockImplementation(makeApiFetchHandler() as never);
+  it("donutData is empty when the rollup carries no per-category spend", async () => {
+    // ⚠ The transaction list still serves a settled expense of 50. A donut
+    // that fell back to client aggregation renders 1 slice / 50 here; the
+    // rollup is the only source, so it renders nothing.
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        spendingRollup: EMPTY_ROLLUP,
+        transactions: { items: [TX_EXPENSE], total: 1 },
+      }) as never,
+    );
 
     renderChartProvider();
 
@@ -1120,7 +1171,8 @@ describe("DashboardDataProvider — Phase 2b: chartFilter", () => {
       screen.getByTestId("set-chart-filter").click();
     });
 
-    expect(screen.getByTestId("chart-filter").textContent).toBe("Groceries");
+    // TBD-221: a category_id, not a name.
+    expect(screen.getByTestId("chart-filter").textContent).toBe("10");
   });
 
   it("setChartFilter(null) clears the filter", async () => {
@@ -1135,7 +1187,7 @@ describe("DashboardDataProvider — Phase 2b: chartFilter", () => {
     act(() => {
       screen.getByTestId("set-chart-filter").click();
     });
-    expect(screen.getByTestId("chart-filter").textContent).toBe("Groceries");
+    expect(screen.getByTestId("chart-filter").textContent).toBe("10");
 
     act(() => {
       screen.getByTestId("clear-chart-filter").click();
@@ -1156,7 +1208,7 @@ describe("DashboardDataProvider — Phase 2b: chartFilter", () => {
     act(() => {
       screen.getByTestId("set-chart-filter").click();
     });
-    expect(screen.getByTestId("chart-filter").textContent).toBe("Groceries");
+    expect(screen.getByTestId("chart-filter").textContent).toBe("10");
 
     // Navigate to period index 1 — should clear the filter
     act(() => {
@@ -1182,10 +1234,11 @@ describe("DashboardDataProvider — Phase 2b: chartFilter", () => {
         <div>
           <span data-testid="loading">{String(ctx.loading)}</span>
           <span data-testid="chart-filter">{ctx.chartFilter ?? "null"}</span>
+          <span data-testid="has-projection">{String(ctx.forecastProjection !== null)}</span>
           <span data-testid="period-idx">{ctx.periodIdx}</span>
           <button
             data-testid="set-filter"
-            onClick={() => ctx.setChartFilter("Groceries")}
+            onClick={() => ctx.setChartFilter(10)}
           />
           <button
             data-testid="go-to-0"
@@ -1214,11 +1267,19 @@ describe("DashboardDataProvider — Phase 2b: chartFilter", () => {
       screen.getByTestId("go-to-0").click();
     });
 
+    // ⚠ Wait for the new period's projection to land before filtering. TBD-221
+    // gates the chart filter on the rollup's window being known: during a
+    // projection refetch there is no window, so there is also nothing to
+    // click (the donut is empty) and the filter reads null.
+    await waitFor(() =>
+      expect(screen.getByTestId("has-projection").textContent).toBe("true"),
+    );
+
     // Set filter while on past period
     act(() => {
       screen.getByTestId("set-filter").click();
     });
-    expect(screen.getByTestId("chart-filter").textContent).toBe("Groceries");
+    expect(screen.getByTestId("chart-filter").textContent).toBe("10");
 
     // jumpToCurrentPeriod should clear the filter
     act(() => {
@@ -1308,9 +1369,7 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
       vi.mocked(apiFetch).mock.calls.filter((c) => pred(c[0] as string)).length;
 
     const refsBefore = countCalls((u) => u.startsWith("/api/v1/accounts"));
-    const snapshotBefore = countCalls((u) =>
-      u.startsWith("/api/v1/transactions?limit=200"),
-    );
+    const budgetsBefore = countCalls((u) => u.startsWith("/api/v1/budgets"));
     const pageBefore = countCalls((u) =>
       u.startsWith("/api/v1/transactions?limit=10"),
     );
@@ -1336,7 +1395,7 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
       expect((put?.[1] as { body?: string }).body).toContain("pending");
     });
 
-    // Refresh cascade: refs + page + (page-0) snapshot + projection refetched,
+    // Refresh cascade: refs + page + (page-0) budgets + projection refetched,
     // and the all-time pending refetch fired.
     await waitFor(() => {
       expect(countCalls((u) => u.startsWith("/api/v1/accounts"))).toBeGreaterThan(
@@ -1346,9 +1405,9 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
     expect(
       countCalls((u) => u.startsWith("/api/v1/transactions?limit=10")),
     ).toBeGreaterThan(pageBefore);
-    expect(
-      countCalls((u) => u.startsWith("/api/v1/transactions?limit=200")),
-    ).toBeGreaterThan(snapshotBefore);
+    expect(countCalls((u) => u.startsWith("/api/v1/budgets"))).toBeGreaterThan(
+      budgetsBefore,
+    );
     expect(
       countCalls((u) => u.startsWith("/api/v1/forecast?period_start=")),
     ).toBeGreaterThan(projectionBefore);
@@ -1357,13 +1416,27 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
     );
   });
 
-  it("chartFilter routes sortedVisibleTxs to the full snapshot, not the page", async () => {
-    // Snapshot (limit=200) holds two Groceries rows; the page (limit=10) holds
-    // only one. With a chartFilter active, sortedVisibleTxs must reflect the
-    // snapshot (2), proving the filter switches the source.
+  it("chartFilter re-queries the SERVER rather than re-slicing an in-memory snapshot", async () => {
+    // ⚠ REPLACED by TBD-221. The fence in this slot asserted that a chart
+    // filter switched `sortedVisibleTxs` from the paginated page to the
+    // `limit=200` snapshot — i.e. it pinned the exact design being deleted
+    // (client filtering, on a name, over a capped array). The property that
+    // replaced it: the filter changes the QUERY, and the rendered list is
+    // whatever the server answered.
+    //
+    // The filtered URL serves two rows, the unfiltered one serves one. A
+    // surviving client-side filter renders the unfiltered page's single row.
     const SECOND_GROCERY = { ...TX_EXPENSE, id: 5 };
+    const seen: string[] = [];
     vi.mocked(apiFetch).mockImplementation((async (url: string) => {
-      if (url.startsWith("/api/v1/transactions?limit=200"))
+      // ⚠ The rollup shares the /api/v1/transactions prefix (TBD-221) but is
+      // not a list query: it must be answered BEFORE the list branches and
+      // must stay out of `seen`, which fences the shape of the LIST URLs. It
+      // also supplies the window without which no drilldown can be built.
+      if (url.startsWith("/api/v1/transactions/spending-by-category"))
+        return SPENDING_ROLLUP;
+      if (url.startsWith("/api/v1/transactions")) seen.push(url);
+      if (url.startsWith("/api/v1/transactions?limit=10") && url.includes("category_id=10"))
         return { items: [TX_EXPENSE, SECOND_GROCERY], total: 2 };
       if (url.startsWith("/api/v1/transactions"))
         return { items: [TX_EXPENSE], total: 1 };
@@ -1385,7 +1458,7 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
     await waitFor(() =>
       expect(screen.getByTestId("loading").textContent).toBe("false"),
     );
-    // No filter: source is the page (1 row).
+    // No filter: the plain period page (1 row).
     await waitFor(() =>
       expect(screen.getByTestId("sorted-visible-count").textContent).toBe("1"),
     );
@@ -1394,13 +1467,17 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
       screen.getByTestId("set-chart-filter").click();
     });
 
-    // Filter active: source switches to the snapshot (2 Groceries rows).
+    // Filter active: the server was asked a different question…
+    await waitFor(() =>
+      expect(seen.some((u) => u.includes("category_match=exact"))).toBe(true),
+    );
+    // …and its answer is what renders.
     await waitFor(() =>
       expect(screen.getByTestId("sorted-visible-count").textContent).toBe("2"),
     );
   });
 
-  it("onToggleTransactionStatus on page>0 does NOT refresh the limit=200 snapshot (page-gated cascade)", async () => {
+  it("onToggleTransactionStatus on page>0 does NOT refresh the page-0 chart cascade", async () => {
     vi.mocked(apiFetch).mockImplementation(
       makeApiFetchHandler({
         transactions: { items: [TX_EXPENSE], total: 25 },
@@ -1424,9 +1501,11 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
     const countCalls = (pred: (u: string) => boolean) =>
       vi.mocked(apiFetch).mock.calls.filter((c) => pred(c[0] as string)).length;
 
-    const snapshotBefore = countCalls((u) =>
-      u.startsWith("/api/v1/transactions?limit=200"),
-    );
+    // ⚠ REPOINTED by TBD-221: the page-0 cascade used to be
+    // snapshot+budgets+forecast-plan and is now budgets+forecast-plan. The
+    // PROPERTY under test (the cascade is skipped off page 0) is unchanged;
+    // only the observable it is read through moved.
+    const budgetsBefore = countCalls((u) => u.startsWith("/api/v1/budgets"));
     const pageBefore = countCalls((u) =>
       u.startsWith("/api/v1/transactions?limit=10"),
     );
@@ -1441,10 +1520,8 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
         countCalls((u) => u.startsWith("/api/v1/transactions?limit=10")),
       ).toBeGreaterThan(pageBefore);
     });
-    // … but the snapshot cascade must be SKIPPED off page 0.
-    expect(
-      countCalls((u) => u.startsWith("/api/v1/transactions?limit=200")),
-    ).toBe(snapshotBefore);
+    // … but the chart cascade must be SKIPPED off page 0.
+    expect(countCalls((u) => u.startsWith("/api/v1/budgets"))).toBe(budgetsBefore);
   });
 
   it("period navigation does NOT reset the page (re-fetches the same offset for the new period)", async () => {
@@ -1767,7 +1844,6 @@ describe("DashboardDataProvider — cold-mount single fetch per endpoint", () =>
     // Wait until every loader class has fired at least once.
     await waitFor(() => {
       expect(countCallsByPrefix("/api/v1/transactions?limit=10")).toBeGreaterThan(0);
-      expect(countCallsByPrefix("/api/v1/transactions?limit=200")).toBeGreaterThan(0);
       expect(countCallsByPrefix("/api/v1/budgets")).toBeGreaterThan(0);
       expect(countCallsByPrefix("/api/v1/forecast?period_start=")).toBeGreaterThan(0);
     });
@@ -1789,7 +1865,14 @@ describe("DashboardDataProvider — cold-mount single fetch per endpoint", () =>
     // Period-scoped loaders must not re-fire after the settings aux load
     // commits (billingCycleDay / period fallback are render-stable).
     expect(countCallsByPrefix("/api/v1/transactions?limit=10")).toBe(1);
-    expect(countCallsByPrefix("/api/v1/transactions?limit=200")).toBe(1);
+    // ⚠ INVERTED by TBD-221: this line read `.toBe(1)` for the `limit=200`
+    // period snapshot. Deleting that fetch is how the endpoint's 200-row cap
+    // stops affecting correctness, so the assertion now pins its ABSENCE.
+    // It also guards the cheap regression the swap could have introduced: the
+    // rollup window arriving (null -> known) must not re-fire an identical
+    // unfiltered page query, which is why the URL tail is a plain string
+    // compared by value rather than a fresh object each render.
+    expect(countCallsByPrefix("/api/v1/transactions?limit=200")).toBe(0);
     expect(countCallsByPrefix("/api/v1/forecast?period_start=")).toBe(1);
   });
 });
@@ -2221,7 +2304,7 @@ describe("DashboardDataProvider — transfer collapse (TBD-268)", () => {
     );
   });
 
-  it("F9e: both the page fetch and the snapshot opt in; the pending fetch does not", async () => {
+  it("F9e: the unfiltered page fetch opts in; the pending fetch does not", async () => {
     const urls: string[] = [];
     vi.mocked(apiFetch).mockImplementation((async (url: string) => {
       if (url.startsWith("/api/v1/transactions")) urls.push(url);
@@ -2236,7 +2319,10 @@ describe("DashboardDataProvider — transfer collapse (TBD-268)", () => {
       expect(screen.getByTestId("loading").textContent).toBe("false"),
     );
     await waitFor(() => {
-      expect(urls.some((u) => u.includes("limit=200") && u.includes("collapse_transfers=true"))).toBe(true);
+      // TBD-221 deleted the limit=200 snapshot that used to be asserted here
+      // alongside the page fetch. The UNFILTERED page still collapses; the
+      // drilldown deliberately does not (reportable=true is a strict superset
+      // of collapse_transfers, and sending both contradicts itself).
       expect(urls.some((u) => u.includes("offset=0") && u.includes("collapse_transfers=true"))).toBe(true);
     });
     // The all-time pending list goes through fetchAll, which this file mocks
