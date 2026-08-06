@@ -405,7 +405,65 @@ async def test_send_email_failure_does_not_log_body(
     fail_events = [(e, kw) for e, kw in captured if e == "email_send_failed"]
     assert len(fail_events) == 1
     _event, kw = fail_events[0]
-    # Allowed keys only: to, subject, error. Body fields must be absent.
+    # Allowed keys only: to, subject, error, error_type. Body fields absent.
+    assert "body_html" not in kw and "body_text" not in kw
+    assert "SECRET_RESET" not in repr(kw)
+
+
+@pytest.mark.asyncio
+async def test_send_timeout_does_not_log_body(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Same PII bound on the timeout event (TBD-266).
+
+    A timed-out send no longer lands on ``email_send_failed`` — it has its
+    own ``email_send_timeout`` event, because ``str(TimeoutError())`` is
+    ``""`` and the shared handler would log a blank reason. That rename
+    would otherwise walk the timeout path straight out of the sweep above,
+    so the same discipline is pinned here: to + subject, never the body,
+    which carries the raw reset token.
+    """
+    monkeypatch.setattr(email_service.settings, "mailgun_api_key", "real-key")
+    monkeypatch.setattr(email_service.settings, "mailgun_domain", "mg.example.com")
+    monkeypatch.setattr(email_service.settings, "mailgun_region", "")
+
+    class _TimeoutClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_TimeoutClient":
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> None:
+            return None
+
+        async def post(self, *args: Any, **kwargs: Any) -> Any:
+            # Bare, exactly as ``asyncio.timeout`` raises it: str() is "".
+            raise TimeoutError()
+
+    monkeypatch.setattr(email_service.httpx, "AsyncClient", _TimeoutClient)
+
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    class _Recorder:
+        async def ainfo(self, event: str, **kw: Any) -> None:
+            captured.append((event, kw))
+
+        async def aerror(self, event: str, **kw: Any) -> None:
+            captured.append((event, kw))
+
+    monkeypatch.setattr(email_service, "logger", _Recorder())
+
+    ok = await email_service.send_email(
+        "user@example.com",
+        "Reset your The Better Decision password",
+        '<a href="http://x/reset-password?token=SECRET_RESET">x</a>',
+        "http://x/reset-password?token=SECRET_RESET",
+    )
+    assert ok is False
+    timeout_events = [(e, kw) for e, kw in captured if e == "email_send_timeout"]
+    assert len(timeout_events) == 1
+    _event, kw = timeout_events[0]
     assert "body_html" not in kw and "body_text" not in kw
     assert "SECRET_RESET" not in repr(kw)
 

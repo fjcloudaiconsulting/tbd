@@ -243,11 +243,50 @@ async def send_email(
                 "email_sent", to=to, subject=subject, status=response.status_code
             )
             return True
+    except TimeoutError:
+        # Exactly one name, and never a tuple with an httpx class:
+        # ``asyncio.TimeoutError`` *is* the builtin ``TimeoutError`` on
+        # 3.11+, and none of httpx's own timeout classes derive from it,
+        # so this clause cannot steal a per-phase httpx timeout — those
+        # keep landing in the handler below.
+        #
+        # It needs its own clause because ``asyncio.timeout`` raises a
+        # BARE ``TimeoutError()`` and ``str(TimeoutError())`` is ``""``.
+        # Routed through the handler below it would emit ``error=""`` on
+        # the exact incident the aggregate bound above exists to survive
+        # — a blank reason, indistinguishable from any other zero-message
+        # exception and impossible to alert on. It is also the ONLY
+        # operator signal on that path: ``routers/auth.py`` dispatches the
+        # password-reset send through ``BackgroundTasks``, which discards
+        # the ``False`` return entirely.
+        #
+        # Same split TBD-179 makes at ``auth.google.callback.exchange_timeout``:
+        # "Mailgun rejected the send" and "Mailgun never answered" need
+        # different operator remediations, so they get different events.
+        # Snake_case, matching this module's other four events rather than
+        # auth's dotted names.
+        #
+        # PII bound is the same as the handler below: ``to`` and
+        # ``subject`` only, never the body (it carries the raw token).
+        await logger.aerror(
+            "email_send_timeout",
+            to=to,
+            subject=subject,
+            error="timeout",
+            timeout_s=MAILGUN_SEND_TOTAL_TIMEOUT_S,
+        )
+        return False
     except Exception as exc:
         # Never log the body, it carries the token. ``str(exc)`` from httpx
         # surfaces the response status / reason but not our payload.
+        # ``error_type`` rides along because ``str(exc)`` is empty for any
+        # zero-message exception; the class name is always there.
         await logger.aerror(
-            "email_send_failed", to=to, subject=subject, error=str(exc)
+            "email_send_failed",
+            to=to,
+            subject=subject,
+            error=str(exc),
+            error_type=type(exc).__name__,
         )
         return False
 
@@ -358,15 +397,29 @@ async def send_batch(
                 status=response.status_code,
             )
             return True
+    except TimeoutError:
+        # Same clause, same reasoning, same PII bound as ``send_email``
+        # above; see the note there. The falsy return is unchanged, so the
+        # drain still reads this batch as failed and a resume can retry it.
+        await logger.aerror(
+            "broadcast_batch_timeout",
+            count=len(to_list),
+            subject=subject,
+            error="timeout",
+            timeout_s=MAILGUN_SEND_TOTAL_TIMEOUT_S,
+        )
+        return False
     except Exception as exc:
         # Never log to_list / recipient_variables / bodies (MA5) — only the
         # count, subject, and the exception's str() (httpx surfaces status /
-        # reason there, not our request payload).
+        # reason there, not our request payload). ``error_type`` rides along
+        # because ``str(exc)`` is empty for any zero-message exception.
         await logger.aerror(
             "broadcast_batch_failed",
             count=len(to_list),
             subject=subject,
             error=str(exc),
+            error_type=type(exc).__name__,
         )
         return False
 
