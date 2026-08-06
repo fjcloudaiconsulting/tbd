@@ -89,9 +89,11 @@ export function broadcastErrorCode(err: unknown): string | undefined {
     : undefined;
 }
 
-// Friendly copy for the six coded errors the broadcast endpoints raise.
+// Friendly copy for the coded errors the broadcast endpoints raise.
 // No em dashes (house style) — hyphens/en dashes only.
 export const BROADCAST_ERROR_COPY: Record<string, string> = {
+  dry_run_send_failed:
+    "The test email could not be sent, so the Send button stays locked. Check the email service, then try again.",
   dry_run_required:
     "Send a test to yourself first - the Send button unlocks once a dry run has gone out.",
   confirm_subject_mismatch:

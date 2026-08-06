@@ -3,20 +3,25 @@
 Forecast = Settled (what happened) + Pending (committed but not settled) + Upcoming Recurring (will be generated)
 
 This gives the user a complete picture of where the month is heading.
+
+⚠ **The "executed" half of this file lives in ``spending_service``** (TBD-221),
+and this module is a CALLER of it — the period window, the per-category
+executed rollup and the category-name lookup all come from there. The direction
+is forced: spending-by-category is a historical-actuals surface that must stay
+reachable when an org switches Forecast off (TBD-197), so it cannot depend on
+this module. Do not copy any of those three back in; two copies drift silently
+because each surface's own tests keep passing.
 """
 
 import datetime
 from decimal import Decimal
 
-from dateutil.relativedelta import relativedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.billing import BillingPeriod
-from app.models.category import Category
 from app.models.recurring import RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
-from app.services.billing_service import get_current_period, period_spend_window_end
+from app.services import spending_service
 from app.services.date_utils import occurrences_in_window
 from app.services.recurring_filters import active_series_filter, remaining_occurrences
 from app.services.transaction_filters import (
@@ -35,19 +40,23 @@ async def compute_forecast(
     """Compute the full forecast for a billing period.
 
     ``today`` is keyword-only and injectable because the period window floors
-    at the wall clock (see ``window_end`` below). It is resolved ONCE here and
-    consumed at exactly THREE sites: the two ``get_current_period`` calls that
-    may auto-create the period this function then computes over (TBD-297), and
-    the ``period_spend_window_end`` call that derives ``window_end``.
+    at the wall clock. It is resolved ONCE here and consumed at exactly ONE
+    site: the ``spending_service.resolve_spend_window`` call below, which takes
+    it as a REQUIRED keyword and itself spends it at exactly three places —
+    the two ``get_current_period`` calls that may auto-create the period this
+    function then computes over (TBD-297), and the ``period_spend_window_end``
+    call that derives ``window_end``.
 
-    ⚠ That count was "exactly ONE site" until TBD-297, and the sentence was
-    load-bearing in the wrong direction: it read as licence to delete the
-    ``today=`` on the two period lookups as redundant. They are not redundant —
-    without them an org with no open row gets its first period anchored by a
-    second, independent clock. Everything downstream, including the whole recurring
-    projection, is bound to ``window_end`` and never re-reads the clock: two
-    independent clock reads inside one computation is the straddle trap
-    TBD-240 D6 exists to prevent, and
+    ⚠ That count was "exactly ONE site" until TBD-297, then "THREE" until
+    TBD-221 moved the derivation into ``spending_service``; the number has
+    always been the wrong thing to memorise. What is invariant is the RULE:
+    the clock is read once per computation and travels as an argument
+    thereafter. Deleting a ``today=`` anywhere on that path is not removing a
+    redundancy — without them an org with no open row gets its first period
+    anchored by a second, independent clock. Everything downstream, including
+    the whole recurring projection, is bound to ``window_end`` and never
+    re-reads the clock: two independent clock reads inside one computation is
+    the straddle trap TBD-240 D6 exists to prevent, and
     ``test_forecast_parity_after_generate`` asserts a conservation invariant
     ACROSS two calls that a mid-computation tick would break.
 
@@ -74,47 +83,17 @@ async def compute_forecast(
     # it computes over.
     today = today if today is not None else datetime.date.today()
 
-    # Get the period
-    if period_start:
-        result = await db.execute(
-            select(BillingPeriod).where(
-                BillingPeriod.org_id == org_id,
-                BillingPeriod.start_date == period_start,
-            )
-        )
-        period = result.scalar_one_or_none()
-        if period is None:
-            period = await get_current_period(db, org_id, today=today)
-    else:
-        period = await get_current_period(db, org_id, today=today)
-
-    p_start = period.start_date
-
-    # ── The period's ONE window (TBD-243) ─────────────────────────────────
+    # ── The period's ONE window (TBD-243), derived ONCE by the shared helper ─
     # `window_end` bounds EVERY backward sum and EVERY forward projection
-    # horizon in this function. There is deliberately no second value and no
-    # second name: the backward sum and the forward projection are two halves
-    # of one total joined by a materialisation event, and
-    # `generate_due_transactions` materialises on `current_cycle_window`,
-    # which is ROSTER-INDEPENDENT. Two windows would open a gap the
-    # materialisation window reaches into — an obligation in neither bucket
-    # before and one bucket after — and `forecast_net` would move with no user
-    # action. `specs/2026-07-30-forecast-period-window-design.md` §2
-    # reproduces that break; §4 F4 fences it.
-    #
-    # Closed rows take `end_date` verbatim and are NEVER floored: flooring one
-    # would re-open reported history for every org (§4 F6). The `None` arm is
-    # the roster tail, where `period_effective_end` is genuinely unbounded;
-    # the calendar expression there is FORCED, not chosen — the
-    # `while d <= window_end` loops below cannot terminate on `None`, and it is
-    # what keeps `period_end` non-null in the response contract (§4 F5).
-    if period.end_date is not None:
-        window_end = period.end_date
-    else:
-        derived = await period_spend_window_end(db, org_id, period, today=today)
-        window_end = derived if derived is not None else (
-            p_start + relativedelta(months=1) - datetime.timedelta(days=1)
-        )
+    # horizon in this function, and it is the SAME derivation
+    # `GET /api/v1/transactions/spending-by-category` uses — shared, not
+    # copied, so the two surfaces cannot report the same period with two
+    # different ends. `spending_service.resolve_spend_window` carries the full
+    # rationale (closed rows verbatim, the roster-tail calendar fallback, why
+    # there is exactly one window and not two).
+    p_start, window_end = await spending_service.resolve_spend_window(
+        db, org_id, period_start, today=today
+    )
 
     # ── Executed (settled) — uses settled_date for period assignment ─────
     # Transactions count against the period in which they settled,
@@ -260,23 +239,14 @@ async def compute_forecast(
                 )
 
     # ── Per-category breakdown ────────────────────────────────────────────
-    # Executed by category (uses settled_date for period assignment).
-    # Exclude transfer halves so Forecast by Category matches the
-    # dashboard donut.
-    cat_exec_result = await db.execute(
-        select(
-            Transaction.category_id,
-            func.sum(Transaction.amount),
-        ).where(
-            Transaction.org_id == org_id,
-            Transaction.type == TransactionType.EXPENSE,
-            Transaction.status == TransactionStatus.SETTLED,
-            Transaction.settled_date >= p_start,
-            Transaction.settled_date <= window_end,
-            reportable_transaction_filter(),
-        ).group_by(Transaction.category_id)
+    # Executed by category. THE SAME CALL the ungated spending-by-category
+    # endpoint makes — that is the point of TBD-221, and the reason Forecast
+    # by Category matches the dashboard donut is now that they are one query
+    # rather than two that agree. Do not inline it back: a copy here would
+    # drift from the donut with both surfaces' tests still green.
+    cat_executed = await spending_service.executed_expense_by_category(
+        db, org_id, p_start, window_end
     )
-    cat_executed = {row[0]: Decimal(str(row[1])) for row in cat_exec_result.all()}
 
     # Pending by category
     cat_pend_result = await db.execute(
@@ -300,16 +270,10 @@ async def compute_forecast(
     # Merge all category IDs
     all_cat_ids = set(cat_executed.keys()) | set(cat_pending.keys()) | set(cat_recurring.keys())
 
-    # Get category names
-    cat_names = {}
-    if all_cat_ids:
-        name_result = await db.execute(
-            select(Category.id, Category.name, Category.parent_id).where(
-                Category.id.in_(all_cat_ids), Category.org_id == org_id
-            )
-        )
-        for row in name_result.all():
-            cat_names[row[0]] = {"name": row[1], "parent_id": row[2]}
+    # Get category names. Note the id set is the UNION — a category reached
+    # only through `cat_recurring` or `cat_pending` has no executed row, so
+    # this lookup must not be folded into the executed rollup above.
+    cat_names = await spending_service.load_category_meta(db, org_id, all_cat_ids)
 
     categories = []
     for cid in sorted(all_cat_ids):
