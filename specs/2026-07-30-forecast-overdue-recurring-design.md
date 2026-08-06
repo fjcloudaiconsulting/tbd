@@ -346,20 +346,51 @@ Existing coverage that must stay green and unmodified: F1, F2, F3, F6, F7a, F7b,
   the failure mode.
 
   The "unbounded walk" the cap was also credited with preventing does not exist: the collect loop
-  terminates at `end`, and the widest walk the type system permits (1900-01-01 → 9998-12-31) was
-  MEASURED at 0.16s / 3.7MB weekly, 0.21s / 0.8MB monthly. What *did* need closing is
-  `advance_date` past `datetime.date.max`, which raises `OverflowError` for `timedelta`
-  frequencies and `ValueError` for `relativedelta` ones — already live on the uncapped fast-forward
-  since #599. `_next_occurrence` folds that into the same "the grid ended" answer as the
-  no-progress guard; **F26** is its fence, and kills both single-exception half-fixes.
+  terminates at `end`, and the genuinely widest walk the type system permits — `datetime.date.min`
+  (0001-01-01) → `datetime.date.max` (9999-12-31), wider than any `DATE` column can hold, since
+  MySQL's floor is 1000-01-01 — was MEASURED in-container at:
 
-  Still open, deliberately out of TBD-286's scope: an absurd window makes
+  | frequency | occurrences | best-of-5 | `tracemalloc` peak |
+  |---|---|---|---|
+  | weekly | 521,723 | 0.18s | **21.4MB** |
+  | monthly | 119,988 | 0.24s | **4.9MB** |
+
+  ⚠ **Peak, not `getsizeof`.** An earlier revision of this residual and of the `date_utils`
+  docstring quoted **3.7MB / 0.8MB**. Those are `sys.getsizeof(out)` over the narrower 1900→9998
+  walk — the list object's **pointer array only, excluding the `datetime.date` objects it points
+  at**, which are ~4.7x larger than the pointers. Re-measured on the same narrower window the peaks
+  are **17.2MB / 3.9MB**. The smaller figure understated the cost ~4.7x, inside a paragraph whose
+  whole force is "measured rather than assumed". Do not recorrect it back down.
+
+  What *did* need closing is `advance_date` past `datetime.date.max`, which raises `OverflowError`
+  for `timedelta` frequencies and `ValueError` for `relativedelta` ones — already live on the
+  uncapped fast-forward since #599. `_next_occurrence` folds that into the same "the grid ended"
+  answer as the no-progress guard; **F26** is its fence, and kills both single-exception half-fixes.
+
+  Still open, deliberately out of TBD-286's scope (**TBD-335**): an absurd window makes
   `account_balance_forecast_service` emit one response LINE per projected occurrence. Bounding a
   billing period's span at its writer is the honest place for that, and the limit is a product
-  decision.
-- **`recurring_service.MAX_CATCHUP_ITERATIONS` remains an alias.** F17a pins the aliasing, not the
-  value; nothing depends on 500 in particular. The alias is a "sized by one number" claim only — see
-  §5 for what it deliberately no longer claims.
+  decision. Two reasons it is deferred rather than folded in: it needs `start_date` bounded too (an
+  **open** row at 2000-01-01 with a successor in 2026 yields a 26-year window by itself), and it
+  does not repair rows already stored.
+
+  ⚠ A third reason was offered and is **struck as unsound**: *"any bound tight enough to matter
+  (5 years ⇒ 261 weekly occurrences) bites below 500 and re-creates this defect at a lower
+  boundary."* It conflates a **validation rejection at the writer** with a **silent truncation at
+  the reader**. A span bound returns a 400 and the over-long window never exists — nothing
+  truncates, nothing is hidden, `forecast_net` cannot move; this defect was a reader silently
+  returning a short list for a window that does exist. Decisively: `generate_due_transactions`
+  materialises on `current_cycle_window(cycle_day, today)` (`recurring_service.py:728`), which is
+  **roster-independent**, so bounding a period's span changes nothing about what generation creates
+  and the conservation property the removed cap broke is not in play. As written it argued against
+  ever bounding anything.
+- **`recurring_service.MAX_CATCHUP_ITERATIONS` remains an alias — now a vacuous one (TBD-338).**
+  F17a pins the aliasing, not the value; nothing depends on 500 in particular. With the collect
+  loop's cap gone there is no second walk left to truncate in step with, so the aliasing buys
+  nothing and the constant is purely generation's per-run cap. Retiring it is **TBD-338**, not this
+  ticket: the cleanup is *exactly* the mutant F17a's AST guard exists to kill, so the fence has to
+  be re-aimed in the same change. F17a's docstring records which of its three claims survive; its
+  assertions are unchanged here.
 
 ## 12. Review fold — the shared iteration budget, and what a mutation audit added
 

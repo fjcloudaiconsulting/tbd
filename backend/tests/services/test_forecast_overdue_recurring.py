@@ -711,17 +711,31 @@ def _import_aliases(module) -> dict[str, str]:
 def test_f17a_catchup_cap_is_an_alias_and_the_walk_is_iterated():
     """FENCE. Three claims, all structural.
 
-    1. **The cap is an ALIAS, not a second literal.** Sizing the projection's
-       walk and generation's walk from two independent ``500``\\ s is how they
-       drift. ⚠ A VALUE comparison cannot see this — they are equal the day it
-       is written — so the equality is backed by an AST guard over
-       ``recurring_service``'s own source. There is no type checker in CI.
+    1. **The cap is an ALIAS, not a second literal.** ⚠ A VALUE comparison
+       cannot see this — the two are equal the day it is written — so the
+       equality is backed by an AST guard over ``recurring_service``'s own
+       source. There is no type checker in CI.
 
-       ⚠ **What the alias does NOT buy.** It does not make the two walks
-       truncate at the same place, and the docstrings no longer claim it does:
-       generation's cap MAKES PROGRESS (it advances ``next_due_date``), a
-       projection's cap makes none. F17b is the fence for the conservation that
-       reasoning got wrong.
+       ⚠ **This claim's ORIGINAL RATIONALE IS NOW VOID (TBD-286).** It read
+       "sizing the projection's walk and generation's walk from two independent
+       ``500``\\ s is how they drift". There is no projection walk sized by it
+       any more: TBD-286 deleted ``occurrences_in_window``'s collect-loop
+       budget, so ``date_utils.MAX_OCCURRENCE_ITERATIONS`` bounds nothing in
+       ``date_utils`` and the alias has no second walk to keep in step with.
+
+       What the assertion is RETAINED for, pending retirement: it is the
+       structural pin that stops ``MAX_CATCHUP_ITERATIONS`` being quietly
+       re-declared as its own literal while the alias is still the shipped
+       shape. **TBD-338** retires the alias — moving the literal into
+       ``recurring_service`` — and that cleanup is precisely the mutant this
+       guard kills, so the two must move together and neither may be a drive-by.
+       Until then this claim is load-bearing only against an accidental
+       re-declaration, not against drift between two walks.
+
+       ⚠ **What the alias never bought, even when the second walk existed.** It
+       did not make the two walks truncate at the same place: generation's cap
+       MAKES PROGRESS (it advances ``next_due_date``), a projection's cap made
+       none. F17b is the fence for the conservation that reasoning got wrong.
 
     2. **The occurrence grid is ITERATED, never closed-form.** ⚠ The fixture
        MUST start on the 31st: ``advance_date`` is path-dependent at month ends
@@ -1430,8 +1444,20 @@ async def test_f24_long_window_conserves_forecast_net_over_500_occurrences(db_se
 
     ⚠ **The fixture must CROSS the boundary.** At <= 500 in-window occurrences
     the capped and uncapped implementations return the same list and the fence
-    pins nothing. 523 is asserted below, from ``_WEEKS_BACK`` rather than from
-    the helper under test.
+    pins nothing. 523 is asserted below, derived from the local ``weeks_back``
+    literal (522) rather than from anything the helper under test computes — so
+    the discriminating assertion is not circular. M4, which merely RAISES the
+    constant to 522, is what proves that.
+
+    ⚠ The guard reads ``recurring_service.MAX_CATCHUP_ITERATIONS``, GENERATION's
+    per-run cap, and not ``date_utils.MAX_OCCURRENCE_ITERATIONS``. They are the
+    same object today — the second aliases the first — but the constant this
+    test actually depends on is generation's: the tick-1 assertion below is
+    ``res["generated"] == MAX_CATCHUP_ITERATIONS``, and the fixture has to
+    exceed that cap for generation to truncate at all. ``MAX_OCCURRENCE_ITERATIONS``
+    no longer bounds anything in ``date_utils`` (see its comment), so reading
+    the guard off it would redden this FORECAST test for a change to
+    GENERATION's cap it has no stake in. TBD-338 retires the alias.
 
     ⚠ **Anti-vacuity: generation's OWN cap must bite**, exactly as in F17b, or
     tick 1 materialises everything and the intermediate state — the one the
@@ -1445,7 +1471,9 @@ async def test_f24_long_window_conserves_forecast_net_over_500_occurrences(db_se
     today = datetime.date.today()
     weeks_back = 522                       # -> 523 in-window occurrences
     in_window = weeks_back + 1
-    assert in_window > MAX_OCCURRENCE_ITERATIONS, "fixture must cross the cap"
+    assert in_window > recurring_service.MAX_CATCHUP_ITERATIONS, (
+        "fixture must cross GENERATION's per-run cap"
+    )
 
     p_start = today - datetime.timedelta(weeks=weeks_back)
     # The successor is what gives the OPEN row a derived end:

@@ -21,7 +21,9 @@ from app.models.recurring import Frequency
 # alias rather than a re-declared literal. Retiring the alias — moving the
 # literal into ``recurring_service`` beside ``_MAX_FRONTIER_ADVANCE_STEPS``,
 # whose comment already argues that the alias rule is only about "walks that
-# must TRUNCATE TOGETHER" — is a follow-up, not this ticket.
+# must TRUNCATE TOGETHER" — is TBD-338, not this ticket. That cleanup is
+# precisely the mutant F17a's AST guard exists to kill, so it needs the fence
+# re-aimed in the same change and cannot be a drive-by.
 #
 # Generation's cap is legitimate where a projection's was not: it bounds WORK
 # and MAKES PROGRESS (it mutates ``next_due_date`` forward, so the next run
@@ -153,17 +155,41 @@ def occurrences_in_window(
     failure mode. What is left instead is the loop's natural bound — it
     terminates at ``end``, and ``_next_occurrence`` above closes the two ways
     the walk could fail to terminate. That the natural bound is enough was
-    MEASURED rather than assumed: the widest walk the type system permits
-    (1900-01-01 to 9998-12-31, ~8100 years) costs 0.16s / 3.7MB weekly and
-    0.21s / 0.8MB monthly. There is no unbounded hang to trade a wrong number
-    for. §11 of ``specs/2026-07-30-forecast-overdue-recurring-design.md``
-    pre-registered this removal: *"If a period roster ever admits multi-year
-    windows, delete the budget"*.
+    MEASURED rather than assumed, at the genuinely widest walk the type system
+    permits — ``datetime.date.min`` (0001-01-01) to ``datetime.date.max``
+    (9999-12-31), which no ``DATE`` column can even hold (MySQL's floor is
+    1000-01-01):
 
-    ⚠ What is NOT fixed here, and is a separate ticket: an absurd window still
-    makes ``account_balance_forecast_service`` emit one response line per
-    projected occurrence. Bounding a billing period's SPAN at its writer is the
-    honest place for that, and it is a product decision about the limit.
+    * weekly: 521,723 occurrences, 0.18s, **21.4MB peak**;
+    * monthly: 119,988 occurrences, 0.24s, **4.9MB peak**.
+
+    ⚠ Those are ``tracemalloc`` PEAK figures, and they are the honest ones. An
+    earlier revision of this comment quoted 3.7MB / 0.8MB, which is
+    ``sys.getsizeof(out)`` over the narrower 1900→9998 walk: the LIST OBJECT's
+    pointer array only, EXCLUDING the ``datetime.date`` objects it points at.
+    The dates are ~4.7x the pointers, so that number understates the real cost
+    by that factor. Do not "recorrect" the peak back down to it.
+
+    There is no unbounded hang to trade a wrong number for. §11 of
+    ``specs/2026-07-30-forecast-overdue-recurring-design.md`` pre-registered
+    this removal: *"If a period roster ever admits multi-year windows, delete
+    the budget"*.
+
+    ⚠ What is NOT fixed here, and is a separate ticket (TBD-335): an absurd
+    window still makes ``account_balance_forecast_service`` emit one response
+    line per projected occurrence. Bounding a billing period's SPAN at its
+    writer is the honest place for that, and it is a product decision about the
+    limit. Deferred because such a bound needs ``start_date`` bounded too (an
+    OPEN row at 2000-01-01 with a successor in 2026 is a 26-year window on its
+    own) and because it does not repair rows already stored. It is NOT deferred
+    on the ground that "a bound tight enough to matter would bite below 500 and
+    re-create this defect at a lower boundary" — that argument was made and is
+    unsound. A span bound is a 400 at the WRITER: the over-long window never
+    exists, so nothing truncates and nothing is hidden. This defect was a SILENT
+    TRUNCATION at the READER. And ``generate_due_transactions`` materialises on
+    ``current_cycle_window(cycle_day, today)``, which is roster-independent, so
+    bounding a period's span cannot move what generation creates — the
+    conservation property is not in play at all.
 
     ``budget`` (TBD-275) is the instalment series' REMAINING occurrence count,
     ``None`` for an open-ended series. It is spent by **BOTH loops**, and the
