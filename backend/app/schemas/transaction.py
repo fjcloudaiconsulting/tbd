@@ -287,6 +287,40 @@ class TransferCandidatesResponse(BaseModel):
     candidates: list[TransferCandidate]
 
 
+class SpendingCategoryRow(BaseModel):
+    """One category's SETTLED, reportable expense inside a billing period.
+
+    ``executed`` is a string (a string-serialised Decimal), matching the wire
+    contract ``ForecastCategoryRow`` already uses for the same number.
+
+    ⚠ There is no ``pending``, ``recurring`` or ``forecast`` field, and adding
+    one is not an extension — those are synthesized from templates that have
+    not materialised, which is the Forecast product and stays behind the
+    Forecast gate (TBD-197). This row is historical actuals only; the cut line
+    is happened-vs-projected.
+    """
+
+    category_id: int
+    category_name: str
+    parent_id: Optional[int] = None
+    executed: str
+
+
+class SpendingByCategoryResponse(BaseModel):
+    """``GET /api/v1/transactions/spending-by-category`` (TBD-221).
+
+    ``executed_expense`` is the sum of ``categories[].executed`` by
+    construction, so the donut's centre figure can never disagree with its
+    slices. ``period_end`` is the period's spend-window end, which for an open
+    period is floored at today — not a calendar month end.
+    """
+
+    period_start: datetime.date
+    period_end: datetime.date
+    executed_expense: str
+    categories: list[SpendingCategoryRow]
+
+
 class DuplicateCandidate(BaseModel):
     """Embedded in ImportPreviewRow when a CSV row matches an existing linked
     leg on the same account. Lean shape so /import does not refetch row details.

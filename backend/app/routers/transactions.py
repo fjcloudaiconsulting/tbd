@@ -29,6 +29,7 @@ from app.schemas.transaction import (
     ConvertToTransferRequest,
     DeleteTransactionResponse,
     PromoteToRecurringRequest,
+    SpendingByCategoryResponse,
     TransactionCreate,
     TransactionPairRequest,
     TransactionResponse,
@@ -43,6 +44,7 @@ from app.schemas.transaction_suggestions import (
 )
 from app.services import (
     audit_service,
+    spending_service,
     transaction_batch_service,
     transaction_service as svc,
     transaction_suggestions_service as suggestions_svc,
@@ -470,6 +472,47 @@ async def suggest_descriptions(
     )
     response.headers["Cache-Control"] = "private, max-age=60"
     return DescriptionSuggestionsResponse(suggestions=suggestions)
+
+
+# ── Spending by category (TBD-221) ───────────────────────────────────────────
+# Like the L3.2 routes above, this MUST stay declared before
+# ``/{transaction_id}`` so FastAPI's path matcher resolves the literal segment
+# first; below it, the id route claims the path and answers 422.
+
+
+@router.get("/spending-by-category", response_model=SpendingByCategoryResponse)
+async def spending_by_category(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    period_start: datetime.date | None = Query(default=None),
+):
+    """Per-category SETTLED, reportable expense for a billing period.
+
+    ⚠⚠ **DELIBERATELY UNGATED, and deliberately NOT on the forecast router.**
+
+    Spending-by-Category is a HISTORICAL ACTUALS tile. TBD-197 lets an org
+    switch the Forecast feature off, which 404s ``GET /api/v1/forecast`` — the
+    route whose per-category rollup this used to be. Gating this one would put
+    a dashboard tile showing what already happened behind a *projection*
+    feature, and the failure is the one TBD-221 removes: the donut renders "No
+    expense data yet" over a period holding real settled expense.
+
+    The URL is on the TRANSACTIONS router for a reason that is not aesthetic.
+    ``frontend/tests/components/dashboard/dashboard-forecast-fetch-skip.test.tsx``
+    asserts a forecast-off org issues NO ``/api/v1/forecast*`` request except
+    ``account-balances``. A ``/forecast/...`` shape here would redden that
+    fence or force it into a two-exception rule, which is exactly what
+    ``routers/forecast.py``'s module docstring exists to hold shut.
+    ``account-balances`` is a ONE-exception rule; do not make it two.
+
+    ``executed`` only. No ``pending``, no ``recurring``, no ``forecast`` —
+    those are synthesized from templates that have not materialised, and
+    re-exporting them here would re-gate this surface by the back door. The cut
+    line is happened-vs-projected.
+    """
+    return await spending_service.compute_spending_by_category(
+        db, current_user.org_id, period_start=period_start
+    )
 
 
 @router.get("/{transaction_id}", response_model=TransactionResponse)
