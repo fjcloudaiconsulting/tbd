@@ -99,6 +99,31 @@ async def list_transactions(
             "requires every named tag; 'any' requires at least one."
         ),
     ),
+    category_match: Literal["exact", "subtree"] = Query(
+        default="subtree",
+        description=(
+            "Match mode for the ``category_id`` filter. 'subtree' (default) "
+            "is master-includes-subs: picking a master returns its direct "
+            "rows AND every row on one of its subcategories, because the "
+            "filter dropdown lists masters and subs flat. 'exact' returns "
+            "only rows whose OWN category_id is the given id -- the grouping "
+            "the /api/v1/forecast per-category rollup uses, so a drilldown "
+            "into a rollup slice returns that slice and not a superset of it."
+        ),
+    ),
+    reportable: bool = Query(
+        default=False,
+        description=(
+            "Restrict to rows that count toward income/expense aggregates: "
+            "excludes transfer legs, manual balance adjustments and reverted "
+            "(skipped/rejected) reconciliation rows -- the same clause every "
+            "server aggregate applies. Default false: the unfiltered list is "
+            "the ledger view, where an adjustment or a rejected row is still "
+            "a row the user entered and must be able to find. Do NOT pair "
+            "with collapse_transfers: this already excludes every non-null "
+            "linked_transaction_id, a strict superset of it."
+        ),
+    ),
     sort_by: str | None = Query(default=None),
     sort_dir: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
@@ -138,6 +163,8 @@ async def list_transactions(
             tags=tag_list,
             tags_exclude=excl_list,
             tag_match=tag_match,
+            category_match=category_match,
+            reportable=reportable,
             sort_by=sort_by,
             sort_dir=sort_dir,
             limit=limit,
