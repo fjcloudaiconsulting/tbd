@@ -509,6 +509,38 @@ async def spending_by_category(
     those are synthesized from templates that have not materialised, and
     re-exporting them here would re-gate this surface by the back door. The cut
     line is happened-vs-projected.
+
+    ⚠ **``period_start`` is a HINT, not a filter, and this GET can WRITE.**
+    A syntactically valid value matching no ``BillingPeriod`` row for the org
+    is **silently substituted** with the org's current period — there is no 404
+    and no 422 — because ``spending_service.resolve_spend_window`` falls
+    through to ``billing_service.get_current_period``, which AUTO-CREATES and
+    ``commit()``s a period row for an org that has none (TBD-297). So a caller
+    **must read ``period_start`` back off the response** rather than trust the
+    value it sent; a client that labels the donut with its own requested date
+    can end up labelling it with a period it is not showing. The behaviour is
+    pre-existing — it moved verbatim out of ``compute_forecast`` — but it is
+    newly reachable here on an UNGATED route by an org that has Forecast
+    switched off, which is why it is written down rather than left to be
+    rediscovered. Whether a GET should write at all is a separate ticket, not a
+    decision this docstring makes. ``F-I`` in
+    ``tests/routers/test_spending_by_category_endpoint.py`` fences
+    IDEMPOTENCE — two calls, one period row — and deliberately does NOT fence
+    the write, which would bless it as contract.
+
+    ⚠⚠ **Drilldown callers must pass ``category_match=exact``.** This rollup
+    groups by the row's **own** ``category_id`` and returns ``parent_id``
+    alongside — the same shape ``GET /api/v1/forecast`` returns — so a master
+    category and its subcategory are two separate slices. But ``category_id``
+    on ``GET /api/v1/transactions`` is **master-includes-subs**, a deliberate
+    2026-05-13 regression guard. Wiring a donut slice straight to the list
+    endpoint without ``category_match=exact`` (the parameter added for exactly
+    this — see the ``category_match`` ``Query`` on ``list_transactions``
+    above) therefore opens a slice labelled with the master's DIRECT total and
+    fills it with the master's rows PLUS every subcategory's: Home 90.00 direct
+    + Utilities 160.00 renders two slices, and clicking the 90.00 Home slice
+    returns 250.00 of rows. Both endpoints are correct on their own; only the
+    unqualified pairing is wrong.
     """
     return await spending_service.compute_spending_by_category(
         db, current_user.org_id, period_start=period_start

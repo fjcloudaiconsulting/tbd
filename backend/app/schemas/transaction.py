@@ -313,6 +313,23 @@ class SpendingByCategoryResponse(BaseModel):
     construction, so the donut's centre figure can never disagree with its
     slices. ``period_end`` is the period's spend-window end, which for an open
     period is floored at today — not a calendar month end.
+
+    ``period_start`` is the period the server RESOLVED, which is not
+    necessarily the one the caller asked for: an unmatched ``period_start``
+    query value is silently substituted with the current period. Read it back
+    off this response before labelling anything with it — see the route
+    docstring in ``routers/transactions.py``.
+
+    ⚠⚠ **Rows are keyed by the transaction's OWN ``category_id``**, so a master
+    category and its subcategory are two separate slices and ``parent_id``
+    carries the link between them. A drilldown from a slice into
+    ``GET /api/v1/transactions`` **must pass ``category_match=exact``**:
+    ``category_id`` there is master-includes-subs (a deliberate 2026-05-13
+    regression guard), so without it a slice showing the master's DIRECT spend
+    opens a list that also contains every subcategory's rows, and the list
+    total exceeds the slice it was opened from — Home 90.00 direct + Utilities
+    160.00 gives two slices here, and an unqualified drilldown on the 90.00
+    Home slice returns 250.00 of rows.
     """
 
     period_start: datetime.date
