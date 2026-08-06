@@ -324,20 +324,39 @@ Existing coverage that must stay green and unmodified: F1, F2, F3, F6, F7a, F7b,
   them.
 - **`ai_forecast_refine_service` still labels an N-month window "monthly".** Untouched; TBD-243 §5
   announced it; it needs its own design round.
-- **The collect loop's `max_iterations` is the same defect class as §12, at a far more extreme
-  fixture, and it is knowingly retained.** If a single forecast window contains more than 500
-  occurrences of one template, the projection truncates while generation — capped per *run*, and
-  making progress across runs — eventually materialises all of them, so `forecast_net` moves. The
-  difference that makes this acceptable where the fast-forward's cap was not: the fast-forward's
-  exposure was bounded by `next_due_date`, which is **user-supplied with no past-date guard** and
-  reachable by a single-digit year typo; the collect loop's exposure is bounded by the **window
-  length**, which comes from the billing-period roster (open period start derived by
-  `current_cycle_window`; closed periods created through the overlap-validated admin endpoint at
-  `settings.py:746`). It needs a single period spanning ~9.6 years of weekly, ~19 years of biweekly,
-  or ~41 years of monthly. Not fenced, deliberately: a fence would pin a limitation rather than a
-  property. If a period roster ever admits multi-year windows, delete the budget — the `nxt <= d`
-  no-progress guard is the real defence, and `forecast_plan_service.populate_from_sources` already
-  ships uncapped.
+- **~~The collect loop's `max_iterations` is knowingly retained.~~ REMOVED by TBD-286.** It was the
+  same defect class as §12 at a more extreme fixture: past 500 occurrences of one template in one
+  window the projection truncated **in silence** — no log, no marker — while generation, capped per
+  *run* but advancing its frontier every run, materialised all of them, so `forecast_net` moved with
+  no user action. It was retained on the argument that its exposure was bounded by the **window
+  length**, "which comes from the billing-period roster ... closed periods created through the
+  overlap-validated admin endpoint".
+
+  **That premise was false.** `POST /api/v1/settings/billing-period` reads `start_date` and
+  `end_date` straight out of an admin request body. `BillingPeriodCreate` validates only their
+  ORDER, and the router's second check is for OVERLAP — position, not length. **Nothing caps a
+  period's span**, and `compute_forecast` reads `period.end_date` verbatim into `window_end`. A
+  decades-long period is one accepted request, so >500 occurrences needs no corrupt data at all.
+  The removal is exactly what the retained wording pre-registered: *"If a period roster ever admits
+  multi-year windows, delete the budget."*
+
+  Fenced by **F24** (conservation across three generation ticks over a 523-occurrence window; RED at
+  `50000.00 != 52300.00` with the cap, and still RED with the constant merely raised to 522) and
+  **F25** (the unit half). Raising the constant was never the fix — it moves the boundary and keeps
+  the failure mode.
+
+  The "unbounded walk" the cap was also credited with preventing does not exist: the collect loop
+  terminates at `end`, and the widest walk the type system permits (1900-01-01 → 9998-12-31) was
+  MEASURED at 0.16s / 3.7MB weekly, 0.21s / 0.8MB monthly. What *did* need closing is
+  `advance_date` past `datetime.date.max`, which raises `OverflowError` for `timedelta`
+  frequencies and `ValueError` for `relativedelta` ones — already live on the uncapped fast-forward
+  since #599. `_next_occurrence` folds that into the same "the grid ended" answer as the
+  no-progress guard; **F26** is its fence, and kills both single-exception half-fixes.
+
+  Still open, deliberately out of TBD-286's scope: an absurd window makes
+  `account_balance_forecast_service` emit one response LINE per projected occurrence. Bounding a
+  billing period's span at its writer is the honest place for that, and the limit is a product
+  decision.
 - **`recurring_service.MAX_CATCHUP_ITERATIONS` remains an alias.** F17a pins the aliasing, not the
   value; nothing depends on 500 in particular. The alias is a "sized by one number" claim only — see
   §5 for what it deliberately no longer claims.
