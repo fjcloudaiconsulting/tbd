@@ -43,8 +43,12 @@ describe("BROADCAST_ERROR_COPY", () => {
     expect(BROADCAST_ERROR_COPY.invalid_template_token.length).toBeGreaterThan(0);
   });
 
-  it("covers all six coded errors", () => {
+  it("covers every coded error the broadcast endpoints raise", () => {
     for (const code of [
+      // 502 from POST /{id}/dry-run when the test send itself failed
+      // (TBD-266): the gate stays locked, so the operator needs to be told
+      // why rather than shown a raw transport message.
+      "dry_run_send_failed",
       "dry_run_required",
       "confirm_subject_mismatch",
       "confirm_count_mismatch",

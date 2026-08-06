@@ -380,6 +380,11 @@ async def dry_run_broadcast(
     draft (``sending``/``completed``/``failed``) must not be re-rendered
     and re-sent to the operator's own inbox, and dry-running it wouldn't
     mean anything post-send anyway.
+
+    A send that fails leaves ``dry_run_sent_at`` UNSET, audits
+    ``broadcast.dry_run`` with ``outcome="failure"``, and returns 502
+    ``dry_run_send_failed``. The stamp is the send gate, so it may only be
+    written when the test email actually went out.
     """
     actor_user_id = current_user.id
     actor_email = current_user.email
@@ -393,7 +398,42 @@ async def dry_run_broadcast(
         )
 
     html_out, text_out = render_email(row.body_template, current_user.first_name)
-    await send_email(current_user.email, row.subject, html_out, text_out)
+    sent = await send_email(current_user.email, row.subject, html_out, text_out)
+    if not sent:
+        # ``dry_run_sent_at`` is send_broadcast's gate #2, and the only
+        # thing it can stand for is "a human has seen this email". Stamping
+        # it on a send that never left unlocks a broadcast to the entire
+        # user base on the strength of a test message nobody received —
+        # and ``send_email`` swallows every failure into a ``False``, so
+        # discarding that return is the same as asserting it never fails.
+        # It does: TBD-266 gave the Mailgun call an aggregate deadline, so
+        # a dribbling upstream now returns False at
+        # MAILGUN_SEND_TOTAL_TIMEOUT_S where it used to hang the request.
+        #
+        # Audited as a failure rather than logged only: the success path
+        # writes broadcast.dry_run, so a silent failure would leave the
+        # audit trail reading as though no dry run was ever attempted.
+        # ``actor_user_id``/``actor_email`` are the scalars snapshotted at
+        # the top of the handler, not live ORM attribute reads.
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="broadcast.dry_run",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=None,
+            target_org_name=None,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="failure",
+            detail=_audit_detail(row, error="send_failed"),
+        )
+        await logger.awarning("broadcast.dry_run_failed", broadcast_id=row.id)
+        # 502 + coded detail, the shape this codebase already uses for an
+        # upstream that failed us (``routers/ai_categorize.py``).
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "dry_run_send_failed"},
+        )
 
     await db.execute(
         update(EmailBroadcast)

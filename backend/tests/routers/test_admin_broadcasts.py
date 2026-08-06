@@ -777,6 +777,88 @@ async def test_dry_run_on_non_draft_returns_409(session_factory):
     assert res.json()["detail"]["code"] == "broadcast_not_draft"
 
 
+# ── a failed dry-run send must not unlock the send gate (TBD-266) ────────
+#
+# ``dry_run_sent_at`` is send_broadcast's gate #2 and the only thing it can
+# stand for is "a human has seen this email". ``send_email`` swallows every
+# failure into a ``False``, so a discarded return means a test email that
+# never arrived still stamps the gate, shows a green "Test sent to your
+# inbox", and permits a broadcast to the entire user base. TBD-266's
+# aggregate deadline makes that reachable in a new way: a dribbling Mailgun
+# now returns False at MAILGUN_SEND_TOTAL_TIMEOUT_S where it used to hang
+# the request instead.
+#
+# The pair below is a fence plus its control. Without the control an
+# implementation that simply refused every dry run would pass the fence.
+
+
+@pytest.mark.asyncio
+async def test_failed_dry_run_send_leaves_the_gate_locked(
+    session_factory, _mock_send_email
+):
+    _mock_send_email["dry_run"].return_value = False
+    await _seed(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        draft = _create_draft(client)
+        res = client.post(f"/api/v1/admin/broadcasts/{draft['id']}/dry-run")
+        assert res.status_code == 502, res.text
+        assert res.json()["detail"]["code"] == "dry_run_send_failed"
+
+        # The gate is still locked, which is the whole point: the operator
+        # cannot fire the broadcast off a test email that never arrived.
+        send_res = client.post(
+            f"/api/v1/admin/broadcasts/{draft['id']}/send",
+            json={
+                "confirm_subject": draft["subject"],
+                "confirm_recipient_count": draft["recipient_count"],
+            },
+        )
+        assert send_res.status_code == 422, send_res.text
+        assert send_res.json()["detail"]["code"] == "dry_run_required"
+
+    async with session_factory() as db:
+        row = await db.get(EmailBroadcast, draft["id"])
+        assert row.dry_run_sent_at is None
+        assert row.status == BroadcastStatus.DRAFT
+        events = (
+            await db.execute(
+                select(AuditEvent).where(AuditEvent.event_type == "broadcast.dry_run")
+            )
+        ).scalars().all()
+    # Audited as a failure, not as a success and not silently: the success
+    # path writes this same event type, so a missing row would read as
+    # "no dry run was ever attempted".
+    assert len(events) == 1
+    assert events[0].outcome == "failure"
+
+
+@pytest.mark.asyncio
+async def test_successful_dry_run_stamps_the_gate_and_audits_success(
+    session_factory, _mock_send_email
+):
+    """Control for the fence above: same path, send returns True."""
+    _mock_send_email["dry_run"].return_value = True
+    await _seed(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        draft = _create_draft(client)
+        res = client.post(f"/api/v1/admin/broadcasts/{draft['id']}/dry-run")
+        assert res.status_code == 200, res.text
+        assert res.json()["dry_run_sent_at"] is not None
+
+    async with session_factory() as db:
+        row = await db.get(EmailBroadcast, draft["id"])
+        assert row.dry_run_sent_at is not None
+        events = (
+            await db.execute(
+                select(AuditEvent).where(AuditEvent.event_type == "broadcast.dry_run")
+            )
+        ).scalars().all()
+    assert len(events) == 1
+    assert events[0].outcome == "success"
+
+
 @pytest.mark.asyncio
 async def test_preview_happy_path_returns_subject_html_text(session_factory):
     await _seed(session_factory)
