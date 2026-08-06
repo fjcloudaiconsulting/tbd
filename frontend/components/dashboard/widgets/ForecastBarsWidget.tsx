@@ -63,8 +63,9 @@ export default function ForecastBarsWidget() {
                   <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={220}
                     cursor="pointer"
                     onClick={(_, idx) => {
-                      const name = forecastExpenseItems[idx]?.category_name;
-                      if (name) setChartFilter(chartFilter === name ? null : name);
+                      // TBD-221: category_id, matching the rollup's identity.
+                      const cid = forecastExpenseItems[idx]?.category_id;
+                      if (cid != null) setChartFilter(chartFilter === cid ? null : cid);
                     }}
                   />
                   <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={220}>

@@ -72,6 +72,9 @@ const BASE: DashboardData = {
   projectionFailed: false,
   projectionLoading: false,
   onRetryProjection: vi.fn(),
+  rollupFailed: false,
+  rollupLoading: false,
+  onRetryRollup: vi.fn(),
   accountMonthEndForecast: null,
   accountMonthEndForecastError: false,
   periods: [],
@@ -84,7 +87,6 @@ const BASE: DashboardData = {
   monthFrom: "2026-05-01",
   monthTo: "2026-05-31",
   jumpToCurrentPeriod: vi.fn(),
-  allTransactions: [],
   budgets: [],
   dashBudgets: [],
   budgetChartData: [],
@@ -98,6 +100,7 @@ const BASE: DashboardData = {
   forecastExpenseItems: [],
   forecastChartRows: [],
   chartFilter: null,
+  chartFilterName: null,
   setChartFilter: vi.fn(),
   transactions: [],
   txTotal: 0,
@@ -105,7 +108,6 @@ const BASE: DashboardData = {
   setPage: vi.fn(),
   pageSize: 10,
   setPageSize: vi.fn(),
-  visibleTxs: [],
   sortedVisibleTxs: [],
   dashSort: {
     field: "date", dir: "desc", setSort: vi.fn(), reset: vi.fn(), isDefault: true,
@@ -143,7 +145,7 @@ describe("RecentTransactionsWidget — transfer collapse (TBD-268 F9)", () => {
 
   it("F9: renders every row the provider returns, transfers included", () => {
     const rows = collapsedPage();
-    mount({ transactions: rows, visibleTxs: rows, sortedVisibleTxs: rows, txTotal: rows.length });
+    mount({ transactions: rows, sortedVisibleTxs: rows, txTotal: rows.length });
 
     expect(rowIds()).toHaveLength(10);
     // Kills the legacy hide surviving anywhere in the widget/provider chain.
@@ -156,22 +158,22 @@ describe("RecentTransactionsWidget — transfer collapse (TBD-268 F9)", () => {
     // txMap lookup could not possibly resolve it. Direction comes from `type`,
     // so a surviving INCOME leg still reads source -> destination.
     const rows = collapsedPage();
-    mount({ transactions: rows, visibleTxs: rows, sortedVisibleTxs: rows, txTotal: rows.length });
+    mount({ transactions: rows, sortedVisibleTxs: rows, txTotal: rows.length });
 
     expect(screen.getAllByText(/Checking\s*→\s*Savings/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Savings\s*→\s*Checking/)).toBeNull();
   });
 
   it("F9c: an empty rendered list shows the empty state, not a blank card", () => {
-    // Keyed off sortedVisibleTxs, not `transactions`: under a chart filter the
-    // rendered source is the snapshot, so a non-empty `transactions` with an
-    // empty rendered list must still show the empty state.
+    // Keyed off sortedVisibleTxs, not `transactions`. TBD-221 made the two the
+    // same array in the provider, but the WIDGET must not start reading the raw
+    // page: it is handed both, and only one of them is the rendered list.
     mount({
       transactions: [tx({ id: 1 })],
-      visibleTxs: [],
       sortedVisibleTxs: [],
       txTotal: 1,
-      chartFilter: "Groceries",
+      chartFilter: 5,
+      chartFilterName: "Groceries",
     });
 
     expect(screen.getByText(/No transactions this period/)).toBeInTheDocument();

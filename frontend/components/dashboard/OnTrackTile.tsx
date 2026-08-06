@@ -220,6 +220,9 @@ export default function OnTrackTile({
             type="button"
             onClick={onRetryProjection}
             disabled={projectionLoading}
+            // Distinguishing name: the Spending donut and the dashboard's
+            // refresh banner each render their own "Retry" alongside this one.
+            aria-label="Retry loading the forecast"
             className={`${btnSecondary} text-xs disabled:opacity-50`}
           >
             <RefreshCw className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
