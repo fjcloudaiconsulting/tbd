@@ -103,6 +103,9 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   projectionFailed: false,
   projectionLoading: false,
   onRetryProjection: vi.fn(),
+  rollupFailed: false,
+  rollupLoading: false,
+  onRetryRollup: vi.fn(),
   accountMonthEndForecast: null,
   accountMonthEndForecastError: false,
   periods: [],
@@ -115,7 +118,6 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   monthFrom: "2026-06-01",
   monthTo: "2026-06-30",
   jumpToCurrentPeriod: vi.fn(),
-  allTransactions: [],
   budgets: [],
   dashBudgets: [],
   budgetChartData: [],
@@ -127,6 +129,7 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   forecastExpenseItems: [],
   forecastChartRows: [],
   chartFilter: null,
+  chartFilterName: null,
   setChartFilter: MOCK_SETFILTER,
   transactions: [],
   txTotal: 0,
@@ -134,7 +137,6 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   setPage: vi.fn(),
   pageSize: 10,
   setPageSize: vi.fn(),
-  visibleTxs: [],
   sortedVisibleTxs: [],
   dashSort: {
     field: "date" as const,
@@ -211,9 +213,9 @@ describe("SpendingDonutWidget", () => {
 
   it("renders chart content when donutData has items", () => {
     mockWith({
-      donutData: [{ name: "Food", value: 200 }],
+      donutData: [{ categoryId: 7, name: "Food", value: 200 }],
       sortedSpending: [
-        { name: "Food", value: 200, pct: 100, origIdx: 0 },
+        { categoryId: 7, name: "Food", value: 200, pct: 100, origIdx: 0 },
       ],
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_spending", "w1"))}</>);
@@ -221,12 +223,12 @@ describe("SpendingDonutWidget", () => {
     expect(screen.getByText("Food")).toBeInTheDocument();
   });
 
-  it("clicking legend row calls setChartFilter with the category name", () => {
+  it("clicking legend row calls setChartFilter with the category ID", () => {
     const setChartFilter = vi.fn();
     mockWith({
-      donutData: [{ name: "Food", value: 200 }],
+      donutData: [{ categoryId: 7, name: "Food", value: 200 }],
       sortedSpending: [
-        { name: "Food", value: 200, pct: 100, origIdx: 0 },
+        { categoryId: 7, name: "Food", value: 200, pct: 100, origIdx: 0 },
       ],
       setChartFilter,
     });
@@ -234,14 +236,17 @@ describe("SpendingDonutWidget", () => {
     // The legend buttons are the category rows — click the one with "Food"
     const btn = screen.getByRole("button", { name: /Food/i });
     fireEvent.click(btn);
-    expect(setChartFilter).toHaveBeenCalledWith("Food");
+    // TBD-221: the id, not the name — the drilldown groups by category_id
+    // and category names are not unique.
+    expect(setChartFilter).toHaveBeenCalledWith(7);
   });
 
   it("shows active filter badge when chartFilter is set", () => {
     mockWith({
-      donutData: [{ name: "Food", value: 200 }],
-      sortedSpending: [{ name: "Food", value: 200, pct: 100, origIdx: 0 }],
-      chartFilter: "Food",
+      donutData: [{ categoryId: 7, name: "Food", value: 200 }],
+      sortedSpending: [{ categoryId: 7, name: "Food", value: 200, pct: 100, origIdx: 0 }],
+      chartFilter: 7,
+      chartFilterName: "Food",
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_spending", "w1"))}</>);
     expect(screen.getByText(/Filtering: Food/)).toBeInTheDocument();
@@ -250,9 +255,10 @@ describe("SpendingDonutWidget", () => {
   it("clicking filter badge clears chartFilter (calls setChartFilter(null))", () => {
     const setChartFilter = vi.fn();
     mockWith({
-      donutData: [{ name: "Food", value: 200 }],
-      sortedSpending: [{ name: "Food", value: 200, pct: 100, origIdx: 0 }],
-      chartFilter: "Food",
+      donutData: [{ categoryId: 7, name: "Food", value: 200 }],
+      sortedSpending: [{ categoryId: 7, name: "Food", value: 200, pct: 100, origIdx: 0 }],
+      chartFilter: 7,
+      chartFilterName: "Food",
       setChartFilter,
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_spending", "w1"))}</>);
@@ -315,18 +321,21 @@ describe("BudgetBarsWidget", () => {
     expect(screen.getByTestId("responsive-container")).toBeInTheDocument();
   });
 
-  it("clicking spent bar calls setChartFilter with the category name", () => {
+  it("clicking spent bar calls setChartFilter with the category ID", () => {
     const setChartFilter = vi.fn();
     mockWith({
       budgets: [MOCK_BUDGET],
       dashBudgets: [MOCK_BUDGET],
       budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
       chartFilter: null,
+      chartFilterName: null,
       setChartFilter,
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>);
     fireEvent.click(screen.getByTestId("bar-spent"));
-    expect(setChartFilter).toHaveBeenCalledWith("Groceries");
+    // TBD-221: the cross-tile filter is a category_id — the drilldown has to
+    // reproduce the rollup's grouping, which is by id.
+    expect(setChartFilter).toHaveBeenCalledWith(MOCK_BUDGET.category_id);
   });
 
   it("clicking spent bar when already active toggles filter to null", () => {
@@ -335,7 +344,8 @@ describe("BudgetBarsWidget", () => {
       budgets: [MOCK_BUDGET],
       dashBudgets: [MOCK_BUDGET],
       budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
-      chartFilter: "Groceries",
+      chartFilter: MOCK_BUDGET.category_id,
+      chartFilterName: "Groceries",
       setChartFilter,
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>);
@@ -447,18 +457,20 @@ describe("ForecastBarsWidget", () => {
     expect(screen.getByTestId("responsive-container")).toBeInTheDocument();
   });
 
-  it("clicking planned bar calls setChartFilter with the category name", () => {
+  it("clicking planned bar calls setChartFilter with the category ID", () => {
     const setChartFilter = vi.fn();
     mockWith({
       forecast: MOCK_FORECAST,
       forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
       forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
       chartFilter: null,
+      chartFilterName: null,
       setChartFilter,
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
     fireEvent.click(screen.getByTestId("bar-planned"));
-    expect(setChartFilter).toHaveBeenCalledWith("Transport");
+    // TBD-221: category_id, matching the rollup's identity.
+    expect(setChartFilter).toHaveBeenCalledWith(MOCK_FORECAST_EXPENSE_ITEM.category_id);
   });
 
   it("clicking planned bar when already active toggles filter to null", () => {
@@ -467,7 +479,8 @@ describe("ForecastBarsWidget", () => {
       forecast: MOCK_FORECAST,
       forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
       forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
-      chartFilter: "Transport",
+      chartFilter: MOCK_FORECAST_EXPENSE_ITEM.category_id,
+      chartFilterName: "Transport",
       setChartFilter,
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
@@ -668,6 +681,7 @@ describe("RecentTransactionsWidget", () => {
       page: 0,
       pageSize: 10,
       chartFilter: null,
+      chartFilterName: null,
     });
     renderRecentTx();
     expect(
@@ -684,6 +698,7 @@ describe("RecentTransactionsWidget", () => {
       page: 0,
       pageSize: 10,
       chartFilter: null,
+      chartFilterName: null,
       setPage,
     });
     renderRecentTx();
@@ -703,6 +718,7 @@ describe("RecentTransactionsWidget", () => {
       page: 0,
       pageSize: 10,
       chartFilter: null,
+      chartFilterName: null,
       setPageSize,
     });
     renderRecentTx();
@@ -715,19 +731,26 @@ describe("RecentTransactionsWidget", () => {
     expect(setPageSize).toHaveBeenCalledWith(50);
   });
 
-  it("hides pagination while a chartFilter is active", () => {
+  it("keeps pagination while a chartFilter is active (the drilldown is paginated)", () => {
+    // ⚠ INVERTED by TBD-221. The pager used to hide under a chart filter
+    // because the filtered list was a client slice of an in-memory snapshot
+    // and had no server pages. The drilldown is a paginated SERVER query now,
+    // and `txTotal` is that query's own total — so hiding the pager would cap
+    // the slice's list at one page while its total said otherwise, which is
+    // the same silent truncation this ticket removed.
     mockWith({
       transactions: [TX],
       sortedVisibleTxs: [TX],
       txTotal: 25,
       page: 0,
       pageSize: 10,
-      chartFilter: "Groceries",
+      chartFilter: 5,
+      chartFilterName: "Groceries",
     });
     renderRecentTx();
     expect(
-      screen.queryByRole("button", { name: /Next page/i }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: /Next page/i }),
+    ).toBeInTheDocument();
   });
 
   it("does not render pager or page-size selector when txTotal is 0", () => {
@@ -738,6 +761,7 @@ describe("RecentTransactionsWidget", () => {
       page: 0,
       pageSize: 10,
       chartFilter: null,
+      chartFilterName: null,
       canAdd: true,
     });
     renderRecentTx();
