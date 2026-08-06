@@ -211,6 +211,11 @@ export interface DashboardData {
   projectionLoading: boolean;
   onRetryProjection: () => void;
   rollupFailed: boolean;
+  // "The tile has no numbers for the SELECTED period yet" — a request in
+  // flight, OR a period change whose fetch has not been kicked off yet. It is
+  // NOT true during a same-period refetch, because the last good rollup stays
+  // on screen through one (see `activeRollup`). The donut's loading arm and
+  // the Retry button's `disabled` both read it.
   rollupLoading: boolean;
   onRetryRollup: () => void;
   accountMonthEndForecast: AccountMonthEndForecastResponse | null;
@@ -441,10 +446,19 @@ export function DashboardDataProvider({
   // projection above. Two endpoints, two lifecycles: `/api/v1/forecast` is
   // gated by TBD-197 and projects forward; this one is ungated and reports
   // what already happened.
-  const [spendingRollup, setSpendingRollup] =
-    useState<SpendingByCategoryResponse | null>(null);
+  //
+  // ⚠ STORED WITH THE PERIOD IT WAS REQUESTED FOR. That key is what lets the
+  // last good payload survive a refetch (see `activeRollup` below) without ever
+  // showing one period's numbers under another period's heading: a period
+  // change invalidates it in the SAME render, before any fetch is issued.
+  const [spendingRollup, setSpendingRollup] = useState<{
+    periodStart: string;
+    data: SpendingByCategoryResponse;
+  } | null>(null);
   const [rollupFailed, setRollupFailed] = useState(false);
-  const [rollupLoading, setRollupLoading] = useState(false);
+  // Raw in-flight flag. The context exposes the WIDER `rollupLoading` derived
+  // below; this one is only "a request is open right now".
+  const [rollupFetching, setRollupFetching] = useState(false);
   const rollupRequestId = useRef(0);
 
   // ── Account month-end forecast ──────────────────────────────────────────────
@@ -544,17 +558,38 @@ export function DashboardDataProvider({
   // silently substituted with the current period, with no 404 and no 422. A
   // drilldown built from the value we SENT would then query a window the
   // numbers above do not describe.
-  const rollupFrom = spendingRollup?.period_start ?? null;
-  const rollupTo = spendingRollup?.period_end ?? null;
+  //
+  // ⚠ THE LAST GOOD ROLLUP SURVIVES A REFETCH (PR 630 review, B1/B2). It is
+  // dropped for exactly one reason — the selected period no longer matches the
+  // one it was fetched for — and NOT because a request happens to be open.
+  // `loadSpendingRollup` used to null it before every fetch, which made the
+  // window (and therefore the drilldown below) a function of whether a network
+  // response was currently in hand: every status toggle and every
+  // `pfv:transaction-added` refresh silently dropped an active drilldown for a
+  // full round-trip, and a chart click during that window did nothing at all.
+  // A failed refetch keeps it too: the fetch failed, the WINDOW did not change.
+  const activeRollup =
+    spendingRollup !== null && spendingRollup.periodStart === realPeriodStart
+      ? spendingRollup.data
+      : null;
+  const rollupFrom = activeRollup?.period_start ?? null;
+  const rollupTo = activeRollup?.period_end ?? null;
+
+  // "No numbers for the selected period yet". The second arm covers the render
+  // between a period change (which invalidates `activeRollup` immediately) and
+  // the effect that starts the next fetch — without it the tile flashes "No
+  // expense data yet" for a frame on every period nav, which is the exact
+  // sentence TBD-221 exists to stop showing.
+  const rollupLoading =
+    rollupFetching ||
+    (realPeriodStart !== null && activeRollup === null && !rollupFailed);
 
   // A drilldown is only meaningful while that window is known: the filtered
   // query has to reproduce the slice's WHERE clause, and the window is half of
-  // it. With no rollup (failed or still in flight) the filter reads null and
-  // the tile falls back to the plain period page — rather than guessing a bound
-  // from `monthTo`, which is the disagreement this ticket removes. Trade-off: a
-  // rollup refetch blanks `spendingRollup` for a frame, so an active filter
-  // drops and re-applies across a post-write refresh. That costs one extra list
-  // GET and is self-healing; substituting a wrong window would not be.
+  // it. With no rollup for this period (never loaded, or the period just
+  // changed) the filter reads null and the tile falls back to the plain period
+  // page — rather than guessing a bound from `monthTo`, which is the
+  // disagreement this ticket removes.
   const chartFilter = rollupFrom && rollupTo ? chartFilterId : null;
 
   const setChartFilter = useCallback((c: number | null) => {
@@ -787,13 +822,16 @@ export function DashboardDataProvider({
       rollupRequestId.current += 1;
       setSpendingRollup(null);
       setRollupFailed(false);
-      setRollupLoading(false);
+      setRollupFetching(false);
       return;
     }
     const myId = ++rollupRequestId.current;
-    setSpendingRollup(null);
+    // ⚠ NO `setSpendingRollup(null)` HERE. The last good payload — and with it
+    // the analysis window an open drilldown is running against — stays until a
+    // newer one lands or the period changes. Blanking it up front turned a
+    // user-owned interaction state into a function of network timing.
     setRollupFailed(false);
-    setRollupLoading(true);
+    setRollupFetching(true);
     try {
       // `period_start` is a HINT — the server may substitute the current
       // period. Nothing below reads `realPeriodStart` again; the window comes
@@ -802,15 +840,18 @@ export function DashboardDataProvider({
         `/api/v1/transactions/spending-by-category?period_start=${realPeriodStart}`,
       );
       if (rollupRequestId.current !== myId) return;
-      setSpendingRollup(data);
+      setSpendingRollup({ periodStart: realPeriodStart, data });
       setRollupFailed(false);
     } catch {
       if (rollupRequestId.current !== myId) return;
-      setSpendingRollup(null);
+      // The stored rollup is deliberately LEFT ALONE. `rollupFailed` already
+      // stops the tile rendering its now-stale numbers; dropping the payload
+      // as well would also destroy the window, and an open drilldown with it
+      // — permanently, with no message, since nothing re-applies it.
       setRollupFailed(true);
     } finally {
       if (rollupRequestId.current === myId) {
-        setRollupLoading(false);
+        setRollupFetching(false);
       }
     }
   }, [realPeriodStart]);
@@ -1042,7 +1083,9 @@ export function DashboardDataProvider({
   // `is_manual_adjustment` is on the wire and `reconciliation_state` is not, so
   // any client reconstruction can only ever be half of the filter.
   const donutDataRaw = useMemo<DonutDatum[]>(() => {
-    const rows = spendingRollup?.categories;
+    // `activeRollup`, not `spendingRollup`: a payload fetched for a period the
+    // user has since navigated away from must not render under the new one.
+    const rows = activeRollup?.categories;
     if (!Array.isArray(rows)) return [];
     return rows
       .map((r) => ({
@@ -1050,18 +1093,22 @@ export function DashboardDataProvider({
         name: r.category_name,
         value: Number(r.executed),
       }))
+      // A defensive finite/positive guard, NOT a negative-expense handler: no
+      // reachable state produces one. `TransactionCreate/Update.amount` and
+      // `ImportConfirmRow.amount` are `Field(gt=0)`, the OFX path writes
+      // `amount_abs`, sign is carried by `type`, and the rollup groups only
+      // `type == EXPENSE` — so a refund is an INCOME row, never a negative
+      // EXPENSE, and every group sum is strictly positive.
       .filter((d) => Number.isFinite(d.value) && d.value > 0)
       .sort((a, b) => b.value - a.value);
-  }, [spendingRollup]);
+  }, [activeRollup]);
 
   // The sum of the RENDERED slices, which is the figure the percentages below
   // are taken against — so they add to 100 by construction. Server-side
-  // `executed_expense` is itself the sum of the same rows, so the two agree
-  // for every payload whose rows are all positive; the reduce is what keeps
-  // them agreeing when a category nets to zero or below and drops out of the
-  // slice list. What must NEVER back this figure is a second source — a
-  // client re-aggregation, or `forecastProjection.executed_expense`, which is
-  // null for a forecast-off org.
+  // `executed_expense` is itself the sum of the same rows, so the two agree.
+  // What must NEVER back this figure is a second source — a client
+  // re-aggregation, or `forecastProjection.executed_expense`, which is null
+  // for a forecast-off org.
   const totalSpend = useMemo(
     () => donutDataRaw.reduce((s, d) => s + d.value, 0),
     [donutDataRaw],
@@ -1244,13 +1291,20 @@ export function DashboardDataProvider({
         }),
       });
       await loadPageTransactions(page);
-      // Page-0 chart cascade fires BEFORE the refs step (matching legacy,
-      // where it ran inside loadTransactions(0) ahead of loadRefs). loadAux
-      // has no internal try/catch and can reject; keeping the cascade ahead
-      // of it means a transient refs blip after a committed PUT can't skip
-      // the donut/budget/forecast refresh.
+      // Chart cascade fires BEFORE the refs step (matching legacy, where it
+      // ran inside loadTransactions(0) ahead of loadRefs). loadAux has no
+      // internal try/catch and can reject; keeping the cascade ahead of it
+      // means a transient refs blip after a committed PUT can't skip the
+      // donut/budget/forecast refresh.
+      //
+      // ⚠ `loadBudgets` is NOT page-gated (PR 630 review, N6). The rollup
+      // below refreshes on every page, so leaving Budget Progress behind
+      // `page === 0` made the two tiles disagree after a toggle from page 2 —
+      // the donut moved, the budget bar kept the old figure. In LegacyDashboard
+      // budgets ride `loadRefs()`, which the toggle calls unconditionally, so
+      // gating them here was also a parity break.
+      void loadBudgets();
       if (page === 0) {
-        void loadBudgets();
         void loadForecastPlan();
       }
       await Promise.all([mutateAccounts(), mutateBillingPeriods(), loadAux()]);

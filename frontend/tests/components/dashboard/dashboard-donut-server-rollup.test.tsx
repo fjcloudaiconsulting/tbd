@@ -41,6 +41,7 @@ import {
   DashboardDataProvider,
   useDashboard,
 } from "@/components/dashboard/DashboardDataProvider";
+import SpendingDonutWidget from "@/components/dashboard/widgets/SpendingDonutWidget";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 import DashboardPage from "@/app/dashboard/page";
@@ -207,6 +208,20 @@ function sumAmounts(rows: { amount: string }[]) {
 type Handler = (url: string, init?: RequestInit) => Promise<unknown>;
 
 /**
+ * A promise the test resolves by hand, so a rollup request can be held OPEN
+ * while the fences below assert what the rest of the dashboard does meanwhile.
+ * Every "while the rollup is refetching" claim in this file is measured against
+ * a request that is genuinely still in flight, not against a timing guess.
+ */
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+/**
  * One mock for both shells. Records every URL so the fences can assert on the
  * shape of the requests, not only on the rendered numbers.
  */
@@ -215,6 +230,9 @@ function makeHandler(opts: {
   rollupRejects?: boolean;
   projectionRejects?: boolean;
   snapshotRows?: ReturnType<typeof tx>[];
+  // Hold the rollup open from the Nth call on (1-based): `{ fromCall: 2 }`
+  // lets the initial load land and then parks the refetch.
+  rollupHold?: { fromCall: number; gate: Promise<void> };
   urls: string[];
 }): Handler {
   const {
@@ -222,7 +240,9 @@ function makeHandler(opts: {
     rollupRejects = false,
     projectionRejects = false,
     snapshotRows = CAPPED_SNAPSHOT,
+    rollupHold,
   } = opts;
+  let rollupCalls = 0;
   return async (url: string) => {
     opts.urls.push(url);
     if (url.startsWith("/api/v1/accounts")) return [];
@@ -242,6 +262,10 @@ function makeHandler(opts: {
     // ⚠ MUST precede the generic /api/v1/transactions branch below — the
     // rollup lives on the transactions router, so its URL shares the prefix.
     if (url.startsWith("/api/v1/transactions/spending-by-category")) {
+      rollupCalls += 1;
+      if (rollupHold && rollupCalls >= rollupHold.fromCall) {
+        await rollupHold.gate;
+      }
       if (rollupRejects) throw new Error("rollup boom");
       return rollupResponse;
     }
@@ -304,6 +328,7 @@ function Probe() {
         {ctx.donutData.reduce((s, d) => s + d.value, 0)}
       </span>
       <span data-testid="pct-sum">{pctSum.toFixed(4)}</span>
+      <span data-testid="rollup-loading">{String(ctx.rollupLoading)}</span>
       <span data-testid="chart-filter">{ctx.chartFilter ?? "null"}</span>
       <span data-testid="list-sum">
         {ctx.sortedVisibleTxs.reduce((s, t) => s + Number(t.amount), 0)}
@@ -315,6 +340,14 @@ function Probe() {
           const slice = ctx.donutData.find((d) => d.name === "Home");
           if (slice) ctx.setChartFilter(slice.categoryId);
         }}
+      />
+      {/* A click from a NON-DONUT tile. BudgetBarsWidget and ForecastBarsWidget
+          call the same `setChartFilter` with a category_id off their OWN data,
+          which they have whether or not the rollup is in hand — so this button
+          deliberately does NOT read `ctx.donutData`. */}
+      <button
+        data-testid="click-external-filter"
+        onClick={() => ctx.setChartFilter(HOME_ID)}
       />
     </div>
   );
@@ -612,6 +645,254 @@ describe("TBD-221 — CustomDashboard shell (DashboardDataProvider)", () => {
     expect(drill).toContain(`date_to=${SUBSTITUTED_END}`);
     expect(drill).not.toContain(`date_from=${PERIOD.start_date}`);
   });
+
+  // ── F-G: the window is the LAST GOOD one, not "whatever is in hand" ────────
+  //
+  // PR 630 review, B1 + B2. `loadSpendingRollup` used to null `spendingRollup`
+  // before every fetch, so `rollupFrom`/`rollupTo` — and with them the
+  // cross-tile chart filter, which is USER-OWNED INTERACTION STATE — became a
+  // function of whether a network response happened to be present. Every status
+  // toggle and every `pfv:transaction-added` refresh opened that window for a
+  // full round-trip.
+
+  it("F-G1: a chart click from a NON-DONUT tile lands while the rollup is refetching", async () => {
+    const gate = deferred();
+    vi.mocked(apiFetch).mockImplementation(
+      makeHandler({ urls, rollupHold: { fromCall: 2, gate: gate.promise } }) as never,
+    );
+
+    mountProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+    );
+
+    // A post-write refresh: the rollup refetches and is HELD open.
+    act(() => {
+      window.dispatchEvent(new Event("pfv:transaction-added"));
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("rollup-loading").textContent).toBe("true"),
+    );
+
+    // Budget Progress / Forecast bars still render — they have their own data —
+    // so a click on one has to do something. It used to do nothing visible at
+    // all while still resetting the recent-tx page to 1.
+    act(() => {
+      screen.getByTestId("click-external-filter").click();
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("chart-filter").textContent).toBe(
+        String(HOME_ID),
+      ),
+    );
+
+    const drill = await waitFor(() => {
+      const found = txUrls(urls).find((u) =>
+        u.includes(`category_id=${HOME_ID}`),
+      );
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    // The drilldown carries the LAST GOOD window, which is the same window the
+    // numbers on screen were computed over.
+    expect(drill).toContain("category_match=exact");
+    expect(drill).toContain(`date_from=${ROLLUP_START}`);
+    expect(drill).toContain(`date_to=${ROLLUP_END}`);
+
+    // ⚠ NON-VACUITY: the refetch really was still open for all of the above.
+    expect(screen.getByTestId("rollup-loading").textContent).toBe("true");
+
+    await act(async () => {
+      gate.resolve();
+      await gate.promise;
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("rollup-loading").textContent).toBe("false"),
+    );
+    // …and the response landing does not disturb the filter the user set.
+    expect(screen.getByTestId("chart-filter").textContent).toBe(String(HOME_ID));
+  });
+
+  it("F-G2: an open drilldown survives a post-write refresh, with no unfiltered refire", async () => {
+    const gate = deferred();
+    vi.mocked(apiFetch).mockImplementation(
+      makeHandler({ urls, rollupHold: { fromCall: 2, gate: gate.promise } }) as never,
+    );
+
+    mountProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+    );
+    act(() => {
+      screen.getByTestId("click-home-slice").click();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("list-sum").textContent).toBe(
+        String(HOME_SLICE),
+      ),
+    );
+
+    const listUrls = () =>
+      urls.filter((u) => u.startsWith("/api/v1/transactions?limit="));
+    const before = listUrls().length;
+
+    act(() => {
+      window.dispatchEvent(new Event("pfv:transaction-added"));
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("rollup-loading").textContent).toBe("true"),
+    );
+
+    // The badge never blanks…
+    expect(screen.getByTestId("chart-filter").textContent).toBe(String(HOME_ID));
+    // …and every list GET the refresh issued is still the DRILLDOWN. The old
+    // behaviour produced three fetches for one toggle: filtered, then the whole
+    // period (window blanked), then filtered again — the user watching the
+    // badge vanish and the list repopulate with everything in between.
+    await waitFor(() => expect(listUrls().length).toBeGreaterThan(before));
+    expect(
+      listUrls()
+        .slice(before)
+        .every((u) => u.includes(`category_id=${HOME_ID}`)),
+    ).toBe(true);
+    expect(screen.getByTestId("list-sum").textContent).toBe(String(HOME_SLICE));
+
+    await act(async () => {
+      gate.resolve();
+      await gate.promise;
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("rollup-loading").textContent).toBe("false"),
+    );
+    expect(screen.getByTestId("chart-filter").textContent).toBe(String(HOME_ID));
+    expect(screen.getByTestId("list-sum").textContent).toBe(String(HOME_SLICE));
+  });
+
+  it("F-G3: a rollup FAILURE does not silently drop an open drilldown either", async () => {
+    // The half of B2 with no recovery path: under the old code a refetch that
+    // failed left `spendingRollup` null forever, so the filter was lost with no
+    // message and nothing to re-apply it. The fetch failed; the WINDOW did not.
+    let failNext = false;
+    vi.mocked(apiFetch).mockImplementation((async (url: string) => {
+      if (
+        failNext &&
+        url.startsWith("/api/v1/transactions/spending-by-category")
+      ) {
+        urls.push(url);
+        throw new Error("rollup boom");
+      }
+      return makeHandler({ urls })(url);
+    }) as never);
+
+    mountProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("donut-count").textContent).toBe("3"),
+    );
+    act(() => {
+      screen.getByTestId("click-home-slice").click();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("list-sum").textContent).toBe(
+        String(HOME_SLICE),
+      ),
+    );
+
+    failNext = true;
+    act(() => {
+      window.dispatchEvent(new Event("pfv:transaction-added"));
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("rollup-failed").textContent).toBe("true"),
+    );
+    // The tile says "unavailable" (rollupFailed), and the drilldown the user
+    // opened is still theirs.
+    expect(screen.getByTestId("chart-filter").textContent).toBe(String(HOME_ID));
+    expect(screen.getByTestId("list-sum").textContent).toBe(String(HOME_SLICE));
+  });
+
+  // ── F-H: the loading arm ──────────────────────────────────────────────────
+
+  it("F-H: the tile shows a loading state — never 'No expense data yet' — while the rollup is in flight", async () => {
+    // Rendered through the REAL widget, because the arm being fenced is JSX.
+    const gate = deferred();
+    vi.mocked(apiFetch).mockImplementation(
+      makeHandler({ urls, rollupHold: { fromCall: 1, gate: gate.promise } }) as never,
+    );
+
+    renderWithSWR(
+      <DashboardDataProvider>
+        <SpendingDonutWidget />
+      </DashboardDataProvider>,
+    );
+
+    const tile = await screen.findByTestId("spending-donut");
+    await waitFor(() =>
+      expect(within(tile).getByTestId("donut-loading")).toBeInTheDocument(),
+    );
+    // ⚠ THE SENTENCE THIS TICKET EXISTS TO STOP SHOWING over a period holding
+    // real settled expense — which the held response is about to prove is
+    // exactly what this period holds.
+    expect(within(tile).queryByText(/No expense data yet/i)).toBeNull();
+    expect(
+      within(tile).queryByText(/Spending by category unavailable/i),
+    ).toBeNull();
+
+    await act(async () => {
+      gate.resolve();
+      await gate.promise;
+    });
+
+    await waitFor(() =>
+      expect(within(tile).getByText("Home")).toBeInTheDocument(),
+    );
+    expect(within(tile).queryByTestId("donut-loading")).toBeNull();
+    expect(within(tile).getByText("45%")).toBeInTheDocument();
+  });
+
+  it("F-H2: a same-period REFETCH keeps the last good slices on screen, not a spinner", async () => {
+    const gate = deferred();
+    vi.mocked(apiFetch).mockImplementation(
+      makeHandler({ urls, rollupHold: { fromCall: 2, gate: gate.promise } }) as never,
+    );
+
+    renderWithSWR(
+      <DashboardDataProvider>
+        <SpendingDonutWidget />
+      </DashboardDataProvider>,
+    );
+
+    const tile = await screen.findByTestId("spending-donut");
+    await waitFor(() =>
+      expect(within(tile).getByText("Home")).toBeInTheDocument(),
+    );
+
+    act(() => {
+      window.dispatchEvent(new Event("pfv:transaction-added"));
+    });
+
+    // The refetch is open (F-G1 pins that this state is real), and the tile
+    // still shows the numbers it had rather than blinking through a loading
+    // state on every post-write refresh.
+    await waitFor(() =>
+      expect(
+        urls.filter((u) =>
+          u.startsWith("/api/v1/transactions/spending-by-category"),
+        ).length,
+      ).toBeGreaterThan(1),
+    );
+    expect(within(tile).getByText("Home")).toBeInTheDocument();
+    expect(within(tile).getByText("45%")).toBeInTheDocument();
+    expect(within(tile).queryByTestId("donut-loading")).toBeNull();
+
+    await act(async () => {
+      gate.resolve();
+      await gate.promise;
+    });
+  });
 });
 
 // ── LegacyDashboard shell ────────────────────────────────────────────────────
@@ -709,7 +990,7 @@ describe("TBD-221 — LegacyDashboard shell (app/dashboard/page.tsx)", () => {
     expect(within(tile).getByText("45%")).toBeInTheDocument();
   });
 
-  it("F-C2: a rollup failure renders the donut error state with no number", async () => {
+  it("F-C2: a rollup failure renders the donut error state, announced, with a named Retry", async () => {
     vi.mocked(apiFetch).mockImplementation(
       makeHandler({ urls, rollupRejects: true }) as never,
     );
@@ -722,12 +1003,138 @@ describe("TBD-221 — LegacyDashboard shell (app/dashboard/page.tsx)", () => {
         within(tile).getByText(/Spending by category unavailable/i),
       ).toBeInTheDocument(),
     );
+    // The error appears asynchronously, after the page has settled, so it has
+    // to be in a live region or a screen-reader user is told nothing (WCAG 2.2
+    // AA 4.1.3), and its Retry needs a name that says WHICH retry it is — the
+    // dashboard renders up to three buttons otherwise all labelled "Retry".
+    expect(within(tile).getByRole("alert")).toHaveTextContent(
+      /Spending by category unavailable/i,
+    );
     expect(
-      within(tile).getByRole("button", { name: /retry/i }),
+      within(tile).getByRole("button", {
+        name: "Retry loading spending by category",
+      }),
     ).toBeInTheDocument();
-    // No fallback aggregation of the rows the list endpoint is still serving.
+    // ⚠ THIS TEST DOES NOT PIN THE ABSENCE OF A CLIENT FALLBACK. The ladder
+    // short-circuits on `rollupFailed` regardless of `donutData`, so any
+    // "nothing is rendered here" assertion in this state passes on the JSX's
+    // SHAPE — a mutant with client aggregation live and 200 rows in memory
+    // still passes it. F-C3 below fences the data path instead.
+  });
+
+  it("F-C3: no client fallback — an EMPTY rollup renders the empty state while rows sit in memory", async () => {
+    // The state that forces the ladder past `rollupFailed` and onto the data:
+    // the rollup answered 200 with no categories, and the recent-tx list is
+    // simultaneously serving settled expense rows the deleted client
+    // aggregation would have happily turned into a slice.
+    vi.mocked(apiFetch).mockImplementation(
+      makeHandler({
+        urls,
+        rollupResponse: rollup({ categories: [], executed_expense: "0.00" }),
+      }) as never,
+    );
+
+    render(<DashboardPage />);
+
+    const tile = await screen.findByTestId("spending-donut");
+    await waitFor(() =>
+      expect(within(tile).getByText(/No expense data yet/i)).toBeInTheDocument(),
+    );
+    // The tile is NOT in its error state, so nothing is short-circuiting: this
+    // is the data path answering.
+    expect(
+      within(tile).queryByText(/Spending by category unavailable/i),
+    ).toBeNull();
+    expect(within(tile).queryByTestId("donut-loading")).toBeNull();
+    // Not one slice, not one percentage.
     expect(within(tile).queryByText("Bogus")).toBeNull();
     expect(within(tile).queryByText(/100%/)).toBeNull();
+    expect(within(tile).queryByText(/%$/)).toBeNull();
+
+    // ⚠ NON-VACUITY: the rows a fallback would have aggregated really are on
+    // the client — the recent-tx list rendered them.
+    expect(
+      screen.getAllByTestId(/^dash-settled-\d+$/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Bogus/).length).toBeGreaterThan(0);
+  });
+
+  it("F-G2 (legacy): an open drilldown survives a post-write refresh", async () => {
+    const gate = deferred();
+    vi.mocked(apiFetch).mockImplementation(
+      makeHandler({ urls, rollupHold: { fromCall: 2, gate: gate.promise } }) as never,
+    );
+
+    render(<DashboardPage />);
+
+    const row = await within(
+      await screen.findByTestId("spending-donut"),
+    ).findByText("Home");
+    act(() => {
+      row.closest("button")!.click();
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/Filtering: Home/)).toBeInTheDocument(),
+    );
+
+    const listUrls = () =>
+      urls.filter((u) => u.startsWith("/api/v1/transactions?limit="));
+    const before = listUrls().length;
+
+    act(() => {
+      window.dispatchEvent(new Event("pfv:transaction-added"));
+    });
+
+    // The rollup refetch is held open. Through all of it the badge stays, the
+    // legend keeps its slices (no blink to a loading state on a refetch), and
+    // every list GET is still the drilldown.
+    //
+    // ⚠ Re-query the tile: in this shell a filter change alters
+    // `txQueryTail`, which re-identifies `loadTransactions`, which re-raises
+    // `fetching` — so the page swaps through its skeleton and the earlier DOM
+    // node is detached. (Pre-existing legacy behaviour, unrelated to this PR.)
+    await waitFor(() => expect(listUrls().length).toBeGreaterThan(before));
+    const tile = screen.getByTestId("spending-donut");
+    expect(screen.getByText(/Filtering: Home/)).toBeInTheDocument();
+    expect(within(tile).getByText("Home")).toBeInTheDocument();
+    expect(within(tile).queryByTestId("donut-loading")).toBeNull();
+    expect(
+      listUrls()
+        .slice(before)
+        .every((u) => u.includes(`category_id=${HOME_ID}`)),
+    ).toBe(true);
+    expect(screen.queryByText("Utilities sub")).toBeNull();
+
+    await act(async () => {
+      gate.resolve();
+      await gate.promise;
+    });
+    expect(screen.getByText(/Filtering: Home/)).toBeInTheDocument();
+  });
+
+  it("F-H (legacy): the tile shows a loading state, not 'No expense data yet', on a cold load", async () => {
+    const gate = deferred();
+    vi.mocked(apiFetch).mockImplementation(
+      makeHandler({ urls, rollupHold: { fromCall: 1, gate: gate.promise } }) as never,
+    );
+
+    render(<DashboardPage />);
+
+    const tile = await screen.findByTestId("spending-donut");
+    await waitFor(() =>
+      expect(within(tile).getByTestId("donut-loading")).toBeInTheDocument(),
+    );
+    expect(within(tile).queryByText(/No expense data yet/i)).toBeNull();
+
+    await act(async () => {
+      gate.resolve();
+      await gate.promise;
+    });
+
+    await waitFor(() =>
+      expect(within(tile).getByText("Home")).toBeInTheDocument(),
+    );
+    expect(within(tile).queryByTestId("donut-loading")).toBeNull();
   });
 
   it("F-E: the legacy shell never issues the limit=200 period snapshot either", async () => {

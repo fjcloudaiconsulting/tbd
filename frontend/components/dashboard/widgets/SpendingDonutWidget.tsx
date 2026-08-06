@@ -36,7 +36,12 @@ export default function SpendingDonutWidget() {
       <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
       {chartFilter !== null && (
         <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">
-          Filtering: {chartFilterName ?? "selected category"} &times;
+          {/* The fallback is reachable: a category can be filtered from the
+              Budget or Forecast bars with no rollup row, no budget and no
+              forecast item to name it. Plain language, not "selected category"
+              — the user picked it, and a label that reads like system
+              vocabulary tells them the app lost track. */}
+          Filtering: {chartFilterName ?? "one category"} &times;
         </button>
       )}
       {/* TBD-221: the numbers on this tile come from the UNGATED
@@ -51,12 +56,21 @@ export default function SpendingDonutWidget() {
           simply an org with Forecast switched off — render "Spending by
           category unavailable" over real settled expense. */}
       {rollupFailed ? (
-        <div className="flex flex-wrap items-center gap-3 py-6 text-sm text-text-muted">
+        /* role="alert": this appears asynchronously, long after the page has
+           settled, so without a live region a screen-reader user is told
+           nothing at all (WCAG 2.2 AA 4.1.3). The Retry button's accessible
+           name says WHICH retry it is — the dashboard renders up to three
+           buttons otherwise all called "Retry". */
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-3 py-6 text-sm text-text-muted"
+        >
           <span>Spending by category unavailable.</span>
           <button
             type="button"
             onClick={onRetryRollup}
             disabled={rollupLoading}
+            aria-label="Retry loading spending by category"
             className={`${btnSecondary} text-xs disabled:opacity-50`}
           >
             <RefreshCw className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
@@ -218,7 +232,7 @@ export default function SpendingDonutWidget() {
                 <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CHART_SERIES[d.origIdx % CHART_SERIES.length] }} />
                 <span className="min-w-0 truncate text-left text-xs text-text-secondary">{d.name}</span>
                 {/* %/amount carry data, so they ride text-secondary
-                    (~6.9:1) not text-muted (~3.0:1, fails AA 1.4.3). */}
+                    rather than the dimmer text-muted. */}
                 <span className="text-right text-[10px] tabular-nums text-text-secondary">{d.pct.toFixed(0)}%</span>
                 <span className="text-right text-xs tabular-nums text-text-secondary">{formatAmount(d.value)}</span>
               </button>
@@ -228,6 +242,20 @@ export default function SpendingDonutWidget() {
             )}
           </div>
         </div>
+      ) : rollupLoading ? (
+        /* ⚠ AHEAD OF THE EMPTY STATE, BEHIND THE CHART. Without this arm the
+           tile renders "No expense data yet" over every cold load and every
+           period change — the exact sentence TBD-221 exists to stop showing
+           over a period holding real settled expense. It sits behind the chart
+           arm so a same-period refetch keeps the last good slices on screen
+           instead of blinking to a spinner. */
+        <p
+          role="status"
+          data-testid="donut-loading"
+          className="text-sm text-text-muted py-6 text-center"
+        >
+          Loading spending by category…
+        </p>
       ) : (
         <p className="text-sm text-text-muted py-6 text-center">No expense data yet</p>
       )}

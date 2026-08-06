@@ -1477,7 +1477,7 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
     );
   });
 
-  it("onToggleTransactionStatus on page>0 does NOT refresh the page-0 chart cascade", async () => {
+  it("onToggleTransactionStatus on page>0 refreshes budgets alongside the donut, but not the page-0 forecast plan", async () => {
     vi.mocked(apiFetch).mockImplementation(
       makeApiFetchHandler({
         transactions: { items: [TX_EXPENSE], total: 25 },
@@ -1501,11 +1501,22 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
     const countCalls = (pred: (u: string) => boolean) =>
       vi.mocked(apiFetch).mock.calls.filter((c) => pred(c[0] as string)).length;
 
-    // ⚠ REPOINTED by TBD-221: the page-0 cascade used to be
-    // snapshot+budgets+forecast-plan and is now budgets+forecast-plan. The
-    // PROPERTY under test (the cascade is skipped off page 0) is unchanged;
-    // only the observable it is read through moved.
+    // ⚠ REPOINTED TWICE. TBD-221 moved the page-0 cascade from
+    // snapshot+budgets+forecast-plan to budgets+forecast-plan; PR 630's review
+    // (N6) then lifted BUDGETS out of the gate. The rollup behind the Spending
+    // donut has always refreshed on every page, so a page-gated budgets load
+    // let a status toggle from page 2 move the donut while Budget Progress kept
+    // the old figure — two tiles, one write, two different answers. (Legacy
+    // refreshes budgets through `loadRefs()`, which its toggle calls
+    // unconditionally, so the gate was a parity break too.) What is still
+    // page-0-gated, and still fenced below, is the forecast plan.
     const budgetsBefore = countCalls((u) => u.startsWith("/api/v1/budgets"));
+    const planBefore = countCalls((u) =>
+      u.startsWith("/api/v1/forecast-plans/current"),
+    );
+    const rollupBefore = countCalls((u) =>
+      u.startsWith("/api/v1/transactions/spending-by-category"),
+    );
     const pageBefore = countCalls((u) =>
       u.startsWith("/api/v1/transactions?limit=10"),
     );
@@ -1520,8 +1531,25 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
         countCalls((u) => u.startsWith("/api/v1/transactions?limit=10")),
       ).toBeGreaterThan(pageBefore);
     });
-    // … but the chart cascade must be SKIPPED off page 0.
-    expect(countCalls((u) => u.startsWith("/api/v1/budgets"))).toBe(budgetsBefore);
+    // … the donut's rollup refreshes off page 0 (it always did) …
+    await waitFor(() =>
+      expect(
+        countCalls((u) =>
+          u.startsWith("/api/v1/transactions/spending-by-category"),
+        ),
+      ).toBeGreaterThan(rollupBefore),
+    );
+    // … and budgets refresh WITH it, so the two tiles cannot disagree.
+    await waitFor(() =>
+      expect(countCalls((u) => u.startsWith("/api/v1/budgets"))).toBeGreaterThan(
+        budgetsBefore,
+      ),
+    );
+    // The forecast plan stays behind the page-0 gate, matching legacy, where it
+    // is loaded inside `loadTransactions(0)`.
+    expect(
+      countCalls((u) => u.startsWith("/api/v1/forecast-plans/current")),
+    ).toBe(planBefore);
   });
 
   it("period navigation does NOT reset the page (re-fetches the same offset for the new period)", async () => {

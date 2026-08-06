@@ -222,10 +222,17 @@ function LegacyDashboard() {
   // is not. One flag across both would blank a working donut whenever the
   // forecast failed (or was simply switched off), and blank a working forecast
   // whenever the rollup failed.
-  const [spendingRollup, setSpendingRollup] =
-    useState<SpendingByCategoryResponse | null>(null);
+  //
+  // ⚠ STORED WITH THE PERIOD IT WAS REQUESTED FOR, so the last good payload can
+  // survive a refetch (see `activeRollup`) without ever rendering one period's
+  // numbers under another period's heading.
+  const [spendingRollup, setSpendingRollup] = useState<{
+    periodStart: string;
+    data: SpendingByCategoryResponse;
+  } | null>(null);
   const [rollupFailed, setRollupFailed] = useState(false);
-  const [rollupLoading, setRollupLoading] = useState(false);
+  // Raw in-flight flag; the tile reads the wider `rollupLoading` derived below.
+  const [rollupFetching, setRollupFetching] = useState(false);
   const rollupRequestId = useRef(0);
   // Per-account expected month-end balance from /api/v1/forecast/account-balances.
   // Distinct from forecastProjection above (which drives the OnTrackTile —
@@ -321,13 +328,32 @@ function LegacyDashboard() {
   // the request is a hint the server may silently substitute with the current
   // period (no 404, no 422), so a window built from the value we SENT can
   // describe a different period from the numbers we got.
-  const rollupFrom = spendingRollup?.period_start ?? null;
-  const rollupTo = spendingRollup?.period_end ?? null;
+  //
+  // ⚠ THE LAST GOOD ROLLUP SURVIVES A REFETCH (PR 630 review, B1/B2). It is
+  // dropped for exactly one reason — the selected period no longer matches the
+  // one it was fetched for — and NOT because a request happens to be open.
+  // Nulling it before every fetch made the window, and therefore the drilldown
+  // below, a function of whether a network response was currently in hand.
+  // A failed refetch keeps it too: the fetch failed, the WINDOW did not change.
+  const activeRollup =
+    spendingRollup !== null && spendingRollup.periodStart === realPeriodStart
+      ? spendingRollup.data
+      : null;
+  const rollupFrom = activeRollup?.period_start ?? null;
+  const rollupTo = activeRollup?.period_end ?? null;
+
+  // "No numbers for the selected period yet". The second arm covers the render
+  // between a period change (which invalidates `activeRollup` immediately) and
+  // the effect that starts the next fetch — without it the tile flashes "No
+  // expense data yet" for a frame on every period nav.
+  const rollupLoading =
+    rollupFetching
+    || (realPeriodStart !== null && activeRollup === null && !rollupFailed);
 
   // A drilldown is only meaningful while that window is known: the filtered
   // query has to reproduce the slice's WHERE clause and the window is half of
-  // it. With no rollup the filter reads null and the tile falls back to the
-  // plain period page, rather than guessing a bound from `monthTo`.
+  // it. With no rollup for this period the filter reads null and the tile falls
+  // back to the plain period page, rather than guessing a bound from `monthTo`.
   const chartFilter = rollupFrom && rollupTo ? chartFilterId : null;
   const setChartFilter = useCallback((c: number | null) => {
     setChartFilterId(c);
@@ -503,28 +529,32 @@ function LegacyDashboard() {
       rollupRequestId.current += 1;
       setSpendingRollup(null);
       setRollupFailed(false);
-      setRollupLoading(false);
+      setRollupFetching(false);
       return;
     }
     const myId = ++rollupRequestId.current;
-    setSpendingRollup(null);
+    // ⚠ NO `setSpendingRollup(null)` HERE — the last good payload, and the
+    // analysis window an open drilldown runs against, stay until a newer one
+    // lands or the period changes.
     setRollupFailed(false);
-    setRollupLoading(true);
+    setRollupFetching(true);
     try {
       // `period_start` is a HINT. The window comes back off the response.
       const data = await apiFetch<SpendingByCategoryResponse>(
         `/api/v1/transactions/spending-by-category?period_start=${realPeriodStart}`,
       );
       if (rollupRequestId.current !== myId) return;
-      setSpendingRollup(data);
+      setSpendingRollup({ periodStart: realPeriodStart, data });
       setRollupFailed(false);
     } catch {
       if (rollupRequestId.current !== myId) return;
-      setSpendingRollup(null);
+      // The stored rollup is deliberately LEFT ALONE: `rollupFailed` already
+      // stops the tile rendering stale numbers, and dropping the payload would
+      // destroy the window — and any open drilldown with it.
       setRollupFailed(true);
     } finally {
       if (rollupRequestId.current === myId) {
-        setRollupLoading(false);
+        setRollupFetching(false);
       }
     }
   }, [realPeriodStart]);
@@ -709,7 +739,9 @@ function LegacyDashboard() {
   // order so the largest slice starts at 12 o'clock) and the legend list
   // (sortable by name | percent | amount, persisted via spendingSort).
   const donutDataRaw = useMemo(() => {
-    const rows = spendingRollup?.categories;
+    // `activeRollup`, not `spendingRollup`: a payload fetched for a period the
+    // user has since navigated away from must not render under the new one.
+    const rows = activeRollup?.categories;
     if (!Array.isArray(rows)) return [];
     return rows
       .map((r) => ({
@@ -717,14 +749,19 @@ function LegacyDashboard() {
         name: r.category_name,
         value: Number(r.executed),
       }))
+      // A defensive finite/positive guard, NOT a negative-expense handler: no
+      // reachable state produces one. `TransactionCreate/Update.amount` and
+      // `ImportConfirmRow.amount` are `Field(gt=0)`, the OFX path writes
+      // `amount_abs`, sign is carried by `type`, and the rollup groups only
+      // `type == EXPENSE` — a refund is an INCOME row, never a negative EXPENSE.
       .filter((d) => Number.isFinite(d.value) && d.value > 0)
       .sort((a, b) => b.value - a.value);
-  }, [spendingRollup]);
+  }, [activeRollup]);
   const donutData = donutDataRaw;
   // The sum of the RENDERED slices, so the percentages below add to 100 by
   // construction. Server-side `executed_expense` is itself the sum of the same
-  // rows and agrees for any all-positive payload; what must never back this
-  // figure is a SECOND source — a client re-aggregation, or
+  // rows and agrees with it; what must never back this figure is a SECOND
+  // source — a client re-aggregation, or
   // `forecastProjection.executed_expense`, which is null for a forecast-off org.
   const totalSpend = useMemo(
     () => donutDataRaw.reduce((s, d) => s + d.value, 0),
@@ -918,6 +955,10 @@ function LegacyDashboard() {
               void refreshAllPostWrite();
             }}
             disabled={refreshing}
+            // Distinguishing name: the donut and the OnTrackTile each render
+            // their own "Retry" on this page, and three identically named
+            // buttons leave a screen-reader user no way to tell which is which.
+            aria-label="Retry the dashboard refresh"
             className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
           >
             {refreshing ? "Retrying..." : "Retry"}
@@ -1075,7 +1116,13 @@ function LegacyDashboard() {
               <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
               {chartFilter !== null && (
                 <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">
-                  Filtering: {chartFilterName ?? "selected category"} &times;
+                  {/* The fallback is reachable: a category can be filtered from
+                      the Budget or Forecast bars with no rollup row, no budget
+                      and no forecast item to name it. Plain language, not
+                      "selected category" — the user picked it, and a label that
+                      reads like system vocabulary tells them the app lost
+                      track. */}
+                  Filtering: {chartFilterName ?? "one category"} &times;
                 </button>
               )}
               {/* TBD-221: the numbers on this tile come from the UNGATED
@@ -1088,12 +1135,21 @@ function LegacyDashboard() {
                   and reading it here renders "unavailable" over real settled
                   expense for any org with Forecast switched off. */}
               {rollupFailed ? (
-                <div className="flex flex-wrap items-center gap-3 py-6 text-sm text-text-muted">
+                /* role="alert": this appears asynchronously, long after the
+                   page has settled, so without a live region a screen-reader
+                   user is told nothing at all (WCAG 2.2 AA 4.1.3). The Retry
+                   button's accessible name says WHICH retry it is — three
+                   buttons on this page are otherwise all called "Retry". */
+                <div
+                  role="alert"
+                  className="flex flex-wrap items-center gap-3 py-6 text-sm text-text-muted"
+                >
                   <span>Spending by category unavailable.</span>
                   <button
                     type="button"
                     onClick={loadSpendingRollup}
                     disabled={rollupLoading}
+                    aria-label="Retry loading spending by category"
                     className={`${btnSecondary} text-xs disabled:opacity-50`}
                   >
                     <RefreshCw className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />
@@ -1256,7 +1312,7 @@ function LegacyDashboard() {
                         <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CHART_SERIES[d.origIdx % CHART_SERIES.length] }} />
                         <span className="min-w-0 truncate text-left text-xs text-text-secondary">{d.name}</span>
                         {/* %/amount carry data, so they ride text-secondary
-                            (~6.9:1) not text-muted (~3.0:1, fails AA 1.4.3). */}
+                            rather than the dimmer text-muted. */}
                         <span className="text-right text-[10px] tabular-nums text-text-secondary">{d.pct.toFixed(0)}%</span>
                         <span className="text-right text-xs tabular-nums text-text-secondary">{formatAmount(d.value)}</span>
                       </button>
@@ -1266,6 +1322,21 @@ function LegacyDashboard() {
                     )}
                   </div>
                 </div>
+              ) : rollupLoading ? (
+                /* ⚠ AHEAD OF THE EMPTY STATE, BEHIND THE CHART. Without this
+                   arm the tile renders "No expense data yet" over every cold
+                   load and every period change — the exact sentence TBD-221
+                   exists to stop showing over a period holding real settled
+                   expense. It sits behind the chart arm so a same-period
+                   refetch keeps the last good slices on screen instead of
+                   blinking to a spinner. */
+                <p
+                  role="status"
+                  data-testid="donut-loading"
+                  className="text-sm text-text-muted py-6 text-center"
+                >
+                  Loading spending by category…
+                </p>
               ) : (
                 <p className="text-sm text-text-muted py-6 text-center">No expense data yet</p>
               )}
