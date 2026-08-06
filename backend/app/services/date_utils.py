@@ -6,20 +6,28 @@ from dateutil.relativedelta import relativedelta
 
 from app.models.recurring import Frequency
 
-# Defensive cap on how many occurrences one walk may COLLECT out of a single
-# window. ``recurring_service.MAX_CATCHUP_ITERATIONS`` is an ALIAS of this
-# value, not a second literal, so the two walks over a template's occurrence
-# grid are sized by one number rather than by two constants that drift apart.
+# Defensive per-RUN cap on ``recurring_service``'s catch-up loop, which
+# aliases this value as ``MAX_CATCHUP_ITERATIONS``.
 #
-# ⚠ It is NOT a cap on how far a walk may travel to REACH the window. The
-# fast-forward loop in ``occurrences_in_window`` is deliberately UNCAPPED; see
-# that docstring for why capping it was a correctness bug and not a safety net.
+# ⚠ **Nothing in this module consumes it any more.** It used to also bound
+# ``occurrences_in_window``'s collect loop, and the two were one number on the
+# claim that "the two walks over a template's occurrence grid are sized by one
+# number rather than by two constants that drift apart". TBD-286 removed the
+# collect loop's cap outright (see that docstring), so the projection no longer
+# truncates at all and there is nothing left here to keep in step with
+# generation. It lives on in this module only because
+# ``recurring_service.MAX_CATCHUP_ITERATIONS`` imports it and an AST fence
+# (``test_forecast_overdue_recurring.test_f17a_...``) pins that binding to an
+# alias rather than a re-declared literal. Retiring the alias — moving the
+# literal into ``recurring_service`` beside ``_MAX_FRONTIER_ADVANCE_STEPS``,
+# whose comment already argues that the alias rule is only about "walks that
+# must TRUNCATE TOGETHER" — is TBD-338, not this ticket. That cleanup is
+# precisely the mutant F17a's AST guard exists to kill, so it needs the fence
+# re-aimed in the same change and cannot be a drive-by.
 #
-# ⚠ Not to be confused with ``occurrences_in_window``'s ``budget`` argument
-# (TBD-275), which DOES bound the fast-forward. That one is not an iteration
-# cap: it is the instalment series' remaining occurrence count, generation
-# spends it identically, and it therefore removes occurrences rather than
-# hiding them. Same docstring spells out the difference.
+# Generation's cap is legitimate where a projection's was not: it bounds WORK
+# and MAKES PROGRESS (it mutates ``next_due_date`` forward, so the next run
+# resumes further along), and it LOGS (``recurring.generate.catchup_cap``).
 MAX_OCCURRENCE_ITERATIONS = 500
 
 
@@ -38,13 +46,46 @@ def advance_date(current: datetime.date, freq: Frequency) -> datetime.date:
     return current + relativedelta(months=1)
 
 
+def _next_occurrence(
+    d: datetime.date, freq: Frequency
+) -> datetime.date | None:
+    """``advance_date(d, freq)``, or ``None`` when there is no next occurrence.
+
+    The two ways a grid ends, folded into one place so both loops below treat
+    them identically:
+
+    * **No progress.** ``advance_date`` returning ``<= d`` would spin the walk
+      forever. This is the real defence a cap was standing in for, and it is
+      the one the fast-forward has relied on alone since PR 599.
+    * **Past ``datetime.date.max``.** ``advance_date`` has no next value to
+      give, and it does not fail cleanly: ``timedelta`` addition raises
+      ``OverflowError`` (weekly, biweekly) while ``relativedelta`` raises
+      ``ValueError`` (monthly, quarterly, yearly). Catching only one of the two
+      leaves three frequencies unguarded, so both are caught.
+
+      An ``end`` in year 9999 is admin-reachable — ``POST
+      /api/v1/settings/billing-period`` validates ordering and overlap but not
+      span (``schemas/settings.py``), and it is the shape a "no end" sentinel
+      typo takes. With the collect loop capped at 500 the walk stopped long
+      before the ceiling and this never fired; uncapping it without this guard
+      would turn ``GET /api/v1/forecast`` into an unhandled 500 rather than the
+      truncation TBD-286 removed. Terminating is also the *correct* answer, not
+      merely a safe one: there is no occurrence after ``date.max``, and ``end``
+      can never exceed it, so nothing in ``[start, end]`` is being dropped.
+    """
+    try:
+        nxt = advance_date(d, freq)
+    except (OverflowError, ValueError):
+        return None
+    return nxt if nxt > d else None
+
+
 def occurrences_in_window(
     next_due: datetime.date,
     freq: Frequency,
     start: datetime.date,
     end: datetime.date,
     *,
-    max_iterations: int = MAX_OCCURRENCE_ITERATIONS,
     budget: int | None = None,
 ) -> list[datetime.date]:
     """Occurrence dates in ``[start, end]``, walked with ``advance_date`` from
@@ -86,19 +127,69 @@ def occurrences_in_window(
     exists to remove. Conservation held to 495 steps and broke at 496.
 
     The loop is inherently bounded without a cap: ``advance_date`` moves
-    strictly forward for every frequency, the ``nxt <= d`` no-progress guard
-    below is the real defence against a runaway, and the loop terminates at
+    strictly forward for every frequency, ``_next_occurrence``'s no-progress
+    guard is the real defence against a runaway, and the loop terminates at
     ``start``. ``forecast_plan_service.populate_from_sources`` already ships
     exactly this uncapped shape.
 
-    The COLLECT loop keeps ``max_iterations``, and that is a different
-    exposure: it bounds occurrences per WINDOW, and the window comes from the
-    billing-period roster (the open period's start is app-derived from
-    ``current_cycle_window``; closed periods are admin-created through an
-    overlap-validated endpoint), not from an unvalidated user-supplied date.
-    Reaching it needs a single period window longer than 500 steps of the
-    template's frequency — ~9.6 years of weekly. See §11 of
-    ``specs/2026-07-30-forecast-overdue-recurring-design.md``.
+    **The COLLECT loop carries no iteration budget either, since TBD-286.** It
+    kept one — ``max_iterations``, 500 — on the argument that its exposure was
+    bounded by the WINDOW rather than by a user-supplied date, and that the
+    window comes from the billing-period roster. The premise was false. The
+    roster is not a bound: ``POST /api/v1/settings/billing-period`` takes
+    ``start_date`` and ``end_date`` straight from an admin request body, and
+    ``BillingPeriodCreate`` validates only their ORDER (plus an overlap check
+    in the router, which bounds position, not length). A closed period spanning
+    decades is one accepted request, and ``compute_forecast`` reads
+    ``period.end_date`` verbatim into ``window_end``. Reaching >500 occurrences
+    of one template therefore needs no corruption, just a long period row.
+
+    Once past it the failure was the ticket's own defect class: the projection
+    truncated in silence — no log, no marker, just a smaller number — while
+    ``generate_due_transactions``, capped per RUN but advancing its frontier
+    every run, materialised every occurrence across successive ticks. So
+    ``forecast_net`` moved with no user action, exactly as the fast-forward's
+    cap made it move.
+
+    Raising the constant was never the fix: it moves the boundary and keeps the
+    failure mode. What is left instead is the loop's natural bound — it
+    terminates at ``end``, and ``_next_occurrence`` above closes the two ways
+    the walk could fail to terminate. That the natural bound is enough was
+    MEASURED rather than assumed, at the genuinely widest walk the type system
+    permits — ``datetime.date.min`` (0001-01-01) to ``datetime.date.max``
+    (9999-12-31), which no ``DATE`` column can even hold (MySQL's floor is
+    1000-01-01):
+
+    * weekly: 521,723 occurrences, 0.18s, **21.4MB peak**;
+    * monthly: 119,988 occurrences, 0.24s, **4.9MB peak**.
+
+    ⚠ Those are ``tracemalloc`` PEAK figures, and they are the honest ones. An
+    earlier revision of this comment quoted 3.7MB / 0.8MB, which is
+    ``sys.getsizeof(out)`` over the narrower 1900→9998 walk: the LIST OBJECT's
+    pointer array only, EXCLUDING the ``datetime.date`` objects it points at.
+    The dates are ~4.7x the pointers, so that number understates the real cost
+    by that factor. Do not "recorrect" the peak back down to it.
+
+    There is no unbounded hang to trade a wrong number for. §11 of
+    ``specs/2026-07-30-forecast-overdue-recurring-design.md`` pre-registered
+    this removal: *"If a period roster ever admits multi-year windows, delete
+    the budget"*.
+
+    ⚠ What is NOT fixed here, and is a separate ticket (TBD-335): an absurd
+    window still makes ``account_balance_forecast_service`` emit one response
+    line per projected occurrence. Bounding a billing period's SPAN at its
+    writer is the honest place for that, and it is a product decision about the
+    limit. Deferred because such a bound needs ``start_date`` bounded too (an
+    OPEN row at 2000-01-01 with a successor in 2026 is a 26-year window on its
+    own) and because it does not repair rows already stored. It is NOT deferred
+    on the ground that "a bound tight enough to matter would bite below 500 and
+    re-create this defect at a lower boundary" — that argument was made and is
+    unsound. A span bound is a 400 at the WRITER: the over-long window never
+    exists, so nothing truncates and nothing is hidden. This defect was a SILENT
+    TRUNCATION at the READER. And ``generate_due_transactions`` materialises on
+    ``current_cycle_window(cycle_day, today)``, which is roster-independent, so
+    bounding a period's span cannot move what generation creates — the
+    conservation property is not in play at all.
 
     ``budget`` (TBD-275) is the instalment series' REMAINING occurrence count,
     ``None`` for an open-ended series. It is spent by **BOTH loops**, and the
@@ -139,24 +230,20 @@ def occurrences_in_window(
             if remaining <= 0:
                 return out
             remaining -= 1
-        nxt = advance_date(d, freq)
-        if nxt <= d:
+        nxt = _next_occurrence(d, freq)
+        if nxt is None:
             return out
         d = nxt
 
     # COLLECT.
-    iterations = 0
     while d <= end:
         if remaining is not None and remaining <= 0:
             break
-        if iterations >= max_iterations:
-            break
-        iterations += 1
         if remaining is not None:
             remaining -= 1
         out.append(d)
-        nxt = advance_date(d, freq)
-        if nxt <= d:
+        nxt = _next_occurrence(d, freq)
+        if nxt is None:
             break
         d = nxt
 
