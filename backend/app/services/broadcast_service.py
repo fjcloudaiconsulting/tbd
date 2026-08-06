@@ -43,7 +43,11 @@ from app.models.email_broadcast import (
     RecipientStatus,
 )
 from app.models.user import User
-from app.services.email_service import send_batch
+from app.services.email_service import (
+    BatchSendResult,
+    SendDisposition,
+    send_batch,
+)
 
 logger = structlog.get_logger()
 
@@ -319,8 +323,20 @@ async def materialize_recipients(db: AsyncSession, broadcast: EmailBroadcast) ->
 # label ``sent_count`` as "Queued" / "Accepted for delivery".
 #
 # Claim-BEFORE-send (R2). Each batch is claimed to ``sent`` (``attempts+1``,
-# ``sent_at=NOW()``) in ONE UPDATE and COMMITTED *before* the Mailgun call; a
-# non-2xx result reverts exactly that batch ``sent → failed`` with an error.
+# ``sent_at=NOW()``, and — TBD-330 — ``error=NULL``, discarding the previous
+# attempt's verdict) in ONE UPDATE and COMMITTED *before* the Mailgun call.
+#
+# ⚠ SUPERSEDED BY TBD-330: this note used to read "a non-2xx result reverts
+# exactly that batch ``sent → failed`` with an error". It no longer does, and
+# the difference is the whole point of TBD-330. ``send_batch`` now returns a
+# typed ``BatchSendResult`` and ONLY a ``REJECTED`` disposition reverts the
+# batch, because only ``REJECTED`` asserts Mailgun did not take the message.
+# An ``INDETERMINATE`` result — the aggregate deadline, a read timeout, a
+# 5xx — is ALSO non-2xx and deliberately leaves the rows ``sent``, recording
+# the reason in ``error`` instead. Reverting those would invite an operator's
+# Resume click to duplicate a batch Mailgun may already be delivering. The
+# full three-way table lives at step (5) of ``_run_drain_loop``.
+#
 # This favours the never-double-send invariant, which is what matters for real
 # customer email. The accepted residual (documented per R2): a crash between the
 # claim commit and a successful Mailgun receipt leaves an in-flight batch marked
@@ -556,8 +572,19 @@ async def _run_drain_loop(
     Per batch: SELECT the next ``min(broadcast_batch_size, 1000)`` eligible rows
     ORDER BY id, segment-re-check each (a lapsed user is claimed ``skipped`` and
     EXCLUDED), CLAIM the surviving set to ``sent`` in ONE UPDATE and COMMIT, THEN
-    make ONE ``send_batch`` Mailgun call; a non-2xx result reverts exactly that
-    batch ``sent → failed``. One batch's failure never halts the drain (R3): the
+    make ONE ``send_batch`` Mailgun call.
+
+    TBD-330 — the outcome is THREE-way, not two, and "non-2xx reverts the
+    batch" (what this docstring used to say) is no longer true:
+
+    * ``ACCEPTED``      → rows stay ``sent``; ``error`` stays NULL.
+    * ``REJECTED``      → and ONLY ``REJECTED`` — reverts exactly that batch
+      ``sent → failed`` with the reason, so a resume re-batches it.
+    * ``INDETERMINATE`` → also non-2xx, but rows STAY ``sent`` and only
+      ``error`` is written. Re-sending an unanswered batch duplicates real
+      customer email.
+
+    One batch's failure never halts the drain (R3): the
     loop moves on. Pacing (``broadcast_pacing_seconds``) is applied BETWEEN
     batches, never after the last. When no eligible rows remain the broadcast is
     ``completed`` (even with some ``failed``/``skipped``).
@@ -614,6 +641,31 @@ async def _run_drain_loop(
         conditions = [
             EmailBroadcastRecipient.broadcast_id == broadcast_id,
             eligible,
+            # (TBD-330) Never batch a row a Mailgun webhook has already
+            # reported on. ``delivery_status`` has ONE producer
+            # (``mailgun_webhook.map_event``) and a closed value set, and
+            # EVERY non-NULL value suppresses a re-send: ``delivered``
+            # duplicates, ``bounced_temporary`` stacks a second message on
+            # top of Mailgun's own internal retry, ``bounced_permanent`` is
+            # the fastest way to get a sending domain throttled, and
+            # ``complained`` is the worst available action. The
+            # "safe to re-send" set is EMPTY, so the discriminator is
+            # non-nullness.
+            #
+            # ⚠ ``is_(None)``, never a value list. A
+            # ``delivery_status NOT IN ('delivered', ...)`` term evaluates
+            # to SQL NULL for a NULL row, excluding it — resume would then
+            # send to nobody, which passes any naive "no duplicates" check.
+            # ``IS NULL`` is also collation-independent, where a value
+            # comparison against this ``utf8mb4_0900_ai_ci`` VARCHAR is
+            # case-insensitive on MySQL and case-sensitive on the SQLite
+            # test DB (the TBD-322 class, invisible to CI).
+            #
+            # On the FRESH-send path this is vacuous by construction: a
+            # ``pending`` row was never claimed, so no Mailgun message
+            # exists for a webhook to report on. It ships there as an
+            # invariant, not as a fence-able behaviour.
+            EmailBroadcastRecipient.delivery_status.is_(None),
         ]
         if seen_ids:
             conditions.append(EmailBroadcastRecipient.id.notin_(seen_ids))
@@ -689,17 +741,57 @@ async def _run_drain_loop(
 
         # (3) CLAIM the whole survivor set BEFORE the send (R2). ONE UPDATE,
         # committed first, so a crash mid-call never re-sends this batch.
+        #
+        # (TBD-330) The ``delivery_status IS NULL`` term is repeated HERE,
+        # and this copy is the one that actually closes the door. The
+        # SELECT above, the per-row segment re-check loop (one await plus a
+        # commit per row, up to 1000 round-trips) and this UPDATE are
+        # separated by real time, during which the webhook sink keeps
+        # accepting events. A SELECT-only fix is internally consistent and
+        # passes every naive fence while leaving the race open — and the
+        # rowcount guard below does NOT save it: without the term here the
+        # UPDATE matches every ``survivor_id`` regardless of
+        # ``delivery_status``, so ``claimed == len(survivor_ids)``, the
+        # guard never fires, and the just-delivered row is mailed.
+        #
+        # ⚠ LIVENESS COST, deliberate and accepted: one late webhook makes
+        # ``claimed != len(survivor_ids)``, so the guard below rolls back
+        # and ``continue``s — skipping the ENTIRE batch (up to 1000
+        # recipients) to a later resume click, because those ids are
+        # already in ``seen_ids`` and are excluded for the rest of this
+        # run. That is safe (never-double-send holds, and no recipient is
+        # consumed) and consistent with the existing claim-mismatch
+        # semantics, but it looks like a bug from the outside. It is not.
         claim_result = await db.execute(
             update(EmailBroadcastRecipient)
             .where(
                 EmailBroadcastRecipient.broadcast_id == broadcast_id,
                 EmailBroadcastRecipient.id.in_(survivor_ids),
                 EmailBroadcastRecipient.status.in_(expected_statuses),
+                EmailBroadcastRecipient.delivery_status.is_(None),
             )
             .values(
                 status=RecipientStatus.SENT,
                 attempts=EmailBroadcastRecipient.attempts + 1,
                 sent_at=func.now(),
+                # (TBD-330) Clear the PREVIOUS attempt's verdict. Without
+                # this, a row that was REJECTED (``failed`` + a rejection
+                # reason), then resumed and ACCEPTED, keeps the stale
+                # rejection string forever — the ACCEPTED path writes
+                # nothing, so nothing else ever erases it. The row then
+                # reads ``status='sent' AND error IS NOT NULL``, which is
+                # byte-identical to an INDETERMINATE row. That is the one
+                # query an operator has to find unresolved batches (the
+                # comment on ``RecipientResponse.error`` says this column
+                # is the ONLY place that fact surfaces), and stale reasons
+                # make it return false positives.
+                #
+                # The claim is the correct place: it is the "a new attempt
+                # begins, discard the last verdict" point, and it COMMITS
+                # before the send, so it cannot race the reason write that
+                # follows. The SKIPPED path is unaffected — a skipped row
+                # is excluded from ``survivor_ids`` before this UPDATE runs.
+                error=None,
             )
         )
         # The claim MUST cover exactly the set we are about to hand Mailgun.
@@ -721,10 +813,17 @@ async def _run_drain_loop(
             continue
         await db.commit()
 
-        # (4) ONE Mailgun batch call. ``send_batch`` returns a bool and never
-        # raises (it catches internally, MA4); a defensive guard stays anyway.
+        # (4) ONE Mailgun batch call. ``send_batch`` returns a typed
+        # ``BatchSendResult`` and never raises (it catches internally, MA4);
+        # a defensive guard stays anyway.
+        #
+        # ⚠ ONLY the await is inside the ``try``. Reading ``.disposition``
+        # deliberately sits outside it: a stale test double still returning a
+        # bare ``True`` must blow up with ``AttributeError`` and fail the
+        # drain loudly, not get swallowed into "indeterminate" — silence here
+        # is exactly the defect class TBD-330 fixes.
         try:
-            ok = await send_batch(
+            result = await send_batch(
                 to_list,
                 subject,
                 body_html_tokens,
@@ -732,15 +831,49 @@ async def _run_drain_loop(
                 recipient_variables,
                 broadcast_id,
             )
-            batch_error = None if ok else "send_batch returned a falsy result"
         except Exception as exc:  # noqa: BLE001 - one batch's failure must not halt the drain
-            ok = False
-            batch_error = f"send_batch raised: {exc}"
+            # We do not know how far the call got before it raised, so the
+            # fail-safe classification is INDETERMINATE, never REJECTED.
+            result = BatchSendResult(
+                SendDisposition.INDETERMINATE,
+                f"send_batch raised: {exc}; Mailgun's answer is unknown, so "
+                "these rows are NOT re-sent",
+            )
         did_send = True
 
-        # (5) Non-2xx → revert THIS batch ``sent → failed`` with the error, so a
-        # later resume (while ``attempts < max``) re-batches it.
-        if not ok:
+        # (5) TBD-330. Three outcomes, not two:
+        #
+        #   ACCEPTED      → rows stay ``sent``. Mailgun owns the message.
+        #   REJECTED      → revert THIS batch ``sent → failed`` with the
+        #                   reason, so a later resume (while
+        #                   ``attempts < max``) re-batches it. This is
+        #                   licensed ONLY because ``REJECTED`` asserts
+        #                   Mailgun did not take the message.
+        #   INDETERMINATE → rows stay ``sent``. The request went out and no
+        #                   answer came back, which is informationally
+        #                   identical to a crash between the claim commit and
+        #                   the Mailgun receipt — a state R2 already rules is
+        #                   NOT retried by ``resume`` (see the module note
+        #                   above). Reverting these to ``failed`` would be an
+        #                   assertion we cannot make, and would invite an
+        #                   operator's Resume click to duplicate up to a full
+        #                   batch of real customer email.
+        #
+        # ─── Column-ownership invariant (TBD-330 §4) ───────────────────
+        # ``status`` / ``attempts`` / ``sent_at`` / ``error`` are the HANDOFF
+        # record and are written ONLY by this drain. ``delivery_status`` /
+        # ``delivery_updated_at`` are the OUTCOME record and are written ONLY
+        # by ``webhooks._apply_delivery_status``. The two writers touch
+        # disjoint column sets, which is what makes them race-free without
+        # locking against each other.
+        #
+        # A ``status='failed'`` row carrying a non-NULL ``delivery_status`` is
+        # therefore left exactly as it is. It is a near-impossible state (a
+        # rejected batch was never queued, so no webhook can fire for it), and
+        # reconciling it would add a THIRD writer to ``status`` and put an
+        # N-row UPDATE into lock contention with the webhook's
+        # ``SELECT ... FOR UPDATE``. Do not add one.
+        if result.disposition is SendDisposition.REJECTED:
             await db.execute(
                 update(EmailBroadcastRecipient)
                 .where(
@@ -748,9 +881,33 @@ async def _run_drain_loop(
                     EmailBroadcastRecipient.id.in_(survivor_ids),
                     EmailBroadcastRecipient.status == RecipientStatus.SENT,
                 )
-                .values(status=RecipientStatus.FAILED, error=batch_error)
+                .values(status=RecipientStatus.FAILED, error=result.reason)
             )
             await db.commit()
+        elif result.disposition is SendDisposition.INDETERMINATE:
+            # Status untouched. Record WHY in the queryable column, because
+            # under this design an indeterminate batch changes no status, no
+            # counter and no UI element — it looks exactly like a clean send,
+            # so the operator has no trigger to go looking.
+            await db.execute(
+                update(EmailBroadcastRecipient)
+                .where(
+                    EmailBroadcastRecipient.broadcast_id == broadcast_id,
+                    EmailBroadcastRecipient.id.in_(survivor_ids),
+                    EmailBroadcastRecipient.status == RecipientStatus.SENT,
+                )
+                .values(error=result.reason)
+            )
+            await db.commit()
+            # ``error`` level, not ``info``: an unresolved delivery question
+            # must never sort alongside ``broadcast_batch_sent``. MA5 — the
+            # size of the uncertainty, never the addresses.
+            logger.error(
+                "broadcast_batch_indeterminate",
+                broadcast_id=broadcast_id,
+                count=len(survivor_ids),
+                reason=result.reason,
+            )
 
         # Recompute live so GET /{id} progress polling advances per batch.
         await _recompute_broadcast_counters(db, broadcast_id)

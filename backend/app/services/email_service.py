@@ -30,6 +30,8 @@ import asyncio
 import html
 import json
 import urllib.parse
+from dataclasses import dataclass
+from enum import Enum
 
 import httpx
 import structlog
@@ -65,6 +67,102 @@ MAILGUN_TIMEOUT = httpx.Timeout(10.0)
 # is already failed from the caller's point of view. Do not restate this
 # constant as provably safe.
 MAILGUN_SEND_TOTAL_TIMEOUT_S = 20.0
+
+
+# ─── Batch send outcome (TBD-330) ───
+#
+# ``send_batch`` used to return a bare ``bool``. That collapsed two
+# epistemically OPPOSITE outcomes into one value:
+#
+#   * "Mailgun parsed the batch and refused it" (a 4xx, or our own MA2
+#     pre-check refusing to issue the request at all) — nothing was
+#     queued, so re-sending is not only safe, it is required; and
+#   * "the request was written and no answer ever came" (the aggregate
+#     deadline, a read timeout, a 5xx) — Mailgun may well be holding a
+#     copy, so re-sending duplicates real customer email.
+#
+# The drain's only consumer read every falsy return as the first, wrote
+# ``status='failed'``, and thereby invited an operator to Resume an
+# unanswered 1000-address batch into 1000 duplicates (TBD-330). ``failed``
+# is an ASSERTION that Mailgun did not accept the message, and a falsy
+# return never licensed it.
+#
+# Why a typed object with ATTRIBUTE ACCESS rather than an ``Enum`` or a
+# string: every ``Enum`` member and every non-empty string is truthy, so a
+# stale ``if not ok:`` call site — or a stale test double still doing
+# ``AsyncMock(return_value=True)`` — would keep compiling and silently
+# treat a rejection as a success. Reading ``.disposition`` makes every
+# such site raise ``AttributeError`` instead. The migration fails LOUD.
+#
+# For the same reason the drain reads ``.disposition`` OUTSIDE its
+# defensive ``except Exception``: swallowing that ``AttributeError`` into
+# "indeterminate" would put the silence straight back.
+
+
+class SendDisposition(Enum):
+    """What we actually know about a batch after ``send_batch`` returns."""
+
+    #: A 2xx was observed (or dev mode short-circuited before any HTTP).
+    #: Mailgun owns the message now.
+    ACCEPTED = "accepted"
+    #: Provably never queued: the MA2 pre-check refused to issue the
+    #: request, Mailgun answered 4xx, or the connection was never
+    #: established. Safe — and correct — to re-send.
+    REJECTED = "rejected"
+    #: Written, or maybe written, with no conclusive answer. Never
+    #: re-send on this: it is informationally identical to a crash
+    #: mid-call, which R2 already rules is not retried by ``resume``.
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass(frozen=True, slots=True)
+class BatchSendResult:
+    """``send_batch``'s return value.
+
+    ``reason`` is a short, PII-free, operator-readable string explaining a
+    non-ACCEPTED disposition. The drain writes it verbatim into
+    ``email_broadcast_recipients.error``, which moves the
+    rejection-vs-unknown distinction out of structlog and into a queryable
+    column. It is ``None`` for ACCEPTED.
+    """
+
+    disposition: SendDisposition
+    reason: str | None = None
+
+
+_ACCEPTED = BatchSendResult(SendDisposition.ACCEPTED)
+
+
+def _classify_send_exception(exc: BaseException) -> SendDisposition:
+    """Bucket an exception raised out of the Mailgun POST.
+
+    ⚠ The trap: httpx's own per-phase timeouts do NOT derive from builtin
+    ``TimeoutError`` — ``ReadTimeout``/``WriteTimeout``/``ConnectTimeout``/
+    ``PoolTimeout`` all descend from ``httpx.TimeoutException``. Only the
+    ``asyncio.timeout`` aggregate bound raises the builtin. So classifying
+    by ``except TimeoutError`` alone mis-buckets ``ReadTimeout``, which is
+    the single most ambiguous outcome there is: the request was written
+    and the answer was never read.
+
+    REJECTED is claimed ONLY where the request provably never reached
+    Mailgun's application. Everything else — including anything
+    unrecognised — defaults to INDETERMINATE, which is the fail-safe
+    direction under the never-double-send invariant.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        # 4xx: Mailgun parsed it and refused. Conclusive, nothing queued.
+        # 5xx: can come from a proxy AFTER Mailgun enqueued. Not conclusive.
+        if 400 <= exc.response.status_code < 500:
+            return SendDisposition.REJECTED
+        return SendDisposition.INDETERMINATE
+    if isinstance(
+        exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+    ):
+        # No connection was ever established, so no bytes were written.
+        # (``ConnectTimeout`` is NOT a subclass of ``ConnectError``; both
+        # have to be named.)
+        return SendDisposition.REJECTED
+    return SendDisposition.INDETERMINATE
 
 
 # ─── Brand surface constants (mirrors frontend/lib/brand.ts) ───
@@ -298,22 +396,29 @@ async def send_batch(
     body_text: str,
     recipient_variables: dict,
     broadcast_id: int,
-) -> bool:
+) -> BatchSendResult:
     """Send ONE Mailgun batch-sending call covering every address in
     ``to_list`` (spec ``2026-07-18-admin-email-broadcast-design.md``, "Batch
     sending revision" MA4). Mailgun fans this out into one individualized
     message per recipient, substituting ``recipient_variables`` into the
     ``%recipient.*%`` tokens in ``body_html``/``body_text``.
 
+    Returns a :class:`BatchSendResult`, NOT a bool (TBD-330 — see the
+    module-level note above ``SendDisposition``). The caller must branch on
+    ``.disposition``: only ``REJECTED`` licenses reverting the batch's rows
+    to ``failed``, because only ``REJECTED`` asserts that Mailgun did not
+    take the message.
+
     Dev mode (no ``mailgun_api_key``): logs ``broadcast_batch_sent`` with
-    ONLY ``count=len(to_list)`` and ``subject``, sends nothing, returns True.
+    ONLY ``count=len(to_list)`` and ``subject``, sends nothing, and is
+    ACCEPTED — the drain must treat it exactly as it treats a real 2xx.
 
     Prod: mirrors ``send_email``'s HTTP shape, but ``to`` carries every
     address (httpx repeats a list-valued form field) and
     ``recipient-variables`` is sent as a JSON string — Mailgun's
-    single-value-per-form-key model. Returns True only on a 2xx response;
-    any exception (including a raised non-2xx status) is caught and
-    returns False so one bad batch never crashes the caller.
+    single-value-per-form-key model. ACCEPTED only on a 2xx response; any
+    exception (including a raised non-2xx status) is caught and classified
+    so one bad batch never crashes the caller.
 
     PII bound (MA5): logging here NEVER includes ``to_list``,
     ``recipient_variables``, or the rendered bodies — only the batch size,
@@ -328,9 +433,9 @@ async def send_batch(
     every other address. So for ``len(to_list) > 1`` the map's key set must
     equal ``to_list`` exactly — otherwise NOTHING is sent, a PII-bounded
     ``broadcast_batch_failed`` is logged (counts + reason only, never
-    addresses), and the call returns ``False`` (same falsy contract the
-    drain already treats as a failed batch, so the rows revert
-    ``sent → failed`` and a resume can retry them).
+    addresses), and the call returns ``REJECTED``. Conclusively rejected
+    precisely BECAUSE no HTTP request is issued at all: the rows revert
+    ``sent → failed`` and a resume can correctly retry them.
 
     A SINGLE-address ``to`` is deliberately allowed without a map entry:
     there is no cross-recipient leak possible with one address, and the
@@ -357,13 +462,17 @@ async def send_batch(
                 "deliver with every address exposed in the To header"
             ),
         )
-        return False
+        return BatchSendResult(
+            SendDisposition.REJECTED,
+            "recipient-variables key set did not match the to-list; no "
+            "request was issued",
+        )
 
     if not settings.mailgun_api_key:
         await logger.ainfo(
             "broadcast_batch_sent", count=len(to_list), subject=subject
         )
-        return True
+        return _ACCEPTED
 
     # Production: send via Mailgun HTTP API.
     api_host = (
@@ -396,11 +505,17 @@ async def send_batch(
                 subject=subject,
                 status=response.status_code,
             )
-            return True
+            return _ACCEPTED
     except TimeoutError:
         # Same clause, same reasoning, same PII bound as ``send_email``
-        # above; see the note there. The falsy return is unchanged, so the
-        # drain still reads this batch as failed and a resume can retry it.
+        # above; see the note there. This clause catches ONLY the
+        # ``asyncio.timeout`` aggregate bound — none of httpx's own
+        # per-phase timeout classes derive from builtin ``TimeoutError``.
+        #
+        # TBD-330: the request was written and the answer never read, so
+        # this is INDETERMINATE, not a rejection. Reverting these rows to
+        # ``failed`` (the pre-TBD-330 behaviour) invites a Resume click to
+        # duplicate a batch Mailgun may already be delivering.
         await logger.aerror(
             "broadcast_batch_timeout",
             count=len(to_list),
@@ -408,7 +523,12 @@ async def send_batch(
             error="timeout",
             timeout_s=MAILGUN_SEND_TOTAL_TIMEOUT_S,
         )
-        return False
+        return BatchSendResult(
+            SendDisposition.INDETERMINATE,
+            f"no answer from Mailgun within the {MAILGUN_SEND_TOTAL_TIMEOUT_S}s "
+            "aggregate send deadline; the batch may or may not have been "
+            "accepted, so these rows are NOT re-sent",
+        )
     except Exception as exc:
         # Never log to_list / recipient_variables / bodies (MA5) — only the
         # count, subject, and the exception's str() (httpx surfaces status /
@@ -421,7 +541,19 @@ async def send_batch(
             error=str(exc),
             error_type=type(exc).__name__,
         )
-        return False
+        disposition = _classify_send_exception(exc)
+        if disposition is SendDisposition.REJECTED:
+            reason = (
+                f"Mailgun did not accept the batch ({type(exc).__name__}: "
+                f"{exc}); nothing was queued"
+            )
+        else:
+            reason = (
+                f"the batch send did not complete ({type(exc).__name__}: "
+                f"{exc}) and Mailgun's answer is unknown, so these rows are "
+                "NOT re-sent"
+            )
+        return BatchSendResult(disposition, reason)
 
 
 async def send_password_reset_email(to: str, token: str) -> bool:

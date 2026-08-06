@@ -44,6 +44,7 @@ import httpx
 import pytest
 
 from app.services import broadcast_service, email_service
+from app.services.email_service import SendDisposition
 from app.services.broadcast_service import (
     build_batch_bodies,
     build_recipient_variables,
@@ -153,7 +154,7 @@ async def test_send_batch_dev_mode_returns_true_without_httpx(monkeypatch):
         broadcast_id=42,
     )
 
-    assert result is True
+    assert result.disposition is SendDisposition.ACCEPTED
     assert captured == []
 
 
@@ -224,7 +225,7 @@ async def test_send_batch_prod_mode_request_shape(monkeypatch):
         broadcast_id=42,
     )
 
-    assert result is True
+    assert result.disposition is SendDisposition.ACCEPTED
     assert len(captured) == 1
 
 
@@ -255,12 +256,16 @@ async def test_send_batch_prod_mode_tags_v_broadcast_id_as_string(monkeypatch):
         broadcast_id=42,
     )
 
-    assert result is True
+    assert result.disposition is SendDisposition.ACCEPTED
     assert len(captured) == 1
 
 
 @pytest.mark.asyncio
-async def test_send_batch_prod_mode_non_2xx_returns_false(monkeypatch):
+async def test_send_batch_prod_mode_5xx_is_indeterminate(monkeypatch):
+    """A 5xx is NOT a rejection (TBD-330): a proxy can answer 502 after
+    Mailgun already enqueued the message, so we cannot assert it was not
+    accepted. See ``test_send_batch_4xx_is_rejected`` in
+    ``test_email_send_aggregate_timeout.py`` for the other side."""
     monkeypatch.setattr(email_service.settings, "mailgun_api_key", "key-123")
     monkeypatch.setattr(email_service.settings, "mailgun_domain", "mg.example.com")
     monkeypatch.setattr(email_service.settings, "mailgun_region", "us")
@@ -279,7 +284,7 @@ async def test_send_batch_prod_mode_non_2xx_returns_false(monkeypatch):
         broadcast_id=42,
     )
 
-    assert result is False
+    assert result.disposition is SendDisposition.INDETERMINATE
 
 
 @pytest.mark.asyncio
@@ -371,7 +376,10 @@ async def test_send_batch_multi_address_bad_vars_never_posts(
         broadcast_id=42,
     )
 
-    assert result is False
+    # REJECTED, not merely "not accepted": the refusal is conclusive
+    # precisely because no request was issued, so a resume SHOULD retry
+    # these rows once the vars map is fixed (TBD-330).
+    assert result.disposition is SendDisposition.REJECTED
     # The decisive assertion: no HTTP request was ever issued.
     assert captured == []
 
@@ -417,7 +425,7 @@ async def test_send_batch_single_address_allowed_without_vars(monkeypatch):
         ["alice@x.io"], "Subject", "<p>html</p>", "text", {}, broadcast_id=42
     )
 
-    assert result is True
+    assert result.disposition is SendDisposition.ACCEPTED
     assert len(captured) == 1
 
 
