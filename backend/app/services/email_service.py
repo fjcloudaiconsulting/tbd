@@ -26,6 +26,7 @@ Security stance (audited L5.6):
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import urllib.parse
@@ -36,6 +37,34 @@ import structlog
 from app.config import settings
 
 logger = structlog.get_logger()
+
+# Per-phase transport bound for the Mailgun HTTP calls below.
+MAILGUN_TIMEOUT = httpx.Timeout(10.0)
+
+# Aggregate ceiling for ONE Mailgun send. ``MAILGUN_TIMEOUT`` above is a
+# *per-phase* bound — connect / write / read / pool each get 10s, and
+# ``read`` is charged per socket read rather than per response — so a
+# server dribbling one byte just under the read budget keeps the send
+# alive with no bound at all. TBD-179 verified that shape against a real
+# drip-feed server on the Google OAuth exchange; this is the same defect
+# on a lower-severity path (a send that fails closed, not a synchronous
+# browser navigation).
+#
+# Unlike TBD-179's site there is exactly ONE awaited call per block, so
+# the floor is one per-phase read budget rather than two, and a plain
+# relative ``asyncio.timeout`` is as correct as a shared absolute
+# deadline. If a second sequential call is ever added to either block,
+# switch to ``asyncio.timeout_at`` with one deadline computed before the
+# first — two nested relative bounds would permit their sum, which is
+# the very thing this constant exists to cap.
+#
+# 20.0s is a deliberate narrowing and no value here can be shown
+# "non-narrowing": per-phase also permits a connect and a write, so e.g.
+# 3s connect + 9s read + 8s read violates no per-phase bound and still
+# trips 20s. The judgement is that a Mailgun send taking longer than 20s
+# is already failed from the caller's point of view. Do not restate this
+# constant as provably safe.
+MAILGUN_SEND_TOTAL_TIMEOUT_S = 20.0
 
 
 # ─── Brand surface constants (mirrors frontend/lib/brand.ts) ───
@@ -191,18 +220,24 @@ async def send_email(
         else "api.mailgun.net"
     )
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-            response = await client.post(
-                f"https://{api_host}/v3/{settings.mailgun_domain}/messages",
-                auth=("api", settings.mailgun_api_key),
-                data={
-                    "from": settings.email_from,
-                    "to": [to],
-                    "subject": subject,
-                    "html": body_html,
-                    **({"text": body_text} if body_text else {}),
-                },
-            )
+        async with httpx.AsyncClient(timeout=MAILGUN_TIMEOUT) as client:
+            # Only the network await sits inside the bound. The status
+            # check, the log write and the client's own aclose() stay
+            # outside it, matching TBD-179: a response arriving near the
+            # deadline must not be cancelled mid-log, which would lose
+            # the very record the incident needs.
+            async with asyncio.timeout(MAILGUN_SEND_TOTAL_TIMEOUT_S):
+                response = await client.post(
+                    f"https://{api_host}/v3/{settings.mailgun_domain}/messages",
+                    auth=("api", settings.mailgun_api_key),
+                    data={
+                        "from": settings.email_from,
+                        "to": [to],
+                        "subject": subject,
+                        "html": body_html,
+                        **({"text": body_text} if body_text else {}),
+                    },
+                )
             response.raise_for_status()
             await logger.ainfo(
                 "email_sent", to=to, subject=subject, status=response.status_code
@@ -298,20 +333,23 @@ async def send_batch(
         else "api.mailgun.net"
     )
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-            response = await client.post(
-                f"https://{api_host}/v3/{settings.mailgun_domain}/messages",
-                auth=("api", settings.mailgun_api_key),
-                data={
-                    "from": settings.email_from,
-                    "to": to_list,
-                    "subject": subject,
-                    "html": body_html,
-                    "text": body_text,
-                    "recipient-variables": json.dumps(recipient_variables),
-                    "v:broadcast_id": str(broadcast_id),
-                },
-            )
+        async with httpx.AsyncClient(timeout=MAILGUN_TIMEOUT) as client:
+            # Same bound, same placement as ``send_email`` above; see the
+            # note there for why only the network await is inside it.
+            async with asyncio.timeout(MAILGUN_SEND_TOTAL_TIMEOUT_S):
+                response = await client.post(
+                    f"https://{api_host}/v3/{settings.mailgun_domain}/messages",
+                    auth=("api", settings.mailgun_api_key),
+                    data={
+                        "from": settings.email_from,
+                        "to": to_list,
+                        "subject": subject,
+                        "html": body_html,
+                        "text": body_text,
+                        "recipient-variables": json.dumps(recipient_variables),
+                        "v:broadcast_id": str(broadcast_id),
+                    },
+                )
             response.raise_for_status()
             await logger.ainfo(
                 "broadcast_batch_sent",
