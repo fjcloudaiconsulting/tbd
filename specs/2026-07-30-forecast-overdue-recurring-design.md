@@ -324,23 +324,73 @@ Existing coverage that must stay green and unmodified: F1, F2, F3, F6, F7a, F7b,
   them.
 - **`ai_forecast_refine_service` still labels an N-month window "monthly".** Untouched; TBD-243 §5
   announced it; it needs its own design round.
-- **The collect loop's `max_iterations` is the same defect class as §12, at a far more extreme
-  fixture, and it is knowingly retained.** If a single forecast window contains more than 500
-  occurrences of one template, the projection truncates while generation — capped per *run*, and
-  making progress across runs — eventually materialises all of them, so `forecast_net` moves. The
-  difference that makes this acceptable where the fast-forward's cap was not: the fast-forward's
-  exposure was bounded by `next_due_date`, which is **user-supplied with no past-date guard** and
-  reachable by a single-digit year typo; the collect loop's exposure is bounded by the **window
-  length**, which comes from the billing-period roster (open period start derived by
-  `current_cycle_window`; closed periods created through the overlap-validated admin endpoint at
-  `settings.py:746`). It needs a single period spanning ~9.6 years of weekly, ~19 years of biweekly,
-  or ~41 years of monthly. Not fenced, deliberately: a fence would pin a limitation rather than a
-  property. If a period roster ever admits multi-year windows, delete the budget — the `nxt <= d`
-  no-progress guard is the real defence, and `forecast_plan_service.populate_from_sources` already
-  ships uncapped.
-- **`recurring_service.MAX_CATCHUP_ITERATIONS` remains an alias.** F17a pins the aliasing, not the
-  value; nothing depends on 500 in particular. The alias is a "sized by one number" claim only — see
-  §5 for what it deliberately no longer claims.
+- **~~The collect loop's `max_iterations` is knowingly retained.~~ REMOVED by TBD-286.** It was the
+  same defect class as §12 at a more extreme fixture: past 500 occurrences of one template in one
+  window the projection truncated **in silence** — no log, no marker — while generation, capped per
+  *run* but advancing its frontier every run, materialised all of them, so `forecast_net` moved with
+  no user action. It was retained on the argument that its exposure was bounded by the **window
+  length**, "which comes from the billing-period roster ... closed periods created through the
+  overlap-validated admin endpoint".
+
+  **That premise was false.** `POST /api/v1/settings/billing-period` reads `start_date` and
+  `end_date` straight out of an admin request body. `BillingPeriodCreate` validates only their
+  ORDER, and the router's second check is for OVERLAP — position, not length. **Nothing caps a
+  period's span**, and `compute_forecast` reads `period.end_date` verbatim into `window_end`. A
+  decades-long period is one accepted request, so >500 occurrences needs no corrupt data at all.
+  The removal is exactly what the retained wording pre-registered: *"If a period roster ever admits
+  multi-year windows, delete the budget."*
+
+  Fenced by **F24** (conservation across three generation ticks over a 523-occurrence window; RED at
+  `50000.00 != 52300.00` with the cap, and still RED with the constant merely raised to 522) and
+  **F25** (the unit half). Raising the constant was never the fix — it moves the boundary and keeps
+  the failure mode.
+
+  The "unbounded walk" the cap was also credited with preventing does not exist: the collect loop
+  terminates at `end`, and the genuinely widest walk the type system permits — `datetime.date.min`
+  (0001-01-01) → `datetime.date.max` (9999-12-31), wider than any `DATE` column can hold, since
+  MySQL's floor is 1000-01-01 — was MEASURED in-container at:
+
+  | frequency | occurrences | best-of-5 | `tracemalloc` peak |
+  |---|---|---|---|
+  | weekly | 521,723 | 0.18s | **21.4MB** |
+  | monthly | 119,988 | 0.24s | **4.9MB** |
+
+  ⚠ **Peak, not `getsizeof`.** An earlier revision of this residual and of the `date_utils`
+  docstring quoted **3.7MB / 0.8MB**. Those are `sys.getsizeof(out)` over the narrower 1900→9998
+  walk — the list object's **pointer array only, excluding the `datetime.date` objects it points
+  at**, which are ~4.7x larger than the pointers. Re-measured on the same narrower window the peaks
+  are **17.2MB / 3.9MB**. The smaller figure understated the cost ~4.7x, inside a paragraph whose
+  whole force is "measured rather than assumed". Do not recorrect it back down.
+
+  What *did* need closing is `advance_date` past `datetime.date.max`, which raises `OverflowError`
+  for `timedelta` frequencies and `ValueError` for `relativedelta` ones — already live on the
+  uncapped fast-forward since #599. `_next_occurrence` folds that into the same "the grid ended"
+  answer as the no-progress guard; **F26** is its fence, and kills both single-exception half-fixes.
+
+  Still open, deliberately out of TBD-286's scope (**TBD-335**): an absurd window makes
+  `account_balance_forecast_service` emit one response LINE per projected occurrence. Bounding a
+  billing period's span at its writer is the honest place for that, and the limit is a product
+  decision. Two reasons it is deferred rather than folded in: it needs `start_date` bounded too (an
+  **open** row at 2000-01-01 with a successor in 2026 yields a 26-year window by itself), and it
+  does not repair rows already stored.
+
+  ⚠ A third reason was offered and is **struck as unsound**: *"any bound tight enough to matter
+  (5 years ⇒ 261 weekly occurrences) bites below 500 and re-creates this defect at a lower
+  boundary."* It conflates a **validation rejection at the writer** with a **silent truncation at
+  the reader**. A span bound returns a 400 and the over-long window never exists — nothing
+  truncates, nothing is hidden, `forecast_net` cannot move; this defect was a reader silently
+  returning a short list for a window that does exist. Decisively: `generate_due_transactions`
+  materialises on `current_cycle_window(cycle_day, today)` (`recurring_service.py:728`), which is
+  **roster-independent**, so bounding a period's span changes nothing about what generation creates
+  and the conservation property the removed cap broke is not in play. As written it argued against
+  ever bounding anything.
+- **`recurring_service.MAX_CATCHUP_ITERATIONS` remains an alias — now a vacuous one (TBD-338).**
+  F17a pins the aliasing, not the value; nothing depends on 500 in particular. With the collect
+  loop's cap gone there is no second walk left to truncate in step with, so the aliasing buys
+  nothing and the constant is purely generation's per-run cap. Retiring it is **TBD-338**, not this
+  ticket: the cleanup is *exactly* the mutant F17a's AST guard exists to kill, so the fence has to
+  be re-aimed in the same change. F17a's docstring records which of its three claims survive; its
+  assertions are unchanged here.
 
 ## 12. Review fold — the shared iteration budget, and what a mutation audit added
 

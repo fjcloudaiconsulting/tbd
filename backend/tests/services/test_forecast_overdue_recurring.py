@@ -711,17 +711,31 @@ def _import_aliases(module) -> dict[str, str]:
 def test_f17a_catchup_cap_is_an_alias_and_the_walk_is_iterated():
     """FENCE. Three claims, all structural.
 
-    1. **The cap is an ALIAS, not a second literal.** Sizing the projection's
-       walk and generation's walk from two independent ``500``\\ s is how they
-       drift. ⚠ A VALUE comparison cannot see this — they are equal the day it
-       is written — so the equality is backed by an AST guard over
-       ``recurring_service``'s own source. There is no type checker in CI.
+    1. **The cap is an ALIAS, not a second literal.** ⚠ A VALUE comparison
+       cannot see this — the two are equal the day it is written — so the
+       equality is backed by an AST guard over ``recurring_service``'s own
+       source. There is no type checker in CI.
 
-       ⚠ **What the alias does NOT buy.** It does not make the two walks
-       truncate at the same place, and the docstrings no longer claim it does:
-       generation's cap MAKES PROGRESS (it advances ``next_due_date``), a
-       projection's cap makes none. F17b is the fence for the conservation that
-       reasoning got wrong.
+       ⚠ **This claim's ORIGINAL RATIONALE IS NOW VOID (TBD-286).** It read
+       "sizing the projection's walk and generation's walk from two independent
+       ``500``\\ s is how they drift". There is no projection walk sized by it
+       any more: TBD-286 deleted ``occurrences_in_window``'s collect-loop
+       budget, so ``date_utils.MAX_OCCURRENCE_ITERATIONS`` bounds nothing in
+       ``date_utils`` and the alias has no second walk to keep in step with.
+
+       What the assertion is RETAINED for, pending retirement: it is the
+       structural pin that stops ``MAX_CATCHUP_ITERATIONS`` being quietly
+       re-declared as its own literal while the alias is still the shipped
+       shape. **TBD-338** retires the alias — moving the literal into
+       ``recurring_service`` — and that cleanup is precisely the mutant this
+       guard kills, so the two must move together and neither may be a drive-by.
+       Until then this claim is load-bearing only against an accidental
+       re-declaration, not against drift between two walks.
+
+       ⚠ **What the alias never bought, even when the second walk existed.** It
+       did not make the two walks truncate at the same place: generation's cap
+       MAKES PROGRESS (it advances ``next_due_date``), a projection's cap made
+       none. F17b is the fence for the conservation that reasoning got wrong.
 
     2. **The occurrence grid is ITERATED, never closed-form.** ⚠ The fixture
        MUST start on the 31st: ``advance_date`` is path-dependent at month ends
@@ -1390,3 +1404,228 @@ async def test_f24_inactive_templates_are_not_projected(db_session):
     assert Decimal(after["pending_expense"]) == Decimal("7")
     assert Decimal(after["recurring_expense"]) == Decimal("0")
     assert Decimal(after["forecast_net"]) == Decimal("-7")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F24 — fence. The COLLECT loop's iteration budget was the same conservation
+#       defect as F17b's, one loop over. TBD-286.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_f24_long_window_conserves_forecast_net_over_500_occurrences(db_session):
+    """FENCE. A window holding MORE than 500 occurrences of one template must
+    project all of them, and ``forecast_net`` must not move across generation.
+
+    The collect loop kept ``max_iterations = MAX_OCCURRENCE_ITERATIONS`` after
+    PR 599 stripped the fast-forward's. The distinction offered was exposure,
+    not safety: the fast-forward's bound came from a user-supplied
+    ``next_due_date``, the collect loop's from "the billing-period roster".
+
+    **The roster is not a bound.** ``POST /api/v1/settings/billing-period``
+    reads ``start_date`` and ``end_date`` out of an admin request body;
+    ``BillingPeriodCreate`` validates only that they are in ORDER, and the
+    router's second check is for OVERLAP — position, not length. Nothing
+    anywhere caps a period's span. ``compute_forecast`` then reads
+    ``period.end_date`` verbatim into ``window_end``.
+
+    Past 500 the projection truncated in SILENCE — no log line, no marker —
+    while ``generate_due_transactions``, capped per RUN but advancing its
+    frontier every run, materialised every occurrence across successive ticks.
+    So the amount arrived in ``pending_*`` having never been in
+    ``recurring_*``: ``forecast_net`` moved with no user action, which is the
+    whole of TBD-260.
+
+    Wrong implementations killed:
+      * ``max_iterations`` on the collect loop, at ANY value below the window's
+        523 occurrences — ``before.recurring_expense`` is 50000.00 instead of
+        52300.00 and ``nets`` reads ``[-50000, -52300, -52300, -52300]``;
+      * raising the constant rather than deleting it — 501, 522, anything
+        under 523 fails identically, which is the point: the boundary moves and
+        the failure mode does not.
+
+    ⚠ **The fixture must CROSS the boundary.** At <= 500 in-window occurrences
+    the capped and uncapped implementations return the same list and the fence
+    pins nothing. 523 is asserted below, derived from the local ``weeks_back``
+    literal (522) rather than from anything the helper under test computes — so
+    the discriminating assertion is not circular. M4, which merely RAISES the
+    constant to 522, is what proves that.
+
+    ⚠ The guard reads ``recurring_service.MAX_CATCHUP_ITERATIONS``, GENERATION's
+    per-run cap, and not ``date_utils.MAX_OCCURRENCE_ITERATIONS``. They are the
+    same object today — the second aliases the first — but the constant this
+    test actually depends on is generation's: the tick-1 assertion below is
+    ``res["generated"] == MAX_CATCHUP_ITERATIONS``, and the fixture has to
+    exceed that cap for generation to truncate at all. ``MAX_OCCURRENCE_ITERATIONS``
+    no longer bounds anything in ``date_utils`` (see its comment), so reading
+    the guard off it would redden this FORECAST test for a change to
+    GENERATION's cap it has no stake in. TBD-338 retires the alias.
+
+    ⚠ **Anti-vacuity: generation's OWN cap must bite**, exactly as in F17b, or
+    tick 1 materialises everything and the intermediate state — the one the
+    truncating projection could not describe — is never visited.
+
+    ⚠ Anchored to ``today`` throughout (``reference_wall_clock_date_bomb_tests``):
+    a 10-year window written as literals drifts into the past. The weekly grid
+    also avoids ``advance_date``'s month-end path entirely, so ``p_start +
+    523 weeks`` is exact on every calendar day.
+    """
+    today = datetime.date.today()
+    weeks_back = 522                       # -> 523 in-window occurrences
+    in_window = weeks_back + 1
+    assert in_window > recurring_service.MAX_CATCHUP_ITERATIONS, (
+        "fixture must cross GENERATION's per-run cap"
+    )
+
+    p_start = today - datetime.timedelta(weeks=weeks_back)
+    # The successor is what gives the OPEN row a derived end:
+    # `period_spend_window_end` returns `successor.start - 1 day`, floored at
+    # `today` — both of which are `today` here, so the window is [p_start, today].
+    seed = await _seed(
+        db_session,
+        open_start=p_start,
+        closed_windows=((today + DAY, today + datetime.timedelta(days=30)),),
+        cycle_day=1,
+    )
+    db_session.add(_template(
+        seed, amount=Decimal("100.00"), frequency="weekly", next_due_date=p_start,
+    ))
+    await db_session.commit()
+
+    before = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+    # The window really is the long one — asserted, not assumed. Without this
+    # the fence could pass on a one-month window with a truncating loop.
+    assert before["period_start"] == p_start.isoformat()
+    assert before["period_end"] == today.isoformat()
+
+    # THE discriminating assertion. 52300, not 50000.
+    assert Decimal(before["recurring_expense"]) == Decimal(in_window) * Decimal("100")
+    assert Decimal(before["pending_expense"]) == Decimal("0")
+    nets = [Decimal(before["forecast_net"])]
+
+    for tick in range(3):
+        res = await recurring_service.generate_due_transactions(
+            db_session, seed["org_id"], today=today
+        )
+        if tick == 0:
+            # Anti-vacuity: generation truncates and leaves the frontier still
+            # inside the window, so the projection has to describe a partly
+            # materialised grid — the state the cap got wrong.
+            assert res["generated"] == recurring_service.MAX_CATCHUP_ITERATIONS
+            template = (await db_session.execute(
+                select(RecurringTransaction).where(
+                    RecurringTransaction.org_id == seed["org_id"]
+                )
+            )).scalar_one()
+            assert template.next_due_date == p_start + datetime.timedelta(
+                weeks=recurring_service.MAX_CATCHUP_ITERATIONS
+            )
+            assert template.next_due_date <= today
+        fc = await forecast_service.compute_forecast(
+            db_session, seed["org_id"], today=today
+        )
+        nets.append(Decimal(fc["forecast_net"]))
+
+    assert nets == [Decimal(in_window) * Decimal("-100")] * 4
+
+    # And the amount really did change buckets rather than sitting still.
+    final = await forecast_service.compute_forecast(
+        db_session, seed["org_id"], today=today
+    )
+    assert Decimal(final["recurring_expense"]) == Decimal("0")
+    assert Decimal(final["pending_expense"]) == Decimal(in_window) * Decimal("100")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F25 — fence. ``occurrences_in_window`` returns the WHOLE grid, at any depth.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_f25_collect_loop_returns_the_whole_grid_past_500():
+    """FENCE. The unit half of F24: no occurrence count truncates the walk.
+
+    The reference list is built by iterating ``advance_date`` here, in the
+    test, so a cap re-introduced in ``occurrences_in_window`` cannot hide
+    inside a shared helper.
+
+    Wrong implementations killed:
+      * any ``iterations >= max_iterations`` guard in the collect loop — the
+        returned list is 500 long and stops 23 occurrences short of ``end``;
+      * a budget-shaped cap re-derived from ``MAX_OCCURRENCE_ITERATIONS``.
+
+    ⚠ Both ends are asserted. A length check alone would pass a walk that
+    collected the right COUNT off the wrong grid, and the last element is the
+    one a cap removes first.
+    """
+    today = datetime.date.today()
+    weeks_back = 522
+    start = today - datetime.timedelta(weeks=weeks_back)
+
+    reference, d = [], start
+    while d <= today:
+        reference.append(d)
+        d = advance_date(d, Frequency.WEEKLY)
+    assert len(reference) == weeks_back + 1 > MAX_OCCURRENCE_ITERATIONS
+
+    got = occurrences_in_window(start, Frequency.WEEKLY, start, today)
+
+    assert got == reference
+    assert got[0] == start
+    assert got[-1] == today
+    assert len(got) == 523
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F26 — fence. The walk TERMINATES at ``datetime.date.max`` instead of raising.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_f26_walk_terminates_at_date_max_for_every_frequency():
+    """FENCE. Uncapping the collect loop must not trade a wrong number for a 500.
+
+    ``advance_date`` has no value to return past ``datetime.date.max``, and it
+    does not fail uniformly: ``timedelta`` addition raises ``OverflowError``
+    (weekly, biweekly) while ``relativedelta`` raises ``ValueError`` (monthly,
+    quarterly, yearly). Both loops must treat that as "the grid ended".
+
+    This was already live on the FAST-FORWARD, which has carried no cap since
+    PR 599 — an ``end`` in year 9999 is one accepted ``POST
+    /api/v1/settings/billing-period`` away, since that endpoint validates
+    ordering and overlap but never span.
+
+    Wrong implementations killed:
+      * no guard at all — ``OverflowError``/``ValueError`` escapes
+        ``occurrences_in_window`` and ``GET /api/v1/forecast`` 500s;
+      * ``except OverflowError`` alone — green on weekly and biweekly, red on
+        the three ``relativedelta`` frequencies, which is exactly the half-fix
+        shape;
+      * ``except ValueError`` alone — the mirror image.
+
+    ⚠ Terminating is the CORRECT answer, not a swallowed error: ``end`` can
+    never exceed ``date.max``, so no occurrence inside ``[start, end]`` is
+    dropped. The collect assertions below pin that the walk returns the real
+    grid up to the ceiling rather than an empty list.
+    """
+    ceiling = datetime.date.max                       # 9999-12-31
+
+    # COLLECT half: the walk runs into the ceiling mid-window.
+    got = occurrences_in_window(
+        datetime.date(9999, 12, 1), Frequency.WEEKLY, datetime.date(9999, 12, 1),
+        ceiling,
+    )
+    assert got == [
+        datetime.date(9999, 12, 1),
+        datetime.date(9999, 12, 8),
+        datetime.date(9999, 12, 15),
+        datetime.date(9999, 12, 22),
+        datetime.date(9999, 12, 29),
+    ]
+
+    # Every frequency, both loops, no exception.
+    for freq in Frequency:
+        collected = occurrences_in_window(
+            datetime.date(9999, 12, 30), freq, datetime.date(9999, 12, 30), ceiling
+        )
+        assert collected == [datetime.date(9999, 12, 30)], freq
+        # FAST-FORWARD half: it can never reach ``start``, so the grid is empty.
+        assert occurrences_in_window(
+            datetime.date(9999, 12, 30), freq, ceiling, ceiling
+        ) == [], freq
