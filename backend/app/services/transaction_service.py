@@ -41,6 +41,7 @@ from app.services.transaction_filters import (
     effective_period_date_expr,
     is_reciprocal_pair,
     is_reportable_transaction,
+    reportable_transaction_filter,
 )
 
 logger = structlog.get_logger()
@@ -2600,34 +2601,67 @@ def _apply_transaction_filters(
     tags: list[str] | None,
     tags_exclude: list[str] | None,
     tag_match: str,
+    category_match: str = "subtree",
+    reportable: bool = False,
 ):
     """Apply all transaction list filters to a query. Used for BOTH the page
     query and the count query so `total` is computed over the same filtered
     set (org-scoping contract; see app.services.list_query). The caller must
-    already have scoped `q` to org_id. Returns the filtered query."""
+    already have scoped `q` to org_id. Returns the filtered query.
+
+    ``category_match`` and ``reportable`` (TBD-221 PR A) both default to
+    today's behaviour. They are keyword args WITH defaults on purpose: this
+    helper is the single definition of the items/total contract and is called
+    from three sites in ``list_transactions``; a required kwarg would have to
+    be threaded through all three to say "unchanged".
+    """
     if account_id is not None:
         q = q.where(Transaction.account_id == account_id)
     if category_id is not None:
-        # Master-includes-subs semantics: the /transactions filter
-        # dropdown lists masters and subs flat, so a user picking a
-        # master expects every row in that bucket (direct hits AND
-        # rows tagged with any of the master's subcategories). Subs
-        # remain exact-match (one-directional inclusion). Regression
-        # guard for the 2026-05-13 user report that the category
-        # filter "did not filter anything".
-        sub_ids_q = (
-            select(Category.id)
-            .where(
-                Category.org_id == org_id,
-                Category.parent_id == category_id,
+        if category_match == "exact":
+            # TBD-221: the row's OWN category, which is what the
+            # /api/v1/forecast per-category rollup groups by
+            # (forecast_service.py:266-278). Opt-in only -- see the
+            # subtree branch below for why it cannot be the default.
+            q = q.where(Transaction.category_id == category_id)
+        else:
+            # Master-includes-subs semantics: the /transactions filter
+            # dropdown lists masters and subs flat, so a user picking a
+            # master expects every row in that bucket (direct hits AND
+            # rows tagged with any of the master's subcategories). Subs
+            # remain exact-match (one-directional inclusion). Regression
+            # guard for the 2026-05-13 user report that the category
+            # filter "did not filter anything".
+            #
+            # ⚠ This stays the DEFAULT. Flipping it would silently narrow
+            # every existing caller of a PAT-reachable endpoint
+            # (TBD-268 §5) and re-open the 2026-05-13 report.
+            sub_ids_q = (
+                select(Category.id)
+                .where(
+                    Category.org_id == org_id,
+                    Category.parent_id == category_id,
+                )
             )
-        )
-        q = q.where(
-            or_(
-                Transaction.category_id == category_id,
-                Transaction.category_id.in_(sub_ids_q),
+            q = q.where(
+                or_(
+                    Transaction.category_id == category_id,
+                    Transaction.category_id.in_(sub_ids_q),
+                )
             )
-        )
+    if reportable:
+        # TBD-221: the SAME clause every server aggregate uses, so a
+        # drilldown into a rollup slice cannot return rows the slice
+        # excluded. It drops transfer legs, manual balance adjustments AND
+        # reverted (skipped/rejected) reconciliation rows.
+        #
+        # ⚠ Only ``is_manual_adjustment`` is on the wire
+        # (schemas/transaction.py), so a client-side reconstruction of this
+        # can only ever be half of it -- which is precisely why the filter
+        # belongs here. Do NOT pair this with ``collapse_transfers``: this
+        # clause already excludes every non-null ``linked_transaction_id``,
+        # a strict superset.
+        q = q.where(reportable_transaction_filter())
     if tx_type is not None:
         q = q.where(Transaction.type == TransactionType(tx_type))
     if status is not None:
@@ -2725,6 +2759,9 @@ async def list_transactions(
     limit: int = 50,
     offset: int = 0,
     collapse_transfers: bool = False,
+    *,
+    category_match: str = "subtree",
+    reportable: bool = False,
 ) -> tuple[list[Transaction], int]:
     """List one page of transactions plus the total over the same filtered set.
 
@@ -2742,11 +2779,25 @@ async def list_transactions(
     the SURVIVING leg's account, which may not be where an alphabetical scan
     expects it. ``amount`` is order-neutral (both legs positive and equal by
     pair invariant 4) and ``category_name`` is shared by ``_link_pair``.
+
+    ``category_match`` and ``reportable`` (TBD-221 PR A, both opt-in) let a
+    caller reproduce the ``/api/v1/forecast`` per-category rollup's WHERE
+    clause exactly, so a drilldown into a rollup slice returns that slice and
+    not a superset of it. Both go into ``filter_kwargs``, so page, count and
+    the collapse subquery see one filtered set by construction.
+
+    They sit AFTER the ``*`` rather than in argument order next to
+    ``category_id``, because this signature already carries seventeen
+    positional-or-keyword params. Every in-repo caller passes at most ``db``
+    and ``org_id`` positionally (verified by AST scan over ``app/`` and
+    ``tests/``), so keyword-only costs nothing today and makes the
+    silent-reordering break structurally impossible for the next param.
     """
     filter_kwargs = dict(
         account_id=account_id, category_id=category_id, tx_type=tx_type,
         status=status, date_from=date_from, date_to=date_to, search=search,
         tags=tags, tags_exclude=tags_exclude, tag_match=tag_match,
+        category_match=category_match, reportable=reportable,
     )
 
     opts = _load_opts()

@@ -594,9 +594,13 @@ async def _roster_transaction_count(
     """D7's UNFILTERED count, as a two-branch ``UNION ALL``.
 
     ⚠ **Two columns, two filters, two DIFFERENT predicate shapes**, and this
-    is the un-filtered one. `list_transactions` applies no
-    `reportable_transaction_filter`, so a filtered count would not match the
-    click-through the page links to.
+    is the un-filtered one. Since TBD-221 `list_transactions` CAN apply
+    `reportable_transaction_filter` — but only when a caller opts in with
+    `reportable=true`, and the roster click-through URL this count must match
+    does not send it. So the invariant still holds, for a narrower reason:
+    it is not that the endpoint cannot filter, it is that this link does not
+    ask it to. ⚠ Adding `reportable` to the roster link would therefore make
+    a filtered count the right one, and this count wrong.
 
     With no status predicate, `ix_transactions_org_settled_date` is
     unreachable (its `status` column sits in the MIDDLE of the two useful
