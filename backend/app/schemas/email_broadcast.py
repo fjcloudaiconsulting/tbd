@@ -101,6 +101,13 @@ class RecipientResponse(BaseModel):
     email: str
     first_name: Optional[str] = None
     status: RecipientStatus
+    # Why the drain last touched this row (TBD-330). Under the tri-state
+    # send classification an INDETERMINATE batch changes no status, no
+    # counter and no UI element — it looks exactly like a clean send — so
+    # this is the only place an operator can find out that a batch's
+    # delivery is unresolved. API field only; adding a column to the
+    # recipients table is a design change needing visual sign-off.
+    error: Optional[str] = None
     delivery_status: Optional[str] = None
     delivery_updated_at: Optional[datetime] = None
     sent_at: Optional[datetime] = None

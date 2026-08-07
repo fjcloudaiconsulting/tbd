@@ -273,3 +273,78 @@ def test_non_string_signature_is_bad_signature_not_error():
             )
             == VERIFY_BAD_SIGNATURE
         )
+
+
+# ─── F6 (TBD-330): the delivery_status value set is CLOSED ──────────────
+
+
+def test_map_event_range_is_exactly_the_ranked_delivery_statuses():
+    """``map_event`` is the SOLE producer of ``delivery_status``, and its
+    range must stay exactly the ranked, non-NULL set.
+
+    ⚠ Read this before widening ``map_event``. TBD-330 made
+    ``broadcast_service._run_drain_loop``'s resume predicate turn on
+    ``delivery_status IS NULL`` — in the eligibility SELECT *and* in the
+    claim UPDATE — on the strength of one property: EVERY non-NULL value
+    means "Mailgun has already reported on this address", so the
+    "safe to re-send" set is empty and non-nullness is the whole
+    discriminator.
+
+    A new mapping is therefore not a local change. If some future event
+    ever maps to a value that does NOT imply "already reported on", the
+    resume predicate silently starts suppressing rows it should re-send,
+    and nothing else in the suite notices. Widen this assertion only after
+    re-reading that predicate.
+
+    (An ``== exact set`` assertion is a known hazard in this repo —
+    ``reference_reports_v3_networth_source.md``. It is deliberate here: the
+    point is precisely to force a re-read, not to be easy to update.)
+    """
+    events = [
+        ("delivered", None),
+        ("failed", "temporary"),
+        ("failed", "permanent"),
+        ("failed", None),
+        ("failed", "who-knows"),
+        ("complained", None),
+        # Everything Mailgun can POST that we deliberately 200-drop.
+        ("accepted", None),
+        ("opened", None),
+        ("clicked", None),
+        ("unsubscribed", None),
+        ("rejected", None),
+        ("stored", None),
+        ("some-future-event", None),
+    ]
+    produced = {mailgun_webhook.map_event(event, sev) for event, sev in events}
+
+    # ⚠ Pinned against a LITERAL frozen set, not against ``DELIVERY_RANK``.
+    #
+    # This assertion used to read
+    # ``produced - {None} == set(DELIVERY_RANK) - {None}`` — a MUTUAL-CLOSURE
+    # check between two structures that live in the same module. It reddens
+    # if you widen ``map_event`` alone, but the natural way anyone actually
+    # widens this is to touch BOTH (the precedence lattice needs the new
+    # rank, or ``_apply_delivery_status`` raises a KeyError on it). Widen
+    # both and the two sides grow together, the equality still holds, and
+    # the fence that exists to force a re-read of the resume predicate
+    # passes silently. Measured: adding a fifth value to both passed 16/16.
+    #
+    # A literal has no such degree of freedom. Changing this set is an
+    # explicit, reviewable edit — which is exactly the "force a re-read"
+    # property the docstring above promises.
+    assert produced - {None} == frozenset(
+        {
+            "delivered",
+            "bounced_permanent",
+            "bounced_temporary",
+            "complained",
+        }
+    )
+    # And the rank table must still cover exactly that range plus NULL —
+    # a value ``map_event`` can emit but ``DELIVERY_RANK`` does not rank
+    # would KeyError in ``_apply_delivery_status``'s precedence compare.
+    assert set(mailgun_webhook.DELIVERY_RANK) == produced | {None}
+    # ``None`` must remain reachable: it is the 200-drop signal, and the
+    # NULL that makes a row re-sendable.
+    assert None in produced

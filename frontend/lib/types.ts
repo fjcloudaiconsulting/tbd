@@ -982,6 +982,12 @@ export interface BroadcastRecipient {
   email: string;
   first_name: string | null;
   status: string;
+  // Why the drain last touched this row (TBD-330). Deliberately NOT
+  // rendered as a table column: an unanswered send now leaves its rows
+  // `sent` with the reason here, and surfacing that is a design change
+  // needing visual sign-off. The mirror is kept in sync so the next reader
+  // does not have to rediscover the field.
+  error: string | null;
   delivery_status: string | null;
   delivery_updated_at: string | null;
   sent_at: string | null;
