@@ -117,6 +117,27 @@ async def authenticate_pat(
         logger.info("pat.auth_rejected", reason="unknown")
         raise _generic_401()
 
+    # ⚠ THE POSITION OF THIS BIND IS THE FIX (TBD-188 §3), and nothing in
+    # the code enforces it. It sits here — immediately after the row
+    # resolves, BEFORE every validity check — because
+    # ``_record_auth_rejected`` fires at the revoked/expired branches below
+    # and ``audit_service._build_audit_event`` reads this contextvar. Folded
+    # back into the composite bind at the end of this function (where the
+    # user_id/org_id/role binds live), the one event type that is entirely
+    # *about* a token — ``api_token.auth_rejected`` — would be written with
+    # ``api_token_id IS NULL`` while ``detail`` still carried the id, so the
+    # row would *look* attributed. Moving this line down is a silent
+    # regression. The fence is ``tests/auth/test_audit_api_token_attribution
+    # .py::test_f3_auth_rejected_row_carries_the_token_in_the_column``, and
+    # its named mutant is POSITIONAL, not value-based: it moves this line
+    # down without changing ``row.id``.
+    #
+    # Safe for every path below: each one either writes an
+    # ``api_token.auth_rejected`` row (which must carry this id) or raises
+    # out of ``get_current_user`` without auditing anything. No path binds a
+    # token id and then audits a non-token action.
+    structlog.contextvars.bind_contextvars(api_token_id=row.id)
+
     # 3. Revoked / expired (naive-UTC normalized). These are KNOWN-but-dead
     # tokens (a resolved row), so — unlike unknown garbage — they also get an
     # ``api_token.auth_rejected`` audit row (spec §11): a leaked token still
@@ -180,16 +201,21 @@ async def authenticate_pat(
     # 8. Mark auth provenance for the interactive-only guard (§7) and audit
     # attribution (§8/§11): a leaked token's actions stay forensically
     # separable from the human's.
+    # ``request.state.api_token_id`` used to be stamped here too. It had zero
+    # readers, and TBD-188 gave the same fact a real channel (the contextvar
+    # bound above, read by ``audit_service``). Two channels for one fact is
+    # how a divergent reader gets written next quarter, so it is gone.
+    # ``auth_method`` stays — ``require_interactive_session`` reads it.
     request.state.auth_method = "pat"
-    request.state.api_token_id = row.id
 
     # 9. Bind the request-scoped structlog context exactly as the JWT branch
-    # does, plus the token id.
+    # does. ``api_token_id`` is NOT bound here — see the comment at the bind
+    # site above; it must be bound before the rejection branches, and binding
+    # it twice would make that position look optional.
     structlog.contextvars.bind_contextvars(
         user_id=user.id,
         org_id=user.org_id,
         role=user.role.value if hasattr(user.role, "value") else str(user.role),
-        api_token_id=row.id,
     )
 
     # Throttled last-used stamp on an independent session (swallows errors).
