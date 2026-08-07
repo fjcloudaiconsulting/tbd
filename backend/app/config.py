@@ -201,6 +201,66 @@ class Settings(BaseSettings):
     captcha_secret: str = ""
     captcha_verify_url: str = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
     captcha_verify_timeout_s: float = 5.0
+    # Aggregate ceiling for ONE siteverify call (TBD-328).
+    #
+    # ``captcha_verify_timeout_s`` above is a *per-phase* bound: httpx
+    # expands a bare float to connect / write / read / pool, and ``read``
+    # is charged per socket read rather than per response. A provider
+    # dribbling one byte just under the read budget therefore keeps the
+    # call alive with no aggregate bound at all — the shape TBD-179
+    # verified against a real drip-feed server on the Google OAuth
+    # exchange and TBD-266 closed on the Mailgun sends. This site is
+    # worse than either: the verify is inline on the synchronous, public,
+    # pre-auth ``POST /api/v1/auth/register``, so an unbounded call parks
+    # a worker per registration attempt on an unauthenticated endpoint.
+    #
+    # A *setting* rather than the module constant TBD-179 and TBD-266
+    # used, deliberately. Those constants were right there because their
+    # per-phase partner (``GOOGLE_OAUTH_TIMEOUT``, ``MAILGUN_TIMEOUT``)
+    # is a module constant too, so the pair moves together in one commit.
+    # Here the per-phase bound is already operator-tunable, and splitting
+    # one policy across an env var and a literal fails silently and
+    # fail-closed: raising ``CAPTCHA_VERIFY_TIMEOUT_S`` during a provider
+    # slowdown would make an invisible literal the binding constraint and
+    # refuse every registration, with the operator's only remediation
+    # lever as the cause. Both halves live in one mechanism instead.
+    #
+    # ⚠ Do NOT "simplify" this back to a module constant in
+    # ``app/captcha.py``. That cleanup looks like a tidy-up and is the
+    # exact regression the paragraph above describes: it re-splits one
+    # policy across an env var and a literal, and the resulting failure
+    # is silent, fail-closed, and points the operator at their own
+    # remediation lever as the cause. Argue with the reason, not with
+    # the shape. (A fence asserting the *absence* of such a constant was
+    # tried and deleted in review — it matched on the name, so a mutant
+    # that reintroduced the split under any other name sailed past it.
+    # The behavioural fences in
+    # ``tests/test_captcha_aggregate_timeout.py`` catch it properly:
+    # they monkeypatch the setting and assert the bound moves with it,
+    # so a bound reading anything else goes red regardless of naming.)
+    #
+    # Verify is ONE call, so the floor is one per-phase read budget, not
+    # two as in TBD-179's two-call exchange. 20.0 is a deliberate
+    # narrowing and no value here can be shown "non-narrowing": per-phase
+    # also permits a connect and a write, so e.g. 3s connect + 9s read +
+    # 8s read violates no per-phase bound and still trips 20s. The
+    # judgement is that a siteverify taking longer than 20s has already
+    # failed from the registering human's point of view. Do not restate
+    # this value as provably safe. Raising the per-phase bound without
+    # raising this one starts failing healthy signups closed: a public
+    # registration endpoint refusing real humans with ``captcha_failed``,
+    # which no ordinary captcha test would notice because every one of
+    # them answers instantly.
+    #
+    # That relationship — ``0 < per_phase <= total`` — is enforced by
+    # ``_validate_captcha_timeouts`` below, not by a unit test reading
+    # these defaults. Such a test existed and was deleted in review: once
+    # the validator runs at construction, a violating default makes the
+    # module-scope ``settings = Settings()`` raise, so the assertion can
+    # never be reached in a state where it would fail. The validator
+    # covers these defaults AND the env overrides a defaults-only check
+    # is blind to, which is the case that actually reaches production.
+    captcha_verify_total_timeout_s: float = 20.0
     # Optional defense-in-depth pins. Empty string disables the check (the
     # provider's domain allowlist on the widget still applies).
     captcha_expected_hostname: str = ""
@@ -427,6 +487,62 @@ class Settings(BaseSettings):
                     "defeats the decoupling. Generate a distinct secret via: "
                     "python -c 'import secrets; print(secrets.token_urlsafe(64))'"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_captcha_timeouts(self) -> "Settings":
+        # Enforce ``0 < per_phase <= total`` on the LIVE values, not on the
+        # field defaults (TBD-328 review). Both are operator-tunable env
+        # vars, and the only prior check read
+        # ``Settings.model_fields[...].default`` — blind to every override,
+        # which is the only way the pair can actually go wrong in prod.
+        #
+        # Measured before this validator existed:
+        #   CAPTCHA_VERIFY_TIMEOUT_S=30 CAPTCHA_VERIFY_TOTAL_TIMEOUT_S=0
+        #     -> accepted (per_phase=30.0 total=0.0)
+        #   CAPTCHA_VERIFY_TOTAL_TIMEOUT_S=-5
+        #     -> accepted
+        # and ``asyncio.timeout(0.0)`` / ``asyncio.timeout(-5.0)`` trip
+        # immediately, so ``verify_captcha`` returns REASON_TIMEOUT on
+        # every call. Because the gate is fail-closed on a public,
+        # pre-auth endpoint, that is 100% signup failure while the app
+        # boots clean and healthy — no crashloop, no alert, nothing in
+        # the logs but a captcha timeout the operator will read as a
+        # Cloudflare outage. A typo, or a templating bug rendering an
+        # unset var as the empty-ish "0", is enough.
+        #
+        # Boot-fatal is the right severity here and is safe for the DO
+        # PRE_DEPLOY migrate job: that job binds only APP_ENV,
+        # DATABASE_URL, JWT_SECRET_KEY and API_TOKEN_HMAC_KEY (see
+        # .do/app.yaml — there is no app-level ``envs:`` block, so no
+        # CAPTCHA_* value reaches it), and the defaults below satisfy
+        # this check. Contrast the 2026-07-21 break, where #558 made
+        # API_TOKEN_HMAC_KEY prod-required and the job HAD no binding for
+        # it. Keep it that way: giving the migrate job a CAPTCHA_* value
+        # would put it back in this validator's blast radius for no gain.
+        per_phase = self.captcha_verify_timeout_s
+        total = self.captcha_verify_total_timeout_s
+        if per_phase <= 0:
+            raise ValueError(
+                "CAPTCHA_VERIFY_TIMEOUT_S must be greater than 0. Required: "
+                "0 < CAPTCHA_VERIFY_TIMEOUT_S <= CAPTCHA_VERIFY_TOTAL_TIMEOUT_S; "
+                f"got CAPTCHA_VERIFY_TIMEOUT_S={per_phase}, "
+                f"CAPTCHA_VERIFY_TOTAL_TIMEOUT_S={total}. A non-positive "
+                "per-phase budget makes httpx fail every siteverify "
+                "immediately, and the captcha gate is fail-closed: "
+                "registration would refuse everyone."
+            )
+        if total < per_phase:
+            raise ValueError(
+                "CAPTCHA_VERIFY_TOTAL_TIMEOUT_S must be greater than or equal "
+                "to CAPTCHA_VERIFY_TIMEOUT_S. Required: "
+                "0 < CAPTCHA_VERIFY_TIMEOUT_S <= CAPTCHA_VERIFY_TOTAL_TIMEOUT_S; "
+                f"got CAPTCHA_VERIFY_TIMEOUT_S={per_phase}, "
+                f"CAPTCHA_VERIFY_TOTAL_TIMEOUT_S={total}. The aggregate is a "
+                "ceiling over the whole call; setting it below one per-phase "
+                "budget makes the narrower bound invisible and fails healthy "
+                "signups closed."
+            )
         return self
 
     @property
