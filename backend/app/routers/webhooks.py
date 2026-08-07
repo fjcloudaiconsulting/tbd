@@ -79,6 +79,22 @@ async def _apply_delivery_status(
     on user-delete, so it is the correct key). No matching row ⇒ breadcrumb
     + drop. The new status is written ONLY when its rank strictly exceeds the
     current row's rank; equal / lower rank is a no-op (idempotent).
+
+    ─── Column-ownership invariant (TBD-330 §4) ───
+    This function writes ``delivery_status`` / ``delivery_updated_at`` and
+    NOTHING else. ``status`` / ``attempts`` / ``sent_at`` / ``error`` belong
+    to the send drain (``broadcast_service._run_drain_loop``, which carries
+    the same note). The disjoint column sets are what make the two writers
+    race-free without locking against each other, and the drain relies on
+    that: it reads ``delivery_status IS NULL`` to decide what may be
+    re-sent.
+
+    So do NOT "reconcile" a ``status='failed'`` row here just because a
+    delivery event arrived for it. That state is near-impossible by
+    construction (a rejected batch was never queued, so no webhook can fire
+    for it), the production population is zero, and writing ``status`` from
+    here would add a third writer to a column with exactly one, putting an
+    N-row UPDATE into contention with the ``SELECT ... FOR UPDATE`` below.
     """
     async with session_factory() as db:
         rows = (

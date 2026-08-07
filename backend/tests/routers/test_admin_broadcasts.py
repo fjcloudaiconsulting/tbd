@@ -58,6 +58,7 @@ from app.routers import admin_broadcasts as admin_broadcasts_module
 from app.routers.admin_broadcasts import router as admin_broadcasts_router
 from app.security import hash_password
 from app.services import broadcast_service
+from app.services.email_service import BatchSendResult, SendDisposition
 from tests.factories import make_test_app
 
 
@@ -118,11 +119,15 @@ def _clean_registries():
 def _mock_send_email(monkeypatch):
     """Mock the two send paths: the router's dry-run ``send_email`` (single
     recipient = the calling superadmin) and the drain engine's ``send_batch``
-    (Mailgun batch sending, 2026-07-19 revision). Returns both mocks with
-    ``return_value=True``; ``drain`` is the ``send_batch`` mock (one call per
-    batch, NOT per recipient)."""
+    (Mailgun batch sending, 2026-07-19 revision). Returns both mocks;
+    ``drain`` is the ``send_batch`` mock (one call per batch, NOT per
+    recipient), and it returns a typed ``BatchSendResult`` — ``send_batch``
+    stopped returning a bool in TBD-330. ``send_email`` still returns a
+    bool; only the batch path carries the tri-state."""
     dry_run_mock = AsyncMock(return_value=True)
-    drain_mock = AsyncMock(return_value=True)
+    drain_mock = AsyncMock(
+        return_value=BatchSendResult(SendDisposition.ACCEPTED)
+    )
     monkeypatch.setattr(admin_broadcasts_module, "send_email", dry_run_mock)
     monkeypatch.setattr(broadcast_service, "send_batch", drain_mock)
     return {"dry_run": dry_run_mock, "drain": drain_mock}
@@ -570,10 +575,26 @@ async def test_audit_events_carry_no_recipient_email(session_factory):
 # ── delivery counts + recipients endpoint (Task 5, W9) ───────────────────
 
 
+# The reason string an INDETERMINATE batch leaves behind. Kept as a module
+# constant so the fence can assert the endpoint round-trips the VALUE, not
+# merely the presence of a key.
+_INDETERMINATE_REASON = (
+    "no answer from Mailgun within the 20.0s aggregate send deadline; the "
+    "batch may or may not have been accepted, so these rows are NOT re-sent"
+)
+
+
 async def _seed_broadcast_with_mixed_delivery_status(factory) -> int:
     """Seed one broadcast + 6 recipient rows directly (no real send), with
     mixed ``delivery_status``: two delivered, one bounced_permanent, one
-    bounced_temporary, one complained, one NULL (no webhook event yet)."""
+    bounced_temporary, one complained, one NULL (no webhook event yet).
+
+    Row 1 also carries a non-NULL ``error`` (TBD-330): the INDETERMINATE
+    shape — ``status='sent'`` with a reason recorded — which is the state
+    the ``error`` field exists to make visible. The other five leave it
+    NULL, so the endpoint has to serialise BOTH polarities and a fence
+    cannot pass by finding the key populated everywhere.
+    """
     async with factory() as db:
         broadcast = EmailBroadcast(
             subject="Delivery status test",
@@ -601,6 +622,7 @@ async def _seed_broadcast_with_mixed_delivery_status(factory) -> int:
                     first_name=f"Recip{i}",
                     status=RecipientStatus.SENT,
                     delivery_status=delivery_status,
+                    error=(_INDETERMINATE_REASON if i == 1 else None),
                     delivery_updated_at=(
                         None if delivery_status is None else datetime(2026, 7, 20)
                     ),
@@ -668,6 +690,31 @@ async def test_recipients_endpoint_returns_rows_with_delivery_status(session_fac
     assert by_email["recip3@customer.io"]["delivery_status"] == "bounced_temporary"
     assert by_email["recip4@customer.io"]["delivery_status"] == "complained"
     assert by_email["recip5@customer.io"]["delivery_status"] is None
+
+    # ── TBD-330: ``error`` must actually reach the wire ──────────────
+    #
+    # This is the ONLY channel through which an operator ever learns a
+    # batch's delivery is unresolved: an INDETERMINATE send changes no
+    # status, no counter and no UI element, so without this field on the
+    # response there is nothing to look at. Deleting
+    # ``RecipientResponse.error`` used to pass this whole module.
+    #
+    # Both polarities, and the VALUE not just the key — a schema that
+    # declared the field but dropped the ORM attribute would serialise
+    # ``None`` everywhere and satisfy a presence-only check.
+    assert by_email["recip1@customer.io"]["error"] == _INDETERMINATE_REASON
+    for email in (
+        "recip0@customer.io",
+        "recip2@customer.io",
+        "recip3@customer.io",
+        "recip4@customer.io",
+        "recip5@customer.io",
+    ):
+        assert "error" in by_email[email], (
+            "the API must always serialise the key, never omit it — the "
+            "frontend mirror types it as required, not optional"
+        )
+        assert by_email[email]["error"] is None
 
 
 # ── CAS-before-materialize + dry-run draft guard (R2, Task 1 Minors) ─────
