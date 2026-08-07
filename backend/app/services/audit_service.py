@@ -40,6 +40,11 @@ logger = structlog.stdlib.get_logger()
 # Closed whitelist of sortable columns for the admin audit list. Keys are
 # the public sort tokens the frontend sends; values are the column to
 # order by. Anything not here is a 400 (see ``list_query.resolve_order_by``).
+#
+# ``api_token_id`` is deliberately ABSENT (TBD-188 §5): you filter by a
+# token id, you never order by one. ``_SORTABLE``'s keys are the frontend's
+# sort tokens, so an entry with no ``SortableHeader`` behind it is dead
+# surface on a closed whitelist. Adding it must be a deliberate act.
 _SORTABLE = {
     "created_at": AuditEvent.created_at,
     "event_type": AuditEvent.event_type,
@@ -47,6 +52,25 @@ _SORTABLE = {
     "actor_email": AuditEvent.actor_email,
     "target_org_name": AuditEvent.target_org_name,
 }
+
+
+def _acting_api_token_id() -> Optional[int]:
+    """The API token presented as the credential for the current request.
+
+    Read from the request-scoped structlog contextvars, bound exactly once
+    in ``app.auth.pat.authenticate_pat``. This is an *ambient* read on
+    purpose (TBD-188 §2): threading a kwarg through the 108 audit call
+    sites has a silent failure mode — a forgotten site is permanently NULL
+    with CI green, and a call site added next quarter is NULL by default.
+    Reading here inverts that: a new audit call site is correct by
+    construction.
+
+    ``None`` for every non-PAT request (interactive JWT, pre-auth /
+    anonymous, and scheduler tasks whose lifespan-spawned context snapshot
+    is empty). ``RequestContextMiddleware`` is pure-ASGI and calls
+    ``clear_contextvars()`` per request, so nothing bleeds across requests.
+    """
+    return structlog.contextvars.get_contextvars().get("api_token_id")
 
 
 def _build_audit_event(
@@ -71,6 +95,10 @@ def _build_audit_event(
         ip_address=ip_address,
         outcome=AuditOutcome(outcome),
         detail=detail,
+        # NOT a parameter — resolved from the request context so all 108
+        # call sites are covered without call-site churn. See
+        # ``_acting_api_token_id``.
+        api_token_id=_acting_api_token_id(),
     )
 
 
@@ -191,6 +219,7 @@ async def list_audit_events(
     *,
     actor_user_id: Optional[int] = None,
     target_org_id: Optional[int] = None,
+    api_token_id: Optional[int] = None,
     event_type: Optional[str] = None,
     outcome: Optional[str] = None,
     from_dt: Optional[datetime] = None,
@@ -213,6 +242,12 @@ async def list_audit_events(
         where.append(AuditEvent.actor_user_id == actor_user_id)
     if target_org_id is not None:
         where.append(AuditEvent.target_org_id == target_org_id)
+    if api_token_id is not None:
+        # "Everything this token did" — the query ix_audit_events_api_token_id
+        # exists for. Matches the ACTING credential only; a row that merely
+        # names the token in ``detail`` (api_token.created / .revoked) is
+        # correctly excluded.
+        where.append(AuditEvent.api_token_id == api_token_id)
     if event_type:
         where.append(AuditEvent.event_type == event_type)
     if outcome:

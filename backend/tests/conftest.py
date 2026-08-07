@@ -324,6 +324,34 @@ class _SharedFakeRedis:
 
 
 @pytest.fixture(autouse=True)
+def _autouse_clear_structlog_contextvars():
+    """Give every test an empty structlog context, before AND after.
+
+    In production ``RequestContextMiddleware`` (pure ASGI) calls
+    ``clear_contextvars()`` at the top of every HTTP request, so nothing
+    bleeds between requests. Test apps built as a bare ``FastAPI()`` do not
+    mount that middleware, and a handful of sync tests bind on the main
+    thread directly (``test_log_field_propagation.py``,
+    ``test_request_context.py``) and clear only by convention.
+
+    That mattered little while contextvars were log decoration. Since
+    TBD-188 ``audit_service._build_audit_event`` READS ``api_token_id`` from
+    this context, so a leftover bind from an earlier test could stamp a real
+    token id onto an unrelated test's audit row. This fixture makes the empty
+    starting context a property of the harness rather than of test ordering.
+
+    Deliberately a fixture and NOT a test: asserting on cross-test contextvar
+    hygiene requires a specific execution order, and an order-dependent test
+    is worse than the defect it guards against.
+    """
+    import structlog
+
+    structlog.contextvars.clear_contextvars()
+    yield
+    structlog.contextvars.clear_contextvars()
+
+
+@pytest.fixture(autouse=True)
 def _autouse_fake_redis(monkeypatch):
     """Install a fresh in-process fake Redis for every test.
 

@@ -16,6 +16,12 @@ class AuditEventResponse(BaseModel):
     actor_email: str
     target_org_id: Optional[int]
     target_org_name: Optional[str]
+    # The API token presented as the credential for the request that
+    # produced this row (TBD-188). NULL for interactive JWT sessions,
+    # pre-auth/anonymous routes and scheduler tasks. Actor, never subject:
+    # api_token.created / .revoked rows keep this NULL and carry the
+    # subject token in ``detail``.
+    api_token_id: Optional[int]
     request_id: Optional[str]
     ip_address: Optional[str]
     outcome: Literal["success", "failure"]

@@ -26,6 +26,56 @@ Two design choices worth restating in code:
    thing to display in the UI after the org is gone. Same trick for
    ``actor_user_id`` / ``actor_email``.
 
+3. **``api_token_id`` is the ACTOR credential, never the subject**
+   (TBD-188). It means: *the API token presented as the credential
+   for the request that produced this row.* On ``outcome="success"``
+   rows it additionally validated; on ``api_token.auth_rejected``
+   rows it was presented and rejected. It is resolved from the
+   request-scoped structlog contextvar inside
+   ``audit_service._build_audit_event`` — never passed by a caller —
+   so a new audit call site is attributed by construction.
+
+   ⚠ ``api_token.created`` / ``api_token.revoked`` rows MUST keep
+   this column NULL. Those routes are ``require_interactive_session``
+   so the *actor* is a JWT session; the token they name is the
+   *subject* and stays in ``detail["api_token_id"]``. Copying the
+   subject into this column (the obvious-looking "fix") permanently
+   merges two different facts into one field and makes "everything
+   token 42 did" return the row where a human revoked token 42.
+
+   **Where NULL comes from.** No API token was resolved as the
+   credential: an interactive JWT session, a pre-auth or anonymous
+   route, or a scheduler task (whose lifespan-spawned context
+   snapshot is empty). Plus one documented gap — a ``pat_`` bearer
+   presented to an OPTIONAL-auth route is silently anonymous:
+   ``deps.get_current_user_optional`` decodes the credential as a
+   JWT and has no ``pat_`` branch, so ``authenticate_pat`` never
+   runs and nothing binds. That row is NULL even though a token
+   *was* presented as the credential, which is literally what this
+   column says it means. Harmless today — the only optional-auth
+   route is ``GET /api/v1/auth/status``, which writes no audit rows
+   — and real the moment an optional-auth route starts auditing.
+
+   ⚠ **``api_tokens`` rows are never hard-deleted, and this column's
+   ``ON DELETE SET NULL`` is only free because of that.** The
+   cheapness argument holds for ``audit_service.record_audit_event``,
+   which writes on an independent session and swallows (worst case:
+   one lost audit row). It does NOT hold for
+   ``audit_service.add_audit_event_to_session``, which stages the row
+   on the CALLER's session and deliberately does not swallow, so an
+   FK violation surfaces at the business commit. Of its eleven call
+   sites, nine are PAT-reachable (``routers/categories.py`` ×4,
+   ``services/category_service.py`` ×4, and
+   ``services/transaction_service.py::adjust_account_balance``); the
+   other two — ``routers/orgs.py`` rename and ``routers/admin_orgs.py``
+   delete — sit under ``require_interactive_session`` and can never be
+   PAT-authed. If a token row were hard-deleted while one of those
+   nine were in flight, the staged audit row's FK would violate and
+   roll back the *user's business write* with a 500 — not merely lose
+   an audit row. Revocation is a ``revoked_at`` stamp precisely so
+   this is unreachable; anything that introduces a real ``DELETE`` on
+   ``api_tokens`` must revisit this FK first.
+
 L4.4 admin-slices event-type taxonomy (seeded 2026-05-22, spec
 ``specs/2026-05-22-l4-4-admin-slices.md`` §8). These strings are
 the durable contract every L4.4 router commits to emit; the
@@ -128,6 +178,17 @@ class AuditEvent(Base):
     # Snapshot — same rationale as actor_email.
     target_org_name: Mapped[Optional[str]] = mapped_column(
         String(200), nullable=True
+    )
+    # The API token PRESENTED AS THE CREDENTIAL for this request (TBD-188).
+    # See design note 3 in the module docstring — actor, never subject.
+    # BigInteger mirrors ``api_tokens.id``; MySQL rejects an FK whose
+    # referencing column type differs from the referenced PK, so a plain
+    # ``Integer`` here would pass SQLite CI and fail at ALTER TABLE on prod.
+    api_token_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("api_tokens.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     request_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
