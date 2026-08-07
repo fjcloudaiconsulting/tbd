@@ -18,6 +18,7 @@ token itself is single-use at Cloudflare's end (returns
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -89,14 +90,72 @@ async def verify_captcha(token: str | None, remote_ip: str | None) -> CaptchaVer
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(app_settings.captcha_verify_timeout_s)
         ) as client:
-            response = await client.post(
-                app_settings.captcha_verify_url,
-                data=payload,
-            )
-    except httpx.TimeoutException:
+            # Only the network await sits inside the aggregate bound. The
+            # status check, the .json() parse, the logging and the
+            # client's own aclose() stay outside it, matching TBD-179 and
+            # TBD-266: a response arriving near the deadline must not be
+            # cancelled mid-log, which would lose the very record the
+            # incident needs. There is exactly ONE awaited call here, so
+            # a relative ``asyncio.timeout`` is as correct as a shared
+            # absolute deadline; if a second sequential call is ever
+            # added, switch to ``asyncio.timeout_at`` with one deadline
+            # computed before the first — two nested relative bounds
+            # would permit their sum, the very thing this caps.
+            async with asyncio.timeout(app_settings.captcha_verify_total_timeout_s):
+                response = await client.post(
+                    app_settings.captcha_verify_url,
+                    data=payload,
+                )
+    except (httpx.TimeoutException, TimeoutError) as exc:
+        # ``TimeoutError`` shares this clause rather than getting its own
+        # (TBD-328). ``asyncio.timeout`` raises a BARE builtin
+        # ``TimeoutError`` — an ``OSError`` subclass deriving from
+        # NEITHER ``httpx.TimeoutException`` nor ``httpx.HTTPError``, so
+        # without this name it would escape ``verify_captcha`` entirely.
+        # This function's contract is "never raises" and the register
+        # handler leans on it: ``routers/auth.py`` calls it with no
+        # ``try`` and ``main.py`` registers no generic ``Exception``
+        # handler, so an escape is an unhandled 500 on a public, pre-auth
+        # endpoint — exactly the failure TBD-179 existed to fix.
+        #
+        # Note this is the opposite of TBD-266's split at
+        # ``email_send_timeout``: that site already had a surrounding
+        # ``except Exception`` whose ``error=str(exc)`` would have logged
+        # "" for a bare ``TimeoutError``, so it needed its OWN clause to
+        # stay alertable. Here the clause it lands in is already a
+        # dedicated, well-named timeout handler, so sharing it keeps the
+        # reason code and event name stable for the call site and every
+        # log consumer. Cannot steal httpx's per-phase timeouts either
+        # way: none of httpx's timeout classes derive from the builtin.
+        #
+        # ``total_timeout_s`` is additive and load-bearing: an aggregate
+        # trip logging only ``timeout_s`` would assert the per-phase
+        # bound fired, an active falsehood in the one line the incident
+        # reads.
+        #
+        # ``bound`` is what the event name can no longer carry. Sharing
+        # one clause keeps ``captcha.verify.timeout`` stable for existing
+        # consumers (the reason TBD-179 and TBD-266 could each give the
+        # aggregate its own event and this site cannot), but it also
+        # makes the two trips indistinguishable in the log — and they
+        # want DIFFERENT Cloudflare remediations. ``per_phase`` means one
+        # phase stalled: a connect that never completed, a socket read
+        # that never returned. ``aggregate`` means every individual phase
+        # stayed inside its budget while the call as a whole did not —
+        # the drip feed, which no per-phase bound can ever catch. An
+        # incident that cannot tell those apart chases the wrong one.
+        #
+        # The test is exact, not a heuristic: the two hierarchies are
+        # disjoint (verified against httpx 0.28.1 — no httpx timeout
+        # class derives from the builtin, and the builtin derives from
+        # ``OSError``, not from ``httpx.HTTPError``), so every exception
+        # reaching this clause matches exactly one arm.
+        bound = "per_phase" if isinstance(exc, httpx.TimeoutException) else "aggregate"
         await logger.awarning(
             "captcha.verify.timeout",
+            bound=bound,
             timeout_s=app_settings.captcha_verify_timeout_s,
+            total_timeout_s=app_settings.captcha_verify_total_timeout_s,
         )
         return CaptchaVerifyResult(ok=False, reason=REASON_TIMEOUT)
     except httpx.HTTPError as exc:
