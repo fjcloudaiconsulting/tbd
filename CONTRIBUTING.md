@@ -265,9 +265,48 @@ All limits are per client IP via slowapi. Production and Docker Compose use Redi
 
 ### Public endpoints (no auth required)
 
-`/health`, `/ready`, `/api/v1/auth/status`, `/api/v1/auth/check-username`, `/api/v1/auth/login`, `/api/v1/auth/register`, `/api/v1/auth/refresh`, `/api/v1/auth/forgot-password`, `/api/v1/auth/reset-password`, `/api/v1/auth/verify-email`, `/api/v1/auth/resend-verification-public`, `/api/v1/auth/google`, `/api/v1/auth/google/callback`, the `/api/v1/auth/mfa/*` challenge endpoints, `/api/v1/public/founder-count`, `/api/v1/security/csp-report`, and `/api/v1/webhooks/mailgun` (signature-verified, not open).
+Exactly **25** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 10 are genuinely **open**, and 15 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "25 public routes" is not 25 unauthenticated ones.
 
-This list is the authoritative one, and it is deliberately small and closed. Do not add to it without a security review.
+**Open — no identity check at all (10)**
+
+| Route | Why it cannot carry auth |
+| --- | --- |
+| `GET /health` | Platform liveness probe. |
+| `GET /ready` | Platform readiness probe. |
+| `GET /api/v1/auth/status` | Serves feature flags to anonymous and authenticated callers alike. Uses `get_current_user_optional`, which returns `None` rather than raising. |
+| `GET /api/v1/auth/check-username` | Signup-time availability probe; runs before any account exists. |
+| `POST /api/v1/auth/register` | Account creation. Nothing to authenticate yet. |
+| `POST /api/v1/auth/forgot-password` | Password reset request. Answers uniformly whether or not the address exists, so it leaks no account inventory. |
+| `POST /api/v1/auth/resend-verification-public` | Targets an unverified account, which cannot hold a usable session. The non-`-public` sibling `POST /api/v1/auth/resend-verification` **is** authenticated. |
+| `GET /api/v1/auth/google` | Starts the Google OAuth redirect; the caller is anonymous at this point by construction. |
+| `GET /api/v1/public/founder-count` | Single aggregate integer rendered on the signup surface, before any account exists. |
+| `POST /api/v1/security/csp-report` | Browsers post CSP violation reports with no auth context and no way to attach a bearer token. Always answers 204. |
+
+**Credential-bearing — authenticated, but no bearer token by construction (15)**
+
+| Route | Credential, and why not a bearer token |
+| --- | --- |
+| `POST /api/v1/auth/login` | Verifies username + password. The credential *is* the request body; there is no prior session. |
+| `POST /api/v1/auth/refresh` | The httpOnly refresh cookie. An expired access token is precisely what the caller does not have. |
+| `POST /api/v1/auth/verify` | The httpOnly refresh cookie. Next.js RSC renders hold the cookie and have no `Authorization` header by construction. Shares the whole validation chain with `/auth/refresh` via `_validate_refresh_cookie` so the two cannot drift, and never emits `Set-Cookie`. |
+| `POST /api/v1/auth/logout` | Must succeed once the access token has expired, or a user cannot log out of a stale session. The refresh cookie's HMAC signature is verified before any session family is revoked, so an anonymous caller cannot revoke a session they do not hold; with no cookie it is a no-op cookie clear. |
+| `POST /api/v1/auth/reset-password` | The single-use reset JWT. A caller who could already authenticate would not need this route. |
+| `POST /api/v1/auth/verify-email` | The emailed verification JWT. The account is not yet usable for login. |
+| `POST /api/v1/auth/mfa/verify` | Short-lived `mfa_token` from the first login leg. |
+| `POST /api/v1/auth/mfa/recovery` | Short-lived `mfa_token` from the first login leg. |
+| `POST /api/v1/auth/mfa/email-code` | Short-lived `mfa_token` from the first login leg. |
+| `POST /api/v1/auth/mfa/email-verify` | Short-lived `mfa_token` from the first login leg. |
+| `GET /api/v1/auth/google/callback` | Browser redirect from Google carrying `code` + `state`. A top-level navigation has no `Authorization` header; identity is bound by the state cookie and the provider's verified email. |
+| `GET /api/v1/auth/sso-stepup/callback` | Browser redirect from Google. Identity is bound by the httpOnly `oauth_state` cookie issued at `/sso-stepup/initiate`, which *does* require authentication, and re-checked against the Google account's verified email; the return target is an allowlisted key, never a caller-supplied URL. |
+| `GET /api/v1/orgs/invitations/preview` | The invitee has no account yet, so there is no credential to present. Gated by a signed, 7-day, email-bound invitation JWT; every failure mode returns one uniform `410` so the response cannot distinguish "not yours" from "does not exist". |
+| `POST /api/v1/orgs/invitations/accept` | Creates the account, so it necessarily runs before the caller has one. The signed invitation JWT is the credential: `org_id` and `role` are read from the locked DB row and never from the request body, the role can never be OWNER, and the token is consumed single-use under `SELECT ... FOR UPDATE`. |
+| `POST /api/v1/webhooks/mailgun` | HMAC signature-verified against the signing key on every call. Not open, just not bearer-authenticated. |
+
+The four MFA routes above are the **pre-auth challenge** legs only. `mfa/setup`, `mfa/enable`, `mfa/disable` and `mfa/recovery-codes` are authenticated *and* interactive-session-gated — never write this set as an `mfa/*` glob, or it blesses the whole account-takeover surface.
+
+This list is the authoritative one, and it is deliberately small and closed. Do not add to it without a security review. It is enforced automatically by `backend/tests/auth/test_public_route_allowlist.py`, which enumerates the real `app.main:app` and fails in both directions — a route that loses `Depends(get_current_user)` and a stale entry that no longer applies. Adding a route here without adding it to that test's `PUBLIC_ROUTES` literal (or the reverse) is a red build.
+
+The table documents **reachability**, not a claim that every listed route is fully hardened. Known rate-limit gaps on `/auth/logout` and `/auth/sso-stepup/callback` are tracked in TBD-353.
 
 All other endpoints require a Bearer access token via the `get_current_user` dependency.
 
