@@ -233,6 +233,9 @@ services:
       - key: CAPTCHA_VERIFY_TIMEOUT_S
         scope: RUN_AND_BUILD_TIME
         value: "5"
+      - key: CAPTCHA_VERIFY_TOTAL_TIMEOUT_S
+        scope: RUN_AND_BUILD_TIME
+        value: "20"
       - key: CAPTCHA_EXPECTED_HOSTNAME
         scope: RUN_AND_BUILD_TIME
         value: "app.thebetterdecision.com"
