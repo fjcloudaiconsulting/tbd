@@ -34,6 +34,9 @@ router = APIRouter(prefix="/api/v1/admin/audit", tags=["admin-audit"])
 async def list_audit_events(
     actor_user_id: int | None = Query(default=None, ge=1),
     target_org_id: int | None = Query(default=None, ge=1),
+    # Filters on the ACTING credential (TBD-188). ``ge=1`` mirrors
+    # actor_user_id: ids are 1-based, so 0 is a client bug, not "unfiltered".
+    api_token_id: int | None = Query(default=None, ge=1),
     event_type: str | None = Query(default=None, max_length=80),
     # Typed Literal so a typo (?outcome=failuer) returns 422 from
     # FastAPI's request validation rather than silently dropping the
@@ -52,6 +55,7 @@ async def list_audit_events(
             db,
             actor_user_id=actor_user_id,
             target_org_id=target_org_id,
+            api_token_id=api_token_id,
             event_type=event_type,
             outcome=outcome,
             from_dt=from_dt,
