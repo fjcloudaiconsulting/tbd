@@ -410,6 +410,17 @@ class Settings(BaseSettings):
     # row on every request. Mirrors ``last_active_stamp_throttle_seconds``.
     api_token_last_used_throttle_seconds: int = 300
 
+    # ── Org data export (TBD-222) ──────────────────────────────────────
+    # ``export_max_rows``: pre-flight COUNT(*) ceiling across included
+    # tables. Above it the CLI refuses and points at the privacy@ channel.
+    # ⚠ ``export_max_bytes``: a row count does NOT bound bytes —
+    # ``transactions.description`` is free text and several columns are
+    # unbounded JSON. Checked incrementally against cumulative encoded
+    # output and aborted the moment it is crossed. Bytes is what kills a
+    # 512 MB single-instance box, so bytes is what to count.
+    export_max_rows: int = 2_000_000
+    export_max_bytes: int = 1_073_741_824  # 1 GiB
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:
