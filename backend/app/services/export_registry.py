@@ -215,7 +215,23 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
         # ``scope_predicate``. Nothing is lost for the org's own members:
         # ``actor_user_id`` IS exported and joins to the exported ``users``
         # rows, which carry ``email``.
-        redact=frozenset({"ip_address", "detail", "actor_email"}),
+        #
+        # ⚠ api_token_id (added by TBD-188, PR #635) is dropped for the SAME
+        # reason as ``actor_email`` — NOT because a token id is secret. It is
+        # not: ``models/api_token.py`` states ``token_hash`` is the stored
+        # credential and ``token_prefix`` is "a short, non-secret slice".
+        # PATs are superadmin-only platform credentials, and ``api_tokens`` is
+        # EXCLUDED from this export as "superadmin-only platform credential
+        # with no org_id". So an ``api_token_id`` on an audit row identifies
+        # WHICH OPERATOR TOKEN acted on this tenant, and points into a table
+        # the subject cannot see. Contrast ``actor_user_id``, which IS
+        # exported precisely because it joins to the exported ``users`` rows.
+        #
+        # This column arrived from ``main`` after this branch was cut. The
+        # column-drift fence caught it in CI and forced an explicit decision
+        # rather than letting a new secret-named column export silently —
+        # which is exactly what that fence exists to do.
+        redact=frozenset({"ip_address", "detail", "actor_email", "api_token_id"}),
     ),
     "billing_periods": Include(OrgColumn(), "the subject's billing periods"),
     "budgets": Include(OrgColumn(), "the subject's budgets"),
