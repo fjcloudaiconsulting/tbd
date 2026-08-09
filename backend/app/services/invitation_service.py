@@ -354,8 +354,26 @@ async def accept_invitation(
         # would silently reopen that bootstrap to the next signup.
         existing.is_superadmin = False
         existing.password_hash = hash_password(password)
-        existing.password_changed_at = now
-        existing.sessions_invalidated_at = now
+        # Whole-second session cutoff. The router mints an access token and
+        # a refresh session immediately after this returns, and both stamp
+        # "iat": int(now.timestamp()) — floored to a whole second. Every
+        # validator (deps.get_current_user, deps.get_current_user_optional,
+        # auth./refresh) compares `token_issued_at < token_cutoff(user)`
+        # with a strict `<`, and token_cutoff is max(password_changed_at,
+        # sessions_invalidated_at). A microsecond-bearing cutoff therefore
+        # rejects the very credentials this request just issued.
+        #
+        # BOTH columns must be floored: max() means flooring only one lets
+        # the other supply the identical sub-second cutoff.
+        #
+        # Floored at the WRITE site, not inside token_cutoff: these are
+        # fsp-0 MySQL DATETIME columns and MySQL 8.0's default sql_mode
+        # ROUNDS fractional seconds on insert (measured on 8.0.46 — .5+
+        # rounds up to the next second). Truncating on read cannot undo a
+        # value that was already rounded UP past the token's iat.
+        cutoff = now.replace(microsecond=0)
+        existing.password_changed_at = cutoff
+        existing.sessions_invalidated_at = cutoff
         existing.email_verified = True
         inv.accepted_at = now
         inv.open_email = None
