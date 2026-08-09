@@ -8,7 +8,7 @@ from app._time import utcnow_naive
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -456,21 +456,34 @@ async def test_accept_reactivates_existing_soft_deleted_user(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_fence_reactivation_clears_superadmin_flag(session_factory):
-    """FENCE (TBD-351). Kills the wrong implementation "reactivation leaves
-    ``is_superadmin`` untouched".
+async def test_fence_reactivation_of_superadmin_is_refused(session_factory):
+    """FENCE (TBD-351). Kills BOTH wrong implementations of this branch:
 
-    A deprovisioned superadmin who is later re-invited as a plain member
-    must come back as a plain member. ``has_permission`` short-circuits on
-    ``is_superadmin`` BEFORE consulting the role, so a retained flag beats
-    the "member" role the invitation grants.
+      (a) reactivating a deprovisioned superadmin with the flag intact —
+          ``has_permission`` short-circuits on ``is_superadmin`` BEFORE it
+          consults the role, so the retained flag would beat the "member"
+          the invitation granted;
+      (b) *clearing* the flag here — which closes (a) and opens something
+          worse. ``count(is_superadmin) >= 1`` is an inductive invariant on
+          ``main``: the only three write sites are constructions
+          (``auth.py:367``, ``auth.py:3397``, ``invitation_service.py:378``)
+          and nothing ever sets an existing row's flag to False. A clear on
+          this branch would be the first decrement primitive in the
+          codebase, reachable from an UNAUTHENTICATED public route. Once
+          the count hits 0 the register + Google bootstraps
+          (``auth.py:350-353``, ``auth.py:3377-3380``) re-arm — they count
+          the flag with NO ``is_active`` filter — and the Google callback
+          mints a superadmin, verifies the email and issues a session in
+          one uncaptcha'd redirect.
+
+    The escalation assertion at the end is what pins (b) specifically: the
+    platform superadmin count must be unchanged. Asserting only "refused"
+    would go green against a clear that also happened to raise.
 
     The seed deliberately sets ``is_superadmin=True`` before the soft
     delete — without that this fence passes vacuously against a user that
     never held the flag.
     """
-    from app.auth.permissions import has_permission
-
     org_id, owner_id = await _seed_org_with_owner(session_factory)
     existing_id = await _add_user(
         session_factory, org_id=org_id, username="expo",
@@ -483,6 +496,7 @@ async def test_fence_reactivation_clears_superadmin_flag(session_factory):
             await db.execute(select(User).where(User.id == existing_id))
         ).scalar_one()
         assert before.is_superadmin is True
+        original_hash = before.password_hash
 
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
@@ -490,25 +504,54 @@ async def test_fence_reactivation_clears_superadmin_flag(session_factory):
             email="expo@acme.io", role=Role.MEMBER,
         )
         await db.commit()
+        inv_id = inv.id
         token = create_invitation_token(inv.id, inv.email)
     async with session_factory() as db:
-        user = await invitation_service.accept_invitation(
-            db, token=token, username="expo", password="brand-new-pw-1234",
+        with pytest.raises(ConflictError, match="platform role"):
+            await invitation_service.accept_invitation(
+                db, token=token, username="expo", password="brand-new-pw-1234",
+            )
+        # Assert inside the SAME session, before it closes. The router's
+        # ConflictError path never commits (``get_db`` only closes), so a
+        # refusal that mutated the row first and raised second would be
+        # silently discarded on rollback — and a post-commit assertion alone
+        # would go green against it for the wrong reason. Measured: that
+        # exact mutant passes without these two lines.
+        in_session = (
+            await db.execute(select(User).where(User.id == existing_id))
+        ).scalar_one()
+        assert in_session.is_superadmin is True, (
+            "The refusal mutated is_superadmin before raising"
         )
-        await db.commit()
+        assert await db.scalar(
+            select(func.count()).select_from(User).where(User.is_superadmin == True)  # noqa: E712
+        ) == 1
 
     async with session_factory() as db:
         after = (
             await db.execute(select(User).where(User.id == existing_id))
         ).scalar_one()
-        assert after.is_superadmin is False, (
-            "Reactivation restored a deprovisioned superadmin's platform flag"
-        )
-        assert after.role == Role.MEMBER
-        # The consequence the flag actually buys: platform permissions.
-        assert has_permission(after, "users.delete") is False
-        assert has_permission(after, "admin.view") is False
-    assert user.is_superadmin is False
+        # The refusal raises BEFORE any attribute assignment, so no field of
+        # the user row moved — not even partially, via autoflush.
+        assert after.is_superadmin is True
+        assert after.is_active is False
+        assert after.role == Role.ADMIN       # pre-removal role, not the invite's
+        assert after.password_hash == original_hash
+        assert after.password_changed_at is None
+        assert after.sessions_invalidated_at is None
+
+        # The invitation was NOT consumed — the org admin can still revoke it.
+        refreshed_inv = (
+            await db.execute(select(Invitation).where(Invitation.id == inv_id))
+        ).scalar_one()
+        assert refreshed_inv.accepted_at is None
+
+        # THE ESCALATION ASSERTION. Nothing in this flow may decrement the
+        # platform superadmin count; reaching 0 re-arms the first-user
+        # bootstrap for the next arbitrary signup.
+        assert await db.scalar(
+            select(func.count()).select_from(User).where(User.is_superadmin == True)  # noqa: E712
+        ) == 1
 
 
 @pytest.mark.asyncio

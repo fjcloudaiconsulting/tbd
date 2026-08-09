@@ -335,24 +335,31 @@ async def accept_invitation(
     ).scalar_one_or_none()
 
     if existing is not None and existing.org_id == inv.org_id and not existing.is_active:
+        # An invitation carries an ORG role and must never write the PLATFORM
+        # flag — in either direction. REFUSE rather than clear: this endpoint is
+        # unauthenticated (public route POST /api/v1/orgs/invitations/accept),
+        # and clearing here would make it the only path in the codebase able to
+        # drive count(is_superadmin) to 0. The register and Google bootstraps
+        # (auth.py:350-353, auth.py:3377-3380) count that flag with NO is_active
+        # filter, so reaching 0 re-arms them and mints a superadmin for the next
+        # arbitrary signup. Matches admin_users_service.py:140 and
+        # admin_org_members_service.py:134, which both refuse rather than mutate
+        # a superadmin. Recovery is out-of-band, as every superadmin grant
+        # already is.
+        #
+        # Raised BEFORE any attribute assignment on ``existing`` so a refused
+        # accept leaves the user row untouched and ``inv.accepted_at`` still
+        # None: no autoflush can persist a partial reactivation, and the org
+        # admin can still revoke the invitation.
+        if existing.is_superadmin:
+            raise ConflictError(
+                "This account holds a platform role and cannot be reactivated "
+                "through an organization invitation. Contact platform support."
+            )
         # Reactivation: keep the row, refresh credentials, kill old
         # sessions atomically with marking the invite accepted.
         existing.is_active = True
         existing.role = inv.role
-        # An invitation grants exactly the org role it carries — never a
-        # platform role. Without this the reactivation branch would be the
-        # only way a deprovisioned superadmin's flag survives back onto an
-        # active row: has_permission() short-circuits on is_superadmin
-        # BEFORE consulting `role`, so the retained flag would beat the
-        # "member" the invitation granted. The new-user branch below
-        # already writes is_superadmin=False for the same reason.
-        #
-        # Cleared here rather than in remove_member on purpose: the
-        # "first registrant becomes superadmin" bootstrap in
-        # auth.register / the Google callback counts is_superadmin rows
-        # with NO is_active filter, so clearing the flag at removal time
-        # would silently reopen that bootstrap to the next signup.
-        existing.is_superadmin = False
         existing.password_hash = hash_password(password)
         # Whole-second session cutoff. The router mints an access token and
         # a refresh session immediately after this returns, and both stamp
