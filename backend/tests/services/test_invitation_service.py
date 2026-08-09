@@ -71,6 +71,7 @@ async def _add_user(
     email: str,
     role: Role = Role.MEMBER,
     is_active: bool = True,
+    is_superadmin: bool = False,
 ) -> int:
     async with factory() as db:
         u = User(
@@ -79,7 +80,7 @@ async def _add_user(
             email=email,
             password_hash=hash_password("pw-1234567"),
             role=role,
-            is_superadmin=False,
+            is_superadmin=is_superadmin,
             is_active=is_active,
             email_verified=True,
         )
@@ -452,6 +453,100 @@ async def test_accept_reactivates_existing_soft_deleted_user(session_factory):
         # Sessions invalidated so any old token is dead
         assert user.sessions_invalidated_at is not None
         assert user.password_changed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_fence_reactivation_clears_superadmin_flag(session_factory):
+    """FENCE (TBD-351). Kills the wrong implementation "reactivation leaves
+    ``is_superadmin`` untouched".
+
+    A deprovisioned superadmin who is later re-invited as a plain member
+    must come back as a plain member. ``has_permission`` short-circuits on
+    ``is_superadmin`` BEFORE consulting the role, so a retained flag beats
+    the "member" role the invitation grants.
+
+    The seed deliberately sets ``is_superadmin=True`` before the soft
+    delete — without that this fence passes vacuously against a user that
+    never held the flag.
+    """
+    from app.auth.permissions import has_permission
+
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    existing_id = await _add_user(
+        session_factory, org_id=org_id, username="expo",
+        email="expo@acme.io", role=Role.ADMIN, is_active=False,
+        is_superadmin=True,
+    )
+    # Control: the flag really is on the row before the accept.
+    async with session_factory() as db:
+        before = (
+            await db.execute(select(User).where(User.id == existing_id))
+        ).scalar_one()
+        assert before.is_superadmin is True
+
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id,
+            email="expo@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+    async with session_factory() as db:
+        user = await invitation_service.accept_invitation(
+            db, token=token, username="expo", password="brand-new-pw-1234",
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        after = (
+            await db.execute(select(User).where(User.id == existing_id))
+        ).scalar_one()
+        assert after.is_superadmin is False, (
+            "Reactivation restored a deprovisioned superadmin's platform flag"
+        )
+        assert after.role == Role.MEMBER
+        # The consequence the flag actually buys: platform permissions.
+        assert has_permission(after, "users.delete") is False
+        assert has_permission(after, "admin.view") is False
+    assert user.is_superadmin is False
+
+
+@pytest.mark.asyncio
+async def test_guard_reactivation_leaves_ordinary_member_intact(session_factory):
+    """GUARD (TBD-351 control). An ordinary (never-superadmin) member
+    round-trips through reactivation unaltered apart from the fields the
+    flow is supposed to touch. Proves the superadmin clear is not a blunt
+    instrument that damages the normal path."""
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    existing_id = await _add_user(
+        session_factory, org_id=org_id, username="plain",
+        email="plain@acme.io", role=Role.MEMBER, is_active=False,
+    )
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id,
+            email="plain@acme.io", role=Role.ADMIN,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+    async with session_factory() as db:
+        await invitation_service.accept_invitation(
+            db, token=token, username="ignored", password="brand-new-pw-1234",
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        after = (
+            await db.execute(select(User).where(User.id == existing_id))
+        ).scalar_one()
+        assert after.id == existing_id
+        assert after.username == "plain"      # username is not rewritten
+        assert after.email == "plain@acme.io"
+        assert after.is_active is True
+        assert after.email_verified is True
+        assert after.role == Role.ADMIN       # role comes from the invitation
+        assert after.is_superadmin is False
+        assert verify_password("brand-new-pw-1234", after.password_hash)
 
 
 @pytest.mark.asyncio

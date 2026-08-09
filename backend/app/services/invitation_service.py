@@ -339,6 +339,20 @@ async def accept_invitation(
         # sessions atomically with marking the invite accepted.
         existing.is_active = True
         existing.role = inv.role
+        # An invitation grants exactly the org role it carries — never a
+        # platform role. Without this the reactivation branch would be the
+        # only way a deprovisioned superadmin's flag survives back onto an
+        # active row: has_permission() short-circuits on is_superadmin
+        # BEFORE consulting `role`, so the retained flag would beat the
+        # "member" the invitation granted. The new-user branch below
+        # already writes is_superadmin=False for the same reason.
+        #
+        # Cleared here rather than in remove_member on purpose: the
+        # "first registrant becomes superadmin" bootstrap in
+        # auth.register / the Google callback counts is_superadmin rows
+        # with NO is_active filter, so clearing the flag at removal time
+        # would silently reopen that bootstrap to the next signup.
+        existing.is_superadmin = False
         existing.password_hash = hash_password(password)
         existing.password_changed_at = now
         existing.sessions_invalidated_at = now
