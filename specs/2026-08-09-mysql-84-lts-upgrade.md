@@ -1,0 +1,172 @@
+---
+name: MySQL 8.0 -> 8.4 LTS upgrade (pfv-data-01)
+description: Runbook and risk analysis for moving the self-hosted production data plane off end-of-life MySQL 8.0
+type: project
+---
+
+# MySQL 8.0 -> 8.4 LTS upgrade
+
+**Status:** spec, not yet scheduled. Execution is a Sprint 9 ticket requiring explicit operator authorization — this is a production database with no replica.
+**Target:** MySQL **8.4 LTS**. Operator decision, 2026-08-09.
+**Scope:** `pfv-data-01` (production), plus the dev and CI pins that must move with it.
+
+---
+
+## Why
+
+MySQL 8.0 Premier Support ended 2025-04-30; Extended Support ended 2026-04-30. It is now under Oracle "Sustaining Support", which continues indefinitely but ships **no new fixes, no security alerts, and no Critical Patch Updates**. For a finance application holding user financial records that is a security posture problem, not a version-hygiene one.
+
+8.4 LTS: Premier to 2029-04-30, Extended to 2032-04-30.
+
+### Open question, deliberately not closed here
+
+**MySQL 9.7 is also an LTS** (GA 2026-04-21, supported to ~2034), and Oracle's EOL notice recommends "8.4 LTS **or** 9.7 LTS". This does **not** change the immediate work: the documented upgrade rules state *"a bugfix or LTS series cannot be skipped"*, so 8.0 -> 8.4 is mandatory regardless of the eventual destination. Whether to make a later 8.4 -> 9.7 hop (a supported next-LTS step, buying ~2 extra years) is a separate decision to take **after** this lands. Note 9.0 **removes** `mysql_native_password` entirely, so the auth work in this spec is a prerequisite for that hop either way.
+
+An earlier framing of this plan asserted that 9.x is Innovation-track-only and therefore unsuitable. That was true of 9.0–9.6 and became stale in April 2026. Recorded so it is not repeated.
+
+---
+
+## The blocker: the server will refuse to start
+
+`infra/ansible/roles/mysql/templates/my.cnf.j2:7` contains:
+
+```
+default-authentication-plugin = mysql_native_password
+```
+
+`default_authentication_plugin` was deprecated in 8.0.27 and **removed in 8.4.0**. MySQL treats an unknown variable in an option file as fatal: the server displays a diagnostic and **exits**, it does not warn and continue. Starting 8.4 against the current config therefore takes the data plane down with `unknown variable 'default_authentication_plugin=mysql_native_password'`.
+
+**This is the single highest-risk item in the plan, and it is also the cheapest to de-risk.** `mysqld --validate-config` is a documented dry-run that parses the config and exits 0 (clean) or 1 (error) without starting the server. Run it with the 8.4 binary against the live config **before** stopping the 8.0 server.
+
+Obsolete `sql_mode` values have the same fail-to-start behaviour and are caught by the same check.
+
+### Other removed variables to check for
+
+Not currently in our `my.cnf`, but verify with `--validate-config` rather than by reading:
+`expire_logs_days`, `skip-host-cache`, `character-set-client-handshake`, `innodb`/`skip-innodb`, `ssl`, `have_ssl`/`have_openssl`, the four `master-info-*`/`relay-log-info-*` variables, `transaction_write_set_extraction`, `binlog_transaction_dependency_tracking`, `log_bin_use_v1_events`, `slave-rows-search-algorithms`, `avoid_temporal_upgrade`, `show_old_temporals`, `old`/`new`, `old-style-user-limits`, `no-dd-upgrade`, `language`.
+
+---
+
+## Authentication: three accounts must move first
+
+`mysql_native_password` is **disabled by default in 8.4** (re-enablable with `mysql_native_password=ON` in `[mysqld]`) and **removed in 9.0**. Four sites depend on it:
+
+| Site | What it is |
+|---|---|
+| `roles/mysql/tasks/main.yml:37` | backup user — the account the nightly cron `mysqldump` runs as |
+| `roles/mysql/tasks/main.yml:72` | account |
+| `roles/mysql/tasks/main.yml:92` | account |
+| `roles/mysql/templates/my.cnf.j2:7` | server default (the fatal one above) |
+
+**Convert to `caching_sha2_password` on 8.0, before the upgrade.** Doing it ahead of time means the `mysql_native_password=ON` escape hatch is never needed, and it is a hard prerequisite for any later 9.7 hop.
+
+```sql
+SELECT user, host, plugin FROM mysql.user WHERE plugin <> 'caching_sha2_password';
+ALTER USER '<u>'@'<h>' IDENTIFIED WITH caching_sha2_password BY '<pw>';
+```
+
+Do not miss non-app accounts: backup, monitoring, and `root@localhost` (which stays on `auth_socket` deliberately — see the role's comment; leave it alone).
+
+In 8.4 the `authentication_policy` default is `'*,,'`, meaning factor 1 is `caching_sha2_password`. So the removed line should simply be **deleted**, not translated.
+
+### The driver side — verified, with one live hazard
+
+The app reaches MySQL over the private VPC with **no TLS** (`backend/app/database.py:13-14`, explicit). Under `caching_sha2_password` on a plaintext connection the client must obtain the server's RSA public key.
+
+- There is **no server-side `allow-public-key-retrieval`** setting — that name is a Connector/J concept, not MySQL server. The only server requirement is that the RSA keypair exists, and `caching_sha2_password_auto_generate_rsa_keys` defaults ON, so the existing datadir already has `private_key.pem` / `public_key.pem`.
+- The server does not volunteer the key; the client must request it. **aiomysql requests it unconditionally and automatically.**
+- `cryptography` is a **hard requirement** — PyMySQL raises `RuntimeError("'cryptography' package is required for sha256_password or caching_sha2_password auth methods")`. We pin `cryptography==44.0.3` in `backend/requirements.txt:26`, so this is satisfied — **but verify it is present in the deployed image, not just the requirements file.**
+
+⚠ **The failure mode is total, not gradual.** The `caching_sha2_password` fast-auth cache is empty after every server restart, so a missing `cryptography` wheel fails **100% of connections immediately** post-upgrade. This is the same shape as the 2026-05-20 aiomysql outage.
+
+⚠ **Do not bump `aiomysql==0.2.0` or `PyMySQL==1.1.3` as part of this work.** `requirements.txt:7-14` documents that SQLAlchemy's mysql dialect inspects PyMySQL's `connect.__doc__`, and a newer PyMySQL breaks `ping()`. Version changes belong in their own ticket with their own fence.
+
+---
+
+## The package swap is not a version bump
+
+Ubuntu 24.04's archive ships MySQL **8.0.46** and will never offer 8.4. `roles/mysql/tasks/main.yml` installs plain `mysql-server` from the distro repo. Moving to 8.4 means replacing Ubuntu's `mysql-server-8.0` with **Oracle's `mysql-community-server`** via `mysql-apt-config` (select the `mysql-8.4-lts` series).
+
+That swap changes more than the version, and each item below is a real breakage path on this box:
+
+- **Config layout** differs (`/etc/mysql/mysql.conf.d/` vs `/etc/my.cnf`). Our template lands in the Ubuntu path; confirm the Oracle package still includes it.
+- **No `debian-sys-maint` account and no `/etc/mysql/debian.cnf`.** Ubuntu's `/etc/logrotate.d/mysql-server` authenticates with that credential. Audit every cron, logrotate and monitoring script for it before cutover.
+- **AppArmor profile** differs and can silently block a non-default `datadir`.
+- **systemd unit** differs.
+- **unattended-upgrades** could reinstall 8.0 over the top — pin/hold the Ubuntu packages.
+
+---
+
+## 8.4 changes ~20 InnoDB defaults, and some are hostile to this box
+
+`pfv-data-01` is an `s-1vcpu-2gb` droplet **co-hosting Redis/Valkey**. Notable default changes: `innodb_adaptive_hash_index` ON->OFF, `innodb_change_buffering` all->none, `innodb_doublewrite_pages`->128, plus changes to `innodb_page_cleaners`, `innodb_parallel_read_threads`, `innodb_purge_threads`, `innodb_read_io_threads`, `innodb_log_buffer_size` and the `temptable_*` family.
+
+The one that matters most here: **`innodb_io_capacity` default moves 200 -> 10000.** On DO block storage that over-issues background flush I/O, and the extra threads plus larger log buffer raise baseline RSS — a plausible OOM path for the co-resident Redis on a 2 GB box.
+
+Our `my.cnf` already pins `innodb_io_capacity` and `innodb_io_capacity_max` from variables, which protects us on those two specifically. **Pin the rest explicitly rather than inheriting 8.4's defaults**, and capture a `SHOW GLOBAL VARIABLES` diff before and after.
+
+---
+
+## Backups, and why rollback is the weak point
+
+**In-place downgrade from 8.4 is not supported.** The documented downgrade path is logical dump-and-load only, and only "for rollback purposes … if no new server functionality has been applied to the data." So rollback means restore-from-dump or a droplet snapshot. There is no replica to fail over to.
+
+Backup-script exposure (`roles/backups/templates/mysql-backup.sh.j2`):
+
+- The script's `mysqldump` invocation uses `--single-transaction --routines --triggers --quick --hex-blob` — all still valid in 8.4.
+- It authenticates as the backup user via `/root/.my.cnf` — **that account is one of the three that must be converted** (above), or every nightly backup fails silently after cutover.
+- `mysqlpump` is **removed** in 8.4; `--master-data` is now a deprecated alias for `--source-data`. Neither appears in our script, but re-check before the window.
+- A stored dump containing removed replication SQL (`CHANGE MASTER TO`, `RESET MASTER`, `START SLAVE`, `SHOW MASTER STATUS`) will not replay into 8.4.
+
+⚠ **An untested restore is not a rollback plan, and per the above it is the only rollback we have.** Test-restoring a current dump into a throwaway 8.4 instance is a required pre-flight step, not an optional one.
+
+---
+
+## The verification we now have for free
+
+TBD-212 shipped a `Migration Checks` CI job that runs all 80 alembic revisions from empty against a real MySQL service container, then boots the app and asserts `/ready`. **Flipping that job's image from `mysql:8.0` to `mysql:8.4` exercises the entire schema and the async driver against the target version, in CI, before anything touches production.**
+
+The fact-check flagged one genuinely unverified item: aiomysql 0.2.0 predates 8.4's GA by ~10 months and is lightly maintained. No documented incompatibility was found, but *"the async driver works against 8.4"* should be treated as unverified until the backend suite runs against a real 8.4 container. That is cheap, and it is the highest-value single verification in this plan.
+
+---
+
+## Pre-flight (all non-destructive, days ahead of the window)
+
+1. Flip CI `Migration Checks` to `mysql:8.4`; confirm 80 revisions + `/ready` green. Flip `docker-compose.yml` to `mysql:8.4`; run the full backend suite.
+2. Take a droplet snapshot.
+3. Take a fresh logical dump; **test-restore it into a throwaway 8.4 instance** and confirm it replays clean.
+4. Audit `mysql.user` for non-`caching_sha2_password` accounts; convert them on 8.0 and confirm the app and the nightly backup still work.
+5. Run `mysqld --validate-config` with the 8.4 binary against the live `my.cnf`; expect exit 1 until the `default-authentication-plugin` line is removed, then exit 0.
+6. Audit cron/logrotate/monitoring for `debian-sys-maint` / `/etc/mysql/debian.cnf`.
+7. Capture `SHOW GLOBAL VARIABLES` as the before-baseline.
+
+## Cutover
+
+8. Announce the window. App Platform: scale backend to 0 (same lever `infra/MIGRATION.md` uses).
+9. Final dump.
+10. `SET GLOBAL innodb_fast_shutdown = 0;` then `mysqladmin shutdown`. **Slow shutdown, not 2** — required for in-place upgrade.
+11. Swap packages to the Oracle 8.4 repo; hold the Ubuntu ones.
+12. Start 8.4. The server performs the data-dictionary upgrade itself at startup — `mysql_upgrade` was removed in 8.4 and must not be invoked.
+13. Verify: `SELECT VERSION()`, `/ready`, a real authenticated request, the nightly backup script by hand, and the `SHOW GLOBAL VARIABLES` diff.
+14. Scale the backend back up.
+
+## Rollback
+
+Restore the droplet snapshot, or rebuild 8.0 and restore the final dump. **Decide and write down the go/no-go point** — once step 12 completes and writes land, dump-restore is the only way back and any writes taken on 8.4 are lost.
+
+---
+
+## Repo changes this ticket carries
+
+| File | Change |
+|---|---|
+| `infra/ansible/roles/mysql/templates/my.cnf.j2` | delete the `default-authentication-plugin` line; pin InnoDB values that 8.4 re-defaults |
+| `infra/ansible/roles/mysql/tasks/main.yml` | `plugin: caching_sha2_password` at the three account sites; add the Oracle APT repo + package hold |
+| `.github/workflows/test.yml` | `mysql:8.0` -> `mysql:8.4` in the `migrations` job |
+| `docker-compose.yml` | `mysql:8.0` -> `mysql:8.4` |
+| `infra/MIGRATION.md` | add this runbook, or link it |
+| Docs | `README.md`, `CLAUDE.md`, `DEPLOYMENT.md`, `infra/README.md`, `infra/terraform/README.md` all say "MySQL 8" |
+
+## Out of scope
+
+The 8.4 -> 9.7 LTS hop. Driver version bumps (`aiomysql`, `PyMySQL`). Adding a replica — though the absence of one is what makes this a one-way door, and it is worth its own ticket.
