@@ -134,7 +134,9 @@ SEED_EMAIL=alice@example.com SEED_ORG="Alice LLC" \
 ./pfv seed                                       # custom user
 ```
 
-The seed script registers the user if it does not exist, logs in, and creates data. If the user already exists, it adds data to their org.
+The seed script logs in as the user, registering them first if they do not exist, and then creates data through the API. If the user already exists, it adds data to their org.
+
+Before each login attempt the script marks that user's email verified with a direct `UPDATE` on `users` (`ensure_verified()` in `backend/seed.py`). `POST /api/v1/auth/login` refuses any account with an unverified email and a dev stack has no mailbox to click the link in, so without that step the script cannot sign in at all. It is the one thing seeding does outside the API, and it is a precondition rather than data — everything the script actually seeds still goes through the HTTP endpoints. A `SEED_USERNAME=alice` run creates a *second* user, which is not covered by the first-user verification bypass on `/register`, so it depends on this step.
 
 `SEED_*` env var reference:
 
