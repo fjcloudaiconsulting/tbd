@@ -156,6 +156,89 @@ Restore the droplet snapshot, or rebuild 8.0 and restore the final dump. **Decid
 
 ---
 
+---
+
+# Phase 2 — rename the database `pfv2` -> `tbd`
+
+Operator addition, 2026-08-09. Folded into this ticket because it shares the maintenance window, and split out of **TBD-205** (which keeps the code/CLI/compose half).
+
+⚠ **TBD-205 carries a decision-in-force that says the opposite**: *"This touches the database name, which makes it a migration and ops event rather than a rename. Sequence it when there is no other in-flight schema work."* That note assumed the rename would need its own window. The operator's call is that a planned window with a verified dump and a snapshot is a **better** home than a standalone event, not a worse one. Recorded so the override is visible rather than silent.
+
+## This is a separate PHASE, not a merged step
+
+Run it **after** the 8.4 upgrade is verified (step 13), never interleaved. Two reasons:
+
+1. The upgrade is **in-place** and does not restore anything, so the rename is not "free from the dump" — it is free because it is metadata-only (below). Switching the upgrade to a logical dump-and-restore just to land the rename would trade a fast, documented path for a slow one and muddy the rollback.
+2. If the app fails to come up, one variable at a time. The upgrade is effectively irreversible; **the rename is trivially reversible** (rename back). Keeping them sequential means a failure is immediately attributable.
+
+## Why it is cheap here — verified, not assumed
+
+- **No views, triggers, or stored routines exist.** `grep -riE "create (or replace )?(view|trigger|procedure|function)"` across `backend/alembic/versions/` returns nothing. Those objects do **not** move with `RENAME TABLE`, and their absence is what makes this a complete operation rather than a partial one. ⚠ Re-run that grep at execution time — a migration added between now and then invalidates this.
+- MySQL has **no `RENAME DATABASE`**. `RENAME TABLE` across schemas is the documented approach and is metadata-only for InnoDB — no data copy, fast regardless of table size.
+- `alembic_version` is an ordinary table and moves with the rest, so alembic continues from the same head with no stamping.
+
+## ⚠ It must be ONE atomic statement
+
+There are **83 FK declarations** across the models. `RENAME TABLE` executed per-table would leave foreign keys pointing at tables not yet moved, and fail partway with the schema half-renamed. MySQL renames all pairs in a single statement atomically:
+
+```sql
+CREATE DATABASE tbd CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
+RENAME TABLE
+  pfv2.accounts       TO tbd.accounts,
+  pfv2.alembic_version TO tbd.alembic_version,
+  ...                                          -- ALL 50 tables, one statement
+  pfv2.users          TO tbd.users;
+```
+
+Generate the statement rather than hand-typing it, from
+`SELECT table_name FROM information_schema.tables WHERE table_schema='pfv2' AND table_type='BASE TABLE'`,
+and **assert the generated list length equals the table count** before executing — a truncated list is a half-rename.
+
+⚠ The new schema's charset/collation must match exactly (`utf8mb4` / `utf8mb4_0900_ai_ci`). Per-table collations are carried by the tables themselves, but the schema default governs anything created later — and this repo has a live production incident (TBD-322) rooted in collation semantics.
+
+## Grants and the app user
+
+The production app user is **`pfv_app`** (`infra/ansible/roles/mysql/defaults/main.yml:4`), *not* `pfv2` — `MYSQL_USER=pfv2` in `.env.example:19` is the dev/compose user only. Grants are schema-scoped, so `pfv_app` needs privileges on `tbd.*`; the old `pfv2.*` grant is revoked after verification.
+
+**Renaming the database user is explicitly OUT of scope** — it is a separate, smaller change with its own credential-rotation blast radius, and it belongs with TBD-205's remaining half.
+
+## Sequence (after upgrade step 13 has passed)
+
+1. Confirm the app is healthy on 8.4 against `pfv2`. Do not proceed otherwise.
+2. Scale backend to 0 again (writes must be quiesced — `RENAME TABLE` takes metadata locks).
+3. `CREATE DATABASE tbd` with the charset/collation above.
+4. Generate and length-assert the rename statement; execute it as one statement.
+5. `GRANT` on `tbd.*` to `pfv_app`.
+6. Update `DATABASE_URL` in App Platform. ⚠ `.do/app.yaml` is authoritative and its `EV[]` blobs **must** land in the repo — see `reference_do_spec_sync`.
+7. Scale up; verify `/ready`, a real authenticated request, and `SELECT COUNT(*)` on 3-4 core tables against the pre-rename baseline.
+8. Run the nightly backup script by hand — it targets `mysql_app_db`, which must have moved to `tbd`.
+9. Only after all of the above: `DROP DATABASE pfv2` (now empty). **Leave it for at least one full backup cycle.**
+
+## Rollback for this phase
+
+Reverse `RENAME TABLE` (same atomic form, `tbd.* TO pfv2.*`), restore `DATABASE_URL`. Cheap and complete — which is exactly why it goes last.
+
+## Repo changes Phase 2 adds
+
+| File | Change |
+|---|---|
+| `infra/ansible/roles/mysql/defaults/main.yml:3` | `mysql_app_db: pfv2` -> `tbd` |
+| `infra/ansible/inventory.yml.example:13` | same |
+| `.env.example:18` | `MYSQL_DATABASE=pfv2` -> `tbd` |
+| `.github/workflows/test.yml` | `MYSQL_DATABASE`/`DATABASE_URL` in the `migrations` job |
+| `docker-compose.yml` | DB name in the mysql service env + `DATABASE_URL` |
+| `k8s/values.yaml:40`, `k8s/Chart.yaml:2` | `pfv2` -> `tbd` |
+| `.do/app.yaml` | `DATABASE_URL` (EV[] blob must land in repo) |
+
+⚠ **Dev stacks keep their existing volume.** A developer's `mysql_data` volume still holds a `pfv2` schema; after the pin changes they get an empty `tbd` and migrations re-run from scratch. That is fine for dev but must be **called out in the PR**, or it reads as data loss. `./pfv reset` is the clean path.
+
+## Still out of scope after Phase 2
+
+The rest of TBD-205: the `./pfv` CLI name, compose service names, env prefixes, the repo directory, and the TFC workspace `FlamaCorp/pfv` (which cannot be renamed from the CLI — Terraform is VCS-driven with manual Confirm & Apply).
+
+---
+
 ## Repo changes this ticket carries
 
 | File | Change |
