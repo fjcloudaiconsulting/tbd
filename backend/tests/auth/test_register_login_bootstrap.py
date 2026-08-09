@@ -42,6 +42,7 @@ from app.database import get_db
 from app.deps import get_session_factory
 from app.middleware.request_context import RequestContextMiddleware
 from app.models import Base
+from app.models.audit_event import AuditEvent
 from app.models.subscription import Plan
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
@@ -183,6 +184,25 @@ async def _seed_user(
         return user.id
 
 
+async def _register_success_detail(factory) -> dict:
+    """The `detail` dict off the single `auth.register.success` audit row.
+
+    Read by KEY at the call sites, never by dict equality — the same posture
+    `tests/routers/test_auth_register_captcha.py` takes with
+    `detail["is_first_user"]` / `["granted_superadmin"]`, so that adding a
+    field to this event stays a purely additive change.
+    """
+    async with factory() as db:
+        result = await db.execute(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "auth.register.success"
+            )
+        )
+        rows = list(result.scalars())
+    assert len(rows) == 1, f"expected exactly one success row, got {len(rows)}"
+    return rows[0].detail
+
+
 def _register(client: TestClient, *, username: str, email: str) -> Any:
     return client.post(
         "/api/v1/auth/register",
@@ -249,6 +269,14 @@ async def test_f1_bootstrap_register_then_login_succeeds(session_factory) -> Non
         "login succeeded but the account was CREATED unverified — the fix was "
         f"applied at the gate instead of at the mint. body={body}"
     )
+
+    # The audit row must record that the grant happened. Positive side of the
+    # pin; F3 carries the negative side and is the one that distinguishes the
+    # two predicates. Asserted against the account's ACTUAL stored flag rather
+    # than a bare literal, so the row cannot drift from the thing it describes.
+    detail = await _register_success_detail(session_factory)
+    assert detail["email_verified_on_create"] is True
+    assert detail["email_verified_on_create"] == body["email_verified"]
 
 
 # ── F2 ───────────────────────────────────────────────────────────────────────
@@ -348,6 +376,29 @@ async def test_f3_verification_keys_on_user_count_not_superadmin_count(
 
     assert login.status_code == 403, login.text
     assert login.json()["detail"]["code"] == "email_not_verified"
+
+    # (d) the AUDIT row must name the predicate that granted verification.
+    #
+    # `auth.register.success` records `email_verified_on_create` precisely so a
+    # bootstrap row shows WHICH first-ness predicate minted verification —
+    # without it, a later rekey of the constructor is invisible in
+    # `audit_events` after the fact. Rekeying that field alone to
+    # `is_first_user` otherwise escapes the entire suite.
+    #
+    # This fixture is the only one that can catch it: here the two predicates
+    # disagree, so a row claiming the grant happened while the account is
+    # actually unverified is a contradiction. Compared against the account's
+    # real stored flag, not a literal, so the row is pinned to the truth it
+    # reports rather than to a constant.
+    detail = await _register_success_detail(session_factory)
+    assert detail["email_verified_on_create"] is False, (
+        "the audit row says verification was granted on create, but the "
+        f"account came back unverified — detail={detail}, body={body}"
+    )
+    assert detail["email_verified_on_create"] == body["email_verified"]
+    # Sanity that this really is the divergent state on the row too.
+    assert detail["is_first_user"] is False
+    assert detail["granted_superadmin"] is True
 
 
 # ── F4 ───────────────────────────────────────────────────────────────────────

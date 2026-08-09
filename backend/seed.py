@@ -102,8 +102,25 @@ async def ensure_verified(username: str) -> None:
             text("UPDATE users SET email_verified = 1 WHERE username = :u"),
             {"u": username},
         )
+        # Read rowcount before the commit purely so it cannot depend on cursor
+        # lifetime. Reading it afterwards is in fact safe for a
+        # single-parameter-set UPDATE — `CursorResult.rowcount` is a
+        # memoized_property and SQLAlchemy 2.0 transfers `cursor.rowcount` into
+        # the execution context BEFORE closing the cursor for exactly this
+        # statement shape (the `preserve_rowcount` execution option is what
+        # extends that to INSERT/SELECT/executemany, which this is not).
+        # Measured on MySQL 8 / aiomysql: 1 before commit, still 1 after the
+        # session closed AND after another session had churned the pool with a
+        # 3-row UPDATE. Ordering it this way just removes the need to know that
+        # rule to read the code.
+        changed = result.rowcount
         await db.commit()
-    if result.rowcount:
+    # `changed` is the MATCHED count, not the modified count: SQLAlchemy's MySQL
+    # dialect connects with CLIENT_FOUND_ROWS, so a no-op rewrite of a row that
+    # is already 1 still reports 1 — measured, and identical to SQLite. So this
+    # line prints whenever the account exists and stays quiet only when the
+    # username matched nothing, on both backends.
+    if changed:
         print(f"   Marked {username}'s email verified")
 
 
