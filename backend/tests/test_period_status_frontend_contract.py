@@ -12,12 +12,16 @@ read ONE shared fixture. If the Python classifier changes, this test goes red
 here, in the backend suite, immediately.
 
 ⚠ **This test FAILS; it does not regenerate.** That distinction is the whole
-point. The repo's only other cross-language sync mechanism
-(`scripts/regen_feature_catalog_fixture.py`) is explicitly manual and is
-pinned by no backend test, so a Python-side change can drift past it silently
-while the TypeScript guard stays green. Do not "fix" a failure here by making
-the test rewrite the fixture — regenerate deliberately, and review the diff,
-because a changed vector means the wire meaning of a status changed.
+point. Do not "fix" a failure here by making the test rewrite the fixture —
+regenerate deliberately, and review the diff, because a changed vector means
+the wire meaning of a status changed.
+
+The repo's other cross-language sync mechanism
+(`scripts/regen_feature_catalog_fixture.py`) is explicitly manual, and until
+TBD-212 it was pinned by no backend test — so a Python-side change could
+drift past it silently while the TypeScript guard stayed green. That gap is
+now closed by `tests/test_feature_catalog_frontend_contract.py`, which
+applies the same fail-never-regenerate rule to the same shape.
 
 ⚠ **The vector set must keep its branch-order-discriminating cases.** Without
 an inverted row whose `start_date > today` (branch 1 vs branch 3) and an open
