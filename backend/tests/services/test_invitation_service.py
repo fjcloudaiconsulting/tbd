@@ -456,7 +456,17 @@ async def test_accept_reactivates_existing_soft_deleted_user(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_fence_reactivation_of_superadmin_is_refused(session_factory):
+@pytest.mark.parametrize(
+    ("invited_role", "prior_role"),
+    [
+        (Role.MEMBER, Role.ADMIN),
+        (Role.ADMIN, Role.MEMBER),
+    ],
+    ids=["invited_as_member", "invited_as_admin"],
+)
+async def test_fence_reactivation_of_superadmin_is_refused(
+    session_factory, invited_role, prior_role
+):
     """FENCE (TBD-351). Kills BOTH wrong implementations of this branch:
 
       (a) reactivating a deprovisioned superadmin with the flag intact —
@@ -483,11 +493,27 @@ async def test_fence_reactivation_of_superadmin_is_refused(session_factory):
     The seed deliberately sets ``is_superadmin=True`` before the soft
     delete — without that this fence passes vacuously against a user that
     never held the flag.
+
+    PARAMETRIZED over the invited role because ``role`` is first-class
+    reachable input (``Literal["admin", "member"]`` at
+    ``schemas/invitation.py:14``), and the guard is a two-cell space:
+    (holds the flag) × (invited as member | admin). Covering one cell lets a
+    role-conditional guard through — e.g.
+    ``if existing.is_superadmin and inv.role == Role.MEMBER: raise`` — which
+    would refuse member-invites while silently reactivating a superadmin
+    invited as ADMIN, flag intact and no refusal. Same half-fix door as the
+    original clear-based mutant, and worse here because the surviving path
+    reactivates rather than merely retaining.
+
+    ``prior_role`` is always the OTHER role from ``invited_role`` so the
+    "role unchanged" assertion below stays non-trivial in both cells: with
+    them equal it would hold even if the reactivation had gone through.
     """
     org_id, owner_id = await _seed_org_with_owner(session_factory)
+    assert prior_role != invited_role, "fixture must make the two roles differ"
     existing_id = await _add_user(
         session_factory, org_id=org_id, username="expo",
-        email="expo@acme.io", role=Role.ADMIN, is_active=False,
+        email="expo@acme.io", role=prior_role, is_active=False,
         is_superadmin=True,
     )
     # Control: the flag really is on the row before the accept.
@@ -501,7 +527,7 @@ async def test_fence_reactivation_of_superadmin_is_refused(session_factory):
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="expo@acme.io", role=Role.MEMBER,
+            email="expo@acme.io", role=invited_role,
         )
         await db.commit()
         inv_id = inv.id
@@ -535,7 +561,7 @@ async def test_fence_reactivation_of_superadmin_is_refused(session_factory):
         # the user row moved — not even partially, via autoflush.
         assert after.is_superadmin is True
         assert after.is_active is False
-        assert after.role == Role.ADMIN       # pre-removal role, not the invite's
+        assert after.role == prior_role       # pre-removal role, not the invite's
         assert after.password_hash == original_hash
         assert after.password_changed_at is None
         assert after.sessions_invalidated_at is None

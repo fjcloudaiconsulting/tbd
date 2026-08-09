@@ -137,8 +137,10 @@ def _make_app(session_factory) -> FastAPI:
 # ── frozen clock ────────────────────────────────────────────────────────────
 
 
-def _freeze(monkeypatch, instant: datetime) -> None:
+def _freeze(monkeypatch, instant: datetime) -> datetime:
     """Pin BOTH clocks that feed the comparison to the same instant.
+    Returns the frozen naive-UTC value so callers can assert against the
+    exact instant the write sites are supposed to floor.
 
     ``invitation_service.utcnow_naive`` produces the cutoff written to the
     two user columns; ``security.datetime.now`` produces the ``iat`` stamped
@@ -149,6 +151,18 @@ def _freeze(monkeypatch, instant: datetime) -> None:
     """
     aware = instant if instant.tzinfo else instant.replace(tzinfo=timezone.utc)
     naive = aware.replace(tzinfo=None)
+
+    # GUARD on the fences themselves, not on the app. Every fence in this
+    # module is vacuous at a whole second: the bug is
+    # ``floor(T) < T.<micros>``, which is false when micros is 0. Measured —
+    # replacing the ``500_001`` literals with ``0`` makes this entire file
+    # pass against unfixed ``main``. Fail loudly here rather than quietly
+    # proving nothing if someone edits that constant.
+    assert naive.microsecond != 0, (
+        "The frozen instant must carry a non-zero microsecond component. "
+        "At a whole second floor(T) < T is false and every fence in this "
+        "module passes against the unfixed code."
+    )
 
     class _FrozenDatetime(datetime):
         @classmethod
@@ -161,6 +175,16 @@ def _freeze(monkeypatch, instant: datetime) -> None:
 
     monkeypatch.setattr(security_module, "datetime", _FrozenDatetime)
     monkeypatch.setattr(invitation_service, "utcnow_naive", lambda: naive)
+    return naive
+
+
+# Deliberately ABOVE 500_000, not merely non-zero. MySQL 8.0's default
+# sql_mode rounds fractional seconds to nearest when storing into an fsp-0
+# DATETIME (measured on 8.0.46), so a "round instead of floor" write site is
+# only distinguishable from a flooring one when the fraction is >= .5. At
+# .4 a round-to-nearest implementation coincides with flooring and the
+# equality assertion below would pass against it.
+CUTOFF_MICROSECONDS = 500_001
 
 
 def _instant_with_microseconds(micros: int, *, shift_seconds: int = 0) -> datetime:
@@ -248,19 +272,32 @@ async def _accept_as_reactivation(client, factory, *, org_id: int, owner_id: int
 async def test_fence_reactivation_access_token_survives_next_request(
     session_factory, monkeypatch
 ):
-    """FENCE (TBD-352). Kills two wrong implementations:
-      (i)  no truncation at either write site;
-      (ii) truncating only ``sessions_invalidated_at`` — the ticket's own
-           half-fix — because ``password_changed_at`` is set from the same
-           microsecond value and ``token_cutoff`` takes the ``max()``.
+    """FENCE (TBD-352). Kills:
+      (i)   no truncation at either write site;
+      (ii)  truncating only ``sessions_invalidated_at`` — the ticket's own
+            half-fix — because ``password_changed_at`` is set from the same
+            microsecond value and ``token_cutoff`` takes the ``max()``;
+      (iii) truncation moved into ``token_cutoff`` (read side) instead of the
+            write site;
+      (iv)  flooring PAST the intended instant — to the whole minute, or
+            ``floor - 1s``, or any other over-shoot;
+      (v)   rounding to nearest instead of flooring.
 
     Accept the invitation, then use the returned bearer token on a second,
     real request through the unmodified ``get_current_user`` dependency.
+
+    (iv) and (v) are invisible to the behavioural assertion: a cutoff pushed
+    further into the past accepts the new credential just fine. They are
+    caught only by the exact-equality assertion at the bottom, which pins the
+    cutoff from BOTH sides. A cutoff that floors too far leaves the
+    reactivated user's PREVIOUS sessions alive, which is the whole point of
+    writing a cutoff at all.
     """
     seed = await _seed_org_with_owner(session_factory)
     user_id = await _seed_soft_deleted_member(session_factory, org_id=seed["org_id"])
 
-    _freeze(monkeypatch, _instant_with_microseconds(500_001))
+    frozen = _freeze(monkeypatch, _instant_with_microseconds(CUTOFF_MICROSECONDS))
+    expected_cutoff = frozen.replace(microsecond=0)
 
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -278,15 +315,39 @@ async def test_fence_reactivation_access_token_survives_next_request(
         f"very next request: {followup.status_code} {followup.text}"
     )
 
-    # The cutoff really did carry microseconds pre-fix; assert the fix put a
-    # whole second on BOTH columns, so neither can resurrect the bug via max().
+    # ⚠ DO NOT WEAKEN OR DELETE — this is not redundant with the 200 above.
+    #
+    # Two independent jobs, neither of which any behavioural assertion in this
+    # module can do:
+    #
+    # 1. It is the SOLE PROXY FOR MySQL fsp-0 ROUNDING, which the CI database
+    #    physically cannot exercise. Both columns are fsp-0 MySQL DATETIME and
+    #    MySQL 8.0 ROUNDS fractional seconds on insert (measured on 8.0.46:
+    #    .500001 reads back as the NEXT whole second), so a fix that truncates
+    #    on READ inside token_cutoff cannot undo a value already rounded past
+    #    the token's iat — it fixes nothing in production. Under aiosqlite,
+    #    where microseconds persist verbatim, that same read-side fix looks
+    #    perfectly correct: measured, all three behavioural fences in this
+    #    module stay GREEN against it and ONLY this assertion fires.
+    #
+    # 2. It pins the cutoff from BOTH sides. `microsecond == 0` alone is a
+    #    one-sided cap: `.replace(microsecond=0, second=0)` (floor to the
+    #    minute) and `.replace(microsecond=0) - timedelta(seconds=1)` both
+    #    satisfy it while silently keeping the reactivated user's previous
+    #    sessions alive. Equality against the exact expected instant is what
+    #    kills them, and rounding-to-nearest with them.
     async with session_factory() as db:
         row = (await db.execute(select(User).where(User.id == user_id))).scalar_one()
-        assert row.password_changed_at.microsecond == 0, (
-            "password_changed_at still carries microseconds — token_cutoff() "
-            "takes max() of the two columns, so this alone re-opens TBD-352"
+        assert row.password_changed_at == expected_cutoff, (
+            f"password_changed_at must be exactly {expected_cutoff} (the frozen "
+            f"instant floored to the second), got {row.password_changed_at}. "
+            "Too late re-opens TBD-352 via token_cutoff()'s max(); too early "
+            "leaves the pre-reactivation sessions alive."
         )
-        assert row.sessions_invalidated_at.microsecond == 0
+        assert row.sessions_invalidated_at == expected_cutoff, (
+            f"sessions_invalidated_at must be exactly {expected_cutoff}, got "
+            f"{row.sessions_invalidated_at}"
+        )
 
 
 @pytest.mark.asyncio
@@ -304,7 +365,7 @@ async def test_fence_reactivation_refresh_cookie_survives_next_request(
     seed = await _seed_org_with_owner(session_factory)
     await _seed_soft_deleted_member(session_factory, org_id=seed["org_id"])
 
-    _freeze(monkeypatch, _instant_with_microseconds(500_001))
+    _freeze(monkeypatch, _instant_with_microseconds(CUTOFF_MICROSECONDS))
 
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -337,7 +398,7 @@ async def test_fence_reactivated_user_is_not_anonymous_on_optional_auth(
     seed = await _seed_org_with_owner(session_factory)
     user_id = await _seed_soft_deleted_member(session_factory, org_id=seed["org_id"])
 
-    _freeze(monkeypatch, _instant_with_microseconds(500_001))
+    _freeze(monkeypatch, _instant_with_microseconds(CUTOFF_MICROSECONDS))
 
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -374,10 +435,10 @@ async def test_guard_stale_pre_reactivation_token_is_still_rejected(
     user_id = await _seed_soft_deleted_member(session_factory, org_id=seed["org_id"])
 
     # Mint the pre-existing session token a full minute before the accept.
-    _freeze(monkeypatch, _instant_with_microseconds(500_001, shift_seconds=-60))
+    _freeze(monkeypatch, _instant_with_microseconds(CUTOFF_MICROSECONDS, shift_seconds=-60))
     stale_access = create_access_token(user_id, seed["org_id"], Role.MEMBER.value)
 
-    _freeze(monkeypatch, _instant_with_microseconds(500_001))
+    _freeze(monkeypatch, _instant_with_microseconds(CUTOFF_MICROSECONDS))
 
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -411,7 +472,7 @@ async def test_guard_reactivation_leaves_the_rest_of_the_row_alone(
     seed = await _seed_org_with_owner(session_factory)
     user_id = await _seed_soft_deleted_member(session_factory, org_id=seed["org_id"])
 
-    _freeze(monkeypatch, _instant_with_microseconds(500_001))
+    _freeze(monkeypatch, _instant_with_microseconds(CUTOFF_MICROSECONDS))
 
     app = _make_app(session_factory)
     with TestClient(app) as client:
