@@ -220,6 +220,19 @@ async def _settled(db, org, acct, *, amount, tx_type="expense", d=date(2026, 6, 
         type=tx_type, status="settled", date=d))
 
 
+async def _pending(db, org, acct, *, amount, tx_type="expense", d=date(2026, 6, 1)):
+    """Create a PENDING row through the real create path.
+
+    ``_create_transaction_no_commit`` calls ``apply_balance`` only for SETTLED
+    rows, so a row created here is deliberately NOT inside ``accounts.balance``.
+    The caller asserts that rather than trusting it.
+    """
+    return await ts.create_transaction(db, org.id, TransactionCreate(
+        account_id=acct.id, category_id=await _cat_id(db, org),
+        description=f"pending-{amount}", amount=Decimal(amount),
+        type=tx_type, status="pending", date=d))
+
+
 async def _transition(db, org, tx, *, target_state, link_to=None):
     """Drive the REAL balance bookkeeping for a reconcile state transition.
 
@@ -448,3 +461,59 @@ async def test_reconcile_still_detects_real_drift(db_session):
     assert stored == Decimal("999.00")
     assert computed == Decimal("940.00")
     assert consistent is False
+
+
+@pytest.mark.asyncio
+async def test_reconcile_excludes_pending_rows(db_session):
+    """FENCE (TBD-303 follow-up). Kills: dropping
+    ``Transaction.status == TransactionStatus.SETTLED`` from either
+    ``reconcile_account`` subquery.
+
+    The docstring has always claimed "Only settled transactions are included
+    in the computation", but nothing pinned it -- the whole reconcile-relevant
+    suite stayed green with the SETTLED gate deleted, because no fixture
+    anywhere seeded a PENDING row and called ``reconcile_account``. The
+    TBD-303 ``contributes`` clause sits directly under that gate, so it is
+    fenced here.
+
+    A PENDING row's amount is virtual: ``_create_transaction_no_commit``
+    calls ``apply_balance`` only for SETTLED rows. So the pending amounts are
+    NOT in ``accounts.balance`` and must not be in ``computed``.
+
+    ⚠ NON-VACUITY: the two pending amounts (500 expense / 40 income) are
+    distinct and do NOT net to zero. A symmetric pair would cancel inside
+    ``income - expense`` and the gated and un-gated implementations would
+    agree on the fixture, pinning nothing. Here the three leak shapes are all
+    distinguishable from the correct 1100.00:
+        both sides leak  -> 640.00   (1100 + 40 - 500)
+        income only      -> 1140.00
+        expense only     ->  600.00
+    """
+    db = db_session
+    org, acct = await _seed(db, opening="1000.00")
+
+    await _settled(db, org, acct, amount="100.00")
+    await _settled(db, org, acct, amount="200.00", tx_type="income",
+                   d=date(2026, 6, 2))
+    await db.refresh(acct)
+    assert acct.balance == Decimal("1100.00")       # 1000 - 100 + 200
+
+    pend_exp = await _pending(db, org, acct, amount="500.00", d=date(2026, 6, 3))
+    pend_inc = await _pending(db, org, acct, amount="40.00", tx_type="income",
+                              d=date(2026, 6, 4))
+    await db.refresh(acct)
+    # The invariant under test: pending amounts never entered the balance.
+    assert acct.balance == Decimal("1100.00")
+    assert pend_exp.status == TransactionStatus.PENDING
+    assert pend_inc.status == TransactionStatus.PENDING
+    # CONTROL: the pending rows are ordinary in every other respect, so they
+    # are NOT dropped by the TBD-303 clause -- only by the SETTLED gate.
+    assert pend_exp.linked_transaction_id is None
+    assert pend_inc.linked_transaction_id is None
+    assert pend_exp.reconciliation_state == "accepted"
+    assert pend_inc.reconciliation_state == "accepted"
+
+    stored, computed, consistent = await ts.reconcile_account(db, org.id, acct)
+    assert stored == Decimal("1100.00")
+    assert computed == Decimal("1100.00")
+    assert consistent is True
