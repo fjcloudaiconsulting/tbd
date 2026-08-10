@@ -37,6 +37,7 @@ from app.services.exceptions import ConflictError, NotFoundError, ValidationErro
 from app.services.list_query import resolve_order_by
 from app.services.transaction_filters import (
     REVERTED_RECONCILIATION_STATES,
+    balance_contribution_filter,
     contributes_to_cached_balance,
     effective_period_date_expr,
     is_reciprocal_pair,
@@ -2877,13 +2878,34 @@ async def reconcile_account(
     db: AsyncSession, org_id: int, account: Account
 ) -> tuple[Decimal, Decimal, bool]:
     """Returns (stored_balance, computed_balance, is_consistent).
-    Only settled transactions are included in the computation."""
+    Only settled transactions are included in the computation.
+
+    TBD-303: both sums are gated on ``balance_contribution_filter()`` -- the
+    SAME clause that defines which rows make up ``accounts.balance``. Without
+    it this query counted rows whose contribution
+    ``reconciliation_service._apply_balance_for_transition`` had already
+    REVERTED out of the cached balance (matched / skipped / rejected), so any
+    account holding one reported ``is_consistent=False`` permanently.
+
+    The filter goes on BOTH subqueries. Gating only one drifts ``computed``
+    by the other side's excluded rows -- a half-fix that swaps a permanent
+    false negative for a smaller one.
+
+    It is deliberately NOT ``reportable_transaction_filter()``: that one also
+    drops reciprocal transfer legs and manual balance adjustments, both of
+    which ARE inside ``accounts.balance`` and must stay inside ``computed``.
+    Nor ``non_reverted_transaction_filter()``: MATCHED is excluded by the
+    ONE-WAY LINK, not by any state clause, so a state-only filter leaves the
+    matched duplicate double-counted.
+    """
+    contributes = balance_contribution_filter()
     income = await db.scalar(
         select(func.coalesce(func.sum(Transaction.amount), 0)).where(
             Transaction.account_id == account.id,
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.INCOME,
             Transaction.status == TransactionStatus.SETTLED,
+            contributes,
         )
     )
     expense = await db.scalar(
@@ -2892,6 +2914,7 @@ async def reconcile_account(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.SETTLED,
+            contributes,
         )
     )
     # The live balance is seeded from opening_balance at creation and then
