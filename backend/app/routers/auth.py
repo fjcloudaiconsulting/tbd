@@ -366,6 +366,27 @@ async def register(
         role=Role.OWNER,
         is_superadmin=is_first_user,
         is_founder=True,
+        # TBD-344: the bootstrap account is verified at creation. The column is
+        # `server_default="0"` with no Python default, so omitting it here made
+        # EVERY user unverified, and `/login` below 403s an unverified user
+        # unconditionally. That broke both documented register-then-login
+        # callers — the first-user `/setup` bootstrap (README, CONTRIBUTING) and
+        # `seed.py` — on 100% of fresh installs. The operator of a brand-new
+        # install has no mailbox wired up yet and no second account to let them
+        # back in, so the one account that cannot be locked out is this one.
+        #
+        # ⚠ `is_first_user_setup` (user_count == 0), NEVER `is_first_user`
+        # (existing_superadmin == 0). See the audit comment below: the two
+        # predicates deliberately diverge. Keying this to `is_first_user` would
+        # mean that on any deployment where the superadmins were demoted or
+        # deleted, the next public self-signup from the open internet receives
+        # superadmin, a verified email, and an immediately usable session — a
+        # live privilege escalation. Only an EMPTY `users` table earns the
+        # bypass, because only then is there provably no one else to attack.
+        #
+        # The fix is at the mint, not at the check: `/login`'s gate is
+        # untouched, and no environment or role exempts anyone from it.
+        email_verified=is_first_user_setup,
     )
     db.add(user)
     try:
@@ -443,6 +464,14 @@ async def register(
             "method": "password",
             "is_first_user": is_first_user_setup,
             "granted_superadmin": is_first_user,
+            # TBD-344: which predicate granted the email-verification bypass.
+            # This block already records both first-ness flags BECAUSE they
+            # diverge; a bootstrap row has to show which one minted verification
+            # or the escalation described at the `User(...)` constructor above
+            # is invisible in `audit_events` after the fact. It reads as a
+            # duplicate of `is_first_user` today and that is the point — the day
+            # it stops matching is the day the constructor was rekeyed.
+            "email_verified_on_create": is_first_user_setup,
             "captcha_required": app_settings.captcha_required,
         },
     )
