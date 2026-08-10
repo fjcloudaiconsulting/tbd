@@ -384,6 +384,15 @@ def _launch(
     than silently swallowed.
     """
     if broadcast_id in _ACTIVE_DRAINS:
+        # Observable, not silent (TBD-358). The no-op itself is correct — it is
+        # the Ruling 3b mutual exclusion — but a SILENT return is not. If the
+        # registry ever holds a stale id (an entry whose task died without its
+        # done-callback running, e.g. a task destroyed mid-flight), every later
+        # launch for that id becomes a no-op with no task, no log and no
+        # signal, and anything downstream that assumes "a drain ran" succeeds
+        # vacuously. ``info``, not ``warning``: a genuine concurrent second
+        # launch is the expected, healthy shape of this branch.
+        logger.info("broadcast_drain_already_active", broadcast_id=broadcast_id)
         return
     _ACTIVE_DRAINS.add(broadcast_id)
     task = asyncio.create_task(coro_fn(session_factory, broadcast_id))
