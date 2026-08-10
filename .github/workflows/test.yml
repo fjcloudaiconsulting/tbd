@@ -1,21 +1,35 @@
 name: Test
 
+# NO `paths:` FILTER, DELIBERATELY (TBD-347). Do not reintroduce one.
+#
+# `Backend Checks` and `Frontend Checks` are REQUIRED status checks on `main`.
+# A required context that never reports blocks its PR forever on "Expected —
+# waiting for status to be reported", so any path filter here turns a
+# docs-only PR into a permanently unmergeable one. Measured before this
+# change: 4 of the last 12 merged PRs (#631, #638, #639, #640 — all
+# docs/specs-only) carried ZERO GitHub Actions check-runs and would have been
+# stuck.
+#
+# The filter previously existed to conserve Actions minutes. This repository
+# is PUBLIC, where GitHub-hosted standard runners are free and unmetered, so
+# it was saving nothing. The cost of removing it is ~8 minutes of wall clock
+# on the minority of PRs that touch no code.
+#
+# The rejected alternative — a mirrored `paths-ignore` workflow whose jobs
+# carry identical `name:` strings and `exit 0` — requires two hand-maintained
+# lists to stay exact inverses forever. The first drift makes a PR match both,
+# two runs report the same context name, and a real red suite can be
+# overwritten by the stub. That is this repo's half-fix-leaves-a-door pattern
+# with the door installed on purpose.
 on:
   pull_request:
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - ".github/workflows/test.yml"
-      # `scripts/regen_feature_catalog_fixture.py` is the generator that
-      # `tests/test_feature_catalog_frontend_contract.py` backstops, and
-      # `.do/app.yaml` + `deploy.yml` are the marker files that test's repo-root
-      # walk depends on. Without these entries a PR touching only one of them
-      # does not trigger this workflow, so the guard's own breakage is
-      # invisible to CI — the "DEVELOPER-gated, not CI-gated" hazard the
-      # sibling contract test documents.
-      - "scripts/**"
-      - ".do/**"
-      - ".github/workflows/deploy.yml"
+  # Post-merge run on `main`. This is the deliberate substitute for branch
+  # protection's `strict: true` (which would force every PR up-to-date and
+  # serialize merges behind a full ~8-minute re-run). Two PRs can each be
+  # green in isolation and conflict semantically once both land; no PR check
+  # can see that. This makes it visible within one run of the merge instead.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -23,7 +37,15 @@ permissions:
 
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # ⚠ PR runs cancel their own superseded runs; `main` runs MUST NOT.
+  # On push, `github.ref` is `refs/heads/main` for every merge, so all
+  # post-merge runs share one concurrency group. With a blanket
+  # `cancel-in-progress: true` each merge cancels the previous merge's run —
+  # measured burst: four merges inside fifteen minutes on 2026-08-09 — so the
+  # conflict introduced by merge N is cancelled by merge N+1 and never
+  # reported. That silently defeats the `push:` trigger above in exactly the
+  # conditions it exists for.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Backend pytest is sharded across N parallel groups via pytest-split.
@@ -102,6 +124,65 @@ jobs:
     needs: [backend-shard, migrations]
     if: ${{ always() }}
     steps:
+      # ⚠ THE WIRING GUARD MUST STAY THE FIRST STEP IN THIS JOB.
+      # This job is `if: always()`. If the guard sat after the shard-result
+      # `exit 1` below, a failing shard would mask a wiring failure and the
+      # guard would only ever run on already-green builds.
+      - uses: actions/checkout@v4
+
+      # Only `Backend Checks` and `Frontend Checks` are required contexts on
+      # `main`. So a new top-level job added to this file WITHOUT wiring it
+      # into this aggregate's `needs:` reports an unrequired context: it goes
+      # red and the PR merges anyway. That is TBD-347's own defect at smaller
+      # scale, and worse than the original because by then CI is believed to
+      # be a floor.
+      #
+      # The fold-in convention (see the `Migration Checks` note below) was
+      # previously held by a comment. This turns it into a test.
+      - name: Verify every job in this workflow is wired into this gate
+        run: |
+          pip install --quiet pyyaml
+          python - <<'PY'
+          import pathlib, sys, yaml
+
+          # Jobs that ARE the gates, so they cannot depend on themselves.
+          ALLOWLIST = {"backend", "frontend"}
+
+          doc = yaml.safe_load(
+              pathlib.Path(".github/workflows/test.yml").read_text()
+          )
+          jobs = set(doc["jobs"])
+
+          # Positive baseline. Without this, a wrong path or a swallowed parse
+          # error yields an empty set and "no unwired jobs" passes vacuously —
+          # the unreachable-predicate class this repo has shipped before.
+          assert len(jobs) >= 4, f"parsed only {len(jobs)} job(s); expected >= 4"
+          assert "migrations" in jobs, f"did not find `migrations` in {sorted(jobs)}"
+
+          # Pin the allowlist itself. Otherwise the trivially-available fix for
+          # a red guard is to widen the allowlist, which re-opens the hole
+          # behind a green check. Widening it must be a deliberate two-place
+          # edit, not a reflex.
+          assert ALLOWLIST == {"backend", "frontend"}, (
+              f"allowlist was widened to {sorted(ALLOWLIST)}. Wire the new job "
+              "into `needs:` instead — the allowlist is only for the gates."
+          )
+
+          # Read `needs:` off the parsed YAML, never a hardcoded copy. A copy
+          # is a second source of truth that drifts and re-creates the defect
+          # inside the fix.
+          needs = set(doc["jobs"]["backend"].get("needs") or [])
+          unwired = sorted(jobs - (needs | ALLOWLIST))
+
+          if unwired:
+              print(f"Job(s) not wired into the `Backend Checks` gate: {unwired}")
+              print("Add them to `jobs.backend.needs` and assert their result,")
+              print("or they will report an unrequired context and merge red.")
+              sys.exit(1)
+
+          print(f"All {len(jobs)} jobs are wired into a required gate.")
+          PY
+
       - name: Verify all backend shards passed
         run: |
           if [ "${{ needs.backend-shard.result }}" != "success" ]; then
