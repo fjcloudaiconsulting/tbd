@@ -14,6 +14,9 @@ from decimal import Decimal
 
 import httpx
 from dateutil.relativedelta import relativedelta
+from sqlalchemy import text
+
+from app.database import async_session
 
 BASE = "http://localhost:8000"
 
@@ -64,12 +67,75 @@ def billing_period_outcome(r: httpx.Response) -> str:
     return "created"
 
 
+async def ensure_verified(username: str) -> None:
+    """Mark the seed user's email verified, so ``/auth/login`` will accept it.
+
+    ``POST /auth/login`` 403s any user with ``email_verified = 0`` and there
+    is no mailbox in a dev stack to click the link in. TBD-344 makes
+    ``/register`` verify the FIRST user on an empty ``users`` table, which
+    covers the common case, but not the two this script still hits:
+
+    * A machine that has already run ``./pfv seed`` once, from before that
+      fix, is WEDGED — the demo user exists and is unverified, so login 403s,
+      register 409s, and the script dies at its ``!= 201`` guard.
+    * ``SEED_USERNAME=alice`` (CONTRIBUTING, "Seeding mock data") registers a
+      SECOND user, where ``user_count > 0`` and no bypass applies.
+
+    ⚠ Direct DB write, deliberately, and NOT an HTTP token redemption: on a
+    wedged DB no HTTP response yields a ``user_id`` to mint a token for (the
+    login 403 detail carries none, the register 409 detail is a bare string,
+    and ``resend-verification-public`` is generic on purpose to prevent
+    account enumeration), so the token path would have to open a DB session
+    anyway and would only add a second thing to keep in sync.
+
+    ⚠ This is a PRECONDITION, not data. Everything this script seeds still
+    goes through the API — see ``billing_period_outcome`` above and the
+    contract-drift guard its docstring describes. Do not read this as
+    precedent for writing seed DATA out of band.
+
+    No-ops when the username does not exist: the UPDATE simply matches zero
+    rows, which is the correct behaviour on the cold-start path where the
+    account has not been registered yet.
+    """
+    async with async_session() as db:
+        result = await db.execute(
+            text("UPDATE users SET email_verified = 1 WHERE username = :u"),
+            {"u": username},
+        )
+        # Read rowcount before the commit purely so it cannot depend on cursor
+        # lifetime. Reading it afterwards is in fact safe for a
+        # single-parameter-set UPDATE — `CursorResult.rowcount` is a
+        # memoized_property and SQLAlchemy 2.0 transfers `cursor.rowcount` into
+        # the execution context BEFORE closing the cursor for exactly this
+        # statement shape (the `preserve_rowcount` execution option is what
+        # extends that to INSERT/SELECT/executemany, which this is not).
+        # Measured on MySQL 8 / aiomysql: 1 before commit, still 1 after the
+        # session closed AND after another session had churned the pool with a
+        # 3-row UPDATE. Ordering it this way just removes the need to know that
+        # rule to read the code.
+        changed = result.rowcount
+        await db.commit()
+    # `changed` is the MATCHED count, not the modified count: SQLAlchemy's MySQL
+    # dialect connects with CLIENT_FOUND_ROWS, so a no-op rewrite of a row that
+    # is already 1 still reports 1 — measured, and identical to SQLite. So this
+    # line prints whenever the account exists and stays quiet only when the
+    # username matched nothing, on both backends.
+    if changed:
+        print(f"   Marked {username}'s email verified")
+
+
 async def main():
     async with httpx.AsyncClient(base_url=BASE, timeout=30) as c:
         print("=== PFV2 Seed Script ===\n")
 
         # Auth
         print("1. Authenticating...")
+        # TBD-344, call 1 of 2 — MUST precede the first login. A machine that
+        # already ran ./pfv seed before the register fix has the demo user
+        # sitting unverified: login 403s, the register below 409s, and the
+        # `!= 201` guard returns before any data is seeded. Anything placed
+        # after that return is dead code on exactly the machines that need it.
+        await ensure_verified(USER["username"])
         r = await c.post("/api/v1/auth/login", json={"login": USER["username"], "password": USER["password"]})
         if r.status_code != 200:
             print("   User not found, registering...")
@@ -84,6 +150,11 @@ async def main():
             if r.status_code != 201:
                 print(f"   Registration failed: {r.text}")
                 return
+            # TBD-344, call 2 of 2 — the SEED_USERNAME=alice case. That is a
+            # second user, so `user_count > 0` and /register's bootstrap
+            # verification does not apply. Unconditional: on the cold-start
+            # path the row is already verified and this is a no-op write.
+            await ensure_verified(USER["username"])
             r = await c.post("/api/v1/auth/login", json={"login": USER["username"], "password": USER["password"]})
 
         token = r.json()["access_token"]
