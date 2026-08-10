@@ -335,13 +335,52 @@ async def accept_invitation(
     ).scalar_one_or_none()
 
     if existing is not None and existing.org_id == inv.org_id and not existing.is_active:
+        # An invitation carries an ORG role and must never write the PLATFORM
+        # flag — in either direction. REFUSE rather than clear: this endpoint is
+        # unauthenticated (public route POST /api/v1/orgs/invitations/accept),
+        # and clearing here would make it the only path in the codebase able to
+        # drive count(is_superadmin) to 0. The register and Google bootstraps
+        # (auth.py:350-353, auth.py:3377-3380) count that flag with NO is_active
+        # filter, so reaching 0 re-arms them and mints a superadmin for the next
+        # arbitrary signup. Matches admin_users_service.py:140 and
+        # admin_org_members_service.py:134, which both refuse rather than mutate
+        # a superadmin. Recovery is out-of-band, as every superadmin grant
+        # already is.
+        #
+        # Raised BEFORE any attribute assignment on ``existing`` so a refused
+        # accept leaves the user row untouched and ``inv.accepted_at`` still
+        # None: no autoflush can persist a partial reactivation, and the org
+        # admin can still revoke the invitation.
+        if existing.is_superadmin:
+            raise ConflictError(
+                "This account holds a platform role and cannot be reactivated "
+                "through an organization invitation. Contact platform support."
+            )
         # Reactivation: keep the row, refresh credentials, kill old
         # sessions atomically with marking the invite accepted.
         existing.is_active = True
         existing.role = inv.role
         existing.password_hash = hash_password(password)
-        existing.password_changed_at = now
-        existing.sessions_invalidated_at = now
+        # Whole-second session cutoff. The router mints an access token and
+        # a refresh session immediately after this returns, and both stamp
+        # "iat": int(now.timestamp()) — floored to a whole second. Every
+        # validator (deps.get_current_user, deps.get_current_user_optional,
+        # auth./refresh) compares `token_issued_at < token_cutoff(user)`
+        # with a strict `<`, and token_cutoff is max(password_changed_at,
+        # sessions_invalidated_at). A microsecond-bearing cutoff therefore
+        # rejects the very credentials this request just issued.
+        #
+        # BOTH columns must be floored: max() means flooring only one lets
+        # the other supply the identical sub-second cutoff.
+        #
+        # Floored at the WRITE site, not inside token_cutoff: these are
+        # fsp-0 MySQL DATETIME columns and MySQL 8.0's default sql_mode
+        # ROUNDS fractional seconds on insert (measured on 8.0.46 — .5+
+        # rounds up to the next second). Truncating on read cannot undo a
+        # value that was already rounded UP past the token's iat.
+        cutoff = now.replace(microsecond=0)
+        existing.password_changed_at = cutoff
+        existing.sessions_invalidated_at = cutoff
         existing.email_verified = True
         inv.accepted_at = now
         inv.open_email = None
