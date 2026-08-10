@@ -25,8 +25,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
@@ -38,6 +40,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -59,15 +62,28 @@ from app.routers.admin_broadcasts import router as admin_broadcasts_router
 from app.security import hash_password
 from app.services import broadcast_service
 from app.services.email_service import BatchSendResult, SendDisposition
+# ⚠ The MODULE import is load-bearing, not a stylistic accident, and this
+# split is deliberate. ``broadcast_drains.quiesce_broadcast_drains(...)``
+# resolves the attribute at CALL time, which is the only reason the teardown
+# ordering fence below can monkeypatch it with a spy; a
+# ``from ... import quiesce_broadcast_drains`` here would bind the function
+# object at import time and silently make that fence unfalsifiable. Do not
+# "tidy" these two lines into one. ``await_broadcast_drains`` is never spied,
+# so it is imported directly.
+from tests import broadcast_drains
+from tests.broadcast_drains import await_broadcast_drains
 from tests.factories import make_test_app
 
 
-@pytest_asyncio.fixture
-async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    """A FILE-backed (not ``:memory:``) sqlite engine, deliberately.
+@asynccontextmanager
+async def _broadcast_session_factory() -> AsyncIterator[
+    async_sessionmaker[AsyncSession]
+]:
+    """The ``session_factory`` fixture body, as a context manager.
 
-    This test suite has a genuinely concurrent background asyncio task (the
-    drain launched by ``POST /send``) whose own session runs at the same
+    A FILE-backed (not ``:memory:``) sqlite engine, deliberately. This test
+    suite has a genuinely concurrent background asyncio task (the drain
+    launched by ``POST /send``) whose own session runs at the same
     wall-clock time as the test's polling ``GET`` requests. An in-memory
     ``StaticPool`` engine hands out the exact same single physical
     connection to every session, so two concurrently-open sessions share one
@@ -75,6 +91,22 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     as the drain permanently stalling at N-1 of N recipients). A temp-file
     database with the default pool gives each ``session_factory()`` call its
     own real connection, which is what actual concurrent use looks like.
+
+    ⚠ The finalizer's step order is load-bearing (TBD-358), and so is the
+    choice to put the drain quiesce HERE rather than in ``_clean_registries``.
+    Measured: pytest sets autouse fixtures up BEFORE explicitly-requested
+    same-scope ones, so ``_clean_registries`` finalizes LAST — after this
+    engine is disposed and ``path`` is unlinked. Cancelling a live drain from
+    there would land after its database is already gone, which trades one
+    flake for another. This finalizer runs FIRST, while the engine, the temp
+    file and every autouse monkeypatch (``send_batch``, pacing) are all still
+    alive, so it is the only correct place for the quiesce — and the quiesce
+    goes before ``engine.dispose()``, never after.
+
+    Exposed as a context manager (rather than living inline in the fixture)
+    so a fence can drive this exact teardown at a deterministic point inside
+    a test body; see
+    ``test_session_factory_quiesces_pending_drains_before_disposing``.
     """
     fd, path = tempfile.mkstemp(suffix=".sqlite3")
     os.close(fd)
@@ -95,8 +127,42 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     try:
         yield factory
     finally:
+        await broadcast_drains.quiesce_broadcast_drains()
         await engine.dispose()
         os.unlink(path)
+
+
+@pytest_asyncio.fixture
+async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    async with _broadcast_session_factory() as factory:
+        yield factory
+
+
+@pytest.fixture
+def _spy_broadcast_session_factory(monkeypatch) -> list[str]:
+    """Record every call to ``_broadcast_session_factory``; return the log.
+
+    ⚠ A test using this MUST request it BEFORE ``session_factory`` in its
+    signature. Measured: same-scope fixtures are instantiated in request
+    order, so listing the spy second would let ``session_factory`` resolve
+    against the un-spied module attribute. Installing the spy in a test BODY
+    is later still — every fixture is already set up by then.
+
+    Patches the MODULE attribute, so it only sees a call that went through
+    the module-global name. That is precisely the point: it is what
+    distinguishes a ``session_factory`` fixture that delegates to the shared
+    context manager from one that has been rewritten to inline its own engine
+    setup and quietly bypass the drain quiesce.
+    """
+    calls: list[str] = []
+    real = _broadcast_session_factory
+
+    def spy(*args, **kwargs):
+        calls.append("called")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_broadcast_session_factory", spy)
+    return calls
 
 
 @pytest.fixture(autouse=True)
@@ -107,7 +173,16 @@ def _fast_pacing(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _clean_registries():
-    """Isolate the module-level drain registries between tests."""
+    """Isolate the module-level drain registries between tests.
+
+    ⚠ Clearing is ISOLATION, never cleanup (TBD-358). ``_DRAIN_TASKS`` holds
+    the only strong reference to a live drain task, so clearing it while a
+    task is still pending is the one thing the set exists to prevent. The
+    cancel-and-await that has to happen first lives in
+    ``_broadcast_session_factory``'s finalizer, which — unlike this autouse
+    fixture — runs while the database is still alive. Do not "fix" a leak by
+    adding a ``cancel()`` here; read that finalizer's docstring first.
+    """
     broadcast_service._ACTIVE_DRAINS.clear()
     broadcast_service._DRAIN_TASKS.clear()
     yield
@@ -253,11 +328,22 @@ async def _wait_for_terminal_status(client, broadcast_id, timeout=5.0):
 
     The drain launched by POST /send runs as a bare tracked asyncio task
     (Ruling 1), not FastAPI's BackgroundTasks, so TestClient's synchronous
-    call for /send does not block until the drain finishes. TestClient
-    shares the pytest-asyncio test's event loop, so the polling wait MUST be
-    an ``await asyncio.sleep`` (not a blocking ``time.sleep``) — a blocking
-    sleep would freeze the single shared loop and starve the drain task of
-    any chance to run its own awaits.
+    call for /send does not block until the drain finishes.
+
+    ⚠ This is a status poll, NOT a wait on the drain task, and the two are
+    not interchangeable (TBD-358). A terminal status only means the drain
+    reached its last commit; the task itself may still be pending. Worse,
+    ``_run_drain_loop`` never flips a broadcast back to ``sending``, so on a
+    RESUME of an already-``completed`` broadcast this returns on its first
+    poll having waited for nothing at all. When what you need is "the drain
+    has finished", call ``await_broadcast_drains()``.
+
+    ⚠ The previous version of this docstring claimed "TestClient shares the
+    pytest-asyncio test's event loop". Measured 2026-08-09: it does NOT.
+    ``TestClient`` runs the app on an anyio blocking portal in a separate
+    thread with its own loop. The ``await asyncio.sleep`` below is still
+    right — ``httpx.ASGITransport`` elsewhere in this file DOES run on the
+    test's loop — but not for the reason that was written here.
     """
     deadline = time.monotonic() + timeout
     body = None
@@ -488,6 +574,11 @@ async def test_dry_run_then_send_drains_all_recipients(session_factory, _mock_se
         assert final["sent_count"] == 3
         assert final["failed_count"] == 0
         assert final["total_recipients"] == 3
+        # A terminal STATUS is not a finished TASK: the drain writes
+        # ``completed`` and only then unwinds its session. Small residual
+        # window, but a leaked task is attributed to a later test, so close
+        # it here rather than rely on teardown to mop up (TBD-358).
+        await await_broadcast_drains()
 
         # Second send on the same (now non-draft) broadcast is refused.
         second = client.post(
@@ -532,14 +623,21 @@ async def test_audit_events_carry_no_recipient_email(session_factory):
             },
         )
         await _wait_for_terminal_status(client, draft["id"])
-        client.post(f"/api/v1/admin/broadcasts/{draft['id']}/resume")
-        # Let the (no-op, nothing pending) resume drain settle before the
-        # TestClient context tears down its portal — an in-flight task
-        # abruptly cancelled by portal shutdown can take the shared
-        # in-memory sqlite connection down with it (StaticPool has exactly
-        # one physical connection), which would otherwise flake later
-        # queries in THIS test with "no such table".
-        await _wait_for_terminal_status(client, draft["id"])
+        await await_broadcast_drains()
+        assert (
+            client.post(f"/api/v1/admin/broadcasts/{draft['id']}/resume").status_code
+            == 200
+        )
+        # Wait on the resume's TASK, not on the broadcast's status (TBD-358).
+        # The comment that used to sit here said this second
+        # ``_wait_for_terminal_status`` "let the resume settle"; it did not.
+        # ``_run_drain_loop`` never flips a broadcast back to ``sending``, so
+        # the broadcast was already ``completed`` from the send above and the
+        # poll returned on its FIRST GET, with the resume task still pending.
+        # It was then abruptly cancelled by the ``TestClient`` portal shutting
+        # down at the end of this ``with`` block, mid-session, while the
+        # queries below still had to run against the same engine.
+        await await_broadcast_drains()
 
     recipient_emails = [
         "cust0@customer.io",
@@ -792,6 +890,15 @@ async def test_concurrent_send_returns_one_200_one_409_no_duplicate_materialize(
 
         res_a, res_b = await asyncio.gather(_send(), _send())
 
+        # The CAS winner launched a drain and nothing above waits for it
+        # (TBD-358). ⚠ This test is the one real cross-test leak in this
+        # file: ``httpx.ASGITransport`` runs the app in-process on the
+        # TEST's event loop (unlike ``TestClient``, which uses its own
+        # portal loop and cancels stragglers when its ``with`` block exits),
+        # so the task outlives the test body and is still pending when
+        # pytest-asyncio closes the loop at teardown.
+        await await_broadcast_drains()
+
     statuses = sorted([res_a.status_code, res_b.status_code])
     assert statuses == [200, 409], (res_a.text, res_b.text)
     loser = res_a if res_a.status_code == 409 else res_b
@@ -809,6 +916,9 @@ async def test_concurrent_send_returns_one_200_one_409_no_duplicate_materialize(
         broadcast = await db.get(EmailBroadcast, draft["id"])
     assert recipient_count == draft["recipient_count"]
     assert broadcast.total_recipients == draft["recipient_count"]
+    # The winner's drain really ran to the end — so the wait above is a wait,
+    # not a no-op that happened to find an empty registry.
+    assert broadcast.status == BroadcastStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -1014,3 +1124,102 @@ async def test_delete_requires_superadmin(session_factory):
     # The draft survives the forbidden attempt.
     async with session_factory() as db:
         assert await db.get(EmailBroadcast, draft["id"]) is not None
+
+
+# ── drain-task teardown (TBD-358) ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_session_factory_quiesces_pending_drains_before_disposing(
+    monkeypatch, _spy_broadcast_session_factory, session_factory
+):
+    """FENCE (TBD-358). Kills THREE named wrong implementations:
+
+    1. **clear-only teardown** — what this file shipped: the autouse
+       ``_clean_registries`` fixture calls ``_DRAIN_TASKS.clear()`` with no
+       ``cancel()`` and no ``await``. ``_DRAIN_TASKS`` holds the ONLY strong
+       reference to a live drain task (``broadcast_service.py``, Ruling 1), so
+       clearing it while the task is pending drops that reference on a live
+       task — ``Task was destroyed but it is pending!``, then
+       ``RuntimeError: Event loop is closed`` once the loop goes.
+    2. **right cancel, wrong place** — adding ``cancel()``/``gather()`` to
+       ``_clean_registries``. That fixture is autouse, so pytest sets it up
+       BEFORE the explicitly-requested ``session_factory`` and finalizes it
+       AFTER: the cancel would land once the engine is disposed and the temp
+       sqlite file unlinked. That trades one flake for another, so this fence
+       asserts the ORDER, not merely that a cancel happened.
+    3. **the right teardown, never reached** — a ``session_factory`` fixture
+       rewritten to inline its own engine setup, bypassing
+       ``_broadcast_session_factory`` and its quiesce entirely. Measured: with
+       only the two assertions above, that mutant is 48/48 GREEN, because
+       driving the context manager directly proves its internal ordering and
+       nothing whatever about the fixture that is supposed to call it. Hence
+       the ``_spy_broadcast_session_factory`` assertion below, which pins the
+       fixture→CM wiring.
+
+    Method: drive the real fixture body as a context manager so its finalizer
+    runs at a deterministic point inside this test, with ``AsyncEngine.dispose``
+    and the quiesce helper both spied to record the order they run in. The
+    real ``session_factory`` fixture is requested too — solely so the wiring
+    spy has something to observe.
+
+    The pending task goes through the real ``broadcast_service._launch`` —
+    real registry, real strong reference, real done-callback — running a
+    coroutine blocked on an ``asyncio.Event`` that is NEVER set, so the drain
+    is provably still pending when teardown starts. A drain left to complete
+    on its own (pacing 0 + a fast mocked ``send_batch``) finishes first and
+    makes any assertion about teardown vacuous. No database work is needed to
+    pin the ordering, so this one deliberately does none; the
+    ``send_batch``-blocked variant against a REAL ``_run_drain_loop`` lives in
+    ``tests/services/test_broadcast_drain.py``.
+    """
+    # The `session_factory` fixture resolved before this body ran, and the spy
+    # was installed before it (fixtures instantiate in request order). So this
+    # is a clean read: the fixture tests actually receive is the one whose
+    # teardown ordering the rest of this test pins.
+    assert _spy_broadcast_session_factory == ["called"], (
+        "the `session_factory` fixture must delegate to "
+        "`_broadcast_session_factory`; a fixture that inlines its own engine "
+        "setup silently skips the drain quiesce and every assertion below "
+        "still passes"
+    )
+
+    order: list[str] = []
+    entered = asyncio.Event()
+    never_released = asyncio.Event()
+
+    real_quiesce = broadcast_drains.quiesce_broadcast_drains
+
+    async def spy_quiesce(**kwargs):
+        order.append("quiesce")
+        return await real_quiesce(**kwargs)
+
+    real_dispose = AsyncEngine.dispose
+
+    async def spy_dispose(self, *args, **kwargs):
+        order.append("dispose")
+        return await real_dispose(self, *args, **kwargs)
+
+    monkeypatch.setattr(broadcast_drains, "quiesce_broadcast_drains", spy_quiesce)
+    monkeypatch.setattr(AsyncEngine, "dispose", spy_dispose)
+
+    async def _blocks_until_cancelled(_factory, _broadcast_id):
+        entered.set()
+        await never_released.wait()
+
+    async with _broadcast_session_factory() as factory:
+        broadcast_service._launch(factory, 4242, _blocks_until_cancelled)
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        task = next(iter(broadcast_service._DRAIN_TASKS))
+        assert not task.done(), "precondition: the drain must be provably pending"
+
+    assert task.done(), (
+        "teardown dropped the strong reference to a still-PENDING drain task "
+        "instead of cancelling and awaiting it"
+    )
+    assert task.cancelled()
+    assert order == ["quiesce", "dispose"], (
+        f"the drain must be quiesced while the database is still alive; got {order}"
+    )
+    assert broadcast_service._DRAIN_TASKS == set()
+    assert broadcast_service._ACTIVE_DRAINS == set()

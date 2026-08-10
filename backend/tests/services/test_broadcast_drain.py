@@ -43,6 +43,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 import pytest_asyncio
+import structlog.testing
 from sqlalchemy import event, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -60,6 +61,7 @@ from app.models.user import Organization, Role, User
 from app.security import hash_password
 from app.services import broadcast_service
 from app.services.email_service import BatchSendResult, SendDisposition
+from tests.broadcast_drains import quiesce_broadcast_drains
 
 # ``send_batch`` returns a TYPED result, not a bool (TBD-330). Every mock
 # here hands back one of these three. A stale mock still returning a bare
@@ -74,6 +76,33 @@ INDETERMINATE = BatchSendResult(
 
 @pytest_asyncio.fixture
 async def session_factory():
+    """⚠ UNFENCED DEFENSIVE CODE (TBD-358). Read this before trusting it.
+
+    The quiesce below must run BEFORE ``engine.dispose()``, and on a fixture
+    that finalizes BEFORE the autouse ``_clean_registries`` — pytest sets
+    autouse fixtures up first and so tears them down LAST, i.e. after this
+    engine is gone, which is why the cancel lives here and not there.
+
+    But nothing tests that. Measured: inverting these two lines, or deleting
+    the quiesce outright, leaves this file 22/22 GREEN. An earlier version of
+    this docstring pointed at
+    ``tests/routers/test_admin_broadcasts.py::
+    test_session_factory_quiesces_pending_drains_before_disposing`` as "the
+    fence for the equivalent ordering". That was FALSE, and it is exactly the
+    shape of claim that gets believed on sight: that fence lives in the router
+    module and drives the ROUTER module's context manager. It cannot see this
+    finalizer at all.
+
+    Left unfenced deliberately, rather than mirrored with a near-duplicate
+    ordering fence, because there is no defect behind it. Measured on
+    unmodified ``main``, counting ``Event loop is closed`` per run: this file
+    alone leaks 0, twice; the router file alone leaks 4, twice. Every launch
+    site in THIS file already awaits its own task explicitly, so the quiesce
+    is redundancy against a FUTURE test that forgets to — worth keeping, not
+    worth a second copy of the router suite's fence machinery. If a test here
+    ever does leak, fence it then, and mirror ``_broadcast_session_factory``
+    plus ``_spy_broadcast_session_factory`` from the router module to do it.
+    """
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -88,8 +117,11 @@ async def session_factory():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    await engine.dispose()
+    try:
+        yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    finally:
+        await quiesce_broadcast_drains()
+        await engine.dispose()
 
 
 @pytest.fixture(autouse=True)
@@ -100,7 +132,14 @@ def _fast_pacing(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _clean_registries():
-    """Isolate the module-level drain registries between tests."""
+    """Isolate the module-level drain registries between tests.
+
+    ⚠ Clearing is ISOLATION, never cleanup (TBD-358) — ``_DRAIN_TASKS`` holds
+    the only strong reference to a live drain task, so clearing it while a
+    task is pending is exactly what the set exists to prevent. The
+    cancel-and-await lives in ``session_factory``'s finalizer, which runs
+    before this one and while the engine is still alive.
+    """
     broadcast_service._ACTIVE_DRAINS.clear()
     broadcast_service._DRAIN_TASKS.clear()
     yield
@@ -1083,3 +1122,135 @@ async def test_fresh_drain_still_sends_rows_with_no_delivery_status(
     assert set(send_mock.await_args.args[0]) == {"user0@x.io", "user1@x.io"}
     statuses = await _recipient_statuses(session_factory, broadcast_id)
     assert all(s == RecipientStatus.SENT for s in statuses.values())
+
+
+# ── drain-task teardown + registry observability (TBD-358) ──────────────
+
+
+@pytest.mark.asyncio
+async def test_quiesce_cancels_and_awaits_a_still_pending_drain(
+    session_factory, monkeypatch
+):
+    """FENCE (TBD-358). Kills the clear-only teardown.
+
+    The named wrong implementation is the one both broadcast test modules
+    shipped: an autouse ``_clean_registries`` whose teardown is nothing but
+    ``_ACTIVE_DRAINS.clear(); _DRAIN_TASKS.clear()``. ``_DRAIN_TASKS`` exists
+    to hold the ONE strong reference that stops the GC collecting a task
+    mid-flight (``broadcast_service.py``, Ruling 1), so clearing it while a
+    task is pending drops that reference on a live task — the direct cause of
+    ``Task was destroyed but it is pending!`` and ``RuntimeError: Event loop
+    is closed``. Clearing is strictly worse than doing nothing.
+
+    Non-vacuity, deliberately:
+
+    * The drain is REAL — a real ``launch_drain`` into a real
+      ``_run_drain_loop``, blocked at the ``send_batch`` call on an
+      ``asyncio.Event`` that is NEVER set. With ``broadcast_pacing_seconds=0``
+      and the fast ``AsyncMock`` used everywhere else in this file, a drain
+      finishes on its own long before teardown, so a fence built on one would
+      be green against the clear-only implementation too.
+    * The assertion is ``task.done()`` / ``task.cancelled()``, NOT
+      "``_DRAIN_TASKS`` is empty" — the clear-only implementation empties it
+      just as thoroughly, which is what makes that check vacuous.
+    * It does not go anywhere near the ``Task was destroyed but it is
+      pending!`` stderr string: that is emitted by the GC through the loop's
+      exception handler at a nondeterministic moment, so keying on it is
+      flaky in both directions.
+    """
+    broadcast_id, _users, _recips = await _seed(session_factory, [{}, {}])
+
+    entered = asyncio.Event()
+    never_released = asyncio.Event()
+
+    async def blocking_send_batch(*_args, **_kwargs):
+        entered.set()
+        await never_released.wait()
+        return ACCEPTED
+
+    monkeypatch.setattr(broadcast_service, "send_batch", blocking_send_batch)
+
+    broadcast_service.launch_drain(session_factory, broadcast_id)
+    await asyncio.wait_for(entered.wait(), timeout=5.0)
+    task = next(iter(broadcast_service._DRAIN_TASKS))
+    assert not task.done(), "precondition: the drain must be provably pending"
+
+    settled = await quiesce_broadcast_drains()
+
+    assert task in settled
+    assert task.done(), (
+        "the teardown dropped the strong reference to a still-PENDING drain "
+        "task instead of cancelling and awaiting it"
+    )
+    assert task.cancelled()
+    assert broadcast_service._DRAIN_TASKS == set()
+    assert broadcast_service._ACTIVE_DRAINS == set()
+
+
+@pytest.mark.asyncio
+async def test_launch_on_an_already_active_id_logs_the_skip(
+    session_factory, monkeypatch
+):
+    """FENCE (TBD-358, DoD item 2). Kills the SILENT ``_ACTIVE_DRAINS`` return.
+
+    The ruling: the early return itself stays. It is the Ruling 3b
+    mutual-exclusion guard and changing it would re-open double-send. What is
+    wrong is that it was SILENT — no task, no log, no signal. A stale registry
+    entry (one whose task died without its done-callback running, which is
+    precisely what the drain-task leak this ticket fixes can produce) then
+    turns every later launch for that id into a no-op, and anything
+    downstream that assumes "a drain ran" passes VACUOUSLY. So the fix is
+    observability, not behaviour.
+
+    The entry is PRE-SEEDED on purpose. Calling ``launch_drain`` twice does
+    not reproduce the hazard — that is the healthy concurrent-launch path,
+    already covered by ``test_launch_drain_twice_runs_single_drain``, and the
+    clearing fixture means a genuinely stale entry never survives into a test.
+    The defect is a registry entry with no live task behind it, so the test
+    constructs exactly that.
+
+    ⚠ DO NOT reach for ``structlog.testing.capture_logs()`` here. This fence
+    was originally written that way and it was ORDER-DEPENDENT: green on the
+    file alone and on either half of the suite, RED in a full run. ``capture_logs``
+    swaps the processor chain on the GLOBAL structlog config, and several tests
+    in this suite reconfigure that global and never restore it — for example
+    ``tests/routers/test_transactions_suggestions.py`` calls
+    ``structlog.configure(...)`` with its own processors and ``wrapper_class``
+    and has no restore, unlike its siblings in ``test_broadcast_batch_primitives``
+    and ``test_notification_service``, which both put the original config back.
+    Whether the capture sees anything therefore depends on which files ran
+    first, which is exactly the "a red result you cannot trust" failure this
+    ticket exists to remove. Binding a recorder onto the module's own ``logger``
+    asserts the same thing — that the skip is observable — and is immune to
+    whatever any other test has done to the global configuration.
+    """
+    stale_id = 4242
+    broadcast_service._ACTIVE_DRAINS.add(stale_id)
+
+    calls: list[tuple[str, dict]] = []
+
+    class _Recorder:
+        """Records structlog-style calls without touching global config."""
+
+        def info(self, event, **kw):
+            calls.append((event, kw))
+
+        def warning(self, event, **kw):
+            calls.append((event, kw))
+
+        def error(self, event, **kw):
+            calls.append((event, kw))
+
+    monkeypatch.setattr(broadcast_service, "logger", _Recorder())
+
+    broadcast_service.launch_drain(session_factory, stale_id)
+
+    # GUARD (not the fence): the Ruling 3b no-op still holds — no second task.
+    assert broadcast_service._DRAIN_TASKS == set()
+
+    skips = [kw for event, kw in calls if event == "broadcast_drain_already_active"]
+    assert skips, (
+        "a launch skipped because of the registry must be observable; "
+        f"calls={calls}"
+    )
+    assert skips[0]["broadcast_id"] == stale_id
