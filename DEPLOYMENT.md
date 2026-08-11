@@ -21,8 +21,8 @@ Four production surfaces. Each has its own pipeline. Some changes fan out across
 flowchart LR
   dev[Contributor push to main] --> rel[Release workflow]
   dev --> apex[Apex Deploy workflow]
-  dev --> tfc1[TFC pfv]
-  dev --> tfc2[TFC pfv-apex]
+  dev --> tfc1[TFC data workspace]
+  dev --> tfc2[TFC apex workspace]
 
   rel -->|semantic-release published| do[DO App Platform pfv]
   do --> appurl[app.thebetterdecision.com]
@@ -533,9 +533,9 @@ flowchart TD
   front -- no --> infra{P in .do/** or nginx/** or Dockerfile*?}
   infra -- yes --> rel
   infra -- no --> tf1{P in infra/terraform/apex/**?}
-  tf1 -- yes --> tfapex[TFC pfv-apex apply waits on Confirm and Apply]
+  tf1 -- yes --> tfapex[TFC apex workspace apply waits on Confirm and Apply]
   tf1 -- no --> tf2{P in infra/terraform/**?}
-  tf2 -- yes --> tfpfv[TFC pfv apply waits on Confirm and Apply]
+  tf2 -- yes --> tfpfv[TFC data workspace apply waits on Confirm and Apply]
   tf2 -- no --> wf{P in .github/workflows/**?}
   wf -- yes --> nothing[Workflow file updated.<br/>Next matching trigger uses the new file.]
   wf -- no --> docs[Docs / memory / root-level only.<br/>Nothing fires.]
@@ -554,8 +554,8 @@ Concrete cases:
 | `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` (post-#267). `release.yml` does NOT fire (no path match). |
 | `frontend/lib/brand.ts` (feat) | Both `release.yml` AND `apex-deploy.yml`. |
 | `backend/alembic/versions/abc_new_migration.py` | `release.yml` -> deploy -> PRE_DEPLOY migrate applies it -> roll backend |
-| `infra/terraform/main.tf` | TFC `pfv` speculative plan on PR; apply waits on operator Confirm & Apply after merge |
-| `infra/terraform/apex/main.tf` | TFC `pfv-apex` speculative plan on PR; apply waits on operator Confirm & Apply after merge |
+| `infra/terraform/main.tf` | TFC `<data-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge |
+| `infra/terraform/apex/main.tf` | TFC `<apex-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge |
 | `.do/app.yaml` (chore) | `release.yml` fires but semantic-release does not bump. Operator must run `gh workflow run deploy.yml --ref main`. |
 | `.github/workflows/test.yml` | Triggers itself on PR (path is on its allowlist). On merge, nothing else fires. |
 | `README.md` or `CLAUDE.md` only | Nothing fires. |
@@ -621,8 +621,8 @@ If a migration **partially applies** and the job exits non-zero, the PRE_DEPLOY 
 | `deploy.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/deploy.yml` |
 | `apex-deploy.yml` runs (post-#267) | `https://github.com/flamarion/pfv/actions/workflows/apex-deploy.yml` |
 | `test.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/test.yml` |
-| TFC `pfv` (DO data droplet) | `https://app.terraform.io/app/<tfc-org>/workspaces/<data-workspace>` |
-| TFC `pfv-apex` (AWS apex) | `https://app.terraform.io/app/<tfc-org>/workspaces/<apex-workspace>` |
+| TFC `<data-workspace>` (DO data droplet) | `https://app.terraform.io/app/<tfc-org>/workspaces/<data-workspace>` |
+| TFC `<apex-workspace>` (AWS apex) | `https://app.terraform.io/app/<tfc-org>/workspaces/<apex-workspace>` |
 | DO App Platform deploys | DO console -> Apps -> `pfv` -> Activity |
 | Backend access logs (live) | DO console -> Apps -> `pfv` -> Runtime Logs -> backend component |
 | Frontend access logs (live) | DO console -> Apps -> `pfv` -> Runtime Logs -> frontend component |
