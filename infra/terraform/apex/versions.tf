@@ -1,21 +1,25 @@
 terraform {
   required_version = ">= 1.6"
 
-  # State + plan/apply runs live in Terraform Cloud (FlamaCorp/pfv-apex).
+  # State + plan/apply runs live in Terraform Cloud (FlamaCorp/tbd-apex).
   # The workspace is VCS-driven against this repo via the HCP Terraform
   # GitHub App, with working directory scoped to infra/terraform/apex/ and
   # trigger pattern infra/terraform/apex/**. Speculative plans fire on PR;
   # merges to main create runs that wait for manual Confirm & Apply in the
-  # TFC UI (auto-apply is intentionally off, matching the FlamaCorp/pfv
+  # TFC UI (auto-apply is intentionally off, matching the FlamaCorp/tbd
   # workspace policy for the data droplet).
   #
-  # NOTE: a dedicated workspace (pfv-apex) keeps the AWS apex provisioning
-  # isolated from the DigitalOcean data plane in FlamaCorp/pfv. Different
+  # NOTE: a dedicated workspace (tbd-apex) keeps the AWS apex provisioning
+  # isolated from the DigitalOcean data plane in FlamaCorp/tbd. Different
   # cloud, different blast radius, different state.
+  #
+  # ⚠ Renaming this workspace is NOT just an edit here: the name is also the
+  # AWS trust boundary via var.tfc_workspace_pattern. Read that variable's
+  # comment before touching either.
   cloud {
     organization = "FlamaCorp"
     workspaces {
-      name = "pfv-apex"
+      name = "tbd-apex"
     }
   }
 
