@@ -1,6 +1,6 @@
 # pfv terraform: apex landing (AWS S3 + CloudFront + ACM + IAM OIDC)
 
-Terraform Cloud workspace `FlamaCorp/pfv-apex` managing the AWS-side
+Terraform Cloud workspace `<tfc-org>/<apex-workspace>` managing the AWS-side
 infrastructure for the `thebetterdecision.com` apex marketing site.
 `app.thebetterdecision.com` stays on DigitalOcean App Platform. State and
 runs live in TFC; this directory holds the configuration.
@@ -31,7 +31,7 @@ plus the ACM-emitted validation CNAMEs).
 
 ## Workspace variables
 
-Set in TFC (`FlamaCorp/pfv-apex` -> Variables); never committed.
+Set in TFC (`<tfc-org>/<apex-workspace>` -> Variables); never committed.
 
 | Name | Kind | Sensitive | Description |
 |---|---|---|---|
@@ -69,7 +69,7 @@ Read from TFC -> Workspace -> Outputs after apply.
 - `route53_zone_id` -> the apex hosted zone ID. Used by the validation
   CNAMEs and the apex/www ALIAS records in this module.
 - `tfc_role_arn` -> set as `TFC_AWS_RUN_ROLE_ARN` env variable in the
-  `pfv-apex` workspace after the bootstrap apply. Lets TFC drop static
+  `<apex-workspace>` workspace after the bootstrap apply. Lets TFC drop static
   keys.
 
 ## Workflow
@@ -78,7 +78,7 @@ Read from TFC -> Workspace -> Outputs after apply.
   a TFC plan posted as a status check on the PR.
 - **Apply**: triggered on merge to `main`, gated on **manual confirm** in
   the TFC UI. Auto-apply is intentionally off, matching the
-  `FlamaCorp/pfv` (data droplet) workspace policy. No infra change ever
+  `<tfc-org>/<data-workspace>` (data droplet) workspace policy. No infra change ever
   lands without an operator clicking Confirm & Apply.
 - **Local CLI**: `terraform login` once, then
   `terraform -chdir=infra/terraform/apex plan` reaches the same remote
@@ -96,7 +96,7 @@ flip to OIDC immediately.
 
 1. In AWS, create an IAM user named `pfv-apex-bootstrap` with
    `AdministratorAccess`. Generate an access key pair.
-2. In TFC -> `FlamaCorp/pfv-apex` -> Variables, add:
+2. In TFC -> `<tfc-org>/<apex-workspace>` -> Variables, add:
    - `AWS_ACCESS_KEY_ID` (Environment, sensitive) = the key id
    - `AWS_SECRET_ACCESS_KEY` (Environment, sensitive) = the secret
    - `aws_account_id` (Terraform) = your 12-digit account id
@@ -111,7 +111,7 @@ flip to OIDC immediately.
    TFC UI. The run provisions S3, CloudFront, ACM (validates via DNS,
    takes 2-5 minutes), the OIDC providers, and the two IAM roles.
 6. **Switch TFC off static keys**:
-   - In TFC -> `FlamaCorp/pfv-apex` -> Variables, set:
+   - In TFC -> `<tfc-org>/<apex-workspace>` -> Variables, set:
      - `TFC_AWS_PROVIDER_AUTH` (Environment) = `true`
      - `TFC_AWS_RUN_ROLE_ARN` (Environment) = the `tfc_role_arn` output
        from the bootstrap apply (e.g.
@@ -321,8 +321,8 @@ break-glass CLI path is documented in PR-D's PR body.
 
 ## See also
 
-- `../README.md`: DO data droplet workspace (`FlamaCorp/pfv`)
-- `~/.claude/projects/-Users-fjorge-src-pfv/memory/project_apex_s3_cloudfront.md`:
+- `../README.md`: DO data droplet workspace (`<tfc-org>/<data-workspace>`)
+- `~/.claude/projects/-Users-flamarion-src-tbd/memory/project_apex_s3_cloudfront.md`:
   canonical plan and locked decisions (D1-D5)
-- `~/.claude/projects/-Users-fjorge-src-pfv/memory/feedback_terraform_vcs_only.md`:
+- `~/.claude/projects/-Users-flamarion-src-tbd/memory/feedback_terraform_vcs_only.md`:
   Terraform is VCS-driven; CLI is debug-only

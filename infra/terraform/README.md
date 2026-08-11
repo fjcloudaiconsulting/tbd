@@ -1,11 +1,11 @@
 # pfv terraform: DO data droplet
 
-Terraform Cloud workspace `FlamaCorp/pfv` managing the DigitalOcean
+Terraform Cloud workspace `<tfc-org>/<data-workspace>` managing the DigitalOcean
 infrastructure for the self-hosted MySQL + Redis pair behind `pfv`. State
 and runs live in TFC; this directory holds the configuration.
 
 > The apex landing (AWS S3 + CloudFront + ACM + IAM OIDC) lives in a
-> separate workspace `FlamaCorp/pfv-apex` with working directory
+> separate workspace `<tfc-org>/<apex-workspace>` with working directory
 > `infra/terraform/apex/` and trigger pattern `infra/terraform/apex/**`.
 > Keeping the AWS provisioning isolated from this DigitalOcean workspace
 > contains the blast radius and lets each workspace use its own auth
@@ -16,8 +16,8 @@ and runs live in TFC; this directory holds the configuration.
 
 | Resource | Purpose |
 |---|---|
-| `digitalocean_vpc` | Dedicated `10.42.0.0/24` VPC in region `ams3` |
-| `digitalocean_droplet` | `pfv-data-01`: `s-1vcpu-2gb` Ubuntu 24.04, hosts MySQL 8 + Redis |
+| `digitalocean_vpc` | Dedicated `<vpc-cidr>` VPC in region `<region>` |
+| `digitalocean_droplet` | `<data-droplet>`: `<droplet-size>` Ubuntu 24.04, hosts MySQL 8 + Redis |
 | `digitalocean_firewall` | SSH 22 from anywhere; MySQL 3306 / Redis 6379 / ICMP from the VPC only |
 | `digitalocean_project_resources` | Attaches the droplet to the existing DO `pfv` project |
 
@@ -74,7 +74,7 @@ resolves the right namespace inside the module.
 
 | Line | Monthly |
 |---|---|
-| `s-1vcpu-2gb` droplet | ~$12.00 |
+| `<droplet-size>` droplet | ~$12.00 |
 | DO weekly snapshots | $0 (disabled — nightly mysqldump cron is the durability floor) |
 | VPC + firewall + project attachment | $0 |
 | **Total** | **~$12.00** |

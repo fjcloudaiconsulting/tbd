@@ -48,7 +48,7 @@ Production env vars live in `.do/app.yaml` and are pushed with:
 doctl apps update <APP_ID> --spec .do/app.yaml
 ```
 
-The current production app ID is `3bcf70e8-2bae-4918-8297-ce430c79735e`.
+The current production app ID is `<app-id>`.
 
 `SECRET`-scoped values are encrypted as `EV[...]` blobs and safe to commit.
 See [Spec-sync hazards](#spec-sync-hazards-digitalocean-app-platform) below.
@@ -137,7 +137,7 @@ the Python backend. They must match the credentials embedded in
 | `MYSQL_USER` | yes | `pfv2` | `.env` | no | App-level MySQL user created at init. Must match `DATABASE_URL`. |
 | `MYSQL_PASSWORD` | yes | `pfv2_secret` | `.env` | yes (locally trivial) | `MYSQL_USER`'s password. Must match `DATABASE_URL`. |
 
-Production MySQL runs on the `pfv-data-01` droplet; credentials live in
+Production MySQL runs on the `<data-droplet>` droplet; credentials live in
 `DATABASE_URL` (SECRET) and not in any per-mysql-container env. See
 `infra/MIGRATION.md`.
 
@@ -284,7 +284,7 @@ Add or rotate these in the repo's GitHub Settings → Secrets and variables
 `.do/app.yaml` is the authoritative spec. Push with:
 
 ```bash
-doctl apps update 3bcf70e8-2bae-4918-8297-ce430c79735e --spec .do/app.yaml
+doctl apps update <app-id> --spec .do/app.yaml
 ```
 
 Any env var NOT listed in `.do/app.yaml` will be REMOVED from the live
@@ -412,7 +412,7 @@ set ONLY `app_spec_location` to avoid this trap. See
 After merging any change to `.do/app.yaml`, the owner runs:
 
 ```bash
-doctl apps update 3bcf70e8-2bae-4918-8297-ce430c79735e --spec .do/app.yaml
+doctl apps update <app-id> --spec .do/app.yaml
 ```
 
 Without that step, edits to `.do/app.yaml` do not take effect until the

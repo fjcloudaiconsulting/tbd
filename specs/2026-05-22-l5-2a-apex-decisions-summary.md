@@ -12,7 +12,7 @@ The L5.2a spec at `specs/apex-s3-cloudfront-l5-2a.md` still labels D1-D5 as "ope
 
 ## Current state
 
-`thebetterdecision.com` and `www.thebetterdecision.com` are served from AWS S3 + CloudFront in `eu-central-1` (Frankfurt), with ACM cert in `us-east-1` (CloudFront constraint), OAC-only access to the bucket, security headers via a response-headers policy, and a CloudFront Function handling `www` to apex 301 + S3 directory-index rewrites. `app.thebetterdecision.com` continues to serve from DigitalOcean App Platform (no Cloudflare CDN, no WAF in front of it). Cloudflare is in the trust boundary only via Turnstile CAPTCHA on `POST /api/v1/auth/register` (script + siteverify), not as DNS, CDN, or WAF for any host. Terraform Cloud workspace `FlamaCorp/pfv-apex` owns the AWS resources via OIDC workload identity; GitHub Actions deploys via OIDC into a least-privilege role pinned to `repo:flamarion/pfv:ref:refs/heads/main`. No long-lived AWS keys remain after bootstrap. Production data plane (MySQL, Redis) stays on the self-hosted `pfv-data-01` droplet in a private VPC, unchanged.
+`thebetterdecision.com` and `www.thebetterdecision.com` are served from AWS S3 + CloudFront in `eu-central-1` (Frankfurt), with ACM cert in `us-east-1` (CloudFront constraint), OAC-only access to the bucket, security headers via a response-headers policy, and a CloudFront Function handling `www` to apex 301 + S3 directory-index rewrites. `app.thebetterdecision.com` continues to serve from DigitalOcean App Platform (no Cloudflare CDN, no WAF in front of it). Cloudflare is in the trust boundary only via Turnstile CAPTCHA on `POST /api/v1/auth/register` (script + siteverify), not as DNS, CDN, or WAF for any host. Terraform Cloud workspace `<tfc-org>/<apex-workspace>` owns the AWS resources via OIDC workload identity; GitHub Actions deploys via OIDC into a least-privilege role pinned to `repo:flamarion/pfv:ref:refs/heads/main`. No long-lived AWS keys remain after bootstrap. Production data plane (MySQL, Redis) stays on the self-hosted `<data-droplet>` droplet in a private VPC, unchanged.
 
 ## Decisions table
 
@@ -54,7 +54,7 @@ Trade-offs reconciled:
 
 Recommendation: **confirm D2.A as final for the v1 footprint.** If AWS surface ever expands to multi-region, multi-app, or staging environments, revisit D2.B at that point.
 
-Downstream impact: shipped. The TFC workspace `FlamaCorp/pfv-apex` was created against the chosen account.
+Downstream impact: shipped. The TFC workspace `<tfc-org>/<apex-workspace>` was created against the chosen account.
 
 Confidence: **high.**
 

@@ -1,10 +1,10 @@
 # Migration runbook: managed MySQL + Redis -> self-hosted droplet
 
 Source of truth for moving prod data from DO Managed MySQL + Managed Redis to
-the new `pfv-data-01` droplet provisioned by `infra/terraform`.
+the new `<data-droplet>` droplet provisioned by `infra/terraform`.
 
 > **Status (2026-05-07).** The cutover described here has already been
-> executed; production runs against `pfv-data-01` and the managed services
+> executed; production runs against `<data-droplet>` and the managed services
 > have been decommissioned. The runbook is kept as a reference for any
 > future managed-to-droplet move (or as the canonical writeup of the path
 > we took). Variables like `<managed-host>`, `<APP_ID>`, and the secret
@@ -15,7 +15,7 @@ PFV dataset today. Mostly waiting on dump + import.
 
 ## Pre-flight checklist
 
-- [ ] TFC apply on `FlamaCorp/pfv` succeeded; droplet reachable via
+- [ ] TFC apply on `<tfc-org>/<data-workspace>` succeeded; droplet reachable via
       `ssh root@<public_ipv4>` (fetch the IP from TFC outputs or
       `terraform -chdir=infra/terraform output -raw droplet_public_ipv4`).
 - [ ] Ansible playbook applied; `mysql --version` and `redis-cli ping` work
@@ -29,7 +29,7 @@ PFV dataset today. Mostly waiting on dump + import.
       not the GitHub deploy action).
 
 > **Note on private-IP reachability.** App Platform cannot reach the droplet's
-> 10.42.x.x address until Step 0 below attaches the app to the VPC. Don't try
+> <vpc-cidr> address until Step 0 below attaches the app to the VPC. Don't try
 > to verify that before Step 0. To verify the *droplet side* end-to-end
 > earlier, spin up a one-shot droplet inside the VPC and run
 > `mysql -h <droplet_private_ipv4> -u pfv_app -p -e 'SELECT 1'` from there.
