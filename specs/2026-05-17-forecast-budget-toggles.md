@@ -2,7 +2,7 @@
 
 **Status:** design only, not yet implemented.
 **Date:** 2026-05-17.
-**Source:** workstream D of the 2026-05-17 parallel-team wave. Spec request at `~/.claude/projects/-Users-fjorge-src-pfv/memory/project_forecast_budget_enable_disable.md`.
+**Source:** workstream D of the 2026-05-17 parallel-team wave. Spec request at `~/.claude/projects/-Users-flamarion-src-tbd/memory/project_forecast_budget_enable_disable.md`.
 
 ## Goal
 
