@@ -1,7 +1,7 @@
 terraform {
   required_version = ">= 1.5.0"
 
-  # State + plan/apply runs live in Terraform Cloud (FlamaCorp/pfv).
+  # State + plan/apply runs live in Terraform Cloud (FlamaCorp/tbd).
   # The workspace is VCS-driven against this repo via the HCP Terraform
   # GitHub App, with working directory scoped to infra/terraform/ and
   # trigger pattern infra/terraform/** . Speculative plans fire on PR;
@@ -12,7 +12,7 @@ terraform {
   cloud {
     organization = "FlamaCorp"
     workspaces {
-      name = "pfv"
+      name = "tbd"
     }
   }
 

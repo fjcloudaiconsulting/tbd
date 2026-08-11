@@ -39,9 +39,19 @@ variable "tfc_organization" {
 }
 
 variable "tfc_workspace_pattern" {
-  description = "TFC workspace name pattern (supports glob via wildcard suffix on the OIDC sub claim) allowed to assume the apex provisioner role. Default pfv-apex* covers the apex workspace plus any future split (e.g. pfv-apex-staging)."
+  # ⚠ This value IS the AWS trust boundary for the apex workspace: it lands in
+  # the OIDC `sub` StringLike condition on aws_iam_role.tfc_apex_provisioner,
+  # which is managed BY the workspace it authorizes. Renaming the TFC workspace
+  # without changing this first denies AssumeRoleWithWebIdentity, and the
+  # workspace then cannot apply its own fix. That happened on 2026-08-11 during
+  # the pfv-apex -> tbd-apex rename; recovery was an out-of-band edit to the
+  # role's trust policy in AWS.
+  #
+  # If this ever needs to change again: widen to a pattern spanning both names,
+  # apply, rename, then narrow. Never rename first.
+  description = "TFC workspace name pattern (supports glob via wildcard suffix on the OIDC sub claim) allowed to assume the apex provisioner role. Must track the actual workspace name -- see the lockout note above before editing."
   type        = string
-  default     = "pfv-apex*"
+  default     = "tbd-apex*"
 }
 
 variable "noncurrent_version_expiration_days" {
