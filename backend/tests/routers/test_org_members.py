@@ -9,16 +9,18 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models import Base
+from app.models.audit_event import AuditEvent, AuditOutcome
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.org_members import router as org_members_router
@@ -58,12 +60,38 @@ def make_app(session_factory, current_user_factory):
         async with session_factory() as session:
             yield session
 
-    async def override_current_user(request: Request) -> User:
+    async def override_current_user(
+        request: Request, db: AsyncSession = Depends(get_db)
+    ) -> User:
         request.state.auth_method = "jwt"  # interactive-session guard (spec §7)
-        return await current_user_factory(session_factory)
+        # ⚠ TBD-364 (F-4b). The actor MUST be resolved on the REQUEST session,
+        # not a private one. Production `get_current_user` loads it from the
+        # request db (deps.py:52-55), so a later `db.rollback()` expires it and
+        # any subsequent `current_user.email` read lazy-loads → MissingGreenlet
+        # → 500 with zero audit rows.
+        #
+        # The previous harness returned a User loaded in its OWN session. That
+        # instance is absent from the request session's identity map, so
+        # rollback() provably could not expire it — and the
+        # "read the actor after the rollback" mutant stayed GREEN across the
+        # whole suite while being a 500 in production. Measured.
+        #
+        # FastAPI caches `get_db` per request, so this is the same session the
+        # handler holds.
+        detached = await current_user_factory(session_factory)
+        return (
+            await db.execute(select(User).where(User.id == detached.id))
+        ).scalar_one()
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_current_user] = override_current_user
+    # F-4a. Required so audit rows land in the test DB. WITHOUT this the real
+    # engine is used, the insert violates the audit_events FK (the actor does
+    # not exist there), record_audit_event swallows and returns None, and the
+    # row-count assertions fail LOUDLY with 0 rows. It is a harness
+    # precondition, not a vacuity risk — an earlier draft of the spec claimed
+    # the reverse and a build round measured it false.
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.include_router(org_members_router)
     return app
 
@@ -483,3 +511,206 @@ async def test_invitations_list_unknown_sort_is_400(session_factory):
     with TestClient(app) as client:
         res = client.get("/api/v1/orgs/invitations?sort_by=org_id")
     assert res.status_code == 400
+
+
+# ── TBD-364: org.member.remove.failed audit row ────────────────────────────
+#
+# Spec: specs/2026-08-11-tbd-364-remove-member-superadmin-guard.md
+
+
+async def _audit_rows(factory, event_type="org.member.remove.failed"):
+    """Rows for ONE event type. Never a bare table count — an unrelated
+    call site writing its own row would silently break a global count."""
+    async with factory() as db:
+        return list(
+            (
+                await db.execute(
+                    select(AuditEvent).where(AuditEvent.event_type == event_type)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def _add_member(factory, seed, **kw):
+    async with factory() as db:
+        u = User(
+            org_id=seed["org_id"],
+            password_hash=hash_password("pw-12345"),
+            is_active=kw.pop("is_active", True),
+            email_verified=True,
+            **kw,
+        )
+        db.add(u)
+        await db.commit()
+        return u.id
+
+
+@pytest.mark.asyncio
+async def test_delete_member_superadmin_409_and_audit_row(session_factory):
+    """F-4. The refusal is durable even though the business txn is abandoned.
+
+    Kills: a service-only fix with no router wiring (0 rows);
+    add_audit_event_to_session on this path (row discarded with the rollback);
+    reading target.role off a select(User) ENTITY after the rollback (500).
+    """
+    seed = await _seed(session_factory)
+    admin_id = await _add_member(
+        session_factory, seed, username="orgadmin",
+        email="orgadmin@acme.io", role=Role.ADMIN,
+    )
+    target_id = await _add_member(
+        session_factory, seed, username="platsa",
+        email="platsa@acme.io", role=Role.MEMBER, is_superadmin=True,
+    )
+    app = make_app(session_factory, _user_factory(Role.ADMIN))
+    with TestClient(app) as client:
+        res = client.delete(f"/api/v1/orgs/members/{target_id}")
+
+    assert res.status_code == 409
+    # The user-visible half. `detail` must stay a plain STRING carrying the
+    # explanatory sentence: frontend `extractErrorMessage` reads it straight
+    # through (api.ts) and MembersSection renders it. Shipping `detail=e.code`
+    # or a generic message would otherwise be green.
+    detail = res.json()["detail"]
+    assert isinstance(detail, str), f"detail must be a plain string, got {type(detail)}"
+    assert "platform role" in detail
+
+    rows = await _audit_rows(session_factory)
+    assert len(rows) == 1, f"expected exactly 1 audit row, got {len(rows)}"
+    row = rows[0]
+    assert row.outcome == AuditOutcome.FAILURE
+    assert row.actor_user_id == admin_id
+    assert row.actor_email == "orgadmin@acme.io"
+    assert row.target_org_id == seed["org_id"]
+    assert row.target_org_name == "Acme"
+    assert row.detail["reason"] == invitation_service.CODE_TARGET_IS_SUPERADMIN
+    assert row.detail["target_user_id"] == target_id
+    assert row.detail["target_role"] == "member"
+    assert row.detail["target_is_active"] is True
+
+    # The business txn was abandoned: the target must be untouched.
+    async with session_factory() as db:
+        target = (
+            await db.execute(select(User).where(User.id == target_id))
+        ).scalar_one()
+        assert target.is_active is True
+        assert target.sessions_invalidated_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario",
+    ["self_removal", "owner_removal_requires_owner", "target_is_platform_superadmin"],
+)
+async def test_every_router_reachable_refusal_writes_exactly_one_row(
+    session_factory, scenario
+):
+    """F-5. EVERY refusal reachable through HTTP is audited, not just the
+    superadmin one.
+
+    Kills: `if e.code == CODE_TARGET_IS_SUPERADMIN` in the router. With that
+    mutant, absence of a row becomes uninterpretable — an operator cannot
+    distinguish "nobody tried" from "someone tried and hit another guard".
+
+    ⚠ Only THREE of the four refusal branches are constructible here.
+    `last_active_owner` needs an actor who is an active OWNER of the org, who
+    is therefore counted alongside the target, so active_owners >= 2 always;
+    and get_current_user rejects inactive users. It is fenced at the service
+    layer instead (see test_remove_member_blocks_removing_last_owner).
+    """
+    seed = await _seed(session_factory)
+    if scenario == "self_removal":
+        actor_role, target_id = Role.OWNER, seed["owner_id"]
+    elif scenario == "owner_removal_requires_owner":
+        await _add_member(
+            session_factory, seed, username="orgadmin",
+            email="orgadmin@acme.io", role=Role.ADMIN,
+        )
+        actor_role, target_id = Role.ADMIN, seed["owner_id"]
+    else:
+        await _add_member(
+            session_factory, seed, username="orgadmin",
+            email="orgadmin@acme.io", role=Role.ADMIN,
+        )
+        target_id = await _add_member(
+            session_factory, seed, username="platsa",
+            email="platsa@acme.io", role=Role.MEMBER, is_superadmin=True,
+        )
+        actor_role = Role.ADMIN
+
+    app = make_app(session_factory, _user_factory(actor_role))
+    with TestClient(app) as client:
+        res = client.delete(f"/api/v1/orgs/members/{target_id}")
+
+    assert res.status_code == 409
+    rows = await _audit_rows(session_factory)
+    assert len(rows) == 1, f"{scenario}: expected 1 row, got {len(rows)}"
+    # Exact code equality — NEVER a message regex. Two distinct refusal
+    # messages here both contain the word "owner", which is how the
+    # pre-existing last-owner service test stayed vacuous for months.
+    assert rows[0].detail["reason"] == scenario
+
+
+@pytest.mark.asyncio
+async def test_delete_ordinary_member_still_works_and_writes_no_failure_row(
+    session_factory,
+):
+    """F-6. Control. Kills a blunt guard (`is not False`, a truthiness slip on
+    a NULL column, a guard on the wrong subject) and any audit write leaking
+    onto the success path under the failure event type."""
+    seed = await _seed(session_factory)
+    await _add_member(
+        session_factory, seed, username="orgadmin",
+        email="orgadmin@acme.io", role=Role.ADMIN,
+    )
+    target_id = await _add_member(
+        session_factory, seed, username="vic",
+        email="vic@acme.io", role=Role.MEMBER,
+    )
+    app = make_app(session_factory, _user_factory(Role.ADMIN))
+    with TestClient(app) as client:
+        res = client.delete(f"/api/v1/orgs/members/{target_id}")
+
+    assert res.status_code == 204
+    async with session_factory() as db:
+        target = (
+            await db.execute(select(User).where(User.id == target_id))
+        ).scalar_one()
+        assert target.is_active is False
+        assert target.sessions_invalidated_at is not None
+    assert await _audit_rows(session_factory) == []
+
+
+@pytest.mark.asyncio
+async def test_refusal_audit_ip_comes_from_the_single_client_ip_helper(
+    session_factory, monkeypatch
+):
+    """F-7. Kills `request.client.host`, which would record "testclient".
+
+    tests/test_no_raw_request_client.py forbids the raw read at AST level, but
+    its own docstring says it cannot catch a caller passing the WRONG value.
+    This closes that gap for this call site.
+    """
+    monkeypatch.setenv("PFV_RUNTIME", "app_platform")
+    seed = await _seed(session_factory)
+    await _add_member(
+        session_factory, seed, username="orgadmin",
+        email="orgadmin@acme.io", role=Role.ADMIN,
+    )
+    target_id = await _add_member(
+        session_factory, seed, username="platsa",
+        email="platsa@acme.io", role=Role.MEMBER, is_superadmin=True,
+    )
+    app = make_app(session_factory, _user_factory(Role.ADMIN))
+    with TestClient(app) as client:
+        res = client.delete(
+            f"/api/v1/orgs/members/{target_id}",
+            headers={"do-connecting-ip": "203.0.113.77"},
+        )
+
+    assert res.status_code == 409
+    rows = await _audit_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].ip_address == "203.0.113.77"
