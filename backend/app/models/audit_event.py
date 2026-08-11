@@ -118,6 +118,33 @@ The existing ``org.invitation.sent`` / ``org.invitation.accepted``
 event types gain a ``detail.via_platform_admin: true`` flag when
 issued by a superadmin acting on an org (no new event_type — the
 flag rides on the existing row). Implementation in PR 2.
+
+⚠ Neither of those two strings is emitted anywhere in ``app/`` today.
+This paragraph is a forward contract, not a description of shipped
+behaviour, and ``tests/models/test_audit_event_taxonomy.py`` asserts
+only that they appear *in this docstring*. Tracked in TBD-376.
+
+Tenant org-membership types (TBD-364):
+
+* ``org.member.remove.failed`` — ``DELETE /api/v1/orgs/members/{id}``
+  was refused. actor=the org ADMIN/OWNER who attempted it,
+  target_org_id=their org, ``outcome="failure"`` always. **Every**
+  refusal reason is emitted, not only the protected-target one, so
+  that ABSENCE of a row is interpretable — one-of-N coverage would
+  leave an operator unable to distinguish "nobody attempted a
+  removal" from "someone attempted one and hit a different guard".
+  ``detail.reason`` carries the ``invitation_service.CODE_*`` value
+  (``self_removal``, ``target_is_platform_superadmin``,
+  ``owner_removal_requires_owner``, ``last_active_owner``), alongside
+  ``target_user_id``, ``target_email``, ``target_role`` and
+  ``target_is_active``. The last of those distinguishes an attempt
+  against an already-locked-out account from a fresh lockout.
+  404s are deliberately not audited (different HTTP class; auditing
+  them opens the member-enumeration-probe question).
+
+  ⚠ The success counterpart ``org.member.removed`` is deliberately
+  NOT emitted yet — the name is reserved for TBD-375, which must
+  first rule on notification parity. Do not squat it.
 """
 from __future__ import annotations
 

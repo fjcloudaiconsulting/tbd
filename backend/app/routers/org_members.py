@@ -5,8 +5,9 @@ Mounted at `/api/v1/orgs`. Admin-gating uses `require_org_admin` from
 JWT in the URL is the proof of intent.
 """
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.org_permissions import require_org_admin
 from app.auth.pat import require_interactive_session
@@ -14,9 +15,10 @@ from app.config import settings as app_settings
 from sqlalchemy import select
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.user import Organization, Role, User
-from app.rate_limit import limiter
+from app.rate_limit import get_client_ip, limiter
+from app.services import audit_service
 from app.routers.auth import _clear_legacy_refresh_cookie, _issue_refresh_session
 from app.schemas.auth import TokenResponse
 from app.schemas.common import ListEnvelope
@@ -38,6 +40,13 @@ from app.services.exceptions import ConflictError, NotFoundError, ValidationErro
 
 
 router = APIRouter(prefix="/api/v1/orgs", tags=["org-members"])
+
+logger = structlog.stdlib.get_logger()
+
+
+def _request_id() -> str | None:
+    """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
+    return structlog.contextvars.get_contextvars().get("request_id")
 
 
 def _serialize_invitation(inv) -> InvitationResponse:
@@ -290,21 +299,119 @@ async def list_members(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_interactive_session)],
 )
+# Bounds audit_events growth now that every refusal writes a row. The cheapest
+# trigger needs no target row and no org state — an org admin looping
+# DELETE /members/<own_id> hits the self-removal refusal every time — and there
+# is no retention/purge job for audit_events. Deliberately generous: 30/minute
+# is far beyond any real bulk removal through the UI, so it bounds a loop
+# without constraining legitimate use. The audited org-admin sibling
+# (orgs.py, org rename) carries 10/hour; removal is more routine, hence looser.
+@limiter.limit("30/minute")
 async def remove_member(
     user_id: int,
+    request: Request,
     current_user: User = Depends(require_org_admin),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
+    # Snapshot the actor's scalars BEFORE the try. The refusal path rolls
+    # back, and Session.rollback() expires every loaded instance regardless of
+    # expire_on_commit (database.py:89) — current_user is loaded on THIS
+    # session (deps.py:52-55), so a later current_user.email read would
+    # lazy-load and raise MissingGreenlet, turning the 409 into a 500 and
+    # losing the audit row entirely. Pattern: admin_users.py:139-145.
+    actor_id = current_user.id
+    actor_email = current_user.email
+    actor_org_id = current_user.org_id
+
     try:
         await invitation_service.remove_member(
             db,
-            org_id=current_user.org_id,
+            org_id=actor_org_id,
             current_user=current_user,
             target_user_id=user_id,
         )
     except NotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
     except ConflictError as e:
+        # EVERY refusal is audited, not just the superadmin one. Auditing a
+        # single branch would make ABSENCE of a row uninterpretable: an
+        # operator could not tell "nobody attempted a removal" from "someone
+        # attempted one and hit a different guard".
+        #
+        # Columns, NOT the entity: a Row of plain scalars is a materialized
+        # tuple with no identity-map entanglement, so it survives the rollback
+        # below. select(User) followed by reading .role after the rollback is a
+        # MissingGreenlet. Re-applies the org scope so a refusal audit can
+        # never read a foreign-org row. Refusal path only — the successful
+        # delete pays zero extra queries. Safe to query here because the
+        # service raises before any mutation or flush.
+        row = (
+            await db.execute(
+                select(User.role, User.is_active, User.email, Organization.name)
+                .join(Organization, Organization.id == User.org_id)
+                .where(User.id == user_id, User.org_id == actor_org_id)
+            )
+        ).first()
+        # Label-addressed, not positional: reordering the columns above must
+        # not silently re-map these. `row.role` is a Role enum even on a
+        # columns-only SELECT — SQLAlchemy attaches the Enum result processor
+        # to the column expression's type, so this behaves identically on
+        # MySQL and SQLite. Same shape as the production path at
+        # import_service.py:80-88.
+        target_role = row.role.value if row else None
+        target_is_active = row.is_active if row else None
+        target_email = row.email if row else None
+        target_org_name = row.name if row else None
+
+        # ⚠ Rollback BEFORE the audit write, not after.
+        #
+        # Reversing the two does NOT risk a deadlock — the service issued only
+        # plain SELECTs, which take no record locks under InnoDB's consistent
+        # snapshot reads. The real cost is CONNECTION-POOL AMPLIFICATION: this
+        # request would hold its own connection while record_audit_event draws
+        # a second, doubling concurrent checkouts against pool_size /
+        # max_overflow (database.py). Under a burst of refusals the pool
+        # exhausts, record_audit_event raises TimeoutError — and it SWALLOWS
+        # it (audit_service.py) — so the audit row vanishes silently, which is
+        # the single outcome this change exists to prevent.
+        #
+        # get_db only closes, never rolls back, so this must be explicit.
+        # Pinned by an ordering fence: on SQLite/StaticPool both sessions share
+        # one connection, so no behavioural test on the CI backend can see it.
+        await db.rollback()
+
+        await logger.awarning(
+            "org.member.remove.failed",
+            actor_user_id=actor_id,
+            target_org_id=actor_org_id,
+            target_user_id=user_id,
+            reason=e.code,
+        )
+        # Independent session: the business txn is abandoned, but an attempt
+        # against a protected member must be durable regardless
+        # (audit_service.py:130-133).
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="org.member.remove.failed",
+            actor_user_id=actor_id,
+            actor_email=actor_email,
+            target_org_id=actor_org_id,
+            target_org_name=target_org_name,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="failure",
+            detail={
+                "target_user_id": user_id,
+                "target_email": target_email,
+                "target_role": target_role,
+                # Distinguishes "tried to lock one out" from "tried to remove
+                # an already-locked-out one" — legible only because the
+                # superadmin guard sits before the is_active early-return.
+                "target_is_active": target_is_active,
+                "reason": e.code,
+            },
+        )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

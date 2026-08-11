@@ -801,23 +801,179 @@ async def test_remove_member_blocks_removing_last_owner(session_factory):
         first_again = (
             await db.execute(select(User).where(User.id == owner_id))
         ).scalar_one()
-        # Now first owner tries to remove herself — last-owner guard kicks
-        # in via "can't remove yourself" first; build a separate scenario
-        # where ANOTHER owner removes the last remaining owner.
-        # Promote a second admin to the only-active owner-ish path:
-        member_id = await _add_user(
-            session_factory, org_id=org_id, username="admin2",
-            email="admin2@acme.io", role=Role.ADMIN,
-        )
-        admin = (
-            await db.execute(select(User).where(User.id == member_id))
+        assert first_again.is_active is True  # sole remaining ACTIVE owner
+        # ⚠ TBD-364 repair (F-10). This block previously passed an ADMIN actor
+        # and asserted `match="owner"`. For an ADMIN actor the
+        # ADMIN-cannot-remove-OWNER guard fires FIRST, and its message ("Only
+        # an owner can remove another owner") ALSO matches that regex — so this
+        # test had never once executed the last-active-OWNER guard it is named
+        # after. Both halves are repaired: the actor is now an OWNER, and the
+        # assertion is exact `code` equality rather than a regex two distinct
+        # messages satisfy.
+        #
+        # The actor must be an INACTIVE owner: the active-owner COUNT counts
+        # only ACTIVE owners, so an active-owner actor would be counted itself
+        # and the guard could never fire. That is also precisely why this
+        # branch is unreachable through the router (get_current_user rejects
+        # inactive users) — see the F-3 fence.
+        second_owner = (
+            await db.execute(select(User).where(User.id == second_owner_id))
         ).scalar_one()
-        # Admin can't remove owner anyway, so this guard chain
-        # effectively means: only a peer OWNER can remove an OWNER, and
-        # only if there are ≥2 OWNERs at the time. With first_again as
-        # the sole active OWNER, even another OWNER can't be the
-        # remover. Verify the explicit last-owner guard:
-        with pytest.raises(ConflictError, match="owner"):
+        assert second_owner.is_active is False  # removed above
+        assert second_owner.role == Role.OWNER
+        with pytest.raises(ConflictError) as excinfo:
             await invitation_service.remove_member(
-                db, org_id=org_id, current_user=admin, target_user_id=owner_id,
+                db,
+                org_id=org_id,
+                current_user=second_owner,
+                target_user_id=owner_id,
             )
+        assert excinfo.value.code == invitation_service.CODE_LAST_ACTIVE_OWNER
+
+
+# ── TBD-364: remove_member superadmin guard ────────────────────────────────
+#
+# Spec: specs/2026-08-11-tbd-364-remove-member-superadmin-guard.md
+#
+# ⚠ Do NOT add a `count(is_superadmin) == 1` assertion to any fence below.
+# Both bootstrap predicates count that flag with NO is_active filter
+# (routers/auth.py:351, routers/auth.py:3407), so a soft delete leaves the
+# count unchanged and such an assertion passes against the UNFIXED code.
+# The load-bearing assertion is `is_active is True`, read INSIDE the session:
+# the ConflictError path never commits, so a post-close read shows the
+# pre-mutation row and is green even against a mutate-then-raise guard.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_role", [Role.MEMBER, Role.ADMIN, Role.OWNER])
+async def test_remove_member_refuses_platform_superadmin(session_factory, target_role):
+    """F-1. An org ADMIN cannot remove a platform superadmin, and the row is
+    left completely untouched.
+
+    Kills: the shipped defect; a guard that mutates before raising; a
+    role-conditional guard (`... and target.role == Role.MEMBER`); a subject
+    swap (`if current_user.is_superadmin`) — the actor here is not one.
+
+    ⚠ Role.OWNER is the param that earns its keep. MEMBER and ADMIN traverse
+    byte-identical code, because every guard after the superadmin check
+    branches on `target.role == Role.OWNER`. Only the OWNER param exercises
+    the ordering ruling that the superadmin guard precedes BOTH owner guards
+    — and an org ADMIN removing a superadmin who is also an org OWNER is the
+    most operationally likely shape of this bug. Without it, a guard placed
+    after the ADMIN-cannot-remove-OWNER check would report
+    `owner_removal_requires_owner` (and audit the wrong reason) with the whole
+    suite green.
+    """
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    admin_id = await _add_user(
+        session_factory, org_id=org_id, username="orgadmin",
+        email="orgadmin@acme.io", role=Role.ADMIN,
+    )
+    target_id = await _add_user(
+        session_factory, org_id=org_id, username="platsa",
+        email="platsa@acme.io", role=target_role, is_superadmin=True,
+    )
+    async with session_factory() as db:
+        admin = (
+            await db.execute(select(User).where(User.id == admin_id))
+        ).scalar_one()
+        with pytest.raises(ConflictError) as excinfo:
+            await invitation_service.remove_member(
+                db, org_id=org_id, current_user=admin, target_user_id=target_id,
+            )
+        assert excinfo.value.code == invitation_service.CODE_TARGET_IS_SUPERADMIN
+
+        # Read INSIDE the session — see the module note above.
+        target = (
+            await db.execute(select(User).where(User.id == target_id))
+        ).scalar_one()
+        assert target.is_active is True
+        assert target.sessions_invalidated_at is None
+
+
+@pytest.mark.asyncio
+async def test_remove_member_refuses_already_inactive_superadmin(session_factory):
+    """F-2. THE fence for the guard-placement ruling.
+
+    Kills: the guard placed AFTER the `if not target.is_active: return target`
+    early-return. That mutant is green on every other test in the suite —
+    measured. (is_superadmin=True, is_active=False) is exactly the state the
+    unguarded endpoint produced, so answering 204 there would confirm the
+    lockout instead of reporting it.
+    """
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    admin_id = await _add_user(
+        session_factory, org_id=org_id, username="orgadmin2",
+        email="orgadmin2@acme.io", role=Role.ADMIN,
+    )
+    target_id = await _add_user(
+        session_factory, org_id=org_id, username="platsa2",
+        email="platsa2@acme.io", role=Role.MEMBER,
+        is_superadmin=True, is_active=False,
+    )
+    async with session_factory() as db:
+        admin = (
+            await db.execute(select(User).where(User.id == admin_id))
+        ).scalar_one()
+        with pytest.raises(ConflictError) as excinfo:
+            await invitation_service.remove_member(
+                db, org_id=org_id, current_user=admin, target_user_id=target_id,
+            )
+        assert excinfo.value.code == invitation_service.CODE_TARGET_IS_SUPERADMIN
+
+
+@pytest.mark.asyncio
+async def test_remove_member_superadmin_reason_wins_over_last_owner(session_factory):
+    """F-3. Ordering: the superadmin guard precedes both OWNER guards, so the
+    strongest protection is the one reported.
+
+    Service-level by necessity: the last-owner branch is UNREACHABLE through
+    the router. It needs an OWNER actor, and `get_current_user` rejects
+    inactive users (deps.py:56), so via HTTP the actor is an active OWNER of
+    the org and is counted alongside the target — active_owners >= 2, always.
+    An inactive-OWNER actor is constructible only below HTTP.
+
+    Kills: the guard appended at the END of the guard block, which would
+    report `last_active_owner` instead.
+    """
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    # Sole ACTIVE owner is the superadmin target; the actor is an INACTIVE
+    # owner so it is excluded from the active-owner count.
+    async with session_factory() as db:
+        seeded_owner = (
+            await db.execute(select(User).where(User.id == owner_id))
+        ).scalar_one()
+        seeded_owner.is_active = False
+        await db.commit()
+    target_id = await _add_user(
+        session_factory, org_id=org_id, username="saowner",
+        email="saowner@acme.io", role=Role.OWNER, is_superadmin=True,
+    )
+    async with session_factory() as db:
+        actor = (
+            await db.execute(select(User).where(User.id == owner_id))
+        ).scalar_one()
+        with pytest.raises(ConflictError) as excinfo:
+            await invitation_service.remove_member(
+                db, org_id=org_id, current_user=actor, target_user_id=target_id,
+            )
+        assert excinfo.value.code == invitation_service.CODE_TARGET_IS_SUPERADMIN
+
+    # CONTROL: identical fixture with the superadmin flag cleared must now
+    # fall through to the last-owner guard. Without this, the fence above
+    # would pass even if the fixture never reached the last-owner branch.
+    async with session_factory() as db:
+        target = (
+            await db.execute(select(User).where(User.id == target_id))
+        ).scalar_one()
+        target.is_superadmin = False
+        await db.commit()
+    async with session_factory() as db:
+        actor = (
+            await db.execute(select(User).where(User.id == owner_id))
+        ).scalar_one()
+        with pytest.raises(ConflictError) as excinfo:
+            await invitation_service.remove_member(
+                db, org_id=org_id, current_user=actor, target_user_id=target_id,
+            )
+        assert excinfo.value.code == invitation_service.CODE_LAST_ACTIVE_OWNER

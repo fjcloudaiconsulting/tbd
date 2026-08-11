@@ -492,6 +492,21 @@ async def count_members(db: AsyncSession, *, org_id: int) -> int:
     ) or 0
 
 
+# Machine-readable refusal codes. The router branches on ``e.code`` to write
+# the ``org.member.remove.failed`` audit row and reuses the code verbatim as
+# ``detail.reason``, so there is exactly one spelling of each fact. Mirrors
+# admin_users_service.py:95-97.
+#
+# ⚠ EVERY ConflictError raised by ``remove_member`` carries one, deliberately.
+# Auditing only a subset would make ABSENCE of a row uninterpretable — an
+# operator could not distinguish "nobody attempted a removal" from "someone
+# attempted one and hit a different guard".
+CODE_TARGET_IS_SELF = "self_removal"
+CODE_TARGET_IS_SUPERADMIN = "target_is_platform_superadmin"
+CODE_OWNER_REMOVAL_REQUIRES_OWNER = "owner_removal_requires_owner"
+CODE_LAST_ACTIVE_OWNER = "last_active_owner"
+
+
 async def remove_member(
     db: AsyncSession,
     *,
@@ -499,9 +514,13 @@ async def remove_member(
     current_user: User,
     target_user_id: int,
 ) -> User:
-    """Soft-delete + session invalidation. Caller must commit."""
+    """Soft-delete + session invalidation. Caller must commit.
+
+    Every ``ConflictError`` raised here carries a ``code`` from the ``CODE_*``
+    constants above; the router audits all of them.
+    """
     if target_user_id == current_user.id:
-        raise ConflictError("You cannot remove yourself")
+        raise ConflictError("You cannot remove yourself", code=CODE_TARGET_IS_SELF)
 
     target = (
         await db.execute(
@@ -510,13 +529,41 @@ async def remove_member(
     ).scalar_one_or_none()
     if target is None:
         raise NotFoundError("Member")
+
+    # A platform superadmin is not an ordinary org member (TBD-364).
+    #
+    # Placed BEFORE the is_active early-return below on purpose:
+    # (is_superadmin=True, is_active=False) is exactly the state the unguarded
+    # path produced, and answering 204 there would silence the one signal that
+    # reveals the lockout. Both siblings order it the same way —
+    # admin_users_service.py:140 precedes its is_active precondition, and
+    # admin_org_members_service.py:134 precedes its no-op computation.
+    #
+    # Also precedes the two OWNER guards below so the STRONGEST protection is
+    # the one reported. Not hoisted above the self-check: a superadmin removing
+    # themselves should still read "You cannot remove yourself".
+    #
+    # There is no in-app undo. accept_invitation refuses to reactivate a
+    # superadmin (:354) and there is no promotion endpoint — is_superadmin is
+    # only ever set at construction (auth.py:367, auth.py:3426). A removal that
+    # lands here is permanent and recoverable only by direct SQL (TBD-377).
+    if target.is_superadmin:
+        raise ConflictError(
+            "This member holds a platform role and cannot be removed from the "
+            "organization. Contact platform support.",
+            code=CODE_TARGET_IS_SUPERADMIN,
+        )
+
     if not target.is_active:
         # Already removed — keep idempotent.
         return target
 
     # ADMIN cannot remove OWNER. Only OWNER can remove OWNER.
     if target.role == Role.OWNER and current_user.role != Role.OWNER:
-        raise ConflictError("Only an owner can remove another owner")
+        raise ConflictError(
+            "Only an owner can remove another owner",
+            code=CODE_OWNER_REMOVAL_REQUIRES_OWNER,
+        )
 
     # Cannot remove the last active OWNER, even if requester is OWNER.
     if target.role == Role.OWNER:
@@ -530,7 +577,10 @@ async def remove_member(
             )
         )
         if (active_owners or 0) <= 1:
-            raise ConflictError("Cannot remove the last owner of the organization")
+            raise ConflictError(
+                "Cannot remove the last owner of the organization",
+                code=CODE_LAST_ACTIVE_OWNER,
+            )
 
     target.is_active = False
     target.sessions_invalidated_at = utcnow_naive()
