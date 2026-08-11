@@ -108,8 +108,9 @@ debug-only.
 | `<tfc-org>/<apex-workspace>` | AWS | `infra/terraform/apex/` | `infra/terraform/apex/**` | OIDC workload identity (`TFC_AWS_PROVIDER_AUTH=true`, `TFC_AWS_RUN_ROLE_ARN=<tfc_role_arn output>`) |
 
 The two workspaces deliberately have non-overlapping working directories.
-A change under `infra/terraform/apex/` triggers `pfv-apex` only; a change
-under `infra/terraform/main.tf` triggers `pfv` only. State is isolated.
+A change under `infra/terraform/apex/` triggers `<apex-workspace>` only; a change
+under `infra/terraform/main.tf` triggers `<data-workspace>` only. State is
+isolated.
 
 ## DNS
 
@@ -199,7 +200,7 @@ resource only. No other resource is pinned to that region.
 
 ### OIDC switchover
 
-The first `pfv-apex` apply needs static AWS credentials to bootstrap the
+The first `<apex-workspace>` apply needs static AWS credentials to bootstrap the
 OIDC providers themselves (the apex provisioner role doesn't exist
 until this module applies). The sequence:
 
