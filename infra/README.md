@@ -1,15 +1,27 @@
 # pfv infra
 
+> **Note on placeholders.** Concrete production identifiers — droplet and
+> firewall names, resource IDs, the VPC range, the region and Terraform Cloud
+> workspace names — are held in the maintainer's internal records rather than in
+> this public repository, and appear below as `<placeholders>`. The Terraform and
+> Ansible **code** is unchanged and remains the source of truth for how the
+> infrastructure is built; only the prose specifics were removed. Real values are
+> supplied at apply time via `terraform.tfvars` and the Ansible inventory, neither
+> of which is committed. They will be restored here if the repository becomes
+> private.
+
+
+
 End-to-end infrastructure for The Better Decision (pfv). Two clouds, two TFC
 workspaces, one app.
 
 - **AWS** owns the apex marketing landing site at `thebetterdecision.com`
   (S3 + CloudFront + ACM + IAM OIDC). Managed by Terraform Cloud workspace
-  `FlamaCorp/pfv-apex` against `infra/terraform/apex/`.
+  `<tfc-org>/<apex-workspace>` against `infra/terraform/apex/`.
 - **DigitalOcean** owns the app itself at `app.thebetterdecision.com`
   (App Platform fronting the Next.js frontend and FastAPI backend) plus the
-  self-hosted data plane (`pfv-data-01`: MySQL 8 + Valkey 8) inside a private
-  VPC. Managed by Terraform Cloud workspace `FlamaCorp/pfv` against
+  self-hosted data plane (`<data-droplet>`: MySQL 8 + Valkey 8) inside a private
+  VPC. Managed by Terraform Cloud workspace `<tfc-org>/<data-workspace>` against
   `infra/terraform/` (root + `modules/`).
 
 App Platform spec lives at `.do/app.yaml`. The migration runbook for the
@@ -37,8 +49,8 @@ flowchart LR
         ing[App Platform ingress<br/>app.thebetterdecision.com]
         fe[frontend<br/>Next.js :3000]
         be[backend<br/>FastAPI :8000]
-        subgraph vpc[VPC 10.42.0.0/24 ams3]
-            droplet[pfv-data-01<br/>s-1vcpu-2gb]
+        subgraph vpc[VPC <vpc-cidr> <region>]
+            droplet[<data-droplet><br/><droplet-size>]
             mysql[(MySQL 8<br/>:3306)]
             valkey[(Valkey 8<br/>:6379)]
             droplet --- mysql
@@ -68,19 +80,19 @@ target (Route 53 holds the apex, Cloudflare holds the `app.` subdomain).
 infra/
 ├── README.md                       # this file
 ├── MIGRATION.md                    # managed MySQL+Redis -> droplet cutover (historical)
-├── terraform/                      # DO data droplet (TFC: FlamaCorp/pfv)
+├── terraform/                      # DO data droplet (TFC: <tfc-org>/<data-workspace>)
 │   ├── main.tf
 │   ├── outputs.tf
 │   ├── variables.tf
 │   ├── modules/                    # vpc/, droplet/, firewall/, project/
-│   └── apex/                       # AWS apex landing (TFC: FlamaCorp/pfv-apex)
+│   └── apex/                       # AWS apex landing (TFC: <tfc-org>/<apex-workspace>)
 │       ├── main.tf
 │       ├── variables.tf
 │       ├── outputs.tf
 │       ├── providers.tf            # default region + us-east-1 alias for ACM
 │       ├── versions.tf
 │       └── README.md               # apex-specific bootstrap + IAM detail
-└── ansible/                        # Ubuntu 24.04 bootstrap for pfv-data-01
+└── ansible/                        # Ubuntu 24.04 bootstrap for <data-droplet>
 ```
 
 ## TFC workspaces
@@ -92,8 +104,8 @@ debug-only.
 
 | Workspace | Cloud | Working dir | Trigger pattern | Auth |
 |---|---|---|---|---|
-| `FlamaCorp/pfv` | DigitalOcean | `infra/terraform/` | `infra/terraform/**` (excludes `apex/`) | `do_token` workspace variable |
-| `FlamaCorp/pfv-apex` | AWS | `infra/terraform/apex/` | `infra/terraform/apex/**` | OIDC workload identity (`TFC_AWS_PROVIDER_AUTH=true`, `TFC_AWS_RUN_ROLE_ARN=<tfc_role_arn output>`) |
+| `<tfc-org>/<data-workspace>` | DigitalOcean | `infra/terraform/` | `infra/terraform/**` (excludes `apex/`) | `do_token` workspace variable |
+| `<tfc-org>/<apex-workspace>` | AWS | `infra/terraform/apex/` | `infra/terraform/apex/**` | OIDC workload identity (`TFC_AWS_PROVIDER_AUTH=true`, `TFC_AWS_RUN_ROLE_ARN=<tfc_role_arn output>`) |
 
 The two workspaces deliberately have non-overlapping working directories.
 A change under `infra/terraform/apex/` triggers `pfv-apex` only; a change
@@ -135,7 +147,7 @@ flowchart LR
     end
 
     gha[GitHub Actions<br/>deploy workflow]
-    tfc[Terraform Cloud<br/>FlamaCorp/pfv-apex]
+    tfc[Terraform Cloud<br/><tfc-org>/<apex-workspace>]
 
     user --> r53 --> cfd
     cfd -. attaches .-> acm
@@ -163,7 +175,7 @@ flowchart LR
 | `aws_iam_openid_connect_provider.github` | GitHub Actions OIDC trust. SHA-1 thumbprint computed at plan time via `tls_certificate` data source (AWS does not auto-rotate OIDC thumbprints). |
 | `aws_iam_openid_connect_provider.tfc` | Terraform Cloud workload identity trust. Same thumbprint pattern. |
 | `aws_iam_role.github_actions_apex_deploy` | Trust pinned via `StringEquals` to `repo:flamarion/pfv:ref:refs/heads/main`. PR-context tokens have a different `sub` and are rejected at the trust level (workflow `if:` guards alone are insufficient because PR authors can edit the workflow). Permissions scoped to this bucket + this distribution only. |
-| `aws_iam_role.tfc_apex_provisioner` | Trust pinned to `FlamaCorp` org + `pfv-apex*` workspace pattern. Manages apex bucket + distribution + ACM cert + IAM role chain + Route 53 records. Route 53 writes are split into two narrow IAM statements (each pairs `route53:ChangeResourceRecordSetsRecordTypes` with `route53:ChangeResourceRecordSetsNormalizedRecordNames`): `A`/`AAAA` on exactly apex + www, and `CNAME` on the exact ACM validation names from `domain_validation_options`. Any other record type or name in the zone is IAM-blocked. |
+| `aws_iam_role.tfc_apex_provisioner` | Trust pinned to the TFC org + apex workspace pattern. Manages apex bucket + distribution + ACM cert + IAM role chain + Route 53 records. Route 53 writes are split into two narrow IAM statements (each pairs `route53:ChangeResourceRecordSetsRecordTypes` with `route53:ChangeResourceRecordSetsNormalizedRecordNames`): `A`/`AAAA` on exactly apex + www, and `CNAME` on the exact ACM validation names from `domain_validation_options`. Any other record type or name in the zone is IAM-blocked. |
 
 ### Why `us-east-1` for ACM
 
@@ -174,7 +186,7 @@ resource only. No other resource is pinned to that region.
 
 ### Why a separate TFC workspace
 
-`FlamaCorp/pfv-apex` is split from `FlamaCorp/pfv` because:
+`<tfc-org>/<apex-workspace>` is split from `<tfc-org>/<data-workspace>` because:
 
 - Different cloud (AWS vs DO) and different auth model (IAM OIDC vs DO
   API token), so the workspace credentials don't overlap.
@@ -226,14 +238,14 @@ the public-facing identifiers below are useful for operators reading this
 file alone.
 
 - **App URL:** `https://app.thebetterdecision.com`
-- **DO-issued URL:** `https://pfv-xccvs.ondigitalocean.app` (still works,
+- **DO-issued URL:** `<do-issued-app-url>` (still works,
   redirects)
-- **App ID:** `3bcf70e8-2bae-4918-8297-ce430c79735e`
-- **DO project:** `pfv` (`5c404689-358b-42c5-a8e2-f48a304d8298`)
-- **Region:** `ams3`
-- **VPC attachment:** `694e9d40-a08d-486a-becb-5d068e5ef5c5` (declared at
+- **App ID:** `<app-id>`
+- **DO project:** `pfv` (`<do-project-id>`)
+- **Region:** `<region>`
+- **VPC attachment:** `<vpc-attachment-id>` (declared at
   the top of `.do/app.yaml`, required for App Platform to reach
-  `pfv-data-01`'s private IPv4)
+  `<data-droplet>`'s private IPv4)
 
 ### Components
 
@@ -272,19 +284,19 @@ merge to `main`. `deploy_on_push` is set to `false` in DO so the spec
 push is exclusively driven by the workflow. See `DEPLOYMENT.md` for the
 full walkthrough.
 
-## DO data droplet (`pfv-data-01`)
+## DO data droplet (`<data-droplet>`)
 
 Self-hosted MySQL + Valkey on a single DigitalOcean droplet, replacing
 the DO Managed MySQL + Managed Redis pair (~$30/mo) with one
-`s-1vcpu-2gb` droplet (~$12/mo). DO droplet snapshots are off; the
+`<droplet-size>` droplet (~$12/mo). DO droplet snapshots are off; the
 nightly mysqldump cron is the durability floor.
 
-- **Region:** `ams3`
-- **VPC:** `10.42.0.0/24` (Terraform-managed)
+- **Region:** `<region>`
+- **VPC:** `<vpc-cidr>` (Terraform-managed)
 - **Engines:** MySQL 8 (`:3306`), Valkey 8 (`:6379`, drop-in Redis
   replacement)
-- **Firewall:** single layer, DO cloud firewall `pfv-data-fw`
-  (id `cd1f4b10-d9e4-48ca-83cd-2d75ab815bce`). UFW on the host is
+- **Firewall:** single layer, DO cloud firewall `<data-firewall>`
+  (id `<firewall-id>`). UFW on the host is
   intentionally **disabled** as of PR #260. The previous two-layer
   setup (UFW + cloud firewall) was suspected of silent drops during
   VPC NAT translation; consolidating to one layer resolved the issue.
@@ -294,16 +306,16 @@ nightly mysqldump cron is the durability floor.
 
 ```
                      ┌────────────────────────────┐
-                     │  DO App Platform (ams3)    │
+                     │  DO App Platform (<region>)    │
                      │   backend + frontend       │
                      └──────────────┬─────────────┘
                                     │ VPC private IPv4
                                     ▼
-              VPC 10.42.0.0/24 ┌────────────────────────────┐
-                               │  pfv-data-01 (s-1vcpu-2gb) │
+              VPC <vpc-cidr> ┌────────────────────────────┐
+                               │  <data-droplet> (<droplet-size>) │
                                │   - MySQL 8 (3306)         │
                                │   - Valkey 8 (6379)        │
-                               │   - cloud FW pfv-data-fw   │
+                               │   - cloud FW <data-firewall>   │
                                │   - nightly mysqldump      │
                                └────────────────────────────┘
                                     ▲
@@ -315,7 +327,7 @@ nightly mysqldump cron is the durability floor.
 DO Cloud Firewall: SSH 22 from any IPv4, MySQL 3306 + Valkey 6379 from
 VPC CIDR only. ICMP from VPC.
 
-## Prerequisites (DO side, `FlamaCorp/pfv`)
+## Prerequisites (DO side, `<tfc-org>/<data-workspace>`)
 
 - A DO API token with read/write scope. In normal operation it lives as
   the `do_token` workspace variable in TFC; local CLI debug runs against
@@ -332,7 +344,7 @@ VPC CIDR only. ICMP from VPC.
 
 ### 1. Provision (Terraform Cloud)
 
-State and runs live in Terraform Cloud, workspace `FlamaCorp/pfv`,
+State and runs live in Terraform Cloud, workspace `<tfc-org>/<data-workspace>`,
 VCS-driven against this repo with the working directory and trigger
 paths both scoped to `infra/terraform/` (the apex workspace handles
 `infra/terraform/apex/**` independently). Workflow:
@@ -411,12 +423,12 @@ Two OIDC trust relationships live in the apex AWS account:
   workflow-level `if:` guards. Scope: `s3:Put/Delete/List` on the apex
   bucket and `cloudfront:CreateInvalidation` on the apex distribution.
 - **Terraform Cloud -> AWS**: `tfc-apex-provisioner` is assumable only
-  by TFC runs in `FlamaCorp/pfv-apex*` workspaces (any phase). Scope:
+  by TFC runs in `<tfc-org>/<apex-workspace>*` workspaces (any phase). Scope:
   the apex resource graph (S3 bucket, CloudFront distribution, ACM in
   `us-east-1`, the two IAM OIDC providers, the two IAM roles, Route 53
   read-only plus CNAME-only writes for ACM validation).
 
-DO-side (`FlamaCorp/pfv`) does NOT use OIDC; it uses a long-lived
+DO-side (`<tfc-org>/<data-workspace>`) does NOT use OIDC; it uses a long-lived
 `do_token` workspace variable. DO Terraform Cloud OIDC for the DO
 provider is not currently supported, so static-token auth is the path
 there until further notice.
@@ -455,7 +467,7 @@ console OIDC setup).
 ### Data droplet
 
 - **Inspect droplet metrics**: DO control panel -> Droplets ->
-  pfv-data-01 -> Graphs. CPU, memory, disk, network all graphed for
+  <data-droplet> -> Graphs. CPU, memory, disk, network all graphed for
   free.
 - **Watch backups**: `ls -lh /var/backups/mysql/` on the droplet. Logs
   at `/var/log/mysql-backup.log`.
@@ -467,7 +479,7 @@ console OIDC setup).
 
 ## Teardown
 
-### Apex (`FlamaCorp/pfv-apex`)
+### Apex (`<tfc-org>/<apex-workspace>`)
 
 Every resource in the apex module is `terraform destroy`-able. A full
 teardown removes the apex / www `A` + `AAAA` ALIAS records, the ACM
@@ -478,7 +490,7 @@ it survives untouched. After teardown DNS for apex and www returns to
 open a PR removing the resources, merge, Confirm & Apply in TFC. Or
 queue a Destroy plan from the TFC workspace UI.
 
-### Data droplet (`FlamaCorp/pfv`)
+### Data droplet (`<tfc-org>/<data-workspace>`)
 
 Terraform is VCS-driven via TFC; teardown follows the same path. Either:
 

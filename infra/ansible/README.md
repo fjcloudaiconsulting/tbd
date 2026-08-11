@@ -1,4 +1,4 @@
-# pfv-data-01 Ansible
+# <data-droplet> Ansible
 
 Configuration management for the pfv data droplet (MySQL + Redis).
 
@@ -9,12 +9,12 @@ post-boot config: packages, MySQL/Redis tuning, backups, fail2ban, swap.
 
 ```bash
 ansible-playbook -i infra/ansible/inventory.yml \
-  infra/ansible/playbooks/site.yml --limit pfv-data-01
+  infra/ansible/playbooks/site.yml --limit <data-droplet>
 ```
 
 ## Firewall: single layer, DO cloud firewall only
 
-The DigitalOcean cloud firewall `pfv-data-fw` is the single source of truth
+The DigitalOcean cloud firewall `<data-firewall>` is the single source of truth
 for inbound rules on managed droplets. UFW is intentionally **disabled** by
 the `common` role.
 
@@ -24,12 +24,12 @@ Layering UFW on top of the DO cloud firewall risks silent drops during VPC
 NAT translation: a TCP SYN can reach the droplet's VPC interface from a
 rewritten source address that UFW's CIDR rule no longer matches. Symptoms
 look like generic connectivity timeouts (App Platform to Redis on
-`10.42.0.0/24` was the case that triggered this consolidation on 2026-05-13).
+`<vpc-cidr>` was the case that triggered this consolidation on 2026-05-13).
 
-### Rules enforced by `pfv-data-fw`
+### Rules enforced by `<data-firewall>`
 
-- TCP 3306 (MySQL): from `10.42.0.0/24`
-- TCP 6379 (Redis): from `10.42.0.0/24`
+- TCP 3306 (MySQL): from `<vpc-cidr>`
+- TCP 6379 (Redis): from `<vpc-cidr>`
 - TCP 22 (SSH): from `0.0.0.0/0`
 - ICMP: from the VPC subnet
 
