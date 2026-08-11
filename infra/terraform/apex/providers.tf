@@ -10,7 +10,7 @@ provider "aws" {
       project     = "pfv"
       component   = "apex-landing"
       managed_by  = "terraform"
-      workspace   = "FlamaCorp/pfv-apex"
+      workspace   = "FlamaCorp/tbd-apex"
       environment = "prod"
     }
   }
@@ -28,7 +28,7 @@ provider "aws" {
       project     = "pfv"
       component   = "apex-landing"
       managed_by  = "terraform"
-      workspace   = "FlamaCorp/pfv-apex"
+      workspace   = "FlamaCorp/tbd-apex"
       environment = "prod"
     }
   }

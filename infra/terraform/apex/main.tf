@@ -961,7 +961,7 @@ resource "aws_iam_role_policy" "github_actions_apex_deploy" {
 
 ###############################################################################
 # IAM ROLE: tfc_apex_provisioner
-# Assumable from TFC workload identity tokens originating in the pfv-apex
+# Assumable from TFC workload identity tokens originating in the tbd-apex
 # workspace (or any workspace matching var.tfc_workspace_pattern). Has full
 # management of THIS module's resources: S3 bucket, CloudFront distribution,
 # ACM cert, IAM role chain, and the Route 53 records this module manages.
