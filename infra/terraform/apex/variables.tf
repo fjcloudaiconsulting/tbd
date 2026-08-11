@@ -39,9 +39,17 @@ variable "tfc_organization" {
 }
 
 variable "tfc_workspace_pattern" {
-  description = "TFC workspace name pattern (supports glob via wildcard suffix on the OIDC sub claim) allowed to assume the apex provisioner role. Default pfv-apex* covers the apex workspace plus any future split (e.g. pfv-apex-staging)."
+  # TRANSITIONAL — widened deliberately so the trust policy matches the apex
+  # workspace under BOTH its old name (pfv-apex) and its new one (tbd-apex).
+  # The trust policy is managed by the very workspace it authorizes, so a
+  # rename performed while this pattern still reads "pfv-apex*" locks the
+  # workspace out of AWS with no way to apply the fix. Widen -> rename ->
+  # narrow, in that order. Narrowing back to "tbd-apex*" is a follow-up PR
+  # and should not be skipped: while this reads "*-apex*", any workspace in
+  # the org whose name ends in -apex can assume the provisioner role.
+  description = "TFC workspace name pattern (supports glob via wildcard suffix on the OIDC sub claim) allowed to assume the apex provisioner role. Transitionally *-apex* to span the pfv-apex -> tbd-apex rename; narrow to tbd-apex* once the rename lands."
   type        = string
-  default     = "pfv-apex*"
+  default     = "*-apex*"
 }
 
 variable "noncurrent_version_expiration_days" {
