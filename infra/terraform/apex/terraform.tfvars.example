@@ -1,5 +1,5 @@
 # Reference only. Production runs happen in Terraform Cloud
-# (FlamaCorp/pfv-apex); variables are set as workspace variables there.
+# (FlamaCorp/tbd-apex); variables are set as workspace variables there.
 # Use this file ONLY for local-CLI debug runs (`terraform login` then
 # `terraform plan` from a laptop); terraform.tfvars stays gitignored.
 #
@@ -12,5 +12,5 @@
 # github_repo                        = "fjcloudaiconsulting/tbd"
 # github_main_branch                 = "main"
 # tfc_organization                   = "FlamaCorp"
-# tfc_workspace_pattern              = "pfv-apex*"
+# tfc_workspace_pattern              = "tbd-apex*"
 # noncurrent_version_expiration_days = 90
