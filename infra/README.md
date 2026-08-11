@@ -515,9 +515,9 @@ destroy.
 - `ENVIRONMENT.md` (repo root): authoritative per-env-var reference for
   every component.
 - `DEPLOYMENT.md` (repo root): GitHub Actions deploy walkthrough.
-- `~/.claude/projects/-Users-fjorge-src-pfv/memory/reference_digitalocean.md`:
+- `~/.claude/projects/-Users-flamarion-src-tbd/memory/reference_digitalocean.md`:
   DO IDs, gotchas, and operational lore.
-- `~/.claude/projects/-Users-fjorge-src-pfv/memory/project_apex_s3_cloudfront.md`:
+- `~/.claude/projects/-Users-flamarion-src-tbd/memory/project_apex_s3_cloudfront.md`:
   L5.2a direction lock and decision log.
-- `~/.claude/projects/-Users-fjorge-src-pfv/memory/feedback_terraform_vcs_only.md`:
+- `~/.claude/projects/-Users-flamarion-src-tbd/memory/feedback_terraform_vcs_only.md`:
   Terraform is VCS-driven; CLI is debug-only.

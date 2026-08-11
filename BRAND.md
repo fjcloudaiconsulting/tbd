@@ -3,7 +3,7 @@
 Canonical reference for product name, voice, palette, and logo usage.
 Downstream teams (landing, email, SSO, onboarding, header/footer) consume
 this file. Internal-only repo/CLI/DB names are out of scope here — see
-`~/.claude/projects/-Users-fjorge-src-pfv/memory/project_brand_consolidation.md`.
+`~/.claude/projects/-Users-flamarion-src-tbd/memory/project_brand_consolidation.md`.
 
 ## Name
 

@@ -322,7 +322,7 @@ break-glass CLI path is documented in PR-D's PR body.
 ## See also
 
 - `../README.md`: DO data droplet workspace (`FlamaCorp/pfv`)
-- `~/.claude/projects/-Users-fjorge-src-pfv/memory/project_apex_s3_cloudfront.md`:
+- `~/.claude/projects/-Users-flamarion-src-tbd/memory/project_apex_s3_cloudfront.md`:
   canonical plan and locked decisions (D1-D5)
-- `~/.claude/projects/-Users-fjorge-src-pfv/memory/feedback_terraform_vcs_only.md`:
+- `~/.claude/projects/-Users-flamarion-src-tbd/memory/feedback_terraform_vcs_only.md`:
   Terraform is VCS-driven; CLI is debug-only

@@ -87,7 +87,7 @@ How to read failures:
 - **Design tokens**: `frontend/scripts/check-design-tokens.sh` scans for hard-coded colors / spacings that should use brand tokens. Output names the file and line.
 - **Lint**: `npm run lint -- --quiet` shows only errors (warnings are tolerated; treat warnings shown in logs as informational).
 - **Frontend build**: a build failure here means it will also fail in production. Test locally with `docker compose exec frontend npm run build`.
-- **Pytest**: known-flaky `tests/app/transactions-page.test.tsx` does not run here (that's a Jest test). For backend flake see `~/.claude/projects/-Users-fjorge-src-pfv/memory/` references; otherwise the failure is real.
+- **Pytest**: known-flaky `tests/app/transactions-page.test.tsx` does not run here (that's a Jest test). For backend flake see `~/.claude/projects/-Users-flamarion-src-tbd/memory/` references; otherwise the failure is real.
 
 Re-run a single job from the PR's Checks tab.
 
