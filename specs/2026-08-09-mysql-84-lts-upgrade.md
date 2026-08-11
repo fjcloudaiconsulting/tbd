@@ -1,5 +1,5 @@
 ---
-name: MySQL 8.0 -> 8.4 LTS upgrade (pfv-data-01)
+name: MySQL 8.0 -> 8.4 LTS upgrade (<data-droplet>)
 description: Runbook and risk analysis for moving the self-hosted production data plane off end-of-life MySQL 8.0
 type: project
 ---
@@ -8,7 +8,7 @@ type: project
 
 **Status:** spec, not yet scheduled. Execution is a Sprint 9 ticket requiring explicit operator authorization — this is a production database with no replica.
 **Target:** MySQL **8.4 LTS**. Operator decision, 2026-08-09.
-**Scope:** `pfv-data-01` (production), plus the dev and CI pins that must move with it.
+**Scope:** `<data-droplet>` (production), plus the dev and CI pins that must move with it.
 
 ---
 
@@ -99,7 +99,7 @@ That swap changes more than the version, and each item below is a real breakage 
 
 ## 8.4 changes ~20 InnoDB defaults, and some are hostile to this box
 
-`pfv-data-01` is an `s-1vcpu-2gb` droplet **co-hosting Redis/Valkey**. Notable default changes: `innodb_adaptive_hash_index` ON->OFF, `innodb_change_buffering` all->none, `innodb_doublewrite_pages`->128, plus changes to `innodb_page_cleaners`, `innodb_parallel_read_threads`, `innodb_purge_threads`, `innodb_read_io_threads`, `innodb_log_buffer_size` and the `temptable_*` family.
+`<data-droplet>` is an `<droplet-size>` droplet **co-hosting Redis/Valkey**. Notable default changes: `innodb_adaptive_hash_index` ON->OFF, `innodb_change_buffering` all->none, `innodb_doublewrite_pages`->128, plus changes to `innodb_page_cleaners`, `innodb_parallel_read_threads`, `innodb_purge_threads`, `innodb_read_io_threads`, `innodb_log_buffer_size` and the `temptable_*` family.
 
 The one that matters most here: **`innodb_io_capacity` default moves 200 -> 10000.** On DO block storage that over-issues background flush I/O, and the extra threads plus larger log buffer raise baseline RSS — a plausible OOM path for the co-resident Redis on a 2 GB box.
 
@@ -235,7 +235,7 @@ Reverse `RENAME TABLE` (same atomic form, `tbd.* TO pfv2.*`), restore `DATABASE_
 
 ## Still out of scope after Phase 2
 
-The rest of TBD-205: the `./pfv` CLI name, compose service names, env prefixes, the repo directory, and the TFC workspace `FlamaCorp/pfv` (which cannot be renamed from the CLI — Terraform is VCS-driven with manual Confirm & Apply).
+The rest of TBD-205: the `./pfv` CLI name, compose service names, env prefixes, the repo directory, and the TFC workspace `<tfc-org>/<data-workspace>` (which cannot be renamed from the CLI — Terraform is VCS-driven with manual Confirm & Apply).
 
 ---
 

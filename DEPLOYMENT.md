@@ -14,8 +14,8 @@ Four production surfaces. Each has its own pipeline. Some changes fan out across
 |---|---|---|---|
 | App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | DigitalOcean App Platform (`pfv` app) | `release.yml` (auto) or `deploy.yml` (manual) |
 | Apex landing (marketing, privacy, terms, docs) | `https://thebetterdecision.com` | AWS S3 + CloudFront | `apex-deploy.yml` (auto) |
-| Data plane (MySQL 8 + Redis) | private VPC IP `10.42.x.x:3306 / :6379` | Self-hosted DO droplet `pfv-data-01` | TFC workspace `FlamaCorp/pfv` (manual confirm) |
-| Apex CDN + cert + IAM | n/a (control plane) | AWS (S3, CloudFront, ACM, IAM, Route 53) | TFC workspace `FlamaCorp/pfv-apex` (manual confirm) |
+| Data plane (MySQL 8 + Redis) | private VPC IP `<vpc-ip>:3306 / :6379` | Self-hosted DO droplet `<data-droplet>` | TFC workspace `<tfc-org>/<data-workspace>` (manual confirm) |
+| Apex CDN + cert + IAM | n/a (control plane) | AWS (S3, CloudFront, ACM, IAM, Route 53) | TFC workspace `<tfc-org>/<apex-workspace>` (manual confirm) |
 
 ```mermaid
 flowchart LR
@@ -31,7 +31,7 @@ flowchart LR
   s3 --> cf[CloudFront]
   cf --> apexurl[thebetterdecision.com]
 
-  tfc1 -->|Confirm and Apply| droplet[pfv-data-01 droplet]
+  tfc1 -->|Confirm and Apply| droplet[<data-droplet> droplet]
   droplet --> db[MySQL 8 + Redis]
   do -.->|VPC private IP| db
 
@@ -224,7 +224,7 @@ For rollback to a prior `main` SHA, see Section 10.
 
 > Workflow is live on `main` (shipped in PR #267). It deploys to S3 + CloudFront on every push to `main` whose paths match the filter below. Public traffic reaches the distribution via the apex / www ALIAS records provisioned by PR #270.
 
-The apex landing (`thebetterdecision.com`) is a Next.js static export. `frontend/scripts/build-apex.sh` produces `frontend/out-apex/`. The workflow uploads that directory to an S3 bucket fronted by CloudFront in AWS, using **GitHub OIDC** to assume an IAM role (no long-lived AWS keys committed anywhere). The bucket, distribution, ACM cert, and IAM roles are provisioned by the `FlamaCorp/pfv-apex` TFC workspace (Section 7).
+The apex landing (`thebetterdecision.com`) is a Next.js static export. `frontend/scripts/build-apex.sh` produces `frontend/out-apex/`. The workflow uploads that directory to an S3 bucket fronted by CloudFront in AWS, using **GitHub OIDC** to assume an IAM role (no long-lived AWS keys committed anywhere). The bucket, distribution, ACM cert, and IAM roles are provisioned by the `<tfc-org>/<apex-workspace>` TFC workspace (Section 7).
 
 ### Trigger and path filter
 
@@ -348,7 +348,7 @@ The OIDC trust policy on `github-actions-apex-deploy` (provisioned by PR #240) u
    ```
 3. CloudFront invalidation status: AWS console -> CloudFront -> Distributions -> select -> Invalidations tab.
 
-## 6. Terraform: `FlamaCorp/pfv` (DO data droplet)
+## 6. Terraform: `<tfc-org>/<data-workspace>` (DO data droplet)
 
 Source: `infra/terraform/`, `infra/terraform/README.md`, `infra/README.md`.
 
@@ -356,8 +356,8 @@ This TFC workspace manages the DigitalOcean control plane for the self-hosted My
 
 | Resource | Purpose |
 |---|---|
-| `digitalocean_vpc` | Dedicated `10.42.0.0/24` VPC in `ams3` |
-| `digitalocean_droplet` | `pfv-data-01`, `s-1vcpu-2gb`, Ubuntu 24.04, runs MySQL 8 + Redis |
+| `digitalocean_vpc` | Dedicated `<vpc-cidr>` VPC in `<region>` |
+| `digitalocean_droplet` | `<data-droplet>`, `<droplet-size>`, Ubuntu 24.04, runs MySQL 8 + Redis |
 | `digitalocean_firewall` | SSH 22 from anywhere; MySQL 3306 / Redis 6379 / ICMP from VPC only |
 | `digitalocean_project_resources` | Attaches the droplet to the existing DO `pfv` project |
 
@@ -391,7 +391,7 @@ Outputs consumed elsewhere:
 
 After-droplet steps (one-time): Ansible playbook bootstraps the host. See `infra/README.md`.
 
-## 7. Terraform: `FlamaCorp/pfv-apex` (AWS apex control plane)
+## 7. Terraform: `<tfc-org>/<apex-workspace>` (AWS apex control plane)
 
 Source: `infra/terraform/apex/`, `infra/terraform/apex/README.md`.
 
@@ -434,7 +434,7 @@ flowchart LR
 Because the OIDC providers and `tfc-apex-provisioner` role only exist after the first apply, the first run uses a single static-credential window:
 
 1. Create IAM user `pfv-apex-bootstrap` with `AdministratorAccess`. Generate an access-key pair.
-2. In TFC -> `FlamaCorp/pfv-apex` -> Variables: set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (both env, sensitive), `aws_account_id` (terraform).
+2. In TFC -> `<tfc-org>/<apex-workspace>` -> Variables: set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (both env, sensitive), `aws_account_id` (terraform).
 3. Merge the apex Terraform PR. Confirm & Apply.
 4. Switch TFC to OIDC: set `TFC_AWS_PROVIDER_AUTH=true`, `TFC_AWS_RUN_ROLE_ARN=<tfc_role_arn output>`. Delete `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
 5. Delete (or deactivate the access key of) the bootstrap IAM user within the hour.
@@ -621,16 +621,16 @@ If a migration **partially applies** and the job exits non-zero, the PRE_DEPLOY 
 | `deploy.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/deploy.yml` |
 | `apex-deploy.yml` runs (post-#267) | `https://github.com/flamarion/pfv/actions/workflows/apex-deploy.yml` |
 | `test.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/test.yml` |
-| TFC `pfv` (DO data droplet) | `https://app.terraform.io/app/FlamaCorp/workspaces/pfv` |
-| TFC `pfv-apex` (AWS apex) | `https://app.terraform.io/app/FlamaCorp/workspaces/pfv-apex` |
+| TFC `pfv` (DO data droplet) | `https://app.terraform.io/app/<tfc-org>/workspaces/<data-workspace>` |
+| TFC `pfv-apex` (AWS apex) | `https://app.terraform.io/app/<tfc-org>/workspaces/<apex-workspace>` |
 | DO App Platform deploys | DO console -> Apps -> `pfv` -> Activity |
 | Backend access logs (live) | DO console -> Apps -> `pfv` -> Runtime Logs -> backend component |
 | Frontend access logs (live) | DO console -> Apps -> `pfv` -> Runtime Logs -> frontend component |
 | `PRE_DEPLOY migrate` job logs | DO console -> Apps -> `pfv` -> Activity -> select deploy -> migrate job |
 | Apex CloudFront access logs | Not enabled today. `infra/terraform/apex/main.tf` (`aws_cloudfront_distribution.apex`) does not configure `logging_config`. Post-launch follow-up: provision a separate S3 bucket for CloudFront standard logs and add the logging block. For real-time debugging until then, AWS console -> CloudFront -> distribution -> Monitoring tab. |
 | Apex S3 contents | AWS console -> S3 -> `thebetterdecision-com-apex` |
-| MySQL slow query / error log | SSH to `pfv-data-01`: `journalctl -u mysql` or `/var/log/mysql/error.log` |
-| Nightly mysqldump | `pfv-data-01`: `ls -lh /var/backups/mysql/`; log at `/var/log/mysql-backup.log` |
+| MySQL slow query / error log | SSH to `<data-droplet>`: `journalctl -u mysql` or `/var/log/mysql/error.log` |
+| Nightly mysqldump | `<data-droplet>`: `ls -lh /var/backups/mysql/`; log at `/var/log/mysql-backup.log` |
 | Smoke-test failure GitHub issue | Auto-opened by `scripts/notify-smoke-failure.sh`; check open issues in `flamarion/pfv` |
 
 Triage shortcuts:
@@ -643,7 +643,7 @@ Triage shortcuts:
 | Apex site shows stale content | Confirm `apex-deploy.yml` ran for the SHA; check CloudFront invalidation completed; `curl https://thebetterdecision.com/_meta.json` (object is no-cache). If the apex hostname is itself unreachable, fall back to the TFC output `cloudfront_distribution_domain` to probe the distribution directly. |
 | Apex 404 on a known route | The CloudFront Function rewrites `/path/` -> `/path/index.html`. Check the function's invocation logs in CloudFront Functions console |
 | Apex deploy failed at OIDC step | Trust policy on `github-actions-apex-deploy` pinned to `repo:flamarion/pfv:ref:refs/heads/main`. PR-context, forks, non-main branches are rejected by design |
-| App can't reach MySQL or Redis | Confirm `.do/app.yaml`'s top-level `vpc.id` matches the TFC output, and `DATABASE_URL` / `REDIS_URL` point at the droplet's `10.42.x.x` private IP |
+| App can't reach MySQL or Redis | Confirm `.do/app.yaml`'s top-level `vpc.id` matches the TFC output, and `DATABASE_URL` / `REDIS_URL` point at the droplet's `<vpc-cidr>` private IP |
 | Secret env var "disappeared" after deploy | `.do/app.yaml` must declare every SECRET with its `EV[...]` blob. Missing -> stripped on push. Refresh via `doctl apps spec get <app-id>` |
 
 For the env var matrix and common per-variable failures (Google SSO button missing, `NEXT_PUBLIC_*` not in client bundle, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](./ENVIRONMENT.md) "Common failure modes".

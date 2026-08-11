@@ -173,7 +173,7 @@ Browser --> nginx (:80) --> /api/*  --> backend (FastAPI :8000) --> MySQL (:3306
                                         backend --> Redis (:6379)
 ```
 
-In production (DigitalOcean App Platform), nginx is replaced by DO's built-in ingress. MySQL and Redis are self-hosted on a single droplet (`pfv-data-01`) in a private VPC. Background and runbook: `infra/README.md`, `infra/MIGRATION.md`.
+In production (DigitalOcean App Platform), nginx is replaced by DO's built-in ingress. MySQL and Redis are self-hosted on a single droplet (`<data-droplet>`) in a private VPC. Background and runbook: `infra/README.md`, `infra/MIGRATION.md`.
 
 ### Backend layout
 
@@ -406,7 +406,7 @@ The full deployment pipeline (release gating, App Platform spec, smoke tests, ma
 
 - Merges to `main` trigger `release.yml`. Whether App Platform redeploys depends on the commit prefix (see [Conventional Commits and the deploy gate](#conventional-commits-and-the-deploy-gate)).
 - `.do/app.yaml` is the source of truth for App Platform config. Secrets are encrypted `EV[...]` blobs committed in-file; any secret missing from this file is removed from the live app on push.
-- Terraform (`infra/terraform/`) is VCS-driven via HCP Terraform Cloud (workspace `FlamaCorp/pfv`). PRs get speculative plans; merges create runs that require manual Confirm and Apply. CLI `terraform plan` / `apply` is debug-only.
+- Terraform (`infra/terraform/`) is VCS-driven via HCP Terraform Cloud (workspace `<tfc-org>/<data-workspace>`). PRs get speculative plans; merges create runs that require manual Confirm and Apply. CLI `terraform plan` / `apply` is debug-only.
 - Droplet bootstrap (`infra/ansible/`) handles MySQL, Redis, hardening, and nightly mysqldump.
 
 ## API documentation
