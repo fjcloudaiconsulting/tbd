@@ -119,23 +119,41 @@ PENDING_STATES: frozenset[str] = frozenset(
 # ``linked_transaction_id``) silently desync the cached balance from
 # the aggregates the user sees in dashboards / budgets.
 #
-# Source of truth for "does this row contribute to the cached balance?"
-# is ``transaction_filters.is_reportable_transaction``: a row counts
-# iff it's reportable. So the balance bookkeeping rule reduces to a
-# simple before/after diff:
+# ⚠ TBD-308: this block used to name ``is_reportable_transaction`` as the
+# "source of truth for does this row contribute to the cached balance". That
+# sentence was FALSE and it caused a live balance-invariant break. That
+# predicate ANDs ``linked_transaction_id is None``, so it answers False for
+# EVERY linked row -- it cannot distinguish "this row's amount is inside
+# accounts.balance" from "this row is a transfer leg". Skipping a reciprocal
+# transfer leg therefore diffed False -> False and reverted nothing, while
+# ``balance_contribution_filter`` dropped the row from the reconstruction on
+# its state clause. "Counts as income/expense" is a REPORTS question;
+# "is inside accounts.balance" is a BALANCE question.
 #
-#   source_reportable  target_reportable  action
-#   -----------------  -----------------  -------
-#         True               True         no-op
-#         False              False        no-op
-#         True               False        revert_balance
-#         False              True         apply_balance
+# Source of truth is ``transaction_filters.contributes_to_cached_balance``,
+# the predicate written for exactly that question. The bookkeeping rule stays
+# a simple before/after diff:
+#
+#   source_in_cached_balance  target_in_cached_balance  action
+#   ------------------------  ------------------------  -------
+#            True                      True             no-op
+#            False                     False            no-op
+#            True                      False            revert_balance
+#            False                     True             apply_balance
+#
+# For ``is_manual_adjustment = False`` the two predicates differ IF AND ONLY
+# IF the row is reciprocal: unlinked rows and one-way (reconcile-match) rows
+# get identical answers from both. The correction therefore changes exactly
+# the reciprocal-leg cells and provably nothing else.
+#
+# ⚠ ``contributes_to_cached_balance`` needs the PARTNER and fails OPEN when it
+# cannot be resolved, so the partner is resolved once in ``_reconcile_one``
+# and threaded through. See the warning on ``_apply_balance_for_transition``.
 #
 # Round 3's ``_BALANCE_KEPT_STATES`` matrix got MATCHED -> ACCEPTED
-# wrong: the link was already set on entering MATCHED, so the row was
-# already non-reportable, but the matrix re-applied based on state
-# alone. Deriving the decision from ``is_reportable_transaction`` is
-# correct by construction across every transition.
+# wrong: the link was already set on entering MATCHED, so the matrix
+# re-applied based on state alone. A before/after diff on the membership
+# predicate is correct by construction across every transition.
 
 
 # ── Batch creation (called from CSV / OFX confirm) ──────────────────────────
@@ -527,8 +545,13 @@ async def _apply_match(
     org_id: int,
     tx: Transaction,
     transition: ReconciliationTransition,
-) -> None:
-    """Validate the match target and link it on ``tx``.
+) -> Transaction:
+    """Validate the match target and link it on ``tx``. Returns the target.
+
+    TBD-308: the target is RETURNED rather than discarded because
+    ``_reconcile_one`` needs the POST-mutation partner to evaluate
+    ``contributes_to_cached_balance``. Re-querying it there would re-read a row
+    this function already holds and could observe a different snapshot.
 
     The match target must:
 
@@ -626,6 +649,7 @@ async def _apply_match(
             )
 
     tx.linked_transaction_id = match_id
+    return target
 
 
 # ── Balance bookkeeping (PR #247 round 3 P1) ────────────────────────────────
@@ -638,26 +662,51 @@ async def _apply_balance_for_transition(
     tx: Transaction,
     source_state: str,
     target_state: str,
-    source_reportable: bool,
+    source_in_cached_balance: bool,
+    target_partner: Transaction | None,
 ) -> None:
     """Revert or re-apply the row's balance contribution based on the
-    reportability diff between before-mutation and after-mutation
-    snapshots of the transaction.
+    CACHED-BALANCE-MEMBERSHIP diff between before-mutation and
+    after-mutation snapshots of the transaction.
 
-    ``source_reportable`` is captured by ``_reconcile_one`` BEFORE any
-    state-flip or link-mutation runs. ``target_reportable`` is read
-    here AFTER those mutations have landed on the in-memory instance.
-    The diff drives the action:
+    ⚠ TBD-308: this used to diff ``is_reportable_transaction``, which is the
+    wrong question. That predicate ANDs ``linked_transaction_id is None``, so
+    it answers False for EVERY linked row -- meaning a genuine, reciprocal
+    transfer leg transitioning to SKIPPED produced a ``False -> False`` no-op
+    and reverted nothing, while ``balance_contribution_filter``'s state clause
+    dropped that row from the reconstruction immediately. Permanent drift.
+    "Does this count as income/expense" is not "is this amount inside
+    ``accounts.balance``"; ``contributes_to_cached_balance`` is the predicate
+    for the latter.
 
-        True  -> True   no-op (still reportable, balance unchanged)
-        False -> False  no-op (still excluded, balance unchanged)
-        True  -> False  revert_balance (row drops out of reports)
-        False -> True   apply_balance  (row enters reports)
+    ``source_in_cached_balance`` is captured by ``_reconcile_one`` BEFORE any
+    state-flip or link-mutation runs. The target side is computed here AFTER
+    those mutations have landed on the in-memory instance. The diff drives the
+    action:
 
-    This shape is correct by construction across every state path,
-    including the MATCHED -> ACCEPTED case round 3 got wrong: both
-    states are non-reportable while ``linked_transaction_id`` is set,
-    so the diff is False -> False and no balance change fires.
+        True  -> True   no-op (still inside the cached balance)
+        False -> False  no-op (still outside it)
+        True  -> False  revert_balance (amount leaves accounts.balance)
+        False -> True   apply_balance  (amount re-enters it)
+
+    ⚠ ``target_partner`` is supplied by the caller and is NEVER resolved here.
+    ``contributes_to_cached_balance`` FAILS OPEN on an unresolvable partner
+    (``transaction_filters``), so passing ``None`` for a row whose
+    ``linked_transaction_id`` is set would answer True, collapse a MATCHED
+    transition's diff to ``True -> True``, and silently disable the match
+    revert -- a worse and far more common regression than the bug above. The
+    caller passes the partner ``_apply_match`` already loaded.
+
+    Fail-open is nonetheless safe on the target side of every REVERTING
+    transition, because ``contributes_to_cached_balance`` tests the
+    reconciliation-state clause FIRST: for any target in
+    ``('skipped','rejected')`` it returns False without reaching the
+    partner branch at all.
+
+    This shape stays correct across every state path, including the
+    MATCHED -> ACCEPTED case round 3 got wrong: the link is one-way by
+    construction (``_apply_match`` guard 1 refuses a target that links back),
+    so both states answer False and the diff is False -> False.
 
     Only SETTLED rows ever touched the cached balance at import time,
     so PENDING rows skip this dance entirely (their balance is virtual
@@ -677,30 +726,31 @@ async def _apply_balance_for_transition(
     # does NOT import reconciliation_service, but reconciliation_service is
     # referenced from import_service which transaction_service touches
     # transitively).
-    from app.services.transaction_filters import is_reportable_transaction
+    from app.services.transaction_filters import contributes_to_cached_balance
     from app.services.transaction_service import (
         apply_balance,
         get_account_for_update,
         revert_balance,
     )
 
-    # ``is_reportable_transaction`` reads ``reconciliation_state``,
-    # ``linked_transaction_id``, and ``is_manual_adjustment`` directly
-    # off the instance. By this point ``_apply_edits`` / ``_apply_match``
-    # plus the caller's state flip have already mutated the instance,
-    # so this snapshot is the post-transition reportability.
-    target_reportable = is_reportable_transaction(tx)
-    if source_reportable == target_reportable:
+    # ``contributes_to_cached_balance`` reads ``reconciliation_state`` and
+    # ``linked_transaction_id`` off the instance, plus the partner passed in.
+    # By this point ``_apply_edits`` / ``_apply_match`` plus the caller's state
+    # flip have already mutated the instance, so this is the POST-transition
+    # membership. No status term is needed: the non-SETTLED early return above
+    # already satisfies the predicate's documented caller contract.
+    target_in_cached_balance = contributes_to_cached_balance(tx, target_partner)
+    if source_in_cached_balance == target_in_cached_balance:
         # Same side of the diff; cached balance already correct.
         return
 
     acct = await get_account_for_update(db, tx.account_id, org_id)
-    if source_reportable and not target_reportable:
-        # Row leaves the reportable set: pull its amount out of balance.
+    if source_in_cached_balance and not target_in_cached_balance:
+        # Amount leaves the cached balance: pull it out.
         revert_balance(acct, tx.amount, tx.type)
         direction = "revert"
     else:
-        # Row enters (or re-enters) the reportable set.
+        # Amount enters (or re-enters) the cached balance.
         apply_balance(acct, tx.amount, tx.type)
         direction = "reapply"
 
@@ -718,8 +768,8 @@ async def _apply_balance_for_transition(
         direction=direction,
         amount=str(tx.amount),
         tx_type=tx.type.value,
-        source_reportable=source_reportable,
-        target_reportable=target_reportable,
+        source_in_cached_balance=source_in_cached_balance,
+        target_in_cached_balance=target_in_cached_balance,
     )
 
 
@@ -768,41 +818,71 @@ async def _reconcile_one(
         source_state=source_state, target_state=target_state
     )
 
-    # Capture the source-reportability snapshot BEFORE any mutation.
-    # ``is_reportable_transaction`` reads live attributes off the
-    # instance, so this must run before ``_apply_edits`` /
-    # ``_apply_match`` / the state flip touch anything. The diff
-    # against the post-mutation reportability drives balance bookkeeping
-    # below (PR #247 round 4 P1).
-    from app.services.transaction_filters import is_reportable_transaction
-    source_reportable = is_reportable_transaction(tx)
+    # Capture the source cached-balance-membership snapshot BEFORE any
+    # mutation. ``contributes_to_cached_balance`` reads live attributes off the
+    # instance, so this must run before ``_apply_edits`` / ``_apply_match`` /
+    # the state flip touch anything. The diff against the post-mutation
+    # membership drives balance bookkeeping below (PR #247 round 4 P1;
+    # predicate corrected by TBD-308).
+    #
+    # ⚠ The partner is resolved HERE, org-scoped, and threaded into the helper
+    # -- never resolved inside it, and never passed as ``None`` to mean
+    # "unknown". The predicate FAILS OPEN on an unresolvable partner, so a
+    # ``None`` on one side of the diff and a resolved row on the other silently
+    # suppresses or duplicates a revert. Resolution is skipped entirely for the
+    # overwhelmingly common unlinked row, so this costs no query in that case.
+    from app.services.transaction_filters import contributes_to_cached_balance
+
+    source_partner: Transaction | None = None
+    if tx.linked_transaction_id is not None:
+        source_partner = await db.scalar(
+            select(Transaction).where(
+                Transaction.id == tx.linked_transaction_id,
+                Transaction.org_id == org_id,
+            )
+        )
+    source_in_cached_balance = contributes_to_cached_balance(tx, source_partner)
 
     # Optional payload application (edits / match) BEFORE the state flip
     # so a payload validation error doesn't leave the row in a half-
     # updated state. ``_apply_edits`` handles its own amount-delta
-    # balance bookkeeping when the reportability side does NOT flip
-    # (e.g. PENDING_REVIEW -> EDITED, both reportable). ``_apply_match``
-    # writes ``linked_transaction_id`` which DOES flip reportability;
-    # the diff-based helper below absorbs that.
+    # balance bookkeeping when the membership side does NOT flip
+    # (e.g. PENDING_REVIEW -> EDITED, both inside the balance).
+    # ``_apply_match`` writes ``linked_transaction_id``, which DOES flip
+    # membership; the diff-based helper below absorbs that.
+    matched_target: Transaction | None = None
     if target_state == ReconciliationState.EDITED.value:
         await _apply_edits(db, org_id=org_id, tx=tx, transition=transition)
     elif target_state == ReconciliationState.MATCHED.value:
-        await _apply_match(
+        matched_target = await _apply_match(
             db, org_id=org_id, tx=tx, transition=transition
         )
 
     tx.reconciliation_state = target_state
 
-    # Balance bookkeeping (PR #247 round 4 P1). Diff source-reportable
-    # against target-reportable; the helper reads the post-mutation
-    # state off the instance, so the state flip above must run first.
+    # Balance bookkeeping (PR #247 round 4 P1; predicate corrected by TBD-308).
+    # Diff source membership against target membership; the helper reads the
+    # post-mutation state off the instance, so the state flip above must run
+    # first.
+    #
+    # MATCHED is the ONLY transition that rewrites ``linked_transaction_id``,
+    # so it is the only one whose target partner differs from its source
+    # partner -- and there the partner is the row ``_apply_match`` already
+    # loaded and returned, not a second query that could see a different
+    # snapshot. Every other transition leaves the link untouched, so the
+    # source partner IS the target partner.
     await _apply_balance_for_transition(
         db,
         org_id=org_id,
         tx=tx,
         source_state=source_state,
         target_state=target_state,
-        source_reportable=source_reportable,
+        source_in_cached_balance=source_in_cached_balance,
+        target_partner=(
+            matched_target
+            if target_state == ReconciliationState.MATCHED.value
+            else source_partner
+        ),
     )
 
     # Counter bookkeeping.
