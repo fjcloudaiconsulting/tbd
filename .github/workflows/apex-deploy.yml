@@ -101,10 +101,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # TBD-391. Same interlock as release.yml — the landing surface carried the
+  # identical race (push to main, no dependency on the Test run).
+  #
+  # ⚠ A SEPARATE JOB, not a step inside build-and-deploy. That job's
+  # `timeout-minutes: 15` is already largely consumed by `npm ci` +
+  # `build:apex`; adding an ~8 minute wait inside it would convert a healthy
+  # deploy into a timeout failure. The wait gets its own budget.
+  #
+  # ⚠ SKIPPED for manual dispatch. This workflow's `workflow_dispatch` is the
+  # documented recovery path for a stale deploy (see the trigger comment
+  # above), and gating it on some unrelated commit's suite would defeat the
+  # recovery it exists for. Same treatment as deploy.yml.
+  await-tests:
+    name: Await post-merge tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name != 'workflow_dispatch'
+    permissions:
+      # Job-level permissions REPLACE the workflow-level block, which is what
+      # we want here: it drops `id-token: write` for the wait, so the OIDC
+      # credential is never exposed to the polling step. `actions: read` is
+      # required to list workflow runs — omit it and the call 403s and the
+      # gate fails closed for a reason that looks like a working gate.
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Wait for the Test workflow on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: ./scripts/ci/await-test-run.sh "${{ github.sha }}"
+
   build-and-deploy:
     name: Build and deploy apex
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: await-tests
+    # ⚠ THE SHARPEST EDGE IN THIS CHANGE. `needs:` on a SKIPPED job skips the
+    # dependent by default, so without this clause a manual dispatch — the
+    # recovery path — would silently do nothing at all. `!cancelled()` keeps a
+    # real cancellation propagating; the explicit dispatch arm restores the
+    # bypass.
+    if: >-
+      ${{ !cancelled()
+          && (needs.await-tests.result == 'success'
+              || github.event_name == 'workflow_dispatch') }}
 
     env:
       # Region is a repo variable so a future TFC `aws_region` change does
