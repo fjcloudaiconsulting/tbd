@@ -79,6 +79,16 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/auth/mfa/enable"),             # mfa_enable
     ("POST", "/api/v1/auth/mfa/disable"),            # mfa_disable
     ("POST", "/api/v1/auth/mfa/recovery-codes"),     # mfa_regenerate_codes
+    # TBD-346. The ISSUER of the step-up proof, not a consumer of it. Every
+    # consumer is already gated, so a PAT could reach only this one link of
+    # the chain -- and could not redeem what it started, because the Google
+    # consent is bound to the user's verified email and the state cookie lands
+    # on the caller's own response, not the victim's browser. It is listed
+    # here because this roster claims to enumerate the account-takeover
+    # surface COMPLETELY: leaving the issuer off made that claim false, and
+    # the day anyone loosens the callback's email or cookie binding it becomes
+    # the load-bearing path.
+    ("POST", "/api/v1/auth/sso-stepup/initiate"),    # sso_stepup_initiate
     ("POST", "/api/v1/admin/users/merge"),           # merge_users (destructive)
     ("DELETE", "/api/v1/admin/users/1"),             # delete_user
     ("PATCH", "/api/v1/admin/orgs/1/members/1"),     # update_org_member (role grant)
