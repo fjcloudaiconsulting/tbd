@@ -16,6 +16,12 @@ class Dataset(str, enum.Enum):
     ACCOUNTS = "accounts"
     RECURRING = "recurring"
     NETWORTH = "networth"
+    # CreditUtilizationSource (TBD-170). POINT-IN-TIME by construction: there
+    # is no credit-limit history anywhere (Account.credit_limit is a mutable
+    # scalar overwritten in place, unaudited), so a time series would divide
+    # historical balances by TODAY's limit. Publishes no month/week/day
+    # dimension and no date filter.
+    CREDIT_UTILIZATION = "credit_utilization"
 
 
 class Aggregation(str, enum.Enum):
@@ -39,6 +45,16 @@ class MeasureField(str, enum.Enum):
     # generic agg/field machinery. Distinct from BALANCE so the frontend
     # measure picker / axis / CSV label it "Net worth", not "Balance".
     NET_WORTH = "net_worth"
+    # CreditUtilizationSource (TBD-170). UTILIZATION_PCT is a NOMINAL field:
+    # build_rows computes 100 * Σoutstanding / Σcredit_limit per group and
+    # ignores the generic agg machinery, because a percentage is a ratio of
+    # sums and must never be an unweighted average of ratios.
+    # OUTSTANDING is max(0, -balance) — sign-flipped and clamped relative to
+    # BALANCE, hence its own field: MEASURE_FIELD_LABELS is keyed by field and
+    # drives the axis, tooltip and CSV header.
+    UTILIZATION_PCT = "utilization_pct"
+    OUTSTANDING = "outstanding"
+    CREDIT_LIMIT = "credit_limit"
 
 
 class RelativeDateToken(str, enum.Enum):
