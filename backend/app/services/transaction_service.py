@@ -2703,16 +2703,19 @@ def _apply_transaction_filters(
         # excluded. It drops transfer legs, manual balance adjustments AND
         # reverted (skipped/rejected) reconciliation rows.
         #
-        # ⚠ A client-side reconstruction of this can only ever be PART of it,
-        # which is precisely why the filter belongs here.
+        # ⚠ TBD-309 REMOVED THE OLD REASON WITHOUT WEAKENING THE RULE, and the
+        # difference matters. This note used to say only
+        # ``is_manual_adjustment`` was on the wire, so a client reconstruction
+        # "can only ever be half of it". ``is_reverted`` now ships too, and
+        # with it ALL THREE of this clause's columns are on the wire, so the
+        # ROW-LEVEL predicate is exactly reconstructible client-side. That
+        # argument is spent; do not reach for it.
         #
-        # ⚠ TBD-309 CHANGED THE REASON, NOT THE RULE. This note used to say
-        # only ``is_manual_adjustment`` was on the wire. ``is_reverted`` now
-        # ships too, so that sentence is stale -- but the conclusion survives
-        # for a reason no wire field can fix: this filter also drops transfer
-        # legs, and "is a transfer leg" is a MUTUALITY question that needs the
-        # partner row. A client holding a collapsed list does not have it.
-        # Do not read the new flag as permission to re-aggregate client-side.
+        # The filter still belongs here, for reasons no wire field can fix: a
+        # client holds one PAGE rather than the period's row set, and buckets
+        # by a calendar window rather than ``effective_period_date_expr``
+        # against the org's billing-period boundaries. Those are aggregation
+        # errors rather than filter errors, and they are silent.
         #
         # Do NOT pair this with ``collapse_transfers``: this clause already
         # excludes every non-null ``linked_transaction_id``, a strict superset.

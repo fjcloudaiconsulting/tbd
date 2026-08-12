@@ -221,15 +221,28 @@ async def test_is_reverted_agrees_with_the_production_sql_predicate(
     ``is_reverted`` flag must agree with the independent SQL implementation
     ``non_reverted_transaction_filter()``.
 
-    ⚠ THIS IS THE ANTI-VACUITY SHAPE. Asserting the flag against
-    ``REVERTED_RECONCILIATION_STATES`` would have both sides read the SAME
-    symbol, so a derivation that inlined ``("skipped",)`` would still pass.
-    Asserting against the SQL clause forces two independent implementations to
-    agree, and parametrizing over the enum means a NEW roster member
-    auto-enrols rather than needing this test edited.
+    ⚠ WHAT THIS DOES AND DOES NOT PIN -- read before trusting it.
 
-    KILLS: inlining a literal in the derivation; deriving from the wrong
-    column; inverting the flag; omitting the field from ``to_response``.
+    An earlier revision of this docstring claimed the SQL comparison made the
+    two sides "independent implementations". That was FALSE and is withdrawn:
+    ``non_reverted_transaction_filter()`` is one line over
+    ``_RECON_EXCLUDED_STATES``, and ``REVERTED_RECONCILIATION_STATES`` is the
+    SAME OBJECT (test above). Both sides bottom out in one tuple; only the
+    evaluation mechanism differs, SQL ``NOT IN`` versus Python ``in``.
+    Measured: shrink the roster to ``("skipped",)`` and all seven cases here
+    stay GREEN. A fence that advertises anti-vacuity it does not have is worse
+    than a plain one, because the next reader trusts the claim.
+
+    What it DOES pin, and what nothing else does: the SQL clause itself.
+    Mutate ``non_reverted_transaction_filter`` to ``!= "skipped"`` and the
+    ``rejected`` case goes red. It also pins the derivation against the wrong
+    column, an inverted flag, and the field missing from ``to_response``.
+
+    What pins the ROSTER is the tripwire above plus the byte-identical rollup
+    control, which reddens on all four snapshots when the roster changes.
+
+    KILLS: mutating ``non_reverted_transaction_filter``; deriving from the
+    wrong column; inverting the flag; omitting the field from ``to_response``.
     """
     from app.services import transaction_service
 
@@ -291,10 +304,17 @@ async def test_is_reverted_survives_list_detail_and_put_routes(session_factory):
     """B1 (fence). The flag must reach the client through every route the page
     actually uses, not merely through ``to_response`` in isolation.
 
-    ⚠ Records the PATH, not the item. The page replaces its row state from the
-    body of ``PUT /transactions/{id}`` after every edit, so a fence covering
-    only the list route certifies a path it never touched -- and the row would
-    silently lose its flag mid-session.
+    ⚠ Records the PATH, not the item: a fence covering only the list route
+    certifies two routes it never touched.
+
+    On the ``PUT``: the transactions page does NOT currently consume that body
+    (it splices only ``recurring_id`` from the promote response and then
+    refetches), so this is not protecting a live client path today -- do not
+    justify it that way. It is protecting the CONTRACT. ``PUT`` returns a
+    ``TransactionResponse`` on a PAT-reachable endpoint, so a third-party
+    consumer sees the same shape as the list, and a row that lost the field on
+    one route only would be a silent inconsistency in the wire contract rather
+    than a rendering bug.
 
     KILLS: adding the field to the Pydantic model but not passing it in
     ``to_response``; covering the list route only.

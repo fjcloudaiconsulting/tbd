@@ -39,6 +39,7 @@ function tx(over: Partial<Transaction> = {}): Transaction {
     settled_date: "2026-05-11",
     is_imported: false,
     is_manual_adjustment: false,
+    is_reverted: false,
     tags: [],
     ...over,
   } as Transaction;

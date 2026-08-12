@@ -35,16 +35,21 @@
  *      The over-reach control on the submit half: without it, making the
  *      submit guard unconditionally false passes every other fence here.
  *
- *      ⚠ DISCLOSED GAP, deliberately not papered over. The other direction —
- *      a submit path that allows what the render gate refuses — is NOT
- *      fenceable through the DOM, because the render gate makes its input
- *      unreachable: the checkbox cannot be ticked on a row the gate hides.
- *      The submit guard is kept as defence-in-depth against a mid-edit
- *      revalidation flipping the row underneath an open form, and its real
- *      protection is structural: all three sites consume the SAME
- *      `canPromoteToRecurring`, so they cannot drift without someone
- *      deliberately inlining a second predicate. Do not add a fence that
- *      pretends to cover this; add one only if the sites are ever forked.
+ *  F3b The submit path REFUSES when the row turns reverted underneath an open
+ *      edit form.
+ *      Kills: leaving the submit path on the pre-TBD-309 predicate while
+ *      fixing the two render gates — measured, that mutant leaves every other
+ *      fence in this file green.
+ *
+ *      ⚠ An earlier revision of this file claimed this direction was NOT
+ *      fenceable through the DOM, on the reasoning that the render gate makes
+ *      its input unreachable. That reasoning was WRONG and the claim is
+ *      withdrawn. `refreshAfterTransactionAdded` replaces the row set on the
+ *      global add event WITHOUT closing the open form or clearing the tick, so
+ *      a row can flip to reverted underneath a ticked checkbox — which is
+ *      exactly the mid-edit revalidation the guard was described as defending
+ *      against. A fence file that talks itself out of a reachable path is
+ *      worse than one that never mentions it.
  *
  *  F4  A manual balance adjustment is not offered it either.
  *      Kills: writing the predicate as the reverted test alone, leaving the
@@ -61,7 +66,7 @@
  * rather than only through `title`.
  */
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -161,15 +166,21 @@ const REVERTED_TRANSFER_LEG = makeTx({
   is_reverted: true,
 });
 
+/** Returns a setter so a test can change what the NEXT refetch returns, which
+ * is what the mid-edit revalidation fence needs. */
 function setupApiFetch(txs: Transaction[]) {
+  let rows = txs;
   vi.mocked(apiFetch).mockImplementation(async (url: string) => {
     if (url.startsWith("/api/v1/accounts")) return [ACCT_CHECKING] as never;
     if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
     if (url.startsWith("/api/v1/transactions"))
-      return { items: txs, total: txs.length, limit: 25, offset: 0 } as never;
+      return { items: rows, total: rows.length, limit: 25, offset: 0 } as never;
     return null as never;
   });
+  return (next: Transaction[]) => {
+    rows = next;
+  };
 }
 
 beforeEach(() => {
@@ -243,6 +254,70 @@ describe("TBD-309 — reverted row affordances", () => {
     });
   });
 
+  it("F3b: the submit path refuses when the row turns reverted mid-edit", async () => {
+    const setRows = setupApiFetch([ORDINARY]);
+    render(<TransactionsPage />);
+    await openEditFor(ORDINARY);
+
+    fireEvent.click(screen.getAllByLabelText("Make recurring")[0]);
+    const nextDue = screen.getAllByLabelText(/next due/i)[0] as HTMLInputElement;
+    fireEvent.change(nextDue, { target: { value: "2026-06-04" } });
+
+    // The row is reconciled elsewhere. The page revalidates on the global add
+    // event WITHOUT closing the open form or clearing the tick, so the ticked
+    // checkbox now sits over a row the server would refuse.
+    setRows([{ ...ORDINARY, is_reverted: true }]);
+    await act(async () => {
+      window.dispatchEvent(new Event("pfv:transaction-added"));
+    });
+
+    // Precondition, asserted rather than assumed: the fresh row really landed
+    // under the form (the render gate reacted) and the form is still open with
+    // the tick still set. Without this the test could pass because nothing
+    // happened at all.
+    await waitFor(() =>
+      expect(screen.queryByTestId(`edit-recurring-row-${ORDINARY.id}`)).toBeNull(),
+    );
+    expect(screen.getAllByRole("button", { name: /^Save$/ }).length).toBeGreaterThan(0);
+
+    vi.mocked(apiFetch).mockClear();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Save$/ })[0]);
+
+    await waitFor(() => {
+      const calls = vi.mocked(apiFetch).mock.calls.map((c) => String(c[0]));
+      expect(calls.some((u) => u.includes(`/transactions/${ORDINARY.id}`))).toBe(true);
+    });
+    const calls = vi.mocked(apiFetch).mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("promote-to-recurring"))).toBe(false);
+  });
+
+  it("F6: a reverted row that is ALSO reconcile-matched shows only one chip", async () => {
+    // `!isReconcileMatched` in the badge gate had zero coverage: dropping it
+    // left the whole suite green. This row shape is reachable -- reopen a
+    // matched row (ACCEPTED -> PENDING_REVIEW keeps the one-way link), then
+    // skip it -- and without the term it renders BOTH "Matched" and
+    // "Excluded", the duplication the term exists to prevent.
+    const MATCHED_AND_REVERTED = makeTx({
+      id: 9105,
+      description: "Reopened then skipped",
+      linked_transaction_id: 9500,
+      linked_account_name: null,
+      is_reverted: true,
+    });
+    setupApiFetch([MATCHED_AND_REVERTED]);
+    render(<TransactionsPage />);
+    await screen.findAllByText(MATCHED_AND_REVERTED.description);
+
+    // Matched wins: it is strictly more informative (it names the duplicate
+    // relationship and links to the twin) and its own copy already says the
+    // row is excluded from balances and reports.
+    expect(screen.getByTestId(`matched-badge-${MATCHED_AND_REVERTED.id}`)).toBeTruthy();
+    expect(screen.queryByTestId(`excluded-badge-${MATCHED_AND_REVERTED.id}`)).toBeNull();
+    expect(
+      screen.queryByTestId(`excluded-badge-mobile-${MATCHED_AND_REVERTED.id}`),
+    ).toBeNull();
+  });
+
   it("F4: a manual balance adjustment is not offered the promote checkbox", async () => {
     setupApiFetch([ADJUSTMENT]);
     render(<TransactionsPage />);
@@ -263,15 +338,17 @@ describe("TBD-309 — reverted row affordances", () => {
     for (const badge of [desktop, mobile]) {
       expect(badge.textContent).toContain("Excluded");
 
-      // The trigger must be FOCUSABLE. This is not cosmetic: Tooltip wires
-      // `aria-describedby` onto the first focusable descendant, so a plain
-      // non-focusable span silently gets no wiring at all and leaves keyboard
-      // users with no way in. Kills dropping `tabIndex`, which looks harmless
-      // and disables the entire accessible path.
-      expect(badge.getAttribute("tabindex")).toBe("0");
-
       // It is an indicator, not a navigation action: nowhere to go.
       expect(badge.closest("a")).toBeNull();
+
+      // ⚠ Deliberately NOT asserting `tabindex === "0"`. That pins the
+      // MECHANISM rather than the requirement: a correct implementation using
+      // a <button> trigger would be focusable and correctly wired yet RED on
+      // such an assertion. It is also redundant -- measured, removing
+      // `tabIndex` reddens the `aria-describedby` assertion below on its own,
+      // because Tooltip wires it onto the first FOCUSABLE descendant and a
+      // non-focusable span gets nothing. The requirement is "the explanation
+      // is reachable", and that is what is asserted.
 
       // A11Y FENCE. Opening it must wire `aria-describedby` to the bubble.
       // `title` alone is not acceptable here: it never appears on touch and is
@@ -292,13 +369,18 @@ describe("TBD-309 — reverted row affordances", () => {
     // cause. A row can be reverted by a route the user never chose -- deleting
     // some OTHER row demotes its matched duplicate -- so naming "skipped",
     // "rejected" or "reconciliation" would claim an action they may never have
-    // taken. Asserted over the whole rendered document so the tooltip bubble
-    // is covered wherever it portals to.
+    // taken.
+    //
+    // ⚠ Scoped to the BADGE and its BUBBLE, not to `document.body`. A
+    // page-wide negative would redden for any unrelated future copy on this
+    // page (an import banner, a reconciliation-state filter) -- a false-RED
+    // surface against a perfectly correct implementation.
     fireEvent.focus(desktop);
-    await waitFor(() =>
-      expect(document.body.textContent).toContain("not counted in balances or reports"),
-    );
-    const words = document.body.textContent?.toLowerCase() ?? "";
+    await waitFor(() => expect(desktop.getAttribute("aria-describedby")).toBeTruthy());
+    const bubble = document.getElementById(desktop.getAttribute("aria-describedby")!);
+    const words = `${desktop.textContent} ${bubble?.textContent ?? ""}`.toLowerCase();
+
+    expect(words).toContain("not counted in balances or reports");
     expect(words).toContain("its amount is not in your account balance");
     expect(words).not.toContain("reconcil");
     expect(words).not.toContain("skipped");

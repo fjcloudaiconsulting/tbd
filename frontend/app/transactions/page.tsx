@@ -102,6 +102,18 @@ const DEEP_LINK_MISS =
  * would delete the chip and its series pointer. The submit path adds it as a
  * separate term.
  *
+ * ⚠ KNOWN INCONSISTENCY, unreachable today, and a trap for whoever makes it
+ * reachable. That same argument applies to the other two terms: a row that is
+ * BOTH recurring-linked AND reverted (or a manual adjustment) loses the chip,
+ * the sync hint and the TBD-277 "stop the series" pointer, because this
+ * predicate hides the whole block rather than just the checkbox. No writer
+ * produces that shape right now -- reconciliation states are written on
+ * import-inbox rows and on demoted match referrers, neither of which carries
+ * `recurring_id`, and adjustment rows carry none either. The correct shape is
+ * a separate `showsRecurringSlot` gate for the block with this predicate
+ * governing only the checkbox. Do that BEFORE letting a recurring occurrence
+ * be reconciled, or the chip disappears from rows that still need it.
+ *
  * ⚠ Declared ONCE and used at all three call sites on purpose. The three used
  * to carry subtly different predicates -- the two render sites tested
  * `linked_transaction_id` while the submit path tested that plus
@@ -1834,6 +1846,19 @@ function TransactionsPageContent() {
                                 from balances and reports", so a second neutral
                                 chip would repeat the fact and spend the row's
                                 quiet twice.
+
+                                ⚠ That suppression leaves ONE shape unimproved
+                                rather than broken: a row that is reverted AND
+                                still carries a one-way match link (reachable by
+                                reopening a matched row, then skipping it) shows
+                                Matched, whose explanation is `title` + sr-only
+                                and so is unreachable by tap. It rendered
+                                exactly that way before this change too, so this
+                                is not a regression -- but it is the one row
+                                shape this ticket does not reach. TBD-389
+                                converts the Matched badge to `Tooltip` and
+                                closes it; do not "fix" it here by rendering
+                                both chips.
 
                                 Suppressed on a COLLAPSED transfer pair
                                 (`isPairedTransfer`) because such a row stands

@@ -609,8 +609,20 @@ def test_b2x_b3_composed_drilldown_drops_both_levels_non_reportable_rows(rollup)
 # Originally recorded on unmodified `main` (f32540a9) against
 # `_seed_control_org` below. These are RESPONSE BYTES, not a re-derivation: a
 # re-derived expectation moves with the implementation and cannot detect a
-# changed default. If a legitimate contract change ever lands, re-record
-# deliberately — do not patch a character.
+# changed default.
+#
+# ⚠ HOW TO RE-RECORD, when a legitimate contract change lands. Do not patch a
+# character, and do not simply capture the new bytes and commit them — that
+# turns this control into the implementation asserting it equals itself, which
+# is the one thing it exists not to be. Capture the responses live, then PROVE
+# the delta: parse old and new, remove exactly the keys the change is supposed
+# to add, and assert the remainder is byte-identical. Anything else that moved
+# (row order, a filtered row, a changed value) is a regression the capture
+# would otherwise have silently blessed. Record the proof in the commit.
+#
+# Note "re-record from `main`" is not always possible: for an ADDITIVE change,
+# `main` cannot produce bytes containing the new field. The strip-and-compare
+# above is the procedure that works in both cases.
 #
 # ⚠ RE-RECORDED ONCE, by TBD-309, which added the `is_reverted` field to
 # `TransactionResponse`. That is the "legitimate contract change" this note
