@@ -240,14 +240,30 @@ async def _transition(db, org, tx, *, target_state, link_to=None):
     hand-writing the new balance, so the fixture cannot disagree with the
     production revert it is supposed to model.
     """
-    source_reportable = True          # row was an ordinary accepted row
+    # The row was an ordinary accepted row, so its amount WAS inside
+    # accounts.balance before the transition. TBD-308 renamed this argument
+    # from ``source_reportable``; the modelled fact is unchanged.
+    source_in_cached_balance = True
     tx.reconciliation_state = target_state
+    target_partner = None
     if link_to is not None:
         tx.linked_transaction_id = link_to      # ONE-WAY, as _apply_match writes
+        # TBD-308: the partner must be RESOLVED, never left as None.
+        # ``contributes_to_cached_balance`` fails OPEN on an unresolvable
+        # partner, so a None here would answer True, collapse the diff to
+        # True -> True, and silently skip the very revert this fixture models.
+        from sqlalchemy import select
+
+        target_partner = await db.scalar(
+            select(Transaction).where(
+                Transaction.id == link_to, Transaction.org_id == org.id
+            )
+        )
     await rs._apply_balance_for_transition(
         db, org_id=org.id, tx=tx,
         source_state="accepted", target_state=target_state,
-        source_reportable=source_reportable,
+        source_in_cached_balance=source_in_cached_balance,
+        target_partner=target_partner,
     )
     await db.commit()
 
