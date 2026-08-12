@@ -731,9 +731,17 @@ function LegacyDashboard() {
   //
   // ⚠ NO CLIENT FALLBACK. When the rollup is absent this is empty and the tile
   // renders its rollup-failed state. Re-aggregating here instead would silently
-  // substitute the wrong number, which IS the defect being deleted —
-  // `is_manual_adjustment` is on the wire and `reconciliation_state` is not, so
-  // a client reconstruction can only ever be half the filter.
+  // substitute the wrong number, which IS the defect being deleted — a client
+  // reconstruction can only ever be part of the filter.
+  //
+  // ⚠ TBD-309 CHANGED THE REASON, NOT THE RULE. This note used to say the
+  // client could not reconstruct the filter because `reconciliation_state` was
+  // not on the wire. `is_reverted` now IS, so that specific sentence is no
+  // longer true — but the rule stands, for a reason the wire cannot fix:
+  // `reportable_transaction_filter` also drops transfer legs, and "is this a
+  // transfer leg" is a question about MUTUALITY, answerable only by inspecting
+  // the partner row. A collapsed list does not contain the partner. Do not
+  // read the newly-available flag as permission to re-aggregate here.
   //
   // donutData drives both the donut chart (always rendered in amount-desc
   // order so the largest slice starts at 12 o'clock) and the legend list

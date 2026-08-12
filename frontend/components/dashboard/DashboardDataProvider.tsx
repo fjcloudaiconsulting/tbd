@@ -1080,8 +1080,15 @@ export function DashboardDataProvider({
   // ⚠ NO CLIENT FALLBACK. When the rollup is absent this is empty and the tile
   // renders its `rollupFailed` state. Re-aggregating here instead would
   // silently substitute the wrong number, which IS the defect being deleted.
-  // `is_manual_adjustment` is on the wire and `reconciliation_state` is not, so
-  // any client reconstruction can only ever be half of the filter.
+  // Any client reconstruction can only ever be PART of the filter.
+  //
+  // ⚠ TBD-309 CHANGED THE REASON, NOT THE RULE. This note used to say the
+  // client could not reconstruct the filter because `reconciliation_state` was
+  // not on the wire. `is_reverted` now IS, so that sentence is stale — but the
+  // rule survives for a reason the wire cannot fix: the filter also drops
+  // transfer legs, and "is a transfer leg" is a MUTUALITY question that needs
+  // the partner row, which a collapsed list does not contain. Do not read the
+  // new flag as permission to re-aggregate here.
   const donutDataRaw = useMemo<DonutDatum[]>(() => {
     // `activeRollup`, not `spendingRollup`: a payload fetched for a period the
     // user has since navigated away from must not render under the new one.

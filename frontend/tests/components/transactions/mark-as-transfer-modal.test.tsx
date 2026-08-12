@@ -26,6 +26,7 @@ const source: Transaction = {
   settled_date: "2026-04-29",
   is_imported: false,
   is_manual_adjustment: false,
+  is_reverted: false,
   tags: [],
 };
 
