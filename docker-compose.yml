@@ -52,6 +52,12 @@ services:
       # repo-root .github/workflows/deploy.yml and .do/app.yaml.
       - ./.github:/app/.github:ro
       - ./.do:/app/.do:ro
+      # TBD-391: read-only mount so test_await_test_run_gate.py can execute the
+      # repo-root CI gate script. It cannot go to /app/scripts — that path is
+      # already taken by ./backend/scripts above — hence the distinct mount
+      # point. On a bare CI runner the whole repo is checked out and the test
+      # finds it at REPO_ROOT/scripts/ci instead; the test tries both.
+      - ./scripts:/app/repo-scripts:ro
       # Read-only mount so test_period_status_frontend_contract.py can READ
       # the cross-language period-status fixture that lives on the frontend
       # side. Without it that whole module is red in every container while
