@@ -1080,8 +1080,19 @@ export function DashboardDataProvider({
   // ⚠ NO CLIENT FALLBACK. When the rollup is absent this is empty and the tile
   // renders its `rollupFailed` state. Re-aggregating here instead would
   // silently substitute the wrong number, which IS the defect being deleted.
-  // `is_manual_adjustment` is on the wire and `reconciliation_state` is not, so
-  // any client reconstruction can only ever be half of the filter.
+  //
+  // ⚠ TBD-309 REMOVED THE OLD REASON WITHOUT WEAKENING THE RULE. This note
+  // used to say a client reconstruction "can only ever be half of the filter"
+  // because `reconciliation_state` was not on the wire. `is_reverted` now is,
+  // and with it ALL THREE columns of `reportable_transaction_filter` are on
+  // the wire, so the row-level predicate IS exactly reconstructible here.
+  // That argument is spent; do not reach for it.
+  //
+  // The rule survives on what no wire field can fix: this client holds ONE
+  // PAGE rather than the period's row set, and would bucket by a client
+  // calendar window instead of the org's billing-period boundaries. Those are
+  // aggregation errors, and they are invisible in the same way the original
+  // defect was.
   const donutDataRaw = useMemo<DonutDatum[]>(() => {
     // `activeRollup`, not `spendingRollup`: a payload fetched for a period the
     // user has since navigated away from must not render under the new one.

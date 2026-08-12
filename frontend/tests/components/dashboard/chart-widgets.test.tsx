@@ -621,6 +621,7 @@ const TX: Transaction = {
   settled_date: null,
   is_imported: false,
   is_manual_adjustment: false,
+  is_reverted: false,
   tags: [],
 } as unknown as Transaction;
 
