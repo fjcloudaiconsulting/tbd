@@ -353,3 +353,51 @@ async def test_adjust_balance_rate_limited(session_factory):
         )
 
     assert throttled.status_code == 429
+
+
+# ── /auth/sso-stepup/initiate — 10/hour (TBD-346) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_sso_stepup_initiate_rate_limited(session_factory, monkeypatch):
+    """Eleventh step-up initiation within the hour returns 429.
+
+    TBD-346. This endpoint ISSUES the step-up proof that authorizes an email
+    change, a first password set, and a PAT mint. Its consumers are limited to
+    5/hour and 10/hour; an issuer must not be looser than its loosest consumer,
+    and before this it was unlimited.
+
+    KILLS: dropping the ``@limiter.limit`` decorator; a limit-string typo such
+    as ``"10/hours"`` (slowapi parses it to something else); and losing the
+    ``request: Request`` parameter, without which slowapi raises at call time
+    rather than limiting -- the endpoint had no such parameter before this
+    ticket, so that is a live regression path, not a hypothetical one.
+
+    ⚠ Ten calls must SUCCEED first. A fence that only asserts the 429 passes
+    against a limit of ``1/hour``, which would break the feature.
+    """
+    from app.routers.auth import router as auth_router
+
+    # The handler needs Google configured, or it 501s before the limiter's
+    # counter is what we are measuring. Values are inert: the route builds a
+    # consent URL string and makes no outbound call.
+    monkeypatch.setattr("app.config.settings.google_client_id", "cid.test", raising=False)
+    monkeypatch.setattr(
+        "app.config.settings.google_client_secret", "csecret.test", raising=False
+    )
+
+    seed = await _seed_org_with_owner(session_factory)
+    app = _make_app(
+        [auth_router],
+        current_user_resolver=_resolver_for_owner(seed["owner_id"]),
+        session_factory=session_factory,
+    )
+
+    with TestClient(app) as client:
+        for i in range(10):
+            res = client.post("/api/v1/auth/sso-stepup/initiate", json={})
+            assert res.status_code == 200, f"call {i + 1}: {res.text}"
+
+        throttled = client.post("/api/v1/auth/sso-stepup/initiate", json={})
+
+    assert throttled.status_code == 429

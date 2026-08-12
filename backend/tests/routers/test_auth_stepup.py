@@ -31,7 +31,11 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
+from app.rate_limit import limiter
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -116,7 +120,20 @@ def _make_app(session_factory, current_user_id: int | None):
     app.dependency_overrides[get_session_factory] = override_session_factory
 
     if current_user_id is not None:
-        async def override_current_user() -> User:
+        async def override_current_user(request: Request) -> User:
+            # TBD-346: stamp the auth method the real dependency chain would
+            # set. `sso-stepup/initiate` is now interactive-session gated and
+            # `require_interactive_session` reads `request.state.auth_method`,
+            # so without this every test in this file 403s.
+            #
+            # ⚠ This models a browser session, which is what these tests mean;
+            # it is NOT relaxing the guard. Note the consequence though:
+            # because this fixture overrides `get_current_user`, it is
+            # structurally BLIND to whether that guard is attached at all. The
+            # fence for the gate lives in
+            # `tests/auth/test_interactive_session_enumeration.py`, which
+            # mounts the real seam. Do not add one here and believe it.
+            request.state.auth_method = "jwt"
             async with session_factory() as session:
                 user = await session.get(User, current_user_id)
                 assert user is not None
@@ -124,8 +141,24 @@ def _make_app(session_factory, current_user_id: int | None):
 
         app.dependency_overrides[get_current_user] = override_current_user
 
+    # TBD-346: `initiate` now carries `@limiter.limit("10/hour")`. slowapi
+    # needs both of these wired or it raises instead of limiting.
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
     app.include_router(auth_router)
     return app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """TBD-346. The limiter's storage is process-global and keyed per client
+    IP, which TestClient reports as one address for every test in this file.
+    Without a reset the 10/hour bucket on `initiate` leaks across tests and a
+    correct test fails on a stale 429."""
+    limiter.reset()
+    yield
+    limiter.reset()
 
 
 async def _stepup_failure_rows(factory) -> list[AuditEvent]:
