@@ -144,10 +144,10 @@ both subqueries — never a hand-computed number.
 
 | id | type | asserts | wrong implementation it kills |
 |---|---|---|---|
-| **F1** | fence | Skip a reciprocal transfer leg through the inbox; `is_consistent` on **both** accounts | `main`'s `is_reportable_transaction` derivation (`False -> False`, reverts nothing). Also kills `not is_reciprocal_pair(...)` substituted for the predicate. |
+| **F1** | fence | Move a reciprocal transfer leg into a reverted state through the inbox; `is_consistent` on **both** accounts. **Parametrized over `skipped` AND `rejected`.** | `main`'s `is_reportable_transaction` derivation (`False -> False`, reverts nothing). Also kills `not is_reciprocal_pair(...)` substituted for the predicate, and — via the `rejected` case — an implementation that special-cases the literal `"skipped"` inside this code path instead of deferring to `_RECON_EXCLUDED_STATES`. |
 | **F2** | fence | Skip-then-pair built **through the real service functions**, then edit the surviving partner's amount; invariant on both accounts | ungated 4b/4f. Hand-writing `reconciliation_state` would still go RED but would not pin the *route*, and the route is the finding. |
 | **F3** | guard | A real, unskipped transfer pair still mirrors the amount and still moves **both** balances | any over-reach that freezes transfer edits. Without it, hard-coding the gate to `False` passes F1 and F2. |
-| **F4** | guard | Pairing a SKIPPED row still **succeeds** | the deliberate absence of the `_link_pair` state guard. A future hygiene PR that adds it goes RED and must argue with the dead end. |
+| **F4** | guard | Pairing a SKIPPED row still **succeeds**, and `find_match_candidates` still **offers** it | the deliberate absence of the `_link_pair` state guard, and — via the candidate assertion — a `reconciliation_state` filter added to `find_match_candidates`, which would close the skip-then-pair route from the UI while every other fence stayed green. A future hygiene PR adding either goes RED and must argue with the dead end. |
 | **F5** | guard | A row carrying a **stale one-way** link after `ACCEPTED -> PENDING_REVIEW` still behaves as today; its skip moves no balance | passing `None` as the partner, and any blanket `linked_transaction_id is not None` treatment. |
 
 Additional required kill, covered by F1 + F5 together:
@@ -160,6 +160,20 @@ Additional required kill, covered by F1 + F5 together:
 
 `test_reconciliation_service.py::test_match_reverts_account_balance_for_this_row`
 already fences the "match revert stops firing" case and must stay green.
+
+### Added during review (the roster as first written missed these)
+
+* **F6** — a reciprocal leg transitioned to ACCEPTED moves no money. Kills the
+  **source-only** asymmetric swap. F1 cannot: F1's transition ends in a
+  reverted state where both predicates agree on `False`, so the source-only
+  mutant gets the right answer there by luck. A boundary pinned from one side
+  is not pinned.
+* **F1 parametrized over `rejected`** — an implementation special-casing
+  `"skipped"` *inside* `_apply_balance_for_transition` passed all six original
+  fences. The parity fences on the shared predicate cannot see it either,
+  because it never touches the shared predicate.
+* **F4's `find_match_candidates` assertion** — nothing previously pinned the
+  reachability claim the whole ticket rests on.
 
 ## Verification gate
 

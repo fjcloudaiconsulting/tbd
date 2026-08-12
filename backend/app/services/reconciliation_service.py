@@ -143,8 +143,19 @@ PENDING_STATES: frozenset[str] = frozenset(
 #
 # For ``is_manual_adjustment = False`` the two predicates differ IF AND ONLY
 # IF the row is reciprocal: unlinked rows and one-way (reconcile-match) rows
-# get identical answers from both. The correction therefore changes exactly
-# the reciprocal-leg cells and provably nothing else.
+# get identical answers from both. Within that scope the correction changes
+# exactly the reciprocal-leg cells and nothing else.
+#
+# That scope qualifier is load-bearing, not throat-clearing: the predicates
+# ALSO differ on ``is_manual_adjustment`` (``is_reportable_transaction`` ANDs
+# ``not is_manual_adjustment``; ``contributes_to_cached_balance`` has no such
+# term). That cell is unreachable HERE -- ``_reconcile_one`` requires
+# ``import_batch_id == batch.id``, and ``adjust_account_balance`` creates its
+# rows with ``is_imported=False`` and never enrols them in a batch -- and if it
+# ever became reachable, the NEW answer is the correct one: a manual
+# adjustment's amount IS inside ``accounts.balance`` (see
+# ``reconcile_account``). So this is a latent improvement, not a latent bug.
+# Do not "restore symmetry" by adding an ``is_manual_adjustment`` term.
 #
 # ⚠ ``contributes_to_cached_balance`` needs the PARTNER and fails OPEN when it
 # cannot be resolved, so the partner is resolved once in ``_reconcile_one``

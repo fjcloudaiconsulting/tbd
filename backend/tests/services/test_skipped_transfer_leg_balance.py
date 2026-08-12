@@ -279,12 +279,20 @@ async def _make_reciprocal_pair(
 # ══ F1 -- the root fix ══════════════════════════════════════════════════════
 
 
+@pytest.mark.parametrize(
+    "reverted_state",
+    [ReconciliationState.SKIPPED, ReconciliationState.REJECTED],
+    ids=["skipped", "rejected"],
+)
 @pytest.mark.asyncio
-async def test_skipping_a_reciprocal_transfer_leg_reverts_its_contribution(db_session):
-    """F1 (fence). Skipping a genuine, bidirectionally-linked transfer leg
-    through the inbox must revert that leg's amount out of ``accounts.balance``,
-    because ``balance_contribution_filter`` drops it from the reconstruction the
-    moment its state reads ``skipped``.
+async def test_reverting_a_reciprocal_transfer_leg_reverts_its_contribution(
+    db_session, reverted_state
+):
+    """F1 (fence). Moving a genuine, bidirectionally-linked transfer leg into a
+    REVERTED state through the inbox must revert that leg's amount out of
+    ``accounts.balance``, because ``balance_contribution_filter`` drops it from
+    the reconstruction the moment its state enters
+    ``_RECON_EXCLUDED_STATES``.
 
     KILLS: ``main``'s ``is_reportable_transaction`` derivation in
     ``_apply_balance_for_transition``. That predicate ANDs
@@ -293,6 +301,15 @@ async def test_skipping_a_reciprocal_transfer_leg_reverts_its_contribution(db_se
     while the row leaves the reconstruction. Also kills any ``not
     is_reciprocal_pair(...)`` lookalike, which answers about link shape rather
     than about cached-balance membership.
+
+    ⚠ PARAMETRIZED OVER BOTH MEMBERS of ``_RECON_EXCLUDED_STATES``, deliberately
+    and not for symmetry's sake: an implementation that special-cases the
+    literal ``"skipped"`` INSIDE this code path -- rather than deferring to the
+    shared tuple -- passes every SKIPPED-only fence in this module. The parity
+    fences on the shared predicate cannot see that mutant either, because it
+    never touches the shared predicate. REJECTED is not a hypothetical state:
+    it is a first-class inbox transition AND what ``_demote_match_orphans``
+    writes in production.
     """
     seed = await _seed(db_session)
     expense, income = await _make_reciprocal_pair(
@@ -305,11 +322,11 @@ async def test_skipping_a_reciprocal_transfer_leg_reverts_its_contribution(db_se
 
     a_before = (await _account(db_session, seed["acct_a_id"])).balance
 
-    await _reconcile(
-        db_session, seed, _transition(expense.id, ReconciliationState.SKIPPED)
-    )
+    await _reconcile(db_session, seed, _transition(expense.id, reverted_state))
 
-    assert (await _reload(db_session, expense.id)).reconciliation_state == "skipped"
+    assert (
+        await _reload(db_session, expense.id)
+    ).reconciliation_state == reverted_state.value
     # The leg's amount must leave the cached balance: it is an EXPENSE, so
     # reverting it raises the account.
     assert (await _account(db_session, seed["acct_a_id"])).balance == (
@@ -440,6 +457,27 @@ async def test_pairing_a_skipped_row_still_succeeds(db_session):
     )
     await _reconcile(
         db_session, seed, _transition(skipped.id, ReconciliationState.SKIPPED)
+    )
+
+    # The row is still OFFERED as a transfer candidate. This half of the fence
+    # pins the REACHABILITY claim the whole ticket rests on: the skip-then-pair
+    # route exists because ``find_match_candidates`` carries no
+    # ``reconciliation_state`` term. Without this assertion, a future PR adding
+    # such a filter would make the route unreachable from the UI while every
+    # other fence here stayed green, and the "the route is the finding"
+    # reasoning would rot silently.
+    candidates = await transaction_service.find_match_candidates(
+        db_session, seed["org_id"],
+        source_type=TransactionType.INCOME,
+        amount=Decimal("60.00"),
+        account_id_excluded=seed["acct_b_id"],
+        date=TX_DATE,
+        currency="EUR",
+    )
+    assert skipped.id in {c.id for c in candidates}, (
+        "a SKIPPED row must still surface as a transfer-pair candidate; "
+        "if this fails, the skip-then-pair route is closed and the 4b/4f gate "
+        "may no longer be reachable -- re-read the dead-end argument first"
     )
 
     await transaction_service.pair_existing_transactions(
