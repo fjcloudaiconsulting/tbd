@@ -55,11 +55,79 @@ const MATCHED_BADGE_TITLE =
   "Marked as a duplicate of another transaction. It is excluded from balances and reports.";
 const MATCHED_BADGE_SR =
   "marked as a duplicate of another transaction, excluded from balances and reports";
+// TBD-309: the second member of the same indicator family. A REVERTED row (its
+// amount pulled back out of the account balance at a reconciliation
+// transition) sits in the ledger counting toward nothing, and until now
+// rendered identically to an ordinary transaction.
+//
+// ⚠ COPY DISCIPLINE, same as the Matched twin above: state the FACT and one
+// verifiable consequence, never the cause. A row can become reverted by a
+// route the user never chose -- deleting some OTHER row demotes its matched
+// duplicate -- so words like "skipped" or "rejected" would claim an action
+// they may never have taken. "Excluded" attributes nothing.
+// ⚠ Delivered through `Tooltip`, NOT through `title` + sr-only like the
+// Matched twin above. `title` is invisible on touch and largely skipped by
+// screen readers, and this page has a full mobile tree -- so on the surface
+// where the explanation is most needed it never appeared at all. `Tooltip`
+// opens on hover, focus, click, keyboard AND tap, and wires
+// `aria-describedby`, which is why there is no separate sr-only span here:
+// the bubble IS the accessible description, and duplicating it inside the
+// badge would announce the sentence twice.
+//
+// Cost, recorded so it can be reversed deliberately: the badge becomes a
+// focus stop, so a page of excluded rows adds one tab stop each for content
+// that is purely informational. Accepted on the operator's call to make the
+// explanation reachable on touch.
+//
+// This is a KNOWN DIVERGENCE from the Matched badge above, which still uses
+// `title` + sr-only and is therefore unreachable by tap. Filed as TBD-389
+// rather than widening this ticket; do not "fix" the inconsistency by
+// reverting THIS badge to `title`, which is the wrong direction.
+const EXCLUDED_BADGE_TITLE =
+  "This transaction is not counted in balances or reports. Its amount is not in your account balance.";
 // Shown when a `?transaction_id=` deep link points at a row the current page
 // (filters + pagination) does not contain. The effect used to return silently,
 // so following the badge from a filtered list looked like a dead link.
 const DEEP_LINK_MISS =
   "That transaction isn't on this page. Clear your filters to find it.";
+
+/** TBD-309: the client half of `promote_to_recurring`'s refusals, so that no
+ * affordance is offered which the server will refuse (the standing TBD-289
+ * rule). Mirrors the server guards in
+ * `transaction_service.promote_to_recurring`: linked rows, REVERTED rows, and
+ * manual balance adjustments.
+ *
+ * `recurring_id` is deliberately NOT folded in. The render sites use it to
+ * pick the "Recurring" chip branch INSIDE the gated block, so testing it here
+ * would delete the chip and its series pointer. The submit path adds it as a
+ * separate term.
+ *
+ * ⚠ KNOWN INCONSISTENCY, unreachable today, and a trap for whoever makes it
+ * reachable. That same argument applies to the other two terms: a row that is
+ * BOTH recurring-linked AND reverted (or a manual adjustment) loses the chip,
+ * the sync hint and the TBD-277 "stop the series" pointer, because this
+ * predicate hides the whole block rather than just the checkbox. No writer
+ * produces that shape right now -- reconciliation states are written on
+ * import-inbox rows and on demoted match referrers, neither of which carries
+ * `recurring_id`, and adjustment rows carry none either. The correct shape is
+ * a separate `showsRecurringSlot` gate for the block with this predicate
+ * governing only the checkbox. Do that BEFORE letting a recurring occurrence
+ * be reconciled, or the chip disappears from rows that still need it.
+ *
+ * ⚠ Declared ONCE and used at all three call sites on purpose. The three used
+ * to carry subtly different predicates -- the two render sites tested
+ * `linked_transaction_id` while the submit path tested that plus
+ * `recurring_id`, and none tested state -- and divergence between them is
+ * exactly how the previous hole in this area survived (see the note at the
+ * submit path). A checkbox that ticks and then 400s is the symptom.
+ */
+function canPromoteToRecurring(tx: Transaction): boolean {
+  return (
+    tx.linked_transaction_id === null &&
+    !tx.is_reverted &&
+    !tx.is_manual_adjustment
+  );
+}
 
 // TBD-294. Deleting a row that another row was marked a duplicate OF marks
 // that other row rejected. REJECTED is terminal and unreachable through the
@@ -759,7 +827,13 @@ function TransactionsPageContent() {
       // `linked_account_name` here left the identical hole the render sites
       // had: a checkbox that ticks and then 400s. Invisible until TBD-292
       // stopped the edit itself from 409-ing first.
-      editingRow.linked_transaction_id === null &&
+      //
+      // TBD-309 folded that raw-column test, plus the two refusals this path
+      // still missed (reverted rows and manual adjustments), into the shared
+      // `canPromoteToRecurring` so this path and the two render sites cannot
+      // drift again. `recurring_id` stays here: the render sites use it to
+      // choose the chip branch rather than to hide the block.
+      canPromoteToRecurring(editingRow) &&
       editingRow.recurring_id === null;
     if (wantsPromote && !editRecNextDue) {
       setError("Pick a next due date");
@@ -1506,7 +1580,7 @@ function TransactionsPageContent() {
                               refuses. Gate on the RAW column, matching the
                               server guard exactly. DESKTOP slot; the mobile
                               twin below carries the same gate. */}
-                          {!editPartner && tx.linked_transaction_id === null && (
+                          {!editPartner && canPromoteToRecurring(tx) && (
                             <div className="mt-3" data-testid={`edit-recurring-row-${tx.id}`}>
                               {tx.recurring_id !== null ? (
                                 <div className="flex flex-col gap-1">
@@ -1763,6 +1837,58 @@ function TransactionsPageContent() {
                                 )}
                               </span>
                             )}
+                            {/* TBD-309. DESKTOP slot; the mobile twin carries
+                                the identical gate and copy from the shared
+                                constants.
+
+                                Suppressed when the row already shows Matched:
+                                that badge's own title ends with "It is excluded
+                                from balances and reports", so a second neutral
+                                chip would repeat the fact and spend the row's
+                                quiet twice.
+
+                                ⚠ That suppression leaves ONE shape unimproved
+                                rather than broken: a row that is reverted AND
+                                still carries a one-way match link (reachable by
+                                reopening a matched row, then skipping it) shows
+                                Matched, whose explanation is `title` + sr-only
+                                and so is unreachable by tap. It rendered
+                                exactly that way before this change too, so this
+                                is not a regression -- but it is the one row
+                                shape this ticket does not reach. TBD-389
+                                converts the Matched badge to `Tooltip` and
+                                closes it; do not "fix" it here by rendering
+                                both chips.
+
+                                Suppressed on a COLLAPSED transfer pair
+                                (`isPairedTransfer`) because such a row stands
+                                in for TWO transactions while the wire describes
+                                only the surviving leg. Badging it would assert
+                                something about a pair when we know the state of
+                                one half -- and the leg that survives collapse
+                                is chosen by id, not by state. Silence is not a
+                                gap here; the claim is simply not well-formed
+                                until the wire carries the partner's state. */}
+                            {tx.is_reverted && !isReconcileMatched && !isPairedTransfer && (
+                              <span className="mt-0.5 inline-flex">
+                                <Tooltip
+                                  content={EXCLUDED_BADGE_TITLE}
+                                  trigger={
+                                    <span
+                                      className={`${badgeNeutral} cursor-help`}
+                                      data-testid={`excluded-badge-${tx.id}`}
+                                      // Focusable on purpose: Tooltip wires
+                                      // `aria-describedby` onto the first
+                                      // FOCUSABLE descendant, so a plain span
+                                      // gets no wiring and no keyboard path.
+                                      tabIndex={0}
+                                    >
+                                      Excluded
+                                    </span>
+                                  }
+                                />
+                              </span>
+                            )}
                           </span>
                           <span className="col-span-2 text-sm text-text-secondary truncate">
                             {isPairedTransfer
@@ -1967,7 +2093,7 @@ function TransactionsPageContent() {
                                 gate as the desktop slot above: hidden on ANY
                                 linked row, static chip when already recurring.
                                 TBD-295 -- the raw column, not `editPartner`. */}
-                            {!editPartner && tx.linked_transaction_id === null && (
+                            {!editPartner && canPromoteToRecurring(tx) && (
                               <div data-testid={`edit-recurring-row-mobile-${tx.id}`}>
                                 {tx.recurring_id !== null ? (
                                   <div className="flex flex-col gap-1">
@@ -2183,6 +2309,37 @@ function TransactionsPageContent() {
                                       </span>
                                     </Link>
                                   )}
+                                </div>
+                              )}
+                              {/* TBD-309 MOBILE twin. Same gate, same copy
+                                  constants as the desktop slot -- see the full
+                                  note there for why Matched and collapsed
+                                  transfer pairs suppress it.
+
+                                  ⚠ This slot exists because fixing the desktop
+                                  tree alone is the recurring failure in this
+                                  file: every affordance here has a twin, and
+                                  the mobile one is the one that gets missed.
+                                  The fences assert BOTH testids explicitly for
+                                  that reason -- jsdom renders both trees, so a
+                                  query that does not name the tree cannot tell
+                                  "both fixed" from "matched nothing". */}
+                              {tx.is_reverted && !isReconcileMatched && !isPairedTransfer && (
+                                <div className="mt-1">
+                                  <Tooltip
+                                    content={EXCLUDED_BADGE_TITLE}
+                                    trigger={
+                                      <span
+                                        className={`${badgeNeutral} cursor-help`}
+                                        data-testid={`excluded-badge-mobile-${tx.id}`}
+                                        // See the desktop twin: focusable so
+                                        // Tooltip can wire aria-describedby.
+                                        tabIndex={0}
+                                      >
+                                        Excluded
+                                      </span>
+                                    }
+                                  />
                                 </div>
                               )}
                             </div>

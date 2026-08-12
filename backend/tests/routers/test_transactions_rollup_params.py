@@ -606,116 +606,145 @@ def test_b2x_b3_composed_drilldown_drops_both_levels_non_reportable_rows(rollup)
 
 # ── B4 — control: default response bytes are main's ────────────────────────
 #
-# Recorded on unmodified `main` (f32540a9) against `_seed_control_org` below.
-# These are RESPONSE BYTES, not a re-derivation: a re-derived expectation moves
-# with the implementation and cannot detect a changed default. If a legitimate
-# contract change ever lands, re-record from `main` deliberately — do not patch
-# a character.
+# Originally recorded on unmodified `main` (f32540a9) against
+# `_seed_control_org` below. These are RESPONSE BYTES, not a re-derivation: a
+# re-derived expectation moves with the implementation and cannot detect a
+# changed default.
+#
+# ⚠ HOW TO RE-RECORD, when a legitimate contract change lands. Do not patch a
+# character, and do not simply capture the new bytes and commit them — that
+# turns this control into the implementation asserting it equals itself, which
+# is the one thing it exists not to be. Capture the responses live, then PROVE
+# the delta: parse old and new, remove exactly the keys the change is supposed
+# to add, and assert the remainder is byte-identical. Anything else that moved
+# (row order, a filtered row, a changed value) is a regression the capture
+# would otherwise have silently blessed. Record the proof in the commit.
+#
+# Note "re-record from `main`" is not always possible: for an ADDITIVE change,
+# `main` cannot produce bytes containing the new field. The strip-and-compare
+# above is the procedure that works in both cases.
+#
+# ⚠ RE-RECORDED ONCE, by TBD-309, which added the `is_reverted` field to
+# `TransactionResponse`. That is the "legitimate contract change" this note
+# anticipated, and the re-record followed the rule rather than patching:
+# every response was captured live, then each was parsed and compared to the
+# previous bytes with `is_reverted` stripped out, proving the ONLY delta was
+# the added key — no reordering, no changed filtering, no changed value. The
+# control's purpose is intact: it is still raw bytes, and it still goes red
+# for any change to default behaviour on this PAT-reachable endpoint.
+#
+# Note row id=3 in the fixture is `reconciliation_state="rejected"`, so these
+# bytes also pin that `is_reverted` is True for exactly that row and False for
+# the other five. Do not "simplify" the fixture by dropping it.
 
 CONTROL_SNAPSHOTS: dict[str, str] = {
     "category_id=1": (
-        "{\"items\":[{\"id\":6,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\""
-        "Home\",\"description\":\"leg in\",\"amount\":\"50.00\",\"type\":\"income\",\"status\":\"settled\",\"linked"
-        "_transaction_id\":5,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-09\",\"s"
-        "ettled_date\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\""
-        "id\":5,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"descr"
-        "iption\":\"leg out\",\"amount\":\"50.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transacti"
-        "on_id\":6,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-09\",\"settled_dat"
-        "e\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\"id\":4,\"acc"
-        "ount_id\":1,\"account_name\":\"Acct\",\"category_id\":2,\"category_name\":\"Utilities\",\"descriptio"
-        "n\":\"sub row\",\"amount\":\"40.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id"
-        "\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-08\",\"settled_date\""
-        ":\"2026-01-08\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\"id\":3,\"accou"
-        "nt_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"rej"
-        "ected\",\"amount\":\"30.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null"
-        ",\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-07\",\"settled_date\":\"2026"
-        "-01-07\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\"id\":2,\"account_id\""
-        ":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"adjustmen"
-        "t\",\"amount\":\"20.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"li"
-        "nked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-06\",\"settled_date\":\"2026-01-"
-        "06\",\"is_imported\":false,\"is_manual_adjustment\":true,\"tags\":[]},{\"id\":1,\"account_id\":1,\"a"
-        "ccount_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"ordinary\",\"amo"
-        "unt\":\"10.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_ac"
-        "count_name\":null,\"recurring_id\":null,\"date\":\"2026-01-05\",\"settled_date\":\"2026-01-05\",\"is"
-        "_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]}],\"total\":6,\"limit\":50,\"offset\":"
-        "0}"
+        "{\"items\":[{\"id\":6,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\""
+        ":\"Home\",\"description\":\"leg in\",\"amount\":\"50.00\",\"type\":\"income\",\"status\":\"settled\""
+        ",\"linked_transaction_id\":5,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-0"
+        "9\",\"settled_date\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"is_revert"
+        "ed\":false,\"tags\":[]},{\"id\":5,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"cat"
+        "egory_name\":\"Home\",\"description\":\"leg out\",\"amount\":\"50.00\",\"type\":\"expense\",\"status"
+        "\":\"settled\",\"linked_transaction_id\":6,\"linked_account_name\":null,\"recurring_id\":null,\"date"
+        "\":\"2026-01-09\",\"settled_date\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":fal"
+        "se,\"is_reverted\":false,\"tags\":[]},{\"id\":4,\"account_id\":1,\"account_name\":\"Acct\",\"categor"
+        "y_id\":2,\"category_name\":\"Utilities\",\"description\":\"sub row\",\"amount\":\"40.00\",\"type\":"
+        "\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_account_name\":null,\"recu"
+        "rring_id\":null,\"date\":\"2026-01-08\",\"settled_date\":\"2026-01-08\",\"is_imported\":false,\"is_m"
+        "anual_adjustment\":false,\"is_reverted\":false,\"tags\":[]},{\"id\":3,\"account_id\":1,\"account_nam"
+        "e\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"rejected\",\"amount\":\""
+        "30.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_account_"
+        "name\":null,\"recurring_id\":null,\"date\":\"2026-01-07\",\"settled_date\":\"2026-01-07\",\"is_impor"
+        "ted\":false,\"is_manual_adjustment\":false,\"is_reverted\":true,\"tags\":[]},{\"id\":2,\"account_id"
+        "\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"adjustm"
+        "ent\",\"amount\":\"20.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":nul"
+        "l,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-06\",\"settled_date\":\"2026"
+        "-01-06\",\"is_imported\":false,\"is_manual_adjustment\":true,\"is_reverted\":false,\"tags\":[]},{\"i"
+        "d\":1,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"desc"
+        "ription\":\"ordinary\",\"amount\":\"10.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_tra"
+        "nsaction_id\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-05\",\"sett"
+        "led_date\":\"2026-01-05\",\"is_imported\":false,\"is_manual_adjustment\":false,\"is_reverted\":false"
+        ",\"tags\":[]}],\"total\":6,\"limit\":50,\"offset\":0}"
     ),
     "limit=50&offset=0": (
-        "{\"items\":[{\"id\":6,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\""
-        "Home\",\"description\":\"leg in\",\"amount\":\"50.00\",\"type\":\"income\",\"status\":\"settled\",\"linked"
-        "_transaction_id\":5,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-09\",\"s"
-        "ettled_date\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\""
-        "id\":5,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"descr"
-        "iption\":\"leg out\",\"amount\":\"50.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transacti"
-        "on_id\":6,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-09\",\"settled_dat"
-        "e\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\"id\":4,\"acc"
-        "ount_id\":1,\"account_name\":\"Acct\",\"category_id\":2,\"category_name\":\"Utilities\",\"descriptio"
-        "n\":\"sub row\",\"amount\":\"40.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id"
-        "\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-08\",\"settled_date\""
-        ":\"2026-01-08\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\"id\":3,\"accou"
-        "nt_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"rej"
-        "ected\",\"amount\":\"30.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null"
-        ",\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-07\",\"settled_date\":\"2026"
-        "-01-07\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\"id\":2,\"account_id\""
-        ":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"adjustmen"
-        "t\",\"amount\":\"20.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"li"
-        "nked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-06\",\"settled_date\":\"2026-01-"
-        "06\",\"is_imported\":false,\"is_manual_adjustment\":true,\"tags\":[]},{\"id\":1,\"account_id\":1,\"a"
-        "ccount_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"ordinary\",\"amo"
-        "unt\":\"10.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_ac"
-        "count_name\":null,\"recurring_id\":null,\"date\":\"2026-01-05\",\"settled_date\":\"2026-01-05\",\"is"
-        "_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]}],\"total\":6,\"limit\":50,\"offset\":"
-        "0}"
+        "{\"items\":[{\"id\":6,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\""
+        ":\"Home\",\"description\":\"leg in\",\"amount\":\"50.00\",\"type\":\"income\",\"status\":\"settled\""
+        ",\"linked_transaction_id\":5,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-0"
+        "9\",\"settled_date\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"is_revert"
+        "ed\":false,\"tags\":[]},{\"id\":5,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"cat"
+        "egory_name\":\"Home\",\"description\":\"leg out\",\"amount\":\"50.00\",\"type\":\"expense\",\"status"
+        "\":\"settled\",\"linked_transaction_id\":6,\"linked_account_name\":null,\"recurring_id\":null,\"date"
+        "\":\"2026-01-09\",\"settled_date\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":fal"
+        "se,\"is_reverted\":false,\"tags\":[]},{\"id\":4,\"account_id\":1,\"account_name\":\"Acct\",\"categor"
+        "y_id\":2,\"category_name\":\"Utilities\",\"description\":\"sub row\",\"amount\":\"40.00\",\"type\":"
+        "\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_account_name\":null,\"recu"
+        "rring_id\":null,\"date\":\"2026-01-08\",\"settled_date\":\"2026-01-08\",\"is_imported\":false,\"is_m"
+        "anual_adjustment\":false,\"is_reverted\":false,\"tags\":[]},{\"id\":3,\"account_id\":1,\"account_nam"
+        "e\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"rejected\",\"amount\":\""
+        "30.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_account_"
+        "name\":null,\"recurring_id\":null,\"date\":\"2026-01-07\",\"settled_date\":\"2026-01-07\",\"is_impor"
+        "ted\":false,\"is_manual_adjustment\":false,\"is_reverted\":true,\"tags\":[]},{\"id\":2,\"account_id"
+        "\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"adjustm"
+        "ent\",\"amount\":\"20.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":nul"
+        "l,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-06\",\"settled_date\":\"2026"
+        "-01-06\",\"is_imported\":false,\"is_manual_adjustment\":true,\"is_reverted\":false,\"tags\":[]},{\"i"
+        "d\":1,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"desc"
+        "ription\":\"ordinary\",\"amount\":\"10.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_tra"
+        "nsaction_id\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-05\",\"sett"
+        "led_date\":\"2026-01-05\",\"is_imported\":false,\"is_manual_adjustment\":false,\"is_reverted\":false"
+        ",\"tags\":[]}],\"total\":6,\"limit\":50,\"offset\":0}"
     ),
     "sort_by=amount&sort_dir=asc": (
-        "{\"items\":[{\"id\":1,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\""
-        "Home\",\"description\":\"ordinary\",\"amount\":\"10.00\",\"type\":\"expense\",\"status\":\"settled\",\"lin"
-        "ked_transaction_id\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-"
-        "05\",\"settled_date\":\"2026-01-05\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":"
-        "[]},{\"id\":2,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\","
-        "\"description\":\"adjustment\",\"amount\":\"20.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_"
-        "transaction_id\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-06\","
-        "\"settled_date\":\"2026-01-06\",\"is_imported\":false,\"is_manual_adjustment\":true,\"tags\":[]},{"
-        "\"id\":3,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"desc"
-        "ription\":\"rejected\",\"amount\":\"30.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transac"
-        "tion_id\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-07\",\"settle"
-        "d_date\":\"2026-01-07\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\"id\":4"
-        ",\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":2,\"category_name\":\"Utilities\",\"descr"
-        "iption\":\"sub row\",\"amount\":\"40.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transacti"
-        "on_id\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-08\",\"settled_"
-        "date\":\"2026-01-08\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\"id\":6,\""
-        "account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\""
-        ":\"leg in\",\"amount\":\"50.00\",\"type\":\"income\",\"status\":\"settled\",\"linked_transaction_id\":5,"
-        "\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-09\",\"settled_date\":\"2026-"
-        "01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\"id\":5,\"account_id\":"
-        "1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"leg out\",\""
-        "amount\":\"50.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":6,\"linked_ac"
-        "count_name\":null,\"recurring_id\":null,\"date\":\"2026-01-09\",\"settled_date\":\"2026-01-09\",\"is"
-        "_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]}],\"total\":6,\"limit\":50,\"offset\":"
-        "0}"
+        "{\"items\":[{\"id\":1,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\""
+        ":\"Home\",\"description\":\"ordinary\",\"amount\":\"10.00\",\"type\":\"expense\",\"status\":\"settle"
+        "d\",\"linked_transaction_id\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"202"
+        "6-01-05\",\"settled_date\":\"2026-01-05\",\"is_imported\":false,\"is_manual_adjustment\":false,\"is_"
+        "reverted\":false,\"tags\":[]},{\"id\":2,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1"
+        ",\"category_name\":\"Home\",\"description\":\"adjustment\",\"amount\":\"20.00\",\"type\":\"expense\""
+        ",\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_account_name\":null,\"recurring_id\""
+        ":null,\"date\":\"2026-01-06\",\"settled_date\":\"2026-01-06\",\"is_imported\":false,\"is_manual_adju"
+        "stment\":true,\"is_reverted\":false,\"tags\":[]},{\"id\":3,\"account_id\":1,\"account_name\":\"Acct"
+        "\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"rejected\",\"amount\":\"30.00\",\"t"
+        "ype\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_account_name\":null"
+        ",\"recurring_id\":null,\"date\":\"2026-01-07\",\"settled_date\":\"2026-01-07\",\"is_imported\":false"
+        ",\"is_manual_adjustment\":false,\"is_reverted\":true,\"tags\":[]},{\"id\":4,\"account_id\":1,\"accou"
+        "nt_name\":\"Acct\",\"category_id\":2,\"category_name\":\"Utilities\",\"description\":\"sub row\",\"a"
+        "mount\":\"40.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"linke"
+        "d_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-08\",\"settled_date\":\"2026-01-08\","
+        "\"is_imported\":false,\"is_manual_adjustment\":false,\"is_reverted\":false,\"tags\":[]},{\"id\":6,\""
+        "account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description"
+        "\":\"leg in\",\"amount\":\"50.00\",\"type\":\"income\",\"status\":\"settled\",\"linked_transaction_id"
+        "\":5,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-09\",\"settled_date\":\"2"
+        "026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"is_reverted\":false,\"tags\":[]},"
+        "{\"id\":5,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\""
+        "description\":\"leg out\",\"amount\":\"50.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_"
+        "transaction_id\":6,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-09\",\"sett"
+        "led_date\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"is_reverted\":false"
+        ",\"tags\":[]}],\"total\":6,\"limit\":50,\"offset\":0}"
     ),
     "type=expense&status=settled": (
-        "{\"items\":[{\"id\":5,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\""
-        "Home\",\"description\":\"leg out\",\"amount\":\"50.00\",\"type\":\"expense\",\"status\":\"settled\",\"link"
-        "ed_transaction_id\":6,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-09\","
-        "\"settled_date\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},"
-        "{\"id\":4,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":2,\"category_name\":\"Utilities\""
-        ",\"description\":\"sub row\",\"amount\":\"40.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_tr"
-        "ansaction_id\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-08\",\"s"
-        "ettled_date\":\"2026-01-08\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\""
-        "id\":3,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"descr"
-        "iption\":\"rejected\",\"amount\":\"30.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transact"
-        "ion_id\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-07\",\"settled"
-        "_date\":\"2026-01-07\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]},{\"id\":2,"
-        "\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description"
-        "\":\"adjustment\",\"amount\":\"20.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_"
-        "id\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-06\",\"settled_dat"
-        "e\":\"2026-01-06\",\"is_imported\":false,\"is_manual_adjustment\":true,\"tags\":[]},{\"id\":1,\"acco"
-        "unt_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"or"
-        "dinary\",\"amount\":\"10.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":nul"
-        "l,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-05\",\"settled_date\":\"202"
-        "6-01-05\",\"is_imported\":false,\"is_manual_adjustment\":false,\"tags\":[]}],\"total\":5,\"limit\":"
-        "50,\"offset\":0}"
+        "{\"items\":[{\"id\":5,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\""
+        ":\"Home\",\"description\":\"leg out\",\"amount\":\"50.00\",\"type\":\"expense\",\"status\":\"settled"
+        "\",\"linked_transaction_id\":6,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01"
+        "-09\",\"settled_date\":\"2026-01-09\",\"is_imported\":false,\"is_manual_adjustment\":false,\"is_reve"
+        "rted\":false,\"tags\":[]},{\"id\":4,\"account_id\":1,\"account_name\":\"Acct\",\"category_id\":2,\"c"
+        "ategory_name\":\"Utilities\",\"description\":\"sub row\",\"amount\":\"40.00\",\"type\":\"expense\","
+        "\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_account_name\":null,\"recurring_id\":n"
+        "ull,\"date\":\"2026-01-08\",\"settled_date\":\"2026-01-08\",\"is_imported\":false,\"is_manual_adjust"
+        "ment\":false,\"is_reverted\":false,\"tags\":[]},{\"id\":3,\"account_id\":1,\"account_name\":\"Acct\""
+        ",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"rejected\",\"amount\":\"30.00\",\"ty"
+        "pe\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_account_name\":null,"
+        "\"recurring_id\":null,\"date\":\"2026-01-07\",\"settled_date\":\"2026-01-07\",\"is_imported\":false,"
+        "\"is_manual_adjustment\":false,\"is_reverted\":true,\"tags\":[]},{\"id\":2,\"account_id\":1,\"accoun"
+        "t_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\"adjustment\",\"amou"
+        "nt\":\"20.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id\":null,\"linked_a"
+        "ccount_name\":null,\"recurring_id\":null,\"date\":\"2026-01-06\",\"settled_date\":\"2026-01-06\",\"i"
+        "s_imported\":false,\"is_manual_adjustment\":true,\"is_reverted\":false,\"tags\":[]},{\"id\":1,\"acco"
+        "unt_id\":1,\"account_name\":\"Acct\",\"category_id\":1,\"category_name\":\"Home\",\"description\":\""
+        "ordinary\",\"amount\":\"10.00\",\"type\":\"expense\",\"status\":\"settled\",\"linked_transaction_id"
+        "\":null,\"linked_account_name\":null,\"recurring_id\":null,\"date\":\"2026-01-05\",\"settled_date\":"
+        "\"2026-01-05\",\"is_imported\":false,\"is_manual_adjustment\":false,\"is_reverted\":false,\"tags\":[]"
+        "}],\"total\":5,\"limit\":50,\"offset\":0}"
     ),
 }
 
