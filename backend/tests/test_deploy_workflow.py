@@ -129,3 +129,76 @@ def test_backend_service_declares_all_required_secrets():
         "Any SECRET not in this spec will be removed on next deploy. "
         "Pull the encrypted EV[...] value from `doctl apps spec get` and add it."
     )
+
+
+# ── TBD-391: the deploy interlock is actually wired ─────────────────────────
+#
+# `scripts/ci/await-test-run.sh` is fenced for its DECISION logic in
+# test_await_test_run_gate.py. These fences pin the other half: that the
+# workflows actually consult it, and that the one workflow which must NOT be
+# gated still is not. Covering the script alone would certify a gate nothing
+# calls.
+
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
+APEX_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "apex-deploy.yml"
+
+
+def _yaml(path: Path) -> dict:
+    import yaml
+
+    doc = yaml.safe_load(path.read_text())
+    # Positive baseline: an empty or mis-parsed document would make every
+    # assertion below pass vacuously.
+    assert isinstance(doc, dict) and doc.get("jobs"), f"failed to parse {path}"
+    return doc
+
+
+def test_release_gates_semantic_release_on_the_post_merge_suite():
+    """The gate must run BEFORE `release`, not between `release` and `deploy`.
+
+    semantic-release cuts an immutable git tag and publishes a GitHub Release.
+    Measured on PR #654 it did so 7m41s before the post-merge suite reported,
+    so gating only the deploy would still leave a published release for a
+    commit whose suite then goes red.
+    """
+    jobs = _yaml(RELEASE_WORKFLOW)["jobs"]
+    assert "await-tests" in jobs, "release.yml lost its await-tests gate"
+    assert "await-tests" in (jobs["release"].get("needs") or []), (
+        "`release` must depend on `await-tests`. Gating only `deploy` leaves "
+        "the tag and GitHub Release published for untested code."
+    )
+    # The wait needs `actions: read` to list runs; without it the API 403s and
+    # the gate fails closed for a reason that looks exactly like a working gate.
+    assert (jobs["await-tests"].get("permissions") or {}).get("actions") == "read"
+
+
+def test_apex_gates_its_deploy_but_never_the_manual_recovery():
+    """Same interlock on the landing surface, with the dispatch bypass intact.
+
+    ⚠ `needs:` on a SKIPPED job skips the dependent by default, so the explicit
+    `workflow_dispatch` arm in `build-and-deploy`'s `if:` is what keeps the
+    documented stale-deploy recovery working. Without it the recovery path
+    silently does nothing.
+    """
+    jobs = _yaml(APEX_WORKFLOW)["jobs"]
+    assert "await-tests" in jobs, "apex-deploy.yml lost its await-tests gate"
+    assert "await-tests" in (jobs["build-and-deploy"].get("needs") or [])
+    assert "workflow_dispatch" in (jobs["await-tests"].get("if") or ""), (
+        "the gate must skip on manual dispatch, which is the recovery path"
+    )
+    guard = jobs["build-and-deploy"].get("if") or ""
+    assert "workflow_dispatch" in guard, (
+        "build-and-deploy needs an explicit dispatch arm: `needs:` on a "
+        "SKIPPED gate would otherwise skip the manual recovery deploy too."
+    )
+
+
+def test_manual_deploy_workflow_is_deliberately_ungated():
+    """Pins the boundary from the OTHER side. `deploy.yml` is the escape hatch
+    used when the gate itself is wrong; gating it would remove the recovery at
+    exactly the moment it is needed."""
+    jobs = _yaml(REPO_ROOT / ".github" / "workflows" / "deploy.yml")["jobs"]
+    assert "await-tests" not in jobs, (
+        "deploy.yml must stay ungated — it is the recovery path for a broken "
+        "gate. See scripts/ci/await-test-run.sh."
+    )

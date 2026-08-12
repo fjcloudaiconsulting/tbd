@@ -59,8 +59,60 @@ permissions:
   issues: read
   pull-requests: read
 
+# TBD-391. This workflow had NO concurrency group, so two merges landing close
+# together ran two Release workflows at once and could push `.do/app.yaml` to
+# DO out of order. That was already true; the `await-tests` gate below widens
+# the window from seconds to ~8 minutes, which would turn a rare interleave
+# into a likely one. Serialize, matching apex-deploy.yml.
+#
+# `cancel-in-progress: false` on purpose: a Release run that has already
+# started may be mid-deploy, and cancelling it could leave DO half-rolled.
+# semantic-release analyses every commit since the last tag, so a superseded
+# pending run loses nothing — its commits are picked up by the next one.
+concurrency:
+  group: release-deploy
+  cancel-in-progress: false
+
 jobs:
+  # TBD-391. THE INTERLOCK. See scripts/ci/await-test-run.sh for the measured
+  # timings and the full reasoning.
+  #
+  # Placed before `release`, NOT between `release` and `deploy`: semantic-
+  # release cuts an immutable git tag and publishes a GitHub Release, and on
+  # PR #654 it did so 7m41s before the post-merge suite reported. Gating only
+  # the deploy would still leave a published release for a commit whose suite
+  # then goes red, permanently desynchronising the version line from what is
+  # actually in production.
+  #
+  # This job produces no commit status and is not a required context, so no
+  # failure mode here can block a PR from merging. It can only block a deploy,
+  # and it always does so LOUDLY — a red run in the Actions tab, never a
+  # silent no-ship.
+  await-tests:
+    name: Await post-merge tests
+    runs-on: ubuntu-latest
+    # Comfortably above the observed ~8m10s Test duration plus queueing. The
+    # script's own 25m timeout fires first and prints the escape hatch.
+    timeout-minutes: 30
+    permissions:
+      # ⚠ Job-level permissions REPLACE the workflow-level block, so this drops
+      # `contents: write` for the wait. `actions: read` is REQUIRED to list
+      # workflow runs — omit it and the API call 403s, the gate fails closed,
+      # and deploys stop for a reason that looks exactly like a working gate.
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Wait for the Test workflow on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: ./scripts/ci/await-test-run.sh "${{ github.sha }}"
+
   release:
+    needs: await-tests
     runs-on: ubuntu-latest
     outputs:
       new_release_published: ${{ steps.semantic.outputs.new_release_published }}
