@@ -20,6 +20,10 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
+from app.models.ai_usage_ledger import AIUsageLedger
+from app.models.dashboard import DashboardLayout
+from app.models.org_ai_credential import OrgAICredential
+from app.models.report import Report
 from app.models.budget import Budget
 from app.models.feature_override import OrgFeatureOverride
 from app.models.forecast_plan import ForecastPlan
@@ -29,8 +33,15 @@ from app.models.subscription import Plan, Subscription, SubscriptionStatus
 from app.models.transaction import Transaction
 from app.models.user import Organization, User
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+
 from app.services.list_query import resolve_order_by
 from app.services.org_data_service import wipe_org_data
+# Machine-readable refusal code so the router can branch without parsing
+# English — the same convention as invitation_service / admin_users_service.
+# ⚠ Do NOT match on the message text: admin_orgs.py already does that for a
+# different ConflictError and it is a defect waiting to fire (TBD-374).
+CODE_ORG_HOLDS_SUPERADMIN = "org_holds_platform_superadmin"
+
 
 
 def _serialize_subscription(sub: Optional[Subscription], plan: Optional[Plan]) -> dict:
@@ -296,12 +307,88 @@ async def delete_org_cascade(
     if org is None:
         raise NotFoundError("Organization")
 
+    # ⚠ Refuse when the org houses a platform superadmin (TBD-342, folded from
+    # TBD-373). This guard is only REACHABLE because this function now works:
+    # before the RESTRICT repair below it raised on a foreign key first, so the
+    # unguarded hard-delete was masked in practice. Repairing deletion without
+    # this would convert a fail-safe error into a working, unguarded,
+    # destructive path.
+    #
+    # The harm is NOT privilege escalation — that reading was refuted by
+    # measurement: the caller refuses to delete its own org, org_id is NOT
+    # NULL, and orgs.manage is reachable only via the is_superadmin
+    # short-circuit, so the actor's own row is structurally outside the delete
+    # set and count(is_superadmin) >= 1 always. The harm is destroying platform
+    # admins with no operator signal, and anonymising their entire audit
+    # history — audit_events.actor_user_id is ON DELETE SET NULL, so those rows
+    # survive only through the actor_email snapshot.
+    #
+    # ⚠ The own-org invariant lives in the ROUTER, not here. This guard is what
+    # makes the service safe for a SECOND caller that lacks it.
+    superadmins = (
+        await db.scalar(
+            select(func.count())
+            .select_from(User)
+            # ⚠ NO is_active filter, deliberately. A deactivated superadmin
+            # row still HOLDS the platform flag, and hard-deleting it is the
+            # same irreversible harm the guard exists to prevent — the account
+            # is gone and audit_events.actor_user_id nulls out, anonymising
+            # their history. Soft-deleted is recoverable (TBD-377); deleted is
+            # not. Pinned by test_inactive_superadmin_also_blocks_org_delete.
+            .where(User.org_id == org_id, User.is_superadmin.is_(True))
+        )
+    ) or 0
+    if superadmins:
+        raise ConflictError(
+            f"This organization holds {superadmins} platform administrator "
+            "account(s). Remove or move them before deleting the organization.",
+            code=CODE_ORG_HOLDS_SUPERADMIN,
+        )
+
     # Wipe org-scoped data tables via the shared helper. Single source
     # of truth for the FK-safe wipe order — also used by the tenant
     # reset path in org_data_service.reset_org_data.
     counts = await wipe_org_data(db, org_id=org_id)
 
     # Org-shell tables (only the admin path deletes these):
+
+    # ── RESTRICT foreign keys (TBD-342) ────────────────────────────────────
+    # Every RESTRICT foreign key must be cleared before its parent row.
+    # dashboard_layouts.owner_user_id and reports.owner_user_id are RESTRICT
+    # against USERS (their org_id FKs are CASCADE, which fires too late — the
+    # org row goes after the users); org_ai_credentials.org_id and
+    # ai_usage_ledger.org_id are RESTRICT against the ORGANIZATION.
+    # None had a service-layer delete here, and dashboard.py::_get_or_create
+    # gives every user who opens the dashboard a layout row, so this function
+    # raised MySQL 1451 for essentially every real org.
+    counts["dashboard_layouts"] = (
+        await db.execute(
+            delete(DashboardLayout).where(DashboardLayout.org_id == org_id)
+        )
+    ).rowcount or 0
+    # ⚠ reports.owner_user_id is ALSO ondelete="RESTRICT" (models/report.py).
+    # admin_users_service.delete_user handles it for the SINGLE-USER path, which
+    # made the column look covered — it is not covered here. reports.org_id
+    # being CASCADE does not save us: that fires when `organizations` is
+    # deleted, which happens AFTER the users delete below, so the user delete
+    # raises first. report_versions ride their own CASCADE off reports.id.
+    counts["reports"] = (
+        await db.execute(delete(Report).where(Report.org_id == org_id))
+    ).rowcount or 0
+    # Ledger BEFORE credentials: ai_usage_ledger.credential_id is
+    # ON DELETE SET NULL, so deleting credentials first makes MySQL run a full
+    # UPDATE pass over ledger rows we are about to delete anyway.
+    counts["ai_usage_ledger"] = (
+        await db.execute(delete(AIUsageLedger).where(AIUsageLedger.org_id == org_id))
+    ).rowcount or 0
+    # Note: org_ai_default_routing / org_ai_feature_routing reference
+    # credentials ON DELETE CASCADE, so those rows die with this statement and
+    # are not counted separately.
+    counts["org_ai_credentials"] = (
+        await db.execute(
+            delete(OrgAICredential).where(OrgAICredential.org_id == org_id)
+        )
+    ).rowcount or 0
 
     counts["invitations"] = (
         await db.execute(delete(Invitation).where(Invitation.org_id == org_id))

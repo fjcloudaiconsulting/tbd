@@ -98,11 +98,14 @@ DELETE_USER_ALLOWLIST = {
     # Guarded (partial): refuses superadmin -> non-superadmin. Superadmin ->
     # superadmin only decrements the count, so it cannot reach zero.
     ("services/user_merge_service.py", "merge_users"),
-    # DELIBERATELY UNGUARDED — hard-deletes every user in the org, superadmins
-    # included. Safe only because its single caller refuses to delete the
-    # actor's own org and the actor is necessarily a superadmin, so
-    # count(is_superadmin) >= 1 always. That invariant lives in the ROUTER,
-    # not here, which is why F-8b pins the caller set. See TBD-373.
+    # GUARDED as of TBD-342: delete_org_cascade now REFUSES when the org holds
+    # any superadmin (active or not), raising ConflictError with
+    # code=CODE_ORG_HOLDS_SUPERADMIN. Previously unguarded — and that hazard
+    # was masked, because the function raised on a RESTRICT foreign key before
+    # it could destroy anything; repairing deletion is what made it reachable.
+    # The own-org invariant still lives in the ROUTER, which is why F-8b pins
+    # the caller set. (Formerly annotated "DELIBERATELY UNGUARDED — see
+    # TBD-373"; TBD-373 was folded into TBD-342.)
     ("services/admin_orgs_service.py", "delete_org_cascade"),
 }
 
