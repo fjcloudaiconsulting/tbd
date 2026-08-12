@@ -67,6 +67,9 @@ export const MEASURE_FIELD_LABELS: Record<MeasureField, string> = {
   account_id: "Account",
   balance: "Balance",
   net_worth: "Net worth",
+  utilization_pct: "Utilization",
+  outstanding: "Outstanding",
+  credit_limit: "Credit limit",
 };
 
 /** Display label for a measure field, falling back to the raw key. */

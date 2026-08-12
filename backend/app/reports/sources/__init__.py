@@ -29,3 +29,4 @@ from app.reports.sources import transactions as _transactions  # noqa: E402,F401
 from app.reports.sources import accounts as _accounts  # noqa: E402,F401
 from app.reports.sources import recurring as _recurring  # noqa: E402,F401
 from app.reports.sources import networth as _networth  # noqa: E402,F401
+from app.reports.sources import credit_utilization as _credit_utilization  # noqa: E402,F401

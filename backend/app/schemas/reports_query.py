@@ -57,7 +57,16 @@ MAX_TOP_N = 100  # Upper bound for SankeyQuery.top_n (frontend clamps min=2).
 
 # Fields a SUM / AVG may target. Source-agnostic numeric sanity gate — the
 # per-source validate() still rejects a field the source does not publish.
-NUMERIC_MEASURE_FIELDS = {MeasureField.AMOUNT, MeasureField.BALANCE, MeasureField.NET_WORTH}
+NUMERIC_MEASURE_FIELDS = {
+    MeasureField.AMOUNT,
+    MeasureField.BALANCE,
+    MeasureField.NET_WORTH,
+    # TBD-170. Without these three here, Measure._validate_agg_field 422s
+    # every sum/avg on them before the source is ever consulted.
+    MeasureField.UTILIZATION_PCT,
+    MeasureField.OUTSTANDING,
+    MeasureField.CREDIT_LIMIT,
+}
 
 
 class FilterField(str, enum.Enum):

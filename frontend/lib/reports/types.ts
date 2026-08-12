@@ -25,7 +25,12 @@ export type WidgetType =
 // values to the editor's ``addWidget`` factory.
 export type WidgetTypeV1 = WidgetType;
 
-export type Dataset = "transactions" | "accounts" | "recurring" | "networth";
+export type Dataset =
+  | "transactions"
+  | "accounts"
+  | "recurring"
+  | "networth"
+  | "credit_utilization";
 
 export type Aggregation = "sum" | "count" | "avg" | "distinct";
 
@@ -35,7 +40,14 @@ export type MeasureField =
   | "category_id"
   | "account_id"
   | "balance"
-  | "net_worth";
+  | "net_worth"
+  // CreditUtilizationSource (TBD-170). utilization_pct is a percent-formatted
+  // ratio of sums; outstanding is max(0, -balance), hence its own field —
+  // MEASURE_FIELD_LABELS is keyed by field and drives the axis, tooltip and
+  // CSV header, so it must not borrow "Balance".
+  | "utilization_pct"
+  | "outstanding"
+  | "credit_limit";
 
 export type Dimension =
   | "category"

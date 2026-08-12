@@ -42,6 +42,7 @@ const DATASET_FALLBACK_LABELS: Record<Dataset, string> = {
   accounts: "Accounts",
   recurring: "Recurring",
   networth: "Net worth",
+  credit_utilization: "Credit utilization",
 };
 
 /**
@@ -71,19 +72,22 @@ export default function DataTab({
   widget: Widget;
   onUpdate: (next: Widget) => void;
 }) {
+  const { sources } = useReportSources();
+  // The catalog entry for the widget's current source. While the
+  // catalog is still loading (``sources`` empty) this is undefined and
+  // the pickers fall back to a catalog-free option set.
+  const selected = sources.find((s) => s.key === widget.config.dataset);
+
+  // ⚠ Declared BEFORE buildWidgetMutations: the hook now takes ``selected``
+  // so it can resolve a widget's format from the source catalog, and a const
+  // referenced above its declaration is a temporal-dead-zone error.
   const {
     setSingleMeasure,
     setSeries,
     setPrimaryDimension,
     setSecondaryDimension,
     setDataset,
-  } = buildWidgetMutations(widget, onUpdate);
-
-  const { sources } = useReportSources();
-  // The catalog entry for the widget's current source. While the
-  // catalog is still loading (``sources`` empty) this is undefined and
-  // the pickers fall back to a catalog-free option set.
-  const selected = sources.find((s) => s.key === widget.config.dataset);
+  } = buildWidgetMutations(widget, onUpdate, selected);
 
   // Dimension options. When a catalog entry is known, narrow to its
   // dimensions. Otherwise (catalog still loading) fall back to the static

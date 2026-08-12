@@ -34,9 +34,41 @@ import type {
   WidgetFilters,
 } from "@/lib/reports/types";
 
+
+/**
+ * Resolve a widget's `format` from the source catalog for a given measure.
+ *
+ * ⚠ MATCH ON FIELD ONLY. Do NOT add `&& m.agg === measure.agg`.
+ * The Field select emits `{...measure, field}`, carrying the PREVIOUS agg over
+ * unchanged (SingleMeasureEditor). With the agg conjunct, picking a field that
+ * the catalog publishes at a different agg misses, falls through to the
+ * fallback, and PRESERVES the stale format — so switching to "Outstanding"
+ * while agg is `avg` renders €1,234.56 as "1234.6%": verbatim the bug this
+ * resolver exists to kill. Format is a pure function of field in every
+ * catalog, so the agg conjunct can only ever produce misses.
+ *
+ * Returns the previous format when the catalog is absent (it is `undefined`
+ * while /sources loads) or the field is unknown — never guesses.
+ */
+type WidgetFormat = "currency" | "number" | "percent" | undefined;
+
+function resolveFormat(
+  entry: SourceCatalogEntry | undefined,
+  measure: Measure,
+  previous: WidgetFormat,
+): WidgetFormat {
+  const found = entry?.measures.find((m) => m.field === measure.field)?.format;
+  return found === "currency" || found === "number" || found === "percent"
+    ? found
+    : previous;
+}
+
 export function buildWidgetMutations(
   widget: Widget,
   onUpdate: (next: Widget) => void,
+  // Optional: `undefined` while /sources loads (DataTab), in which case
+  // resolveFormat leaves the existing format untouched.
+  entry?: SourceCatalogEntry,
 ) {
   function setTitle(title: string) {
     onUpdate({ ...widget, title });
@@ -52,11 +84,21 @@ export function buildWidgetMutations(
 
   function setSingleMeasure(measure: Measure) {
     if (isMultiSeries(widget)) return;
+    const cfg = widget.config as
+      | KPIConfig
+      | BarConfig
+      | PieConfig
+      | SparklineConfig;
+    // Changing the MEASURE must re-derive format, not just changing the
+    // dataset: after landing on a percent source, picking a currency measure
+    // in the same picker would otherwise keep "percent" and render
+    // €1,234.56 as "1234.6%".
     const next = {
       ...widget,
       config: {
-        ...(widget.config as KPIConfig | BarConfig | PieConfig | SparklineConfig),
+        ...cfg,
         measure,
+        format: resolveFormat(entry, measure, cfg.format),
       },
     } as Widget;
     onUpdate(next);
@@ -190,9 +232,13 @@ export function buildWidgetMutations(
           ? resetMeasure
           : cfg.measure;
       const filters = finalizeFilters(cfg.filters);
+      // Derive from the RESULTING measure, not entry.measures[0]: `id` is
+      // published by every source, so a retained count(id) survives the switch
+      // and an unconditional measures[0].format would render 4 cards as "4.0%".
+      const format = resolveFormat(entry, measure, cfg.format);
       const next: Widget = {
         ...widget,
-        config: { ...cfg, dataset, measure, filters },
+        config: { ...cfg, dataset, measure, filters, format },
       };
       onUpdate(next);
       return;
@@ -241,9 +287,10 @@ export function buildWidgetMutations(
         ? resetMeasure
         : scfg.measure;
     const filters = finalizeFilters(scfg.filters);
+    const format = resolveFormat(entry, measure, scfg.format);
     const next: Widget = {
       ...widget,
-      config: { ...scfg, dataset, dimensions: dims, measure, filters },
+      config: { ...scfg, dataset, dimensions: dims, measure, filters, format },
     } as Widget;
     onUpdate(next);
   }
