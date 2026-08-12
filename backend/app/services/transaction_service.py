@@ -550,6 +550,16 @@ async def update_transaction(
     )
     pair_partner = linked_row if is_reciprocal_pair(tx, linked_row) else None
     tx_in_cached_balance = contributes_to_cached_balance(tx, linked_row)
+    # TBD-308: the SAME question, asked about the PARTNER row, for arms 4b/4f.
+    # A FOURTH name deliberately, not a reuse of ``tx_in_cached_balance``:
+    # that one answers about ``tx``, and 4b/4f move the PARTNER's account.
+    # Collapsing the two is the trap the note above warns about, one row over.
+    # Invariant across the edit for the same reason as the three above --
+    # ``TransactionUpdate`` (``extra="forbid"``) can set neither
+    # ``linked_transaction_id`` nor ``reconciliation_state``, on either row.
+    partner_in_cached_balance = pair_partner is not None and (
+        contributes_to_cached_balance(pair_partner, tx)
+    )
 
     # NOTE (TBD-292): there is deliberately NO "the partner must link back"
     # guard here. It used to raise ConflictError("Transfer pair link integrity
@@ -635,25 +645,37 @@ async def update_transaction(
         # WORSE than gating neither: 4a-only drifts one way, 4e-only the
         # other.
         #
-        # Arms 4b / 4f are LEFT UNGATED, and the reason is NOT the one an
-        # earlier revision of this comment gave ("a reciprocal partner is by
-        # definition inside the cached balance"). That is FALSE:
-        # ``contributes_to_cached_balance`` tests ``reconciliation_state``
-        # BEFORE reciprocity (``transaction_filters.py``), so a reciprocal
-        # partner sitting in SKIPPED / REJECTED answers False, and 4b would
-        # then revert an amount that is not in ``accounts.balance`` while 4f
-        # applies the new one -- drift by the old amount.
+        # ⚠ TBD-308: arms 4b / 4f are now GATED too, and they are ONE gate in
+        # two halves for exactly the same reason as 4a/4e. Gating only one is
+        # WORSE than gating neither: neither-gated is wrong by the edit delta,
+        # 4b-only injects a full new amount, 4f-only removes a full old one.
         #
-        # That hole is REAL but PRE-EXISTING and byte-identical on ``main``:
-        # this ticket changed neither arm. Widening the gate here would mean
-        # changing transfer-edit balance behaviour under a ticket about
-        # matched rows, with no fence in this file able to justify it. Filed
-        # separately instead. The statement of record is: 4b/4f are ungated,
-        # and that is a known gap, not a proof.
+        # A reciprocal partner is NOT "by definition inside the cached
+        # balance" -- ``contributes_to_cached_balance`` tests
+        # ``reconciliation_state`` BEFORE reciprocity, so a reciprocal partner
+        # sitting in SKIPPED / REJECTED answers False.
+        #
+        # That shape is REACHABLE, and the route is skip-then-pair, NOT
+        # pair-then-skip: ``find_match_candidates`` and ``_link_pair`` carry no
+        # ``reconciliation_state`` term, so a SKIPPED row -- whose contribution
+        # was already correctly reverted -- is an ordinary "Mark as transfer"
+        # candidate. SKIPPED is terminal, so no guard on the reconcile path can
+        # ever reach that row. Ungated, editing the surviving partner then
+        # reverts an amount that is not in ``accounts.balance`` and applies the
+        # new one, moving that account by the delta on every edit.
+        #
+        # 4d (the amount mirror) stays UNGATED on purpose: it moves no money,
+        # and it keeps a legacy pair's two amounts coherent.
         if old_status == TransactionStatus.SETTLED and tx_in_cached_balance:
             revert_balance(accounts[old_account_id], old_amount, old_type)
-        # 4b: revert partner if linked + amount-change + partner currently SETTLED
-        if pair_partner is not None and amount_was_changed and pair_partner.status == TransactionStatus.SETTLED:
+        # 4b: revert partner if linked + amount-change + partner SETTLED **and
+        # the partner's amount is actually inside accounts.balance**
+        if (
+            pair_partner is not None
+            and amount_was_changed
+            and pair_partner.status == TransactionStatus.SETTLED
+            and partner_in_cached_balance
+        ):
             revert_balance(accounts[pair_partner.account_id], pair_partner.amount, pair_partner.type)
 
         # 4c: apply per-leg field updates
@@ -713,8 +735,15 @@ async def update_transaction(
         # See the note there: these two are one decision, not two.
         if tx.status == TransactionStatus.SETTLED and tx_in_cached_balance:
             apply_balance(accounts[tx.account_id], tx.amount, tx.type)
-        # 4f: apply partner with new state if linked + amount change + partner SETTLED
-        if pair_partner is not None and amount_was_changed and pair_partner.status == TransactionStatus.SETTLED:
+        # 4f: apply partner with new state if linked + amount change + partner
+        # SETTLED -- same gate as 4b. See the note there: these two are one
+        # decision, not two.
+        if (
+            pair_partner is not None
+            and amount_was_changed
+            and pair_partner.status == TransactionStatus.SETTLED
+            and partner_in_cached_balance
+        ):
             apply_balance(accounts[pair_partner.account_id], pair_partner.amount, pair_partner.type)
 
         await db.flush()
@@ -1820,8 +1849,21 @@ async def pair_existing_transactions(
 
     Owns transaction scope. Locks both rows in sorted-ID order via SELECT FOR
     UPDATE, validates via _link_pair, links bidirectionally, optionally
-    recategorizes both legs to the system Transfer category. No balance changes
-    (both rows already exist with correct per-leg balance contributions).
+    recategorizes both legs to the system Transfer category. Moves no balance:
+    each row keeps whatever contribution it already had.
+
+    ⚠ TBD-308: that is deliberately NOT the same claim as "both rows have a
+    correct per-leg contribution", which is what this docstring used to say and
+    which is FALSE. A row in SKIPPED / REJECTED had its amount reverted out of
+    ``accounts.balance`` at the state transition, and pairing it is PERMITTED
+    ON PURPOSE: those states are terminal, so refusing the pair would strand a
+    mis-skipped row with delete as its only exit (the closed loop TBD-295
+    documents, and the same ground on which ``_demote_match_orphans`` refused a
+    guard). The resulting reciprocal-plus-reverted row is safe because
+    ``update_transaction``'s arms 4b/4f are gated on
+    ``contributes_to_cached_balance`` and the state clause keeps the leg out of
+    the reconstruction. Do not add a ``reconciliation_state`` guard here
+    without reading that fence first.
 
     Raises ValidationError on identical IDs or invariant violations,
     NotFoundError if either row is missing in this org.
