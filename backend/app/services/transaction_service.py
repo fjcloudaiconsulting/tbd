@@ -119,6 +119,11 @@ def to_response(tx: Transaction) -> TransactionResponse:
         settled_date=tx.settled_date,
         is_imported=tx.is_imported,
         is_manual_adjustment=tx.is_manual_adjustment,
+        # TBD-309: derived HERE, in the one funnel every transaction endpoint
+        # goes through, from the shared roster -- never re-literalled. See the
+        # field's own note in schemas/transaction.py for why the roster's
+        # RESULT ships instead of the ``reconciliation_state`` enum.
+        is_reverted=tx.reconciliation_state in REVERTED_RECONCILIATION_STATES,
         tags=_tag_responses(tx),
     )
 
@@ -2698,12 +2703,22 @@ def _apply_transaction_filters(
         # excluded. It drops transfer legs, manual balance adjustments AND
         # reverted (skipped/rejected) reconciliation rows.
         #
-        # ⚠ Only ``is_manual_adjustment`` is on the wire
-        # (schemas/transaction.py), so a client-side reconstruction of this
-        # can only ever be half of it -- which is precisely why the filter
-        # belongs here. Do NOT pair this with ``collapse_transfers``: this
-        # clause already excludes every non-null ``linked_transaction_id``,
-        # a strict superset.
+        # ⚠ TBD-309 REMOVED THE OLD REASON WITHOUT WEAKENING THE RULE, and the
+        # difference matters. This note used to say only
+        # ``is_manual_adjustment`` was on the wire, so a client reconstruction
+        # "can only ever be half of it". ``is_reverted`` now ships too, and
+        # with it ALL THREE of this clause's columns are on the wire, so the
+        # ROW-LEVEL predicate is exactly reconstructible client-side. That
+        # argument is spent; do not reach for it.
+        #
+        # The filter still belongs here, for reasons no wire field can fix: a
+        # client holds one PAGE rather than the period's row set, and buckets
+        # by a calendar window rather than ``effective_period_date_expr``
+        # against the org's billing-period boundaries. Those are aggregation
+        # errors rather than filter errors, and they are silent.
+        #
+        # Do NOT pair this with ``collapse_transfers``: this clause already
+        # excludes every non-null ``linked_transaction_id``, a strict superset.
         q = q.where(reportable_transaction_filter())
     if tx_type is not None:
         q = q.where(Transaction.type == TransactionType(tx_type))

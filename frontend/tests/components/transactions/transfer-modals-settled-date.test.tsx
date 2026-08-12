@@ -29,6 +29,7 @@ function makeLeg(over: Partial<Transaction> = {}): Transaction {
     settled_date: "2026-06-15",
     is_imported: false,
     is_manual_adjustment: false,
+    is_reverted: false,
     tags: [],
     ...over,
   };

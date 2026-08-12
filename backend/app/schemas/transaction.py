@@ -97,6 +97,28 @@ class TransactionResponse(BaseModel):
     # Frontend can use this to render a distinct visual treatment (deferred
     # to a follow-up PR per the architect spec).
     is_manual_adjustment: bool = False
+    # TBD-309: True iff this row's amount was REVERTED out of
+    # ``accounts.balance`` at a reconciliation transition and it sits outside
+    # every reportable aggregate -- i.e. ``reconciliation_state`` is in
+    # ``transaction_filters.REVERTED_RECONCILIATION_STATES``.
+    #
+    # ⚠ The DERIVED form is deliberate; do NOT "improve" this by putting the
+    # raw ``reconciliation_state`` enum on this surface. The enum itself is
+    # already shared (``ReconciliationRow`` ships it), but the ROSTER --
+    # which 2 of the 7 states count as reverted -- is not. Shipping the enum
+    # forces the client to keep its own TypeScript copy of that roster, with
+    # no shared declaration and nothing able to diff the two languages. The
+    # day the roster gains a third member the backend drops the row from
+    # every aggregate while the client still renders it as ordinary and still
+    # offers promote-to-recurring, with BOTH suites green. Sending the
+    # roster's RESULT instead of its INPUTS makes that drift unrepresentable.
+    #
+    # ⚠ Also NOT "excluded from totals": a manual balance adjustment is
+    # excluded from ``reportable_transaction_filter`` but is deliberately KEPT
+    # by ``balance_contribution_filter`` and counted by ``reconcile_account``.
+    # Its amount IS inside ``accounts.balance``, so a flag with that name
+    # would be a falsehood on every adjustment row.
+    is_reverted: bool = False
     # PR-Tags-A contract: list/detail responses include the tags
     # attached to a transaction. Empty list when none. Populated via a
     # selectinload in transaction_service.list_transactions /

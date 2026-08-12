@@ -206,6 +206,23 @@ export interface Transaction {
   // endpoint. Standard CRUD (edit/delete/promote-to-recurring) refuses
   // to mutate them; bulk delete skips them silently.
   is_manual_adjustment: boolean;
+  // TBD-309: True iff this row's amount was REVERTED out of the account
+  // balance at a reconciliation transition, so it counts toward nothing: it is
+  // outside every balance and every report while still sitting in the ledger.
+  //
+  // This is a DERIVED flag, not the raw reconciliation state, and that is
+  // deliberate. Which states count as reverted is a roster that lives in ONE
+  // language (the backend's REVERTED_RECONCILIATION_STATES). Mirroring it here
+  // would create a second copy nothing can diff across the language boundary,
+  // and the day it grows a member this client would keep rendering such rows
+  // as ordinary with both suites green. Never reconstruct this from a state
+  // string; ask the server.
+  //
+  // ⚠ NOT "excluded from totals". A manual balance adjustment is out of the
+  // reportable aggregates but its amount IS inside the account balance, so it
+  // is `is_reverted: false`. The two are separate booleans on purpose; compose
+  // them, do not merge them.
+  is_reverted: boolean;
   // PR-Tags-A: tags attached to this transaction. Always present on
   // list/detail responses, empty array when none. The backend
   // populates this via a selectinload in the transactions service
