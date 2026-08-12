@@ -3576,8 +3576,35 @@ _STEPUP_RETURN_TARGETS: dict[str, str] = {
 _STEPUP_DEFAULT_TARGET = "settings"
 
 
-@router.post("/sso-stepup/initiate")
+@router.post(
+    "/sso-stepup/initiate",
+    # TBD-346: the ISSUER of the step-up proof must be at least as protected as
+    # the actions it authorizes. Every consumer of ``stepup_token`` is already
+    # interactive-only (``users.py`` update_profile / change_password,
+    # ``api_tokens.py`` mint_token), so before this a PAT could reach the one
+    # link of the chain that was not gated.
+    #
+    # ⚠ That was NOT an escalation and the PR body should not claim it was: a
+    # PAT holder gets back a consent URL string, and converting it to a token
+    # needs BOTH a Google consent bound to the user's verified email AND the
+    # matching ``oauth_state`` cookie -- which lands on the caller's own
+    # response, not the victim's browser. Those fail closed in opposite
+    # directions for an attacker and for a phished victim. The reason to gate
+    # it is that ``test_interactive_session_enumeration`` claims to enumerate
+    # this surface COMPLETELY, and the claim was false while the issuer was
+    # missing; the day the callback's email or cookie binding is loosened,
+    # this becomes the load-bearing path.
+    dependencies=[Depends(require_interactive_session)],
+)
+# Matches the 10/hour on the mint this proof feeds (``api_tokens.mint_token``)
+# and sits above the 5/hour on the two ``users.py`` consumers: an issuer must
+# not be looser than its loosest consumer. Per-IP, like every limit in this app
+# -- slowapi binds one ``key_func`` per Limiter and there is no per-user bucket
+# anywhere. A shared NAT therefore shares the bucket, which is the same cost
+# already accepted on the tighter 5/hour credential-change endpoints.
+@limiter.limit("10/hour")
 async def sso_stepup_initiate(
+    request: Request,
     response: Response,
     body: StepUpInitiateRequest | None = None,
     current_user: User = Depends(get_current_user),

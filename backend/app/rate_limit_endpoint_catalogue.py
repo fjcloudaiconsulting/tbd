@@ -55,6 +55,15 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "api_tokens.mint",
     # auth router (post-auth resend, requires get_current_user)
     "auth.resend_verification",
+    # TBD-346. Post-auth: the route is interactive-session gated, so its
+    # decorator runs with an identity behind it.
+    #
+    # ⚠ Listed for TRUTHFULNESS, not tunability. This catalogue does not
+    # currently make anything adjustable: ``rate_limit_overrides.dynamic_limit``
+    # has no call sites anywhere under ``app/`` and every router decorator is a
+    # static string, so every stored override row is a no-op at request time.
+    # Do not describe this entry as making the limit adjustable.
+    "auth.sso_stepup_initiate",
     # feedback router
     "feedback.submit",
     # onboarding router
