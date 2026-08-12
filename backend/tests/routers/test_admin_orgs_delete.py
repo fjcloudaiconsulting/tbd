@@ -335,3 +335,84 @@ async def test_delete_org_failure_writes_audit_and_returns_json(session_factory)
             )
         ).scalar_one_or_none()
     assert target is not None, "target org was deleted even though cascade raised"
+
+
+# ── TBD-342: the org-holds-a-superadmin refusal must be a 409, not a 500 ───
+
+
+@pytest.mark.asyncio
+async def test_delete_org_holding_a_superadmin_is_409_not_500(session_factory):
+    """delete_org_cascade refuses when the target org holds a platform
+    superadmin. Without the dedicated `except ConflictError` arm the refusal
+    falls into the router's bare `except Exception` and surfaces as an opaque
+    500 — the operator sees "delete failed" with no reason, and the audit row
+    records `internal_error` instead of the truth.
+
+    Kills: deleting the entire `except ConflictError` branch
+    (`admin_orgs.py`), which is otherwise GREEN across the whole suite. Also
+    kills raising the ConflictError without a `code`, which would put
+    {"code": null} on the wire.
+
+    ⚠ This guard is only reachable BECAUSE TBD-342 repaired deletion: before,
+    the cascade raised on a RESTRICT foreign key first, so the unguarded
+    hard-delete of platform admins was masked in practice.
+    """
+    from sqlalchemy import select as _select
+
+    from app.models.user import User as _User
+    from app.services.admin_orgs_service import CODE_ORG_HOLDS_SUPERADMIN
+
+    seed = await _seed_with_import_batch(session_factory)
+
+    # Promote the TARGET org's member to a platform superadmin.
+    async with session_factory() as db:
+        victim = (
+            await db.execute(
+                _select(_User).where(_User.org_id == seed["target_id"])
+            )
+        ).scalars().first()
+        assert victim is not None
+        victim.is_superadmin = True
+        await db.commit()
+        victim_id = victim.id
+
+    # The shared _superadmin_resolver does scalar_one() over ALL superadmins,
+    # so it breaks once the target org holds one too. Resolve the ACTING
+    # superadmin by org instead — that is the realistic shape anyway: the
+    # actor is in a different org from the one being deleted.
+    def _acting_admin_resolver():
+        async def resolve(sf):
+            async with sf() as db:
+                return (
+                    await db.execute(
+                        _select(_User).where(
+                            _User.is_superadmin.is_(True),
+                            _User.org_id != seed["target_id"],
+                        )
+                    )
+                ).scalars().first()
+        return resolve
+
+    app = make_app(session_factory, _acting_admin_resolver())
+    with TestClient(app) as client:
+        res = client.request(
+            "DELETE",
+            f"/api/v1/admin/orgs/{seed['target_id']}",
+            json={"confirm_name": seed["target_name"]},
+        )
+
+    assert res.status_code == 409, f"expected 409, got {res.status_code}: {res.text}"
+    detail = res.json()["detail"]
+    assert detail["code"] == CODE_ORG_HOLDS_SUPERADMIN
+    assert "platform administrator" in detail["message"]
+
+    # And nothing was destroyed.
+    async with session_factory() as db:
+        assert (
+            await db.execute(_select(_User).where(_User.id == victim_id))
+        ).scalar_one_or_none() is not None
+        assert (
+            await db.execute(
+                _select(Organization).where(Organization.id == seed["target_id"])
+            )
+        ).scalars().first() is not None

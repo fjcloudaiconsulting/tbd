@@ -81,6 +81,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.import_batch import ImportBatch
 from app.models.invitation import Invitation
+from app.models.dashboard import DashboardLayout
 from app.models.report import Report, ReportVisibility
 from app.models.user import Role, User
 from app.services.exceptions import ConflictError, NotFoundError
@@ -227,12 +228,23 @@ async def delete_user(
         reports_transferred = 0
         reports_deleted_shared = shared_result.rowcount or 0
 
+    # dashboard_layouts.owner_user_id is ON DELETE RESTRICT (TBD-342) and had
+    # NO service-layer delete, so this function raised for essentially every
+    # real user: dashboard.py::_get_or_create auto-creates a layout on first
+    # dashboard access. Unlike reports there is nothing to transfer — a layout
+    # is a private arrangement of tiles, meaningless to another user — so it is
+    # deleted outright rather than reassigned.
+    layout_result = await db.execute(
+        delete(DashboardLayout).where(DashboardLayout.owner_user_id == target_user_id)
+    )
+
     fk_cleanup_counts = {
         "invitations": inv_result.rowcount or 0,
         "import_batches": batches_result.rowcount or 0,
         "reports_deleted_private": private_delete.rowcount or 0,
         "reports_deleted_shared": reports_deleted_shared,
         "reports_transferred": reports_transferred,
+        "dashboard_layouts": layout_result.rowcount or 0,
     }
 
     # Finally, the user row itself. SET NULL FKs (audit_events,

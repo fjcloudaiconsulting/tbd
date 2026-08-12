@@ -318,6 +318,40 @@ async def delete_org(
             "deleted_rows_by_table": counts,
         }
         await db.commit()
+    except ConflictError as e:
+        # TBD-342: delete_org_cascade refuses when the org holds a platform
+        # superadmin. Without this branch the refusal falls into the generic
+        # `except Exception` below and surfaces as an opaque 500 — the
+        # operator would see "delete failed" with no way to learn why, and the
+        # audit row would say `internal_error` rather than the real reason.
+        #
+        # ⚠ Branch on `e.code`, never on the message text. The role-change
+        # handler in this file matches `"superadmin" in msg.lower()` and that
+        # is a defect waiting to fire (TBD-374) — do not copy it.
+        await db.rollback()
+        await logger.awarning(
+            "admin.org.delete.refused",
+            actor_user_id=actor_id,
+            actor_email=actor_email,
+            target_org_id=org_id,
+            reason=e.code,
+        )
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="admin.org.delete.failed",
+            actor_user_id=actor_id,
+            actor_email=actor_email,
+            target_org_id=org_id,
+            target_org_name=detail["name"],
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="failure",
+            detail={"reason": e.code or "conflict"},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": e.code, "message": str(e)},
+        )
     except Exception as e:  # noqa: BLE001 — translate to generic 500 + log.
         await db.rollback()
         # Use pre-snapshotted scalars — current_user is expired after
