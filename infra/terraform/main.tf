@@ -66,7 +66,8 @@ module "data_droplet" {
   # The standing decision is backups=false: the nightly mysqldump cron (see
   # ansible/roles/backups) plus the App Platform release pin cover the recovery
   # scenarios we care about for a single-user finance app, and DO backups cost
-  # ~20% of droplet cost (daily, below, costs more than weekly). That decision
+  # 20% of droplet cost weekly / 30% DAILY -- and daily is what this enables,
+  # so ~$3.60/mo on this s-1vcpu-2gb, prorated. That decision
   # is unchanged -- this is a window, not a reversal. Toggling backups on/off
   # does not affect the size variable above, and the DO provider applies it
   # in place: no droplet recreation, no IP change.
