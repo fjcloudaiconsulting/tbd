@@ -60,12 +60,36 @@ module "data_droplet" {
 
   ssh_key_id = data.digitalocean_ssh_key.primary.id
 
-  # backups=false: the nightly mysqldump cron (see ansible/roles/backups) plus
-  # the App Platform release pin already cover the recovery scenarios we care
-  # about for a single-user finance app. Re-enable here if/when shared use
-  # changes the durability calculus. Toggling backups on/off does not affect
-  # the size variable above.
-  enable_backups    = false
+  # ⚠⚠ TEMPORARY (TBD-399). Backups are ON only for the TBD-360 MySQL 8.0 -> 8.4
+  # migration window. REVERT TO false ONCE THE CUTOVER IS VERIFIED.
+  #
+  # The standing decision is backups=false: the nightly mysqldump cron (see
+  # ansible/roles/backups) plus the App Platform release pin cover the recovery
+  # scenarios we care about for a single-user finance app, and DO backups cost
+  # ~20% of droplet cost (daily, below, costs more than weekly). That decision
+  # is unchanged -- this is a window, not a reversal. Toggling backups on/off
+  # does not affect the size variable above, and the DO provider applies it
+  # in place: no droplet recreation, no IP change.
+  #
+  # WHY THIS IS NOT MERELY "turn backups on": enabling the flag creates NOTHING.
+  # DO takes backups on its own schedule, weekly by default, so a droplet
+  # enabled shortly before a cutover can reach the window with zero restorable
+  # images while looking configured. `plan = "daily"` bounds that wait to ~24h
+  # so the window can actually be scheduled.
+  #
+  # ⚠ THE GATE IS OUTPUT, NOT THIS APPLY:
+  #     doctl compute droplet backups <droplet-id>   # must return >= 1 row
+  # Do not start the cutover on the strength of this file alone.
+  #
+  # ⚠ This is the SECOND net. The load-bearing rollback artifact for the window
+  # is the manual cold snapshot in infra/MYSQL-84-CUTOVER.md step 3 -- taken
+  # deliberately, immediately pre-cutover, guaranteed to exist. Note the two
+  # restore with DIFFERENT verbs: a backup with `droplet-action restore`, a
+  # snapshot with `droplet-action rebuild`.
+  enable_backups = true
+  backup_policy = {
+    plan = "daily"
+  }
   enable_monitoring = true
 
   tags = ["pfv", "data", "managed-by-terraform"]
