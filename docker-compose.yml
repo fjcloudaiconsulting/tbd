@@ -1,6 +1,16 @@
 services:
   mysql:
-    image: mysql:8.0
+    # TBD-360. WARNING: ONE-WAY DOOR ON YOUR LOCAL DATA.
+    # The first `./pfv start` on this image performs an in-place data-dictionary
+    # upgrade of the existing `mysql_data` volume. MySQL supports 8.0 -> 8.4
+    # in place; the REVERSE DOES NOT EXIST. So after starting once here,
+    # checking back out to a branch pinned at mysql:8.0 leaves a mysqld that
+    # refuses to start, and the only repair is `./pfv reset` - which destroys
+    # every local database AND rotates JWT_SECRET_KEY.
+    # If you need to move between this branch and an 8.0 branch, `./pfv reset`
+    # on the way back, or keep the branches in separate worktrees with separate
+    # `-p` compose projects so they never share this volume.
+    image: mysql:8.4
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}

@@ -2,9 +2,27 @@
 {# package's main config includes this directory by default. #}
 {# bind-address = 0.0.0.0 because MySQL 8 only honours one bind-address; #}
 {# the DO Cloud Firewall (pfv-data-fw) enforces VPC-only access. #}
+{# TBD-360: `default-authentication-plugin` was REMOVED in MySQL 8.4, and an #}
+{# unknown variable in an option file is FATAL - mysqld aborts, it does not #}
+{# warn. Measured with `mysqld --validate-config` against the real binaries: #}
+{#                                                                          #}
+{#                    | 8.0    | 8.4                                        #}
+{#   with this line   | exit 0 | exit 1, "unknown variable                   #}
+{#                    |        |  'default-authentication-plugin=...'"       #}
+{#   without it       | exit 0 | exit 0                                      #}
+{#                                                                          #}
+{# Removing it is therefore rollback-safe, which matters because this        #}
+{# template is re-rendered with `notify: Restart mysql` on every run against #}
+{# the CURRENT 8.0 box - the fix has to be applied BEFORE the upgrade, on a  #}
+{# server that still has to start. Do not re-add it, and do not swap in      #}
+{# `authentication_policy` without re-running validate-config on both.       #}
+{#                                                                          #}
+{# Dropping it also moves the server default for NEWLY created accounts from #}
+{# mysql_native_password to caching_sha2_password, which is the direction    #}
+{# this ticket wants. Every account in tasks/main.yml names its plugin       #}
+{# explicitly, so none of them depended on this default.                     #}
 [mysqld]
 bind-address = 0.0.0.0
-default-authentication-plugin = mysql_native_password
 
 # DNS lookups on every TCP connect are pure overhead at our scale; auth is
 # host=% for pfv_app, no hostname-based ACLs to break.

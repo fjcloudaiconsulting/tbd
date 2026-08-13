@@ -1,6 +1,13 @@
 collections:
+  # TBD-360: FLOOR RAISED AND CAPPED DELIBERATELY. The mysql role depends on a
+  # specific, measured behaviour of `mysql_user`: that `password:` is IGNORED
+  # when `plugin:` is set (it writes the plugin and leaves the hash EMPTY),
+  # so the role must use `plugin_auth_string`. That is the difference between
+  # a working conversion and a passwordless production account. A `>=` floor
+  # alone resolves to whatever is newest on the day, and a 4.x major could
+  # legitimately change that handling. Re-measure before widening this.
   - name: community.mysql
-    version: ">=3.10.0"
+    version: ">=3.10.0,<4.0.0"
   - name: community.general
     version: ">=8.0.0"
   - name: ansible.posix
