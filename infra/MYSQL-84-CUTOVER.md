@@ -22,8 +22,8 @@ step has detail worth reading in full before the window.
 | Schema applies on 8.4 | Real 8.4.11: all **80** alembic revisions to head, idempotent re-run, `utf8mb4_0900_ai_ci` preserved, `/ready` → 200 `database: connected` |
 | The driver stack works on 8.4 | `cryptography 44.0.3` present **in the image**, `aiomysql 0.2.0`, `PyMySQL 1.1.3`; app authenticates with `caching_sha2_password` |
 | CI executes migrations against 8.4 on a real runner | `Migration Checks` job, now matrixed over 8.0 **and** 8.4 |
-| **The in-place upgrade itself works** | Rehearsed: an 8.0.46 datadir, slow-shutdown, then started under 8.4.11 with the final config. `Data dictionary upgrading from '80023' to '80300' ... completed`, `Server upgrade from '80046' to '80411' completed`, row counts and a DECIMAL sum identical, accounts still on `caching_sha2_password` with 70-byte hashes, **zero** deprecation warnings, and a non-TLS `--get-server-public-key` login OK |
-| 8.4's re-defaults are known, not guessed | Same datadir booted under both, `SHOW GLOBAL VARIABLES` diffed: exactly **10** InnoDB/memory/thread knobs move, and the io_capacity pins hold at 1000/2000 |
+| The in-place upgrade runs, **on a synthetic schema, via a container-image swap — NOT the Ubuntu→Oracle package swap and NOT a production restore** | `infra/rehearse-84-upgrade.sh` (reproducible). DD `80023 → 80300` and server `80046 → 80411` completed; a STORED generated column keeps `utf8mb4_0900_as_cs` and its expression; a named CHECK and a UNIQUE on the generated column are both still **enforced** (deliberate bad INSERTs rejected); JSON readable. ⚠ Row/sum equality is near-tautological — a DD upgrade does not rewrite tablespaces. ⚠ **Upgrade DURATION on a production-sized datadir was not measured**, so the window is unsized |
+| 8.4's re-defaults are enumerated **for a dev host, not for the droplet** | Same datadir under both, `SHOW GLOBAL VARIABLES` diffed: **26** value changes, **15 variables REMOVED** (including `default_authentication_plugin` — so a value-diff alone would have missed this ticket's own root cause), 7 new. io_capacity pins hold at 1000/2000. ⚠ Several 8.4 defaults are CPU-derived and **could not be measured for 1 vCPU** from this machine; read them on the box |
 
 ⚠ **What is NOT evidence, so nobody re-derives false confidence from it.** The
 backend test suite ran green against an 8.4 stack (4106 passed), and that proves
@@ -153,13 +153,25 @@ table): an 8.0.46 datadir, slow-shutdown, started under 8.4.11 with the final
 config — DD upgraded `80023 → 80300`, server `80046 → 80411`, data identical,
 accounts and auth intact.
 
-⚠ **What the rehearsal did NOT cover**, and is still worth doing on a scratch
-droplet before the window: a **representative synthetic schema** was used, not
+⚠⚠ **The scratch-droplet rehearsal is STILL OUTSTANDING and is still the
+highest-value remaining pre-flight.** What the container rehearsal did not
+cover, and cannot: a **representative synthetic schema** was used, not
 a restore of the production dataset, and the rehearsal swapped the *binary*
 (container image) rather than performing the **Ubuntu → Oracle package swap**,
 which is where `debian-sys-maint`, AppArmor, the systemd unit and the config
-include path actually change. The engine-level upgrade path is proven; the
-packaging path is not.
+include path actually change. The engine-level mechanism is exercised — but that is the half Oracle already
+regression-tests. The uncovered half is where every box-specific failure this
+runbook enumerates actually lives: `debian-sys-maint`, AppArmor, the systemd
+unit, and the config include path in section 5.
+
+A faithful rehearsal: build a scratch droplet from the production snapshot
+(Ubuntu-packaged 8.0.46, not a container), restore the real nightly dump,
+confirm `mysql.dd_properties` matches production's DD version, perform the
+actual `mysql-apt-config` package swap, start 8.4, then assert
+`SHOW CREATE TABLE organizations` still carries the generated column with
+`utf8mb4_0900_as_cs`, `SHOW CREATE TABLE transactions` still carries the CHECK,
+and **record the elapsed DD-upgrade time** — that is the number the window is
+sized from.
 
 ### 3. Quiesce the app, then snapshot
 
@@ -205,7 +217,10 @@ while the operator's local client still works — a slow, ugly diagnosis),
 ⚠ `mysqld --validate-config` **cannot catch this**: if the file is not included
 it is not read, and validation still exits 0. Diff `SHOW GLOBAL VARIABLES`
 before and after and assert by name: `bind_address`, `collation_server`,
-`innodb_buffer_pool_size`, `innodb_io_capacity`, `innodb_io_capacity_max`.
+`innodb_buffer_pool_size`, `innodb_io_capacity`, `innodb_io_capacity_max`, and
+**`innodb_redo_log_capacity`** (must be 268435456; if the include is dropped it
+silently falls to 8.4's 100MB default — a 2.5x redo shrink that surfaces as
+aggressive background flushing, not as an error).
 
 **Resolved by measurement, not by blanket pinning.** The spec asked to pin
 "~18 InnoDB values 8.4 re-defaults". Booting the same datadir under both

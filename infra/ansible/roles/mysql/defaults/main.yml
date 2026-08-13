@@ -33,6 +33,3 @@ mysql_max_heap_table_size: 32M
 # what the L4.7 audit-log + L4.9 request-log write workload wants.
 mysql_innodb_io_capacity: 1000
 mysql_innodb_io_capacity_max: 2000
-# TBD-360: 8.4 defaults this to 128 (from 4). Pinned to the 8.0 value to keep
-# write behaviour identical across the upgrade; see my.cnf.j2 for the measurement.
-mysql_innodb_doublewrite_pages: 4

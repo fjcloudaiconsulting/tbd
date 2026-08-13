@@ -58,32 +58,60 @@ innodb_flush_neighbors = 0
 innodb_io_capacity = {{ mysql_innodb_io_capacity }}
 
 # --- 8.4 default drift (TBD-360) ---
-# MEASURED, not assumed: booting the same datadir under 8.0.46 and 8.4.11 and
-# diffing SHOW GLOBAL VARIABLES, exactly 10 InnoDB/memory/thread knobs change.
-# Most of them REDUCE memory on this 2GB box co-hosting Redis, so they are
-# deliberately allowed through rather than pinned:
+# Booting the SAME datadir under 8.0.46 and 8.4.11 and diffing SHOW GLOBAL
+# VARIABLES (see infra/rehearse-84-upgrade.sh, which reproduces this):
 #
-#   innodb_adaptive_hash_index      ON  -> OFF   frees buffer-pool memory
-#   innodb_change_buffering         all -> none  frees memory
-#   innodb_purge_threads            4   -> 1     fewer threads; fine on 1 vCPU
-#   innodb_read_io_threads          4   -> 5     negligible
-#   innodb_use_fdatasync            OFF -> ON    cheaper fsync
-#   temptable_use_mmap              ON  -> OFF   \ 8.4 sends large temp tables
-#   temptable_max_mmap              1G  -> 0     / to InnoDB rather than mmap
-#   innodb_buffer_pool_in_core_file ON  -> OFF   core-dump size only
+#   25 value changes on names present in both
+#   15 variables REMOVED in 8.4 -- including `default_authentication_plugin`,
+#      the one this whole ticket exists for. A value-diff structurally CANNOT
+#      see a removal, so a "what changed" diff is not a safety check on its own.
+#    7 variables NEW in 8.4
 #
-# temptable_use_mmap IS settable and rollback-safe, but it is DEPRECATED in 8.4
-# and pinning it would re-enable behaviour 8.4 deliberately turned off, so it is
-# left alone.
+# ⚠ Measured in a container on a multi-core dev host, NOT on the 1-vCPU
+# droplet, and several 8.4 defaults are CPU-derived. `innodb_read_io_threads`
+# reading 5 requires 10 logical processors; on 1 vCPU it stays 4.
+# `innodb_purge_threads`, `innodb_parallel_read_threads` and the auto-sized
+# buffer-pool instances are the same class.
 #
-# The one change that INCREASES resource use is doublewrite_pages, 4 -> 128
-# (32x the doublewrite buffer). Pinned to the 8.0 value so the upgrade changes
-# one thing at a time; revisit once 8.4 has run in production for a while.
+# ⚠⚠ This could NOT be corrected by constraining the container. Neither
+# `--cpus=1` (a CFS quota) nor `--cpuset-cpus=0` changes what mysqld sees under
+# Docker Desktop, which runs a Linux VM whose processor count mysqld reads.
+# So the CPU-derived values below are UNMEASURED for the target. Treat the
+# subset as indicative of DIRECTION only, and read the real values on the box:
 #
-# NOTE the io_capacity pins above are what neutralise the spec's headline
-# concern: 8.4 re-defaults innodb_io_capacity 200 -> 10000, which would be
-# hostile here. Measured on 8.4 WITH this file: still 1000/2000.
-innodb_doublewrite_pages = {{ mysql_innodb_doublewrite_pages }}
+#   SELECT @@innodb_read_io_threads, @@innodb_purge_threads,
+#          @@innodb_buffer_pool_instances, @@innodb_parallel_read_threads;
+#
+# Nothing in that subset is pinned. The memory-relevant ones mostly move in a
+# direction that is fine or favourable here, and the honest reasons are not
+# always the obvious ones:
+#
+#   innodb_adaptive_hash_index  ON  -> OFF   8.4 disabled it for LATCH
+#                                            CONTENTION, not to save memory
+#   innodb_change_buffering     all -> none  frees no RSS (the buffer pool is a
+#                                            fixed allocation); the real effect
+#                                            is more read IOPS on secondary
+#                                            index maintenance
+#   innodb_purge_threads        4   -> 1     fewer threads; fine on 1 vCPU
+#   innodb_use_fdatasync        OFF -> ON    cheaper fsync
+#   temptable_use_mmap/max_mmap ON/1G -> OFF/0  removes an overflow tier
+#   innodb_doublewrite_pages    4   -> 128   DELIBERATELY NOT PINNED: 128 is a
+#                                            vendor performance fix (4 causes
+#                                            excessive fsyncs; 128 measured
+#                                            elsewhere at ~55% fewer write
+#                                            IOPS), which is the right
+#                                            direction on an IOPS-limited
+#                                            droplet. Costs disk, not RAM.
+#
+# ⚠ The real unaddressed memory exposure is `temptable_max_ram`, which does NOT
+# appear in the diff because it is 1 GB on both sides (8.4's 3%-of-RAM rule
+# floors at 1 GB, and 3% of 2 GB is below that). It is unpinned, and it is a
+# ceiling larger than what remains after buffer pool 768M + Redis 300M on a 2 GB
+# box. Consider pinning it before the window.
+#
+# The io_capacity pins above are what neutralise the spec's headline concern:
+# 8.4 re-defaults innodb_io_capacity 200 -> 10000, hostile here. Measured under
+# 8.4 WITH this file: still 1000/2000.
 innodb_io_capacity_max = {{ mysql_innodb_io_capacity_max }}
 
 # --- Durability ---
