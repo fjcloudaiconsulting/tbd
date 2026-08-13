@@ -19,7 +19,10 @@ mysql_innodb_buffer_pool_size: 768M
 # One pool instance is the right call when the buffer pool is under ~1G;
 # multiple instances at this scale just waste RAM on per-instance overhead.
 mysql_innodb_buffer_pool_instances: 1
-mysql_innodb_log_file_size: 128M
+# TBD-360: replaced the deprecated innodb_log_file_size. 128M x the default
+# innodb_log_files_in_group=2 is exactly the 256M capacity 8.4 computed from
+# the old pair, so this is an equivalent restatement, not a resize.
+mysql_innodb_redo_log_capacity: 256M
 mysql_innodb_log_buffer_size: 16M
 # tmp_table_size and max_heap_table_size MUST stay equal — MySQL silently
 # clamps in-memory temp tables to the smaller of the two.
@@ -30,3 +33,6 @@ mysql_max_heap_table_size: 32M
 # what the L4.7 audit-log + L4.9 request-log write workload wants.
 mysql_innodb_io_capacity: 1000
 mysql_innodb_io_capacity_max: 2000
+# TBD-360: 8.4 defaults this to 128 (from 4). Pinned to the 8.0 value to keep
+# write behaviour identical across the upgrade; see my.cnf.j2 for the measurement.
+mysql_innodb_doublewrite_pages: 4

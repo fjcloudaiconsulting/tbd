@@ -37,7 +37,13 @@ innodb_thread_concurrency = 0
 # --- Buffer pool / memory ---
 innodb_buffer_pool_size = {{ mysql_innodb_buffer_pool_size }}
 innodb_buffer_pool_instances = {{ mysql_innodb_buffer_pool_instances }}
-innodb_log_file_size = {{ mysql_innodb_log_file_size }}
+{# TBD-360: innodb_log_file_size is DEPRECATED on 8.4 - it boots, but warns #}
+{# "Deprecated configuration parameters innodb_log_file_size and/or #}
+{# innodb_log_files_in_group have been used to compute #}
+{# innodb_redo_log_capacity". Measured: the modern parameter is valid on #}
+{# BOTH 8.0 and 8.4 (validate-config exit 0 on each), 256M yields exactly #}
+{# the 268435456 the old pair computed, and the warning disappears. #}
+innodb_redo_log_capacity = {{ mysql_innodb_redo_log_capacity }}
 innodb_log_buffer_size = {{ mysql_innodb_log_buffer_size }}
 tmp_table_size = {{ mysql_tmp_table_size }}
 max_heap_table_size = {{ mysql_max_heap_table_size }}
@@ -50,6 +56,34 @@ innodb_flush_method = O_DIRECT
 # into one seek). On SSD it's a small write-amp tax for no payoff.
 innodb_flush_neighbors = 0
 innodb_io_capacity = {{ mysql_innodb_io_capacity }}
+
+# --- 8.4 default drift (TBD-360) ---
+# MEASURED, not assumed: booting the same datadir under 8.0.46 and 8.4.11 and
+# diffing SHOW GLOBAL VARIABLES, exactly 10 InnoDB/memory/thread knobs change.
+# Most of them REDUCE memory on this 2GB box co-hosting Redis, so they are
+# deliberately allowed through rather than pinned:
+#
+#   innodb_adaptive_hash_index      ON  -> OFF   frees buffer-pool memory
+#   innodb_change_buffering         all -> none  frees memory
+#   innodb_purge_threads            4   -> 1     fewer threads; fine on 1 vCPU
+#   innodb_read_io_threads          4   -> 5     negligible
+#   innodb_use_fdatasync            OFF -> ON    cheaper fsync
+#   temptable_use_mmap              ON  -> OFF   \ 8.4 sends large temp tables
+#   temptable_max_mmap              1G  -> 0     / to InnoDB rather than mmap
+#   innodb_buffer_pool_in_core_file ON  -> OFF   core-dump size only
+#
+# temptable_use_mmap IS settable and rollback-safe, but it is DEPRECATED in 8.4
+# and pinning it would re-enable behaviour 8.4 deliberately turned off, so it is
+# left alone.
+#
+# The one change that INCREASES resource use is doublewrite_pages, 4 -> 128
+# (32x the doublewrite buffer). Pinned to the 8.0 value so the upgrade changes
+# one thing at a time; revisit once 8.4 has run in production for a while.
+#
+# NOTE the io_capacity pins above are what neutralise the spec's headline
+# concern: 8.4 re-defaults innodb_io_capacity 200 -> 10000, which would be
+# hostile here. Measured on 8.4 WITH this file: still 1000/2000.
+innodb_doublewrite_pages = {{ mysql_innodb_doublewrite_pages }}
 innodb_io_capacity_max = {{ mysql_innodb_io_capacity_max }}
 
 # --- Durability ---

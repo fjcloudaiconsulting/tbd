@@ -22,6 +22,8 @@ step has detail worth reading in full before the window.
 | Schema applies on 8.4 | Real 8.4.11: all **80** alembic revisions to head, idempotent re-run, `utf8mb4_0900_ai_ci` preserved, `/ready` → 200 `database: connected` |
 | The driver stack works on 8.4 | `cryptography 44.0.3` present **in the image**, `aiomysql 0.2.0`, `PyMySQL 1.1.3`; app authenticates with `caching_sha2_password` |
 | CI executes migrations against 8.4 on a real runner | `Migration Checks` job, now matrixed over 8.0 **and** 8.4 |
+| **The in-place upgrade itself works** | Rehearsed: an 8.0.46 datadir, slow-shutdown, then started under 8.4.11 with the final config. `Data dictionary upgrading from '80023' to '80300' ... completed`, `Server upgrade from '80046' to '80411' completed`, row counts and a DECIMAL sum identical, accounts still on `caching_sha2_password` with 70-byte hashes, **zero** deprecation warnings, and a non-TLS `--get-server-public-key` login OK |
+| 8.4's re-defaults are known, not guessed | Same datadir booted under both, `SHOW GLOBAL VARIABLES` diffed: exactly **10** InnoDB/memory/thread knobs move, and the io_capacity pins hold at 1000/2000 |
 
 ⚠ **What is NOT evidence, so nobody re-derives false confidence from it.** The
 backend test suite ran green against an 8.4 stack (4106 passed), and that proves
@@ -146,10 +148,18 @@ Compare row counts against production before trusting it.
 
 ⚠ **This is a logical restore into a fresh 8.4, which is NOT the operation the
 cutover performs.** The cutover is an in-place data-dictionary upgrade of the
-existing datadir, and nothing in this pre-flight rehearses that. The rehearsal
-that would — restore the snapshot onto a scratch droplet, do the package swap
-there, start 8.4 — is the highest-value remaining pre-flight and has not been
-done.
+existing datadir. That operation **has now been rehearsed** (see the evidence
+table): an 8.0.46 datadir, slow-shutdown, started under 8.4.11 with the final
+config — DD upgraded `80023 → 80300`, server `80046 → 80411`, data identical,
+accounts and auth intact.
+
+⚠ **What the rehearsal did NOT cover**, and is still worth doing on a scratch
+droplet before the window: a **representative synthetic schema** was used, not
+a restore of the production dataset, and the rehearsal swapped the *binary*
+(container image) rather than performing the **Ubuntu → Oracle package swap**,
+which is where `debian-sys-maint`, AppArmor, the systemd unit and the config
+include path actually change. The engine-level upgrade path is proven; the
+packaging path is not.
 
 ### 3. Quiesce the app, then snapshot
 
@@ -197,14 +207,30 @@ it is not read, and validation still exits 0. Diff `SHOW GLOBAL VARIABLES`
 before and after and assert by name: `bind_address`, `collation_server`,
 `innodb_buffer_pool_size`, `innodb_io_capacity`, `innodb_io_capacity_max`.
 
-**Deferred, deliberately:** the spec asks to pin the ~18 other InnoDB values
-8.4 re-defaults (`innodb_adaptive_hash_index`, `innodb_change_buffering`,
-`innodb_doublewrite_pages`, the cleaner/read-IO/purge thread counts, the
-`temptable_*` family). Only `innodb_io_capacity`/`_max` are pinned today, and
-they were pinned before this ticket. On a 2 GB box co-hosting Redis
-(`maxmemory 300mb`, `noeviction`, so pressure becomes 503s rather than
-evictions) that is a live OOM path. **Not done here — carry it before the
-window.**
+**Resolved by measurement, not by blanket pinning.** The spec asked to pin
+"~18 InnoDB values 8.4 re-defaults". Booting the same datadir under both
+versions and diffing `SHOW GLOBAL VARIABLES` shows **exactly 10** change, and
+most of them *reduce* memory on this box — `innodb_adaptive_hash_index` ON→OFF
+frees buffer-pool memory, `innodb_change_buffering` all→none frees more,
+`innodb_purge_threads` 4→1 is fewer threads on a 1-vCPU box. Pinning those back
+would make the upgrade *worse*.
+
+Two changes were acted on, both in `my.cnf.j2` with the measurement inline:
+
+* **`innodb_doublewrite_pages` 4 → 128** is the only knob that increases
+  resource use (32x the doublewrite buffer). **Pinned to 4**, so the upgrade
+  changes one thing at a time.
+* **`innodb_log_file_size` is deprecated on 8.4** and warns on every boot.
+  Replaced with `innodb_redo_log_capacity = 256M` — the exact capacity 8.4 was
+  computing from the old pair, valid on **both** 8.0 and 8.4, and it removes
+  the warning entirely.
+
+⚠ The spec's headline OOM concern — `innodb_io_capacity` re-defaulting 200 →
+10000 on a box co-hosting Redis — **is already neutralised** by the explicit
+pins that predate this ticket. Measured under 8.4 with this config: still
+1000/2000. `temptable_use_mmap` is settable and rollback-safe but is deprecated
+in 8.4; pinning it would re-enable behaviour 8.4 deliberately disabled, so it is
+left alone.
 
 ### 6. After
 
