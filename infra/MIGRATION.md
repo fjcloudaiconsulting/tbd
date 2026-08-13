@@ -13,6 +13,10 @@ the new `<data-droplet>` droplet provisioned by `infra/terraform`.
 Plan window: pick a quiet hour. Total downtime: ~10–20 min for the size of the
 PFV dataset today. Mostly waiting on dump + import.
 
+> **MySQL 8.0 -> 8.4 upgrade (TBD-360):** the ordered cutover checklist lives in
+> [`MYSQL-84-CUTOVER.md`](MYSQL-84-CUTOVER.md); the full analysis is in
+> `specs/2026-08-09-mysql-84-lts-upgrade.md`.
+
 ## Pre-flight checklist
 
 - [ ] TFC apply on `<tfc-org>/<data-workspace>` succeeded; droplet reachable via
