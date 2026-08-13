@@ -22,6 +22,39 @@
 # password MySQL never accepted, breaking subsequent tasks and cron dumps.
 # Cron dumps use the dedicated `mysql_backup` user below.
 
+# TBD-360 - the three accounts below moved from mysql_native_password to
+# caching_sha2_password, because 8.4 ships the native_password component
+# DISABLED: measured on a real mysql:8.4, PLUGIN_STATUS for
+# mysql_native_password is DISABLED, and
+# `CREATE USER ... IDENTIFIED WITH mysql_native_password` fails outright with
+# ERROR 1524 "Plugin 'mysql_native_password' is not loaded". Converting the
+# accounts is mandatory, and it must happen on 8.0 BEFORE the upgrade (an
+# in-place conversion on 8.0 was verified to convert and still authenticate).
+#
+# WARNING: `plugin_auth_string`, NOT `password`. This is the difference
+# between a working conversion and a total production outage, and it is
+# silent. `community.mysql.mysql_user` IGNORES `password:` when `plugin:` is
+# set: it writes the plugin and leaves `authentication_string` EMPTY.
+# Measured against a real 8.0 with the real collection:
+#
+#     plugin + password:           plugin=caching_sha2_password, hash_len=0
+#                                  -> "ERROR 1045 Access denied" for the app
+#     plugin + plugin_auth_string: plugin=caching_sha2_password, hash_len=70
+#                                  -> login OK
+#
+# The module reports `changed: true` and succeeds in BOTH cases, so the first
+# form would convert pfv_app@% to a PASSWORDLESS account on the next run and
+# take every App Platform connection down, before the 8.4 upgrade even starts.
+#
+# Known cost of this form: the play is NO LONGER IDEMPOTENT on these three
+# tasks. `plugin_auth_string` is cleartext, so the module cannot compare it
+# against the stored hash and rewrites it every run - measured `changed=3`
+# on a second consecutive run against an already-converted server. The
+# rewrite is the same credential, so it is functionally a no-op and the
+# accounts keep working (verified: all three authenticate, and pfv_backup
+# can still mysqldump). But do not read `changed` on these tasks as a
+# signal that anything actually differed.
+#
 # All privileged mysql tasks pin login_user: root + login_unix_socket so they
 # auth via root@localhost's auth_socket plugin regardless of whatever the
 # mysql client would otherwise pick up from /root/.my.cnf (which exists from
@@ -31,10 +64,10 @@
     login_user: root
     login_unix_socket: /var/run/mysqld/mysqld.sock
     name: "{{ mysql_backup_user }}"
-    password: "{{ mysql_backup_password }}"
     host: localhost
     priv: "*.*:SELECT,LOCK TABLES,SHOW VIEW,EVENT,TRIGGER,RELOAD,PROCESS,REPLICATION CLIENT"
-    plugin: mysql_native_password
+    plugin: caching_sha2_password
+    plugin_auth_string: "{{ mysql_backup_password }}"
     state: present
 
 - name: Remove anonymous MySQL users
@@ -66,10 +99,10 @@
     login_user: root
     login_unix_socket: /var/run/mysqld/mysqld.sock
     name: "{{ mysql_app_user }}"
-    password: "{{ mysql_app_password }}"
     host: "%"
     priv: "{{ mysql_app_db }}.*:ALL"
-    plugin: mysql_native_password
+    plugin: caching_sha2_password
+    plugin_auth_string: "{{ mysql_app_password }}"
     state: present
 
 # MySQL treats host='%' and host='localhost' as distinct user rows. The
@@ -86,10 +119,10 @@
     login_user: root
     login_unix_socket: /var/run/mysqld/mysqld.sock
     name: "{{ mysql_app_user }}"
-    password: "{{ mysql_app_password }}"
     host: localhost
     priv: "{{ mysql_app_db }}.*:ALL"
-    plugin: mysql_native_password
+    plugin: caching_sha2_password
+    plugin_auth_string: "{{ mysql_app_password }}"
     state: present
 
 # Drop /root/.my.cnf AFTER all privileged mysql_user / mysql_db tasks complete.

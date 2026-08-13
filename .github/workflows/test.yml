@@ -228,9 +228,20 @@ jobs:
   migrations:
     name: Migration Checks
     runs-on: ubuntu-latest
+    # TBD-360: matrixed over BOTH engine versions for the duration of the
+    # migration. Production is still 8.0 and 8.4 is the target, and this job is
+    # the only place CI executes migrations against real MySQL at all - testing
+    # one of them would leave the other completely uncovered. `needs.migrations`
+    # in the `backend` aggregate resolves to success only when EVERY leg
+    # succeeds, so the required context still gates on both.
+    # Drop "8.0" from this list once the production cutover has landed.
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql: ["8.0", "8.4"]
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:${{ matrix.mysql }}
         env:
           MYSQL_ROOT_PASSWORD: ci_root_secret
           MYSQL_DATABASE: pfv2
