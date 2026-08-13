@@ -48,6 +48,26 @@ services:
       - ./backend/alembic:/app/alembic
       - ./backend/scripts:/app/scripts
       - ./backend/tests:/app/tests
+      # TBD-345: seed.py sits at the backend root, so no directory mount above
+      # covers it and it reaches the image only via `COPY . .`. Without this
+      # line `./pfv seed` runs the copy baked at image-build time, and — worse
+      # — tests/test_seed_*.py read that same stale copy through BOTH
+      # `import seed` (PYTHONPATH=/app) and
+      # `Path(__file__).resolve().parents[1] / "seed.py"`, so a source-level
+      # fence evaluates against source that is not on disk. CI is unaffected
+      # (it runs pytest on a plain checkout), which is precisely what makes
+      # the container-only staleness silent. Same trap as the individually
+      # mounted frontend config files below.
+      #
+      # ⚠ A single-FILE bind mount binds an inode. A tool that writes-then-
+      # renames (`perl -i`, `sed -i`, some editors' atomic-save) replaces the
+      # inode and severs the mount: the container then sees
+      # `FileNotFoundError: /app/seed.py` until the container is recreated.
+      # In-place writers (`cp`, a normal editor save, Python's `write_text`)
+      # truncate and keep the inode, so they are unaffected. If seed.py goes
+      # missing inside the container, `docker compose up -d --force-recreate
+      # backend` is the fix, not a rebuild.
+      - ./backend/seed.py:/app/seed.py
       # Read-only mounts so test_deploy_workflow.py can locate
       # repo-root .github/workflows/deploy.yml and .do/app.yaml.
       - ./.github:/app/.github:ro
@@ -58,6 +78,12 @@ services:
       # point. On a bare CI runner the whole repo is checked out and the test
       # finds it at REPO_ROOT/scripts/ci instead; the test tries both.
       - ./scripts:/app/repo-scripts:ro
+      # TBD-345: read-only mount so test_seed_determinism.py can assert that
+      # `pfv`'s cmd_seed still forwards SEED_* generically. Without it that
+      # guard is green on a bare CI checkout (where the repo root is present)
+      # and errors in the container — the inverse of the usual staleness trap.
+      # Distinct mount point because /app is the backend dir, not the repo root.
+      - ./pfv:/app/repo-pfv:ro
       # Read-only mount so test_period_status_frontend_contract.py can READ
       # the cross-language period-status fixture that lives on the frontend
       # side. Without it that whole module is red in every container while

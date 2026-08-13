@@ -154,6 +154,8 @@ demo1234` user documented in CONTRIBUTING.md.
 | `SEED_FIRST_NAME` | `Demo` | First name of the seeded user. |
 | `SEED_LAST_NAME` | `User` | Last name of the seeded user. |
 | `SEED_ORG` | `Demo Household` | Org name created for the seeded user. |
+| `SEED_ANCHOR_DATE` | today | Date the whole dataset is generated relative to, ISO `YYYY-MM-DD`. Pin it to reproduce a dataset exactly. Raises on a malformed value rather than falling back to today. |
+| `SEED_RANDOM_SEED` | `20260101` | Integer seed for the dataset's RNG. Same anchor + same seed on a fresh DB gives an identical dataset. |
 
 ### Frontend (Next.js)
 
