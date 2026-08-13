@@ -37,7 +37,6 @@ from unittest import mock
 import pytest
 import pytest_asyncio
 import structlog.testing
-from dateutil.relativedelta import relativedelta
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -46,6 +45,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+import seed
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Base
@@ -442,7 +442,7 @@ async def test_create_period_duplicate_start_still_wins_over_overlap(session_fac
 async def test_create_open_period_is_checked_on_its_start_date_alone(session_factory):
     """A candidate with no `end_date` is NOT unbounded.
 
-    `seed.py:260-261` posts exactly this shape for the current open period.
+    `seed.py`'s current-open-period POST posts exactly this shape for the current open period.
     Treating it as extending to infinity would make seeding an open period
     after any closed period conflict every time.
     """
@@ -949,27 +949,19 @@ async def test_update_billing_cycle_leaves_no_gap_on_the_seed_shape(
     ids = await _seed(session_factory, cycle_day=1)
     client = TestClient(_make_app(session_factory, ids["owner"]))
 
-    # Verbatim shape of seed.py:241-263 for this `today`.
-    first = seed_today.replace(day=1)
-    period_defs = [
-        (first - relativedelta(months=3) + datetime.timedelta(days=24),
-         first - relativedelta(months=2) + datetime.timedelta(days=21)),
-        (first - relativedelta(months=2) + datetime.timedelta(days=22),
-         first - relativedelta(months=1) + datetime.timedelta(days=22)),
-        (first - relativedelta(months=1) + datetime.timedelta(days=23),
-         first + datetime.timedelta(days=23)),
-    ]
-    for start, end in period_defs:
-        if end < seed_today:
-            resp = client.post(
-                "/api/v1/settings/billing-period",
-                json={"start_date": start.isoformat(), "end_date": end.isoformat()},
-            )
-            assert resp.status_code == 200, resp.text
-    last_end = (
-        period_defs[-1][1] if period_defs[-1][1] < seed_today else period_defs[-2][1]
-    )
-    current_start = last_end + datetime.timedelta(days=1)
+    # The REAL planner, not a hand-copy (TBD-345). This block used to restate
+    # all six boundary expressions and the `last_end` fallback inline, so a
+    # geometry change in seed.py left this test happily validating the old
+    # shape under a comment claiming it tracked the new one.
+    # `seed.plan_billing_periods` is pure and importable, so the coupling can
+    # be real rather than asserted in prose.
+    closed_periods, current_start = seed.plan_billing_periods(seed_today)
+    for start, end in closed_periods:
+        resp = client.post(
+            "/api/v1/settings/billing-period",
+            json={"start_date": start.isoformat(), "end_date": end.isoformat()},
+        )
+        assert resp.status_code == 200, resp.text
     resp = client.post(
         "/api/v1/settings/billing-period",
         json={"start_date": current_start.isoformat()},
@@ -983,7 +975,7 @@ async def test_update_billing_cycle_leaves_no_gap_on_the_seed_shape(
 
     periods = await _periods(session_factory, ids["org"])
     assert [p.start_date for p in periods] == [
-        period_defs[0][0], period_defs[1][0], current_start,
+        closed_periods[0][0], closed_periods[1][0], current_start,
     ]
     # No gap: every closed period ends the day before the next one starts.
     for earlier, later in zip(periods, periods[1:]):

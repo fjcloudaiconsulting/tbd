@@ -264,7 +264,7 @@ async def ensure_future_periods(
         # Known hole: this is blind to a SECOND open row whose start is not
         # a candidate start. `get_current_period` warns when it finds
         # several, and `POST /billing-period` can insert an open row at an
-        # arbitrary start (`seed.py:260-261` does).
+        # arbitrary start (`seed.py`'s current-open-period POST does).
         # `uq_billing_period_org_start` backstops only exact-start
         # collisions.
         overlapping = await db.scalar(
