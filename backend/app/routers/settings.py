@@ -897,9 +897,9 @@ async def create_period(
     #   swallowed an open row's start.
     # * The CANDIDATE is checked on its `start_date` alone when it carries no
     #   `end_date` (`BillingPeriodCreate.end_date` is optional and
-    #   `seed.py:260-261` posts exactly that shape). Treating an open
-    #   candidate as unbounded would make seeding an open period after any
-    #   closed period conflict every time.
+    #   `seed.py`'s current-open-period POST posts exactly that shape).
+    #   Treating an open candidate as unbounded would make seeding an
+    #   open period after any closed period conflict every time.
     candidate_end = body.end_date or body.start_date
     overlap = (
         await db.execute(

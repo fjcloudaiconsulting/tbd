@@ -25,7 +25,7 @@ cp .env.example .env    # First time only
 ./pfv rebuild           # Force rebuild (no cache)
 ./pfv reset             # Destroy all data and start fresh
 ./pfv migrate           # Run pending migrations
-./pfv seed              # Seed a repeatable local dataset (see Seeding below)
+./pfv seed              # Seed a local dataset (deterministic; see Seeding below)
 ./pfv prod              # Run the production compose stack locally
 ./pfv logs [service]    # View logs (backend, frontend, nginx, mysql, redis)
 ./pfv status            # Container status
@@ -121,7 +121,36 @@ since the same env var name pairs with `./pfv migrate`'s CLI guard.
 
 ## Seeding
 
-For a repeatable local dataset (accounts, transactions, budgets, recurring templates), run `./pfv seed`. See the Seeding Mock Data section of CONTRIBUTING.md for the full workflow and the `SEED_*` environment variables that let you customize the seeded user.
+For a local dataset (accounts, transactions, budgets, recurring templates), run `./pfv seed`. See the Seeding Mock Data section of CONTRIBUTING.md for the full workflow and the `SEED_*` environment variables.
+
+**Deterministic, not idempotent (TBD-345).** For a given anchor date and RNG
+seed, on a **fresh** database, the dataset is identical:
+
+```bash
+SEED_ANCHOR_DATE=2026-03-17 SEED_RANDOM_SEED=42 ./pfv seed
+```
+
+`SEED_ANCHOR_DATE` defaults to **today** — deliberately, against the ticket's
+original ask for a fixed default. `billing_service.ensure_future_periods`
+anchors its stubs to the open period's `start_date`, so a permanently-past
+anchor would hand every developer an org whose open period is months behind the
+calendar, and the current-month branch of the planner would go structurally
+dead, so the credit-card `pending` state would never be demoed at all. Both
+variables **raise** on a malformed value rather than falling back, so a caller
+can never believe it pinned one and be wrong.
+
+⚠ **Re-running against an already-seeded org APPENDS a second dataset** —
+`POST /api/v1/accounts` has no duplicate-name check, so you get five more
+accounts and another set of transactions. Any changed-anchor re-run also leaves
+a **second open billing period**. Run `./pfv reset` first. Making the seed
+idempotent needs a product ruling and is tracked separately.
+
+The date/RNG geometry lives in pure planners (`resolve_anchor`, `resolve_rng`,
+`plan_billing_periods`, `plan_transactions`) so it can be swept across anchors
+in-process; `backend/tests/test_seed_determinism.py` does exactly that. ⚠ Note
+`backend/seed.py` is mounted individually into the backend container — it sits
+at the backend root, so no directory mount covers it, and without that mount
+both `./pfv seed` and the seed tests read the copy baked into the image.
 
 ## Architecture
 

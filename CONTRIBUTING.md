@@ -136,6 +136,25 @@ SEED_EMAIL=alice@example.com SEED_ORG="Alice LLC" \
 
 The seed script logs in as the user, registering them first if they do not exist, and then creates data through the API. If the user already exists, it adds data to their org.
 
+### Determinism (TBD-345)
+
+The dataset is **deterministic for a given anchor date and RNG seed, on a fresh database**:
+
+```bash
+SEED_ANCHOR_DATE=2026-03-17 SEED_RANDOM_SEED=42 ./pfv seed
+```
+
+`SEED_ANCHOR_DATE` defaults to today; `SEED_RANDOM_SEED` defaults to a fixed constant, so two runs on the same day already agree. Both **raise** on a malformed value rather than silently falling back, because a caller that believes it pinned an anchor while actually running on the wall clock is the exact defect the knobs exist to remove.
+
+⚠ **Deterministic is not idempotent.** Re-running against an already-seeded org **appends** a second dataset: `POST /api/v1/accounts` has no duplicate-name check, so five more accounts and another set of transactions are created. A re-run at a *different* anchor additionally leaves a **second open billing period** — the containment check cannot reject an existing open row that starts earlier than the one being posted, so that POST answers `created` rather than any 409. Run `./pfv reset` first if you want exactly the dataset described here.
+
+Two dataset regimes are worth knowing when reading seeded data. Both are fully deterministic once the anchor is pinned; the split is a documented property, not a defect:
+
+| Anchor day | Closed billing periods | Open period starts |
+|-----------|------------------------|--------------------|
+| 1-24      | 2                      | 24th of the previous month |
+| 25-31     | 3                      | 25th of the anchor's month |
+
 Before each login attempt the script marks that user's email verified with a direct `UPDATE` on `users` (`ensure_verified()` in `backend/seed.py`). `POST /api/v1/auth/login` refuses any account with an unverified email and a dev stack has no mailbox to click the link in, so without that step the script cannot sign in at all. It is the one thing seeding does outside the API, and it is a precondition rather than data — everything the script actually seeds still goes through the HTTP endpoints. A `SEED_USERNAME=alice` run creates a *second* user, which is not covered by the first-user verification bypass on `/register`, so it depends on this step.
 
 `SEED_*` env var reference:
@@ -148,6 +167,8 @@ Before each login attempt the script marks that user's email verified with a dir
 | `SEED_FIRST_NAME` | `Demo` |
 | `SEED_LAST_NAME` | `User` |
 | `SEED_ORG` | `Demo Household` |
+| `SEED_ANCHOR_DATE` | today (ISO `YYYY-MM-DD`; raises if malformed) |
+| `SEED_RANDOM_SEED` | `20260101` (integer; raises if malformed) |
 
 ## CLI reference
 
