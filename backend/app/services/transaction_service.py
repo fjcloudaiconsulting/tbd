@@ -1115,7 +1115,21 @@ async def _settle_batch_counters_and_demote_orphans(
     # skipping it would permit ``accepted_count > row_count``.
     for tid in sorted(deleted_ids):
         r = locked_rows.get(tid)
-        if r is None or r.import_batch_id is None:
+        if r is None:
+            # NOT the same condition as "not in a batch", and deliberately
+            # not folded into one ``continue``. Every current call site
+            # builds its delete set FROM ``locked_rows``, so this is
+            # unreachable today -- but this helper's contract is "a fifth
+            # delete path must route through it", and a fifth path that
+            # passed an id it forgot to lock would reintroduce TBD-311
+            # silently, with the suite green. Say so rather than skipping.
+            await logger.awarning(
+                "transactions.delete_counter_skipped_unlocked_row",
+                org_id=org_id,
+                transaction_id=tid,
+            )
+            continue
+        if r.import_batch_id is None:
             continue
         bid = r.import_batch_id
         row_delta[bid] = row_delta.get(bid, 0) + 1
@@ -1193,6 +1207,13 @@ async def _settle_batch_counters_and_demote_orphans(
     # separate dicts in insertion order, so delete X could take batch 5 then
     # batch 3 while delete Y took 3 then 5. One ascending pass per batch, both
     # columns in one statement, removes that edge entirely.
+    #
+    # ⚠ Since TBD-311 this paragraph describes the COMMON path, not a rare
+    # one. It used to be reached only when a delete produced a demoted
+    # referrer; now any delete of a batch-enrolled row takes the
+    # ``import_batches`` lock. The inversion CLASS is unchanged and still
+    # accepted on the reasoning above, but it is hit far more often, so do
+    # not read "rare race" as still bounding the exposure.
     for batch_id in sorted(set(accepted_delta) | set(pending_delta) | set(row_delta)):
         values: dict = {}
         for table_col, n in (
@@ -1217,6 +1238,16 @@ async def _settle_batch_counters_and_demote_orphans(
     # ``deleted_ids`` is still physically present and the belt-and-braces
     # recount would read it as counter drift, push ``pending_count`` back up,
     # and strand the batch OPEN with no surviving row able to move it.
+    #
+    # ⚠ ``pending_delta`` and NOT ``row_delta``: a batch touched only by a
+    # ``row_count`` change cannot have reached zero pending on this call.
+    # A batch emptied entirely by deletes therefore stays OPEN at
+    # ``(0, 0, 0)`` -- pre-existing behaviour this change neither creates
+    # nor worsens (``main`` leaves the same batch OPEN claiming its
+    # original row count), and there is no batch-listing surface where it
+    # shows. Widening to ``row_delta`` would also close a fresh,
+    # never-reconciled batch the first time any of its rows is deleted,
+    # which is a product decision rather than a bug fix. Filed separately.
     for batch_id in sorted(pending_delta):
         batch = await db.scalar(
             select(ImportBatch)

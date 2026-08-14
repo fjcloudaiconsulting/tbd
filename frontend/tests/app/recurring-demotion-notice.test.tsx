@@ -99,6 +99,22 @@ async function stopAndConfirm() {
   fireEvent.click(confirm);
 }
 
+/** Click the row's Delete button, then confirm inside the modal.
+ *
+ * ⚠ This helper exists because `doDelete` had NO fence in the first draft
+ * while its own comment claimed "Fenced separately". Reverting `doDelete`
+ * to the pre-TBD-312 message left the entire frontend suite green. Both
+ * routes reach the demotion by different paths, and this repo's most
+ * repeated defect is fixing one sibling and not the other.
+ */
+async function deleteAndConfirm() {
+  const del = await screen.findByLabelText("Delete: Rent");
+  fireEvent.click(del);
+  const dialog = await screen.findByRole("dialog");
+  const confirm = within(dialog).getByRole("button", { name: "Delete" });
+  fireEvent.click(confirm);
+}
+
 describe("recurring page — irreversible demotion is reported (TBD-312)", () => {
   it("fence: stopping a template announces a demoted duplicate", async () => {
     mockApi({ stopped: true, pending_removed: 1, demoted_ids: [4242] });
@@ -123,10 +139,15 @@ describe("recurring page — irreversible demotion is reported (TBD-312)", () =>
     render(<RecurringPage />);
     await stopAndConfirm();
 
-    // Kills the recurring page growing its own phrasing for the same
-    // server-side act. Both surfaces read the sentence from lib/demotion.ts,
-    // so this asserts the SHARED string reaches the rendered page rather
-    // than asserting a literal that could drift from the module.
+    // What this ACTUALLY kills: the shared module being reworded while the
+    // page keeps a private copy, which the hardcoded-literal assertion in
+    // the test above would not see.
+    //
+    // What it does NOT kill, stated so the next reader does not stop
+    // looking: a page that detaches from `@/lib/demotion` and inlines a
+    // byte-identical sentence still passes. The anchor against that is the
+    // literal above plus the transactions page's own literal in
+    // transactions-matched-row-actions.test.tsx.
     const shared = demotionNotice([4242]);
     expect(shared).not.toBe("");
     await waitFor(() => {
@@ -165,6 +186,38 @@ describe("recurring page — irreversible demotion is reported (TBD-312)", () =>
       ).toBeInTheDocument();
     });
     expect(screen.queryByText(/undefined/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/marked rejected/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("recurring page — the DELETE sibling reports it too (TBD-312)", () => {
+  it("fence: deleting a template announces a demoted duplicate", async () => {
+    mockApi({ deleted: true, pending_removed: 1, demoted_ids: [4242] });
+    render(<RecurringPage />);
+    await deleteAndConfirm();
+
+    // Kills reverting `doDelete` to the pre-TBD-312 message. Proven: with
+    // only the Stop fences present, that revert left 2885 tests green.
+    await waitFor(() => {
+      expect(
+        screen.getByText(/matched duplicate was marked rejected/i),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/1 pending transaction\(s\) removed/i),
+    ).toBeInTheDocument();
+  });
+
+  it("control: a delete that demoted nothing says nothing about demotions", async () => {
+    mockApi({ deleted: true, pending_removed: 3, demoted_ids: [] });
+    render(<RecurringPage />);
+    await deleteAndConfirm();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/3 pending transaction\(s\) removed/i),
+      ).toBeInTheDocument();
+    });
     expect(screen.queryByText(/marked rejected/i)).not.toBeInTheDocument();
   });
 });

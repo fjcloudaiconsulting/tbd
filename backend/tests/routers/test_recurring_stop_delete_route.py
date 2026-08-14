@@ -168,10 +168,16 @@ async def _make_template_with_pending_and_match(factory, seed: dict) -> dict:
         db.add(pending)
         await db.flush()
 
-        # The matched duplicate: points AT the pending row one-way, and its
-        # own contribution has already been reverted, which is exactly why
-        # deleting its target must demote it rather than silently release it
-        # back into balances and reports.
+        # The matched duplicate: points AT the pending row one-way.
+        #
+        # ⚠ Built with a raw ``db.add``, so unlike the service-level suite
+        # this row's contribution was never APPLIED and therefore never
+        # reverted. That is fine HERE and only here: these tests assert the
+        # wire shape, never a balance. Do not copy this fixture into a test
+        # that asserts the ledger -- there the missing revert would leave the
+        # premise absent and every assertion untethered, which is why
+        # ``test_matched_row_actions.py`` builds its pairs through
+        # ``reconcile_request`` instead.
         dup = Transaction(
             org_id=seed["org_id"], account_id=seed["acct_id"],
             category_id=seed["cat_id"], description="Rent (bank)",
