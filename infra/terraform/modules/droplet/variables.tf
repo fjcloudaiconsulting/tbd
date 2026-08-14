@@ -34,6 +34,34 @@ variable "enable_backups" {
   default     = true
 }
 
+# TBD-399: DO takes backups on ITS OWN schedule -- weekly by default -- so
+# enabling `backups` creates nothing immediately and may not yield a restorable
+# image for days. `backup_policy` makes the timing knowable instead of assumed,
+# which is what a migration window needs. Null keeps the provider default.
+variable "backup_policy" {
+  description = <<-EOT
+    Optional DO backup schedule. plan: daily|weekly. Null omits the block entirely
+    (provider default: weekly).
+
+    WARNING: when a policy IS supplied, `hour` is NOT optional in practice even
+    though it is declared optional. A null attribute inside an SDKv2 nested block
+    decodes to the type's ZERO VALUE, not absent, and the provider then sends
+    hour=0 on the wire. So leaving it unset silently pins backups to 00:00 UTC.
+    Set it deliberately. DO accepts 0, 4, 8, 12, 16, 20.
+  EOT
+  type = object({
+    plan    = string
+    weekday = optional(string)
+    hour    = optional(number)
+  })
+  default = null
+
+  validation {
+    condition     = var.backup_policy == null || contains(["daily", "weekly"], try(var.backup_policy.plan, ""))
+    error_message = "backup_policy.plan must be \"daily\" or \"weekly\"."
+  }
+}
+
 variable "enable_monitoring" {
   description = "Enable DO droplet metrics agent (free)."
   type        = bool

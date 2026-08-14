@@ -52,12 +52,15 @@ capped below 4.0.0 in `requirements.yml` for the same reason.
 
 ### 0. Gate: a restorable backup must EXIST
 
-`enable_backups = false` in `infra/terraform/main.tf` overrides the module's own
-`default = true`. **TBD-399** flips it.
+`enable_backups` is **now `true`** in `infra/terraform/main.tf` with
+`backup_policy { plan = "daily", hour = 0 }` (TBD-399), deliberately temporary
+for this migration and reverted to `false` afterwards.
 
 ⚠ **"TBD-399 applied" is not the gate. "A backup exists" is.** Enabling backups
-creates nothing; DO takes them on its own schedule, so the first restorable
-image may be days after the apply. Gate on output, not on the apply:
+creates nothing by itself. TBD-399 sets `plan = "daily", hour = 0`, so the wait
+is bounded to **the next 00:00 UTC** rather than DO's default weekly schedule.
+That still means applying at 01:00 UTC waits ~23 hours, so time the apply
+against the window. Gate on output, not on the apply:
 
 ```bash
 doctl compute droplet backups <droplet-id>     # must return at least one row
