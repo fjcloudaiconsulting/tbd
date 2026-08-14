@@ -132,14 +132,53 @@ function valuesEqual(
  * date-less source (it drops it server-side), so "default to supports"
  * is the safe bias.
  */
-export function sourceSupportsDateFilter(
+/**
+ * Does `dataset` publish a filter on `field`? (TBD-381)
+ *
+ * The general form of `sourceSupportsDateFilter` / `sourceSupportsStatusFilter`,
+ * which were two hand-written specializations of this one question — and a
+ * third was about to be written for `FilterEditor`. Both now delegate here.
+ *
+ * ⚠ THE EMPTY-CATALOG BIAS IS LOAD-BEARING. Unknown means ALLOW, exactly as the
+ * two originals did. Invert it and a cold SWR cache silently strips every
+ * filter from every widget, rendering unfiltered totals — a far worse failure
+ * than the one this fixes, and a silent one.
+ */
+export function sourceSupportsField(
   sources: SourceCatalogEntry[] | undefined,
   dataset: Dataset,
+  field: string,
 ): boolean {
   if (!sources || sources.length === 0) return true;
   const entry = sources.find((s) => s.key === dataset);
   if (!entry) return true;
-  return entry.filters.some((f) => f.field === "date");
+  return entry.filters.some((f) => f.field === field);
+}
+
+/**
+ * Which `WidgetFilters` keys may be offered/emitted for `dataset`.
+ *
+ * Drives both the editor's control visibility and `resolveFilters`' emission,
+ * so a control cannot be offered that the wire would then drop or 422 on.
+ */
+export function publishedFilterKeys(
+  sources: SourceCatalogEntry[] | undefined,
+  dataset: Dataset,
+): Set<keyof WidgetFilters> {
+  const out = new Set<keyof WidgetFilters>();
+  for (const [key, field] of Object.entries(FILTER_KEY_TO_SOURCE_FIELD)) {
+    if (sourceSupportsField(sources, dataset, field)) {
+      out.add(key as keyof WidgetFilters);
+    }
+  }
+  return out;
+}
+
+export function sourceSupportsDateFilter(
+  sources: SourceCatalogEntry[] | undefined,
+  dataset: Dataset,
+): boolean {
+  return sourceSupportsField(sources, dataset, "date");
 }
 
 /**

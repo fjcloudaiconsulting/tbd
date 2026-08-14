@@ -74,7 +74,6 @@ function emptyKPI(id: string): Widget {
   const config: KPIConfig = {
     dataset: "transactions",
     measure: { agg: "sum", field: "amount" },
-    format: "currency",
     compare_prior_period: false,
   };
   return {
@@ -93,7 +92,6 @@ function emptyBar(id: string): Widget {
     dimensions: ["category"],
     sort: { by: "value", dir: "desc" },
     limit: 10,
-    format: "currency",
   };
   return {
     id,
@@ -114,7 +112,6 @@ function emptyMultiSeries(
     dimensions: [type === "table" ? ("category" as const) : ("month" as const)],
     sort: { by: "value" as const, dir: "desc" as const },
     limit: type === "table" ? 50 : 100,
-    format: "currency" as const,
   };
   const baseGrid = type === "table" ? { x: 0, y: 0, w: 12, h: 6 } : { x: 0, y: 0, w: 6, h: 4 };
   return {
@@ -145,7 +142,6 @@ function emptyPie(id: string): Widget {
       dimensions: ["category"],
       sort: { by: "value", dir: "desc" },
       limit: 50,
-      format: "currency",
       top_n: 8,
     },
   };
@@ -163,7 +159,6 @@ function emptySparkline(id: string): Widget {
       dimensions: ["month"],
       sort: { by: "dimension", dir: "asc" },
       limit: 50,
-      format: "number",
     },
   };
 }

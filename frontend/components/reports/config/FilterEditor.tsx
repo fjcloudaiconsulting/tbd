@@ -20,6 +20,8 @@ import CategoryPicker from "@/components/reports/filters/CategoryPicker";
 import DatePresetChips from "@/components/reports/filters/DatePresetChips";
 import StatusFilter from "@/components/reports/filters/StatusFilter";
 import TagFilter from "@/components/reports/filters/TagFilter";
+import { publishedFilterKeys } from "@/lib/reports/resolve";
+import { useReportSources } from "@/lib/reports/use-report-sources";
 import { asTxnTypeArray, isFieldOverridden } from "@/lib/reports/resolve";
 import type {
   CanvasFilters,
@@ -64,6 +66,30 @@ export default function FilterEditor({
   hideTxnType?: boolean;
   onChange: (next: WidgetFilters) => void;
 }) {
+  // TBD-381: SUBTRACTIVE. A control is offered iff the selected source
+  // publishes its field. Before this the set was fixed and transactions-shaped,
+  // narrowed only by `allowTransfer`, so it lied in BOTH directions:
+  //
+  //   * offered `category_id` on net worth -> silently dropped by the
+  //     shared-canvas contract, the "does nothing" the owner reported;
+  //   * offered `txn_type` / `tag_name` on net worth / accounts /
+  //     credit_utilization -> those are NOT shared-canvas fields, so
+  //     `validate_against_catalog` RAISES and the widget renders
+  //     "Couldn't load" with no explanation;
+  //   * HID `amount` on recurring, which publishes it.
+  //
+  // ⚠ Unknown catalog means ALLOW (see `sourceSupportsField`) so a cold cache
+  // cannot silently strip every control.
+  const { sources } = useReportSources();
+  const published = publishedFilterKeys(sources, dataset);
+  const has = (key: keyof WidgetFilters) => published.has(key);
+
+  // ⚠ Still dataset-gated, NOT catalog-gated, and deliberately so:
+  //   * Transfer is an enum VALUE of txn_type. The catalog publishes fields,
+  //     ops and control kinds -- never value domains -- so it cannot express
+  //     "recurring has income/expense but not transfer".
+  //   * include_non_reportable is a query MODE, not a filter field.
+  // Both are known catalog gaps, filed rather than papered over.
   const allowTransfer = dataset === "transactions";
   return (
     <div className="flex flex-col gap-4 rounded-md border border-border bg-bg p-3">
@@ -71,59 +97,65 @@ export default function FilterEditor({
         Filters (this widget)
       </div>
 
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center text-xs text-text-secondary">
-          Date range
-          {isFieldOverridden("date_range", filters, canvasFilters) && (
-            <OverridePill />
-          )}
+      {has("date_range") && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center text-xs text-text-secondary">
+            Date range
+            {isFieldOverridden("date_range", filters, canvasFilters) && (
+              <OverridePill />
+            )}
+          </div>
+          <DatePresetChips
+            value={filters.date_range}
+            ariaPrefix="Widget"
+            onChange={(next) =>
+              onChange({
+                ...filters,
+                date_range: next || undefined,
+              })
+            }
+          />
         </div>
-        <DatePresetChips
-          value={filters.date_range}
-          ariaPrefix="Widget"
-          onChange={(next) =>
-            onChange({
-              ...filters,
-              date_range: next || undefined,
-            })
-          }
-        />
-      </div>
+      )}
 
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center text-xs text-text-secondary">
-          Accounts
+      {has("account_ids") && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center text-xs text-text-secondary">
+            Accounts
+          </div>
+          <AccountFilter
+            value={filters.account_ids ?? []}
+            ariaPrefix="Widget account"
+            label=""
+            onChange={(account_ids) =>
+              onChange({
+                ...filters,
+                account_ids: account_ids.length > 0 ? account_ids : undefined,
+              })
+            }
+          />
         </div>
-        <AccountFilter
-          value={filters.account_ids ?? []}
-          ariaPrefix="Widget account"
-          label=""
-          onChange={(account_ids) =>
-            onChange({
-              ...filters,
-              account_ids: account_ids.length > 0 ? account_ids : undefined,
-            })
-          }
-        />
-      </div>
+      )}
 
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center text-xs text-text-secondary">
-          Categories
+      {has("category_ids") && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center text-xs text-text-secondary">
+            Categories
+          </div>
+          <CategoryPicker
+            value={filters.category_ids ?? []}
+            label=""
+            onChange={(category_ids) =>
+              onChange({
+                ...filters,
+                category_ids: category_ids.length > 0 ? category_ids : undefined,
+              })
+            }
+          />
         </div>
-        <CategoryPicker
-          value={filters.category_ids ?? []}
-          label=""
-          onChange={(category_ids) =>
-            onChange({
-              ...filters,
-              category_ids: category_ids.length > 0 ? category_ids : undefined,
-            })
-          }
-        />
-      </div>
+      )}
 
-      {!hideTxnType && (
+      {has("txn_type") && !hideTxnType && (
         <div className="flex flex-col gap-1">
           <TxnTypeCheckboxRow
             value={filters.txn_type}
@@ -139,7 +171,7 @@ export default function FilterEditor({
           Status now cascades from the canvas, so it carries the same
           "Overrides canvas" pill as the date range when the widget value
           differs from the inherited canvas status. */}
-      {allowTransfer && (
+      {has("status") && (
         <div className="flex flex-col gap-1">
           <div className="flex items-center text-xs text-text-secondary">
             Status
@@ -156,10 +188,13 @@ export default function FilterEditor({
         </div>
       )}
 
-      {/* Amount is a transactions-only filter (the only source
-          publishing an ``amount`` field), so the control is offered only
-          for transactions widgets — mirroring the Status gate. */}
-      {allowTransfer && (
+      {/* ⚠ Amount is NOT transactions-only, contrary to what this comment
+          used to say. `recurring` publishes an ``amount`` filter too (kind
+          "number" rather than "amount" -- the same concept under two kinds,
+          which is why `kind` is not a sound dispatch key). The old
+          `dataset === "transactions"` gate HID a control recurring supports.
+          Catalog-gated now, so both get it and neither is guessed at. */}
+      {has("amount_range") && (
         <div className="flex flex-col gap-1">
           <AmountRangeFilter
             value={filters.amount_range}

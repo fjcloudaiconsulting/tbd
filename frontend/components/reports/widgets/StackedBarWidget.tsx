@@ -18,6 +18,7 @@ import dynamic from "next/dynamic";
 
 import { useSeriesQueries } from "@/lib/reports/useReportQuery";
 import { mergeSeriesRows, seriesLabel } from "@/lib/reports/series";
+import { useWidgetFormat } from "@/lib/reports/widget-format";
 import type {
   CanvasFilters,
   StackedBarWidget as StackedBarWidgetType,
@@ -53,14 +54,25 @@ export default function StackedBarWidget({
   currency,
 }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
-  const { series, isLoading, error } = useSeriesQueries(
+  const { series, isLoading: dataLoading, error } = useSeriesQueries(
     widget,
     canvasFilters,
     measures,
   );
 
   const dimensionKey = widget.config.dimensions[0] ?? "dimension";
-  const format = widget.config.format ?? "number";
+  // TBD-381: one derived format for the shared Y axis. Series with
+  // differing formats fall to "number" rather than stamping series[0]'s
+  // unit on a scale the others do not share.
+  const { format: derivedFormat, isLoading: catalogLoading } = useWidgetFormat(
+    widget.config.dataset,
+    widget.config.measures.map((m) => m.measure),
+  );
+  // Hold the skeleton until the catalog resolves: rendering an
+  // unformatted value that then flips is worse than one more frame of
+  // skeleton, and /query is in flight over the same window anyway.
+  const isLoading = dataLoading || catalogLoading;
+  const format = derivedFormat ?? "number";
   const seriesKeys = widget.config.measures.map((_, i) => `s${i}`);
   const rows = mergeSeriesRows(series, dimensionKey, seriesKeys);
   const labels = widget.config.measures.map((m, i) =>

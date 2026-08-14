@@ -13,6 +13,13 @@ import type { Account, Category } from "@/lib/types";
 vi.mock("@/lib/api", () => ({
   apiFetch: vi.fn(),
 }));
+// TBD-381: control visibility is catalog-driven. Without a catalog these
+// tests hit the deliberate "unknown source -> allow everything" bias and see
+// every control, so they must supply one to assert real published sets.
+vi.mock("@/lib/reports/use-report-sources", async () => {
+  const { ALL_ENTRIES } = await import("../../../utils/mock-report-sources");
+  return { useReportSources: () => ({ sources: ALL_ENTRIES, isLoading: false }) };
+});
 vi.mock("@/components/auth/AuthProvider", () => ({
   useAuth: () => ({ user: { id: 1 }, loading: false }),
 }));
@@ -182,7 +189,9 @@ describe("FilterEditor", () => {
     expect(screen.getByLabelText("Widget status Pending")).toBeInTheDocument();
   });
 
-  it("hides the Status control for a non-transactions (recurring) widget", async () => {
+  it("hides the Status control for a recurring widget, which does not publish it", async () => {
+    // Unchanged outcome, different REASON: gated on the catalog now, not on
+    // `dataset === "transactions"`.
     render({}, {}, () => {}, "recurring");
     await screen.findByTestId("category-picker");
     expect(screen.queryByTestId("status-filter")).not.toBeInTheDocument();
@@ -196,10 +205,14 @@ describe("FilterEditor", () => {
     expect(screen.getByLabelText("Widget amount max")).toBeInTheDocument();
   });
 
-  it("hides the Amount range control for a non-transactions (recurring) widget", async () => {
+  it("OFFERS the Amount range control for recurring, which publishes it (TBD-381)", async () => {
+    // ⚠ This expectation was INVERTED, and it encoded the bug. `recurring`
+    // publishes an `amount` filter (recurring.py), but the editor gated the
+    // control on `dataset === "transactions"` and hid it -- the inverse of the
+    // owner-reported symptom: a control withheld for a source that supports it.
     render({}, {}, () => {}, "recurring");
     await screen.findByTestId("category-picker");
-    expect(screen.queryByTestId("amount-range-filter")).not.toBeInTheDocument();
+    expect(screen.getByTestId("amount-range-filter")).toBeInTheDocument();
   });
 
   it("offers the 'Include transfers & adjustments' toggle for a transactions widget", async () => {

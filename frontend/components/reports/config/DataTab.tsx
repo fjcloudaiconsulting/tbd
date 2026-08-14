@@ -87,7 +87,7 @@ export default function DataTab({
     setPrimaryDimension,
     setSecondaryDimension,
     setDataset,
-  } = buildWidgetMutations(widget, onUpdate, selected);
+  } = buildWidgetMutations(widget, onUpdate);
 
   // Dimension options. When a catalog entry is known, narrow to its
   // dimensions. Otherwise (catalog still loading) fall back to the static

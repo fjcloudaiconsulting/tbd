@@ -16,7 +16,7 @@ Design rules (kept deliberately narrow but not over-tight):
   case). Both empty-dict forms pass straight through; we only validate
   the *populated* shape.
 - **Closed enums where the frontend is closed** — ``type``, ``dataset``,
-  ``agg``, ``field``, ``dimension``, ``format``, ``sort``. Anything
+  ``agg``, ``field``, ``dimension``, ``sort``. Anything
   outside these unions is a wire-contract violation → 422.
 - **Single-measure vs multi-series split.** ``kpi`` / ``bar`` / ``pie`` /
   ``sparkline`` carry ``config.measure`` (a single ``Measure``); ``line``
@@ -72,11 +72,6 @@ class WidgetType(str, enum.Enum):
     TABLE = "table"
     SANKEY = "sankey"
 
-
-class WidgetFormat(str, enum.Enum):
-    CURRENCY = "currency"
-    NUMBER = "number"
-    PERCENT = "percent"
 
 
 class SortBy(str, enum.Enum):
@@ -150,7 +145,6 @@ class _SingleMeasureConfig(BaseModel):
     filters: Optional[dict[str, Any]] = None
     sort: Optional[WidgetSort] = None
     limit: Optional[int] = Field(default=None, ge=1)
-    format: Optional[WidgetFormat] = None
 
 
 class _MultiSeriesConfig(BaseModel):
@@ -164,7 +158,6 @@ class _MultiSeriesConfig(BaseModel):
     filters: Optional[dict[str, Any]] = None
     sort: Optional[WidgetSort] = None
     limit: Optional[int] = Field(default=None, ge=1)
-    format: Optional[WidgetFormat] = None
 
 
 class _SankeyConfig(BaseModel):

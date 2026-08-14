@@ -13,11 +13,16 @@
  * "Sum of amount" and "Count of id" side by side. Documented in the
  * task report.
  *
- * Currency formatting follows ``config.format`` for every numeric
- * column; if a single column needs a different format, future PRs
- * can extend ``SeriesConfig`` with a per-column ``format`` override.
+ * TBD-381: each numeric column formats INDEPENDENTLY, derived from its own
+ * measure's catalog row. The earlier note here proposed extending
+ * ``SeriesConfig`` with a per-column ``format`` override -- that turned out to
+ * be unnecessary. Once format derives at render there is nothing to persist,
+ * so no schema change was needed (``SeriesConfig`` is ``extra="forbid"``,
+ * which would have made the override a 422).
  */
 import { useMemo, useState } from "react";
+
+import { formatForMeasure, useWidgetFormat } from "@/lib/reports/widget-format";
 
 import { useSeriesQueries } from "@/lib/reports/useReportQuery";
 import {
@@ -114,7 +119,16 @@ export default function TableWidget({
     setPage(0);
   }
 
-  const format = widget.config.format ?? "number";
+  // Per-column, index-aligned with `seriesKeys` / `config.measures`. A table
+  // showing "Total spent" (currency) next to "Transactions" (count) formats
+  // each honestly instead of stamping one unit across both.
+  const { entry } = useWidgetFormat(
+    widget.config.dataset,
+    widget.config.measures.map((m) => m.measure),
+  );
+  const columnFormats = widget.config.measures.map(
+    (m) => formatForMeasure(entry, m.measure) ?? "number",
+  );
 
   // Total row: sum each measure column across the FULL result set
   // (every row the widget holds in memory), not just the visible page.
@@ -248,9 +262,9 @@ export default function TableWidget({
                       {String(row[d] ?? "—")}
                     </td>
                   ))}
-                  {seriesKeys.map((key) => (
+                  {seriesKeys.map((key, ci) => (
                     <td key={key} className="py-1.5 pr-3 text-right font-mono">
-                      {formatCell(row[key], format, currency)}
+                      {formatCell(row[key], columnFormats[ci], currency)}
                     </td>
                   ))}
                 </tr>
@@ -270,7 +284,7 @@ export default function TableWidget({
                   <td key={key} className="py-1.5 pr-3 text-right font-mono">
                     {columnTotals[i] === null
                       ? "—"
-                      : formatCell(columnTotals[i], format, currency)}
+                      : formatCell(columnTotals[i], columnFormats[i], currency)}
                   </td>
                 ))}
               </tr>

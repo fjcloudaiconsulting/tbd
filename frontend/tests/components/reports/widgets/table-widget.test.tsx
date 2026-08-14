@@ -3,7 +3,15 @@ import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render
 import TableWidget from "@/components/reports/widgets/TableWidget";
 import type { TableWidget as TableWidgetType } from "@/lib/reports/types";
 import { runQuery } from "@/lib/reports/api";
+import { mockReportSources } from "../../../utils/mock-report-sources";
 import { downloadCsv } from "@/lib/reports/csv";
+
+vi.mock("@/lib/api", () => ({
+  // TBD-381: format now derives at render from the source catalog, which
+  // fetches via apiFetch. Without this the catalog is empty, format is
+  // undefined, and the widget holds its loading skeleton forever.
+  apiFetch: (path: string) => mockReportSources()(path),
+}));
 
 vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
@@ -26,7 +34,6 @@ function makeWidget(overrides: Partial<TableWidgetType["config"]> = {}): TableWi
       dimensions: ["category"],
       sort: { by: "value", dir: "desc" },
       limit: 100,
-      format: "currency",
       ...overrides,
     },
   };
@@ -182,7 +189,7 @@ describe("TableWidget", () => {
       meta: { row_count: 75, truncated: false, query_ms: 1 },
     });
 
-    renderWithSWR(<TableWidget widget={makeWidget({ format: "number" })} />);
+    renderWithSWR(<TableWidget widget={makeWidget({})} />);
 
     const totalRow = await screen.findByTestId("table-widget-total-row");
     expect(totalRow).toHaveTextContent("Total");
@@ -201,7 +208,6 @@ describe("TableWidget", () => {
     renderWithSWR(
       <TableWidget
         widget={makeWidget({
-          format: "number",
           measures: [
             { measure: { agg: "sum", field: "amount" }, label: "Total" },
             { measure: { agg: "avg", field: "amount" }, label: "Avg" },
@@ -216,7 +222,8 @@ describe("TableWidget", () => {
     );
     // cells: [dimension "Total", sum column "80", avg column placeholder]
     expect(cells[0]).toBe("Total");
-    expect(cells[1]).toBe("80");
+    // Currency column (sum of amount), per its catalog format.
+    expect(cells[1]).toBe("80.00");
     // avg column must NOT be a number; it's the placeholder.
     expect(cells[2]).toBe("—");
   });
@@ -242,7 +249,6 @@ describe("TableWidget", () => {
     renderWithSWR(
       <TableWidget
         widget={makeWidget({
-          format: "number",
           measures: [
             { measure: { agg: "sum", field: "amount" }, label: "Amount" },
             { measure: { agg: "count", field: "id" }, label: "Count" },
@@ -256,8 +262,13 @@ describe("TableWidget", () => {
       (td) => td.textContent ?? "",
     );
     expect(cells[0]).toBe("Total");
-    expect(cells[1]).toBe("300"); // 200 + 100
-    expect(cells[2]).toBe("10"); // 4 + 6 (count is additive)
+    // TBD-381: each column formats from ITS OWN measure's catalog row.
+    // sum(amount) is `currency`; count(id) is `number`. Before this, one
+    // widget-level format applied to both, so a count of 10 transactions
+    // rendered with currency decimals -- the test asserted that, despite
+    // being named "independently".
+    expect(cells[1]).toBe("300.00"); // 200 + 100, currency column
+    expect(cells[2]).toBe("10"); // 4 + 6, count column stays a plain integer
   });
 
   it("fires one query per column when multiple measures are configured", async () => {

@@ -317,7 +317,6 @@ describe("ReportEditorPage", () => {
             config: {
               dataset: "transactions",
               measure: { agg: "sum", field: "amount" },
-              format: "currency",
             },
           },
         ],
@@ -364,7 +363,6 @@ describe("ReportEditorPage", () => {
             config: {
               dataset: "transactions",
               measure: { agg: "sum", field: "amount" },
-              format: "currency",
               filters: {
                 date_range: { start: "2026-02-01", end: "2026-02-15" },
               },
@@ -868,7 +866,6 @@ describe("ReportEditorPage", () => {
               dimensions: ["category"],
               sort: { by: "value", dir: "desc" },
               limit: 10,
-              format: "currency",
             },
           },
         ],
