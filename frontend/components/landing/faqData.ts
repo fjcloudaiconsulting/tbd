@@ -1,8 +1,19 @@
+import {
+  BACKUP_ROTATION_WINDOW_DAYS,
+  DATA_DELETION_WINDOW_DAYS,
+  PRIVACY_CONTACT_EMAIL,
+} from "@/lib/dataPolicy";
+
 export type FaqEntry = { readonly q: string; readonly a: string };
 
 // FAQ entries shared by the in-page FAQ render (Faq.tsx) and the
 // JSON-LD FAQPage block (app/page.tsx) so the structured data can't
-// drift from what users see. Two payment-related entries and three
+// drift from what users see. Because these answers are published as
+// machine-readable FAQPage structured data, an answer that overstates
+// the product is a false claim to search engines and AI assistants, not
+// only to a reader. Keep them true to what ships today (TBD-343).
+//
+// Two payment-related entries and three
 // tier-name parentheticals were removed in PR #378 (2026-05-29) along
 // with the rest of the customer-facing payment surface; restore via
 // `git revert` of #378 when the payment platform is wired.
@@ -13,7 +24,7 @@ export const faqEntries: ReadonlyArray<FaqEntry> = [
   },
   {
     q: "Can I export my data?",
-    a: "Yes. Every list view exports to CSV, and a one-click full org export is in the works. Your data is always yours.",
+    a: `Any report widget exports to CSV today, and a full org export is on the roadmap. Until it lands, email ${PRIVACY_CONTACT_EMAIL} and we send you a machine-readable copy of everything we hold. Your data is always yours.`,
   },
   {
     q: "Do you use my data to train AI?",
@@ -21,7 +32,7 @@ export const faqEntries: ReadonlyArray<FaqEntry> = [
   },
   {
     q: "Can I delete my account?",
-    a: "Yes. Account deletion is one click in Settings. It hard-deletes your data within seven days, and you receive a confirmation email when the deletion completes.",
+    a: `Yes. Email ${PRIVACY_CONTACT_EMAIL} and we delete your account and all of its data within ${DATA_DELETION_WINDOW_DAYS} days, with backups rotated within ${BACKUP_ROTATION_WINDOW_DAYS} days. Settings also has a reset that clears your financial data if you want a clean slate without closing the account.`,
   },
   {
     q: "Do I need to connect my bank?",

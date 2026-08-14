@@ -5,6 +5,7 @@ import MarketingShell from "@/components/landing/MarketingShell";
 import ChevronGlyph from "@/components/landing/ChevronGlyph";
 import SecondCta from "@/components/landing/SecondCta";
 import { readNonce } from "@/lib/nonce";
+import { DATA_DELETION_WINDOW_DAYS, PRIVACY_CONTACT_EMAIL } from "@/lib/dataPolicy";
 import { apexCanonical, apexUrl, pageSocialMeta, siteName } from "@/lib/site";
 
 const description =
@@ -34,7 +35,7 @@ const shippedFeatures = [
   "CSV and OFX import with a preview before anything is saved",
   "Reports by category",
   "Shared household organization with roles",
-  "EU-hosted, export anytime, never used to train AI",
+  "EU-hosted, CSV export from any report, never used to train AI",
   "Optional AI: bring your own key or run it locally with Ollama, with spend caps and an audit trail",
 ];
 
@@ -61,6 +62,10 @@ const breadcrumbLd = {
 // Visible on-page FAQ (Google requires FAQPage Q&A to be visible). The same
 // array drives both the rendered <details> list below and the FAQPage JSON-LD,
 // so the structured data can't drift from what visitors read.
+//
+// These answers are published as machine-readable structured data, so an
+// answer that overstates the product is a false claim to search engines and
+// AI assistants, not only to a reader. Keep them true to what ships (TBD-343).
 const featuresFaq: ReadonlyArray<{ readonly q: string; readonly a: string }> = [
   {
     q: "Does The Better Decision forecast my cash flow?",
@@ -72,7 +77,7 @@ const featuresFaq: ReadonlyArray<{ readonly q: string; readonly a: string }> = [
   },
   {
     q: "Is my financial data private?",
-    a: "Yes. Your data is hosted in the EU and processed under EU law, you can export it anytime, and it is never sold and never used to train AI.",
+    a: `Yes. Your data is hosted in the EU and processed under EU law, you can export any report to CSV or ask us for a full machine-readable copy at ${PRIVACY_CONTACT_EMAIL}, and it is never sold and never used to train AI.`,
   },
   {
     q: "Is The Better Decision free?",
@@ -127,8 +132,8 @@ const groups = [
     title: "Yours",
     points: [
       "EU-hosted and processed under EU law.",
-      "Export your data anytime. It is never sold and never used to train AI.",
-      "Delete your account, and your data, in one click.",
+      "Export any report to CSV, and ask us for a full machine-readable copy whenever you want. It is never sold and never used to train AI.",
+      `Ask us to delete your account and all of its data, and it is gone within ${DATA_DELETION_WINDOW_DAYS} days.`,
     ],
   },
   {

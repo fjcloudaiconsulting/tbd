@@ -5,6 +5,11 @@ import BackLink from "@/components/ui/BackLink";
 import CookiePreferencesButton from "@/components/landing/CookiePreferencesButton";
 
 import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
+import {
+  BACKUP_ROTATION_WINDOW_DAYS,
+  DATA_DELETION_WINDOW_DAYS,
+  PRIVACY_CONTACT_EMAIL,
+} from "@/lib/dataPolicy";
 
 const description =
   "How The Better Decision collects, uses, and protects your personal data.";
@@ -163,8 +168,9 @@ export default function PrivacyPolicyPage() {
                 account.
               </li>
               <li>
-                If you close your account, we delete your data within 30
-                days. Backups are rotated within 90 days.
+                If you close your account, we delete your data within{" "}
+                {DATA_DELETION_WINDOW_DAYS} days. Backups are rotated within{" "}
+                {BACKUP_ROTATION_WINDOW_DAYS} days.
               </li>
               <li>
                 Request logs are kept for up to 30 days.
@@ -214,7 +220,7 @@ export default function PrivacyPolicyPage() {
                 href="mailto:privacy@thebetterdecision.com"
                 className="underline hover:text-accent"
               >
-                privacy@thebetterdecision.com
+                {PRIVACY_CONTACT_EMAIL}
               </a>
               . We respond within 30 days.
             </p>
@@ -277,7 +283,7 @@ export default function PrivacyPolicyPage() {
                 href="mailto:privacy@thebetterdecision.com"
                 className="underline hover:text-accent"
               >
-                privacy@thebetterdecision.com
+                {PRIVACY_CONTACT_EMAIL}
               </a>
               . General contact:{" "}
               <a
