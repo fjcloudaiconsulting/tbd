@@ -393,7 +393,9 @@ If smoke tests fail or production behaves badly:
   add a second region or move to a multi-tenant network.
 - Backups: nightly logical dump in `/var/backups/mysql/` (7-day retention)
   is the only durability floor; DO droplet snapshots are off at the IaC
-  level (`enable_backups = false` in `infra/terraform/main.tf`). To restore:
+  level (`enable_backups = false` in `infra/terraform/main.tf`) — except
+  temporarily during the TBD-360 MySQL 8.4 migration, when TBD-399 turns them
+  on with a daily policy and reverts afterwards. To restore:
   copy a `.sql.gz` off the droplet, `gunzip -c <file> | mysql pfv2`. If
   snapshots are ever re-enabled, restoring from the DO console and
   re-pointing the spec at the new droplet is the alternate recovery path.
