@@ -939,7 +939,7 @@ async def close_batch_if_complete(
     ``reconciliation_state`` without going through ``_reconcile_one``.
 
     ``exclude_transaction_ids`` exists for the delete paths (TBD-294).
-    ``transaction_service._demote_match_orphans`` runs BEFORE the caller's
+    ``transaction_service._settle_batch_counters_and_demote_orphans`` runs BEFORE the caller's
     ``db.delete()`` -- it has to, since the point is to move the
     discriminator out of the column the FK is about to null -- so rows in the
     delete set are still physically present when this recount runs. Without

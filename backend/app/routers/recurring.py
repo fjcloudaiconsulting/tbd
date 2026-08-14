@@ -4,7 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
-from app.schemas.recurring import RecurringCreate, RecurringResponse, RecurringUpdate
+from app.schemas.recurring import (
+    DeleteRecurringResponse,
+    RecurringCreate,
+    RecurringResponse,
+    RecurringUpdate,
+    StopRecurringResponse,
+)
 from app.services import recurring_service as svc
 
 router = APIRouter(prefix="/api/v1/recurring", tags=["recurring"])
@@ -40,24 +46,28 @@ async def update_recurring(
     return svc.to_response(r)
 
 
-@router.post("/{recurring_id}/stop", response_model=dict)
+@router.post("/{recurring_id}/stop", response_model=StopRecurringResponse)
 async def stop_recurring(
     recurring_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    removed = await svc.stop_recurring(db, current_user.org_id, recurring_id)
-    return {"stopped": True, "pending_removed": removed}
+    outcome = await svc.stop_recurring(db, current_user.org_id, recurring_id)
+    return StopRecurringResponse(
+        pending_removed=outcome.removed, demoted_ids=outcome.demoted_ids
+    )
 
 
-@router.delete("/{recurring_id}", response_model=dict)
+@router.delete("/{recurring_id}", response_model=DeleteRecurringResponse)
 async def delete_recurring(
     recurring_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    removed = await svc.delete_recurring(db, current_user.org_id, recurring_id)
-    return {"deleted": True, "pending_removed": removed}
+    outcome = await svc.delete_recurring(db, current_user.org_id, recurring_id)
+    return DeleteRecurringResponse(
+        pending_removed=outcome.removed, demoted_ids=outcome.demoted_ids
+    )
 
 
 @router.post("/generate", response_model=dict)

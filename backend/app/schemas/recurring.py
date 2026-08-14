@@ -66,3 +66,33 @@ class RecurringResponse(BaseModel):
     occurrences_elapsed: int = 0
 
     model_config = {"from_attributes": True}
+
+
+class StopRecurringResponse(BaseModel):
+    """Result of stopping a template.
+
+    TBD-312: ``demoted_ids`` lists rows that pointed AT a pending row this
+    stop deleted, and were marked REJECTED so the FK's ``ON DELETE SET NULL``
+    could not turn them back into ordinary, balance-contributing
+    transactions. REJECTED is terminal and unreachable through
+    ``TransactionUpdate``, so the demotion is irreversible through the API --
+    it is reported, never silent, exactly as on
+    ``DeleteTransactionResponse``.
+
+    This route previously declared ``response_model=dict``, which validates
+    nothing and documents nothing in OpenAPI. Keep ``stopped`` and
+    ``pending_removed`` named and typed as they ship: the frontend reads
+    ``pending_removed``.
+    """
+
+    stopped: bool = True
+    pending_removed: int = 0
+    demoted_ids: list[int] = Field(default_factory=list)
+
+
+class DeleteRecurringResponse(BaseModel):
+    """Result of deleting a template. See StopRecurringResponse (TBD-312)."""
+
+    deleted: bool = True
+    pending_removed: int = 0
+    demoted_ids: list[int] = Field(default_factory=list)
