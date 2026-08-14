@@ -258,6 +258,19 @@ describe("TableWidget", () => {
     );
 
     const totalRow = await screen.findByTestId("table-widget-total-row");
+
+    // ⚠ DATA ROW too. Every format assertion in this file used to sit on the
+    // total row, so `formatCell(row[key], columnFormats[ci], currency)` -- the
+    // path users actually read -- had NO coverage. A mutant using
+    // `columnFormats[0]` for every column renders the count column as "4.00"
+    // on every visible row while the total row stays correct, and the whole
+    // suite stays green.
+    const dataCells = Array.from(
+      document.querySelectorAll("tbody tr:first-child td"),
+    ).map((td) => td.textContent ?? "");
+    expect(dataCells[1]).toBe("200.00"); // currency column
+    expect(dataCells[2]).toBe("4"); // count column, plain integer
+
     const cells = Array.from(totalRow.querySelectorAll("td")).map(
       (td) => td.textContent ?? "",
     );

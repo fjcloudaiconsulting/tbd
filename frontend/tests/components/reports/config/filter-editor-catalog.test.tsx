@@ -69,6 +69,10 @@ describe("FilterEditor is driven by the source catalog", () => {
     expect(screen.queryByText("Status")).not.toBeInTheDocument();
     // Amount is not published by networth either.
     expect(screen.queryByLabelText("Widget amount min")).not.toBeInTheDocument();
+    // ⚠ The half this fence originally MISSED while its own header claimed it
+    // covered: `tag_name` is published only by transactions and is not a
+    // shared-canvas field, so a tag picked here 422s the widget.
+    expect(screen.queryByTestId("tag-filter")).not.toBeInTheDocument();
   });
 
   it("credit utilization offers no date control, because the source is point-in-time", async () => {
@@ -76,6 +80,7 @@ describe("FilterEditor is driven by the source catalog", () => {
     await waitFor(() => expect(screen.getByText("Accounts")).toBeInTheDocument());
     // credit_utilization publishes NO date filter and says so in its source.
     expect(screen.queryByText("Date range")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tag-filter")).not.toBeInTheDocument();
   });
 
   it("recurring GAINS the amount control it always supported", async () => {
@@ -106,7 +111,6 @@ describe("the empty-catalog bias is load-bearing", () => {
     // "publish nothing", a cold SWR cache would strip every control from every
     // widget and silently render unfiltered totals -- a worse failure than the
     // one this ticket fixes, and one no user would report as a filter bug.
-    vi.resetModules();
     renderWithSWR(
       <FilterEditor
         filters={{}}
@@ -115,7 +119,13 @@ describe("the empty-catalog bias is load-bearing", () => {
         onChange={() => {}}
       />,
     );
-    // Before the catalog resolves, controls are permitted rather than stripped.
-    expect(screen.getByText("Date range")).toBeInTheDocument();
+    // ⚠ Assert controls the LOADED catalog would DENY. The earlier version
+    // asserted "Date range" on networth -- which networth publishes -- so it
+    // passed identically whether the allow-all branch ran or not. These two
+    // are absent from networth's published set, so their presence PROVES the
+    // pre-load branch ran. Kills a half-inversion like
+    //   `if (!sources.length) return field === "date";`
+    expect(screen.getByText("Transaction type")).toBeInTheDocument();
+    expect(screen.getByLabelText("Widget amount min")).toBeInTheDocument();
   });
 });

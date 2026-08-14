@@ -31,13 +31,22 @@
  * ## Why reading the catalog here is safe
  *
  * `/reports/sources` sits behind the SAME `require_feature(Feature.REPORTS)`
- * gate as `/reports/query` (`routers/reports.py`). A caller who cannot fetch
- * the catalog cannot fetch the data either, so catalog-unavailable and
- * data-unavailable coincide exactly -- including on the dashboard tile path,
+ * gate as `/reports/query` (`routers/reports.py`), so AUTHORIZATION-driven
+ * unavailability coincides -- including on the dashboard tile path,
  * where `renderDashboardWidget` delegates to `renderReportWidget` and mounts
  * these same components. No new failure mode. `useReportSources` is a
  * constant-key SWR hook, so this deduplicates against the call already inside
  * `useReportQuery` / `useSeriesQueries` rather than adding a request.
+ *
+ * ⚠ That argument covers the feature gate and auth, NOT transport. They are
+ * separate SWR keys with independent lifecycles, so `/query` succeeding while
+ * `/sources` 500s or times out is ordinary. `useReportSources` swallows SWR's
+ * error and returns `{sources: [], isLoading: false}`, so in that state the
+ * skeleton releases and every widget renders `"number"` -- a currency value
+ * loses its symbol and a percent loses its `%`. That is a real regression
+ * against the old persisted format, which was at least right for currency
+ * widgets. Surfacing the error so callers can degrade visibly is filed as a
+ * follow-up rather than smuggled in here.
  */
 import type { Measure, SourceCatalogEntry } from "@/lib/reports/types";
 import { useReportSources } from "@/lib/reports/use-report-sources";
@@ -46,6 +55,19 @@ import { useReportSources } from "@/lib/reports/use-report-sources";
 export type WidgetFormat = "currency" | "number" | "percent";
 
 const DEFAULT_FORMAT: WidgetFormat = "number";
+
+/**
+ * The catalog's `format` is a bare string on the wire. The deleted
+ * mutation-time resolver validated it; this one must too, or a source
+ * publishing a fourth value some day (`"duration"`, `"count"`) flows straight
+ * into `formatMeasureValue`, matches no branch, and silently falls through to
+ * `toLocaleString()`.
+ */
+function asFormat(value: string | undefined): WidgetFormat | undefined {
+  return value === "currency" || value === "number" || value === "percent"
+    ? value
+    : undefined;
+}
 
 /**
  * Resolve one measure's format against a catalog entry.
@@ -71,14 +93,14 @@ export function formatForMeasure(
   const exact = entry.measures.find(
     (m) => m.field === measure.field && m.agg === measure.agg,
   );
-  if (exact) return exact.format as WidgetFormat;
+  if (exact) return asFormat(exact.format) ?? DEFAULT_FORMAT;
 
   // 2. a cardinality is never currency, whatever the underlying field is
   if (measure.agg === "count" || measure.agg === "distinct") return "number";
 
   // 3. field-only backstop
   const byField = entry.measures.find((m) => m.field === measure.field);
-  if (byField) return byField.format as WidgetFormat;
+  if (byField) return asFormat(byField.format) ?? DEFAULT_FORMAT;
 
   // 4. unknown measure (legacy config, or a source that dropped a measure)
   return DEFAULT_FORMAT;

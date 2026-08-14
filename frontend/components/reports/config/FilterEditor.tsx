@@ -239,17 +239,25 @@ export default function FilterEditor({
         </label>
       )}
 
-      <TagFilter
-        value={filters.tag_names ?? []}
-        match={(filters.tag_match ?? "all") as TagMatch}
-        onChange={({ tag_names, tag_match }) =>
-          onChange({
-            ...filters,
-            tag_names: tag_names.length > 0 ? tag_names : undefined,
-            tag_match: tag_names.length > 0 ? tag_match : undefined,
-          })
-        }
-      />
+      {/* ⚠ Gated like every other control. This one was MISSED in the first
+          pass, and the miss shipped half the reported bug: `tag_name` is
+          published only by transactions and is NOT a shared-canvas field, so
+          picking a tag on a net-worth widget makes validate_against_catalog
+          RAISE -- the widget renders "Couldn't load" with no explanation, and
+          the only escape is to reopen the popover and unpick it. */}
+      {has("tag_names") && (
+        <TagFilter
+          value={filters.tag_names ?? []}
+          match={(filters.tag_match ?? "all") as TagMatch}
+          onChange={({ tag_names, tag_match }) =>
+            onChange({
+              ...filters,
+              tag_names: tag_names.length > 0 ? tag_names : undefined,
+              tag_match: tag_names.length > 0 ? tag_match : undefined,
+            })
+          }
+        />
+      )}
     </div>
   );
 }

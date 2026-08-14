@@ -82,8 +82,11 @@ describe("format derives from the source catalog at render", () => {
       />,
     );
     const el = await screen.findByTestId("kpi-widget-value");
-    expect(el.textContent).toContain("45");
-    expect(el.textContent).not.toContain("€");
+    // ⚠ EXACT. `toContain("45")` + no "€" is also satisfied by a `"number"`
+    // collapse -- so the earlier version of this test proved only the second
+    // half of its own title. This kills:
+    //   if (exact) return exact.format === "currency" ? "currency" : "number";
+    expect(el.textContent).toBe("45.0%");
   });
 
   it("IGNORES a stale persisted format on the same widget", async () => {
@@ -102,7 +105,7 @@ describe("format derives from the source catalog at render", () => {
       />,
     );
     const el = await screen.findByTestId("kpi-widget-value");
-    expect(el.textContent).not.toContain("€");
+    expect(el.textContent).toBe("45.0%");
   });
 
   it("still renders a currency measure as currency", async () => {

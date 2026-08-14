@@ -57,7 +57,7 @@ export default function TableWidget({
   currency,
 }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
-  const { series, isLoading, error } = useSeriesQueries(
+  const { series, isLoading: dataLoading, error } = useSeriesQueries(
     widget,
     canvasFilters,
     measures,
@@ -122,10 +122,14 @@ export default function TableWidget({
   // Per-column, index-aligned with `seriesKeys` / `config.measures`. A table
   // showing "Total spent" (currency) next to "Transactions" (count) formats
   // each honestly instead of stamping one unit across both.
-  const { entry } = useWidgetFormat(
+  const { entry, isLoading: catalogLoading } = useWidgetFormat(
     widget.config.dataset,
     widget.config.measures.map((m) => m.measure),
   );
+  // Hold the skeleton until the catalog resolves, like the other seven
+  // wrappers. Without this a currency table renders 1,234.56 and then FLIPS to
+  // €1,234.56 when /sources lands -- the exact flicker the others refuse.
+  const isLoading = dataLoading || catalogLoading;
   const columnFormats = widget.config.measures.map(
     (m) => formatForMeasure(entry, m.measure) ?? "number",
   );
