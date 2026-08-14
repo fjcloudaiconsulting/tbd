@@ -229,7 +229,6 @@ export interface KPIConfig {
   dataset: Dataset;
   measure: Measure;
   filters?: WidgetFilters;
-  format?: "currency" | "number" | "percent";
   /**
    * When true, the KPI widget renders a delta versus the immediately-
    * prior period of the same length as the resolved date range. v1
@@ -246,7 +245,6 @@ export interface BarConfig {
   filters?: WidgetFilters;
   sort?: SortSpec;
   limit?: number;
-  format?: "currency" | "number" | "percent";
 }
 
 export interface BaseWidget<T extends WidgetType, C> {
@@ -278,7 +276,6 @@ export interface SeriesWidgetConfig {
   filters?: WidgetFilters;
   sort?: SortSpec;
   limit?: number;
-  format?: "currency" | "number" | "percent";
 }
 
 export interface LineConfig extends SeriesWidgetConfig {
@@ -298,7 +295,6 @@ export interface PieConfig {
   filters?: WidgetFilters;
   sort?: SortSpec;
   limit?: number;
-  format?: "currency" | "number" | "percent";
   /** Slices beyond ``top_n`` are folded into an "Other" bucket. */
   top_n?: number;
 }
@@ -310,7 +306,6 @@ export interface SparklineConfig {
   filters?: WidgetFilters;
   sort?: SortSpec;
   limit?: number;
-  format?: "currency" | "number" | "percent";
 }
 
 export interface StackedBarConfig extends SeriesWidgetConfig {
@@ -328,7 +323,6 @@ export interface TableConfig {
   filters?: WidgetFilters;
   sort?: SortSpec;
   limit?: number;
-  format?: "currency" | "number" | "percent";
 }
 
 export type KPIWidget = BaseWidget<"kpi", KPIConfig>;

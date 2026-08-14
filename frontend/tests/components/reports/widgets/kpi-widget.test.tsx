@@ -3,6 +3,14 @@ import { renderWithSWR, screen, waitFor } from "../../../utils/render-with-swr";
 import KPIWidget from "@/components/reports/widgets/KPIWidget";
 import type { KPIWidget as KPIWidgetType } from "@/lib/reports/types";
 import { runQuery } from "@/lib/reports/api";
+import { mockReportSources } from "../../../utils/mock-report-sources";
+
+vi.mock("@/lib/api", () => ({
+  // TBD-381: format now derives at render from the source catalog, which
+  // fetches via apiFetch. Without this the catalog is empty, format is
+  // undefined, and the widget holds its loading skeleton forever.
+  apiFetch: (path: string) => mockReportSources()(path),
+}));
 
 vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
@@ -19,7 +27,6 @@ function makeWidget(overrides: Partial<KPIWidgetType> = {}): KPIWidgetType {
     config: {
       dataset: "transactions",
       measure: { agg: "sum", field: "amount" },
-      format: "currency",
     },
     ...overrides,
   };
@@ -66,7 +73,6 @@ describe("KPIWidget", () => {
       config: {
         dataset: "transactions",
         measure: { agg: "sum", field: "amount" },
-        format: "currency",
         compare_prior_period: true,
       },
     });

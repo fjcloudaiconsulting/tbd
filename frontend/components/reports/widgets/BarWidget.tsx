@@ -30,6 +30,7 @@ import {
   measureFieldLabel,
   pivotBySecondaryDimension,
 } from "@/lib/reports/series";
+import { useWidgetFormat } from "@/lib/reports/widget-format";
 import type {
   BarWidget as BarWidgetType,
   CanvasFilters,
@@ -66,7 +67,7 @@ export default function BarWidget({
   editMode,
   currency,
 }: Props) {
-  const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
+  const { data, error, isLoading: dataLoading } = useReportQuery(widget, canvasFilters);
 
   const primaryKey = widget.config.dimensions[0] ?? "dimension";
   const secondaryKey = widget.config.dimensions[1];
@@ -102,7 +103,14 @@ export default function BarWidget({
 
   const rows = sliced ? stackedRows : simpleRows;
   const hasRows = rows.length > 0;
-  const format = widget.config.format ?? "number";
+  // TBD-381: derived from the source catalog at render, never read from
+  // config. `format` is no longer persisted -- see lib/reports/widget-format.ts.
+  const { format: derivedFormat, isLoading: catalogLoading } = useWidgetFormat(widget.config.dataset, [widget.config.measure]);
+  // Hold the skeleton until the catalog resolves: rendering an
+  // unformatted value that then flips is worse than one more frame of
+  // skeleton, and /query is in flight over the same window anyway.
+  const isLoading = dataLoading || catalogLoading;
+  const format = derivedFormat ?? "number";
 
   // CSV export. Single-series: [dimension, measure]. Sliced (break-down
   // by a secondary dimension): [primary dimension, ...one column per

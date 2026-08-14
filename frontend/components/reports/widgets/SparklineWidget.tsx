@@ -18,6 +18,7 @@ import dynamic from "next/dynamic";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
 import { dimensionHeader, formatMeasureValue } from "@/lib/reports/series";
+import { useWidgetFormat } from "@/lib/reports/widget-format";
 import type {
   CanvasFilters,
   SparklineWidget as SparklineWidgetType,
@@ -52,7 +53,7 @@ export default function SparklineWidget({
   editMode,
   currency,
 }: Props) {
-  const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
+  const { data, error, isLoading: dataLoading } = useReportQuery(widget, canvasFilters);
 
   const dimensionKey = widget.config.dimensions[0] ?? "dimension";
   const rows = (data?.rows ?? []).map((r) => ({
@@ -60,7 +61,14 @@ export default function SparklineWidget({
     value: typeof r.value === "number" ? r.value : Number(r.value ?? 0),
   }));
   const lastValue = rows.length > 0 ? rows[rows.length - 1].value : null;
-  const format = widget.config.format ?? "number";
+  // TBD-381: derived from the source catalog at render, never read from
+  // config. `format` is no longer persisted -- see lib/reports/widget-format.ts.
+  const { format: derivedFormat, isLoading: catalogLoading } = useWidgetFormat(widget.config.dataset, [widget.config.measure]);
+  // Hold the skeleton until the catalog resolves: rendering an
+  // unformatted value that then flips is worse than one more frame of
+  // skeleton, and /query is in flight over the same window anyway.
+  const isLoading = dataLoading || catalogLoading;
+  const format = derivedFormat ?? "number";
 
   // CSV export mirrors the underlying trend series: [dimension, measure].
   const measureLabel = widget.config.measure.field;
