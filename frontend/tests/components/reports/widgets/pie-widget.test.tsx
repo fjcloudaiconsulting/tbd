@@ -3,6 +3,14 @@ import { renderWithSWR, screen, waitFor } from "../../../utils/render-with-swr";
 import PieWidget from "@/components/reports/widgets/PieWidget";
 import type { PieWidget as PieWidgetType } from "@/lib/reports/types";
 import { runQuery } from "@/lib/reports/api";
+import { mockReportSources } from "../../../utils/mock-report-sources";
+
+vi.mock("@/lib/api", () => ({
+  // TBD-381: format now derives at render from the source catalog, which
+  // fetches via apiFetch. Without this the catalog is empty, format is
+  // undefined, and the widget holds its loading skeleton forever.
+  apiFetch: (path: string) => mockReportSources()(path),
+}));
 
 vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
@@ -20,7 +28,6 @@ function makeWidget(overrides: Partial<PieWidgetType["config"]> = {}): PieWidget
       dimensions: ["category"],
       sort: { by: "value", dir: "desc" },
       limit: 50,
-      format: "currency",
       top_n: 8,
       ...overrides,
     },

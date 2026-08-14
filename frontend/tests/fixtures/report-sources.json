@@ -1,0 +1,503 @@
+[
+  {
+    "key": "transactions",
+    "label": "Transactions",
+    "dimensions": [
+      {
+        "key": "category",
+        "label": "Category",
+        "kind": "category"
+      },
+      {
+        "key": "category_master",
+        "label": "Category group",
+        "kind": "category"
+      },
+      {
+        "key": "account",
+        "label": "Account",
+        "kind": "account"
+      },
+      {
+        "key": "tag",
+        "label": "Tag",
+        "kind": "tag"
+      },
+      {
+        "key": "txn_type",
+        "label": "Type",
+        "kind": "type"
+      },
+      {
+        "key": "status",
+        "label": "Status",
+        "kind": "status"
+      },
+      {
+        "key": "month",
+        "label": "Month",
+        "kind": "time"
+      },
+      {
+        "key": "week",
+        "label": "Week",
+        "kind": "time"
+      },
+      {
+        "key": "day",
+        "label": "Day",
+        "kind": "time"
+      }
+    ],
+    "measures": [
+      {
+        "key": "sum_amount",
+        "label": "Total amount",
+        "agg": "sum",
+        "field": "amount",
+        "format": "currency"
+      },
+      {
+        "key": "avg_amount",
+        "label": "Average amount",
+        "agg": "avg",
+        "field": "amount",
+        "format": "currency"
+      },
+      {
+        "key": "count_rows",
+        "label": "Transaction count",
+        "agg": "count",
+        "field": "id",
+        "format": "number"
+      }
+    ],
+    "filters": [
+      {
+        "field": "date",
+        "label": "Date",
+        "ops": [
+          "between",
+          "gte",
+          "lte"
+        ],
+        "kind": "time"
+      },
+      {
+        "field": "amount",
+        "label": "Amount",
+        "ops": [
+          "between",
+          "gte",
+          "lte",
+          "eq"
+        ],
+        "kind": "amount"
+      },
+      {
+        "field": "category_id",
+        "label": "Category",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "category"
+      },
+      {
+        "field": "account_id",
+        "label": "Account",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "account"
+      },
+      {
+        "field": "txn_type",
+        "label": "Type",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "type"
+      },
+      {
+        "field": "status",
+        "label": "Status",
+        "ops": [
+          "eq"
+        ],
+        "kind": "status"
+      },
+      {
+        "field": "tag_name",
+        "label": "Tag",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "tag"
+      }
+    ]
+  },
+  {
+    "key": "accounts",
+    "label": "Accounts",
+    "dimensions": [
+      {
+        "key": "account",
+        "label": "Account",
+        "kind": "account"
+      },
+      {
+        "key": "account_type",
+        "label": "Account type",
+        "kind": "account_type"
+      },
+      {
+        "key": "currency",
+        "label": "Currency",
+        "kind": "currency"
+      },
+      {
+        "key": "account_active",
+        "label": "Status",
+        "kind": "boolean"
+      }
+    ],
+    "measures": [
+      {
+        "key": "sum_balance",
+        "label": "Total balance",
+        "agg": "sum",
+        "field": "balance",
+        "format": "currency"
+      },
+      {
+        "key": "avg_balance",
+        "label": "Average balance",
+        "agg": "avg",
+        "field": "balance",
+        "format": "currency"
+      },
+      {
+        "key": "count_accounts",
+        "label": "Account count",
+        "agg": "count",
+        "field": "id",
+        "format": "number"
+      }
+    ],
+    "filters": [
+      {
+        "field": "account_id",
+        "label": "Account",
+        "ops": [
+          "in"
+        ],
+        "kind": "account"
+      },
+      {
+        "field": "account_type",
+        "label": "Account type",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "account_type"
+      },
+      {
+        "field": "currency",
+        "label": "Currency",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "currency"
+      },
+      {
+        "field": "account_active",
+        "label": "Status",
+        "ops": [
+          "eq"
+        ],
+        "kind": "boolean"
+      },
+      {
+        "field": "balance",
+        "label": "Balance",
+        "ops": [
+          "between",
+          "gte",
+          "lte"
+        ],
+        "kind": "number"
+      }
+    ]
+  },
+  {
+    "key": "recurring",
+    "label": "Recurring",
+    "dimensions": [
+      {
+        "key": "category",
+        "label": "Category",
+        "kind": "category"
+      },
+      {
+        "key": "account",
+        "label": "Account",
+        "kind": "account"
+      },
+      {
+        "key": "currency",
+        "label": "Currency",
+        "kind": "currency"
+      },
+      {
+        "key": "txn_type",
+        "label": "Type",
+        "kind": "type"
+      },
+      {
+        "key": "frequency",
+        "label": "Frequency",
+        "kind": "type"
+      },
+      {
+        "key": "recurring_active",
+        "label": "Status",
+        "kind": "boolean"
+      }
+    ],
+    "measures": [
+      {
+        "key": "sum_amount",
+        "label": "Total amount",
+        "agg": "sum",
+        "field": "amount",
+        "format": "currency"
+      },
+      {
+        "key": "avg_amount",
+        "label": "Average amount",
+        "agg": "avg",
+        "field": "amount",
+        "format": "currency"
+      },
+      {
+        "key": "count_recurring",
+        "label": "Recurring count",
+        "agg": "count",
+        "field": "id",
+        "format": "number"
+      }
+    ],
+    "filters": [
+      {
+        "field": "account_id",
+        "label": "Account",
+        "ops": [
+          "in"
+        ],
+        "kind": "account"
+      },
+      {
+        "field": "category_id",
+        "label": "Category",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "category"
+      },
+      {
+        "field": "currency",
+        "label": "Currency",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "currency"
+      },
+      {
+        "field": "txn_type",
+        "label": "Type",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "type"
+      },
+      {
+        "field": "frequency",
+        "label": "Frequency",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "type"
+      },
+      {
+        "field": "recurring_active",
+        "label": "Status",
+        "ops": [
+          "eq"
+        ],
+        "kind": "boolean"
+      },
+      {
+        "field": "amount",
+        "label": "Amount",
+        "ops": [
+          "between",
+          "gte",
+          "lte"
+        ],
+        "kind": "number"
+      }
+    ]
+  },
+  {
+    "key": "networth",
+    "label": "Net worth",
+    "dimensions": [
+      {
+        "key": "month",
+        "label": "Month",
+        "kind": "time"
+      },
+      {
+        "key": "week",
+        "label": "Week",
+        "kind": "time"
+      },
+      {
+        "key": "day",
+        "label": "Day",
+        "kind": "time"
+      },
+      {
+        "key": "currency",
+        "label": "Currency",
+        "kind": "currency"
+      }
+    ],
+    "measures": [
+      {
+        "key": "net_worth",
+        "label": "Net worth",
+        "agg": "sum",
+        "field": "net_worth",
+        "format": "currency"
+      }
+    ],
+    "filters": [
+      {
+        "field": "currency",
+        "label": "Currency",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "currency"
+      },
+      {
+        "field": "account_id",
+        "label": "Account",
+        "ops": [
+          "in"
+        ],
+        "kind": "account"
+      },
+      {
+        "field": "date",
+        "label": "Date",
+        "ops": [
+          "between",
+          "gte",
+          "lte"
+        ],
+        "kind": "time"
+      }
+    ]
+  },
+  {
+    "key": "credit_utilization",
+    "label": "Credit utilization",
+    "dimensions": [
+      {
+        "key": "account",
+        "label": "Card",
+        "kind": "account"
+      },
+      {
+        "key": "currency",
+        "label": "Currency",
+        "kind": "currency"
+      },
+      {
+        "key": "account_active",
+        "label": "Status",
+        "kind": "boolean"
+      }
+    ],
+    "measures": [
+      {
+        "key": "utilization_pct",
+        "label": "Utilization",
+        "agg": "avg",
+        "field": "utilization_pct",
+        "format": "percent"
+      },
+      {
+        "key": "outstanding",
+        "label": "Outstanding",
+        "agg": "sum",
+        "field": "outstanding",
+        "format": "currency"
+      },
+      {
+        "key": "credit_limit",
+        "label": "Credit limit",
+        "agg": "sum",
+        "field": "credit_limit",
+        "format": "currency"
+      },
+      {
+        "key": "count_cards",
+        "label": "Card count",
+        "agg": "count",
+        "field": "id",
+        "format": "number"
+      }
+    ],
+    "filters": [
+      {
+        "field": "account_id",
+        "label": "Card",
+        "ops": [
+          "in"
+        ],
+        "kind": "account"
+      },
+      {
+        "field": "currency",
+        "label": "Currency",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "currency"
+      },
+      {
+        "field": "account_active",
+        "label": "Status",
+        "ops": [
+          "eq"
+        ],
+        "kind": "boolean"
+      }
+    ]
+  }
+]

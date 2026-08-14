@@ -35,7 +35,6 @@ export function blankDraftSeed(now: Date = new Date()): DraftSeed {
             filters: { txn_type: ["expense"] },
             sort: { by: "value", dir: "desc" },
             limit: 10,
-            format: "currency",
           },
         },
       ],

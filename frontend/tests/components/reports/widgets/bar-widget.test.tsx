@@ -3,7 +3,15 @@ import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render
 import BarWidget from "@/components/reports/widgets/BarWidget";
 import type { BarWidget as BarWidgetType } from "@/lib/reports/types";
 import { runQuery } from "@/lib/reports/api";
+import { mockReportSources } from "../../../utils/mock-report-sources";
 import { downloadCsv } from "@/lib/reports/csv";
+
+vi.mock("@/lib/api", () => ({
+  // TBD-381: format now derives at render from the source catalog, which
+  // fetches via apiFetch. Without this the catalog is empty, format is
+  // undefined, and the widget holds its loading skeleton forever.
+  apiFetch: (path: string) => mockReportSources()(path),
+}));
 
 vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
@@ -35,7 +43,6 @@ function makeWidget(
       dimensions: ["category"],
       sort: { by: "value", dir: "desc" },
       limit: 10,
-      format: "currency",
       ...overrides,
     },
   };

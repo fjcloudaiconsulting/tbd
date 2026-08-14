@@ -1,163 +1,139 @@
 /**
- * F-8 (TBD-170) — `config.format` must derive from the source catalog.
+ * F-8 — a widget's number format must come from the source catalog.
  *
- * The dormant bug: `SourceMeasure.format` is published by the backend and
- * typed by the frontend, and NOTHING read it. Format was hardcoded
- * `"currency"` at widget creation and never re-derived. It had never fired
- * because every measure shipped to date is currency-shaped — `utilization_pct`
- * is the first `percent` measure in the codebase, so without this a 45%
- * utilization bar renders "€45.00".
+ * Originally TBD-170, as a MUTATION-time fence: `resolveFormat` wrote
+ * `config.format` at each write site and this file asserted the write.
+ * TBD-381 moved derivation to RENDER and deleted `config.format` entirely, so
+ * this file moved with it — it now asserts what the user SEES.
  *
- * ⚠ These tests use the measure shape the REAL UI produces. The Field select
- * emits `{...measure, field}` — carrying the PREVIOUS agg over unchanged
- * (SingleMeasureEditor). A test that hand-builds `{agg: "sum", field:
- * "outstanding"}` passes against the buggy `.find(m => m.field === … && m.agg
- * === …)` implementation, because that AST matches the catalog — while the
- * shipped UI can never produce it. That would be a green fence over a live bug.
+ * The dormant bug it exists for is unchanged: `SourceMeasure.format` is
+ * published by the backend and typed by the frontend, and nothing read it.
+ * Format was hardcoded `"currency"` at creation and never re-derived. It never
+ * fired because every measure shipped to date was currency-shaped —
+ * `utilization_pct` is the first `percent` measure, so without this a 45%
+ * utilization renders "€45.00".
+ *
+ * ⚠ Why the render-time version is STRONGER than the mutation-time one it
+ * replaces. That one could only observe widgets that went through a mutation.
+ * It was structurally blind to the 14 `format` writes in
+ * `backend/app/reports/templates.py`, the 5 in `widgetKit.tsx` and the 5 in the
+ * duplicated factory set in `app/reports/[id]/page.tsx` — none of which pass
+ * through a mutation. Two were already wrong in shipped code (a `sum(amount)`
+ * sparkline seeded `"number"`; the `cdd-pie-share` template omitted format
+ * entirely). Asserting rendered output covers all of them at once.
+ *
+ * ⚠ The measure shapes below are ones the REAL UI produces. A test that
+ * hand-builds a measure the shipped editor cannot emit is a green fence over a
+ * live bug — that already happened once on TBD-170.
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { buildWidgetMutations } from "@/components/reports/config/useWidgetMutations";
-import type { BarConfig, SourceCatalogEntry, Widget } from "@/lib/reports/types";
+import { renderWithSWR, screen } from "../../../utils/render-with-swr";
+import {
+  CREDIT_UTILIZATION_ENTRY,
+  TRANSACTIONS_ENTRY,
+  mockReportSources,
+} from "../../../utils/mock-report-sources";
 
-const CREDIT_UTILIZATION: SourceCatalogEntry = {
-  key: "credit_utilization",
-  label: "Credit utilization",
-  dimensions: [
-    { key: "account", label: "Card", kind: "account" },
-    { key: "currency", label: "Currency", kind: "currency" },
-    { key: "account_active", label: "Status", kind: "boolean" },
-  ],
-  measures: [
-    { key: "utilization_pct", label: "Utilization", agg: "avg", field: "utilization_pct", format: "percent" },
-    { key: "outstanding", label: "Outstanding", agg: "sum", field: "outstanding", format: "currency" },
-    { key: "credit_limit", label: "Credit limit", agg: "sum", field: "credit_limit", format: "currency" },
-    { key: "count_cards", label: "Card count", agg: "count", field: "id", format: "number" },
-  ],
-  filters: [
-    { field: "account_id", label: "Card", ops: ["in"], kind: "account" },
-    { field: "currency", label: "Currency", ops: ["eq", "in"], kind: "currency" },
-    { field: "account_active", label: "Status", ops: ["eq"], kind: "boolean" },
-  ],
-} as unknown as SourceCatalogEntry;
+import KPIWidget from "@/components/reports/widgets/KPIWidget";
+import { runQuery } from "@/lib/reports/api";
+import type { KPIWidget as KPIWidgetType } from "@/lib/reports/types";
 
-const ACCOUNTS: SourceCatalogEntry = {
-  key: "accounts",
-  label: "Accounts",
-  dimensions: [{ key: "account", label: "Account", kind: "account" }],
-  measures: [
-    { key: "sum_balance", label: "Total balance", agg: "sum", field: "balance", format: "currency" },
-    { key: "count_accounts", label: "Account count", agg: "count", field: "id", format: "number" },
-  ],
-  filters: [{ field: "account_id", label: "Account", ops: ["in"], kind: "account" }],
-} as unknown as SourceCatalogEntry;
+vi.mock("@/lib/api", () => ({
+  apiFetch: (path: string) =>
+    mockReportSources([TRANSACTIONS_ENTRY, CREDIT_UTILIZATION_ENTRY])(path),
+}));
 
-function barWidget(config: Partial<BarConfig>): Widget {
+vi.mock("@/lib/reports/api", () => ({ runQuery: vi.fn() }));
+
+function kpi(
+  dataset: string,
+  measure: { agg: string; field: string },
+  extra: Record<string, unknown> = {},
+): KPIWidgetType {
   return {
-    id: "w1",
-    type: "bar",
-    title: "W",
-    config: {
-      dataset: "accounts",
-      dimensions: ["account"],
-      measure: { agg: "sum", field: "balance" },
-      filters: {},
-      format: "currency",
-      ...config,
-    },
-  } as unknown as Widget;
+    id: "w_fmt",
+    type: "kpi",
+    title: "Metric",
+    grid: { x: 0, y: 0, w: 3, h: 2 },
+    // `extra` exists to plant a STALE `format` key, proving it is inert.
+    config: { dataset, measure, ...extra },
+  } as unknown as KPIWidgetType;
 }
 
-function captureUpdate() {
-  const calls: Widget[] = [];
-  return { calls, onUpdate: vi.fn((w: Widget) => calls.push(w)) };
-}
+describe("format derives from the source catalog at render", () => {
+  const runQueryMock = vi.mocked(runQuery);
 
-describe("config.format derives from the source catalog", () => {
-  it("switching to credit_utilization makes the widget render percent, not currency", () => {
-    const { calls, onUpdate } = captureUpdate();
-    const { setDataset } = buildWidgetMutations(
-      barWidget({}),
-      onUpdate,
-      CREDIT_UTILIZATION,
-    );
-    setDataset("credit_utilization", CREDIT_UTILIZATION);
-
-    const cfg = calls.at(-1)!.config as BarConfig;
-    expect(cfg.measure.field).toBe("utilization_pct");
-    // Kills the original bug: hardcoded "currency" would render 45% as €45.00.
-    expect(cfg.format).toBe("percent");
-  });
-
-  it("a RETAINED count(id) measure does not inherit percent", () => {
-    // `id` is published by EVERY source, so a count(id) measure survives the
-    // dataset switch. An unconditional `entry.measures[0].format` would write
-    // "percent" and render 4 cards as "4.0%".
-    const { calls, onUpdate } = captureUpdate();
-    const widget = barWidget({ measure: { agg: "count", field: "id" } });
-    const { setDataset } = buildWidgetMutations(widget, onUpdate, CREDIT_UTILIZATION);
-    setDataset("credit_utilization", CREDIT_UTILIZATION);
-
-    const cfg = calls.at(-1)!.config as BarConfig;
-    expect(cfg.measure.field).toBe("id");
-    expect(cfg.format).toBe("number");
-  });
-
-  it("changing the MEASURE within the source re-derives format — using the UI's real shape", () => {
-    // ⚠ THE LOAD-BEARING CASE. The Field select emits {...measure, field}, so
-    // agg stays "avg" from the utilization measure while the field becomes
-    // "outstanding" — which the catalog publishes at "sum".
-    //
-    // Against the buggy `m.field === f && m.agg === a` lookup this MISSES,
-    // falls back to the previous format, and keeps "percent" — rendering
-    // €1,234.56 as "1234.6%". Matching on FIELD ONLY is what makes it pass.
-    const { calls, onUpdate } = captureUpdate();
-    const widget = barWidget({
-      dataset: "credit_utilization",
-      measure: { agg: "avg", field: "utilization_pct" },
-      format: "percent",
+  function resolveTo(value: number) {
+    runQueryMock.mockResolvedValue({
+      rows: [{ value }],
+      meta: { row_count: 1, truncated: false, query_ms: 1 },
     });
-    const { setSingleMeasure } = buildWidgetMutations(
-      widget,
-      onUpdate,
-      CREDIT_UTILIZATION,
+  }
+
+  it("renders a percent measure as a percentage, not currency", async () => {
+    // The headline bug. KILLS any design that reads a stored format, because
+    // every write site seeds "currency".
+    resolveTo(45);
+    renderWithSWR(
+      <KPIWidget
+        widget={kpi("credit_utilization", { agg: "avg", field: "utilization_pct" })}
+        currency="EUR"
+      />,
     );
-
-    // Exactly what SingleMeasureEditor's Field select produces.
-    const asTheFieldSelectEmits = {
-      ...(widget.config as BarConfig).measure,
-      field: "outstanding" as const,
-    };
-    setSingleMeasure(asTheFieldSelectEmits);
-
-    const cfg = calls.at(-1)!.config as BarConfig;
-    expect(cfg.measure).toEqual({ agg: "avg", field: "outstanding" });
-    expect(cfg.format).toBe("currency");
+    const el = await screen.findByTestId("kpi-widget-value");
+    // ⚠ EXACT. `toContain("45")` + no "€" is also satisfied by a `"number"`
+    // collapse -- so the earlier version of this test proved only the second
+    // half of its own title. This kills:
+    //   if (exact) return exact.format === "currency" ? "currency" : "number";
+    expect(el.textContent).toBe("45.0%");
   });
 
-  it("switching AWAY from a percent source restores currency", () => {
-    const { calls, onUpdate } = captureUpdate();
-    const widget = barWidget({
-      dataset: "credit_utilization",
-      measure: { agg: "avg", field: "utilization_pct" },
-      format: "percent",
-    });
-    const { setDataset } = buildWidgetMutations(widget, onUpdate, ACCOUNTS);
-    setDataset("accounts", ACCOUNTS);
-
-    const cfg = calls.at(-1)!.config as BarConfig;
-    expect(cfg.format).toBe("currency");
+  it("IGNORES a stale persisted format on the same widget", async () => {
+    // KILLS keeping `config.format` as a "pre-catalog fallback". Every saved
+    // widget carries a hardcoded "currency", so a fallback renders this as
+    // "€45.00" — the reported bug, shipped as a first paint.
+    resolveTo(45);
+    renderWithSWR(
+      <KPIWidget
+        widget={kpi(
+          "credit_utilization",
+          { agg: "avg", field: "utilization_pct" },
+          { format: "currency" },
+        )}
+        currency="EUR"
+      />,
+    );
+    const el = await screen.findByTestId("kpi-widget-value");
+    expect(el.textContent).toBe("45.0%");
   });
 
-  it("leaves format untouched while the catalog is still loading", () => {
-    // `selected` is undefined until /sources resolves; guessing a format then
-    // would be worse than leaving the existing one alone.
-    const { calls, onUpdate } = captureUpdate();
-    const widget = barWidget({ format: "currency" });
-    const { setSingleMeasure } = buildWidgetMutations(widget, onUpdate, undefined);
-    setSingleMeasure({ agg: "sum", field: "balance" });
+  it("still renders a currency measure as currency", async () => {
+    // The control. Without it, "strip all formatting" passes the two above.
+    resolveTo(1234.5);
+    renderWithSWR(
+      <KPIWidget
+        widget={kpi("credit_utilization", { agg: "sum", field: "outstanding" })}
+        currency="EUR"
+      />,
+    );
+    const el = await screen.findByTestId("kpi-widget-value");
+    expect(el.textContent).toContain("€");
+  });
 
-    const cfg = calls.at(-1)!.config as BarConfig;
-    expect(cfg.format).toBe("currency");
+  it("renders a count as a plain number even on a currency field", async () => {
+    // KILLS the FIELD-ONLY lookup the mutation-time resolver used deliberately
+    // (`useWidgetMutations.ts:41` documented it as load-bearing). `count(amount)`
+    // matches the `amount` row under field-only matching and inherits
+    // "currency" — a transaction count rendered as "€10.00".
+    resolveTo(10);
+    renderWithSWR(
+      <KPIWidget
+        widget={kpi("transactions", { agg: "count", field: "amount" })}
+        currency="EUR"
+      />,
+    );
+    const el = await screen.findByTestId("kpi-widget-value");
+    expect(el.textContent).not.toContain("€");
   });
 });

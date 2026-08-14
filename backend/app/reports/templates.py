@@ -108,7 +108,6 @@ def get_report_templates() -> list[dict]:
                     "config": {
                         "dataset": "transactions",
                         "measure": _measure("sum"),
-                        "format": "currency",
                     },
                 },
                 {
@@ -120,7 +119,6 @@ def get_report_templates() -> list[dict]:
                         "dataset": "transactions",
                         "measure": _measure("sum"),
                         "filters": {"txn_type": "income"},
-                        "format": "currency",
                     },
                 },
                 {
@@ -132,7 +130,6 @@ def get_report_templates() -> list[dict]:
                         "dataset": "transactions",
                         "measure": _measure("sum"),
                         "filters": {"txn_type": "expense"},
-                        "format": "currency",
                     },
                 },
                 {
@@ -147,7 +144,6 @@ def get_report_templates() -> list[dict]:
                         "filters": {"txn_type": "expense"},
                         "sort": {"by": "value", "dir": "desc"},
                         "limit": 10,
-                        "format": "currency",
                     },
                 },
                 {
@@ -159,7 +155,6 @@ def get_report_templates() -> list[dict]:
                         "dataset": "transactions",
                         "measures": [_series("sum", "Net")],
                         "dimensions": ["day"],
-                        "format": "currency",
                     },
                 },
             ],
@@ -183,7 +178,6 @@ def get_report_templates() -> list[dict]:
                     "config": {
                         "dataset": "transactions",
                         "measure": _measure("avg"),
-                        "format": "currency",
                     },
                 },
                 {
@@ -195,7 +189,6 @@ def get_report_templates() -> list[dict]:
                         "dataset": "transactions",
                         "measures": [_series("sum", "Net")],
                         "dimensions": ["month"],
-                        "format": "currency",
                     },
                 },
             ],
@@ -235,7 +228,6 @@ def get_report_templates() -> list[dict]:
                         "dimensions": ["category"],
                         "sort": {"by": "value", "dir": "desc"},
                         "limit": 20,
-                        "format": "currency",
                     },
                 },
                 {
@@ -248,7 +240,6 @@ def get_report_templates() -> list[dict]:
                         "measures": [_series("sum", "Spend")],
                         "dimensions": ["month", "category"],
                         "filters": {"txn_type": "expense"},
-                        "format": "currency",
                     },
                 },
             ],
@@ -275,7 +266,6 @@ def get_report_templates() -> list[dict]:
                     "config": {
                         "dataset": "accounts",
                         "measure": _measure("sum", "balance"),
-                        "format": "currency",
                     },
                 },
                 {
@@ -289,7 +279,6 @@ def get_report_templates() -> list[dict]:
                         "dimensions": ["account"],
                         "sort": {"by": "value", "dir": "desc"},
                         "limit": 10,
-                        "format": "currency",
                     },
                 },
                 {
@@ -302,7 +291,6 @@ def get_report_templates() -> list[dict]:
                         "measure": _measure("sum", "balance"),
                         "dimensions": ["account_type"],
                         "sort": {"by": "value", "dir": "desc"},
-                        "format": "currency",
                     },
                 },
             ],
@@ -327,7 +315,6 @@ def get_report_templates() -> list[dict]:
                     "config": {
                         "dataset": "transactions",
                         "measure": _measure("sum"),
-                        "format": "currency",
                     },
                 },
                 {
@@ -340,7 +327,6 @@ def get_report_templates() -> list[dict]:
                         "measure": _measure("sum"),
                         "dimensions": ["status"],
                         "sort": {"by": "value", "dir": "desc"},
-                        "format": "currency",
                     },
                 },
             ],

@@ -36,40 +36,25 @@ import type {
 
 
 /**
- * Resolve a widget's `format` from the source catalog for a given measure.
+ * TBD-381: `resolveFormat` lived here and is GONE. Format is no longer written
+ * at mutation time -- it derives at render from the catalog
+ * (`lib/reports/widget-format.ts`), so there is nothing to keep in sync here.
  *
- * ⚠ MATCH ON FIELD ONLY. Do NOT add `&& m.agg === measure.agg`.
- * The Field select emits `{...measure, field}`, carrying the PREVIOUS agg over
- * unchanged (SingleMeasureEditor). With the agg conjunct, picking a field that
- * the catalog publishes at a different agg misses, falls through to the
- * fallback, and PRESERVES the stale format — so switching to "Outstanding"
- * while agg is `avg` renders €1,234.56 as "1234.6%": verbatim the bug this
- * resolver exists to kill. Format is a pure function of field in every
- * catalog, so the agg conjunct can only ever produce misses.
- *
- * Returns the previous format when the catalog is absent (it is `undefined`
- * while /sources loads) or the field is unknown — never guesses.
+ * The comment it carried ("MATCH ON FIELD ONLY, do NOT add the agg conjunct")
+ * described a mutation-time hazard: on a lookup miss the resolver had to
+ * PRESERVE a stale previous format. At render there is no previous value, so
+ * the exact (agg, field) pair is matched instead -- which is also what makes a
+ * legacy `count(amount)` render as a count rather than as currency.
  */
-type WidgetFormat = "currency" | "number" | "percent" | undefined;
-
-function resolveFormat(
-  entry: SourceCatalogEntry | undefined,
-  measure: Measure,
-  previous: WidgetFormat,
-): WidgetFormat {
-  const found = entry?.measures.find((m) => m.field === measure.field)?.format;
-  return found === "currency" || found === "number" || found === "percent"
-    ? found
-    : previous;
-}
 
 export function buildWidgetMutations(
   widget: Widget,
   onUpdate: (next: Widget) => void,
-  // Optional: `undefined` while /sources loads (DataTab), in which case
-  // resolveFormat leaves the existing format untouched.
-  entry?: SourceCatalogEntry,
 ) {
+  // TBD-381: the optional `entry` parameter is GONE. It existed solely to feed
+  // `resolveFormat`, which derived format at mutation time; format now derives
+  // at render. `setDataset` still takes its own `entry` argument -- that one is
+  // live and is what prunes filters and snaps the measure on a source switch.
   function setTitle(title: string) {
     onUpdate({ ...widget, title });
   }
@@ -89,8 +74,6 @@ export function buildWidgetMutations(
       | BarConfig
       | PieConfig
       | SparklineConfig;
-    // Changing the MEASURE must re-derive format, not just changing the
-    // dataset: after landing on a percent source, picking a currency measure
     // in the same picker would otherwise keep "percent" and render
     // €1,234.56 as "1234.6%".
     const next = {
@@ -98,7 +81,6 @@ export function buildWidgetMutations(
       config: {
         ...cfg,
         measure,
-        format: resolveFormat(entry, measure, cfg.format),
       },
     } as Widget;
     onUpdate(next);
@@ -234,11 +216,9 @@ export function buildWidgetMutations(
       const filters = finalizeFilters(cfg.filters);
       // Derive from the RESULTING measure, not entry.measures[0]: `id` is
       // published by every source, so a retained count(id) survives the switch
-      // and an unconditional measures[0].format would render 4 cards as "4.0%".
-      const format = resolveFormat(entry, measure, cfg.format);
       const next: Widget = {
         ...widget,
-        config: { ...cfg, dataset, measure, filters, format },
+        config: { ...cfg, dataset, measure, filters },
       };
       onUpdate(next);
       return;
@@ -287,10 +267,9 @@ export function buildWidgetMutations(
         ? resetMeasure
         : scfg.measure;
     const filters = finalizeFilters(scfg.filters);
-    const format = resolveFormat(entry, measure, scfg.format);
     const next: Widget = {
       ...widget,
-      config: { ...scfg, dataset, dimensions: dims, measure, filters, format },
+      config: { ...scfg, dataset, dimensions: dims, measure, filters },
     } as Widget;
     onUpdate(next);
   }
