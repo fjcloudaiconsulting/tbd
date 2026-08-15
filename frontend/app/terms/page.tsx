@@ -5,6 +5,10 @@ import BackLink from "@/components/ui/BackLink";
 import CookiePreferencesButton from "@/components/landing/CookiePreferencesButton";
 
 import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
+import {
+  DATA_DELETION_WINDOW_DAYS,
+  PRIVACY_CONTACT_EMAIL,
+} from "@/lib/dataPolicy";
 
 const description =
   "The agreement between you and The Better Decision when you use the service.";
@@ -124,9 +128,11 @@ export default function TermsOfServicePage() {
               <Link href="/privacy" className="underline hover:text-accent">
                 Privacy Policy
               </Link>
-              . You can export or delete your data at any time by closing
-              your account; within 30 days of closure we delete your data
-              from production systems.
+              . You can export any report to CSV from inside the app. To
+              get a full machine-readable copy of your data, or to close
+              your account, email us at {PRIVACY_CONTACT_EMAIL}; we delete
+              your data from production systems within{" "}
+              {DATA_DELETION_WINDOW_DAYS} days of closure.
             </p>
           </section>
 
@@ -211,7 +217,8 @@ export default function TermsOfServicePage() {
           <section>
             <h2>11. Termination</h2>
             <p>
-              You may close your account at any time. We may suspend or
+              You may close your account at any time by emailing us at{" "}
+              {PRIVACY_CONTACT_EMAIL}. We may suspend or
               close accounts that violate these Terms, fail to pay, or pose
               a security risk. We&rsquo;ll give you reasonable notice when
               practical.
