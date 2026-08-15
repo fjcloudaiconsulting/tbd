@@ -266,9 +266,20 @@ async def test_password_change_failure_writes_no_audit(session_factory):
 
 @pytest.mark.asyncio
 async def test_email_change_writes_audit_with_old_email(session_factory):
-    """PUT /users/me email change captures the OLD email in actor_email
-    (the user's identity at event time) and the NEW email in
-    detail.new_email. Self-target — no target_user_id column."""
+    """PUT /users/me email change writes ``user.email.change_requested``.
+
+    TBD-361: this endpoint no longer changes anything. It records an
+    unproven CLAIM in ``pending_email``; the live address, ``email_verified``
+    and the session all survive until the claim is proven. So the row here
+    attests to a REQUEST, and its detail carries ``pending_email``.
+
+    ⚠ The completion row (``user.email.changed``, with ``detail.new_email``)
+    is written by ``auth.verify_email`` on the promoting branch. Writing it
+    here would assert a completed change that may never happen — and its
+    ``new_email`` used to read ``current_user.email``, which no longer
+    moves, so the row would have claimed the address changed to itself.
+    Fenced in ``test_email_change_request_writes_no_completion_row`` below.
+    """
     seed = await _seed_user(session_factory)
     app = _make_app(session_factory, seed["user_id"], router=users_router)
     with TestClient(app) as client:
@@ -285,7 +296,7 @@ async def test_email_change_writes_audit_with_old_email(session_factory):
         rows = (
             await db.execute(
                 select(AuditEvent).where(
-                    AuditEvent.event_type == "user.email.changed"
+                    AuditEvent.event_type == "user.email.change_requested"
                 )
             )
         ).scalars().all()
@@ -301,7 +312,9 @@ async def test_email_change_writes_audit_with_old_email(session_factory):
     assert row.target_org_id == seed["org_id"]
     assert row.detail is not None
     assert row.detail["old_email"] == "alice@acme.io"
-    assert row.detail["new_email"] == "new-address@acme.io"
+    assert row.detail["pending_email"] == "new-address@acme.io"
+    # And it must NOT claim completion.
+    assert "new_email" not in row.detail
 
     # PR3: security notification dispatched to the actor. The body
     # carries the NEW email (so a recipient receiving this at the OLD
@@ -310,7 +323,7 @@ async def test_email_change_writes_audit_with_old_email(session_factory):
         notifs = (
             await db.execute(
                 select(Notification).where(
-                    Notification.event_type == "user.email.changed"
+                    Notification.event_type == "user.email.change_requested"
                 )
             )
         ).scalars().all()
@@ -318,9 +331,45 @@ async def test_email_change_writes_audit_with_old_email(session_factory):
     notif = notifs[0]
     assert notif.user_id == seed["user_id"]
     assert notif.category == NotificationCategory.SECURITY
-    assert notif.title == "Your account email was changed"
+    assert notif.title == "An email change was requested"
     assert "new-address@acme.io" in notif.body
     assert notif.audit_event_id == row.id
+
+
+@pytest.mark.asyncio
+async def test_email_change_request_writes_no_completion_row(session_factory):
+    """F12. The request must NOT write ``user.email.changed`` (TBD-361).
+
+    Kills leaving the completion event at request time and merely
+    re-sourcing its ``new_email`` from the pending value — which is green,
+    and still writes a completed-change record for a change that has not
+    happened, while mailing the old address "your email was changed to X"
+    when it was not.
+    """
+    seed = await _seed_user(session_factory)
+    app = _make_app(session_factory, seed["user_id"], router=users_router)
+    with TestClient(app) as client:
+        res = client.put(
+            "/api/v1/users/me",
+            json={
+                "email": "new-address@acme.io",
+                "current_password": "starting-password-1",
+            },
+        )
+    assert res.status_code == 200, res.text
+
+    async with session_factory() as db:
+        completed = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "user.email.changed"
+                )
+            )
+        ).scalars().all()
+    assert completed == [], (
+        "the request path must not assert a completed change; the "
+        "completion row belongs on the promotion branch"
+    )
 
 
 @pytest.mark.asyncio
