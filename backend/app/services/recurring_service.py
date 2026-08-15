@@ -4,6 +4,7 @@ Generates pending transactions from recurring templates when their
 next_due_date has passed. Advances next_due_date based on frequency.
 """
 
+import dataclasses
 import datetime
 
 import structlog
@@ -23,7 +24,7 @@ from app.services.recurring_filters import (
     has_remaining_occurrences,
 )
 from app.services.transaction_service import (
-    _demote_match_orphans,
+    _settle_batch_counters_and_demote_orphans,
     apply_balance,
     get_account_for_update,
     validate_account,
@@ -48,6 +49,25 @@ logger = structlog.stdlib.get_logger()
 # ``test_forecast_overdue_recurring.py`` F17 fences the conservation this cap
 # used to break, and pins the alias with an AST guard.
 MAX_CATCHUP_ITERATIONS = MAX_OCCURRENCE_ITERATIONS
+
+
+@dataclasses.dataclass(frozen=True)
+class PendingRemovalResult:
+    """What removing a template's pending rows actually did (TBD-312).
+
+    A NAMED-FIELD type, not a bare tuple, and deliberately so: the two routes
+    that consume this previously declared ``response_model=dict``, which
+    validates nothing, so a tuple would have serialised as a JSON array and
+    shipped. Naming the fields makes every consumer, tests included, say which
+    number it means.
+
+    ``demoted_ids`` are rows marked REJECTED because the row they matched is
+    being deleted. That is irreversible through every API we expose, so the
+    caller is obliged to surface it rather than report ``removed`` alone.
+    """
+
+    removed: int
+    demoted_ids: list[int]
 
 
 def _load_opts():
@@ -499,9 +519,15 @@ async def _reanchor_frontier_on_resume(
 
 async def _remove_pending_transactions(
     db: AsyncSession, org_id: int, recurring_id: int,
-) -> int:
+) -> PendingRemovalResult:
     """Bulk-delete pending future transactions for a recurring template.
-    Returns the number of rows removed.
+
+    Returns BOTH the number of rows removed and the ids demoted to REJECTED
+    (TBD-312). The demotion is irreversible through every API we expose --
+    REJECTED is terminal and ``reconciliation_state`` is not settable through
+    ``TransactionUpdate`` -- so it must not be silent, and it used to be: this
+    function computed the ids and threw them away, leaving the caller able to
+    report only ``pending_removed``.
 
     THE THIRD DELETE PATH (TBD-294). ``transaction_service`` has two --
     ``delete_transaction`` and ``bulk_delete_transactions`` -- and this is the
@@ -520,7 +546,7 @@ async def _remove_pending_transactions(
     ``balance_contribution_filter`` and ``reportable_transaction_filter``
     carrying an amount ``accounts.balance`` does not contain.
 
-    So this routes through ``_demote_match_orphans`` -- the SHARED entry
+    So this routes through ``_settle_batch_counters_and_demote_orphans`` -- the SHARED entry
     point, deliberately not a third copy of the probe. A fourth delete path
     will appear; it should have one function to call.
 
@@ -545,7 +571,7 @@ async def _remove_pending_transactions(
         ).all()
     )
     if not candidate_ids:
-        return 0
+        return PendingRemovalResult(removed=0, demoted_ids=[])
 
     referrer_ids = set(
         (
@@ -583,9 +609,9 @@ async def _remove_pending_transactions(
         and r.date >= today
     }
     if not doomed:
-        return 0
+        return PendingRemovalResult(removed=0, demoted_ids=[])
 
-    await _demote_match_orphans(
+    demoted_ids = await _settle_batch_counters_and_demote_orphans(
         db, org_id, locked_rows=locked_rows, deleted_ids=doomed
     )
 
@@ -594,12 +620,17 @@ async def _remove_pending_transactions(
             Transaction.id.in_(doomed), Transaction.org_id == org_id
         )
     )
-    return result.rowcount
+    return PendingRemovalResult(removed=result.rowcount, demoted_ids=demoted_ids)
 
 
-async def stop_recurring(db: AsyncSession, org_id: int, recurring_id: int) -> int:
+async def stop_recurring(
+    db: AsyncSession, org_id: int, recurring_id: int
+) -> PendingRemovalResult:
     """Deactivate the template and delete any pending future transactions it generated.
-    Returns the number of pending transactions removed. Settled transactions are preserved."""
+
+    Returns the count removed AND any ids demoted to REJECTED. Settled
+    transactions are preserved.
+    """
     result = await db.execute(
         select(RecurringTransaction).where(
             RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id
@@ -610,7 +641,7 @@ async def stop_recurring(db: AsyncSession, org_id: int, recurring_id: int) -> in
         raise NotFoundError("Recurring transaction")
 
     r.is_active = False
-    removed = await _remove_pending_transactions(db, org_id, recurring_id)
+    outcome = await _remove_pending_transactions(db, org_id, recurring_id)
 
     # Clear the now-defunct recurring link on all surviving rows (settled, plus
     # any past-dated pending) so the "Recurring" badge disappears, mirroring
@@ -625,13 +656,17 @@ async def stop_recurring(db: AsyncSession, org_id: int, recurring_id: int) -> in
     )
 
     await db.commit()
-    return removed
+    return outcome
 
 
-async def delete_recurring(db: AsyncSession, org_id: int, recurring_id: int) -> int:
+async def delete_recurring(
+    db: AsyncSession, org_id: int, recurring_id: int
+) -> PendingRemovalResult:
     """Permanently delete the template (only if already stopped/paused).
-    Also removes any remaining pending future transactions.
-    Returns count of pending transactions removed."""
+
+    Also removes any remaining pending future transactions. Returns the count
+    removed AND any ids demoted to REJECTED.
+    """
     result = await db.execute(
         select(RecurringTransaction).where(
             RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id
@@ -641,11 +676,11 @@ async def delete_recurring(db: AsyncSession, org_id: int, recurring_id: int) -> 
     if r is None:
         raise NotFoundError("Recurring transaction")
 
-    removed = await _remove_pending_transactions(db, org_id, recurring_id)
+    outcome = await _remove_pending_transactions(db, org_id, recurring_id)
 
     await db.delete(r)
     await db.commit()
-    return removed
+    return outcome
 
 
 # ── Generation ────────────────────────────────────────────────────────────────

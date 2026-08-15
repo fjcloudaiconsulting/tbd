@@ -33,11 +33,11 @@ No. You import transactions from your bank by CSV or OFX, with a preview before 
 
 ### Is my financial data private?
 
-Yes. Your data is hosted in the EU and processed under EU law, you can export it anytime, and it is never sold and never used to train AI.
+Yes. Your data is hosted in the EU and processed under EU law, you can export any report to CSV or ask us for a full machine-readable copy at privacy@thebetterdecision.com, and it is never sold and never used to train AI.
 
 ### Is The Better Decision free?
 
-Yes, it is free during the beta.
+Yes. It is free while we grow, and founding members keep full access free for life.
 
 ### Can my partner or household use it together?
 
