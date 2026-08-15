@@ -453,6 +453,28 @@ no explanation — which reads as a failed save.
 4. `frontend/app/verify-email/page.tsx` — after a **promotion** the user is
    signed out (the cutoff), so the page must say so and route to login.
    Bootstrap verification is unchanged.
+   ⚠ Both branches returned an identical body, so the page could not tell
+   them apart and would have offered "Go to dashboard" into a guaranteed
+   401. The promote branch now returns an additive
+   `{"email_changed": true}` discriminator.
+
+### Visual approval, granted 2026-08-15
+
+The operator reviewed the running app and approved the pending row and its
+Cancel affordance.
+
+They also caught a real ambiguity that no fence would have: the identity
+card's "Email verified" badge does not name its subject, so with a pending
+claim on screen it reads as contradicting the pending notice. Both
+statements were already true — the badge attests to the LIVE address, which
+stays verified, and that is the point of the design — but a reader pairs the
+badge with whichever address is nearest. Resolved by suffixing
+"· change pending" when `pending_email` is set: one line, the existing
+sub-line element, no new component, and it names the subject without
+duplicating the address already shown in the Email field.
+
+Recorded because it is the kind of defect only a human looking at the
+assembled page finds. Every backend fence was green throughout.
 
 ## Subtract
 

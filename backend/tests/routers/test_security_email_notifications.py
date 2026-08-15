@@ -470,9 +470,22 @@ async def test_mfa_disable_survives_mailer_failure(session_factory, failing_mail
 
 @pytest.mark.asyncio
 async def test_email_change_emails_both_addresses(session_factory, sent_emails):
-    """The OLD address gets the security alert (naming the new address),
-    the NEW address gets the confirmation (naming the old address). The
-    old-address value is the pre-mutation snapshot."""
+    """TBD-361: at REQUEST time exactly ONE email goes out, to the CURRENT
+    address, and it says a change was *requested*.
+
+    The old dual-send belonged to the single-phase design, where the change
+    had already happened. Under two-phase nothing has changed yet: telling
+    the new address "this address is now your login email" would be false,
+    and it would arrive in the same instant as the verification link for a
+    change that has not happened -- two emails telling contradictory
+    stories. The confirmation pair moves to the promotion branch, where it
+    is true, and is fenced in test_verify_email_endpoint.py.
+
+    The surviving alert is worth MORE than its predecessor: the reader still
+    controls the login address, the change has not happened, and they can
+    cancel it. The single-phase version could only tell a victim they had
+    already lost the account.
+    """
     seed = await _seed_user(session_factory)
     app = _make_app(session_factory, seed["user_id"], router=users_router)
     with TestClient(app) as client:
@@ -482,23 +495,24 @@ async def test_email_change_emails_both_addresses(session_factory, sent_emails):
         )
     assert res.status_code == 200, res.text
 
-    # In-app row still written exactly once (to the account, whose
-    # address is now the new one).
-    notifs = await _notif_rows(session_factory, "user.email.changed")
+    # In-app row written exactly once, under the REQUEST event type.
+    notifs = await _notif_rows(session_factory, "user.email.change_requested")
     assert len(notifs) == 1
+    # And no completion row: nothing has completed.
+    assert await _notif_rows(session_factory, "user.email.changed") == []
 
-    assert len(sent_emails) == 2
-    # Old-address alert goes out FIRST — it is the critical one.
+    assert len(sent_emails) == 1, (
+        "the new address must NOT receive a security notice at request "
+        "time; it receives the verification link, and the confirmation "
+        "only once the change actually happens"
+    )
     alert = sent_emails[0]
     assert alert["to"] == OLD_EMAIL
-    assert alert["title"] == "Your account email was changed"
+    assert alert["title"] == "Confirm or cancel: an email change was requested"
     assert NEW_EMAIL in alert["body"]
     assert "wasn't you" in alert["body"]
-
-    confirmation = sent_emails[1]
-    assert confirmation["to"] == NEW_EMAIL
-    assert confirmation["title"] == "This address is now your login email"
-    assert OLD_EMAIL in confirmation["body"]
+    # The copy must not claim the change already happened.
+    assert "Nothing has changed yet" in alert["body"]
 
 
 @pytest.mark.asyncio
@@ -514,14 +528,20 @@ async def test_email_change_alert_force_on_despite_optout(
             json={"email": NEW_EMAIL, "current_password": PASSWORD},
         )
     assert res.status_code == 200, res.text
-    assert [e["to"] for e in sent_emails] == [OLD_EMAIL, NEW_EMAIL]
+    # SECURITY is force-on: opting out of everything must not suppress the
+    # alert to the address that can still cancel the change (TBD-361: one
+    # send at request time, to the CURRENT address).
+    assert [e["to"] for e in sent_emails] == [OLD_EMAIL]
 
 
 @pytest.mark.asyncio
 async def test_email_change_survives_mailer_failure(session_factory, failing_mailer):
-    """Both sends raising must not fail the request or roll back the
-    email change / in-app row. Both sends are still ATTEMPTED (the first
-    failure does not suppress the second address)."""
+    """A raising mailer must not fail the request or roll back the claim.
+
+    TBD-361: one send at request time, to the current address. The
+    "both addresses still attempted" property this used to pin now belongs
+    to the promotion branch, where two sends genuinely go out.
+    """
     seed = await _seed_user(session_factory)
     app = _make_app(session_factory, seed["user_id"], router=users_router)
     with TestClient(app) as client:
@@ -530,13 +550,18 @@ async def test_email_change_survives_mailer_failure(session_factory, failing_mai
             json={"email": NEW_EMAIL, "current_password": PASSWORD},
         )
     assert res.status_code == 200, res.text
-    assert failing_mailer == [OLD_EMAIL, NEW_EMAIL]
+    assert failing_mailer == [OLD_EMAIL]
 
     async with session_factory() as db:
         user = await db.get(User, seed["user_id"])
-        assert user.email == NEW_EMAIL
+        # The CLAIM is recorded; the live identity is untouched. This is the
+        # whole point of the ticket -- a mailer failure here cannot leave the
+        # user logged out of an address they can no longer reach.
+        assert user.pending_email == NEW_EMAIL
+        assert user.email == OLD_EMAIL
+        assert user.email_verified is True
 
-    notifs = await _notif_rows(session_factory, "user.email.changed")
+    notifs = await _notif_rows(session_factory, "user.email.change_requested")
     assert len(notifs) == 1
 
 
@@ -820,8 +845,11 @@ async def test_password_change_survives_dispatch_failure(
 async def test_email_change_survives_dispatch_failure(
     session_factory, sent_emails, failing_dispatch
 ):
-    """A raising in-app write must not fail the email change or roll it
-    back; both address emails still go out."""
+    """A raising in-app write must not fail the request or roll back the
+    claim, and the alert email still goes out.
+
+    TBD-361: one send at request time, and the live identity is untouched.
+    """
     seed = await _seed_user(session_factory)
     app = _make_app(session_factory, seed["user_id"], router=users_router)
     with TestClient(app) as client:
@@ -834,10 +862,11 @@ async def test_email_change_survives_dispatch_failure(
 
     async with session_factory() as db:
         user = await db.get(User, seed["user_id"])
-        assert user.email == NEW_EMAIL
+        assert user.pending_email == NEW_EMAIL
+        assert user.email == OLD_EMAIL
 
-    assert await _notif_rows(session_factory, "user.email.changed") == []
-    assert len(sent_emails) == 2
+    assert await _notif_rows(session_factory, "user.email.change_requested") == []
+    assert len(sent_emails) == 1
 
 
 @pytest.mark.asyncio

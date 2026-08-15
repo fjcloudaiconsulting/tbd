@@ -2038,6 +2038,18 @@ async def _promote_pending_email(
     # and on SQLite the UNIQUE index misses too, so the IntegrityError
     # backstop below never fires either. That residual is covered by
     # migration 040; the exact-case collision is what the fences pin.
+    # A suspended account must not rotate its recovery address
+    # mid-investigation -- that would also destabilise `actor_email` in the
+    # audit trail. Scoped to the PROMOTING branch only: applying it to the
+    # bootstrap arm would change existing behaviour for a case with no
+    # defect. Generic 400, like every other refusal here, so the endpoint
+    # keeps disclosing nothing about why.
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token",
+        )
+
     taken = await db.scalar(
         select(User).where(User.email == pending_email, User.id != user.id)
     )
@@ -2057,7 +2069,15 @@ async def _promote_pending_email(
     # lazy-load, turning a best-effort dispatch into a 500.
     old_email = user.email
     org_id = user.org_id
-    org_name = user.organization.name if user.organization is not None else None
+    # ⚠ Explicit SELECT, never `user.organization`. `verify_email` loads the
+    # user with a plain `select(User)`, so the relationship is unloaded and
+    # touching it here lazy-loads -- which under asyncio raises
+    # MissingGreenlet and 500s the promotion. Caught by the fences, not by
+    # review.
+    org_row = await db.scalar(
+        select(Organization).where(Organization.id == user.org_id)
+    )
+    org_name = org_row.name if org_row is not None else None
     user.email = pending_email
     user.pending_email = None
     user.email_verified = True
@@ -2095,6 +2115,11 @@ async def _promote_pending_email(
             ),
         )
 
+    # Additive discriminator. Both branches used to return an identical
+    # body, so the verify-email page could not tell a first-time
+    # verification from a promotion -- and after a promotion the session is
+    # dead (the cutoff above), so offering "Go to dashboard" sends the user
+    # into a 401. Additive, so no existing client breaks.
     await _record_email_promoted(
         request,
         db,
@@ -2105,7 +2130,7 @@ async def _promote_pending_email(
         org_id=org_id,
         org_name=org_name,
     )
-    return {"detail": "Email verified"}
+    return {"detail": "Email verified", "email_changed": True}
 
 
 async def _record_email_promoted(
