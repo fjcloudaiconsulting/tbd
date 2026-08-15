@@ -12,6 +12,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
 import { isOpenPeriod } from "@/lib/billingPeriodStatus";
+import { demotionNotice } from "@/lib/demotion";
 import { input, label, badgeNeutral, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { useAccounts } from "@/lib/hooks/use-accounts";
@@ -127,17 +128,6 @@ function canPromoteToRecurring(tx: Transaction): boolean {
     !tx.is_reverted &&
     !tx.is_manual_adjustment
   );
-}
-
-// TBD-294. Deleting a row that another row was marked a duplicate OF marks
-// that other row rejected. REJECTED is terminal and unreachable through the
-// edit API, so the change is irreversible — the user has to be told.
-function demotionNotice(demotedIds: number[]): string {
-  if (demotedIds.length === 0) return "";
-  const n = demotedIds.length;
-  return n === 1
-    ? "1 matched duplicate was marked rejected. It no longer counts toward balances or reports."
-    : `${n} matched duplicates were marked rejected. They no longer count toward balances or reports.`;
 }
 
 // TBD-290. `deleted_count` counts DB ROWS removed, and deleting one half of a

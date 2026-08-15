@@ -11,6 +11,7 @@ import SortableHeader from "@/components/ui/SortableHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount } from "@/lib/format";
+import { demotionNotice } from "@/lib/demotion";
 import {
   useTableState,
   paginate,
@@ -437,8 +438,16 @@ export default function RecurringPage() {
   async function doStop(id: number, description: string) {
     setError(""); setSuccessMsg("");
     try {
-      const res = await apiFetch<{ pending_removed: number }>(`/api/v1/recurring/${id}/stop`, { method: "POST" });
-      setSuccessMsg(`Stopped "${description}". ${res?.pending_removed ?? 0} pending transaction(s) removed.`);
+      const res = await apiFetch<{ pending_removed: number; demoted_ids?: number[] }>(`/api/v1/recurring/${id}/stop`, { method: "POST" });
+      // TBD-312. Stopping a template deletes its pending rows, and deleting a
+      // row that another row was matched against marks that other row
+      // REJECTED, irreversibly. Reported in the same words the transactions
+      // page uses for the same server-side act; `demotionNotice` returns ""
+      // when nothing was demoted, so the filter keeps the message clean.
+      setSuccessMsg([
+        `Stopped "${description}". ${res?.pending_removed ?? 0} pending transaction(s) removed.`,
+        demotionNotice(res?.demoted_ids ?? []),
+      ].filter(Boolean).join(" "));
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
@@ -460,8 +469,13 @@ export default function RecurringPage() {
   async function doDelete(id: number) {
     setError(""); setSuccessMsg("");
     try {
-      const res = await apiFetch<{ pending_removed: number }>(`/api/v1/recurring/${id}`, { method: "DELETE" });
-      setSuccessMsg(`Deleted. ${res?.pending_removed ?? 0} pending transaction(s) removed.`);
+      const res = await apiFetch<{ pending_removed: number; demoted_ids?: number[] }>(`/api/v1/recurring/${id}`, { method: "DELETE" });
+      // TBD-312 -- see doStop. Fenced separately; both routes reach the
+      // demotion by different paths.
+      setSuccessMsg([
+        `Deleted. ${res?.pending_removed ?? 0} pending transaction(s) removed.`,
+        demotionNotice(res?.demoted_ids ?? []),
+      ].filter(Boolean).join(" "));
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }

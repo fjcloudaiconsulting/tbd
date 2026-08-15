@@ -994,17 +994,34 @@ def _apply_field_updates(tx: Transaction, body: TransactionUpdate) -> None:
         tx.date = body.date
 
 
-async def _demote_match_orphans(
+async def _settle_batch_counters_and_demote_orphans(
     db: AsyncSession,
     org_id: int,
     *,
     locked_rows: dict[int, Transaction],
     deleted_ids: set[int],
 ) -> list[int]:
-    """TBD-294. Mark every row that points AT a row we are about to delete,
-    and whose amount is NOT inside ``accounts.balance``, as REJECTED.
+    """The single pre-delete side-effect pass for every delete path.
 
-    THE HOLE THIS CLOSES. ``transactions.linked_transaction_id`` is
+    Two jobs, deliberately in ONE function and ONE ``import_batches`` write:
+
+    * **TBD-294** -- mark every row that points AT a row we are about to
+      delete, and whose amount is NOT inside ``accounts.balance``, as
+      REJECTED.
+    * **TBD-311** -- settle the import-batch counters for the rows the caller
+      is about to delete, which no state transition will ever do for them.
+
+    They are not separable. A deleted row and a demoted referrer can sit in
+    the SAME batch and both decrement ``pending_count``, and the counter write
+    below is one floored UPDATE per batch issued in ascending batch id -- a
+    shape arrived at deliberately to kill the self-inversion between two
+    concurrent deletes (see the long comment on that loop). A second helper
+    with its own ``UPDATE import_batches`` would re-create exactly that
+    ordering edge, invisibly, since no test can see a lock-order inversion.
+    It is also why "a fifth delete path must route through the same helper"
+    stays enforceable by a single grep: one helper, not two to remember.
+
+    THE HOLE TBD-294 CLOSES. ``transactions.linked_transaction_id`` is
     ``ON DELETE SET NULL``. A reconcile-matched duplicate ``M -> T`` had its
     contribution reverted at match time and is excluded from balance
     reconstruction and from reports SOLELY because of that link's direction.
@@ -1061,9 +1078,6 @@ async def _demote_match_orphans(
             continue
         demoted.append(r)
 
-    if not demoted:
-        return []
-
     # Counter deltas per batch, computed BEFORE the state write.
     #
     # ⚠ ``pending_count`` is NOT hypothetical here. ACCEPTED -> PENDING_REVIEW
@@ -1075,6 +1089,55 @@ async def _demote_match_orphans(
     # auto-closes.
     accepted_delta: dict[int, int] = {}
     pending_delta: dict[int, int] = {}
+    row_delta: dict[int, int] = {}
+
+    # TBD-311. THE ROWS THE CALLER IS ABOUT TO DELETE.
+    #
+    # A hard delete is not a state transition, and ``_reconcile_one`` -- the
+    # only other maintainer of these counters -- runs on transitions. So the
+    # deleted row's contribution used to disappear with the row, uncounted:
+    # ``pending_count`` stayed high forever, and because
+    # ``close_batch_if_complete`` returns early while ``pending_count > 0``,
+    # its belt-and-braces recount could never heal it either (that recount
+    # fixes UNDER-counts; a stranded delete is an OVER-count). The batch was
+    # stranded OPEN with no surviving row able to move the counter.
+    #
+    # ``row_count`` goes too, not just ``pending_count``. The reconcile screen
+    # renders ``done = total_rows - pending_count`` directly above a table
+    # built from the LIVE rows, so a denominator that still counts a deleted
+    # row both contradicts what the user can see and silently books the
+    # destroyed row as reconciled work they performed. ``row_count`` is also
+    # the only column that can absorb a hard delete: leaving it alone makes
+    # the row permanently unattributable across the three counters.
+    #
+    # ``accepted_count`` is maintained for the same reason even though it is
+    # not on the wire today (it is absent from ``ImportBatchHeader``) --
+    # skipping it would permit ``accepted_count > row_count``.
+    for tid in sorted(deleted_ids):
+        r = locked_rows.get(tid)
+        if r is None:
+            # NOT the same condition as "not in a batch", and deliberately
+            # not folded into one ``continue``. Every current call site
+            # builds its delete set FROM ``locked_rows``, so this is
+            # unreachable today -- but this helper's contract is "a fifth
+            # delete path must route through it", and a fifth path that
+            # passed an id it forgot to lock would reintroduce TBD-311
+            # silently, with the suite green. Say so rather than skipping.
+            await logger.awarning(
+                "transactions.delete_counter_skipped_unlocked_row",
+                org_id=org_id,
+                transaction_id=tid,
+            )
+            continue
+        if r.import_batch_id is None:
+            continue
+        bid = r.import_batch_id
+        row_delta[bid] = row_delta.get(bid, 0) + 1
+        if r.reconciliation_state == "accepted":
+            accepted_delta[bid] = accepted_delta.get(bid, 0) + 1
+        elif r.reconciliation_state in PENDING_STATES:
+            pending_delta[bid] = pending_delta.get(bid, 0) + 1
+
     for r in demoted:
         prior = r.reconciliation_state
         if r.import_batch_id is not None:
@@ -1101,6 +1164,17 @@ async def _demote_match_orphans(
             amount=str(r.amount),
             tx_type=r.type.value,
         )
+
+    # ⚠ THE EARLY RETURN LIVES HERE, BELOW BOTH DELTA CLASSES, AND MUST STAY
+    # THERE. It used to sit above, guarding on ``demoted`` alone. Moving the
+    # deleted-row work in without moving this is the one way to write a
+    # correct-looking version of TBD-311 that is dead on the commonest path:
+    # every pre-existing fence in this area builds a matched pair, so
+    # ``demoted`` is non-empty in all of them and the whole suite stays green
+    # while an ordinary delete still strands its batch. F17/F18 exist with no
+    # matched pair precisely to kill that variant.
+    if not demoted and not row_delta:
+        return []
 
     await db.flush()
 
@@ -1133,11 +1207,19 @@ async def _demote_match_orphans(
     # separate dicts in insertion order, so delete X could take batch 5 then
     # batch 3 while delete Y took 3 then 5. One ascending pass per batch, both
     # columns in one statement, removes that edge entirely.
-    for batch_id in sorted(set(accepted_delta) | set(pending_delta)):
+    #
+    # ⚠ Since TBD-311 this paragraph describes the COMMON path, not a rare
+    # one. It used to be reached only when a delete produced a demoted
+    # referrer; now any delete of a batch-enrolled row takes the
+    # ``import_batches`` lock. The inversion CLASS is unchanged and still
+    # accepted on the reasoning above, but it is hit far more often, so do
+    # not read "rare race" as still bounding the exposure.
+    for batch_id in sorted(set(accepted_delta) | set(pending_delta) | set(row_delta)):
         values: dict = {}
         for table_col, n in (
             (ImportBatch.accepted_count, accepted_delta.get(batch_id, 0)),
             (ImportBatch.pending_count, pending_delta.get(batch_id, 0)),
+            (ImportBatch.row_count, row_delta.get(batch_id, 0)),
         ):
             if n:
                 values[table_col] = case((table_col - n < 0, 0), else_=table_col - n)
@@ -1156,6 +1238,16 @@ async def _demote_match_orphans(
     # ``deleted_ids`` is still physically present and the belt-and-braces
     # recount would read it as counter drift, push ``pending_count`` back up,
     # and strand the batch OPEN with no surviving row able to move it.
+    #
+    # ⚠ ``pending_delta`` and NOT ``row_delta``: a batch touched only by a
+    # ``row_count`` change cannot have reached zero pending on this call.
+    # A batch emptied entirely by deletes therefore stays OPEN at
+    # ``(0, 0, 0)`` -- pre-existing behaviour this change neither creates
+    # nor worsens (``main`` leaves the same batch OPEN claiming its
+    # original row count), and there is no batch-listing surface where it
+    # shows. Widening to ``row_delta`` would also close a fresh,
+    # never-reconciled batch the first time any of its rows is deleted,
+    # which is a product decision rather than a bug fix. Filed separately.
     for batch_id in sorted(pending_delta):
         batch = await db.scalar(
             select(ImportBatch)
@@ -1176,7 +1268,7 @@ async def delete_transaction(
     """Delete one transaction (cascading to a RECIPROCAL partner only).
 
     Returns the ids of any rows demoted to REJECTED because the row they
-    pointed at is being deleted (TBD-294). See ``_demote_match_orphans``.
+    pointed at is being deleted (TBD-294). See ``_settle_batch_counters_and_demote_orphans``.
     """
     # Unlocked pre-read to discover any transfer pair, then acquire tx-row
     # locks in one FOR UPDATE query ordered by ascending id. This matches
@@ -1210,7 +1302,7 @@ async def delete_transaction(
     # ⚠ That claim is about the TRANSACTIONS table only. The demotion itself
     # DOES add an ``import_batches`` edge to this path's lock order, inverted
     # against ``reconcile_request``; see the accepted-edge note in
-    # ``_demote_match_orphans``. Do not read this paragraph as "no new lock
+    # ``_settle_batch_counters_and_demote_orphans``. Do not read this paragraph as "no new lock
     # edge" -- an earlier revision did say that, and it was wrong.
     ids_to_lock = [transaction_id]
     if preview.linked_transaction_id is not None:
@@ -1314,7 +1406,7 @@ async def delete_transaction(
         # TBD-294: demote BEFORE the delete, so the discriminator has moved
         # into ``reconciliation_state`` by the time ON DELETE SET NULL erases
         # the link.
-        demoted_ids = await _demote_match_orphans(
+        demoted_ids = await _settle_batch_counters_and_demote_orphans(
             db, org_id, locked_rows=rows, deleted_ids=set(to_delete)
         )
 
@@ -1331,7 +1423,7 @@ async def bulk_delete_transactions(
     """Delete multiple transactions in one atomic commit.
 
     Returns (deleted_count, skipped_ids, demoted_ids) -- the third element is
-    TBD-294's match-orphan demotion, see ``_demote_match_orphans``.
+    TBD-294's match-orphan demotion, see ``_settle_batch_counters_and_demote_orphans``.
     Cross-org IDs are silently
     skipped. TRANSFER-pair halves cascade: deleting one half also deletes
     the linked half -- but only when the link is MUTUAL (TBD-280). A one-way
@@ -1461,7 +1553,7 @@ async def bulk_delete_transactions(
         # TBD-294: demote before the delete, same reason as delete_transaction.
         # A batch that contains BOTH M and T demotes nothing -- M is in
         # ``deleted_ids`` and skipped by the helper's first clause.
-        demoted_ids = await _demote_match_orphans(
+        demoted_ids = await _settle_batch_counters_and_demote_orphans(
             db, org_id, locked_rows=locked_rows, deleted_ids=set(delete_set)
         )
 
@@ -1863,7 +1955,7 @@ async def pair_existing_transactions(
     ``accounts.balance`` at the state transition, and pairing it is PERMITTED
     ON PURPOSE: those states are terminal, so refusing the pair would strand a
     mis-skipped row with delete as its only exit (the closed loop TBD-295
-    documents, and the same ground on which ``_demote_match_orphans`` refused a
+    documents, and the same ground on which ``_settle_batch_counters_and_demote_orphans`` refused a
     guard). The resulting reciprocal-plus-reverted row is safe because
     ``update_transaction``'s arms 4b/4f are gated on
     ``contributes_to_cached_balance`` and the state clause keeps the leg out of

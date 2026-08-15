@@ -363,7 +363,7 @@ async def test_reconcile_consistent_with_skipped_row(db_session):
 @pytest.mark.asyncio
 async def test_reconcile_consistent_with_rejected_row(db_session):
     """FENCE (TBD-303), sibling state. Kills the same wrong implementations via
-    REJECTED -- the state ``_demote_match_orphans`` writes. Both sides again.
+    REJECTED -- the state ``_settle_batch_counters_and_demote_orphans`` writes. Both sides again.
     """
     db = db_session
     org, acct = await _seed(db, opening="1000.00")
@@ -390,7 +390,7 @@ async def test_reconcile_reports_drift_for_orphaned_duplicate(db_session):
     """GUARD / boundary (TBD-303). The fix must not become a rubber stamp.
 
     An ORPHANED duplicate -- a matched row whose canonical partner was deleted
-    by a path that did NOT route through ``_demote_match_orphans``, so the
+    by a path that did NOT route through ``_settle_batch_counters_and_demote_orphans``, so the
     ``ON DELETE SET NULL`` FK erased its link and left it byte-identical to an
     ordinary ACCEPTED row -- is genuinely NOT inside ``accounts.balance``.
     ``balance_contribution_filter()`` keeps it (that is its documented
@@ -417,7 +417,7 @@ async def test_reconcile_reports_drift_for_orphaned_duplicate(db_session):
     await db.refresh(acct)
     assert acct.balance == Decimal("900.00")
 
-    # A delete path that bypasses _demote_match_orphans: raw DELETE + the
+    # A delete path that bypasses _settle_batch_counters_and_demote_orphans: raw DELETE + the
     # balance revert the canonical row's removal owes the account.
     canon_id, dup_id = canon.id, dup.id
     await db.execute(
