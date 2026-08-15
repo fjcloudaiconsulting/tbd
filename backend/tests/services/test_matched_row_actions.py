@@ -770,7 +770,7 @@ async def test_pending_review_referrer_demotion_decrements_pending_count_and_clo
 async def test_auto_close_recount_ignores_rows_the_caller_is_about_to_delete(
     db_session,
 ):
-    """F11b. ORDERING. ``_demote_match_orphans`` runs BEFORE the caller's
+    """F11b. ORDERING. ``_settle_batch_counters_and_demote_orphans`` runs BEFORE the caller's
     ``db.delete()`` -- it has to, since the whole point is to move the
     discriminator before the FK nulls the link -- so every row in the delete
     set is still PHYSICALLY PRESENT when ``close_batch_if_complete`` runs its
@@ -787,7 +787,7 @@ async def test_auto_close_recount_ignores_rows_the_caller_is_about_to_delete(
     pending row the counter does not know about.
 
     Kills: dropping ``exclude_transaction_ids=deleted_ids`` from the
-    ``close_batch_if_complete`` call in ``_demote_match_orphans``.
+    ``close_batch_if_complete`` call in ``_settle_batch_counters_and_demote_orphans``.
     """
     seed = await _seed(db_session)
     filler = await _create(
@@ -985,7 +985,7 @@ async def test_stop_recurring_demotes_the_match_orphan(db_session):
 
     ``recurring_service._remove_pending_transactions`` is a raw bulk
     ``DELETE`` reached from BOTH ``stop_recurring`` and ``delete_recurring``.
-    It never touched ``_demote_match_orphans``, and it is reachable:
+    It never touched ``_settle_batch_counters_and_demote_orphans``, and it is reachable:
     ``_apply_match`` validates its target on org, existence and not-self and
     NOTHING else, so matching an imported bank row against the PENDING
     recurring row it settles is legal -- and it is the single most natural
@@ -1009,11 +1009,16 @@ async def test_stop_recurring_demotes_the_match_orphan(db_session):
     assert canonical.id == pending.id
     assert canonical.status == TransactionStatus.PENDING
 
-    removed = await recurring_service.stop_recurring(
+    outcome = await recurring_service.stop_recurring(
         db_session, seed["org_id"], rec.id,
     )
 
-    assert removed == 1
+    assert outcome.removed == 1
+    # TBD-312: the demotion must be REPORTED, not merely performed. The
+    # response used to carry only ``pending_removed``, so a user who stopped a
+    # template could irreversibly reject a matched duplicate and be told only
+    # that pending rows were removed.
+    assert outcome.demoted_ids == [dup.id]
     assert await _reload(db_session, pending.id) is None
     orphan = await _reload(db_session, dup.id)
     assert orphan is not None, "the matched duplicate itself must survive"
@@ -1037,11 +1042,15 @@ async def test_delete_recurring_demotes_the_match_orphan(db_session):
         db_session, seed, amount="2048.00", canonical=pending,
     )
 
-    removed = await recurring_service.delete_recurring(
+    outcome = await recurring_service.delete_recurring(
         db_session, seed["org_id"], rec.id,
     )
 
-    assert removed == 1
+    assert outcome.removed == 1
+    # TBD-312, fenced SEPARATELY from the stop sibling on purpose: both routes
+    # reach the helper by different paths and this repo has repeatedly shipped
+    # a fix to one sibling and not the other.
+    assert outcome.demoted_ids == [dup.id]
     assert await _reload(db_session, pending.id) is None
     orphan = await _reload(db_session, dup.id)
     assert orphan is not None
@@ -1075,11 +1084,15 @@ async def test_stop_recurring_leaves_a_settled_row_and_its_referrer_alone(db_ses
         db_session, seed, amount="256.00", canonical=settled,
     )
 
-    removed = await recurring_service.stop_recurring(
+    outcome = await recurring_service.stop_recurring(
         db_session, seed["org_id"], rec.id,
     )
 
-    assert removed == 1
+    assert outcome.removed == 1
+    # The over-reach control: nothing was demoted here, so nothing is
+    # reported. A stop that names ids it did not reject is as wrong as one
+    # that stays silent about ids it did.
+    assert outcome.demoted_ids == []
     assert await _reload(db_session, pending.id) is None
     survivor = await _reload(db_session, settled.id)
     assert survivor is not None
@@ -1101,7 +1114,7 @@ async def test_org_wipe_stays_a_bulk_delete_and_stays_org_scoped(db_session):
     statement, so a wipe that demoted first and a wipe that did not are
     byte-identical afterwards. The previous revision of this test asserted
     only "both rows are gone", which is true on unmodified ``main``, true
-    with ``_demote_match_orphans`` deleted, and true of every rewiring it
+    with ``_settle_batch_counters_and_demote_orphans`` deleted, and true of every rewiring it
     claimed to forbid. It could not fail.
 
     So this pins the two things that ARE observable, each with a named
@@ -1386,3 +1399,326 @@ async def test_self_linked_row_does_not_lock_its_category_type(db_session):
     await category_service.validate_category_type_change(
         db_session, cat, CategoryType.EXPENSE,
     )
+
+# ══ TBD-311: a hard delete must settle its import-batch counters ════════════
+#
+# ⚠ EVERY fence above this line builds a matched pair, so ``demoted`` is
+# non-empty in all of them and the early return at the top of the demotion
+# helper never fires. These fences deliberately build NO matched pair: the
+# deleted row has no inbound referrer anywhere. That is the whole point --
+# it is the case a correct-looking fix that adds the deleted-row deltas
+# BELOW ``if not demoted: return []`` still gets wrong, with the entire
+# existing suite green.
+#
+# ⚠ FIXTURE HAZARD, learned the hard way. ``close_batch_if_complete`` fires
+# from the end of ``reconcile_request``, so accepting EVERY row drives
+# ``pending_count`` to 0 and closes the batch mid-setup -- and nothing
+# reopens a closed batch. Every helper below therefore leaves at least one
+# row pending until the delete under test. The same trap is documented on
+# F11 above.
+
+
+async def _batch(db: AsyncSession, seed: dict) -> ImportBatch:
+    return await db.scalar(
+        select(ImportBatch)
+        .where(ImportBatch.id == seed["batch_id"])
+        .execution_options(populate_existing=True)
+    )
+
+
+async def _batch_of_three(db: AsyncSession, seed: dict) -> list[Transaction]:
+    """Three rows in the batch; the first two ACCEPTED, the third left
+    PENDING_REVIEW. Batch ends OPEN with ``pending_count == 1``.
+
+    Counters: ``row_count=3, accepted_count=2, pending_count=1``.
+    """
+    rows = [
+        await _create(
+            db, seed, account_id=seed["acct_a_id"], amount=amt,
+            label=f"batchrow{i}", in_batch=True,
+        )
+        for i, amt in enumerate(("8.00", "16.00", "32.00"))
+    ]
+    for r in rows[:2]:
+        await _reconcile(db, seed, _transition(r.id, ReconciliationState.ACCEPTED))
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_last_pending_batch_row_settles_counters_and_closes(
+    db_session,
+):
+    """F30. THE TICKET. A hard delete is not a state transition, so nothing
+    removed the deleted row's contribution from the batch counters.
+
+    Kills TWO wrong implementations:
+
+    1. ``main`` -- no counter write at all on the delete path. ``pending_count``
+       stays 1 with no surviving row able to move it, so the batch is stranded
+       OPEN forever and the reconcile header reads "2 of 3" over a two-row
+       table.
+    2. The plausible fix that adds the deleted-row deltas BELOW
+       ``if not demoted: return []``. No referrer is demotable here, so that
+       early return fires and the fix is dead on the commonest path.
+
+    Also kills "decrement ``pending_count`` only": ``row_count`` is the
+    denominator the reconcile screen renders (``done = total_rows -
+    pending_count``), so leaving it at 3 credits the user with reconciling a
+    row that no longer exists.
+
+    ⚠ The ticket's own prescription -- "call ``close_batch_if_complete`` after
+    the delete and let its recount heal it" -- CANNOT work:
+    ``close_batch_if_complete`` returns early while ``pending_count > 0``, so
+    its recount is unreachable for an over-count. The counter must be
+    decremented explicitly.
+    """
+    seed = await _seed(db_session)
+    rows = await _batch_of_three(db_session, seed)
+    doomed = rows[2]
+
+    before = await _batch(db_session, seed)
+    assert (before.row_count, before.accepted_count, before.pending_count) == (3, 2, 1)
+    assert before.status == ImportBatchStatus.OPEN
+
+    demoted = await transaction_service.delete_transaction(
+        db_session, seed["org_id"], doomed.id,
+    )
+    # Precondition of this fence, asserted rather than assumed: nothing was
+    # demoted, so the early return is live.
+    assert demoted == []
+
+    after = await _batch(db_session, seed)
+    assert after.pending_count == 0, "deleted row never left the pending class"
+    assert after.row_count == 2, "denominator still counts a row that is gone"
+    assert after.accepted_count == 2, "accepted rows must not be disturbed"
+    assert after.status == ImportBatchStatus.CLOSED, (
+        "batch stranded OPEN with no row left that can move the counter"
+    )
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_bulk_deleting_the_last_pending_batch_row_settles_counters_and_closes(
+    db_session,
+):
+    """F31. The bulk sibling, fenced SEPARATELY on purpose.
+
+    This repo has repeatedly shipped a fix to ``delete_transaction`` and not
+    to ``bulk_delete_transactions``. Same assertions, different entry point.
+    """
+    seed = await _seed(db_session)
+    rows = await _batch_of_three(db_session, seed)
+
+    deleted_count, skipped_ids, demoted = (
+        await transaction_service.bulk_delete_transactions(
+            db_session, seed["org_id"], [rows[2].id],
+        )
+    )
+    # Nothing demoted, so the early return this fence exists to kill is live.
+    assert (deleted_count, skipped_ids, demoted) == (1, [], [])
+
+    after = await _batch(db_session, seed)
+    assert (after.row_count, after.accepted_count, after.pending_count) == (2, 2, 0)
+    assert after.status == ImportBatchStatus.CLOSED
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_reopened_batch_row_settles_counters(db_session):
+    """F32. PROVENANCE. The live defect's only trigger is the legal
+    ``ACCEPTED -> PENDING_REVIEW`` reopen -- ``create_import_batch`` lands
+    every row ACCEPTED and ``unmatched`` is never written anywhere in the
+    backend. This fence reaches ``pending_review`` through
+    ``reconcile_request`` rather than through the fixture's shortcut, so the
+    state under test is the one the product actually produces.
+
+    The batch stays OPEN here (a genuinely pending row remains), which is
+    what separates this from F30: it fences the COUNTER, not the closure.
+
+    ⚠ Its ``pending_count`` arm does NOT pin the arithmetic on its own. With
+    only one pending row left, a double-decrement lands the counter at 0,
+    which lets ``close_batch_if_complete`` past its early return and its
+    drift recount repairs the value -- so a correct and a double-decrementing
+    implementation agree here. F34b is the fence that separates them, by
+    leaving TWO pending rows so an over-decrement lands above zero and is
+    never recounted.
+    """
+    seed = await _seed(db_session)
+    rows = await _batch_of_three(db_session, seed)
+    reopened = rows[0]
+    await _reconcile(
+        db_session, seed, _transition(reopened.id, ReconciliationState.PENDING_REVIEW),
+    )
+    assert (
+        await _reload(db_session, reopened.id)
+    ).reconciliation_state == "pending_review"
+
+    before = await _batch(db_session, seed)
+    assert (before.row_count, before.accepted_count, before.pending_count) == (3, 1, 2)
+
+    await transaction_service.delete_transaction(
+        db_session, seed["org_id"], reopened.id,
+    )
+
+    after = await _batch(db_session, seed)
+    assert (after.row_count, after.accepted_count, after.pending_count) == (2, 1, 1)
+    assert after.status == ImportBatchStatus.OPEN, (
+        "a batch with a live pending row must stay open"
+    )
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_accepted_batch_row_moves_accepted_not_pending(db_session):
+    """F33. POLARITY control, ACCEPTED arm. An ACCEPTED row leaving the batch must move
+    ``accepted_count`` and ``row_count`` and NOT ``pending_count``.
+
+    Kills a fix that moves ``pending_count`` when an ACCEPTED row is
+    deleted. It does NOT kill a fix that decrements ``pending_count`` for
+    every NON-accepted row (``elif ... in PENDING_STATES`` written as a bare
+    ``else``), because this row takes the ``accepted`` branch either way --
+    F34 is the fence for that arm. Saying so here rather than claiming the
+    broader kill: a docstring that overstates what it pins is worse than
+    none, because the next reader stops looking.
+    """
+    seed = await _seed(db_session)
+    rows = await _batch_of_three(db_session, seed)
+    doomed = rows[0]
+    assert (await _reload(db_session, doomed.id)).reconciliation_state == "accepted"
+
+    await transaction_service.delete_transaction(
+        db_session, seed["org_id"], doomed.id,
+    )
+
+    after = await _batch(db_session, seed)
+    assert after.accepted_count == 1
+    assert after.row_count == 2
+    assert after.pending_count == 1, "an accepted row must not move pending_count"
+    assert after.status == ImportBatchStatus.OPEN, (
+        "a batch with a live pending row must stay open"
+    )
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_row_outside_any_batch_touches_no_counters(db_session):
+    """F35. NEGATIVE control. An ordinary transaction with a NULL
+    ``import_batch_id`` must not move any counter.
+
+    Kills a fix that groups by ``import_batch_id`` without a null check,
+    which would raise, or key a delta under ``None`` and silently skip the
+    real batch.
+    """
+    seed = await _seed(db_session)
+    await _batch_of_three(db_session, seed)
+    loose = await _create(
+        db_session, seed, account_id=seed["acct_b_id"], amount="64.00",
+    )
+    assert loose.import_batch_id is None
+
+    await transaction_service.delete_transaction(
+        db_session, seed["org_id"], loose.id,
+    )
+
+    after = await _batch(db_session, seed)
+    assert (after.row_count, after.accepted_count, after.pending_count) == (3, 2, 1)
+    assert after.status == ImportBatchStatus.OPEN
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_matched_batch_row_moves_only_row_count(db_session):
+    """F34. POLARITY control, NON-ACCEPTED arm. The fence F33 does not give.
+
+    A ``matched`` row is in neither the accepted class nor ``PENDING_STATES``,
+    so deleting it must move ``row_count`` and NOTHING else.
+
+    Kills writing the state test as a bare ``else`` --
+    ``if state == "accepted": ... else: pending_delta += 1`` -- which is the
+    natural shape and is wrong for ``matched``, ``edited``, ``skipped`` and
+    ``rejected``. Under it, deleting this row drives ``pending_count`` to 0
+    and auto-closes a batch that still holds a genuinely pending row.
+    F33's deleted row is ACCEPTED, so it takes the ``if`` branch under both
+    implementations and cannot see this.
+    """
+    seed = await _seed(db_session)
+    rows = await _batch_of_three(db_session, seed)
+    # A matched row inside the batch, reached through the real reconcile
+    # path: rows[0] is ACCEPTED, so reopen it and match it against an
+    # outside canonical row.
+    await _reconcile(
+        db_session, seed, _transition(rows[0].id, ReconciliationState.PENDING_REVIEW),
+    )
+    dup, _canonical = await _make_matched_pair(
+        db_session, seed, amount="512.00", canonical=None,
+    )
+    assert (await _reload(db_session, dup.id)).reconciliation_state == "matched"
+    assert dup.import_batch_id == seed["batch_id"]
+
+    # ⚠ Snapshot as SCALARS. ``_batch`` returns the identity-mapped
+    # ``ImportBatch`` instance, so holding the object and re-reading it after
+    # the delete compares the row against itself -- a tautology that reads
+    # exactly like a real assertion.
+    b = await _batch(db_session, seed)
+    before = (b.row_count, b.accepted_count, b.pending_count)
+
+    await transaction_service.delete_transaction(
+        db_session, seed["org_id"], dup.id,
+    )
+
+    after = await _batch(db_session, seed)
+    assert after.row_count == before[0] - 1
+    assert after.accepted_count == before[1], (
+        "a matched row is not in the accepted class"
+    )
+    assert after.pending_count == before[2], (
+        "a matched row is not in PENDING_STATES"
+    )
+    assert after.status == ImportBatchStatus.OPEN
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_deleting_one_of_two_pending_rows_decrements_exactly_once(db_session):
+    """F34b. THE ARITHMETIC fence for ``pending_count``.
+
+    F32 cannot pin this. With one pending row left, an over-decrement lands
+    the counter at 0, which lets ``close_batch_if_complete`` past its
+    ``pending_count > 0`` early return and its belt-and-braces drift recount
+    silently repairs the value -- so right and wrong implementations agree.
+
+    Leaving TWO pending rows moves the landing point above zero, where the
+    early return fires and no recount ever runs. A double-decrement is then
+    permanent: the batch under-counts, and it will auto-close later while a
+    genuinely pending row is still outstanding.
+
+    Kills ``pending_delta[bid] = pending_delta.get(bid, 0) + 2`` and any
+    equivalent over-decrement of this column.
+    """
+    seed = await _seed(db_session)
+    rows = [
+        await _create(
+            db_session, seed, account_id=seed["acct_a_id"], amount=amt,
+            label=f"quad{i}", in_batch=True,
+        )
+        for i, amt in enumerate(("2.00", "4.00", "8.00", "16.00"))
+    ]
+    # Accept one, leaving THREE pending. Deleting one must land at two.
+    await _reconcile(
+        db_session, seed, _transition(rows[0].id, ReconciliationState.ACCEPTED),
+    )
+    before = await _batch(db_session, seed)
+    assert (before.row_count, before.accepted_count, before.pending_count) == (4, 1, 3)
+
+    await transaction_service.delete_transaction(
+        db_session, seed["org_id"], rows[1].id,
+    )
+
+    after = await _batch(db_session, seed)
+    assert after.pending_count == 2, (
+        "pending_count must move by exactly one per deleted pending row; "
+        "an over-decrement landing above zero is never recounted"
+    )
+    assert (after.row_count, after.accepted_count) == (3, 1)
+    assert after.status == ImportBatchStatus.OPEN
+    await assert_invariant(db_session, seed)

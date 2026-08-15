@@ -308,7 +308,7 @@ async def test_reverting_a_reciprocal_transfer_leg_reverts_its_contribution(
     shared tuple -- passes every SKIPPED-only fence in this module. The parity
     fences on the shared predicate cannot see that mutant either, because it
     never touches the shared predicate. REJECTED is not a hypothetical state:
-    it is a first-class inbox transition AND what ``_demote_match_orphans``
+    it is a first-class inbox transition AND what ``_settle_batch_counters_and_demote_orphans``
     writes in production.
     """
     seed = await _seed(db_session)
@@ -440,7 +440,7 @@ async def test_pairing_a_skipped_row_still_succeeds(db_session):
     (``ALLOWED_TRANSITIONS[SKIPPED] = frozenset()``), so a row skipped by
     mistake could then never be paired and never un-skipped -- delete would be
     its only exit, which is exactly the closed loop TBD-295 documents.
-    ``_demote_match_orphans`` already refused a guard on that same ground.
+    ``_settle_batch_counters_and_demote_orphans`` already refused a guard on that same ground.
 
     The state is arithmetically SAFE because arms 4b/4f are gated (F2) and the
     state clause keeps the leg out of the reconstruction. A future hygiene PR
