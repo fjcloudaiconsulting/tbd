@@ -57,6 +57,26 @@ docker compose exec frontend npm test -- tests/...
 docker compose exec frontend npx tsc --noEmit
 ```
 
+**Report-source catalog fixture (TBD-381).** The frontend derives every widget's
+number format AND every filter control's visibility from `GET /api/v1/reports/sources`,
+so its tests need the catalog. `frontend/tests/fixtures/report-sources.json` is
+**generated**, never hand-written:
+
+```bash
+docker compose exec -T backend python -m scripts.regen_report_sources_fixture --stdout \
+  > frontend/tests/fixtures/report-sources.json
+```
+
+⚠ `backend/tests/test_report_sources_frontend_contract.py` asserts it and **FAILS
+rather than regenerating**. If it is red a source changed: re-run the generator,
+**read the diff**, and confirm the frontend still formats and gates correctly.
+Auto-regenerating restores exactly the silent drift it exists to stop — the
+hand-written original disagreed with production in 16 places, one of them a live
+right/wrong split, and omitted a whole source (which would have made any future
+test of that source structurally vacuous, since an unknown dataset hits the
+resolver's deliberate allow-everything branch). It lives in `backend/tests/` so
+it rides the existing shards: no new CI job, no aggregate `needs:` wiring.
+
 `backend/tests/test_period_status_frontend_contract.py` reads a fixture that lives
 on the frontend side, so `docker-compose.yml` mounts
 `./frontend/tests/fixtures:/app/frontend/tests/fixtures:ro` into the backend
