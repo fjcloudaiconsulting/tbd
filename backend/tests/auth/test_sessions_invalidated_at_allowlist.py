@@ -82,6 +82,26 @@ BACKEND_APP = Path(__file__).resolve().parents[2] / "app"
 # ``routers/auth.py::logout`` was REMOVED from this set in PR 4 —
 # per-session logout via Redis family revoke replaced it. That
 # removal is the load-bearing change this regression pins.
+#
+# ``routers/users.py::update_profile`` was MOVED to
+# ``routers/auth.py::verify_email`` in TBD-361 (two-phase email change).
+# Requesting a change now records an unproven claim in ``pending_email``
+# and touches neither identity nor the session; the cutoff fires at the
+# instant the claim is proven. Do not "restore" the update_profile entry:
+# a write there is the permanent-lockout defect, and the UNEXPECTED
+# direction of this test is what keeps it out.
+#
+# ⚠ This allowlist is FUNCTION-GRANULAR. It names
+# ``_promote_pending_email`` because that is the function that performs the
+# write -- naming its caller ``verify_email`` would not match, since the
+# scanner walks function bodies. Two consequences worth stating:
+#   * it cannot see that the helper is only reached from the promoting
+#     branch, so it would certify a version that fired the cutoff on EVERY
+#     verification and logged out every first-time bootstrap; and
+#   * a future refactor that moves the write into another helper satisfies
+#     nothing here until this entry is updated.
+# Both cases are pinned behaviourally in
+# ``tests/auth/test_verify_email_endpoint.py``, not here.
 
 ALLOWED_WRITE_SITES: tuple[tuple[str, str, str], ...] = (
     (
@@ -90,9 +110,17 @@ ALLOWED_WRITE_SITES: tuple[tuple[str, str, str], ...] = (
         "password reset via token (spec §6 trigger 1)",
     ),
     (
-        "routers/users.py",
-        "update_profile",
-        "email change (spec §6 trigger 3)",
+        "routers/auth.py",
+        "_promote_pending_email",
+        "email change PROMOTION (spec §6 trigger 3). MOVED off "
+        "routers/users.py::update_profile in TBD-361, not deleted: identity "
+        "changes when a proven pending_email is promoted, not when the "
+        "change is requested. The request-time write WAS the permanent "
+        "lockout defect -- it logged the user out in the same request that "
+        "cleared email_verified, and every recovery path then mailed the "
+        "address they had just mistyped -- so update_profile must stay "
+        "absent from this set, and the UNEXPECTED direction now pins it "
+        "shut.",
     ),
     (
         "routers/users.py",

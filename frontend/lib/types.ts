@@ -18,6 +18,10 @@ export interface User {
   phone: string | null;
   avatar_url: string | null;
   email_verified: boolean;
+  // TBD-361. The address the user has CLAIMED but not yet proven, or null.
+  // Optional so every existing User fixture keeps compiling: a required
+  // field on this shared type breaks CI with no backend gate able to see it.
+  pending_email?: string | null;
   role: "owner" | "admin" | "member";
   org_id: number;
   org_name: string;

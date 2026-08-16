@@ -151,6 +151,61 @@ def api_token_created(*, name: str, prefix: str) -> tuple[str, str, Optional[str
     return (title, body, "/system/api-tokens")
 
 
+def user_email_change_requested(
+    *, pending_email: str
+) -> tuple[str, str, Optional[str]]:
+    """Copy for ``user.email.change_requested`` (security category), TBD-361.
+
+    In-app counterpart of ``user_email_change_requested_old_address``.
+
+    ⚠ Nothing has changed when this fires. The account's login email is
+    still the current one, and stays that way unless and until the new
+    address is confirmed, so the copy must not say "changed" -- that was
+    the old, single-phase behaviour, and repeating it here would train the
+    user to ignore the one alert that matters.
+
+    Args:
+        pending_email: the address the account was asked to change TO.
+    """
+    title = "An email change was requested"
+    body = (
+        f"Someone asked to change your account email to {pending_email}. "
+        "Your current address stays your login email until that one is "
+        "confirmed. If this wasn't you, cancel it in Settings and change "
+        "your password."
+    )
+    return (title, body, "/settings")
+
+
+def user_email_change_requested_old_address(
+    *, pending_email: str
+) -> tuple[str, str, Optional[str]]:
+    """EMAIL copy for ``user.email.change_requested``, to the CURRENT address.
+
+    The anti-hijack channel, and under the two-phase design it is also the
+    channel that can still ACT: the change has not happened yet, the reader
+    still controls the login address, and cancelling costs them one click.
+    That makes this notice strictly more useful than its single-phase
+    predecessor, which could only tell the victim they had already lost the
+    account.
+
+    Rendering goes through ``send_notification_email``, which HTML-escapes
+    title and body, so interpolating the raw address here is safe.
+
+    Args:
+        pending_email: the address the account was asked to change TO.
+    """
+    title = "Confirm or cancel: an email change was requested"
+    body = (
+        f"A request was made to change the login email on your The Better "
+        f"Decision account to {pending_email}. Nothing has changed yet, and "
+        "this address remains your login email until the new one is "
+        "confirmed. If this wasn't you, cancel the pending change in "
+        "Settings, reset your password, and contact support."
+    )
+    return (title, body, "/settings")
+
+
 def user_email_changed(*, new_email: str) -> tuple[str, str, Optional[str]]:
     """Copy for ``user.email.changed`` (security category).
 

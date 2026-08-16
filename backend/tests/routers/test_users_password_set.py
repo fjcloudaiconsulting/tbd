@@ -366,7 +366,13 @@ async def test_email_change_accepts_valid_stepup_token(session_factory):
         )
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["email"] == "new@acme.io"
+    # TBD-361: the response still reports the LIVE address, because that is
+    # what it still is. The claim is reported separately, and the settings
+    # page renders its pending row from it -- an implementation that echoed
+    # the new address back here would make the UI show a change that has not
+    # happened, and the field would then snap back on the next refresh.
+    assert body["email"] == "alice@acme.io"
+    assert body["pending_email"] == "new@acme.io"
 
     async with session_factory() as db:
         user = await db.get(User, user_id)
@@ -374,9 +380,18 @@ async def test_email_change_accepts_valid_stepup_token(session_factory):
         # Token must be consumed on use (no replay).
         assert user.stepup_token is None
         assert user.stepup_token_expires_at is None
-        assert user.email == "new@acme.io"
-        # Email change still invalidates sessions.
-        assert user.sessions_invalidated_at is not None
+        # TBD-361: the step-up proof is still consumed, but the change is
+        # now a two-phase commit -- the CLAIM is recorded and the live
+        # identity is untouched until the new address proves itself.
+        assert user.pending_email == "new@acme.io"
+        assert user.email == "alice@acme.io"
+        assert user.email_verified is True
+        # And the session deliberately SURVIVES. Invalidating it here was
+        # the lockout defect: it logged the user out in the same request
+        # that cleared their verification, leaving every recovery path
+        # mailing an address they may have just mistyped. The cutoff now
+        # fires at promotion.
+        assert user.sessions_invalidated_at is None
 
 
 @pytest.mark.asyncio
@@ -497,6 +512,11 @@ async def test_email_change_rejects_replay_of_consumed_stepup_token(session_fact
     async with session_factory() as db:
         user = await db.get(User, user_id)
         assert user is not None
-        assert user.email == "first@acme.io"
+        # TBD-361: the live identity never moved for either request.
+        assert user.email == "alice@acme.io"
+        # The FIRST request's claim stands -- it was authorised and
+        # succeeded. What the replay must not do is overwrite it with the
+        # second address on a consumed proof of presence.
+        assert user.pending_email == "first@acme.io"
         assert user.stepup_token is None
         assert user.stepup_token_expires_at is None
