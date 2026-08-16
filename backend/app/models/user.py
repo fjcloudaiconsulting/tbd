@@ -60,6 +60,26 @@ class User(Base):
         String(AVATAR_URL_MAX_LENGTH), nullable=True
     )
     email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
+    # TBD-361. An UNPROVEN claim on an address: what the user typed into the
+    # email field, held here until they click the link we mail to it. The
+    # live, verified ``email`` above and the user's session are untouched
+    # until then, which is what stops a typo destroying the account.
+    #
+    # ⚠ CLEARED BY EXACTLY FOUR WRITERS, and nothing else:
+    #   1. promotion            (``auth.verify_email``, on the promoting branch)
+    #   2. explicit cancel      (``DELETE /users/me/pending-email``)
+    #   3. overwrite            (a later ``PUT /users/me``; last write wins)
+    #   4. promote-time conflict abort (another row took the address first)
+    #
+    # NOT cleared by token expiry, by ``reset_password``, or by deactivation.
+    # A stale claim is inert: every verification-token mint site reads
+    # ``email``, so nothing can resurrect it, and the guard in
+    # ``verify_email`` compares the token's claim against THIS column's
+    # current value -- so a superseded claim's link is refused with no
+    # revocation list.
+    #
+    # Deliberately NOT unique and not indexed; see 080_pending_email.
+    pending_email: Mapped[str | None] = mapped_column(String(120), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     role: Mapped[Role] = mapped_column(
         Enum(Role, values_callable=lambda x: [e.value for e in x]),

@@ -57,6 +57,11 @@ class UserResponse(BaseModel):
     phone: str | None = None
     avatar_url: str | None = None
     email_verified: bool = False
+    # TBD-361. The address the user has CLAIMED but not yet proven. NULL
+    # unless a change is in flight. The frontend renders the pending row and
+    # its Cancel affordance from this, so it must be emitted by BOTH
+    # _user_response builders -- /auth/me is the one AuthProvider reads.
+    pending_email: str | None = None
     role: str
     org_id: int
     org_name: str

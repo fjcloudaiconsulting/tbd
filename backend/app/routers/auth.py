@@ -133,6 +133,7 @@ def _user_response(user: User, org: Organization, sub: Subscription | None = Non
         phone=user.phone,
         avatar_url=user.avatar_url,
         email_verified=user.email_verified,
+        pending_email=user.pending_email,
         role=user.role.value,
         org_id=org.id,
         org_name=org.name,
@@ -2008,9 +2009,248 @@ async def reset_password(
 # ── Email Verification ───────────────────────────────────────────────────────
 
 
+async def _promote_pending_email(
+    request: Request,
+    db: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user: User,
+    pending_email: str,
+) -> dict:
+    """Promote a proven `pending_email` onto `users.email` (TBD-361).
+
+    Reached only from ``verify_email``'s promoting branch, i.e. only when a
+    valid, unexpired token's ``email`` claim matched the row's live
+    ``pending_email`` exactly. This is the moment the account's identity
+    actually changes, which is why the session cutoff and the completion
+    audit event both live here rather than at request time.
+    """
+    # Re-check uniqueness. The advisory check ran when the claim was made,
+    # and up to 24 hours can pass before it is proven, so somebody else may
+    # have taken the address in between.
+    #
+    # ⚠ COLLATION-DEPENDENT, and the SQLite shards cannot see the half that
+    # matters. `users.email` is pinned to `utf8mb4_0900_ai_ci`
+    # (040_users_email_case_insensitive); SQLite compares binary. Mixed-case
+    # `users.email` rows genuinely exist in production because the old
+    # request path wrote `body.email` raw, so for a legacy `Foo@Bar.com`
+    # against a claim `foo@bar.com` MySQL matches here and SQLite does not --
+    # and on SQLite the UNIQUE index misses too, so the IntegrityError
+    # backstop below never fires either. That residual is covered by
+    # migration 040; the exact-case collision is what the fences pin.
+    # A suspended account must not rotate its recovery address
+    # mid-investigation -- that would also destabilise `actor_email` in the
+    # audit trail. Scoped to the PROMOTING branch only: applying it to the
+    # bootstrap arm would change existing behaviour for a case with no
+    # defect. Generic 400, like every other refusal here, so the endpoint
+    # keeps disclosing nothing about why.
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token",
+        )
+
+    taken = await db.scalar(
+        select(User).where(User.email == pending_email, User.id != user.id)
+    )
+    if taken is not None:
+        await _abandon_pending_email(db, user_id=user.id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "That address is now in use by another account, so the "
+                "change was cancelled. Request it again with a different "
+                "address."
+            ),
+        )
+
+    # Snapshot everything the post-commit audit needs BEFORE the commit:
+    # afterwards the instance is expired and `user.organization` would
+    # lazy-load, turning a best-effort dispatch into a 500.
+    old_email = user.email
+    org_id = user.org_id
+    # ⚠ Explicit SELECT, never `user.organization`. `verify_email` loads the
+    # user with a plain `select(User)`, so the relationship is unloaded and
+    # touching it here lazy-loads -- which under asyncio raises
+    # MissingGreenlet and 500s the promotion. Caught by the fences, not by
+    # review.
+    org_row = await db.scalar(
+        select(Organization).where(Organization.id == user.org_id)
+    )
+    org_name = org_row.name if org_row is not None else None
+    user.email = pending_email
+    user.pending_email = None
+    user.email_verified = True
+    # Identity changed, so every token minted under the OLD address dies.
+    #
+    # ⚠ DELIBERATELY NOT FLOORED to whole seconds. Every validator compares
+    # with a strict `<` (deps.py, and _validate_refresh_cookie) and
+    # `create_access_token` already floors `iat`, so a cutoff floored to T.0
+    # fails to invalidate a token minted at T.2 whose `iat` is T -- `T < T`
+    # is False and the token survives an identity change. Unfloored, MySQL's
+    # fsp-0 rounding stores T+1 and the token is correctly rejected. If this
+    # endpoint is ever changed to mint a session, adopt
+    # `invitation_service.accept_invitation`'s pattern WHOLESALE: its comment
+    # requires BOTH columns floored, because `token_cutoff` maxes two.
+    user.sessions_invalidated_at = datetime.now(timezone.utc)
+
+    user_id_snapshot = user.id
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Lost the race between the SELECT above and this commit. Only
+        # reachable on MySQL, where the unique index is case-insensitive.
+        #
+        # ⚠ The rollback EXPIRES `user`, so the abandon path re-reads the row
+        # rather than touching the instance we hold -- and its own commit can
+        # fail too, so it guards itself.
+        await db.rollback()
+        await _abandon_pending_email(db, user_id=user.id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "That address is now in use by another account, so the "
+                "change was cancelled. Request it again with a different "
+                "address."
+            ),
+        )
+
+    # Additive discriminator. Both branches used to return an identical
+    # body, so the verify-email page could not tell a first-time
+    # verification from a promotion -- and after a promotion the session is
+    # dead (the cutoff above), so offering "Go to dashboard" sends the user
+    # into a 401. Additive, so no existing client breaks.
+    await _record_email_promoted(
+        request,
+        db,
+        session_factory,
+        user_id=user_id_snapshot,
+        old_email=old_email,
+        new_email=pending_email,
+        org_id=org_id,
+        org_name=org_name,
+    )
+    return {"detail": "Email verified", "email_changed": True}
+
+
+async def _record_email_promoted(
+    request: Request,
+    db: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: int,
+    old_email: str,
+    new_email: str,
+    org_id: int | None,
+    org_name: str | None,
+) -> None:
+    """The COMPLETION half of the email-change audit trail (TBD-361).
+
+    The request-time row in ``users.update_profile`` is
+    ``user.email.change_requested`` and asserts only that someone asked. This
+    is the row that says it happened, and it is written here because here is
+    where it did.
+
+    Both "changed" notices belong here for the same reason: at request time
+    the old address had not lost anything yet and the new address was not yet
+    the login email, so sending either then would have been false. The
+    request-time channel is the cancel-able alert to the address that still
+    controls the account.
+
+    Best effort throughout, on the same ground as every other post-commit
+    audit dispatch in this module: the promotion already committed, and a
+    notification failure must not turn a completed change into a 500 on a
+    link click.
+    """
+    from app.services.notification_templates import (
+        user_email_changed,
+        user_email_changed_new_address,
+        user_email_changed_old_address,
+    )
+
+    audit_event_id = await audit_service.record_audit_event(
+        session_factory,
+        event_type="user.email.changed",
+        actor_user_id=user_id,
+        # The OLD address, so a "who was this" lookup after a malicious swap
+        # can still recover the original.
+        actor_email=old_email,
+        target_org_id=org_id,
+        target_org_name=org_name,
+        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"old_email": old_email, "new_email": new_email},
+    )
+    if audit_event_id is None:
+        return
+
+    title, body, link_url = user_email_changed(new_email=new_email)
+    await notification_service.dispatch_notification_best_effort(
+        db,
+        user_id=user_id,
+        category=NotificationCategory.SECURITY,
+        event_type="user.email.changed",
+        title=title,
+        body=body,
+        link_url=link_url,
+        audit_event_id=audit_event_id,
+    )
+
+    # OLD address first: it is the inbox a hijack victim still controls, and
+    # this is the last moment it can be reached, since it is no longer on the
+    # account after this point.
+    alert_title, alert_body, alert_link = user_email_changed_old_address(
+        new_email=new_email
+    )
+    await notification_service.send_security_email_best_effort(
+        db,
+        user_id=user_id,
+        email=old_email,
+        event_type="user.email.changed",
+        title=alert_title,
+        body=alert_body,
+        link_url=alert_link,
+    )
+    confirm_title, confirm_body, confirm_link = user_email_changed_new_address(
+        old_email=old_email
+    )
+    await notification_service.send_security_email_best_effort(
+        db,
+        user_id=user_id,
+        email=new_email,
+        event_type="user.email.changed",
+        title=confirm_title,
+        body=confirm_body,
+        link_url=confirm_link,
+    )
+
+
+async def _abandon_pending_email(db: AsyncSession, *, user_id: int) -> None:
+    """Drop a claim that can no longer be promoted, best effort.
+
+    Clearing lets the user request a different address immediately instead of
+    being stuck behind a claim that will 409 forever. Best effort because the
+    caller is already raising a 409: failing to clear is worse reported as a
+    500 than left for the next request to overwrite.
+    """
+    try:
+        row = await db.scalar(select(User).where(User.id == user_id))
+        if row is not None and row.pending_email is not None:
+            row.pending_email = None
+            await db.commit()
+    except Exception:  # noqa: BLE001 - never mask the 409 with a 500
+        await db.rollback()
+
+
 @router.post("/verify-email")
 @limiter.limit("10/minute")
-async def verify_email(request: Request, body: VerifyEmailRequest, db: AsyncSession = Depends(get_db)):
+async def verify_email(
+    request: Request,
+    body: VerifyEmailRequest,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
     """Verify email address using a verification token."""
     payload = decode_token(body.token)
     if payload is None or payload.get("type") != "email_verify":
@@ -2029,22 +2269,63 @@ async def verify_email(request: Request, body: VerifyEmailRequest, db: AsyncSess
             detail="Invalid or expired verification token",
         )
 
-    # S-P2-1: the token binds the email it was issued for. Reject any
-    # token whose email no longer matches the user's current address —
-    # that means the user changed email after the token was issued and
-    # this link would otherwise verify a stale address. A token without
-    # an `email` claim is a pre-migration token and is rejected outright
-    # so the new binding is always enforced.
+    # S-P2-1: the token binds the email it was issued for.
+    #
+    # TWO legitimate shapes since TBD-361:
+    #
+    #   * BOOTSTRAP — a token minted for the address the account already
+    #     holds. `register`, `resend_verification` and
+    #     `resend_verification_public` all mint from `user.email`, so this
+    #     arm must keep working; dropping it would break every first-time
+    #     verification on the install, and NO pending_email test would catch
+    #     it because `pending_email` is NULL in all of them.
+    #   * PROMOTION — a token minted for a claimed address held in
+    #     `pending_email`, which this endpoint promotes.
+    #
+    # Compared EXACTLY, never casefolded. Values are normalised at every
+    # write site, so a legitimate token's claim is byte-identical to the
+    # stored value; casefolding here would instead accept a token whose
+    # claim DIFFERS from what we stored, which weakens S-P2-1 rather than
+    # hardening it.
+    #
+    # What each arm refuses:
+    #   * current-address arm — the original S-P2-1 replay: a link mailed to
+    #     an address the account has since moved away from must not launder
+    #     it back into `email_verified`.
+    #   * pending arm, pinned to the LIVE column value — replay of a
+    #     superseded or cancelled claim. Claim b@x, change to c@x, and the
+    #     b@x link is inert, with no revocation list to maintain.
+    #   * `not token_email` — pre-S-P2-1 tokens carrying no claim at all,
+    #     which would otherwise verify whatever the row currently holds.
+    #   * together with `sub` — cross-account promotion. `sub` pins the user,
+    #     `email` pins the address; neither alone does.
     token_email = payload.get("email")
-    if not token_email or token_email != user.email:
+    if not token_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token",
+        )
+    promoting = (
+        user.pending_email is not None and token_email == user.pending_email
+    )
+    if not promoting and token_email != user.email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired verification token",
         )
 
-    user.email_verified = True
-    await db.commit()
-    return {"detail": "Email verified"}
+    if not promoting:
+        # Bootstrap: verify the address the account already holds. No
+        # identity change, so deliberately NO session cutoff and no
+        # `pending_email` clear — an unrelated claim in flight is none of
+        # this path's business.
+        user.email_verified = True
+        await db.commit()
+        return {"detail": "Email verified"}
+
+    return await _promote_pending_email(
+        request, db, session_factory, user=user, pending_email=token_email
+    )
 
 
 @router.post("/resend-verification")

@@ -101,6 +101,7 @@ export default function SettingsProfilePage() {
   }, []);
 
   const [profileMsg, setProfileMsg] = useState("");
+  const [cancellingPending, setCancellingPending] = useState(false);
   const [profileErr, setProfileErr] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
 
@@ -119,6 +120,26 @@ export default function SettingsProfilePage() {
     } catch (err) {
       setProfileErr(extractErrorMessage(err));
       setStepupBusy(false);
+    }
+  }
+
+  // TBD-361. No password and no step-up, deliberately: requesting a change
+  // moves the account's recovery channel and so demands proof of presence,
+  // while cancelling one only restores the status quo and can move nothing.
+  // Demanding a password to undo a mistake is the exact shape that made the
+  // original defect unrecoverable.
+  async function cancelPendingEmail() {
+    setProfileErr("");
+    setProfileMsg("");
+    setCancellingPending(true);
+    try {
+      await apiFetch("/api/v1/users/me/pending-email", { method: "DELETE" });
+      await refreshMe();
+      setProfileMsg("Pending email change cancelled.");
+    } catch (err) {
+      setProfileErr(extractErrorMessage(err));
+    } finally {
+      setCancellingPending(false);
     }
   }
 
@@ -169,12 +190,15 @@ export default function SettingsProfilePage() {
       await refreshMe();
       setCurrentPassword("");
       setStepupToken("");
-      // Nudge the user toward the next step — changing email logs every
-      // session out and leaves email_verified=false until they click
-      // the new verification link.
+      // TBD-361. The old copy said "You'll need to sign in again" and
+      // implied the address had changed. All three clauses became false
+      // when the change became two-phase: the profile was NOT updated,
+      // refreshMe() snaps the field back to the live address, and the
+      // session survives. Left alone the user sees their edit revert with
+      // no explanation, which reads as a failed save.
       setProfileMsg(
         "email" in payload
-          ? "Profile updated. Check your new inbox for a verification link. You'll need to sign in again."
+          ? `Check ${payload.email} for a confirmation link. Your current address stays your sign-in email until you confirm, and you are still signed in.`
           : "Profile updated",
       );
     } catch (err) {
@@ -228,7 +252,20 @@ export default function SettingsProfilePage() {
                     {user?.is_superadmin && <span className="ml-1 text-accent">· superadmin</span>}
                   </p>
                   {user?.email_verified && (
-                    <p className="mt-0.5 text-[10px] text-success">Email verified</p>
+                    // TBD-361. The badge attests to the LIVE address, which
+                    // stays verified while a change is in flight -- that is
+                    // the point of the two-phase design. But it never names
+                    // its subject, so with a pending claim on screen a reader
+                    // pairs it with the wrong address and the card reads as
+                    // contradicting the pending notice below. The suffix
+                    // makes the subject unambiguous without duplicating the
+                    // address already shown in the Email field.
+                    <p className="mt-0.5 text-[10px] text-success">
+                      Email verified
+                      {user.pending_email ? (
+                        <span className="text-text-muted"> · change pending</span>
+                      ) : null}
+                    </p>
                   )}
                 </div>
               </div>
@@ -256,6 +293,31 @@ export default function SettingsProfilePage() {
                 <div>
                   <label htmlFor="profile-email" className={label}>Email</label>
                   <input id="profile-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={`${input} max-w-md`} />
+                  {/* TBD-361. The only place the browser can express "abandon
+                      that claim". The form never transmits an unchanged
+                      address, so without this a mistyped address stays
+                      clickable for its full 24 hours and whoever owns it can
+                      promote themselves onto the account. */}
+                  {user?.pending_email && (
+                    <div
+                      data-testid="pending-email-row"
+                      className="mt-2 max-w-md rounded-md border border-border bg-surface-raised px-3 py-2"
+                    >
+                      <p className="text-xs text-text-secondary">
+                        Waiting for confirmation at{" "}
+                        <span className="font-medium text-text-primary">{user.pending_email}</span>.
+                        Your current address stays your sign-in email until then.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={cancelPendingEmail}
+                        disabled={cancellingPending}
+                        className="mt-1 text-xs font-medium text-accent underline underline-offset-2 disabled:opacity-50"
+                      >
+                        {cancellingPending ? "Cancelling…" : "Cancel this change"}
+                      </button>
+                    </div>
+                  )}
                 </div>
                 {emailChanging && passwordSet && (
                   <div>

@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, timezone
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -23,10 +23,10 @@ from app.schemas.user import PasswordChange, ProfileUpdate
 from app.security import create_email_verification_token, hash_password, verify_password
 from app.services import audit_service, notification_service
 from app.services.email_service import send_verification_email
+from app.services.user_service import normalize_email
 from app.services.notification_templates import (
-    user_email_changed as _tpl_user_email_changed,
-    user_email_changed_new_address as _tpl_user_email_changed_new_address,
-    user_email_changed_old_address as _tpl_user_email_changed_old_address,
+    user_email_change_requested as _tpl_user_email_change_requested,
+    user_email_change_requested_old_address as _tpl_user_email_change_requested_old_address,
     user_password_changed as _tpl_user_password_changed,
 )
 
@@ -60,6 +60,7 @@ def _user_response(user: User) -> UserResponse:
         phone=user.phone,
         avatar_url=user.avatar_url,
         email_verified=user.email_verified,
+        pending_email=user.pending_email,
         role=user.role.value,
         org_id=user.org_id,
         org_name=user.organization.name,
@@ -115,14 +116,38 @@ async def update_profile(
             )
         current_user.username = body.username
 
+    # TBD-361. Normalize BOTH sides before comparing. Without this a pure
+    # case change (`Foo@Bar.com` against a stored `foo@bar.com`) reads as a
+    # change and starts a whole two-phase flow for the same address --
+    # re-demanding the password and mailing a pointless confirmation link.
+    new_email_norm = normalize_email(body.email) if body.email is not None else None
     email_changing = (
-        body.email is not None and body.email != current_user.email
+        new_email_norm is not None and new_email_norm != normalize_email(current_user.email)
     )
+    # Submitting your CURRENT address while a claim is live cancels the
+    # claim. Without this the natural undo gesture silently does nothing and
+    # the mistyped address stays clickable for its full 24 hours -- whoever
+    # owns it can promote themselves onto the account. No re-auth: cancelling
+    # only restores the status quo, it cannot move the recovery channel.
+    #
+    # ⚠ Reachable by API clients only. The settings form re-seeds its input
+    # from `user.email` on every refresh and omits `email` from the payload
+    # when it is unchanged, so the browser never transmits this. The UI
+    # escape is DELETE /users/me/pending-email.
+    cancelling_pending = (
+        new_email_norm is not None
+        and not email_changing
+        and current_user.pending_email is not None
+    )
+    if cancelling_pending:
+        current_user.pending_email = None
     # Snapshot the old email BEFORE the mutation so the post-commit
     # audit row carries the OLD address. The new address goes into
-    # detail.new_email — there's no `target_user_email` column on
-    # audit_events today, so the user-target identity is carried via
-    # actor_email (self) + detail.
+    # detail — there's no `target_user_email` column on audit_events
+    # today, so the user-target identity is carried via actor_email
+    # (self) + detail. Since TBD-361 the request-time row carries
+    # `pending_email`, not `new_email`: at that moment nothing has
+    # changed, and the completion row is written at promotion instead.
     old_email_for_audit = current_user.email
     if email_changing:
         # Closes S-P1-2: without re-auth, a session-only compromise could
@@ -164,8 +189,13 @@ async def update_profile(
         # or any password-branch side effects. If the email is already
         # taken the change cannot apply, so the proof of presence must
         # remain usable for the user's retry. (Finding 3 from PR #138.)
+        #
+        # ⚠ ADVISORY ONLY since TBD-361, and deliberately kept anyway: it is
+        # a courtesy so the user is not left waiting for a link that could
+        # never work. The binding check is re-run at PROMOTION time, because
+        # 24 hours can pass between claim and proof.
         existing = await db.execute(
-            select(User).where(User.email == body.email)
+            select(User).where(User.email == new_email_norm)
         )
         if existing.scalar_one_or_none():
             raise HTTPException(
@@ -177,24 +207,35 @@ async def update_profile(
             # change is actually about to be applied.
             current_user.stepup_token = None
             current_user.stepup_token_expires_at = None
-        # Capture the new email now (body.email survives the pydantic
-        # validation; current_user.email is still the old one until the
-        # assignment below).
-        new_email = body.email
-        current_user.email = new_email
-        # New address is unverified by definition; force the user back
-        # through the verify-email flow before any trust is granted.
-        current_user.email_verified = False
-        # Kill every existing access/refresh token. If an attacker
-        # already holds one and happened to get the current password,
-        # the change is still logged out globally and a real user
-        # re-authenticates from scratch.
-        current_user.sessions_invalidated_at = datetime.now(timezone.utc)
-        # Issue a fresh verification token bound to the new email
-        # (S-P2-1) and deliver it in the background so the handler
-        # does not block on SMTP.
-        token = create_email_verification_token(current_user.id, new_email)
-        background_tasks.add_task(send_verification_email, new_email, token)
+        # TBD-361. TWO-PHASE COMMIT. Record the CLAIM; change nothing about
+        # identity. The live `email`, `email_verified` and the user's session
+        # all survive until the new address proves itself.
+        #
+        # This handler used to assign `current_user.email` here, clear
+        # `email_verified`, and set `sessions_invalidated_at` -- logging the
+        # user out in the same request that invalidated their verification.
+        # Since every recovery path mails `user.email`, which was now the
+        # typo, and `reset_password` never writes `email_verified`, a single
+        # mistyped character destroyed the account and its whole financial
+        # history with no way back on a solo org.
+        #
+        # ⚠ Mint from `pending_email`, NOT from `body.email`. They differ
+        # whenever the user types mixed case, and the promote-time guard
+        # compares the token's claim to the STORED value exactly. Minting
+        # from the raw input yields a link that 400s forever, for the one
+        # user who typed `Foo@Bar.com`.
+        current_user.pending_email = new_email_norm
+        # String snapshot for the post-commit notification block: a
+        # best-effort dispatch that rolls back expires ORM instances, so
+        # reading ``current_user.pending_email`` after it would lazy-load and
+        # turn a swallowed failure into a 500.
+        pending_email_snapshot = new_email_norm
+        token = create_email_verification_token(
+            current_user.id, current_user.pending_email
+        )
+        background_tasks.add_task(
+            send_verification_email, current_user.pending_email, token
+        )
 
     sent = body.model_fields_set
     if "first_name" in sent:
@@ -217,17 +258,26 @@ async def update_profile(
 
     if email_changing:
         # Audit AFTER the business commit succeeds. Independent-session
-        # write — a failure here does not roll back the email change.
-        # This row is the trigger source for the user.email.changed
-        # in-app + email notification.
+        # write — a failure here does not roll back the claim.
+        #
+        # ⚠ TBD-361. This is `change_requested`, NOT `changed`. Nothing about
+        # the user's identity has changed yet: `users.email` still holds the
+        # old address and will keep holding it unless and until the new one
+        # is proven. Writing a `user.email.changed` row here would assert a
+        # completed change that may never happen — and its `detail.new_email`
+        # used to read `current_user.email`, which no longer moves, so the
+        # row would claim the address changed to itself.
+        #
+        # The completion event is written by `auth.verify_email` on the
+        # promoting branch, sourced from the promoted value.
+        #
         # No target_user_id column on audit_events today; the actor
         # (self) carries the user identity, and the OLD email goes in
         # actor_email so a future "who was this" lookup after a malicious
-        # email swap can recover the original address. New email lives
-        # in detail.new_email.
+        # email swap can recover the original address.
         audit_event_id = await audit_service.record_audit_event(
             session_factory,
-            event_type="user.email.changed",
+            event_type="user.email.change_requested",
             actor_user_id=current_user.id,
             actor_email=old_email_for_audit,
             target_org_id=current_user.org_id,
@@ -237,80 +287,103 @@ async def update_profile(
             outcome="success",
             detail={
                 "old_email": old_email_for_audit,
-                "new_email": current_user.email,
+                "pending_email": current_user.pending_email,
             },
         )
 
         # Dispatch the security notification AFTER the audit row commits.
-        # The recipient is the actor (self) — the audit
-        # convention uses ``actor_user_id`` for self-target events.
-        # The NEW email is interpolated into the body so the recipient
-        # can confirm the change at a glance.
+        # The recipient is the actor (self) — the audit convention uses
+        # ``actor_user_id`` for self-target events.
+        #
+        # ⚠ TBD-361. ONE channel here, not two. The old single-phase code
+        # mailed BOTH addresses: an alert to the old one and a "this address
+        # is now your login email" confirmation to the new one. Under the
+        # two-phase design that confirmation is simply false at this moment —
+        # nothing has changed, and it would arrive in the same instant as the
+        # verification link for a change that has not happened, telling the
+        # new inbox two contradictory stories. The confirmation moves to the
+        # promotion branch in ``auth.verify_email``, where it is true.
+        #
+        # What stays is the alert to the CURRENT address, and under this
+        # design it is worth more than it used to be: the reader still
+        # controls the login address, the change has not happened, and they
+        # can cancel it. The single-phase version could only tell a victim
+        # they had already lost the account.
         if audit_event_id is not None:
             # Snapshot the recipient id BEFORE the best-effort dispatch: on
             # failure the wrapper rolls back and expires ORM instances, so
             # even a post-wrapper ``current_user.id`` read would lazy-load.
             recipient_user_id = current_user.id
-            title, body, link_url = _tpl_user_email_changed(
-                new_email=new_email
+            title, body, link_url = _tpl_user_email_change_requested(
+                pending_email=pending_email_snapshot
             )
             await notification_service.dispatch_notification_best_effort(
                 db,
                 user_id=recipient_user_id,
                 category=NotificationCategory.SECURITY,
-                event_type="user.email.changed",
+                event_type="user.email.change_requested",
                 title=title,
                 body=body,
                 link_url=link_url,
                 audit_event_id=audit_event_id,
             )
 
-            # Dual-channel to BOTH addresses (operator decision), sent
-            # AFTER the in-app row commits (outside its savepoint).
-            # Force-on + best-effort: each send independently swallows
-            # its own failure, so the second address is always attempted
-            # even when the first raises, and neither can roll back the
-            # email change or the in-app row.
-            #   OLD address (pre-mutation snapshot ``old_email_for_audit``)
-            #     → security ALERT naming the new address; the old inbox
-            #     is what a hijack victim still controls. Sent FIRST.
-            #   NEW address (``new_email`` snapshot) → CONFIRMATION naming
-            #     the old address.
-            # Both reads below use the ``new_email`` string snapshot rather
-            # than ``current_user.email``: the best-effort dispatch above may
-            # have rolled back on failure, which expires ORM instances, so a
-            # post-wrapper ``current_user.email`` access would trigger a
-            # lazy-load and turn a swallowed dispatch failure back into a 500.
+            # Both reads below use string snapshots rather than
+            # ``current_user.*``: the best-effort dispatch above may have
+            # rolled back on failure, which expires ORM instances, so a
+            # post-wrapper attribute access would trigger a lazy-load and
+            # turn a swallowed dispatch failure back into a 500.
             alert_title, alert_body, alert_link = (
-                _tpl_user_email_changed_old_address(
-                    new_email=new_email
+                _tpl_user_email_change_requested_old_address(
+                    pending_email=pending_email_snapshot
                 )
             )
             await notification_service.send_security_email_best_effort(
                 db,
                 user_id=recipient_user_id,
                 email=old_email_for_audit,
-                event_type="user.email.changed",
+                event_type="user.email.change_requested",
                 title=alert_title,
                 body=alert_body,
                 link_url=alert_link,
             )
-            confirm_title, confirm_body, confirm_link = (
-                _tpl_user_email_changed_new_address(
-                    old_email=old_email_for_audit
-                )
-            )
-            await notification_service.send_security_email_best_effort(
-                db,
-                user_id=recipient_user_id,
-                email=new_email,
-                event_type="user.email.changed",
-                title=confirm_title,
-                body=confirm_body,
-                link_url=confirm_link,
-            )
 
     return user_response
+
+
+@router.delete(
+    "/me/pending-email",
+    status_code=204,
+    dependencies=[Depends(require_interactive_session)],
+)
+@limiter.limit("10/hour")
+async def cancel_pending_email(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Abandon a pending email change (TBD-361). Idempotent.
+
+    ⚠ NO password and NO step-up, deliberately, and this is not an
+    oversight of the S-P1-2 re-auth gate on the change itself. Requesting a
+    change moves the account's recovery channel and therefore demands proof
+    of presence; cancelling one only restores the status quo and can move
+    nothing. Demanding the password to undo a mistake is the exact shape
+    that made the original defect unrecoverable — a user who mistyped their
+    address and cannot reach their inbox must not also need to remember a
+    password to get out of it.
+
+    Idempotent 204 rather than 404 on "nothing pending": the caller's goal
+    is a state, not a transition, and a user clicking Cancel twice has not
+    made an error.
+    """
+    if current_user.pending_email is not None:
+        # None, never "": an empty string still satisfies `is not None` in
+        # the promotion guard, and would serialize into the response as a
+        # pending change, rendering an empty row in the UI.
+        current_user.pending_email = None
+        await db.commit()
+    return Response(status_code=204)
 
 
 @router.post(
