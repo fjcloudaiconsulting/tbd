@@ -469,6 +469,8 @@ async def _apply_edits(
     org_id: int,
     tx: Transaction,
     transition: ReconciliationTransition,
+    link_target: Transaction | None,
+    source_in_cached_balance: bool,
 ) -> None:
     """Apply ``ReconciliationEdits`` to a transaction in place.
 
@@ -476,12 +478,11 @@ async def _apply_edits(
     every field be ``None`` to mean "leave it alone"). Integrity rules
     (owner-review fix on PR #247):
 
-    * **Balance bookkeeping** -- an ``amount`` edit on a SETTLED row
-      reverts the original delta from ``accounts.balance`` and applies
-      the new delta. This reuses the same ``revert_balance`` +
-      ``apply_balance`` primitives that ``transaction_service`` uses on
-      transaction CRUD, so the cached balance can never drift from the
-      ledger.
+    * **Balance bookkeeping** -- an ``amount`` edit on a SETTLED row whose
+      amount is ACTUALLY INSIDE ``accounts.balance`` reverts the original
+      delta and applies the new one, reusing the same ``revert_balance`` +
+      ``apply_balance`` primitives ``transaction_service`` uses on CRUD.
+      See the TBD-310 note below for why ``status`` alone is the wrong gate.
 
     * **Category ownership + type compatibility** -- a ``category_id``
       edit routes through ``transaction_service.validate_category_for_type``
@@ -489,15 +490,54 @@ async def _apply_edits(
       ``ValidationError`` (-> 422 at the wire). We do NOT trust the
       payload to carry a legitimate ID.
 
-    * **PENDING / TRANSFER guardrails** -- transfer-leg edits would
-      need the partner-locking dance from
-      ``transaction_service.update_transaction`` and are out of scope
-      for the inbox; we refuse them. PENDING rows DO get their balance
+    * **TRANSFER guardrail** -- a genuine transfer leg needs the
+      partner-locking dance from ``transaction_service.update_transaction``
+      (amount mirror, currency + opposite-type invariants) which the inbox
+      does not implement, so we refuse it. PENDING rows DO get their balance
       change deferred to settlement just like fresh PENDING rows do.
 
     Date / description edits are direct attribute writes. SETTLED
     rows mirror ``settled_date = date`` so the SETTLED-implies-
     settled_date model invariant holds.
+
+    ⚠ TBD-310 -- the two parameters below, and why NEITHER may be re-derived
+    here. Both are computed by ``_reconcile_one`` from the RAW, org-scoped
+    link target BEFORE any mutation, and threaded in:
+
+    * ``link_target`` -- whatever ``linked_transaction_id`` points at. RAW.
+      The refusal asks ``is_reciprocal_pair(tx, link_target)``, which fails
+      CLOSED: an unproven link never blocks an edit. This guard used to test
+      ``linked_transaction_id is not None``, which was WRONG in both
+      directions -- ``_apply_match`` writes that column ONE-WAY for a
+      reconcile match, ``ACCEPTED -> PENDING_REVIEW`` is a legal reopen, and
+      nothing clears the link on reopen, so a reopened matched row was
+      uneditable forever and the error blamed a transfer that did not exist.
+
+    * ``source_in_cached_balance`` -- the PRE-MUTATION answer to "is this
+      row's amount inside ``accounts.balance`` right now". A one-way matched
+      row answers **False**: the MATCHED transition already reverted it. The
+      old gate asked ``status == settled``, which answers "was this ever
+      applied", not "is it in there now" -- the same wrong question TBD-308
+      fixed one function down.
+
+    ⚠⚠ THE TRAP, and it is the highest-probability wrong implementation
+    here. Do NOT write::
+
+        partner = link_target if is_reciprocal_pair(tx, link_target) else None
+        if contributes_to_cached_balance(tx, partner):   # WRONG
+
+    ``contributes_to_cached_balance`` fails **OPEN** on a ``None`` partner, so
+    for every matched row (where that expression yields ``None``) the gate is
+    VACUOUSLY TRUE: the refusal disappears, the balance drifts by the full
+    edit delta, and every status-code test stays green. Both questions take
+    the RAW ``link_target``. Same trap documented at
+    ``transaction_service.update_transaction`` and fenced by F41 in
+    ``tests/services/test_matched_row_actions.py`` -- measured, the half-fix
+    drifts -75.00 with all 122 tests of the seven reconcile suites green.
+
+    ⚠ The revert and the apply are ONE gate in two halves. Gating only the
+    revert drifts by the full new amount; gating only the apply drifts by the
+    full old amount. Either half alone is worse than gating neither.
     """
     # Import here to avoid a circular import: reconciliation_service is
     # imported by import_service, and transaction_service imports a
@@ -513,11 +553,20 @@ async def _apply_edits(
     if edits is None:
         return
 
-    # Refuse transfer-leg edits: the cached partner row would drift.
-    if tx.linked_transaction_id is not None:
+    # Refuse GENUINE transfer-leg edits: the partner row would drift. Narrow
+    # on purpose -- mutuality, never non-nullness. ``is_reciprocal_pair``
+    # fails CLOSED, so a one-way reconcile match reads as an ordinary
+    # editable row (TBD-310) while a real pair is still refused (F42).
+    if is_reciprocal_pair(tx, link_target):
+        await logger.ainfo(
+            "reconcile.edit_refused_transfer_leg",
+            org_id=org_id,
+            transaction_id=tx.id,
+            partner_id=link_target.id,
+        )
         raise ValidationError(
             "Cannot edit a transfer leg from the reconciliation inbox; "
-            "edit via the transactions page."
+            "edit it on the transactions page so both legs stay in sync."
         )
 
     if edits.description is not None:
@@ -532,7 +581,10 @@ async def _apply_edits(
 
     # ── Amount: revert old delta, apply new, never let balance drift ──
     if edits.amount is not None and edits.amount != tx.amount:
-        if tx.status.value == "settled":
+        # ⚠ BOTH terms, and both halves under ONE condition. ``settled``
+        # alone moved money for a reopened matched row whose amount was
+        # already reverted at match time (TBD-310); see the docstring.
+        if tx.status.value == "settled" and source_in_cached_balance:
             # Lock the account row so a concurrent transaction can't
             # interleave between revert and apply.
             acct = await get_account_for_update(
@@ -540,6 +592,36 @@ async def _apply_edits(
             )
             revert_balance(acct, tx.amount, tx.type)
             apply_balance(acct, edits.amount, tx.type)
+            # Forensic parity with ``_apply_balance_for_transition``: before
+            # TBD-310 an amount edit moved the cached balance and logged
+            # NOTHING, because that helper only fires on a membership flip
+            # and an EDITED transition can never flip membership.
+            #
+            # ⚠ ``tx_type`` is NOT optional padding: without it the delta is
+            # unsigned, and 100 -> 175 is +75 for INCOME and -75 for EXPENSE.
+            # Key parity with the sibling emit below is what lets one query
+            # answer "what moved this account's cached balance".
+            #
+            # ⚠ ``source_state`` is the SOURCE state only because
+            # ``_apply_edits`` runs BEFORE ``_reconcile_one``'s state flip,
+            # and ``target_state`` is hardcoded only because this function is
+            # reached solely on the EDITED branch. Both are order-coupled to
+            # the caller; move either and they start lying silently.
+            # ``source_amount`` likewise reads the pre-mutation value only
+            # because ``tx.amount = edits.amount`` sits BELOW this call.
+            await logger.ainfo(
+                "import.reconcile.balance_changed",
+                org_id=org_id,
+                transaction_id=tx.id,
+                account_id=tx.account_id,
+                source_state=tx.reconciliation_state,
+                target_state=ReconciliationState.EDITED.value,
+                direction="amount_edit",
+                amount=str(edits.amount),
+                tx_type=tx.type.value,
+                source_amount=str(tx.amount),
+                target_amount=str(edits.amount),
+            )
         tx.amount = edits.amount
 
     # ── Date: mirror to settled_date when SETTLED so the model
@@ -548,6 +630,17 @@ async def _apply_edits(
         tx.date = edits.date
         if tx.status.value == "settled":
             tx.settled_date = edits.date
+        # TBD-407: a PENDING row keeps its EXPECTED settled_date, so moving
+        # the date past it silently produces ``settled_date < date``. The
+        # model's flush listener enforces only SETTLED-implies-settled_date,
+        # never the ordering, and there is no CheckConstraint -- the single
+        # enforcement of this rule anywhere is in
+        # ``transaction_service.update_transaction``, which the inbox does
+        # not call. Same message string on purpose: two surfaces, one rule.
+        if tx.settled_date is not None and tx.settled_date < tx.date:
+            raise ValidationError(
+                "settled_date must be on or after date"
+            )
 
 
 async def _apply_match(
@@ -758,6 +851,28 @@ async def _apply_balance_for_transition(
     acct = await get_account_for_update(db, tx.account_id, org_id)
     if source_in_cached_balance and not target_in_cached_balance:
         # Amount leaves the cached balance: pull it out.
+        #
+        # ⚠ TBD-310 -- this reverts the POST-mutation ``tx.amount``
+        # DELIBERATELY, and NO TEST CAN PIN THAT. ``_validate_payload_shape``
+        # permits ``edits`` only on an EDITED target, and an EDITED
+        # transition can never flip cached-balance membership (its only
+        # sources are PENDING_REVIEW / UNMATCHED, none of the three states is
+        # reconciliation-excluded, and ``ReconciliationEdits`` is
+        # ``extra="forbid"`` with four fields that cannot touch the link, the
+        # state or the status). So this line and ``_apply_edits``' amount arm
+        # are MUTUALLY EXCLUSIVE, and pre- and post-mutation ``tx.amount`` are
+        # provably equal here on every reachable input.
+        #
+        # If a future edge ever carries ``edits`` AND flips membership, this
+        # must be hardened to a pre-mutation snapshot AND ``_apply_edits``'
+        # balance arm gated off, IN THE SAME CHANGE. Do not do one without
+        # the other: hardening this alone leaves ``_apply_edits`` holding the
+        # new amount while this reverts the old, drifting by the delta.
+        #
+        # The same proof covers the ``apply_balance`` arm below and the
+        # ``amount=str(tx.amount)`` field in the emit at the end of this
+        # function -- all three read the post-mutation value, none of them is
+        # exempt for some separate reason.
         revert_balance(acct, tx.amount, tx.type)
         direction = "revert"
     else:
@@ -863,7 +978,19 @@ async def _reconcile_one(
     # membership; the diff-based helper below absorbs that.
     matched_target: Transaction | None = None
     if target_state == ReconciliationState.EDITED.value:
-        await _apply_edits(db, org_id=org_id, tx=tx, transition=transition)
+        # ⚠ TBD-310: both values come from HERE, pre-mutation, and are never
+        # re-derived inside ``_apply_edits``. ``source_partner`` is the RAW
+        # link target; ``source_in_cached_balance`` was computed from it
+        # above. Re-deriving either inside the callee is how the fail-open
+        # trap documented on ``_apply_edits`` gets reopened.
+        await _apply_edits(
+            db,
+            org_id=org_id,
+            tx=tx,
+            transition=transition,
+            link_target=source_partner,
+            source_in_cached_balance=source_in_cached_balance,
+        )
     elif target_state == ReconciliationState.MATCHED.value:
         matched_target = await _apply_match(
             db, org_id=org_id, tx=tx, transition=transition
