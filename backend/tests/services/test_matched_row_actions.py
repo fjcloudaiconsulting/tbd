@@ -72,6 +72,7 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import TransactionStatus, TransactionType
 from app.schemas.import_reconciliation import (
     ReconcileBatchRequest,
+    ReconciliationEdits,
     ReconciliationState,
     ReconciliationTransition,
 )
@@ -1722,3 +1723,527 @@ async def test_deleting_one_of_two_pending_rows_decrements_exactly_once(db_sessi
     assert (after.row_count, after.accepted_count) == (3, 1)
     assert after.status == ImportBatchStatus.OPEN
     await assert_invariant(db_session, seed)
+
+
+# ══ TBD-310: a REOPENED matched row is editable FROM THE RECONCILE INBOX ════
+#
+# The same non-nullness defect as TBD-292, one module over.
+# ``reconciliation_service._apply_edits`` refused ANY row with a non-null
+# ``linked_transaction_id`` -- but ``_apply_match`` writes that column ONE-WAY,
+# ``ACCEPTED -> PENDING_REVIEW`` is a legal reopen, and nothing clears the link
+# on reopen (``_apply_match`` guard 2 says so and depends on it). So the user
+# reopens a match to correct it and cannot edit the row they reopened.
+#
+# ⚠⚠ MEASURED, and the reason F41 exists: the HALF-FIX -- narrow the guard to
+# ``is_reciprocal_pair`` and leave the balance arms ungated -- passes all 122
+# tests across the seven reconcile/link suites with EXIT=0 while drifting
+# ``accounts.balance`` by -75.00. The pre-existing suite has ZERO
+# discriminating power here. F41 is the only test in the repo that separates a
+# correct fix from a silent ledger break, and because SKIPPED/REJECTED are
+# terminal and MATCHED goes only to ACCEPTED, the reopened-match path is the
+# ONLY way to reach ``_apply_edits`` with ``source_in_cached_balance == False``.
+# That fence has exactly one live cell.
+
+
+async def _make_reopened_match(
+    db: AsyncSession,
+    seed: dict,
+    *,
+    amount: str,
+) -> tuple[Transaction, Transaction]:
+    """``dup`` is matched against ``canonical``, ACCEPTED, then REOPENED to
+    PENDING_REVIEW -- every step through the real ``reconcile_request`` path.
+
+    ⚠ The reopen is what produces the state under test: a live one-way link
+    sitting beside a balance contribution that ``_apply_balance_for_transition``
+    ALREADY reverted at match time. Hand-setting ``reconciliation_state`` (or
+    hand-writing ``linked_transaction_id``) removes exactly that premise and
+    leaves every assertion below untethered -- the fixture rule at the top of
+    this file, applied to one more transition.
+    """
+    dup, canonical = await _make_matched_pair(db, seed, amount=amount)
+    await _reconcile(
+        db, seed, _transition(dup.id, ReconciliationState.ACCEPTED),
+    )
+    await _reconcile(
+        db, seed, _transition(dup.id, ReconciliationState.PENDING_REVIEW),
+    )
+    dup = await _reload(db, dup.id)
+    assert dup.reconciliation_state == "pending_review"
+    assert dup.linked_transaction_id == canonical.id, (
+        "the reopen must NOT clear the link -- that stale link is the premise"
+    )
+    canonical = await _reload(db, canonical.id)
+    assert canonical.linked_transaction_id is None, "match must stay ONE-WAY"
+    return dup, canonical
+
+
+def _edit(tx_id: int, **fields):
+    """A PENDING_REVIEW -> EDITED transition carrying ``edits``."""
+    return ReconcileBatchRequest(
+        transitions=[
+            ReconciliationTransition(
+                transaction_id=tx_id,
+                to_state=ReconciliationState.EDITED,
+                edits=ReconciliationEdits(**fields),
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_reopened_matched_row_is_editable_from_the_inbox(db_session):
+    """F40. Kills the blanket ``if tx.linked_transaction_id is not None: raise``
+    in ``_apply_edits``. RED against ``main`` with
+    ``ValidationError("Cannot edit a transfer leg from the reconciliation
+    inbox…")`` on a row that is not a transfer leg.
+
+    INSUFFICIENT ALONE, deliberately: it asserts a status outcome, not the
+    ledger. Every wrong balance implementation in F41's kill-list passes this
+    test. It is here to pin the user-visible defect; F41 is here to pin the
+    money.
+    """
+    seed = await _seed(db_session)
+    dup, canonical = await _make_reopened_match(db_session, seed, amount="64.00")
+
+    result = await _reconcile(
+        db_session, seed, _edit(dup.id, description="corrected after reopen"),
+    )
+
+    assert result.transitioned == [dup.id]
+    dup = await _reload(db_session, dup.id)
+    assert dup.description == "corrected after reopen"
+    assert dup.reconciliation_state == "edited"
+    # The match itself survives an edit. Clearing it here would re-enter the
+    # row into balance_contribution_filter carrying an amount that is NOT in
+    # accounts.balance -- the CC carried-balance bug.
+    assert dup.linked_transaction_id == canonical.id
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_reopened_matched_row_amount_edit_moves_no_money(db_session):
+    """⭐⭐ F41. THE fence for this ticket. The ONLY test in the repo that
+    separates a correct TBD-310 fix from a silent ledger break.
+
+    A one-way matched row's amount is NOT inside ``accounts.balance`` -- the
+    MATCHED transition already reverted it. So an amount edit must move
+    EXACTLY NOTHING.
+
+    Kills, independently:
+      * the HALF-FIX (guard narrowed, balance arms left ungated) -- measured
+        at -75.00 drift on 100 -> 175 with the whole reconcile suite green;
+      * gating ONLY the revert -- drifts by the full NEW amount;
+      * gating ONLY the apply -- drifts by the full OLD amount. The revert and
+        the apply are ONE gate in two halves; either half alone is worse than
+        gating neither (``transaction_service.py`` says so in those words,
+        because it already happened once on the transactions page);
+      * ⚠ THE TRAP -- ``partner = link if is_reciprocal_pair(...) else None``
+        followed by ``contributes_to_cached_balance(tx, partner)``. That
+        predicate fails OPEN on ``None``, so the gate is VACUOUSLY TRUE for
+        every matched row, the refusal disappears, the balance drifts, and F40
+        stays green. Both questions must take the RAW link target.
+
+    ⚠ The amount MUST change. ``_apply_edits`` short-circuits on
+    ``edits.amount is None`` and on ``edits.amount == tx.amount``, so a
+    description-only edit never enters the arm at all and is green against
+    EVERY mutant above. This is the ticket's own highest-risk instruction.
+    """
+    seed = await _seed(db_session)
+    dup, _canonical = await _make_reopened_match(db_session, seed, amount="128.00")
+    await assert_invariant(db_session, seed)
+    before = (await _account(db_session, seed["acct_a_id"])).balance
+
+    await _reconcile(
+        db_session, seed, _edit(dup.id, amount=Decimal("512.00")),
+    )
+
+    after = (await _account(db_session, seed["acct_a_id"])).balance
+    assert after == before, (
+        f"a reopened matched row's amount is not inside accounts.balance; "
+        f"editing it must move nothing, but the balance went {before} -> {after}"
+    )
+    await assert_invariant(db_session, seed)
+    # ...and the edit really was applied. Without this, "refuse everything"
+    # passes.
+    dup = await _reload(db_session, dup.id)
+    assert dup.amount == Decimal("512.00")
+    assert dup.reconciliation_state == "edited"
+
+
+@pytest.mark.asyncio
+async def test_genuine_transfer_leg_in_a_batch_is_still_refused(db_session):
+    """F42. THE OVER-REACH FENCE, and the reason the guard is NARROWED rather
+    than deleted.
+
+    A genuine reciprocal transfer leg really does land in an import batch:
+    ``import_service`` calls ``_link_pair`` (BIDIRECTIONAL) on both the
+    ``pair_with_existing`` and ``create_transfer_pair`` branches and enrols the
+    resulting ids into the batch. Editing one from the inbox would move this
+    leg's account and never the partner's, breaking the pair-amount invariant
+    ``update_transaction`` enforces -- the inbox implements no partner mirror.
+
+    Kills: deleting the guard outright, and -- IN COMBINATION WITH F40 -- the
+    polarity inversion "editable iff NOT in the cached balance", which would
+    admit the transfer leg (contributes True) and refuse the matched row
+    (contributes False), i.e. exactly backwards. Neither F40 nor F42 alone
+    kills that; the pair does.
+
+    Asserts the DETAIL STRING, not just the exception type: after the fix the
+    refusal fires only on genuine transfer legs, so "transfer leg" is finally
+    a TRUE statement and is part of the contract.
+    """
+    seed = await _seed(db_session)
+    leg_in_batch = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="256.00",
+        tx_type=TransactionType.EXPENSE, label="batch-leg", in_batch=True,
+    )
+    partner = await _create(
+        db_session, seed, account_id=seed["acct_b_id"], amount="256.00",
+        tx_type=TransactionType.INCOME, label="partner-leg",
+    )
+    await transaction_service.pair_existing_transactions(
+        db_session, seed["org_id"],
+        expense_tx_id=leg_in_batch.id, income_tx_id=partner.id,
+    )
+    leg_in_batch = await _reload(db_session, leg_in_batch.id)
+    partner = await _reload(db_session, partner.id)
+    assert leg_in_batch.linked_transaction_id == partner.id
+    assert partner.linked_transaction_id == leg_in_batch.id, "must be MUTUAL"
+
+    a_before = (await _account(db_session, seed["acct_a_id"])).balance
+    b_before = (await _account(db_session, seed["acct_b_id"])).balance
+
+    with pytest.raises(ValidationError) as exc:
+        await _reconcile(
+            db_session, seed, _edit(leg_in_batch.id, amount=Decimal("1024.00")),
+        )
+    # The FULL sentence, not just "transfer leg": ``main``'s wrong message
+    # contained that substring too, so a substring check alone cannot tell the
+    # narrowed guard from the blanket one it replaced. The second clause is
+    # the actionable half -- ``update_transaction`` really does mirror the
+    # amount and re-check the pair invariants, which the inbox cannot.
+    assert exc.value.detail == (
+        "Cannot edit a transfer leg from the reconciliation inbox; "
+        "edit it on the transactions page so both legs stay in sync."
+    )
+
+    # Neither leg moved, and neither balance did.
+    assert (await _account(db_session, seed["acct_a_id"])).balance == a_before
+    assert (await _account(db_session, seed["acct_b_id"])).balance == b_before
+    assert (await _reload(db_session, leg_in_batch.id)).amount == Decimal("256.00")
+    assert (await _reload(db_session, partner.id)).amount == Decimal("256.00")
+
+
+# ══ TBD-407: the inbox is a second writer of date / settled_date ════════════
+
+
+@pytest.mark.asyncio
+async def test_pending_row_date_edit_cannot_outrun_its_settled_date(db_session):
+    """F43 (TBD-407, folded in -- same function, same root cause).
+
+    ``_apply_edits`` mirrors ``settled_date = date`` only when the row is
+    SETTLED. A PENDING row keeps its EXPECTED ``settled_date``, so moving the
+    date past it produced ``settled_date < date`` with nothing to stop it:
+
+    * ``models.transaction``'s flush listener enforces only
+      SETTLED-implies-settled_date, NEVER the ordering;
+    * there is no ``CheckConstraint`` on the column;
+    * ``ReconciliationEdits`` has no model validator (the ordering validator
+      lives on the *transaction* schemas, which the inbox does not use);
+    * ``transaction_service.update_transaction`` is the ONLY enforcement of
+      this rule anywhere, and the inbox does not call it.
+
+    Kills: dropping the ordering guard from the date arm. RED against
+    ``main``, where the edit is accepted and persists an inverted pair.
+
+    ⚠ MUST use a PENDING row. On a SETTLED row the mirror keeps the two equal
+    by construction, so the same assertions pass against unfixed code -- the
+    fence would be vacuous.
+
+    ⚠ The fixture writes ``settled_date`` directly onto a PENDING row rather
+    than routing through an import. That shape is what
+    ``import_service`` persists when a confirm payload carries an expected
+    settlement date, but this test does not prove that path is live -- read it
+    as a guard on the WRITER, not as a live-regression fence.
+    """
+    seed = await _seed(db_session)
+    row = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="32.00",
+        label="pending-expected", status=TransactionStatus.PENDING,
+        in_batch=True,
+    )
+    expected = TX_DATE + timedelta(days=5)
+    row.settled_date = expected
+    await db_session.commit()
+    # Plain scalar, captured BEFORE the refusal. The savepoint rollback leaves
+    # ``row`` expired, and touching any ORM attribute on it afterwards raises
+    # MissingGreenlet (an async lazy-load outside a greenlet) -- which would
+    # fail this test for a reason that has nothing to do with the guard.
+    row_id = row.id
+
+    with pytest.raises(ValidationError) as exc:
+        await _reconcile(
+            db_session, seed,
+            _edit(row_id, date=expected + timedelta(days=30)),
+        )
+    assert "settled_date must be on or after date" in exc.value.detail
+
+    # All-or-nothing: the row is untouched, not left half-updated.
+    row = await _reload(db_session, row_id)
+    assert row.date == TX_DATE
+    assert row.settled_date == expected
+    assert row.reconciliation_state == "pending_review"
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_pending_row_date_edit_within_its_settled_date_still_works(db_session):
+    """F43b. THE OVER-REACH FENCE for F43. Without it, refusing every date
+    edit on a PENDING row passes F43.
+
+    Moving the date to a day still on or before the expected settlement is a
+    legitimate correction and must apply.
+    """
+    seed = await _seed(db_session)
+    row = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="32.00",
+        label="pending-expected", status=TransactionStatus.PENDING,
+        in_batch=True,
+    )
+    expected = TX_DATE + timedelta(days=5)
+    row.settled_date = expected
+    await db_session.commit()
+
+    moved_to = TX_DATE + timedelta(days=2)
+    await _reconcile(db_session, seed, _edit(row.id, date=moved_to))
+
+    row = await _reload(db_session, row.id)
+    assert row.date == moved_to
+    assert row.settled_date == expected, "a PENDING row's expectation is not mirrored"
+    assert row.reconciliation_state == "edited"
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_settled_row_date_edit_mirrors_instead_of_being_refused(db_session):
+    """F44. THE OVER-REACH FENCE for F43's comparison operator, and the one
+    shape F43b does NOT cover.
+
+    On a SETTLED row ``_apply_edits`` mirrors ``settled_date = date`` BEFORE
+    the ordering check runs, so the two are EQUAL by construction at that
+    point. Widening the guard to ``<=`` therefore turns EVERY settled-row date
+    edit from the inbox into a 422 -- and that is the commonest edit shape
+    there; ``ReconcileClient`` sends ``edits.date`` on it.
+
+    Kills: ``tx.settled_date <= tx.date``. Both F43 and F43b survive that
+    mutant, because both use strictly-ordered dates, and before this diff NOT
+    ONE test in the repo passed ``date=`` through ``ReconciliationEdits`` on
+    any path -- so the operator was pinned from neither side.
+    """
+    seed = await _seed(db_session)
+    row = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="8.00",
+        label="settled-date-edit", in_batch=True,
+    )
+    moved_to = TX_DATE + timedelta(days=3)
+
+    await _reconcile(db_session, seed, _edit(row.id, date=moved_to))
+
+    row = await _reload(db_session, row.id)
+    assert row.date == moved_to
+    assert row.settled_date == moved_to, (
+        "a SETTLED row mirrors settled_date = date; the ordering guard must "
+        "accept the equal pair it just created"
+    )
+    assert row.reconciliation_state == "edited"
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_pending_row_with_no_expected_date_can_still_move_its_date(db_session):
+    """F45. The NULL arm of the TBD-407 guard.
+
+    Kills: dropping the ``tx.settled_date is not None`` term. A PENDING row
+    with no expected settlement is the ORDINARY shape -- ``_create`` produces
+    exactly it -- and without that term the comparison raises
+    ``TypeError: '<' not supported between instances of 'NoneType' and
+    'datetime.date'``, i.e. an unhandled 500 on a routine edit.
+
+    Every other TBD-407 fence sets ``settled_date`` explicitly, so this is the
+    only one that exercises the NULL branch at all.
+    """
+    seed = await _seed(db_session)
+    row = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="8.00",
+        label="pending-no-expectation", status=TransactionStatus.PENDING,
+        in_batch=True,
+    )
+    assert row.settled_date is None, "fixture premise: no expected settlement"
+    moved_to = TX_DATE + timedelta(days=9)
+
+    await _reconcile(db_session, seed, _edit(row.id, date=moved_to))
+
+    row = await _reload(db_session, row.id)
+    assert row.date == moved_to
+    assert row.settled_date is None, "a PENDING row gains no settled_date"
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_pending_row_amount_edit_moves_no_money(db_session):
+    """F46. The STATUS half of the amount gate -- the other half of F41.
+
+    Kills: dropping ``tx.status.value == "settled"`` and gating on
+    ``source_in_cached_balance`` alone. An UNLINKED PENDING row answers True
+    to that predicate (its state is not reconciliation-excluded and it has no
+    link), so the arm fires and moves a balance the row's amount was NEVER
+    inside -- pending amounts are virtual until settlement.
+
+    That is the SAME defect class this ticket exists to fix, on the SAME line,
+    in the other direction. F41 cannot see it (its row is matched, so
+    ``source_in_cached_balance`` is False and the arm is skipped for the other
+    reason) and neither can the pre-existing settled-row fence. A boundary
+    pinned from one side is not pinned.
+    """
+    seed = await _seed(db_session)
+    row = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="8.00",
+        label="pending-amount", status=TransactionStatus.PENDING,
+        in_batch=True,
+    )
+    before = (await _account(db_session, seed["acct_a_id"])).balance
+
+    await _reconcile(db_session, seed, _edit(row.id, amount=Decimal("64.00")))
+
+    after = (await _account(db_session, seed["acct_a_id"])).balance
+    assert after == before, (
+        f"a PENDING row's amount is not inside accounts.balance; editing it "
+        f"must move nothing, but the balance went {before} -> {after}"
+    )
+    assert (await _reload(db_session, row.id)).amount == Decimal("64.00")
+    await assert_invariant(db_session, seed)
+
+
+@pytest.mark.asyncio
+async def test_transfer_leg_refusal_does_not_depend_on_the_edit_shape(db_session):
+    """F42b. The refusal must fire on the ROW, not on what the edit would do.
+
+    Kills: narrowing the guard to
+    ``is_reciprocal_pair(tx, link_target) and edits.amount is not None``
+    -- "only refuse edits that would move money", which reads as a reasonable
+    tightening and passes F40, F41, F42, F43 and F43b, because F42 is the only
+    transfer-leg fence and it edits the amount.
+
+    A description edit on a transfer leg is still refused: the inbox has no
+    partner-locking dance for ANY field, and the guard's job is to keep the
+    pair out of this code path entirely.
+    """
+    seed = await _seed(db_session)
+    leg_in_batch = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="16.00",
+        tx_type=TransactionType.EXPENSE, label="batch-leg", in_batch=True,
+    )
+    partner = await _create(
+        db_session, seed, account_id=seed["acct_b_id"], amount="16.00",
+        tx_type=TransactionType.INCOME, label="partner-leg",
+    )
+    await transaction_service.pair_existing_transactions(
+        db_session, seed["org_id"],
+        expense_tx_id=leg_in_batch.id, income_tx_id=partner.id,
+    )
+    leg_id = leg_in_batch.id
+
+    with pytest.raises(ValidationError) as exc:
+        await _reconcile(
+            db_session, seed, _edit(leg_id, description="renamed from the inbox"),
+        )
+    assert "transfer leg" in exc.value.detail
+    assert (await _reload(db_session, leg_id)).description == "batch-leg-16.00"
+
+
+class _Recorder:
+    """Minimal stand-in for the module's structlog logger.
+
+    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That helper
+    swaps global processor state, so a fence built on it is green alone AND
+    green on either half of the suite, then RED in a full run once another
+    module has configured structlog first. Binding a recorder onto the
+    module's OWN ``logger`` attribute is order-independent.
+    """
+
+    def __init__(self):
+        self.events: list[tuple[str, dict]] = []
+
+    async def ainfo(self, event, **kw):
+        self.events.append((event, kw))
+
+    async def awarning(self, event, **kw):
+        self.events.append((event, kw))
+
+    def bind(self, **_kw):
+        return self
+
+
+def _balance_events(rec: "_Recorder") -> list[dict]:
+    return [kw for name, kw in rec.events if name == "import.reconcile.balance_changed"]
+
+
+@pytest.mark.asyncio
+async def test_amount_edit_logs_a_balance_move_only_when_money_moved(
+    db_session, monkeypatch,
+):
+    """F47. The forensic event, and a SECOND independent detector of THE TRAP.
+
+    Before TBD-310 an amount edit on this path moved ``accounts.balance`` and
+    logged NOTHING -- ``_apply_balance_for_transition`` only fires on a
+    membership flip, and an EDITED transition can never flip membership. So
+    the emit is new surface and needs its own fence.
+
+    Two assertions, and the second is the valuable one:
+
+    * an UNLINKED settled row's amount edit DOES emit, carrying ``tx_type``
+      (without which the delta is unsigned and 100 -> 175 is +75 for INCOME
+      and -75 for EXPENSE);
+    * a REOPENED MATCHED row's amount edit emits NOTHING, because no money
+      moved.
+
+    Kills: deleting the emit; dropping ``tx_type``; and -- independently of
+    F41 -- THE TRAP, because under a vacuously-true gate the arm runs on the
+    matched row and this fence sees the event fire.
+    """
+    seed = await _seed(db_session)
+    rec = _Recorder()
+    monkeypatch.setattr(reconciliation_service, "logger", rec)
+
+    # 1. Unlinked settled row: money really moves, so the event must fire.
+    plain = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="8.00",
+        label="plain", in_batch=True,
+    )
+    await _reconcile(db_session, seed, _edit(plain.id, amount=Decimal("32.00")))
+
+    moved = _balance_events(rec)
+    assert len(moved) == 1, f"expected exactly one balance event, got {moved}"
+    assert moved[0]["direction"] == "amount_edit"
+    assert moved[0]["transaction_id"] == plain.id
+    assert moved[0]["tx_type"] == "expense", "an unsigned delta is unreadable"
+    assert moved[0]["source_amount"] == "8.00"
+    assert moved[0]["target_amount"] == "32.00"
+
+    # 2. Reopened matched row: nothing moves, so nothing may be logged.
+    dup, _canonical = await _make_reopened_match(db_session, seed, amount="128.00")
+    before = (await _account(db_session, seed["acct_a_id"])).balance
+    # Clear AFTER the fixture, not before it. Building a reopened match runs a
+    # real MATCHED transition, which legitimately reverts the contribution and
+    # legitimately emits its own balance_changed event. Clearing earlier makes
+    # this fence fail on the fixture's own correct behaviour.
+    rec.events.clear()
+
+    await _reconcile(db_session, seed, _edit(dup.id, amount=Decimal("512.00")))
+
+    assert (await _account(db_session, seed["acct_a_id"])).balance == before
+    assert _balance_events(rec) == [], (
+        "a matched row's amount edit moves no money, so it must not claim to; "
+        "an event here means the balance gate went vacuously true (THE TRAP)"
+    )
