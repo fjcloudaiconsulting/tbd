@@ -84,15 +84,50 @@ This is **not** non-destructive. Running the play on the current 8.0 server:
   replica that is a real outage window, plus a full `caching_sha2` fast-auth
   cache flush that pushes every reconnect through RSA key retrieval at once.
 
-**Precondition, before running anything.** The play now rewrites
+**Precondition, before running anything.** The play rewrites
 `mysql_app_password` unconditionally (see the idempotency note in the role). If
 the vaulted inventory password has ever drifted from the App Platform
 `DATABASE_URL` secret, the play silently replaces the working credential and
-every App Platform connection dies. Confirm they match **first**:
+every App Platform connection dies.
+
+⚠ **You cannot compare them directly.** `DATABASE_URL` is `type: SECRET` in
+`.do/app.yaml`; App Platform stores it as `EV[1:...]` and secrets are
+**write-only** — the plaintext cannot be read back. An earlier revision of this
+runbook said "compare the inventory value against the live secret", which is not
+an operation that exists. ⚠ Nor can you compare the two `EV[]` blobs to each
+other: they use a per-encryption nonce, so identical plaintext always encrypts
+to different ciphertext. Differing blobs mean nothing.
+
+Verify **transitively** instead — the live app proves one side, the inventory
+proves the other:
 
 ```bash
-# compare the inventory value against the live DATABASE_URL secret before the play
+# 1. The running app proves App Platform's secret matches the CURRENT server password
+curl -s https://<app-host>/ready          # expect database: connected
+
+# 2. The inventory holds a real value (prints no secret)
+cd infra/ansible
+ansible all -m debug -a 'msg={{ "ABORT - default!" if mysql_app_password == "CHANGE_ME" else "set from inventory" }}'
+
+# 3. That value actually authenticates, over the transport the app really uses
+ansible all --become -o -m shell -a \
+  'MYSQL_PWD="{{ mysql_app_password }}" mysql -h 127.0.0.1 --ssl-mode=DISABLED \
+   --get-server-public-key -u pfv_app -e "SELECT 1"'
 ```
+
+If 1 and 3 both pass, inventory == server == App Platform. `MYSQL_PWD` keeps the
+password out of the server's process table; `-p` would put it in `argv`.
+
+⚠ Step 3's flags are not optional. A plain `mysql -h 127.0.0.1` defaults to
+`--ssl-mode=PREFERRED`, negotiates TLS, and never exercises the RSA public-key
+retrieval that `caching_sha2_password` needs over the no-TLS VPC link — so it
+passes while production still cannot connect.
+
+**The roles now fail closed on this.** `roles/mysql` and `roles/redis` assert as
+their FIRST task that their secrets are defined, non-empty, and not the
+`CHANGE_ME` default. `inventory.yml` is gitignored, so a missing or mis-pointed
+`-i` would otherwise let Ansible fall back to the role defaults and set the
+production credential to the literal string `CHANGE_ME`, reporting success.
 
 Then run the play, and verify with the **failure-mode** query — not an
 allowlist of the accounts Ansible just fixed:
@@ -400,6 +435,15 @@ left alone.
 ### 6. After
 
 - Scale `backend` back up (spec step 14)
+- ⚠⚠ **If you also run Phase 2 (the `pfv2` → `tbd` rename), `DATABASE_URL` is
+  bound in `.do/app.yaml` TWICE** — once on the `backend` service and once on
+  the `migrate` PRE_DEPLOY job — as two separately-encrypted `EV[]` values.
+  Both name the database in the URL, so **both must be re-encrypted** after the
+  rename. Miss the job's copy and nothing breaks at rename time: the backend
+  comes up green and the failure lands at the **next deploy**, when the migrate
+  job cannot reach `pfv2` any more. Verified live on deployment
+  `2026-08-17`: the job logs `{"database": "pfv2", "event": "migrate.no_op"}`,
+  so it is genuinely reading its own binding, not inheriting the service's.
 - `/ready` green, one real authenticated request served
 - Run the backup script by hand; confirm a non-empty dump
 - ⚠ The nightly backup has four known holes — on-disk only, `pfv2` only so
