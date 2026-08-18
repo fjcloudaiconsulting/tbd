@@ -55,7 +55,7 @@ def terraform_outputs() -> dict:
     return {k: v.get("value") for k, v in raw.items()}
 
 
-def build(outputs: dict, host: str | None, name: str) -> str:
+def build(outputs: dict, host: str | None, name: str, private_ip: str | None = None) -> str:
     missing = [k for k in REQUIRED_OUTPUTS if not outputs.get(k)]
     # Fail loudly. A half-populated inventory is worse than none: it resolves,
     # runs, and targets the wrong or a nonexistent address.
@@ -63,7 +63,14 @@ def build(outputs: dict, host: str | None, name: str) -> str:
         sys.exit(f"!! terraform outputs missing: {', '.join(missing)}")
 
     public = host or outputs["droplet_public_ipv4"]
-    private = outputs.get("droplet_private_ipv4", "")
+    private = private_ip or outputs.get("droplet_private_ipv4", "")
+    if host and not private:
+        sys.exit(
+            "!! --host needs --private-ip too.\n"
+            "   The redis role binds to private_ipv4; without it the play dies at\n"
+            "   its final task, after MySQL has already been provisioned.\n"
+            "   Get it with: doctl compute droplet get <id> --format PrivateIPv4"
+        )
     vpc = outputs.get("vpc_ip_range", "")
 
     lines = [
@@ -98,6 +105,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stdout", action="store_true", help="print instead of writing")
     ap.add_argument("--host", help="override the target address (scratch droplet)")
+    # ⚠ Required alongside --host. The redis role templates `bind` from
+    # private_ipv4, so omitting it fails the play at the LAST task, after MySQL
+    # is already provisioned -- and production's private IP is not merely
+    # unhelpful here, it does not exist on the scratch box, so silently reusing
+    # the Terraform value would bind Valkey to an address the host does not own.
+    ap.add_argument("--private-ip", help="private IPv4 of the --host box")
     ap.add_argument("--name", default="pfv-data-01", help="inventory host name")
     ap.add_argument("--out", default=str(ANSIBLE_DIR / "inventory.yml"))
     args = ap.parse_args()
@@ -105,7 +118,7 @@ def main() -> None:
     # --host is for rehearsing against a throwaway box, so do not consult TFC
     # for an address we are about to override anyway.
     outputs = {} if args.host else terraform_outputs()
-    content = build(outputs, args.host, args.name)
+    content = build(outputs, args.host, args.name, args.private_ip)
 
     if args.stdout:
         sys.stdout.write(content)

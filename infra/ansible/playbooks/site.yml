@@ -2,6 +2,13 @@
   hosts: all
   become: true
   gather_facts: true
+  # ⚠ Without this, a failure in ANY later role silently strands every handler
+  # notified by an earlier one. Measured 2026-08-18 on a scratch droplet: the
+  # redis role failed, so the mysql restart handler never fired; the NEXT run
+  # found pfv.cnf already correct, notified nothing, and reported success --
+  # leaving MySQL running on stock defaults with the intended config sitting
+  # on disk, unread. bind_address was 127.0.0.1 while the file said 0.0.0.0.
+  force_handlers: true
   roles:
     - common
     - mysql
