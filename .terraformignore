@@ -1,0 +1,27 @@
+# TBD-207 — what HCP Terraform must NOT pack into a configuration version.
+#
+# The TFC workspace is VCS-driven, so real runs are built from the GitHub
+# repository. A LOCAL `terraform plan` is different: it uploads a slug of this
+# whole repo for a speculative run, and without this file that upload fails
+# outright with:
+#
+#   illegal slug error: invalid symlink ("frontend/node_modules") has external target
+#
+# npm creates absolute symlinks under node_modules and the packer refuses any
+# symlink pointing outside the slug. The practical effect was that nobody could
+# run a speculative plan locally at all -- every change had to be validated by
+# merging it. Everything below is either unpackable or simply irrelevant to
+# infra/terraform.
+.git/
+.github/
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+backend/__pycache__/
+**/__pycache__/
+**/*.pyc
+.venv/
+venv/
+*.log
+.DS_Store

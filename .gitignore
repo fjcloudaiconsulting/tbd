@@ -5,7 +5,12 @@ __pycache__/
 *.egg
 
 # Node / Frontend
-node_modules/
+# Trailing slash matches DIRECTORIES ONLY. A symlink named node_modules slipped
+# past that rule and was committed in 9ed5f63d -- a self-referential link
+# (frontend/node_modules -> /abs/path/frontend/node_modules) that every clone
+# inherited, that resolves to ELOOP, and that made HCP Terraform configuration
+# uploads fail outright. No trailing slash: match files and symlinks too.
+node_modules
 .next/
 .next-apex/
 out/
