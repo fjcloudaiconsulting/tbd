@@ -86,7 +86,10 @@ hdr()  { printf "\n=== %s ===\n" "$*"; }
 # local target executes the SAME code path the droplet does. A separate
 # "local test script" would validate something other than what you run.
 # ---------------------------------------------------------------------------
-SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+# ⚠ The key must be explicit. The DO-registered key is not necessarily the
+# one ssh picks by default, and BatchMode then fails with a bare
+# "Permission denied (publickey)" that reads like a firewall problem.
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes -i "${SSH_KEY:-$HOME/.ssh/id_rsa}")
 
 run() {   # run <shell command string> — stdout/stderr pass through
   if [[ "$TARGET" == local ]]; then docker exec "$CTR" bash -lc "$1"
@@ -99,7 +102,17 @@ run_in() { # like run(), but pipes this script's stdin through
 # SQL goes over STDIN, never as a quoted argument. Three-layer quote nesting
 # through docker/ssh into mysql -e is how you get a query that silently runs
 # something other than what you read.
-sql()  { run_in "mysql -N -B ${1:-}"; }
+# ⚠⚠ --no-defaults IS LOAD-BEARING. The backups role writes /root/.my.cnf with
+# `user = pfv_backup`, so a bare `mysql` run AS ROOT authenticates as
+# pfv_backup@localhost -- a deliberately low-privilege account. Every privileged
+# step then fails with ERROR 1227 (needs SUPER or SYSTEM_VARIABLES_ADMIN),
+# including the `SET GLOBAL innodb_fast_shutdown = 0` that MYSQL-84-CUTOVER.md
+# step 4 marks REQUIRED before an in-place upgrade. Measured on a real droplet
+# 2026-08-18: it fails, and dpkg then stops mysqld with the DEFAULT fast
+# shutdown, starting the DD upgrade from a non-clean state -- the precise
+# failure that step exists to prevent, arrived at while appearing to follow it.
+# --no-defaults skips /root/.my.cnf, so root@localhost authenticates by socket.
+sql()  { run_in "mysql --no-defaults -N -B ${1:-}"; }
 
 cleanup() {
   if [[ "$TARGET" == local && $KEEP -eq 0 ]]; then
@@ -197,13 +210,13 @@ if [[ -n "$DUMP" ]]; then
   # dies with ERROR 1046. See MYSQL-84-CUTOVER.md section 2.
   if [[ "$TARGET" == local ]]; then
     if [[ "$DUMP" == *.gz ]]; then gzcat "$DUMP" 2>/dev/null || zcat "$DUMP"; else cat "$DUMP"; fi \
-      | docker exec -i "$CTR" bash -lc "mysql $DB" && ok "dump restored into $DB" || bad "dump restore failed"
+      | docker exec -i "$CTR" bash -lc "mysql --no-defaults $DB" && ok "dump restored into $DB" || bad "dump restore failed"
   else
-    run "set -o pipefail; zcat $DUMP | mysql $DB" && ok "dump restored into $DB" || bad "dump restore failed"
+    run "set -o pipefail; zcat $DUMP | mysql --no-defaults $DB" && ok "dump restored into $DB" || bad "dump restore failed"
   fi
 else
   note "no --dump; loading the synthetic constructs a DD upgrade re-parses"
-  run_in "mysql" <<SYNTH
+  run_in "mysql --no-defaults" <<SYNTH
 CREATE DATABASE IF NOT EXISTS $DB CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 USE $DB;
 CREATE TABLE organizations (
@@ -249,7 +262,7 @@ fi
 
 # ---------------------------------------------------------------------------
 hdr "4. capture the 8.0 baseline"
-BASE=$(run_in "mysql -N -B" <<BASELINE
+BASE=$(run_in "mysql --no-defaults -N -B" <<BASELINE
 SELECT CONCAT('tables=',(SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB' AND table_type='BASE TABLE'),
 ' gen=',(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='$DB' AND extra LIKE '%GENERATED%'),
 ' chk=',(SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema='$DB' AND constraint_type='CHECK'),
@@ -269,7 +282,7 @@ fi
 # ---------------------------------------------------------------------------
 hdr "5. slow shutdown — REQUIRED before an in-place upgrade"
 echo "SET GLOBAL innodb_fast_shutdown = 0;" | sql 2>/dev/null && ok "innodb_fast_shutdown = 0" || bad "could not set innodb_fast_shutdown"
-run "mysqladmin shutdown" >/dev/null 2>&1
+run "mysqladmin --no-defaults shutdown" >/dev/null 2>&1
 for _ in $(seq 1 40); do echo "SELECT 1" | sql >/dev/null 2>&1 || break; sleep 2; done
 if echo "SELECT 1" | sql >/dev/null 2>&1; then bad "8.0 did not shut down"; else ok "clean shutdown complete"; fi
 
@@ -369,7 +382,7 @@ fi
 hdr "7. did the risky constructs survive?"
 V84=$(echo "SELECT VERSION()" | sql 2>/dev/null | head -1)
 if [[ "$V84" == 8.4* ]]; then ok "running $V84"; else bad "expected 8.4, got '${V84:-nothing}'"; fi
-AFTER=$(run_in "mysql -N -B" <<AFTERSQL
+AFTER=$(run_in "mysql --no-defaults -N -B" <<AFTERSQL
 SELECT CONCAT('tables=',(SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB' AND table_type='BASE TABLE'),
 ' gen=',(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='$DB' AND extra LIKE '%GENERATED%'),
 ' chk=',(SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema='$DB' AND constraint_type='CHECK'),
@@ -384,13 +397,13 @@ else bad "INVENTORY MISMATCH — 8.0 was: $BASE"; fi
 # still not be enforced; only a rejected INSERT proves it.
 if [[ -z "$DUMP" ]]; then
   echo "    CHECK still ENFORCED (this INSERT must be rejected):"
-  if run_in "mysql $DB" <<<"INSERT INTO transactions (org_id,amount,status,settled_date) VALUES (1,1.00,'settled',NULL);" >/dev/null 2>&1
+  if run_in "mysql --no-defaults $DB" <<<"INSERT INTO transactions (org_id,amount,status,settled_date) VALUES (1,1.00,'settled',NULL);" >/dev/null 2>&1
   then bad "CHECK NOT ENFORCED — the constraint did not survive"; else ok "rejected"; fi
   echo "    UNIQUE on the generated column still ENFORCED:"
-  if run_in "mysql $DB" <<<"INSERT INTO organizations (name) VALUES ('ACME HOUSEHOLD');" >/dev/null 2>&1
+  if run_in "mysql --no-defaults $DB" <<<"INSERT INTO organizations (name) VALUES ('ACME HOUSEHOLD');" >/dev/null 2>&1
   then bad "UNIQUE NOT ENFORCED"; else ok "rejected"; fi
   echo "    generated-column collation:"
-  run_in "mysql -N -B" <<<"SELECT CONCAT('      ',column_name,' ',collation_name) FROM information_schema.columns WHERE table_schema='$DB' AND extra LIKE '%GENERATED%';" 2>/dev/null
+  run_in "mysql --no-defaults -N -B" <<<"SELECT CONCAT('      ',column_name,' ',collation_name) FROM information_schema.columns WHERE table_schema='$DB' AND extra LIKE '%GENERATED%';" 2>/dev/null
 else
   note "restored a real dump; skipping the synthetic enforcement probes"
   note "assert by hand: SHOW CREATE TABLE organizations (generated col, utf8mb4_0900_as_cs)"
@@ -433,10 +446,10 @@ else
     note "/etc/mysql/debian.cnf absent (was already absent on 8.0)"
   fi
 fi
-DSM=$(run_in "mysql -N -B" <<<"SELECT COUNT(*) FROM mysql.user WHERE user='debian-sys-maint';" 2>/dev/null | tr -d '[:space:]')
+DSM=$(run_in "mysql --no-defaults -N -B" <<<"SELECT COUNT(*) FROM mysql.user WHERE user='debian-sys-maint';" 2>/dev/null | tr -d '[:space:]')
 note "debian-sys-maint accounts in mysql.user: ${DSM:-?}"
 echo "    accounts NOT on caching_sha2_password (expect only root@localhost/auth_socket):"
-run_in "mysql -N -B" <<<"SELECT CONCAT('      ',user,'@',host,' ',plugin) FROM mysql.user WHERE plugin <> 'caching_sha2_password';" 2>/dev/null
+run_in "mysql --no-defaults -N -B" <<<"SELECT CONCAT('      ',user,'@',host,' ',plugin) FROM mysql.user WHERE plugin <> 'caching_sha2_password';" 2>/dev/null
 
 # ---------------------------------------------------------------------------
 hdr "10. verdict"
