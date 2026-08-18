@@ -76,8 +76,17 @@ Read-only queries are unaffected (the backup user can SELECT), which is exactly
 why this is easy to miss: the diagnostics in this file all work fine as
 `pfv_backup`, and only the mutating steps fail.
 
-`infra/rehearse-84-scratch-droplet.sh` passes `--no-defaults` on every client
-invocation for this reason.
+**The root cause is fixed as of TBD-360 prep**: `roles/mysql/templates/root.my.cnf.j2`
+no longer emits a `[client]` section, so `mysqldump` still picks the backup
+credentials up from `[mysqldump]` while `mysql` falls through to `root@localhost`
+via `auth_socket`. The play asserts this as its first verification task, so it
+cannot silently regress.
+
+⚠ **Keep using `--no-defaults` anyway.** The fix only lands once the play has
+run, a snapshot rollback restores the old file, and the template governs only
+`/root/.my.cnf` — a `[client]` section in `/etc/mysql/my.cnf` or
+`~/.mylogin.cnf` behaves identically and nothing rewrites those.
+`infra/rehearse-84-scratch-droplet.sh` passes it on every client invocation.
 
 ## Order of operations
 
