@@ -93,7 +93,16 @@ module "data_droplet" {
   # deliberately, immediately pre-cutover, guaranteed to exist. Note the two
   # restore with DIFFERENT verbs: a backup with `droplet-action restore`, a
   # snapshot with `droplet-action rebuild`.
-  enable_backups = true
+  # TBD-399: RE-ENABLE BEFORE ANY FUTURE ONE-WAY-DOOR WINDOW.
+  # This was true only for the TBD-360 MySQL 8.4 cutover, where a restorable
+  # image was the gate on proceeding at all. Reverted afterwards as the ticket
+  # specified: DO charges ~20% of droplet cost for backups, and the nightly
+  # mysqldump plus an on-demand snapshot cover normal operation.
+  # ⚠ Flipping this to true creates NOTHING by itself. With `plan = "daily",
+  # hour = 0` the first image appears at the next 00:00 UTC, so applying at
+  # 01:00 means waiting ~23 hours. Gate on output, never on the apply:
+  #     doctl compute droplet backups <droplet-id>   # must return a row
+  enable_backups = false
   backup_policy = {
     plan = "daily"
   }
