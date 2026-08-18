@@ -189,11 +189,28 @@ only way back is the snapshot.
 
 ### 3.1 Slow shutdown
 
-⚠⚠ **`--no-defaults` is mandatory.** `/root/.my.cnf` forces `user = pfv_backup`,
-so a bare `mysql` as root authenticates as a low-privilege account and this
-step fails with `ERROR 1227` — then dpkg stops mysqld with the *default fast*
-shutdown and the DD upgrade starts from a non-clean state. It looks survivable
-and is exactly the failure this step exists to prevent.
+⚠⚠ **Keep `--no-defaults`, even though the root cause is now fixed.**
+
+The `[client]` section was removed from `/root/.my.cnf` (see
+`roles/mysql/templates/root.my.cnf.j2`), and Phase 1's play asserts that a bare
+`mysql` run as root really is `root@localhost`. So on a freshly-played box this
+flag is belt-and-braces.
+
+It stays in this sheet for three reasons, each of which is live during a window:
+
+1. **Production has not been played yet** when you start. The old
+   `/root/.my.cnf` with its `[client]` section is still there until Phase 1
+   completes.
+2. **A snapshot rollback restores the old file.** If you fall back to the Phase
+   2 snapshot, the trap comes back with it.
+3. The template only governs `/root/.my.cnf`. A `[client]` section in
+   `/etc/mysql/my.cnf` or `~/.mylogin.cnf` would do the same thing, and nothing
+   rewrites those.
+
+Without it, a bare `mysql` as root authenticates as the low-privilege backup
+user and this step fails with `ERROR 1227` — then dpkg stops mysqld with the
+*default fast* shutdown and the DD upgrade starts from a non-clean state. It
+looks survivable, and it is exactly the failure this step exists to prevent.
 
 ```bash
 $SSHQ 'mysql --no-defaults -N -B -e "SELECT CURRENT_USER()"'
