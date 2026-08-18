@@ -8,11 +8,21 @@ post-boot config: packages, MySQL/Redis tuning, backups, fail2ban, swap.
 ## Run
 
 ```bash
-infra/ansible/bin/run-playbook.sh              # apply
-infra/ansible/bin/run-playbook.sh --check --diff   # dry run, changes nothing
+infra/ansible/bin/run-playbook.sh --scratch-host <ip>       # rehearse
+infra/ansible/bin/run-playbook.sh --production --check --diff   # dry run
+infra/ansible/bin/run-playbook.sh --production              # apply
 ```
 
-That is the whole procedure. Nothing needs to be filled in by hand.
+Nothing needs to be filled in by hand.
+
+⚠⚠ **A target is mandatory; there is no default.** Since TBD-207 the credentials
+are Terraform-generated, so `--production` **rotates** them — and the app keeps
+authenticating with the old password until **both** `DATABASE_URL` bindings in
+`.do/app.yaml` (the backend service **and** the migrate PRE_DEPLOY job) are
+re-encrypted and redeployed. Between those two moments the app cannot connect.
+That is a sequenced operation, so it must never be what you get from typing the
+command bare. The TBD-360 window, where the backend is already scaled to 0, is
+its natural home.
 
 ### Why it is a wrapper and not a bare `ansible-playbook`
 

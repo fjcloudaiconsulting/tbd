@@ -17,10 +17,20 @@
 # reference, and removed on EVERY exit path including interrupt.
 #
 # Usage:
-#   bin/run-playbook.sh                          # against the real data droplet
-#   bin/run-playbook.sh --check --diff           # dry run, changes nothing
+# ⚠⚠ A TARGET IS MANDATORY. There is deliberately no default.
+# Since TBD-207 the credentials are Terraform-generated, so applying this play
+# to production ROTATES them -- and the app keeps using the old password until
+# BOTH DATABASE_URL bindings in .do/app.yaml (the backend service and the
+# migrate PRE_DEPLOY job) are re-encrypted and redeployed. Between those two
+# moments the app cannot authenticate. That is a deliberate, sequenced
+# operation, so it must never be what you get by typing the command with no
+# arguments and hitting return.
+#
+# Usage:
 #   bin/run-playbook.sh --scratch-host 1.2.3.4   # rehearse on a throwaway box
-#   bin/run-playbook.sh -- --tags mysql          # anything after -- goes to ansible
+#   bin/run-playbook.sh --production             # the real data droplet
+#   bin/run-playbook.sh --production --check --diff   # dry run, changes nothing
+#   bin/run-playbook.sh --scratch-host 1.2.3.4 -- --tags mysql
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,14 +38,34 @@ ANSIBLE_DIR="$(dirname "$HERE")"
 TERRAFORM_DIR="$(dirname "$ANSIBLE_DIR")/terraform"
 VENV_ANSIBLE="${VENV_ANSIBLE:-$HOME/.virtualenvs/ansible/bin}"
 
-SCRATCH_HOST=""; HOST_NAME="pfv-data-01"; PASSTHRU=()
+SCRATCH_HOST=""; HOST_NAME="pfv-data-01"; PRODUCTION=0; PASSTHRU=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --scratch-host) SCRATCH_HOST="${2:-}"; HOST_NAME="scratch"; shift 2 ;;
+    --production)   PRODUCTION=1; shift ;;
     --) shift; PASSTHRU+=("$@"); break ;;
     *) PASSTHRU+=("$1"); shift ;;
   esac
 done
+
+if [[ -n "$SCRATCH_HOST" && $PRODUCTION -eq 1 ]]; then
+  echo "!! --scratch-host and --production are mutually exclusive"; exit 2
+fi
+if [[ -z "$SCRATCH_HOST" && $PRODUCTION -eq 0 ]]; then
+  cat >&2 <<'USAGE'
+!! No target given, and there is no default. Pick one explicitly:
+
+     --scratch-host <ip>   rehearse against a throwaway droplet
+     --production          the real data droplet
+
+   ⚠ --production ROTATES the data-plane credentials to the Terraform-generated
+     values. The app authenticates with the OLD password until both
+     DATABASE_URL bindings in .do/app.yaml -- the backend service AND the
+     migrate PRE_DEPLOY job -- are re-encrypted and redeployed. Sequence it;
+     the TBD-360 window (backend already scaled to 0) is the natural home.
+USAGE
+  exit 2
+fi
 
 PLAYBOOK="$ANSIBLE_DIR/playbooks/site.yml"
 [[ -f "$PLAYBOOK" ]] || { echo "!! no playbook at $PLAYBOOK"; exit 2; }
