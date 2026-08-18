@@ -188,13 +188,46 @@
 # cutover (TBD-360) can change underneath us. `mysqld --validate-config` cannot
 # catch it either: a file that is never included is never read, and validation
 # still exits 0. Only reading the live values proves it.
+# ---------------------------------------------------------------------------
+# REGRESSION FENCE for the /root/.my.cnf footgun. Deliberately runs WITHOUT
+# --no-defaults, because reading the operator's real default files is the exact
+# thing under test. If a [client] section ever supplies credentials -- in
+# /root/.my.cnf, /etc/mysql/my.cnf, or ~/.mylogin.cnf -- this fails the play
+# instead of surfacing mid-window as a confusing ERROR 1227 on a step that had
+# to work.
+#
+# ⚠ THIS MUST RUN FIRST among the verification tasks. Measured 2026-08-18: when
+# it sat last, a bad [client] section broke the config-read task at line ~194
+# and the play died there, so this fence never executed and proved nothing. You
+# cannot interpret what a server reports until you know WHO is asking.
+- name: Read who a bare `mysql` authenticates as, using the real default files
+  ansible.builtin.command:
+    cmd: mysql -N -B -e "SELECT CURRENT_USER()"
+  changed_when: false
+  failed_when: false
+  register: mysql_default_identity
+
+- name: Assert a bare `mysql` run as root IS root
+  ansible.builtin.assert:
+    that:
+      - mysql_default_identity.stdout | trim | split('@') | first == 'root'
+    quiet: true
+    fail_msg: >-
+      A bare `mysql` run as root authenticates as
+      "{{ mysql_default_identity.stdout | trim | default('nothing', true) }}",
+      not root (stderr: {{ mysql_default_identity.stderr | default('') | trim }}).
+      Something is supplying credentials through a default file -- a [client]
+      section in /root/.my.cnf, /etc/mysql/my.cnf or ~/.mylogin.cnf. Every
+      mutating command then fails with ERROR 1227 while read-only diagnostics
+      keep passing. See roles/mysql/templates/root.my.cnf.j2.
+
 - name: Flush handlers so the checks below read the RESTARTED server
   ansible.builtin.meta: flush_handlers
 
 - name: Read the live MySQL configuration back
   ansible.builtin.command:
     cmd: >-
-      mysql -N -B -e "SELECT CONCAT(@@bind_address,'|',@@collation_server,'|',
+      mysql --no-defaults -N -B -e "SELECT CONCAT(@@bind_address,'|',@@collation_server,'|',
       @@innodb_buffer_pool_size,'|',@@innodb_io_capacity,'|',
       @@innodb_io_capacity_max,'|',@@innodb_redo_log_capacity)"
   changed_when: false
@@ -230,7 +263,7 @@
 - name: Re-read the live configuration after the corrective restart
   ansible.builtin.command:
     cmd: >-
-      mysql -N -B -e "SELECT CONCAT(@@bind_address,'|',@@collation_server,'|',
+      mysql --no-defaults -N -B -e "SELECT CONCAT(@@bind_address,'|',@@collation_server,'|',
       @@innodb_buffer_pool_size,'|',@@innodb_io_capacity,'|',
       @@innodb_io_capacity_max,'|',@@innodb_redo_log_capacity)"
   changed_when: false
