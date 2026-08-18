@@ -52,6 +52,9 @@ TARGET=""; HOST=""; DUMP=""; CFG=""; KEEP=0; PROD_DD=""
 CTR=tbd360_scratch
 UBUNTU_IMAGE=ubuntu:24.04
 DB=pfv2
+# Pinned deliberately: a floating "latest" would change the rehearsed artefact
+# between the rehearsal and the window. Bump it consciously, then re-rehearse.
+MYSQL_APT_CONFIG_URL=http://repo.mysql.com/apt/ubuntu/pool/mysql-apt-config/m/mysql-apt-config/mysql-apt-config_0.8.39-1_all.deb
 
 usage() { sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
@@ -278,22 +281,52 @@ T0=$(date +%s)
 # produces is exactly this repo line, so this is the same transaction.
 CODENAME=$(run "( . /etc/os-release; echo \$VERSION_CODENAME )" 2>/dev/null | tr -d '[:space:]')
 note "distro codename: ${CODENAME:-unknown}"
-# ⚠⚠ USE THE -2025 KEY, NOT -2023. Measured 2026-08-18: the widely-cited
-# RPM-GPG-KEY-mysql-2023 EXPIRED on 2025-10-22, and apt then rejects the whole
-# repo with `EXPKEYSIG B7B3B788A8D3785C ... is not signed`, which surfaces
-# downstream as the very misleading "E: Unable to locate package
-# mysql-community-server" — it reads like a wrong component name and is not.
-# Oracle re-issued the SAME key id under the -2025 filename, valid to 2027-10.
-# Left unfixed this detonates MID-WINDOW, after the point of no return.
-# ⚠ --batch --yes is required: gpg --dearmor prompts before overwriting an
-# existing keyring and dies with "cannot open '/dev/tty'" on a non-interactive box.
-run "install -d /etc/apt/keyrings && rm -f /etc/apt/keyrings/mysql.gpg && curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 | gpg --batch --yes --dearmor -o /etc/apt/keyrings/mysql.gpg" >/dev/null 2>&1 \
-  && ok "Oracle MySQL signing key installed (-2025)" || bad "could not fetch Oracle's signing key"
-run "echo 'deb [signed-by=/etc/apt/keyrings/mysql.gpg] http://repo.mysql.com/apt/ubuntu/ $CODENAME mysql-8.4-lts' > /etc/apt/sources.list.d/mysql.list" >/dev/null 2>&1
+# Oracle's RECOMMENDED path: the mysql-apt-config release package, driven
+# non-interactively via debconf. The runbook's section 4 says to use it, and
+# this script previously hand-rolled the sources.list + key instead, for
+# scripting convenience. That deviation was wrong twice over: it made the
+# rehearsal LESS faithful than the thing it rehearses, and it manufactured a
+# false finding (see below).
+#
+# ⚠ DO NOT hand-roll the signing key. The standalone RPM-GPG-KEY-mysql-2023
+# file on repo.mysql.com EXPIRED 2025-10-22, and apt then rejects the repo with
+# `EXPKEYSIG B7B3B788A8D3785C`, surfacing as the very misleading "E: Unable to
+# locate package mysql-community-server". mysql-apt-config embeds the RENEWED
+# key (same id, expires 2027-10-23) in its postinst and installs it to
+# /usr/share/keyrings/mysql-apt-config.gpg with signed-by=. Measured 2026-08-18
+# against mysql-apt-config 0.8.39-1: valid key, repo usable, candidate 8.4.11.
+# ⚠ dev.mysql.com's quick guide still documents `apt-key adv --recv-keys
+# A8D3785C`, which can resolve the STALE key from a keyserver. Use the package.
+# ⚠ mysql-apt-config declares Pre-Depends: debconf, dpkg, lsb-release, wget,
+# bash, gnupg. Pre-Depends are not auto-resolved by `dpkg -i`, so a missing one
+# aborts the install outright — and the message names only the FIRST missing
+# package, so discovering them one run at a time costs a full rehearsal each.
+# Installed from the package's own declared list, not from guesswork.
+run "export DEBIAN_FRONTEND=noninteractive; apt-get install -y -qq lsb-release wget gnupg debconf debconf-utils" >/dev/null 2>&1
+run "curl -fsSL -o /tmp/mysql-apt-config.deb $MYSQL_APT_CONFIG_URL" >/dev/null 2>&1 \
+  && ok "fetched mysql-apt-config" || bad "could not fetch mysql-apt-config"
+run_in "debconf-set-selections" <<PRESEED
+mysql-apt-config mysql-apt-config/repo-distro select ubuntu
+mysql-apt-config mysql-apt-config/repo-codename select $CODENAME
+mysql-apt-config mysql-apt-config/repo-url string http://repo.mysql.com/apt
+mysql-apt-config mysql-apt-config/select-server select mysql-8.4-lts
+mysql-apt-config mysql-apt-config/select-connectors select Disabled
+mysql-apt-config mysql-apt-config/select-product select Ok
+PRESEED
+if run "export DEBIAN_FRONTEND=noninteractive; dpkg -i /tmp/mysql-apt-config.deb > /tmp/aptcfg.log 2>&1"; then
+  ok "mysql-apt-config installed and configured for mysql-8.4-lts"
+else
+  bad "dpkg -i mysql-apt-config failed"
+  run "tail -12 /tmp/aptcfg.log" 2>/dev/null | sed 's/^/          /'
+fi
+KEYEXP=$(run "gpg --show-keys /usr/share/keyrings/mysql-apt-config.gpg 2>/dev/null | grep -oE 'expires: [0-9-]+'" 2>/dev/null | head -1)
+if [[ -n "$KEYEXP" ]]; then ok "signing key installed by the package (${KEYEXP})"
+else bad "no signing key at /usr/share/keyrings/mysql-apt-config.gpg"; fi
 run "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq" >/dev/null 2>&1
 # Gate on a resolvable CANDIDATE, not on apt-get update's exit code. update
 # returns 0 with an unusable repo when signature verification fails, so its exit
-# status is not evidence the package can be installed.
+# status is not evidence the package can be installed. This gate is what caught
+# the expired-key failure above.
 CAND=$(run "apt-cache policy mysql-community-server 2>/dev/null | awk '/Candidate:/{print \$2}'" 2>/dev/null | tr -d '[:space:]')
 if [[ -n "$CAND" && "$CAND" != "(none)" ]]; then ok "Oracle 8.4 repo usable — candidate $CAND"
 else bad "no installable mysql-community-server candidate (expired key? wrong arch? wrong codename?)"; fi

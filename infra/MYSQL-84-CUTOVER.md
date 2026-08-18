@@ -23,7 +23,7 @@ step has detail worth reading in full before the window.
 | The driver stack works on 8.4 | `cryptography 44.0.3` present **in the image**, `aiomysql 0.2.0`, `PyMySQL 1.1.3`; app authenticates with `caching_sha2_password` |
 | CI executes migrations against 8.4 on a real runner | `Migration Checks` job, now matrixed over 8.0 **and** 8.4 |
 | The in-place upgrade runs, **on a synthetic schema, via a container-image swap — NOT the Ubuntu→Oracle package swap and NOT a production restore** | `infra/rehearse-84-upgrade.sh` (reproducible). DD `80023 → 80300` and server `80046 → 80411` completed; a STORED generated column keeps `utf8mb4_0900_as_cs` and its expression; a named CHECK and a UNIQUE on the generated column are both still **enforced** (deliberate bad INSERTs rejected); JSON readable. ⚠ Row/sum equality is near-tautological — a DD upgrade does not rewrite tablespaces. ⚠ **Upgrade DURATION on a production-sized datadir was not measured**, so the window is unsized |
-| The **Ubuntu → Oracle package swap** completes, and `/etc/mysql/mysql.conf.d` is **still included** by Oracle's packaging | `infra/rehearse-84-scratch-droplet.sh --target local` (reproducible). Real `apt` install of Ubuntu `mysql-server-8.0` **8.0.46** — production's exact version — then the real dpkg transaction to Oracle `mysql-community-server` **8.4.11**, on amd64. After the swap all six section-5 variables still hold their configured values (`bind_address 0.0.0.0`, `collation_server utf8mb4_0900_ai_ci`, buffer pool 768M, io_capacity 1000/2000, `innodb_redo_log_capacity 268435456`), the CHECK and the UNIQUE-on-generated-column are still **enforced**, and `debian.cnf` plus the `debian-sys-maint` account both survived. ⚠ A **container**, so systemd and AppArmor are still unrehearsed, and the duration is meaningless (synthetic data). The scratch-droplet run remains the only source of the window size |
+| The **Ubuntu → Oracle package swap** completes, and `/etc/mysql/mysql.conf.d` is **still included** by Oracle's packaging | `infra/rehearse-84-scratch-droplet.sh --target local` (reproducible). Real `apt` install of Ubuntu `mysql-server-8.0` **8.0.46** — production's exact version — then the real dpkg transaction to Oracle `mysql-community-server` **8.4.11** on amd64, via the recommended `mysql-apt-config` release package (preseeded through debconf) rather than a hand-written sources list. After the swap all six section-5 variables still hold their configured values (`bind_address 0.0.0.0`, `collation_server utf8mb4_0900_ai_ci`, buffer pool 768M, io_capacity 1000/2000, `innodb_redo_log_capacity 268435456`), the CHECK and the UNIQUE-on-generated-column are still **enforced**, and `debian.cnf` plus the `debian-sys-maint` account both survived. ⚠ A **container**, so systemd and AppArmor are still unrehearsed, and the duration is meaningless (synthetic data). The scratch-droplet run remains the only source of the window size |
 | 8.4's re-defaults are enumerated **for a dev host, not for the droplet** | Same datadir under both, `SHOW GLOBAL VARIABLES` diffed: **26** value changes, **15 variables REMOVED** (including `default_authentication_plugin` — so a value-diff alone would have missed this ticket's own root cause), 7 new. io_capacity pins hold at 1000/2000. ⚠ Several 8.4 defaults are CPU-derived and **could not be measured for 1 vCPU** from this machine; read them on the box |
 
 ⚠ **What is NOT evidence, so nobody re-derives false confidence from it.** The
@@ -300,21 +300,34 @@ doctl compute droplet delete tbd360-rehearsal --force
    state.
 2. Replace Ubuntu's `mysql-server-8.0` with Oracle's `mysql-community-server`
    via `mysql-apt-config`.
-   ⚠⚠ **Use the `-2025` signing key. `RPM-GPG-KEY-mysql-2023` EXPIRED on
-   2025-10-22** (measured 2026-08-18). With the expired key apt rejects the
-   whole repo — `EXPKEYSIG B7B3B788A8D3785C ... is not signed` — and the
-   failure then surfaces as **`E: Unable to locate package
-   mysql-community-server`**, which reads like a wrong component name and is
-   not. Oracle re-issued the same key id under `RPM-GPG-KEY-mysql-2025`, valid
-   to 2027-10. This detonates **mid-window**, between the slow shutdown and a
-   running server, so verify the key resolves a candidate *before* the window:
+   ⚠ **Use `mysql-apt-config`; do NOT hand-roll the sources list or the key.**
+   The package embeds Oracle's signing key in its postinst and installs it to
+   `/usr/share/keyrings/mysql-apt-config.gpg` with `signed-by=`. Measured
+   2026-08-18 against `mysql-apt-config 0.8.39-1`: key `B7B3B788A8D3785C`,
+   **valid to 2027-10-23**, repo usable, candidate `8.4.11-1ubuntu24.04`.
+   ⚠⚠ **The standalone key file is a trap.** `RPM-GPG-KEY-mysql-2023` on
+   `repo.mysql.com` **expired 2025-10-22**. Add it by hand and apt rejects the
+   whole repo with `EXPKEYSIG B7B3B788A8D3785C ... is not signed`, which then
+   surfaces as **`E: Unable to locate package mysql-community-server`** — it
+   reads like a wrong component name and is not. Oracle re-issued the same key
+   id as `RPM-GPG-KEY-mysql-2025`. Note that dev.mysql.com's quick guide still
+   documents the manual route as `apt-key adv --recv-keys A8D3785C`, which can
+   resolve the **stale** key from a keyserver. The release package is the safe
+   path, which is why this step says to use it.
+   ⚠ `mysql-apt-config` declares **`Pre-Depends: debconf, dpkg, lsb-release,
+   wget, bash, gnupg`**. `dpkg -i` does **not** resolve pre-dependencies, so a
+   missing one aborts the install — and the error names only the **first**
+   missing package, so discovering them one at a time costs a run each. Install
+   all six first. It is also interactive (debconf): preseed it rather than
+   answering a TUI mid-window. `infra/rehearse-84-scratch-droplet.sh` carries
+   the exact selections.
+   ⚠ **Verify before the window, not during it.** `apt-get update` exits **0**
+   against a repo whose signature failed, so its exit status is not evidence:
 
    ```bash
    apt-cache policy mysql-community-server   # must show a Candidate, not (none)
    ```
 
-   ⚠ `apt-get update` exits **0** against a repo whose signature failed, so its
-   exit status is not evidence. Gate on the candidate.
    ⚠ **amd64 only.** `repo.mysql.com` publishes `Architectures: i386 amd64` for
    Ubuntu — there is no arm64. The data droplet is amd64, so this is fine; an
    ARM droplet would make this cutover path impossible.
