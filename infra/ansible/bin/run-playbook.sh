@@ -27,7 +27,7 @@
 # arguments and hitting return.
 #
 # Usage:
-#   bin/run-playbook.sh --scratch-host 1.2.3.4   # rehearse on a throwaway box
+#   bin/run-playbook.sh --scratch-host 1.2.3.4 --scratch-private-ip 10.x.x.x
 #   bin/run-playbook.sh --production             # the real data droplet
 #   bin/run-playbook.sh --production --check --diff   # dry run, changes nothing
 #   bin/run-playbook.sh --scratch-host 1.2.3.4 -- --tags mysql
@@ -38,10 +38,11 @@ ANSIBLE_DIR="$(dirname "$HERE")"
 TERRAFORM_DIR="$(dirname "$ANSIBLE_DIR")/terraform"
 VENV_ANSIBLE="${VENV_ANSIBLE:-$HOME/.virtualenvs/ansible/bin}"
 
-SCRATCH_HOST=""; HOST_NAME="pfv-data-01"; PRODUCTION=0; PASSTHRU=()
+SCRATCH_HOST=""; SCRATCH_PRIVATE_IP=""; HOST_NAME="pfv-data-01"; PRODUCTION=0; PASSTHRU=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --scratch-host) SCRATCH_HOST="${2:-}"; HOST_NAME="scratch"; shift 2 ;;
+    --scratch-private-ip) SCRATCH_PRIVATE_IP="${2:-}"; shift 2 ;;
     --production)   PRODUCTION=1; shift ;;
     --) shift; PASSTHRU+=("$@"); break ;;
     *) PASSTHRU+=("$1"); shift ;;
@@ -79,7 +80,11 @@ trap cleanup EXIT INT TERM HUP
 
 echo "==> regenerating inventory from Terraform"
 if [[ -n "$SCRATCH_HOST" ]]; then
-  "$HERE/gen-inventory.py" --host "$SCRATCH_HOST" --name "$HOST_NAME"
+  # --private-ip is not optional: the redis role binds to it, so omitting it
+  # fails the play at its LAST task, after MySQL is already provisioned.
+  # Measured on the 2026-08-18 scratch run, which is why this is threaded.
+  "$HERE/gen-inventory.py" --host "$SCRATCH_HOST" \
+      --private-ip "$SCRATCH_PRIVATE_IP" --name "$HOST_NAME"
 else
   "$HERE/gen-inventory.py"
 fi

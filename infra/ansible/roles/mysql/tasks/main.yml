@@ -179,3 +179,74 @@
     group: root
     mode: "0644"
   notify: Restart mysql
+
+# ---------------------------------------------------------------------------
+# ⚠ WRITING THE FILE IS NOT APPLYING THE CONFIG. Everything above proves only
+# that pfv.cnf reached the disk. Whether mysqld READ it depends on the restart
+# handler having fired and on Oracle/Ubuntu packaging still honouring the
+# `!includedir /etc/mysql/mysql.conf.d/` line in my.cnf -- which the MySQL 8.4
+# cutover (TBD-360) can change underneath us. `mysqld --validate-config` cannot
+# catch it either: a file that is never included is never read, and validation
+# still exits 0. Only reading the live values proves it.
+- name: Flush handlers so the checks below read the RESTARTED server
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the live MySQL configuration back
+  ansible.builtin.command:
+    cmd: >-
+      mysql -N -B -e "SELECT CONCAT(@@bind_address,'|',@@collation_server,'|',
+      @@innodb_buffer_pool_size,'|',@@innodb_io_capacity,'|',
+      @@innodb_io_capacity_max,'|',@@innodb_redo_log_capacity)"
+  changed_when: false
+  register: mysql_live_config
+
+- name: Record what the running server SHOULD look like
+  ansible.builtin.set_fact:
+    # NOTE: joined and compared as a STRING. Under ansible-core's native
+    # Jinja, `{{ 768 * 1048576 }}` becomes an int while `split('|')` yields
+    # strings, so comparing the lists is 805306368 != '805306368' and fails
+    # on a server that is configured correctly. Measured 2026-08-18.
+    mysql_expected_config:
+      - "0.0.0.0"
+      - "utf8mb4_0900_ai_ci"
+      - "{{ (mysql_innodb_buffer_pool_size | regex_replace('M$', '') | int) * 1048576 }}"
+      - "{{ mysql_innodb_io_capacity | int }}"
+      - "{{ mysql_innodb_io_capacity_max | int }}"
+      - "{{ (mysql_innodb_redo_log_capacity | regex_replace('M$', '') | int) * 1048576 }}"
+
+# CONVERGE, do not merely complain. The commonest cause of drift here is a
+# restart handler that was notified and never flushed -- measured 2026-08-18,
+# when the redis role failed after the mysql role and stranded it, leaving
+# mysqld on stock defaults with the intended config unread on disk. A restart
+# heals exactly that. If the values are STILL wrong afterwards the cause is
+# different and much worse (the /etc/mysql/mysql.conf.d include is gone), which
+# is what the assertion below then catches.
+- name: Restart MySQL because the running config does not match pfv.cnf
+  ansible.builtin.service:
+    name: mysql
+    state: restarted
+  when: (mysql_live_config.stdout | trim) != (mysql_expected_config | join('|'))
+
+- name: Re-read the live configuration after the corrective restart
+  ansible.builtin.command:
+    cmd: >-
+      mysql -N -B -e "SELECT CONCAT(@@bind_address,'|',@@collation_server,'|',
+      @@innodb_buffer_pool_size,'|',@@innodb_io_capacity,'|',
+      @@innodb_io_capacity_max,'|',@@innodb_redo_log_capacity)"
+  changed_when: false
+  register: mysql_live_config_after
+
+- name: Assert the RUNNING server has the intended configuration
+  ansible.builtin.assert:
+    that:
+      - (mysql_live_config_after.stdout | trim) == (mysql_expected_config | join('|'))
+    quiet: true
+    fail_msg: >-
+      MySQL is RUNNING with configuration that does not match pfv.cnf, and a
+      restart did NOT fix it -- so this is not a stranded handler.
+      expected: {{ mysql_expected_config | join('|') }}
+      live:     {{ mysql_live_config_after.stdout | trim }}
+      Most likely /etc/mysql/mysql.conf.d is no longer included by
+      /etc/mysql/my.cnf. See MYSQL-84-CUTOVER.md section 5: `mysqld
+      --validate-config` cannot detect this, because a file that is never
+      included is never read and validation still exits 0.
