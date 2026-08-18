@@ -36,7 +36,7 @@ export DROPLET_ID=$(terraform -chdir=$TFDIR output -raw droplet_id)
 export DROPLET_IP=$(terraform -chdir=$TFDIR output -raw droplet_public_ipv4)
 export APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="pfv"{print $1}')
 export SSH_KEY=~/.ssh/id_rsa.home
-export SSHQ="ssh -o BatchMode=yes -i $SSH_KEY root@$DROPLET_IP"
+export SSHQ="ssh -o BatchMode=yes -o ConnectTimeout=10 -i $SSH_KEY root@$DROPLET_IP"
 
 echo "droplet=$DROPLET_ID ip=$DROPLET_IP app=$APP_ID"
 ```
@@ -85,7 +85,9 @@ verb mid-outage is a hard stop.
 ### 0.3 Dry run — changes nothing
 
 ```bash
-( umask 077; ./infra/ansible/bin/run-playbook.sh --production --check --diff > /tmp/tbd360-dryrun.txt 2>&1 )
+rm -f /tmp/tbd360-dryrun.txt                  # see the umask note below
+( umask 077; : > /tmp/tbd360-dryrun.txt )
+./infra/ansible/bin/run-playbook.sh --production --check --diff 2>&1 | tee -a /tmp/tbd360-dryrun.txt
 grep -E "PLAY RECAP|^pfv-data-01" /tmp/tbd360-dryrun.txt
 less /tmp/tbd360-dryrun.txt      # read the diff, then:  rm -f /tmp/tbd360-dryrun.txt
 ```
@@ -98,6 +100,18 @@ the payload you are being asked to read. Hence the subshell `umask 077`, and
 hence `rm -f` when you are done. `run-playbook.sh` goes to some trouble to keep
 these off disk (mode-0600 mktemp, trapped on every exit path); do not undo that
 with a redirect.
+
+⚠ `rm -f` **first**, and create the file under the umask before writing to it.
+`umask` governs `open(O_CREAT)` only: redirecting onto a path that already
+exists is `O_TRUNC` and leaves the inode's mode alone, so a file left behind by
+an earlier run — this sheet's previous revision said to `tee` here — stays
+world-readable no matter what umask you wrap the command in.
+
+⚠ `tee`, not a bare redirect. This run includes the `common` role's apt task,
+the slowest thing in the sheet, and under a redirect you watch a blank terminal
+for minutes. Worse, anything the wrapper prompts for — an encrypted SSH key
+passphrase, a TFC re-auth — goes to the file instead of the screen, which reads
+as a hang with no explanation.
 
 ✅ EXPECT: `failed=0`. Some `changed` is normal — the three user tasks rewrite
 every run by design (`plugin_auth_string` is cleartext and cannot be compared).
@@ -153,8 +167,20 @@ a quiet moment; it ends in a deliberate reboot (see below).
 **First, prove it is safe to do outside the window.** This only simulates:
 
 ```bash
-$SSHQ 'apt-get update -qq && apt-get -s upgrade --with-new-pkgs 2>/dev/null | grep -Ei "^(Inst|Conf) .*(mysql|redis|libmysql)" || echo "  no mysql/redis packages in the upgrade (good)"'
+$SSHQ 'set -e
+apt-get update -qq
+apt-get -s upgrade --with-new-pkgs > /tmp/tbd360-sim.txt
+grep -Ei "^(Inst|Conf) .*(mysql|redis|libmysql)" /tmp/tbd360-sim.txt || echo "  no mysql/redis packages in the upgrade (good)"
+rm -f /tmp/tbd360-sim.txt'
 ```
+
+⚠ `set -e`, and the simulation goes to a file rather than into a pipe. The
+obvious one-liner — `apt-get update && apt-get -s upgrade | grep ... || echo
+good` — **fails open**: a pipeline binds tighter than `&&`, so a failed
+`apt-get update` (expired key, mirror 5xx, the dpkg lock held by the
+unattended-upgrades timer this role enables) short-circuits to the `||` and
+prints the reassuring line having proved nothing. Discarding the simulation's
+stderr does the same. This gate's only acceptable failure mode is a false stop.
 
 ✅ EXPECT the `good` line. ⚠ **If anything matches, stop.** Upgrading MySQL or
 Redis here restarts production's database with the backend still serving, before
@@ -162,8 +188,10 @@ the Phase 2 snapshot exists and without Phase 3.1's slow-shutdown discipline.
 That work belongs inside the window, after the snapshot.
 
 ```bash
-$SSHQ 'export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+$SSHQ 'set -e
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
 apt-get update -qq
+set +e
 apt-get -y --with-new-pkgs -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade
 echo "apt-exit=$?"'
 ```
@@ -189,12 +217,27 @@ status is the *last* command's, so `$?` would be `tail`'s and always 0.
 **Then reboot, deliberately, here rather than inside the window:**
 
 ```bash
-$SSHQ 'ls /var/run/reboot-required 2>/dev/null && (systemctl reboot &) ; echo requested'
-sleep 60; $SSHQ 'uptime; uname -r; systemctl is-active mysql redis-server'
+BOOT_BEFORE=$($SSHQ 'cat /proc/sys/kernel/random/boot_id')
+$SSHQ 'if [ -e /var/run/reboot-required ]; then echo REBOOTING; systemctl --no-block reboot; else echo "NO REBOOT NEEDED"; fi'
+
+until $SSHQ "test \"\$(cat /proc/sys/kernel/random/boot_id)\" != '$BOOT_BEFORE'" 2>/dev/null; do
+  echo "waiting for reboot..."; sleep 10
+done
+$SSHQ 'uptime; uname -r; systemctl is-active mysql redis-server
+ls /var/run/reboot-required 2>/dev/null || echo "reboot-required cleared (good)"'
 ```
 
-✅ EXPECT the box back, the new kernel in `uname -r`, and both services
-`active`.
+✅ EXPECT `REBOOTING`, then the loop clearing, then both services `active` and
+`reboot-required cleared (good)`.
+
+⚠ The loop compares **boot ids**, because that is the only positive proof the
+box actually rebooted. `uname -r` cannot tell you — nobody recorded the old
+value — and an unconditional "requested" message cannot either: if
+`/var/run/reboot-required` is absent, nothing reboots and every downstream
+check still passes. Expect `waiting for reboot...` a few times; a 1-vCPU
+droplet stopping MySQL and Redis and booting a fresh kernel to sshd lands
+around 35-75s, so connection refusals during that stretch are the loop working,
+not a dead droplet.
 
 ⚠ Rebooting now is the point, not a side effect. `NEEDRESTART_MODE=l` above
 tells needrestart to *list* services rather than restart them — a library
@@ -211,8 +254,10 @@ an unproven kernel.
 makes 0.4 verifiable:
 
 ```bash
-( umask 077; ./infra/ansible/bin/run-playbook.sh --production --check --diff > /tmp/tbd360-dryrun.txt 2>&1 )
-grep -E "PLAY RECAP|^pfv-data-01" /tmp/tbd360-dryrun.txt; rm -f /tmp/tbd360-dryrun.txt
+rm -f /tmp/tbd360-dryrun.txt; ( umask 077; : > /tmp/tbd360-dryrun.txt )
+./infra/ansible/bin/run-playbook.sh --production --check --diff 2>&1 | tee -a /tmp/tbd360-dryrun.txt
+grep -E "PLAY RECAP|^pfv-data-01" /tmp/tbd360-dryrun.txt
+# once you have read the number below:  rm -f /tmp/tbd360-dryrun.txt
 ```
 
 ✅ EXPECT `failed=0` and **`changed=9`**, not the `changed=10` in the table
@@ -240,12 +285,16 @@ not merely on disk.
 ### 1.1 Verify by failure mode, not by allowlist
 
 ```bash
+$SSHQ 'mysql -N -B -e "SELECT CURRENT_USER()"'   # NO --no-defaults; EXPECT root@localhost now
 $SSHQ 'mysql --no-defaults -t -e "SELECT user, host, plugin, LENGTH(authentication_string) hash_len FROM mysql.user WHERE plugin <> \"caching_sha2_password\""'
 $SSHQ 'mysql --no-defaults -t -e "SELECT user, host, LENGTH(authentication_string) hash_len FROM mysql.user WHERE user LIKE \"pfv%\""'
 $SSHQ 'grep -rn "default.authentication.plugin" /etc/mysql/ || echo "  ABSENT (good)"'
 ```
 
-✅ EXPECT: first query returns **only `root@localhost / auth_socket`**. Second
+✅ EXPECT: `root@localhost` from the first line — this is the other half of
+0.1's identity probe, and the only place the sheet proves the footgun is gone
+before Phase 3.1. Then the first query returns **only
+`root@localhost / auth_socket`**. Second
 shows `hash_len = 70` for all three `pfv_*` rows — a `0` means the passwordless
 form got in. Third prints `ABSENT` (comments do not count; look for a real
 setting line).
