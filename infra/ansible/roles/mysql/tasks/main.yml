@@ -191,18 +191,25 @@
 # ---------------------------------------------------------------------------
 # ⚠ CHECK MODE PROVES NOTHING HERE, so the fences below are skipped under it.
 # Every one asserts a property of the CONVERGED server, and --check converges
-# nothing: ansible skips `command` tasks in check mode, so the reads register
-# with no stdout and the asserts then fail on a perfectly healthy box.
+# nothing. Mechanically: `command` declares supports_check_mode, so under
+# --check the module does not run the query -- it self-reports skipped with
+# stdout left at '' -- and the asserts then fail on a perfectly healthy box.
 # Measured 2026-08-18 against production: the documented Phase 0.3 dry run
 # (MYSQL-84-EXECUTE.md) reported failed=1 for exactly this reason, on the one
-# step whose whole job is to say "nothing unexpected will happen".
+# step whose whole job is to say "nothing unexpected will happen". The fail
+# message named the user as "nothing" -- an empty read, not an identity.
 #
-# `check_mode: false` on the reads is NOT the fix. It would make the fences
-# report the PRE-play state of a box that has not been played yet -- true, but
-# not what a dry run is being asked, and still a red that stops the operator at
-# the top of the window.
+# What has to be gated is the ASSERTS: they are the half that cannot be
+# satisfied before convergence. The reads are gated with them only because
+# nothing else consumes them. `check_mode: false` on the reads plus gated
+# asserts is a defensible alternative -- it would let a dry run PRINT the
+# pre-play identity -- but that signal belongs where the operator can see it
+# without -v, so it lives in MYSQL-84-EXECUTE.md 0.1 as an explicit bare
+# `mysql` call instead. It is deliberately not a reason to leave the asserts
+# ungated: a red dry run on a box that has not been played yet stops the
+# operator at the top of the window for a state the play is about to fix.
 # ---------------------------------------------------------------------------
-- name: Verify the /root/.my.cnf footgun is absent (real runs only)
+- name: Verify no default file downgrades the mysql client (real runs only)
   when: not ansible_check_mode
   block:
     # REGRESSION FENCE for the /root/.my.cnf footgun. Deliberately runs WITHOUT
@@ -212,10 +219,18 @@
     # instead of surfacing mid-window as a confusing ERROR 1227 on a step that had
     # to work.
     #
-    # ⚠ THIS MUST RUN FIRST among the verification tasks. Measured 2026-08-18: when
-    # it sat last, a bad [client] section broke the config-read task at line ~194
-    # and the play died there, so this fence never executed and proved nothing. You
-    # cannot interpret what a server reports until you know WHO is asking.
+    # ⚠ THIS MUST RUN FIRST among the verification tasks. You cannot interpret what
+    # a server reports until you know WHO is asking. Measured 2026-08-18: when this
+    # sat last, a bad [client] section broke an earlier verification read and the
+    # play died there, so the fence never executed and proved nothing. (The reads
+    # below now carry --no-defaults and are immune to that specific break, so do
+    # not take their hardening as licence to move this.)
+    #
+    # ⚠ Scope: by the time this runs, the play has already rewritten /root/.my.cnf
+    # from a template that structurally cannot contain [client]. So this does NOT
+    # detect drift in that file -- it detects a REGRESSION of the template, plus a
+    # [client] section in /etc/mysql/my.cnf or /root/.mylogin.cnf, which nothing
+    # here rewrites. Those are the paths it covers; it covers no others.
     - name: Read who a bare `mysql` authenticates as, using the real default files
       ansible.builtin.command:
         cmd: mysql -N -B -e "SELECT CURRENT_USER()"

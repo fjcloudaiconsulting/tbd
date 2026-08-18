@@ -27,7 +27,7 @@ Fill it in as you go, commit it when done.
 | Snapshot ID taken (Phase 2) | |
 | MySQL version before | `8.0.46-0ubuntu0.24.04.3` |
 | Dataset before | 50 tables / 6.7 MB |
-| `--check` dry run clean? | |
+| `--check` dry run clean? (`changed=` count, and note that the play's fences are skipped under `--check`) | |
 
 ## Timings — the point of this file
 
