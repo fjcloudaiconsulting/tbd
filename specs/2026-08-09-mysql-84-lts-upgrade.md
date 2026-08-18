@@ -1,3 +1,20 @@
+> ## ⚠ SUPERSEDED IN PART — read `infra/MYSQL-84-CUTOVER.md` first
+>
+> This document is the original **analysis** and is kept for its reasoning. Six
+> of its conclusions were overturned by measurement between 2026-08-09 and
+> 2026-08-18. Do not execute from this file.
+>
+> | This spec says | Measured reality |
+> |---|---|
+> | Pin "~18 InnoDB values 8.4 re-defaults" | Only **10** change, and most *reduce* memory on a 1-vCPU box. Pinning them back would make the upgrade worse. Two were acted on; `innodb_doublewrite_pages` is deliberately **not** pinned |
+> | Nothing about client defaults | `/root/.my.cnf` forces `user = pfv_backup`, so step 10's `SET GLOBAL innodb_fast_shutdown = 0` **fails with `ERROR 1227`** unless every `mysql` call uses `--no-defaults` |
+> | Add the repo by hand | The standalone `RPM-GPG-KEY-mysql-2023` **expired 2025-10-22**; apt then rejects the repo and it surfaces as `E: Unable to locate package mysql-community-server`. Use the `mysql-apt-config` package, which ships the renewed key |
+> | Hand-run `ALTER USER` for the conversion | The Ansible play does it, driven from Terraform-generated credentials (TBD-206/TBD-207) |
+> | Duration unknown | **49 seconds**, measured end to end on a real droplet. Production is 6.7 MB across 50 tables |
+> | Rename needs its own window | Folded in as Phase 2 — verified metadata-only (0 views, 0 triggers, 0 routines, 50 tables) |
+>
+> **Execution sheet:** `infra/MYSQL-84-EXECUTE.md`.
+
 ---
 name: MySQL 8.0 -> 8.4 LTS upgrade (<data-droplet>)
 description: Runbook and risk analysis for moving the self-hosted production data plane off end-of-life MySQL 8.0
