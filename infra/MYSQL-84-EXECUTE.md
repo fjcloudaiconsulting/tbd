@@ -72,11 +72,59 @@ verb mid-outage is a hard stop.
 ### 0.3 Dry run — changes nothing
 
 ```bash
-./infra/ansible/bin/run-playbook.sh --production --check --diff
+./infra/ansible/bin/run-playbook.sh --production --check --diff | tee /tmp/tbd360-dryrun.txt
 ```
 
 ✅ EXPECT: `failed=0`. Some `changed` is normal — the three user tasks rewrite
 every run by design (`plugin_auth_string` is cleartext and cannot be compared).
+
+⚠ The play's verification fences are **skipped under `--check`**, deliberately.
+They assert properties of the *converged* server, and `--check` converges
+nothing: ansible skips `command` tasks in check mode, so the reads come back
+empty and the asserts fail on a healthy box. Measured against production
+2026-08-18 — the dry run reported `failed=1` on
+`Assert a bare mysql run as root IS root` for exactly that reason. They are
+gated on `not ansible_check_mode`; a real run still asserts.
+
+**Read the diff, do not just count the failures.** Measured against production
+2026-08-18, `--check --diff` reported `changed=10` and every one was expected:
+
+| Changed | Meaning |
+|---|---|
+| `Update apt cache and upgrade packages` | 27 upgrades + 8 new, kernel included. **No mysql/redis packages.** See 0.4 |
+| `Set system timezone` | `Etc/UTC` → `UTC`; cosmetic, rewrites every run |
+| 3 × `Create ... MySQL user` | the password rotation + `caching_sha2_password` conversion |
+| `Drop /root/.my.cnf` | removes the `[client]` section — the footgun is **still live on production** |
+| `Drop pfv MySQL config override` | drops `default-authentication-plugin`, `innodb_log_file_size 128M` → `innodb_redo_log_capacity 256M`. **Notifies a MySQL restart** |
+| `Drop pfv Redis static config override` | `requirepass` rotation. **Notifies a Redis restart** |
+| 2 handlers | the two restarts above |
+
+⚠⚠ **Phase 1 therefore restarts BOTH MySQL and Redis while the app is still
+serving.** The sheet quiesces in Phase 2, not Phase 1. Sessions survive the
+Redis restart (AOF is on, deliberately — Redis is the auth-session store), but
+every client connection is dropped and the admin dashboard reports
+`Redis: DOWN` until the pool reconnects — *and* `requirepass` has rotated, so it
+cannot reconnect at all until `REDIS_URL` is updated in 1.2. If a visible blip
+matters, scale the backend to zero (2.1) *before* running Phase 1 and take the
+`/ready` check in 1.2 after scaling back up.
+
+### 0.4 Take the OS package upgrade OUTSIDE the window
+
+The `common` role runs `apt upgrade: safe` unconditionally, so a stale box
+drags an unbounded apt run — kernel included — into the middle of Phase 1.
+Nothing in it touches MySQL or Redis, so it is safe to do in advance, and doing
+so makes Phase 1 purely a credentials-and-config step.
+
+```bash
+$SSHQ 'DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get -y -o Dpkg::Options::=--force-confold upgrade 2>&1 | tail -5'
+$SSHQ 'ls /var/run/reboot-required 2>/dev/null && echo "reboot pending (fine - Phase 2 power-cycles anyway)" || echo "no reboot needed"'
+```
+
+✅ EXPECT: a clean apt run, and the 0.3 dry run afterwards reporting
+`Update apt cache and upgrade packages` as `ok`, not `changed`.
+
+⚠ A pending reboot is not a blocker: Phase 2 powers the droplet off for the
+snapshot, which picks up the new kernel for free.
 
 ---
 
