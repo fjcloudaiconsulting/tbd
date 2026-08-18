@@ -15,6 +15,17 @@ infra/ansible/bin/run-playbook.sh --production              # apply
 
 Nothing needs to be filled in by hand.
 
+⚠ **`--check` skips the mysql role's verification fences**, deliberately: they
+assert properties of the *converged* server, and check mode converges nothing.
+A clean dry run is therefore not evidence that the fences pass. ⚠ `--check` is
+only meaningful against an **already-provisioned** host; against a fresh scratch
+droplet it cannot complete, because tasks downstream of a skipped one (the swap
+file, a running mysqld) have nothing to act on.
+
+⚠ **`--check --diff` prints the rotated MySQL and Redis passwords in cleartext**
+— the template diffs are the payload and neither task is `no_log`. Do not tee it
+to a world-readable file; see `infra/MYSQL-84-EXECUTE.md` 0.3.
+
 ⚠⚠ **A target is mandatory; there is no default.** Since TBD-207 the credentials
 are Terraform-generated, so `--production` **rotates** them — and the app keeps
 authenticating with the old password until **both** `DATABASE_URL` bindings in

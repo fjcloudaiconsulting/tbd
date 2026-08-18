@@ -48,12 +48,25 @@ unauthenticated — fix that before going further.
 
 ```bash
 $SSHQ 'echo SSH_OK; mysql --no-defaults -N -B -e "SELECT VERSION()"'
+$SSHQ 'mysql -N -B -e "SELECT CURRENT_USER()"'   # NO --no-defaults, on purpose
 terraform -chdir=$TFDIR output -json | python3 -c 'import json,sys; d=json.load(sys.stdin); print("TF secrets present:", all((d.get(k) or {}).get("value") for k in ("mysql_app_password","mysql_backup_password","redis_password")))'
 doctl compute droplet backups $DROPLET_ID --format Name,Created --no-header | head -3
 ```
 
 ✅ EXPECT: `SSH_OK`, `8.0.46-...`, `TF secrets present: True`, and **at least one
 backup row**.
+
+The second line is the one that is easy to skim past. It is the *only* step in
+this sheet that runs a bare `mysql` before the one-way door — everything else
+uses `--no-defaults`, which by design cannot see the problem.
+
+✅ EXPECT **before** Phase 1: `pfv_backup@localhost`. That is the known live
+footgun, and Phase 1 fixes it. ✅ EXPECT **after** Phase 1: `root@localhost`.
+
+⚠ Anything else — a third user entirely — means a `[client]` section in a file
+the play does not manage (`/etc/mysql/my.cnf`, `/root/.mylogin.cnf`). Phase 1's
+own fence would catch it, but it would catch it *mid-play*, after the
+credentials have rotated and before the redis role has run. Find it now.
 
 ⚠ If there is no backup row, **stop**. Enabling backups creates nothing; the
 policy is `daily, hour 0`, so you may be waiting until the next 00:00 UTC.
@@ -72,31 +85,46 @@ verb mid-outage is a hard stop.
 ### 0.3 Dry run — changes nothing
 
 ```bash
-./infra/ansible/bin/run-playbook.sh --production --check --diff | tee /tmp/tbd360-dryrun.txt
+( umask 077; ./infra/ansible/bin/run-playbook.sh --production --check --diff > /tmp/tbd360-dryrun.txt 2>&1 )
+grep -E "PLAY RECAP|^pfv-data-01" /tmp/tbd360-dryrun.txt
+less /tmp/tbd360-dryrun.txt      # read the diff, then:  rm -f /tmp/tbd360-dryrun.txt
 ```
+
+⚠⚠ **That file contains two production secrets in cleartext.** `--check --diff`
+renders the template diffs, and neither secret-bearing task is `no_log`: the
+rotated `mysql_backup_password` (`roles/mysql/templates/root.my.cnf.j2`) and the
+rotated `redis_password` (`roles/redis/templates/00-static.conf.j2`) are both in
+the payload you are being asked to read. Hence the subshell `umask 077`, and
+hence `rm -f` when you are done. `run-playbook.sh` goes to some trouble to keep
+these off disk (mode-0600 mktemp, trapped on every exit path); do not undo that
+with a redirect.
 
 ✅ EXPECT: `failed=0`. Some `changed` is normal — the three user tasks rewrite
 every run by design (`plugin_auth_string` is cleartext and cannot be compared).
 
 ⚠ The play's verification fences are **skipped under `--check`**, deliberately.
 They assert properties of the *converged* server, and `--check` converges
-nothing: ansible skips `command` tasks in check mode, so the reads come back
+nothing: under `--check` the `command` module self-reports `skipped` with
+`stdout` left at `''` rather than running the query, so the reads come back
 empty and the asserts fail on a healthy box. Measured against production
 2026-08-18 — the dry run reported `failed=1` on
-`Assert a bare mysql run as root IS root` for exactly that reason. They are
+`Assert a bare mysql run as root IS root`, whose fail message named the
+authenticated user as `"nothing"`: an empty read, not a real identity. They are
 gated on `not ansible_check_mode`; a real run still asserts.
 
 **Read the diff, do not just count the failures.** Measured against production
-2026-08-18, `--check --diff` reported `changed=10` and every one was expected:
+2026-08-18 **on the gated play** — the `failed=1` observation above predates the
+gating and came from a run that never reached the redis and backups roles.
+`--check --diff` reported `changed=10`, and every one was expected:
 
 | Changed | Meaning |
 |---|---|
-| `Update apt cache and upgrade packages` | 27 upgrades + 8 new, kernel included. **No mysql/redis packages.** See 0.4 |
+| `Update apt cache and upgrade packages` | 27 upgrades + 8 new, kernel included. No mysql/redis packages **on the day this was measured — re-check, it is not a property of the role.** See 0.4 |
 | `Set system timezone` | `Etc/UTC` → `UTC`; cosmetic, rewrites every run |
-| 3 × `Create ... MySQL user` | the password rotation + `caching_sha2_password` conversion |
+| `Create backup user` + 2 × `Create application MySQL user` | the password rotation + `caching_sha2_password` conversion |
 | `Drop /root/.my.cnf` | removes the `[client]` section — the footgun is **still live on production** |
-| `Drop pfv MySQL config override` | drops `default-authentication-plugin`, `innodb_log_file_size 128M` → `innodb_redo_log_capacity 256M`. **Notifies a MySQL restart** |
-| `Drop pfv Redis static config override` | `requirepass` rotation. **Notifies a Redis restart** |
+| `Drop pfv MySQL config override` | drops `default-authentication-plugin`, and restates `innodb_log_file_size 128M` as `innodb_redo_log_capacity 256M` (**same 268435456 bytes** — 128M × the default `innodb_log_files_in_group=2`; a restatement, not a resize). **Notifies a MySQL restart** |
+| `Drop pfv Redis static config override` | `requirepass` rotation. **Notifies a Redis restart.** ⚠ Confirm the diff touches *only* that line — the same file carries `bind 127.0.0.1 <private_ipv4>`, and a change there means Redis stops listening on the address App Platform uses |
 | 2 handlers | the two restarts above |
 
 ⚠⚠ **Phase 1 therefore restarts BOTH MySQL and Redis while the app is still
@@ -104,27 +132,92 @@ serving.** The sheet quiesces in Phase 2, not Phase 1. Sessions survive the
 Redis restart (AOF is on, deliberately — Redis is the auth-session store), but
 every client connection is dropped and the admin dashboard reports
 `Redis: DOWN` until the pool reconnects — *and* `requirepass` has rotated, so it
-cannot reconnect at all until `REDIS_URL` is updated in 1.2. If a visible blip
-matters, scale the backend to zero (2.1) *before* running Phase 1 and take the
-`/ready` check in 1.2 after scaling back up.
+cannot reconnect at all until `REDIS_URL` is updated in 1.2.
+
+If a visible blip matters, you may scale the backend to zero (2.1) *before*
+running Phase 1 — but ⚠⚠ **scale it back to 1 for the 1.2 `/ready` check, then
+back to zero.** Do not defer that check to 4.3. It is the only proof that both
+`DATABASE_URL` bindings took, and 4.3 is on the far side of Phase 3's one-way
+door: a wrong password on the `migrate` job discovered there costs a snapshot
+rebuild and a full re-run of Phase 1, where discovered at 1.2 it costs an edit.
 
 ### 0.4 Take the OS package upgrade OUTSIDE the window
 
-The `common` role runs `apt upgrade: safe` unconditionally, so a stale box
-drags an unbounded apt run — kernel included — into the middle of Phase 1.
-Nothing in it touches MySQL or Redis, so it is safe to do in advance, and doing
-so makes Phase 1 purely a credentials-and-config step.
+The `common` role runs `apt upgrade: safe` unconditionally, so a stale box drags
+an unbounded apt run — kernel included — into the middle of Phase 1. Doing it in
+advance makes Phase 1 purely a credentials-and-config step.
+
+⚠ **This step is itself a short blip, not a free one.** Budget a few minutes at
+a quiet moment; it ends in a deliberate reboot (see below).
+
+**First, prove it is safe to do outside the window.** This only simulates:
 
 ```bash
-$SSHQ 'DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get -y -o Dpkg::Options::=--force-confold upgrade 2>&1 | tail -5'
-$SSHQ 'ls /var/run/reboot-required 2>/dev/null && echo "reboot pending (fine - Phase 2 power-cycles anyway)" || echo "no reboot needed"'
+$SSHQ 'apt-get update -qq && apt-get -s upgrade --with-new-pkgs 2>/dev/null | grep -Ei "^(Inst|Conf) .*(mysql|redis|libmysql)" || echo "  no mysql/redis packages in the upgrade (good)"'
 ```
 
-✅ EXPECT: a clean apt run, and the 0.3 dry run afterwards reporting
-`Update apt cache and upgrade packages` as `ok`, not `changed`.
+✅ EXPECT the `good` line. ⚠ **If anything matches, stop.** Upgrading MySQL or
+Redis here restarts production's database with the backend still serving, before
+the Phase 2 snapshot exists and without Phase 3.1's slow-shutdown discipline.
+That work belongs inside the window, after the snapshot.
 
-⚠ A pending reboot is not a blocker: Phase 2 powers the droplet off for the
-snapshot, which picks up the new kernel for free.
+```bash
+$SSHQ 'export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+apt-get update -qq
+apt-get -y --with-new-pkgs -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade
+echo "apt-exit=$?"'
+```
+
+✅ EXPECT `apt-exit=0` and no `kept back` line.
+
+⚠ `--with-new-pkgs` is what makes this equivalent to the role's `upgrade: safe`
+(`ansible.builtin.apt` maps `safe` to `apt-get upgrade --with-new-pkgs`).
+Without it, apt holds back every package that needs a *new* one installed —
+which is exactly the 8 new kernel packages — and 0.3 keeps reporting the apt
+task as `changed` no matter how many times you run this.
+
+⚠ `export`, not a `VAR=x cmd` prefix: an assignment prefix binds to the single
+command it precedes, so the old form set the frontend on `apt-get update` (which
+never prompts) and not on the upgrade (which can). `$SSHQ` carries
+`-o BatchMode=yes` and no tty, so a debconf prompt there is a hang holding the
+dpkg lock, not a question.
+
+⚠ Do not pipe this to `tail`. The `kept back` list, the package names, and any
+`dpkg: error processing` all scroll past in the middle, and a pipeline's exit
+status is the *last* command's, so `$?` would be `tail`'s and always 0.
+
+**Then reboot, deliberately, here rather than inside the window:**
+
+```bash
+$SSHQ 'ls /var/run/reboot-required 2>/dev/null && (systemctl reboot &) ; echo requested'
+sleep 60; $SSHQ 'uptime; uname -r; systemctl is-active mysql redis-server'
+```
+
+✅ EXPECT the box back, the new kernel in `uname -r`, and both services
+`active`.
+
+⚠ Rebooting now is the point, not a side effect. `NEEDRESTART_MODE=l` above
+tells needrestart to *list* services rather than restart them — a library
+upgrade (libssl, libc, libkrb5) can otherwise restart mysqld and redis-server
+even though no mysql or redis *package* was upgraded, which is a surprise
+restart of production's database in a step labelled "no outage". The reboot
+replaces that with one you chose. It also means Phase 2 snapshots a system whose
+new kernel has already been proven to boot: deferring the first boot to the
+power-cycle in 2.2 puts it inside the outage, on the machine that then has to
+survive an irreversible package swap, and makes your primary undo a snapshot of
+an unproven kernel.
+
+**Now re-run 0.3.** The sheet is copy/paste in order, and this is the step that
+makes 0.4 verifiable:
+
+```bash
+( umask 077; ./infra/ansible/bin/run-playbook.sh --production --check --diff > /tmp/tbd360-dryrun.txt 2>&1 )
+grep -E "PLAY RECAP|^pfv-data-01" /tmp/tbd360-dryrun.txt; rm -f /tmp/tbd360-dryrun.txt
+```
+
+✅ EXPECT `failed=0` and **`changed=9`**, not the `changed=10` in the table
+above: the apt row is gone and the other nine are unchanged. That drop from 10
+to 9 *is* the evidence that 0.4 worked.
 
 ---
 
