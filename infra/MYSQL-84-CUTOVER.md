@@ -22,7 +22,8 @@ step has detail worth reading in full before the window.
 | Schema applies on 8.4 | Real 8.4.11: all **80** alembic revisions to head, idempotent re-run, `utf8mb4_0900_ai_ci` preserved, `/ready` → 200 `database: connected` |
 | The driver stack works on 8.4 | `cryptography 44.0.3` present **in the image**, `aiomysql 0.2.0`, `PyMySQL 1.1.3`; app authenticates with `caching_sha2_password` |
 | CI executes migrations against 8.4 on a real runner | `Migration Checks` job, now matrixed over 8.0 **and** 8.4 |
-| The in-place upgrade runs, **on a synthetic schema, via a container-image swap — NOT the Ubuntu→Oracle package swap and NOT a production restore** | `infra/rehearse-84-upgrade.sh` (reproducible). DD `80023 → 80300` and server `80046 → 80411` completed; a STORED generated column keeps `utf8mb4_0900_as_cs` and its expression; a named CHECK and a UNIQUE on the generated column are both still **enforced** (deliberate bad INSERTs rejected); JSON readable. ⚠ Row/sum equality is near-tautological — a DD upgrade does not rewrite tablespaces. ⚠ **Upgrade DURATION on a production-sized datadir was not measured**, so the window is unsized |
+| The in-place upgrade runs, **on a synthetic schema, via a container-image swap — NOT the Ubuntu→Oracle package swap and NOT a production restore** | `infra/rehearse-84-upgrade.sh` (reproducible). DD `80023 → 80300` and server `80046 → 80411` completed; a STORED generated column keeps `utf8mb4_0900_as_cs` and its expression; a named CHECK and a UNIQUE on the generated column are both still **enforced** (deliberate bad INSERTs rejected); JSON readable. ⚠ Row/sum equality is near-tautological — a DD upgrade does not rewrite tablespaces. ⚠ Superseded for duration: see the scratch-droplet row below, which measured it |
+| **The full cutover, on a REAL droplet, end to end — and the window is MEASURED at 49 seconds** | `infra/rehearse-84-scratch-droplet.sh --target droplet` against a fresh `s-1vcpu-2gb` in ams3, provisioned by the actual playbook (so systemd, AppArmor, the real systemd unit and Ubuntu's own packaging are all exercised — the half no container can reach). Slow shutdown → `mysql-apt-config` swap → Oracle `mysql-community-server` **8.4.11** → first authenticated query: **0m 49s**. All gates green. ⚠ Production's dataset is **6.7 MB across 50 tables**, so the DD upgrade is not the constraint; size the window from the App Platform scale down/up and the cold snapshot of a 25 GB disk, with ~1 minute for MySQL itself |
 | The **Ubuntu → Oracle package swap** completes, and `/etc/mysql/mysql.conf.d` is **still included** by Oracle's packaging | `infra/rehearse-84-scratch-droplet.sh --target local` (reproducible). Real `apt` install of Ubuntu `mysql-server-8.0` **8.0.46** — production's exact version — then the real dpkg transaction to Oracle `mysql-community-server` **8.4.11** on amd64, via the recommended `mysql-apt-config` release package (preseeded through debconf) rather than a hand-written sources list. After the swap all six section-5 variables still hold their configured values (`bind_address 0.0.0.0`, `collation_server utf8mb4_0900_ai_ci`, buffer pool 768M, io_capacity 1000/2000, `innodb_redo_log_capacity 268435456`), the CHECK and the UNIQUE-on-generated-column are still **enforced**, and `debian.cnf` plus the `debian-sys-maint` account both survived. ⚠ A **container**, so systemd and AppArmor are still unrehearsed, and the duration is meaningless (synthetic data). The scratch-droplet run remains the only source of the window size |
 | 8.4's re-defaults are enumerated **for a dev host, not for the droplet** | Same datadir under both, `SHOW GLOBAL VARIABLES` diffed: **26** value changes, **15 variables REMOVED** (including `default_authentication_plugin` — so a value-diff alone would have missed this ticket's own root cause), 7 new. io_capacity pins hold at 1000/2000. ⚠ Several 8.4 defaults are CPU-derived and **could not be measured for 1 vCPU** from this machine; read them on the box |
 
@@ -48,6 +49,35 @@ The role uses `plugin_auth_string`. Do not "simplify" it back. The collection is
 capped below 4.0.0 in `requirements.yml` for the same reason.
 
 ---
+
+## ⚠⚠ Run every `mysql` command with `--no-defaults`
+
+**On this droplet, a bare `mysql` run as root does NOT authenticate as root.**
+The `backups` role writes `/root/.my.cnf` containing `user = pfv_backup`, and
+the client reads it, so:
+
+```
+mysql -N -B -e "SELECT CURRENT_USER()"                -> pfv_backup@localhost
+mysql --no-defaults -N -B -e "SELECT CURRENT_USER()"  -> root@localhost
+```
+
+`pfv_backup` is deliberately low-privilege, so every privileged step fails with
+**`ERROR 1227 ... you need (at least one of) the SUPER or
+SYSTEM_VARIABLES_ADMIN privilege(s)`** — including the `SET GLOBAL
+innodb_fast_shutdown = 0` that step 4 marks **required**.
+
+⚠ **The danger is that it fails in a survivable-looking way.** The command
+errors on one line, dpkg then stops mysqld with the DEFAULT fast shutdown, the
+package swap proceeds, and 8.4 comes up. You reach the far side having skipped
+the one step that guarantees the DD upgrade starts from a clean state — while
+believing you followed the runbook. Measured on a real droplet 2026-08-18.
+
+Read-only queries are unaffected (the backup user can SELECT), which is exactly
+why this is easy to miss: the diagnostics in this file all work fine as
+`pfv_backup`, and only the mutating steps fail.
+
+`infra/rehearse-84-scratch-droplet.sh` passes `--no-defaults` on every client
+invocation for this reason.
 
 ## Order of operations
 
@@ -295,9 +325,14 @@ bash infra/rehearse-84-scratch-droplet.sh \
 ```
 
 **8. Read the result.** Exit code is the number of failed gates. Phase 10 prints
-the elapsed DD-upgrade time — **record it in this file's evidence table**, and
-size the window as that plus the App Platform scale-down/up and the cold
-snapshot.
+the elapsed DD-upgrade time.
+
+**Already measured: 49 seconds** (2026-08-18, real droplet, full package swap).
+Production carries 6.7 MB across 50 tables, so MySQL is not the constraint. The
+window is dominated by the App Platform scale down/up and the cold snapshot of a
+25 GB disk — budget **~15–25 minutes end to end**, of which about one minute is
+the database. Re-run this only if the dataset or the droplet size changes
+materially.
 
 **9. Destroy the scratch droplet.** It holds a full copy of production data.
 
@@ -329,10 +364,13 @@ doctl compute droplet delete tbd360-rehearsal --force
 
 ### 4. Cutover
 
-1. `SET GLOBAL innodb_fast_shutdown = 0;` then a clean `mysqladmin shutdown`.
+1. `mysql --no-defaults -e "SET GLOBAL innodb_fast_shutdown = 0;"` then a clean
+   `mysqladmin --no-defaults shutdown`.
    ⚠ **Required** for an in-place upgrade (spec step 10). Letting dpkg stop
    mysqld with the default fast shutdown starts the DD upgrade from a non-clean
    state.
+   ⚠⚠ **`--no-defaults` is not optional, and without it this step SILENTLY
+   FAILS.** See the box below.
 2. Replace Ubuntu's `mysql-server-8.0` with Oracle's `mysql-community-server`
    via `mysql-apt-config`.
    ⚠ **Use `mysql-apt-config`; do NOT hand-roll the sources list or the key.**
