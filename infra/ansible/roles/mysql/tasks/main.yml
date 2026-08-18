@@ -189,97 +189,116 @@
 # catch it either: a file that is never included is never read, and validation
 # still exits 0. Only reading the live values proves it.
 # ---------------------------------------------------------------------------
-# REGRESSION FENCE for the /root/.my.cnf footgun. Deliberately runs WITHOUT
-# --no-defaults, because reading the operator's real default files is the exact
-# thing under test. If a [client] section ever supplies credentials -- in
-# /root/.my.cnf, /etc/mysql/my.cnf, or ~/.mylogin.cnf -- this fails the play
-# instead of surfacing mid-window as a confusing ERROR 1227 on a step that had
-# to work.
+# ⚠ CHECK MODE PROVES NOTHING HERE, so the fences below are skipped under it.
+# Every one asserts a property of the CONVERGED server, and --check converges
+# nothing: ansible skips `command` tasks in check mode, so the reads register
+# with no stdout and the asserts then fail on a perfectly healthy box.
+# Measured 2026-08-18 against production: the documented Phase 0.3 dry run
+# (MYSQL-84-EXECUTE.md) reported failed=1 for exactly this reason, on the one
+# step whose whole job is to say "nothing unexpected will happen".
 #
-# ⚠ THIS MUST RUN FIRST among the verification tasks. Measured 2026-08-18: when
-# it sat last, a bad [client] section broke the config-read task at line ~194
-# and the play died there, so this fence never executed and proved nothing. You
-# cannot interpret what a server reports until you know WHO is asking.
-- name: Read who a bare `mysql` authenticates as, using the real default files
-  ansible.builtin.command:
-    cmd: mysql -N -B -e "SELECT CURRENT_USER()"
-  changed_when: false
-  failed_when: false
-  register: mysql_default_identity
+# `check_mode: false` on the reads is NOT the fix. It would make the fences
+# report the PRE-play state of a box that has not been played yet -- true, but
+# not what a dry run is being asked, and still a red that stops the operator at
+# the top of the window.
+# ---------------------------------------------------------------------------
+- name: Verify the /root/.my.cnf footgun is absent (real runs only)
+  when: not ansible_check_mode
+  block:
+    # REGRESSION FENCE for the /root/.my.cnf footgun. Deliberately runs WITHOUT
+    # --no-defaults, because reading the operator's real default files is the exact
+    # thing under test. If a [client] section ever supplies credentials -- in
+    # /root/.my.cnf, /etc/mysql/my.cnf, or ~/.mylogin.cnf -- this fails the play
+    # instead of surfacing mid-window as a confusing ERROR 1227 on a step that had
+    # to work.
+    #
+    # ⚠ THIS MUST RUN FIRST among the verification tasks. Measured 2026-08-18: when
+    # it sat last, a bad [client] section broke the config-read task at line ~194
+    # and the play died there, so this fence never executed and proved nothing. You
+    # cannot interpret what a server reports until you know WHO is asking.
+    - name: Read who a bare `mysql` authenticates as, using the real default files
+      ansible.builtin.command:
+        cmd: mysql -N -B -e "SELECT CURRENT_USER()"
+      changed_when: false
+      failed_when: false
+      register: mysql_default_identity
 
-- name: Assert a bare `mysql` run as root IS root
-  ansible.builtin.assert:
-    that:
-      - mysql_default_identity.stdout | trim | split('@') | first == 'root'
-    quiet: true
-    fail_msg: >-
-      A bare `mysql` run as root authenticates as
-      "{{ mysql_default_identity.stdout | trim | default('nothing', true) }}",
-      not root (stderr: {{ mysql_default_identity.stderr | default('') | trim }}).
-      Something is supplying credentials through a default file -- a [client]
-      section in /root/.my.cnf, /etc/mysql/my.cnf or ~/.mylogin.cnf. Every
-      mutating command then fails with ERROR 1227 while read-only diagnostics
-      keep passing. See roles/mysql/templates/root.my.cnf.j2.
+    - name: Assert a bare `mysql` run as root IS root
+      ansible.builtin.assert:
+        that:
+          - mysql_default_identity.stdout | trim | split('@') | first == 'root'
+        quiet: true
+        fail_msg: >-
+          A bare `mysql` run as root authenticates as
+          "{{ mysql_default_identity.stdout | trim | default('nothing', true) }}",
+          not root (stderr: {{ mysql_default_identity.stderr | default('') | trim }}).
+          Something is supplying credentials through a default file -- a [client]
+          section in /root/.my.cnf, /etc/mysql/my.cnf or ~/.mylogin.cnf. Every
+          mutating command then fails with ERROR 1227 while read-only diagnostics
+          keep passing. See roles/mysql/templates/root.my.cnf.j2.
 
 - name: Flush handlers so the checks below read the RESTARTED server
   ansible.builtin.meta: flush_handlers
 
-- name: Read the live MySQL configuration back
-  ansible.builtin.command:
-    cmd: >-
-      mysql --no-defaults -N -B -e "SELECT CONCAT(@@bind_address,'|',@@collation_server,'|',
-      @@innodb_buffer_pool_size,'|',@@innodb_io_capacity,'|',
-      @@innodb_io_capacity_max,'|',@@innodb_redo_log_capacity)"
-  changed_when: false
-  register: mysql_live_config
+- name: Verify the RUNNING configuration (real runs only)
+  when: not ansible_check_mode
+  block:
+    - name: Read the live MySQL configuration back
+      ansible.builtin.command:
+        cmd: >-
+          mysql --no-defaults -N -B -e "SELECT CONCAT(@@bind_address,'|',@@collation_server,'|',
+          @@innodb_buffer_pool_size,'|',@@innodb_io_capacity,'|',
+          @@innodb_io_capacity_max,'|',@@innodb_redo_log_capacity)"
+      changed_when: false
+      register: mysql_live_config
 
-- name: Record what the running server SHOULD look like
-  ansible.builtin.set_fact:
-    # NOTE: joined and compared as a STRING. Under ansible-core's native
-    # Jinja, `{{ 768 * 1048576 }}` becomes an int while `split('|')` yields
-    # strings, so comparing the lists is 805306368 != '805306368' and fails
-    # on a server that is configured correctly. Measured 2026-08-18.
-    mysql_expected_config:
-      - "0.0.0.0"
-      - "utf8mb4_0900_ai_ci"
-      - "{{ (mysql_innodb_buffer_pool_size | regex_replace('M$', '') | int) * 1048576 }}"
-      - "{{ mysql_innodb_io_capacity | int }}"
-      - "{{ mysql_innodb_io_capacity_max | int }}"
-      - "{{ (mysql_innodb_redo_log_capacity | regex_replace('M$', '') | int) * 1048576 }}"
+    - name: Record what the running server SHOULD look like
+      ansible.builtin.set_fact:
+        # NOTE: joined and compared as a STRING. Under ansible-core's native
+        # Jinja, `{{ 768 * 1048576 }}` becomes an int while `split('|')` yields
+        # strings, so comparing the lists is 805306368 != '805306368' and fails
+        # on a server that is configured correctly. Measured 2026-08-18.
+        mysql_expected_config:
+          - "0.0.0.0"
+          - "utf8mb4_0900_ai_ci"
+          - "{{ (mysql_innodb_buffer_pool_size | regex_replace('M$', '') | int) * 1048576 }}"
+          - "{{ mysql_innodb_io_capacity | int }}"
+          - "{{ mysql_innodb_io_capacity_max | int }}"
+          - "{{ (mysql_innodb_redo_log_capacity | regex_replace('M$', '') | int) * 1048576 }}"
 
-# CONVERGE, do not merely complain. The commonest cause of drift here is a
-# restart handler that was notified and never flushed -- measured 2026-08-18,
-# when the redis role failed after the mysql role and stranded it, leaving
-# mysqld on stock defaults with the intended config unread on disk. A restart
-# heals exactly that. If the values are STILL wrong afterwards the cause is
-# different and much worse (the /etc/mysql/mysql.conf.d include is gone), which
-# is what the assertion below then catches.
-- name: Restart MySQL because the running config does not match pfv.cnf
-  ansible.builtin.service:
-    name: mysql
-    state: restarted
-  when: (mysql_live_config.stdout | trim) != (mysql_expected_config | join('|'))
+    # CONVERGE, do not merely complain. The commonest cause of drift here is a
+    # restart handler that was notified and never flushed -- measured 2026-08-18,
+    # when the redis role failed after the mysql role and stranded it, leaving
+    # mysqld on stock defaults with the intended config unread on disk. A restart
+    # heals exactly that. If the values are STILL wrong afterwards the cause is
+    # different and much worse (the /etc/mysql/mysql.conf.d include is gone), which
+    # is what the assertion below then catches.
+    - name: Restart MySQL because the running config does not match pfv.cnf
+      ansible.builtin.service:
+        name: mysql
+        state: restarted
+      when: (mysql_live_config.stdout | trim) != (mysql_expected_config | join('|'))
 
-- name: Re-read the live configuration after the corrective restart
-  ansible.builtin.command:
-    cmd: >-
-      mysql --no-defaults -N -B -e "SELECT CONCAT(@@bind_address,'|',@@collation_server,'|',
-      @@innodb_buffer_pool_size,'|',@@innodb_io_capacity,'|',
-      @@innodb_io_capacity_max,'|',@@innodb_redo_log_capacity)"
-  changed_when: false
-  register: mysql_live_config_after
+    - name: Re-read the live configuration after the corrective restart
+      ansible.builtin.command:
+        cmd: >-
+          mysql --no-defaults -N -B -e "SELECT CONCAT(@@bind_address,'|',@@collation_server,'|',
+          @@innodb_buffer_pool_size,'|',@@innodb_io_capacity,'|',
+          @@innodb_io_capacity_max,'|',@@innodb_redo_log_capacity)"
+      changed_when: false
+      register: mysql_live_config_after
 
-- name: Assert the RUNNING server has the intended configuration
-  ansible.builtin.assert:
-    that:
-      - (mysql_live_config_after.stdout | trim) == (mysql_expected_config | join('|'))
-    quiet: true
-    fail_msg: >-
-      MySQL is RUNNING with configuration that does not match pfv.cnf, and a
-      restart did NOT fix it -- so this is not a stranded handler.
-      expected: {{ mysql_expected_config | join('|') }}
-      live:     {{ mysql_live_config_after.stdout | trim }}
-      Most likely /etc/mysql/mysql.conf.d is no longer included by
-      /etc/mysql/my.cnf. See MYSQL-84-CUTOVER.md section 5: `mysqld
-      --validate-config` cannot detect this, because a file that is never
-      included is never read and validation still exits 0.
+    - name: Assert the RUNNING server has the intended configuration
+      ansible.builtin.assert:
+        that:
+          - (mysql_live_config_after.stdout | trim) == (mysql_expected_config | join('|'))
+        quiet: true
+        fail_msg: >-
+          MySQL is RUNNING with configuration that does not match pfv.cnf, and a
+          restart did NOT fix it -- so this is not a stranded handler.
+          expected: {{ mysql_expected_config | join('|') }}
+          live:     {{ mysql_live_config_after.stdout | trim }}
+          Most likely /etc/mysql/mysql.conf.d is no longer included by
+          /etc/mysql/my.cnf. See MYSQL-84-CUTOVER.md section 5: `mysqld
+          --validate-config` cannot detect this, because a file that is never
+          included is never read and validation still exits 0.
