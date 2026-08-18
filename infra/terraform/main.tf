@@ -17,6 +17,12 @@ terraform {
   }
 
   required_providers {
+    random = {
+      source = "hashicorp/random"
+      # random_password keeps its value in state across applies; it only
+      # regenerates if the resource is tainted or its keepers change.
+      version = "~> 3.6"
+    }
     digitalocean = {
       source = "digitalocean/digitalocean"
       # Pinned to 2.40+ to ensure project_resources, vpc, droplet backups,
@@ -108,4 +114,39 @@ module "firewall" {
   name         = "${var.project_name}-data-fw"
   droplet_ids  = [module.data_droplet.id]
   vpc_ip_range = var.vpc_ip_range
+}
+
+# ---------------------------------------------------------------------------
+# TBD-207 — data-plane credentials, generated and held in Terraform state.
+#
+# WHY. These passwords previously existed ONLY in two places: the running MySQL
+# server (as an unrecoverable hash) and an App Platform SECRET (write-only, so
+# also unrecoverable). The single readable copy lived in a gitignored
+# inventory.yml on one laptop. When that file went missing on 2026-08-18 the
+# data plane became unconfigurable: the play could not be run, and the
+# credentials could not be reconstructed from anything.
+#
+# Generating them here makes TFC state the source of truth. That is the same
+# trust boundary `do_token` already sits behind, it is encrypted at rest and
+# access-controlled, and crucially it is NOT this repository -- which is public,
+# so a committed ansible-vault file would be a permanent harvestable artefact.
+#
+# ⚠ ALPHANUMERIC ONLY, DELIBERATELY. These land in DATABASE_URL and REDIS_URL,
+# which are URLs: `mysql+aiomysql://user:pass@host/db`. A password containing
+# @ / : # ? or % silently corrupts the userinfo section unless every consumer
+# percent-encodes it identically, and they do not. 40 chars of [A-Za-z0-9] is
+# ~238 bits of entropy -- far past anything special characters would buy.
+resource "random_password" "mysql_app" {
+  length  = 40
+  special = false
+}
+
+resource "random_password" "mysql_backup" {
+  length  = 40
+  special = false
+}
+
+resource "random_password" "redis" {
+  length  = 40
+  special = false
 }
