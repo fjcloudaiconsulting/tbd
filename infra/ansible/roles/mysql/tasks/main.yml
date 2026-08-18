@@ -1,4 +1,36 @@
 ---
+# TBD-360 — FAIL CLOSED ON AN UNSET SECRET, BEFORE ANYTHING IS WRITTEN.
+#
+# `inventory.yml` is gitignored, so these values live only on the operator's
+# machine. If it is missing, the wrong `-i` is passed, or a var name is typo'd,
+# Ansible silently falls back to the role defaults below (`CHANGE_ME`).
+#
+# That used to be survivable because the user tasks ran `update_password:
+# on_create`. It is NOT survivable now: since the caching_sha2 conversion the
+# three account tasks use `plugin_auth_string`, which is cleartext and cannot be
+# compared, so they rewrite the password on EVERY run and always report
+# `changed`. A missing inventory therefore sets the PRODUCTION app credential to
+# the literal string "CHANGE_ME", reports success, and every App Platform
+# connection dies at the next reconnect.
+#
+# There is no other guard: `changed: false` is no longer available as evidence
+# that inventory and server agree (see MYSQL-84-CUTOVER.md, step 1).
+- name: Assert MySQL secrets were supplied by the inventory, not defaulted
+  ansible.builtin.assert:
+    that:
+      - mysql_app_password is defined
+      - mysql_app_password | length > 0
+      - mysql_app_password != 'CHANGE_ME'
+      - mysql_backup_password is defined
+      - mysql_backup_password | length > 0
+      - mysql_backup_password != 'CHANGE_ME'
+    quiet: true
+    fail_msg: >-
+      mysql_app_password and/or mysql_backup_password are unset or still at the
+      role default. Refusing to run: this play rewrites those credentials
+      unconditionally and would set the production password to "CHANGE_ME".
+      Check that -i points at your real inventory.yml and that the vault opened.
+
 - name: Install MySQL server
   ansible.builtin.apt:
     name:

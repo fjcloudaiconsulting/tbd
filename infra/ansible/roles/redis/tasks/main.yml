@@ -1,4 +1,18 @@
 ---
+# TBD-360 — same fail-closed guard as the mysql role. `redis_password` defaults
+# to CHANGE_ME and inventory.yml is gitignored; Valkey backs the session and
+# rate-limit store, so a defaulted password is an auth outage, not a nuisance.
+- name: Assert the Redis password was supplied by the inventory, not defaulted
+  ansible.builtin.assert:
+    that:
+      - redis_password is defined
+      - redis_password | length > 0
+      - redis_password != 'CHANGE_ME'
+    quiet: true
+    fail_msg: >-
+      redis_password is unset or still at the role default. Refusing to run.
+      Check that -i points at your real inventory.yml and that the vault opened.
+
 - name: Install Redis
   ansible.builtin.apt:
     name: redis-server
