@@ -55,6 +55,28 @@ actual:   0.0.0.0 | utf8mb4_0900_ai_ci | 805306368 | 1000/2000 | redo=268435456
 ```
 
 ⚠ `innodb_doublewrite_pages` should read **128**, not 4 — deliberate, not pinned.
+Production reads `doublewrite_pages=128`, as expected.
+
+## Phase 6 — close-out evidence
+
+```
+debian-sys-maint | localhost | caching_sha2_password
+doublewrite_pages=128
+pfv2_20260818-020001.sql.gz   586K   (nightly, pre-cutover, 8.0)
+pfv2_20260819-020001.sql.gz   593K   (nightly, pre-cutover, 8.0)
+pfv2_20260819-155940.sql.gz   598K   (by hand, post-cutover, 8.4)
+```
+
+The hand-run dump is the one that matters: it proves `mysqldump` still works
+against 8.4, which nothing else in this window exercised. Size is consistent
+with the two nightlies either side, so the client did not silently produce a
+stub.
+
+⚠ **The nightly backup is now the ONLY backup.** TBD-399 (revert droplet
+backups to disk-only) is deliberately **held, blocked on TBD-400** — reverting
+it would leave production with no off-host copy at all, because this script
+writes to `/var/backups/mysql/` on the same droplet. Do not merge TBD-399 until
+TBD-400 delivers a verified off-host destination.
 
 ## The three open questions production answers
 
@@ -65,7 +87,7 @@ the third and only authoritative data point.
 |---|---|---|
 | Does Oracle's packaging still read `/etc/mysql/mysql.conf.d`? | Yes, all 6 vars held | **Yes** — all 6 exact, despite the install logging `update-alternatives: using /etc/mysql/mysql.cnf to provide /etc/mysql/my.cnf`, which is precisely the event that could have dropped the include |
 | Does `/etc/mysql/debian.cnf` survive? (logrotate authenticates with it) | Yes | **Yes** — present after the swap |
-| Does the `debian-sys-maint` account survive? | Yes | (see Phase 6 check) |
+| Does the `debian-sys-maint` account survive? | Yes | **Yes** — `debian-sys-maint@localhost`, on `caching_sha2_password` |
 
 ⚠ If `debian.cnf` is gone, the slow query log silently stops rotating and fills
 the disk **days later**. Not urgent, not ignorable — file it.
