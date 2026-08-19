@@ -42,10 +42,9 @@
 # Live-tunable knobs (maxmemory, maxmemory-policy). Applying via
 # `redis-cli CONFIG SET` keeps every existing client connection alive,
 # so the admin dashboard does not flap to Redis: DOWN during a routine
-# memory bump. The handler also runs CONFIG REWRITE so the new value
-# survives a future restart even though it isn't written back to this
-# drop-in (CONFIG REWRITE only edits the file Redis loaded from). The
-# drop-in remains the source of truth for the next Ansible run.
+# memory bump. THIS FILE is what makes the value survive a restart --
+# redis.conf includes it. The handler deliberately does NOT run CONFIG
+# REWRITE; see handlers/main.yml for why that caused an outage (TBD-412).
 - name: Drop pfv Redis tunables override
   ansible.builtin.template:
     src: 10-tunables.conf.j2
@@ -54,6 +53,32 @@
     group: redis
     mode: "0640"
   notify: Apply redis live tunables
+
+# ⚠ REMOVE THE DIRECTIVES THIS ROLE OWNS FROM redis.conf ITSELF.
+#
+# Redis takes the LAST directive it parses, and the include below is appended
+# at EOF -- so any managed directive sitting in redis.conf AFTER that line wins
+# over the drop-in, silently. That is exactly how TBD-412 happened: a
+# `CONFIG REWRITE` (since removed from the handler) had persisted
+# `requirepass "<old>"` and `user default on #<sha256-of-old> ~* &* +@all` past
+# the include, and production kept authenticating with a password no client
+# had any more.
+#
+# ⚠ `requirepass` ALONE IS NOT ENOUGH. In Redis 6+, `requirepass` is sugar for
+# setting the default user's password, and an explicit `user default on #<hash>`
+# line OVERRIDES it outright. Purging only the line you first notice leaves the
+# old credential in force through the ACL entry -- measured on production.
+#
+# Failure mode if the include is ever broken AND these are gone: Redis falls
+# back to stock `bind 127.0.0.1` + `protected-mode yes`, i.e. loopback only and
+# unreachable from the VPC. Noisy and safe, not a silent open door -- and the
+# fence at the end of this file asserts an unauthenticated client is refused.
+- name: Purge role-owned directives from redis.conf so they cannot shadow the drop-ins
+  ansible.builtin.lineinfile:
+    path: /etc/redis/redis.conf
+    regexp: '^\s*(requirepass|user\s+default|maxmemory|maxmemory-policy|appendonly|appendfsync)\s'
+    state: absent
+  notify: Restart redis
 
 # Make sure the main /etc/redis/redis.conf actually pulls in our
 # overrides. The Ubuntu 24.04 redis-server package supports `include`
@@ -93,3 +118,84 @@
     name: redis-server
     state: started
     enabled: true
+
+# ---------------------------------------------------------------------------
+# ⚠ WRITING THE DROP-IN IS NOT APPLYING IT. Everything above proves only that
+# the files reached the disk with the right contents. Whether the RUNNING
+# server uses them depends on the include still being honoured and on nothing
+# shadowing it later in redis.conf -- which is precisely what went wrong in
+# TBD-412 and which no file-level check can see.
+#
+# Gated on `not ansible_check_mode` for the same reason as the mysql role:
+# these assert properties of the CONVERGED server, and --check converges
+# nothing, so under it the reads come back empty and the asserts fail on a
+# healthy box.
+# ---------------------------------------------------------------------------
+- name: Flush handlers so the checks below read the RESTARTED server
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the RUNNING Redis is the one this role configured (real runs only)
+  when: not ansible_check_mode
+  block:
+    # THE FENCE THAT WOULD HAVE CAUGHT TBD-412. It authenticates with the
+    # password from the inventory -- the same one the app uses -- so it fails
+    # the play if anything on the box is enforcing a different credential.
+    - name: Read the live Redis configuration back, authenticating as the app does
+      ansible.builtin.shell: |
+        set -euo pipefail
+        R() { redis-cli -a "{{ redis_password }}" --no-auth-warning "$@"; }
+        printf '%s|%s|%s|%s|%s\n' \
+          "$(R ping)" \
+          "$(R CONFIG GET maxmemory | tail -1)" \
+          "$(R CONFIG GET maxmemory-policy | tail -1)" \
+          "$(R CONFIG GET appendonly | tail -1)" \
+          "$(R CONFIG GET appendfsync | tail -1)"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      no_log: true
+      register: redis_live
+
+    - name: Record what the running Redis SHOULD look like
+      ansible.builtin.set_fact:
+        # Compared as a STRING, for the same reason as the mysql role: Jinja
+        # yields an int for the arithmetic and a str from the shell output.
+        redis_expected_live: >-
+          PONG|{{ (redis_maxmemory | lower | regex_replace('mb$', '') | int) * 1048576
+          }}|{{ redis_maxmemory_policy }}|{{ redis_appendonly }}|{{ redis_appendfsync }}
+
+    - name: Assert the RUNNING Redis matches the drop-ins
+      ansible.builtin.assert:
+        that:
+          - (redis_live.stdout | default('') | trim) == (redis_expected_live | trim)
+        quiet: true
+        fail_msg: >-
+          Redis is RUNNING with configuration that does not match the drop-ins.
+          expected: {{ redis_expected_live | trim }}
+          live:     {{ redis_live.stdout | default('<no output>') | trim }}
+          A leading value of anything other than PONG means the password in
+          inventory.yml is NOT the one the server enforces -- check for a
+          `requirepass` or `user default` line in /etc/redis/redis.conf AFTER
+          the `include /etc/redis/conf.d/*.conf` line. Redis takes the last
+          directive it parses. See TBD-412.
+
+    # The other half: purging requirepass from redis.conf must never leave the
+    # server open. An unauthenticated client has to be refused.
+    - name: Check that Redis refuses an unauthenticated command
+      ansible.builtin.command:
+        cmd: redis-cli -h 127.0.0.1 ping
+      changed_when: false
+      failed_when: false
+      register: redis_noauth
+
+    - name: Assert Redis is not reachable without a password
+      ansible.builtin.assert:
+        that:
+          - "'PONG' not in (redis_noauth.stdout | default(''))"
+        quiet: true
+        fail_msg: >-
+          Redis answered PING with NO password ({{ redis_noauth.stdout | default('') | trim }}).
+          Authentication is off entirely -- most likely the include in
+          /etc/redis/redis.conf is broken, so neither the drop-in's requirepass
+          nor anything else is being read.
