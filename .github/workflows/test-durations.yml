@@ -185,9 +185,20 @@ jobs:
           if len(merged) < 3000:
               sys.exit(f"merged only {len(merged)} entries; expected the whole suite")
 
-          # Round: 3dp is far below any scheduling decision and turns a 400KB
-          # unreadable diff into a reviewable one.
-          merged = {k: round(v, 3) for k, v in merged.items()}
+          # ⚠ 6dp, NOT 3dp, and this is fenced -- do not "tidy" it.
+          #
+          # Rounding shortens an otherwise unreadable float repr
+          # (0.00017587500042282045). But at 3dp every sub-millisecond test
+          # collapses onto the same few values: measured, a real harvest drops
+          # to 824 distinct values out of 4181 (19.7%), which trips
+          # test_recorded_durations_are_not_degenerate -- the fence whose job is
+          # to notice a SYNTHESISED file. 6dp keeps 84.9% distinct at a max
+          # error of 5e-7s (about 2ms across the whole ~1300s suite, i.e.
+          # nothing), so both properties hold.
+          #
+          # If that fence ever goes red, do not lower its threshold to match a
+          # coarser rounding here. Raise the precision.
+          merged = {k: round(v, 6) for k, v in merged.items()}
           out = pathlib.Path("backend/.test_durations")
           out.parent.mkdir(parents=True, exist_ok=True)
           out.write_text(json.dumps(merged, indent=4, sort_keys=True) + "\n")
