@@ -1,7 +1,14 @@
 {# Live-tunable settings: changes here are applied to the running server #}
-{# via `redis-cli CONFIG SET` (see the "Apply redis live tunables" handler) #}
-{# and persisted with `CONFIG REWRITE`. No restart, no dropped client #}
-{# connections, no spurious "Redis: DOWN" on the admin dashboard. #}
+{# via `redis-cli CONFIG SET` (see the "Apply redis live tunables" handler). #}
+{# No restart, no dropped client connections, no spurious "Redis: DOWN" on #}
+{# the admin dashboard. #}
+{# #}
+{# ⚠ THIS FILE is what persists the values across a restart, because #}
+{# redis.conf includes it. The handler deliberately does NOT run #}
+{# CONFIG REWRITE: it wrote the running config back into redis.conf AFTER #}
+{# the include line, where it shadowed this file and pinned an old password #}
+{# through a rotation. That was TBD-412, a production login outage. See #}
+{# roles/redis/handlers/main.yml. #}
 maxmemory {{ redis_maxmemory }}
 maxmemory-policy {{ redis_maxmemory_policy }}
 
