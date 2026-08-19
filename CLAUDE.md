@@ -10,7 +10,7 @@ The Better Decision is a personal finance management application. FastAPI backen
 
 - **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2
 - **Frontend:** Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS, SWR
-- **Database:** MySQL 8.4 LTS in dev and CI; production is still 8.0 pending the TBD-360 cutover
+- **Database:** MySQL 8.4 LTS everywhere — dev, CI, and production (cut over 2026-08-19, TBD-360; production runs 8.4.11)
 - **Auth:** JWT via PyJWT (access + refresh tokens), password hashing with `bcrypt` directly (no passlib)
 - **Reverse proxy:** nginx (single entry point on port 80)
 - **Dev environment:** Docker Compose + `./pfv` CLI
