@@ -1,0 +1,126 @@
+name: Test Durations
+
+# Regenerates `backend/.test_durations`, the per-test timing file pytest-split
+# uses to balance the `Backend Shard` matrix in test.yml.
+#
+# ⚠ WHY THIS IS A SEPARATE WORKFLOW AND NOT A STEP IN test.yml (TBD-421).
+#
+# `scripts/ci/await-test-run.sh` gates every production release on the RUN-level
+# conclusion of `test.yml` for the merge commit. Adding a write/upload step to
+# that workflow on `push: main` therefore puts a network-dependent operation on
+# the one path the deploy interlock reads: an artifact-service blip in any shard
+# would turn the run's conclusion to `failure`, `release.yml` would fail closed,
+# and production would not deploy -- for a reason unrelated to whether the tests
+# passed.
+#
+# Harvesting inside test.yml would also buy nothing. `test.yml` runs with
+# `permissions: contents: read`, there is no `@semantic-release/git` in
+# .releaserc.json, and `release.yml` sets `persist-credentials: false` -- so
+# nothing in this repo has ever written a commit to `main`, and `main` requires
+# reviews with `enforce_admins: true`. An in-CI harvest would still terminate in
+# a human commit, exactly like this workflow, having added deploy-blocking risk
+# for no saved step.
+#
+# ⚠ DO NOT REGENERATE THIS FILE LOCALLY. Two measured reasons:
+#   1. `/app/.test_durations` is root-owned 0644 in the image while the backend
+#      container runs as uid 1001, so `--store-durations` runs the ENTIRE suite
+#      and then dies with PermissionError at pytest_sessionfinish. Twenty-five
+#      minutes discarded at the final step.
+#   2. Local per-test times are NOT a uniform rescaling of runner times.
+#      Measured 2026-08-19: the stale file simulated against local timings
+#      predicts a 1.35x max/min shard spread; CI actually observed 2.00x. A
+#      uniform factor would cancel out (both split algorithms are
+#      scale-invariant); a non-uniform one does not.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 04:17 UTC on the 1st. Off-peak, and the odd minute avoids the top-of-hour
+    # scheduling queue that delays cron workflows on shared runners.
+    - cron: "17 4 1 * *"
+  # Self-test: run when this generator itself changes, so a PR editing it proves
+  # it still works AND produces a committable artifact. Deliberately narrow --
+  # this job is ~20 minutes and must not fire on ordinary PRs.
+  pull_request:
+    paths:
+      - .github/workflows/test-durations.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-durations-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  durations:
+    # NOT a required status check, and must never become one -- it is far slower
+    # than the suite it measures. Only `Backend Checks` and `Frontend Checks`
+    # are required contexts.
+    name: Regenerate test durations
+    runs-on: ubuntu-latest
+    services:
+      # Mirrors test.yml's backend-shard service: only the reuse-detection
+      # real-Lua tests use it, via TEST_REAL_REDIS_URL.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Run the full suite, unsharded, recording per-test durations
+        working-directory: backend
+        env:
+          TEST_REAL_REDIS_URL: redis://localhost:6379/0
+        # UNSHARDED on purpose: one file, one artifact, no merge step, and
+        # timings that are independent of whatever partition happens to be in
+        # force.
+        #
+        # ⚠ `--clean-durations` is load-bearing, not cosmetic. Without it,
+        # PytestSplitCachePlugin merges this run's values ON TOP of the existing
+        # file, so entries for deleted tests survive forever and the result looks
+        # fresher than it is.
+        run: pytest --store-durations --clean-durations --durations-path .test_durations
+
+      - name: Summarise what changed
+        if: ${{ always() }}
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("backend/.test_durations")
+          if not p.exists():
+              print("no durations file was written"); raise SystemExit(0)
+          d = json.loads(p.read_text())
+          files = {k.split("::")[0] for k in d}
+          print(f"entries: {len(d)}")
+          print(f"total recorded time: {sum(d.values()):.1f}s")
+          print(f"test files represented: {len(files)}")
+          PY
+
+      - name: Upload the regenerated durations file
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-durations
+          path: backend/.test_durations
+          if-no-files-found: error
+          retention-days: 14

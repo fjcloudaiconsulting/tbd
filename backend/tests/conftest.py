@@ -30,6 +30,34 @@ os.environ.setdefault("APP_ENV", "development")
 logging.getLogger("ofxtools").setLevel(logging.WARNING)
 
 
+# ---------------------------------------------------------------------------
+# Full-suite collection capture, for the .test_durations freshness fence.
+#
+# ⚠ MUST run BEFORE pytest-split deselects. Under `--splits N --group G`,
+# `session.items` at test time holds only ~1/N of the suite, and it is a
+# NON-RANDOM 1/N: pytest-split places recorded tests deterministically, so a
+# coverage ratio measured over one shard is biased TOWARD looking healthy.
+#
+# `PytestSplitPlugin.pytest_collection_modifyitems` is declared
+# `@hookimpl(trylast=True)` and DESELECTS rather than reducing collection, so a
+# `tryfirst` implementation here observes the whole suite in every shard.
+#
+# Changing `tryfirst` to `trylast`, or returning early, makes
+# test_test_durations_freshness.py measure coverage against a single shard and
+# report ~100% while 5/6 of the suite is unmodelled. The fence's
+# `MIN_COLLECTED` floor exists to turn exactly that mutation RED.
+# ---------------------------------------------------------------------------
+# ⚠ The set lives in its own module, NOT here: this conftest is imported
+# twice under two names (`conftest` and `tests.conftest`) and a module-level
+# set here would exist as two distinct objects. See _durations_registry.
+from tests._durations_registry import COLLECTED_NODEIDS  # noqa: E402
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    COLLECTED_NODEIDS.update(item.nodeid for item in items)
+
+
 def set_refresh_cookie(client: Any, token: str) -> None:
     """Pin ``refresh_token`` on the test client's cookie jar.
 
