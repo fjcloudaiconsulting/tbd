@@ -122,5 +122,17 @@ jobs:
         with:
           name: test-durations
           path: backend/.test_durations
+          # ⚠⚠ LOAD-BEARING. `.test_durations` is a DOTFILE, and
+          # actions/upload-artifact >= 4.4.0 excludes hidden files by default
+          # EVEN WHEN NAMED EXPLICITLY (actions/upload-artifact#602, #614).
+          # Without this the step fails with "No files were found with the
+          # provided path" after the suite has already run, and the entire
+          # ~30-minute harvest is discarded. Measured on run 32296477508: the
+          # suite went green, the summary printed 4173 entries / 1867.4s, and
+          # the artifact count was zero.
+          include-hidden-files: true
           if-no-files-found: error
-          retention-days: 14
+          # Longer than the monthly cron interval on purpose: at 14 days a
+          # scheduled harvest expires two weeks before the next one runs, so
+          # nothing is ever available to commit when someone goes looking.
+          retention-days: 90

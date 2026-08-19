@@ -20,3 +20,8 @@ this set back into conftest.py, and do NOT import it from `tests.conftest`.
 # so it observes the whole suite before pytest-split deselects this shard's
 # complement. Read by tests/test_test_durations_freshness.py.
 COLLECTED_NODEIDS: set[str] = set()
+
+# The same node ids in COLLECTION ORDER. `DurationBasedChunksAlgorithm` cuts the
+# ordered item list into contiguous slices, so any simulation of the real
+# partition needs the order, not just the membership.
+COLLECTED_ORDER: list[str] = []

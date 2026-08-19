@@ -47,15 +47,27 @@ logging.getLogger("ofxtools").setLevel(logging.WARNING)
 # report ~100% while 5/6 of the suite is unmodelled. The fence's
 # `MIN_COLLECTED` floor exists to turn exactly that mutation RED.
 # ---------------------------------------------------------------------------
+# ⚠⚠ THIS IMPORT MUST STAY BELOW THE sys.path.insert ABOVE. `backend/tests/`
+# has no __init__.py and CI sets no PYTHONPATH, so `tests.` only resolves
+# because BACKEND_ROOT was put on sys.path at the top of this file. An
+# autoformatter or isort pass that hoists this to the import block makes
+# EVERY CI run die at conftest load with `ModuleNotFoundError: No module
+# named 'tests'`. That is what the noqa: E402 is protecting.
+#
 # ⚠ The set lives in its own module, NOT here: this conftest is imported
 # twice under two names (`conftest` and `tests.conftest`) and a module-level
 # set here would exist as two distinct objects. See _durations_registry.
-from tests._durations_registry import COLLECTED_NODEIDS  # noqa: E402
+from tests._durations_registry import (  # noqa: E402
+    COLLECTED_NODEIDS,
+    COLLECTED_ORDER,
+)
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
     COLLECTED_NODEIDS.update(item.nodeid for item in items)
+    if not COLLECTED_ORDER:
+        COLLECTED_ORDER.extend(item.nodeid for item in items)
 
 
 def set_refresh_cookie(client: Any, token: str) -> None:

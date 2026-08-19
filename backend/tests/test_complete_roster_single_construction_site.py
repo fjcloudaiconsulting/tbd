@@ -33,7 +33,7 @@ that visible.
 ⚠ **This guard is the precondition's ONLY mechanism.** Round 4's finding
 F3 struck the "type error" framing revision 4 relied on: this repository
 has no type checker and never has (the backend CI job runs ``pytest
---splits 4`` plus ``python -m compileall backend/app``; there is no mypy,
+--splits N`` plus ``python -m compileall backend/app``; there is no mypy,
 pyright, ``pyproject.toml``, ``mypy.ini`` or pre-commit config anywhere).
 A ``@dataclass(frozen=True)`` has a public ``__init__``, so every shape
 below succeeds at runtime with nothing else objecting.

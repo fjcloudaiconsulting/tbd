@@ -50,9 +50,17 @@ concurrency:
 jobs:
   # Backend pytest is sharded across N parallel groups via pytest-split.
   # Each shard runs a deterministic, duration-balanced slice of the suite
-  # using the recorded backend/.test_durations file, so wall-clock per
-  # shard stays well under the 3-minute target even as the suite grows.
-  # See specs/ci-test-sharding.md for the rationale and the audit.
+  # using the recorded backend/.test_durations file.
+  #
+  # ⚠ The original "<3 minute backend check" target is RETIRED (TBD-421). It
+  # was not merely unmet, it was the wrong target: `Frontend Checks` is ~330s
+  # and is the run's floor, so backend time below that is unobservable in the
+  # run's wall clock. Successor target: `Backend Checks` stays below
+  # `Frontend Checks`.
+  #
+  # See specs/2026-08-19-ci-shard-rebalance.md for the current rationale, and
+  # specs/ci-test-sharding.md for the original audit (superseded on the shard
+  # count and the target; still accurate on why pytest-split over xdist).
   #
   # The suite is self-contained: tests use in-process aiosqlite + a fake
   # Redis (see backend/tests/conftest.py), so shards need NO MySQL and the

@@ -62,6 +62,81 @@ def _pytest_step() -> dict:
     )
 
 
+def test_matrix_has_no_axis_other_than_group():
+    """⚠ `strategy.job-total` is the PRODUCT of every matrix axis, not
+    `len(matrix.group)`.
+
+    Adding a second axis is a normal, likely edit -- `Migration Checks` in this
+    same workflow already matrixes over MySQL 8.0/8.4. Do it here:
+
+        matrix:
+          group: [1, 2, 3, 4, 5, 6]
+          python: ["3.12", "3.13"]
+
+    ...and `job-total` becomes 12 while `--group` still only ever takes 1..6.
+    CI then runs `--splits 12 --group 1..6`: groups 7-12 never execute, HALF the
+    backend suite silently does not run, and every check is green.
+
+    The derived form removed one door and opened this one. If a second axis is
+    ever genuinely wanted, stop deriving from `job-total` -- compute splits from
+    the group axis explicitly instead.
+    """
+    matrix = SHARD_JOB["strategy"]["matrix"]
+    extra = sorted(set(matrix) - {"group"})
+    assert not extra, (
+        f"backend-shard's matrix gained the axis/axes {extra}. "
+        "`strategy.job-total` is the product over ALL axes, so `--splits` "
+        f"would become {len(matrix.get('group', []))} x (the rest) while "
+        "`--group` still only takes 1..N. The surplus groups never run and "
+        "that fraction of the suite silently does not execute, all green."
+    )
+
+
+def test_group_argument_is_bound_to_the_matrix():
+    """⚠ `--group` is half of a two-argument pair and is the likelier typo:
+    it sits adjacent to `--splits` on the same line.
+
+    `pytest --splits ${{ strategy.job-total }} --group 1` makes all six shards
+    run group 1. Five sixths of the backend suite never executes, every shard
+    passes, and `Backend Checks` is green -- the same silent total loss this
+    module exists to prevent, through the other argument.
+    """
+    run = str(_pytest_step()["run"])
+    match = re.search(r"--group\s+" + EXPR_OR_INT, run)
+    assert match, f"could not find --group in the shard command: {run!r}"
+    assert _norm(match.group(1)) == "${{ matrix.group }}", (
+        f"--group is {match.group(1)!r}, not `${{{{ matrix.group }}}}`. A "
+        "constant here makes every shard run the SAME group and silently drops "
+        "the rest of the suite while every check stays green."
+    )
+
+
+def test_durations_path_matches_the_file_the_fence_guards():
+    """The freshness fence hardcodes `<backend>/.test_durations`. If the
+    workflow splits on a different path the two silently diverge: the fence
+    certifies one file while CI balances on another, and pytest-split falls
+    back to weighting every test at the mean without printing anything."""
+    run = str(_pytest_step()["run"])
+    match = re.search(r"--durations-path\s+(\S+)", run)
+    assert match, f"could not find --durations-path in: {run!r}"
+    assert match.group(1) == ".test_durations", (
+        f"--durations-path is {match.group(1)!r}, but "
+        "test_test_durations_freshness.py guards `.test_durations`. Point them "
+        "at the same file or the fence is guarding nothing CI uses."
+    )
+
+
+def test_shards_do_not_fail_fast():
+    """`fail-fast: true` cancels sibling shards on the first failure, so a red
+    run reports one failure and cancels up to five shards' worth of unrun
+    tests. The aggregate would still go red, but the run would no longer tell
+    you what else is broken."""
+    assert SHARD_JOB["strategy"].get("fail-fast") is False, (
+        "backend-shard must set `fail-fast: false` so one failing shard does "
+        "not cancel the others and hide further failures."
+    )
+
+
 def test_matrix_is_the_single_source_of_truth_for_the_shard_count():
     groups = SHARD_JOB["strategy"]["matrix"]["group"]
 

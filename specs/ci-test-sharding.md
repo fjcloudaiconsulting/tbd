@@ -5,6 +5,25 @@ description: "Architect-aligned plan to shard backend pytest in GitHub Actions a
 
 # CI test sharding — near-term follow-up (2026-05-17)
 
+> **Partially superseded 2026-08-19 by `specs/2026-08-19-ci-shard-rebalance.md`
+> (TBD-421).** The shard count is now **6**, not 4, and the `<3 minute` target
+> below is **retired** — `Frontend Checks` is the run's floor at ~330s, so
+> backend time under that is unobservable in the run's wall clock. Successor
+> target: `Backend Checks` stays below `Frontend Checks`.
+>
+> Two items below were re-examined and **stand**: the choice of `pytest-split`
+> over `pytest-xdist` (item 4), and starting conservatively on shard count
+> (item 3) — though its own item 5 authorised the bump to 6/8 that nobody made
+> for three months.
+>
+> One item is **resolved**: item 6's replicate-or-pin concern for
+> filesystem-scanning tests. All eight such tests scan `backend/app/` or
+> `alembic/versions/`; none scans `tests/`, so none is shard-sensitive.
+>
+> ⚠ Its frontend claim (`~11s for 1017 tests`, "not material") is **refuted by
+> 19.5x** — vitest is now 215s and `Frontend Checks` is the CI floor. See
+> TBD-422.
+
 ## Trigger
 
 Backend pytest runtime has grown materially during the parallel-team wave:
