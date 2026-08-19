@@ -41,6 +41,11 @@ REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 WORKFLOW = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "test.yml").read_text())
 SHARD_JOB = WORKFLOW["jobs"]["backend-shard"]
 
+DURATIONS_WORKFLOW = yaml.safe_load(
+    (REPO_ROOT / ".github" / "workflows" / "test-durations.yml").read_text()
+)
+HARVEST_JOB = DURATIONS_WORKFLOW["jobs"]["harvest"]
+
 DERIVED = "${{ strategy.job-total }}"
 # A GitHub expression contains spaces, so `\S+` would capture only "${{".
 EXPR_OR_INT = r"(\$\{\{[^}]*\}\}|\d+)"
@@ -181,3 +186,60 @@ def test_shard_job_name_reports_the_real_shard_count():
             f"shard job name says `/{suffix}` but {len(groups)} shards run. "
             f"Prefer `/{DERIVED}`."
         )
+
+
+def test_the_harvest_is_sharded_the_same_way_the_suite_is():
+    """⚠ The durations harvest must use the SAME shard count as consumption.
+
+    MEASURED (TBD-421, run 32304646118). Harvesting unsharded while consuming
+    sharded biases the file by collection position: the harvest is one long
+    process, consumption is N short ones, and late-position tests carry the long
+    process's accumulated cost. `DurationBasedChunksAlgorithm` cuts CONTIGUOUS
+    slices, so chunk N maps to position N and the error concentrates instead of
+    cancelling.
+
+        shard  tests  predicted  actual  actual/predicted
+          1      624     308s     283s        0.92
+          4     1023     308s     181s        0.59
+          5      667     308s     153s        0.50
+
+    1.82x real spread against a self-scored prediction of 1.01x. Note the
+    freshness fence's own balance simulation CANNOT see this -- it scores the
+    file with itself, so a position-biased file still self-scores at 1.01x.
+    Matching the shapes is what makes that simulation mean anything.
+
+    A drift in either direction reintroduces the bias silently, because nothing
+    downstream is red -- the shards simply stop being balanced again.
+    """
+    consume = SHARD_JOB["strategy"]["matrix"]["group"]
+    harvest = HARVEST_JOB["strategy"]["matrix"]["group"]
+
+    assert len(harvest) >= 2, f"parsed only {len(harvest)} harvest shard(s)"
+    assert harvest == consume, (
+        f"test-durations.yml harvests in {len(harvest)} shards ({harvest}) but "
+        f"test.yml consumes in {len(consume)} ({consume}). The harvest must "
+        "measure each test in the same process shape it will run in, or the "
+        "timings are biased by collection position and the shards silently "
+        "stop balancing."
+    )
+
+
+def test_the_harvest_cleans_durations():
+    """⚠ `--clean-durations` is what makes the per-shard artifacts DISJOINT.
+
+    Without it, PytestSplitCachePlugin merges each shard's fresh values on top
+    of the whole committed file, so every artifact carries all ~4000 entries and
+    the merge overwrites fresh values with stale ones in arbitrary artifact
+    order -- silently producing a file that looks regenerated and is not.
+    """
+    steps = HARVEST_JOB["steps"]
+    run = next(
+        (str(s.get("run", "")) for s in steps if "--store-durations" in str(s.get("run", ""))),
+        None,
+    )
+    assert run, "no harvest step runs pytest --store-durations"
+    assert "--clean-durations" in run, (
+        "the harvest omits --clean-durations, so each shard's artifact would "
+        "carry the entire stale file and the merge would silently reinstate "
+        "stale values over fresh ones."
+    )

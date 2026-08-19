@@ -53,15 +53,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  durations:
-    # NOT a required status check, and must never become one -- it is far slower
-    # than the suite it measures. Only `Backend Checks` and `Frontend Checks`
-    # are required contexts.
-    name: Regenerate test durations
+  # ⚠⚠ THE HARVEST MUST BE SHARDED THE WAY THE CONSUMPTION IS. MEASURED, TBD-421.
+  #
+  # The first version of this workflow ran the suite UNSHARDED, on the reasoning
+  # that `backend/tests/` has no session- or module-scoped fixtures, so a
+  # shard-measured duration should equal an unsharded one. That reasoning is
+  # about fixture attribution and misses process-level accumulation.
+  #
+  # An unsharded harvest is ONE ~31-minute process; consumption is six short
+  # ones. Late-position tests carry the long process's accumulated cost and are
+  # overweighted. `DurationBasedChunksAlgorithm` cuts CONTIGUOUS slices, so
+  # chunk N maps to collection position N and the error CONCENTRATES instead of
+  # cancelling. Measured on run 32304646118 with an unsharded-harvest file:
+  #
+  #   shard  tests  predicted  actual  actual/predicted
+  #     1      624     308s     283s        0.92
+  #     3      554     308s     277s        0.90
+  #     4     1023     308s     181s        0.59
+  #     5      667     308s     153s        0.50
+  #
+  # 1.82x real spread against a self-scored prediction of 1.01x. Sharding the
+  # harvest measures each test in the same short-process context it will run in.
+  #
+  # It is ALSO why this stays out of test.yml: harvesting there would put an
+  # artifact upload on the run whose conclusion gates production deploys.
+  harvest:
+    name: Harvest shard ${{ matrix.group }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # ⚠ Must equal test.yml's backend-shard matrix. Fenced by
+        # backend/tests/test_ci_shard_config.py.
+        group: [1, 2, 3, 4, 5, 6]
     services:
-      # Mirrors test.yml's backend-shard service: only the reuse-detection
-      # real-Lua tests use it, via TEST_REAL_REDIS_URL.
       redis:
         image: redis:7-alpine
         ports:
@@ -87,52 +112,93 @@ jobs:
       - name: Install backend dependencies
         run: pip install -r backend/requirements-dev.txt
 
-      - name: Run the full suite, unsharded, recording per-test durations
+      - name: Harvest this shard's durations
         working-directory: backend
         env:
           TEST_REAL_REDIS_URL: redis://localhost:6379/0
-        # UNSHARDED on purpose: one file, one artifact, no merge step, and
-        # timings that are independent of whatever partition happens to be in
-        # force.
+        # ⚠ `--clean-durations` is LOAD-BEARING here, not cosmetic. Without it
+        # PytestSplitCachePlugin merges this shard's fresh values on top of the
+        # whole committed file, so every artifact would carry all 4000+ entries
+        # and a naive merge would overwrite fresh values with stale ones --
+        # silently producing a file that looks regenerated and is not. With it,
+        # each artifact holds ONLY this shard's tests and the six are disjoint
+        # by construction.
         #
-        # ⚠ `--clean-durations` is load-bearing, not cosmetic. Without it,
-        # PytestSplitCachePlugin merges this run's values ON TOP of the existing
-        # file, so entries for deleted tests survive forever and the result looks
-        # fresher than it is.
-        run: pytest --store-durations --clean-durations --durations-path .test_durations
+        # The incoming split shape does not need to be correct: it only decides
+        # WHICH tests this shard measures, not how fast they are. Even a badly
+        # balanced input converges, because every test is timed in a short
+        # process either way.
+        run: >-
+          pytest --splits ${{ strategy.job-total }} --group ${{ matrix.group }}
+          --store-durations --clean-durations --durations-path .test_durations
 
-      - name: Summarise what changed
-        if: ${{ always() }}
+      - name: Upload this shard's durations
+        uses: actions/upload-artifact@v4
+        with:
+          name: durations-shard-${{ matrix.group }}
+          path: backend/.test_durations
+          # ⚠ `.test_durations` is a DOTFILE and upload-artifact >= 4.4.0 drops
+          # hidden files by default EVEN WHEN NAMED (actions/upload-artifact#602).
+          # Without this the step fails after the suite has already run.
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  merge:
+    name: Regenerate test durations
+    runs-on: ubuntu-latest
+    needs: harvest
+    steps:
+      - name: Download every shard's durations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: durations-shard-*
+          path: shards
+
+      - name: Merge, asserting the shards are disjoint
         run: |
           python3 - <<'PY'
-          import json, pathlib
-          p = pathlib.Path("backend/.test_durations")
-          if not p.exists():
-              print("no durations file was written"); raise SystemExit(0)
-          d = json.loads(p.read_text())
-          files = {k.split("::")[0] for k in d}
-          print(f"entries: {len(d)}")
-          print(f"total recorded time: {sum(d.values()):.1f}s")
-          print(f"test files represented: {len(files)}")
+          import json, pathlib, sys
+
+          parts = sorted(pathlib.Path("shards").glob("*/.test_durations"))
+          if not parts:
+              sys.exit("no shard artifacts were downloaded")
+          print(f"merging {len(parts)} shard artifact(s)")
+
+          merged: dict[str, float] = {}
+          for part in parts:
+              data = json.loads(part.read_text())
+              # ⚠ Disjointness is the property --clean-durations buys us, and
+              # asserting it is what makes the pytest-split pin safely
+              # upgradeable: if a future version changes those semantics, this
+              # fails loudly instead of quietly emitting a half-stale file.
+              overlap = merged.keys() & data.keys()
+              if overlap:
+                  sys.exit(
+                      f"{part} overlaps an earlier shard on {len(overlap)} keys, "
+                      f"e.g. {sorted(overlap)[:3]}. --clean-durations is not "
+                      "doing what this merge assumes."
+                  )
+              print(f"  {part.parent.name}: {len(data)} entries, {sum(data.values()):.1f}s")
+              merged.update(data)
+
+          if len(merged) < 3000:
+              sys.exit(f"merged only {len(merged)} entries; expected the whole suite")
+
+          # Round: 3dp is far below any scheduling decision and turns a 400KB
+          # unreadable diff into a reviewable one.
+          merged = {k: round(v, 3) for k, v in merged.items()}
+          out = pathlib.Path("backend/.test_durations")
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text(json.dumps(merged, indent=4, sort_keys=True) + "\n")
+          print(f"\nmerged: {len(merged)} entries, {sum(merged.values()):.1f}s")
           PY
 
       - name: Upload the regenerated durations file
-        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: test-durations
           path: backend/.test_durations
-          # ⚠⚠ LOAD-BEARING. `.test_durations` is a DOTFILE, and
-          # actions/upload-artifact >= 4.4.0 excludes hidden files by default
-          # EVEN WHEN NAMED EXPLICITLY (actions/upload-artifact#602, #614).
-          # Without this the step fails with "No files were found with the
-          # provided path" after the suite has already run, and the entire
-          # ~30-minute harvest is discarded. Measured on run 32296477508: the
-          # suite went green, the summary printed 4173 entries / 1867.4s, and
-          # the artifact count was zero.
           include-hidden-files: true
           if-no-files-found: error
-          # Longer than the monthly cron interval on purpose: at 14 days a
-          # scheduled harvest expires two weeks before the next one runs, so
-          # nothing is ever available to commit when someone goes looking.
           retention-days: 90
