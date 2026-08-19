@@ -29,18 +29,27 @@
 #
 # The rewrite was never load-bearing. The drop-in already persists these four
 # values across restarts, which is the entire job CONFIG REWRITE was doing.
+#
+# ⚠ EVERY REPLY IS CHECKED, because `redis-cli` EXITS 0 ON AUTH FAILURE.
+# Measured: `redis-cli -a WRONGPASS --no-auth-warning ping` prints
+# `NOAUTH Authentication required.` on STDOUT and returns 0; only the
+# `AUTH failed` line goes to stderr. So `set -e` never trips, and this handler
+# reported success while applying nothing at all -- the same silent-success
+# shape that let TBD-412 hide for months. A CONFIG SET that worked replies
+# exactly `OK`; anything else is a failure.
 - name: Apply redis live tunables
   ansible.builtin.shell: |
     set -euo pipefail
-    redis-cli -a "{{ redis_password }}" --no-auth-warning \
-      CONFIG SET maxmemory {{ redis_maxmemory }}
-    redis-cli -a "{{ redis_password }}" --no-auth-warning \
-      CONFIG SET maxmemory-policy {{ redis_maxmemory_policy }}
-    redis-cli -a "{{ redis_password }}" --no-auth-warning \
-      CONFIG SET appendonly {{ redis_appendonly }}
-    redis-cli -a "{{ redis_password }}" --no-auth-warning \
-      CONFIG SET appendfsync {{ redis_appendfsync }}
+    set_cfg() {
+      out=$(redis-cli --no-auth-warning CONFIG SET "$1" "$2")
+      [ "$out" = "OK" ] || { echo "CONFIG SET $1 -> $out" >&2; exit 1; }
+    }
+    set_cfg maxmemory "{{ redis_maxmemory }}"
+    set_cfg maxmemory-policy "{{ redis_maxmemory_policy }}"
+    set_cfg appendonly "{{ redis_appendonly }}"
+    set_cfg appendfsync "{{ redis_appendfsync }}"
   args:
     executable: /bin/bash
+  environment:
+    REDISCLI_AUTH: "{{ redis_password }}"
   changed_when: true
-  no_log: true
