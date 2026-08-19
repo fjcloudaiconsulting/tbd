@@ -68,9 +68,21 @@ pfv2_20260819-155940.sql.gz   598K   (by hand, post-cutover, 8.4)
 ```
 
 The hand-run dump is the one that matters: it proves `mysqldump` still works
-against 8.4, which nothing else in this window exercised. Size is consistent
-with the two nightlies either side, so the client did not silently produce a
-stub.
+against 8.4, which nothing else in this window exercised.
+
+Verified as a **complete** dump, not merely a file that exists — which is the
+whole point, because the script's known hole is that `gzip >` creates the file
+before `mysqldump` can fail:
+
+```
+zcat pfv2_20260819-155940.sql.gz | tail -2   -> -- Dump completed on 2026-08-19 15:59:41
+zcat pfv2_20260819-155940.sql.gz | grep -c '^CREATE TABLE'  -> 50
+```
+
+50 tables matches the schema, and the completion marker is the last line. A
+truncated dump ends mid-statement with no marker. **This is the check the
+nightly cron does not do** — TBD-400 should make the script assert both and
+fail loudly, rather than leaving it to whoever thinks to look.
 
 ⚠ **The nightly backup is now the ONLY backup.** TBD-399 (revert droplet
 backups to disk-only) is deliberately **held, blocked on TBD-400** — reverting
