@@ -128,9 +128,19 @@ jobs:
         # WHICH tests this shard measures, not how fast they are. Even a badly
         # balanced input converges, because every test is timed in a short
         # process either way.
+        #
+        # ⚠⚠ THE FRESHNESS FENCE MUST BE DESELECTED HERE, OR THIS WORKFLOW
+        # DEADLOCKS. It reads the COMMITTED .test_durations, so a committed file
+        # bad enough to trip it fails the harvest too -- and the harvest is the
+        # only sanctioned way to produce a good one. Measured: run 32306137554,
+        # `Harvest shard 6/6` failed on `only 824 distinct values across 4181
+        # entries`, the merge job was skipped, and the remedy for the red fence
+        # became unreachable. The fence still runs for real in test.yml, which
+        # is where it belongs; this job is measuring, not validating.
         run: >-
           pytest --splits ${{ strategy.job-total }} --group ${{ matrix.group }}
           --store-durations --clean-durations --durations-path .test_durations
+          --deselect tests/test_test_durations_freshness.py
 
       - name: Upload this shard's durations
         uses: actions/upload-artifact@v4

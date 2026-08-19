@@ -243,3 +243,31 @@ def test_the_harvest_cleans_durations():
         "carry the entire stale file and the merge would silently reinstate "
         "stale values over fresh ones."
     )
+
+
+def test_the_harvest_does_not_run_the_fence_that_reads_its_own_output():
+    """⚠ Deadlock guard. MEASURED: run 32306137554.
+
+    `test_test_durations_freshness.py` asserts against the COMMITTED
+    `.test_durations`. The harvest runs the whole suite, so it runs that fence
+    too -- against the very file it is being run to replace. A file bad enough
+    to trip the fence therefore fails the harvest, the merge job is skipped, and
+    the only sanctioned remedy for the red fence becomes unreachable. That
+    happened: `Harvest shard 6/6` failed on "only 824 distinct values across
+    4181 entries", and the workflow could not produce the file that would have
+    fixed it.
+
+    The fence still runs for real in test.yml. This job is measuring, not
+    validating.
+    """
+    run = next(
+        (str(s.get("run", "")) for s in HARVEST_JOB["steps"] if "--store-durations" in str(s.get("run", ""))),
+        None,
+    )
+    assert run, "no harvest step runs pytest --store-durations"
+    assert "--deselect tests/test_test_durations_freshness.py" in run, (
+        "the harvest no longer deselects the freshness fence. A committed "
+        "durations file bad enough to trip that fence will now also fail the "
+        "harvest, making regeneration impossible -- the remedy gated on the "
+        "problem it fixes."
+    )
