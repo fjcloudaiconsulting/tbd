@@ -153,9 +153,9 @@ first. **The role itself is still wrong** — see follow-ups.
 | SSH open to `0.0.0.0/0` | TBD-370 |
 | Ansible CI + DO dynamic inventory | TBD-206 |
 | Remaining `pfv*` names (users, config file, droplet) | TBD-205 / TBD-396 |
-| **Redis role: `CONFIG REWRITE` shadows the drop-ins** — needs a role fix plus a fence asserting no directive follows the include line | NEW, file it |
-| **Runbook: Phase 2.1 cannot be executed** on the current plan; document the credential-rotation quiesce instead | NEW, file it |
-| **`/ready` does not check Redis** — it was green while the app could not issue a session, so the probe certified a genuinely broken app | NEW, file it |
-| **Rotate `mysql_app_password` and `redis_password`** — both were pasted into an agent transcript during the window | NEW, file it |
+| **Redis role: `CONFIG REWRITE` shadows the drop-ins** — role fix plus a converge-then-assert fence | **TBD-412** (PR #679) |
+| **Runbook: Phase 2.1 cannot be executed** on the current plan | Fixed in this PR |
+| **`/ready` does not check Redis** — green while nobody could log in | **TBD-413** |
+| **Rotate `mysql_app_password` and `redis_password`** — exposed in a transcript during the window. ⚠ Do this AFTER TBD-412 | **TBD-414** |
 | Phase 5 rename `pfv2` → `tbd` — deliberately deferred, trivially reversible, do it as its own operation | TBD-360 follow-up |
 | Delete snapshot `241824729` once confident (holds a full copy of production; keep a few days) | — |

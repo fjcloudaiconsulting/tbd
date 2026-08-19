@@ -273,6 +273,14 @@ This converts the three accounts to `caching_sha2_password`, removes the
 passwords to the Terraform-generated values**. The app keeps using the old
 password until 1.2 — expect a gap.
 
+⚠⚠ **RUN THE PLAY FIRST, THEN 1.2. The order is load-bearing, not stylistic.**
+Doing 1.2 first fires a deploy whose `migrate` PRE_DEPLOY job authenticates with
+the *new* password against a server that still has the *old* one. It fails at
+6/12, App Platform keeps the previous deployment alive (so the app stays up on
+the old container, with the old credentials, which then break the moment the
+play lands), and a second deploy is needed. Measured 2026-08-19: about seven
+minutes of avoidable downtime.
+
 ```bash
 ./infra/ansible/bin/run-playbook.sh --production
 ```
@@ -339,21 +347,49 @@ restore the previous secrets. Nothing irreversible has happened yet.
 
 ## Phase 2 — Quiesce and snapshot  ⚠ OUTAGE STARTS
 
-### 2.1 Scale the backend to zero
+### 2.1 Quiesce the app
 
-🌐 **Console:** Apps → `pfv` → `backend` → Resize → instance count **0**.
+⚠⚠ **SCALING TO ZERO IS NOT AVAILABLE ON THIS APP.** The `backend` component
+runs on the legacy `basic-xxs` plan, which the console pins to exactly one
+container ("This plan is limited to 1 container. Plans starting at $12.00/mo
+can manually scale or autoscale"). The instruction that used to be here could
+not be carried out, and nobody discovered that until the middle of the 2026-08-19
+window. `doctl apps update` with `instance_count: 0` was not accepted either.
 
-⚠ Do not skip this. Any write taken after the snapshot is **lost** on rollback,
-and a live backend would serve writes straight through the package swap.
+**You do not need it.** Phase 1 already quiesced the app: rotating the
+credentials locks the backend out of both MySQL and Redis, so it cannot write.
+By this point it either has the new credentials (if you completed 1.2) or none
+that work. Either way, the clean shutdown in 2.2 makes writes impossible.
+
+If you *do* want the app to serve a clean 503 rather than errors, the only
+levers are raising the plan to one that allows manual scaling, or removing the
+inbound 3306/6379 rules from the cloud firewall for the duration. Neither is
+required, and the firewall route adds a step you must remember to undo.
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://$(doctl apps get $APP_ID --format DefaultIngress --no-header | sed 's|https://||')/health
+curl -s https://$(doctl apps get $APP_ID --format DefaultIngress --no-header | sed 's|https://||')/ready
 ```
 
-✅ EXPECT: a failure (`000`, `502`, `503`). A `200` means it is still serving —
-do not continue.
+✅ EXPECT `database: connected` **if** you completed 1.2 — that is the state you
+want going in, because it means both bindings are proven. The database goes down
+in 2.2, not here.
+
+⚠ `/health` stays `200` throughout: it is a liveness probe and does not touch
+the database. Do not read it as "the app is fine". `/ready` does check the
+database — but **not Redis** (TBD-413), so it too can be green on an app where
+nobody can log in.
 
 ### 2.2 Cold snapshot, powered off
+
+⚠ **Shut MySQL down cleanly FIRST — run 3.1 before the power-off, not after.**
+This sheet used to power off a running server, which makes the snapshot
+crash-consistent. Running the slow shutdown first makes it an image of a
+cleanly-closed InnoDB, which is a strictly better thing to roll back to, and it
+costs one command.
+
+⚠ Then run **3.1 again** after the power-on. MySQL auto-starts on boot, so
+between power-on and the package swap there is a window in which the app can
+take writes that a rollback would discard. Keep it short.
 
 ```bash
 doctl compute droplet-action power-off $DROPLET_ID --wait
@@ -440,8 +476,21 @@ apt-cache policy mysql-community-server | head -3'
 exit status proves nothing. Gate on the candidate.
 
 ```bash
-$SSHQ 'export DEBIAN_FRONTEND=noninteractive; apt-get install -y -o Dpkg::Options::=--force-confold mysql-community-server 2>&1 | tail -15'
+$SSHQ 'export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+apt-get install -y -o Dpkg::Options::=--force-confold mysql-community-server > /tmp/tbd360-install.log 2>&1
+echo "install-exit=$?"
+tail -15 /tmp/tbd360-install.log'
 ```
+
+✅ EXPECT `install-exit=0`. Piping the install straight to `tail` reports the
+pipeline's status, which is `tail`'s and always 0 — the full log stays on the
+box instead.
+
+⚠ Expect to see `update-alternatives: using /etc/mysql/mysql.cnf to provide
+/etc/mysql/my.cnf` in that tail. That is Oracle's packaging repointing the file
+that carries the `!includedir`, and it is exactly the event 4.1 exists to catch.
+Measured 2026-08-19: the include survived it and all six pinned values held —
+but that is a measurement, not a guarantee, so still run 4.1.
 
 ⚠ **Do not run `mysql_upgrade`** — removed in 8.4. The server performs the
 data-dictionary upgrade itself at startup.
