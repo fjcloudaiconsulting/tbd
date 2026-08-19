@@ -335,6 +335,83 @@ evaluates the image's baked copy, so after regenerating the file the fence still
 RED locally. That false red is exactly what gets a fence weakened. `:ro` on purpose —
 regeneration comes from CI artifacts, never from a container run.
 
+## Measured outcome
+
+| | before | after |
+|---|---|---|
+| shard times | 485 / 471 / 298 / 262s | 279 / 277 / 253 / 274 / 268 / 259s |
+| max/min spread | **2.00x** | **1.10x** |
+| critical path | 485s | **279s** |
+| `Backend Checks` | ~497s | **~290s** |
+| `Frontend Checks` | ~347s | ~344s (unchanged) |
+| run wall clock | 8m21s | **~5m44s** |
+
+R2's successor target is met: `Backend Checks` (~290s) is now below
+`Frontend Checks` (~344s).
+
+### ⚠ Two predictions that were WRONG, and why
+
+Both are recorded because the reasoning that produced them looked sound.
+
+**1. "The runner-measured file will balance at 1.01x."** It measured **1.82x**.
+The harvest ran UNSHARDED (one ~31-minute process) while consumption is sharded
+into six short ones, so late-position tests carried the long process's
+accumulated cost and were overweighted. `DurationBasedChunksAlgorithm` cuts
+CONTIGUOUS slices, so chunk N maps to collection position N and the error
+CONCENTRATED rather than cancelling:
+
+```
+shard  tests  predicted  actual  actual/predicted
+  1      624     308s     283s        0.92
+  4     1023     308s     181s        0.59
+  5      667     308s     153s        0.50
+```
+
+This contradicted an explicit design ruling — that a shard-measured duration
+equals an unsharded one, since `backend/tests/` has no session- or
+module-scoped fixtures. That argument is about **fixture attribution** and
+misses **process-level accumulation** entirely. Two architects, a
+concede-or-defend round and three reviewers all passed over it; only running it
+on real hardware surfaced it.
+
+⚠ It also partially rehabilitates an option that was rejected: harvesting from
+sharded runs is **more** accurate, not less. The other objection to it — that it
+would put an artifact upload on the run whose conclusion gates production
+deploys — still stands, which is why the sharding happens in this separate
+generator workflow and not in `test.yml`.
+
+**2. "The balance fence will catch a bad file."** It cannot catch this one. The
+simulation scores the file with **itself**, so a position-biased file still
+self-scores at 1.01x. Matching the harvest and consumption shapes is what makes
+that simulation mean anything — which is why both shapes are now fenced against
+drift in either direction.
+
+## ⚠ The generator deadlocked on its own output
+
+The harvest runs the whole suite, so it ran the freshness fence too — against
+the COMMITTED `.test_durations`. A file bad enough to trip the fence therefore
+failed the harvest, the merge job was skipped, and the only sanctioned remedy
+for the red fence became unreachable. Measured: run 32306137554, `Harvest shard
+6/6` red on "only 824 distinct values across 4181 entries", no artifact.
+
+The fence is deselected in the harvest, and **that deselection is itself
+fenced** — removing it reintroduces a deadlock that stays invisible until the
+day it matters. Cost: the six freshness-fence tests carry no timing entry, so
+they are weighted at the mean. They are sub-second, and coverage stays at
+99.9%.
+
+## ⚠ Rounding fought its own fence
+
+The merge rounds the float repr for readability. At **3dp** every sub-millisecond
+test collapses onto a handful of values and a genuinely-measured file came out
+at **19.7% distinct**, tripping the degeneracy fence — which was correct to fire,
+since its job is to notice a file whose values carry no information.
+
+Resolved by raising precision to **6dp** (86% distinct, max error 5e-7s ≈ 2ms
+across the whole suite), **not** by lowering the threshold. Lowering it would
+have been the "fence gets weakened rather than obeyed" failure this spec argues
+against three sections earlier. The workflow says so at the call site.
+
 ## Follow-up to file with this PR
 
 **`Frontend Checks` is now the CI floor and its dominant step is vitest at 215s of
