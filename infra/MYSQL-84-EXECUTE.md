@@ -5,9 +5,12 @@
 it. This file assumes you have already decided to go and are sitting at your
 laptop with `doctl`, `terraform`, `ansible` and your SSH key.
 
-**Total expected outage: ~15–25 min**, of which the database is ~1 minute
-(measured 49s on a real droplet, 2026-08-18). The window is dominated by App
-Platform scaling and the cold snapshot.
+**Measured 2026-08-19: ~24 min total, of which ~8 min database-down.** The
+window is dominated by the credential rotation and its deploy, the cold
+snapshot, and the package swap. ⚠ There is **no App Platform scaling** — see
+2.1, it is not available on this plan — and the database is down for far longer
+than the "~1 minute" this file used to claim, because the snapshot is now taken
+with MySQL already stopped.
 
 > **No production identifiers appear in this file.** Every IP, droplet id and
 > app id is derived at run time. That keeps it safe in a public repo *and*
@@ -148,12 +151,8 @@ every client connection is dropped and the admin dashboard reports
 `Redis: DOWN` until the pool reconnects — *and* `requirepass` has rotated, so it
 cannot reconnect at all until `REDIS_URL` is updated in 1.2.
 
-If a visible blip matters, you may scale the backend to zero (2.1) *before*
-running Phase 1 — but ⚠⚠ **scale it back to 1 for the 1.2 `/ready` check, then
-back to zero.** Do not defer that check to 4.3. It is the only proof that both
-`DATABASE_URL` bindings took, and 4.3 is on the far side of Phase 3's one-way
-door: a wrong password on the `migrate` job discovered there costs a snapshot
-rebuild and a full re-run of Phase 1, where discovered at 1.2 it costs an edit.
+⚠ You cannot avoid this by scaling the backend to zero first — that is not
+available on this plan (2.1). Accept the blip, and keep 1.2 short.
 
 ### 0.4 Take the OS package upgrade OUTSIDE the window
 
@@ -356,15 +355,25 @@ can manually scale or autoscale"). The instruction that used to be here could
 not be carried out, and nobody discovered that until the middle of the 2026-08-19
 window. `doctl apps update` with `instance_count: 0` was not accepted either.
 
-**You do not need it.** Phase 1 already quiesced the app: rotating the
-credentials locks the backend out of both MySQL and Redis, so it cannot write.
-By this point it either has the new credentials (if you completed 1.2) or none
-that work. Either way, the clean shutdown in 2.2 makes writes impossible.
+⚠⚠ **SO NOTHING QUIESCES THE APP. Be honest with yourself about this rather
+than assuming something upstream handled it.** By the end of 1.2 the backend
+has working credentials again — that is the whole point of 1.2's `/ready`
+check — so it serves writes normally right up until MySQL stops in 2.2.
 
-If you *do* want the app to serve a clean 503 rather than errors, the only
-levers are raising the plan to one that allows manual scaling, or removing the
-inbound 3306/6379 rules from the cloud firewall for the duration. Neither is
-required, and the firewall route adds a step you must remember to undo.
+**The exposure is the interval from 1.2 to the shutdown in 2.2.** Any write
+taken in it is lost **if you later roll back to the snapshot**, because the
+snapshot is taken after it. Nothing else is at risk: the write itself succeeds,
+and if you never roll back it is simply a normal write.
+
+**Therefore: go from 1.2 straight into 2.2.** Do not break for coffee here.
+Measured 2026-08-19, the interval was about two minutes and the accepted risk
+was judged negligible for this app's traffic.
+
+If you need a hard quiesce — a bigger dataset, a busier app, a rollback you
+consider likely — the two real levers are raising the plan to one that permits
+manual scaling, or dropping the cloud-firewall rules for 3306/6379 for the
+duration. The firewall route adds a step you must remember to undo, and
+forgetting it looks exactly like a failed cutover.
 
 ```bash
 curl -s https://$(doctl apps get $APP_ID --format DefaultIngress --no-header | sed 's|https://||')/ready
@@ -399,7 +408,9 @@ doctl compute snapshot list --resource droplet --format ID,Name,Created --no-hea
 ```
 
 📋 **Write the snapshot ID down.** This is your primary undo from here on.
-Expect roughly 5–10 minutes on a 25 GB disk.
+Measured 2026-08-19: **58 s** for the snapshot and 2 min 27 s for the whole
+power-off → snapshot → power-on cycle, on this 25 GB disk. The old "5–10
+minutes" estimate was never measured.
 
 🔙 **ROLLBACK from here on:**
 `doctl compute droplet-action rebuild $DROPLET_ID --image <snapshot-id> --wait`
@@ -415,6 +426,13 @@ only way back is the snapshot.
 
 ### 3.1 Slow shutdown
 
+⚠⚠ **YOU ARRIVE HERE TWICE, BOTH TIMES FROM 2.2 — and the first time is BEFORE
+the snapshot exists.** Once to shut MySQL down cleanly so the snapshot images a
+closed InnoDB, and again after the power-on, because MySQL auto-starts on boot.
+**Do not run straight on into 3.2 the first time.** ↩ Return to 2.2 after the
+`STOPPED (good)` line; 3.2 is the one-way door and the snapshot is your only
+way back through it.
+
 ⚠⚠ **Keep `--no-defaults`, even though the root cause is now fixed.**
 
 The `[client]` section was removed from `/root/.my.cnf` (see
@@ -427,8 +445,10 @@ It stays in this sheet for three reasons, each of which is live during a window:
 1. **Production has not been played yet** when you start. The old
    `/root/.my.cnf` with its `[client]` section is still there until Phase 1
    completes.
-2. **A snapshot rollback restores the old file.** If you fall back to the Phase
-   2 snapshot, the trap comes back with it.
+2. **A rollback to the Phase 0.2 BACKUP restores the old file**, and with it
+   the trap. ⚠ Not the Phase 2 snapshot — that is taken *after* Phase 1 played
+   the box, so it carries the fixed `/root/.my.cnf`. Getting these two the
+   wrong way round mid-window is easy and expensive.
 3. The template only governs `/root/.my.cnf`. A `[client]` section in
    `/etc/mysql/my.cnf` or `~/.mylogin.cnf` would do the same thing, and nothing
    rewrites those.
@@ -538,9 +558,11 @@ $SSHQ 'test -f /etc/mysql/debian.cnf && echo "debian.cnf present" || echo "debia
 public-key path `caching_sha2_password` needs over the no-TLS VPC link. It
 passes while production still cannot connect. The real proof is `/ready` below.
 
-### 4.3 Bring traffic back
+### 4.3 Confirm traffic is flowing again
 
-🌐 **Console:** Apps → `pfv` → `backend` → Resize → instance count **1**.
+⚠ There is nothing to scale back up — nothing was scaled down (2.1). The
+backend reconnects on its own once MySQL answers, because its credentials did
+not change in Phase 3. Poll until it does.
 
 ```bash
 curl -s https://$(doctl apps get $APP_ID --format DefaultIngress --no-header | sed 's|https://||')/ready
@@ -636,10 +658,11 @@ fail so existence ≠ success, and no alerting. Tracked as **TBD-400**.
 | Change | Where |
 |---|---|
 | `enable_backups = true` → `false` | `infra/terraform/main.tf` (TBD-399's stated revert) — **already prepared, see the open PR** |
-| "production still on 8.0 pending the TBD-360 cutover" | `README.md`, `CLAUDE.md` |
+| ~~"production still on 8.0"~~ — done 2026-08-19 | `README.md`, `CLAUDE.md` |
 | Add production as the final evidence row | `MYSQL-84-CUTOVER.md` |
 | Decide whether CI keeps the `mysql: ["8.0","8.4"]` matrix | `.github/workflows/test.yml` |
-| Fill in the outcome record | `specs/2026-08-18-mysql-84-cutover-record.md` |
+| ~~Fill in the outcome record~~ — done 2026-08-19 | `specs/2026-08-18-mysql-84-cutover-record.md` |
+| ⚠ Still open: `mysql: ["8.0","8.4"]` matrix, and the `docker-compose.prod.yml` / `MYSQL-84-CUTOVER.md` / `MIGRATION.md` status notes | see the record's follow-ups |
 
 ```bash
 # Destroy the pre-cutover snapshot once you are confident (it holds a full copy

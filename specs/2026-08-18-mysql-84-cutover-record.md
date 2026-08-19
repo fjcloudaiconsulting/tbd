@@ -14,7 +14,7 @@ either side and are accurate to roughly a minute.
 | | |
 |---|---|
 | Date / operator | 2026-08-19, flamarion (agent-driven, operator ran every SSH and console step) |
-| Start (UTC) | 15:13 — env-var save, which is when the first deploy fired |
+| Start (UTC) | 15:13 — env-var save, which is when the first deploy fired. ⚠ User impact did not begin until ~15:18, when the play rotated the credentials out from under the running container; 15:13–15:18 is the failed deploy, during which the app served normally |
 | End (UTC) | 15:42 — Google SSO login confirmed working |
 | **Total user-visible outage** | **~24 min**, of which ~8 min database-down and a further ~7 min with the DB up but logins failing on an unrelated Redis fault |
 | Predicted | ~15–25 min total, ~1 min of it database |
@@ -29,6 +29,20 @@ either side and are accurate to roughly a minute.
 | MySQL version before | `8.0.46-0ubuntu0.24.04.3` |
 | Dataset before | 50 tables / 6.7 MB |
 | `--check` dry run clean? (`changed=` count, and note that the play's fences are skipped under `--check`) | Yes — `ok=40 changed=9 failed=0`, run twice (18th and 19th) with an identical nine. The real Phase 1 run was `ok=46 changed=10 failed=0`; `skipped` fell 10 → 4, which is the six check-mode-gated verification tasks executing |
+
+⚠ **The tenth changed task is UNIDENTIFIED.** The dry run's nine were timezone,
+three user tasks, `/root/.my.cnf`, `pfv.cnf`, the redis drop-in and two restart
+handlers. The real run reported ten, and the newly-executing gated tasks cannot
+account for it: five are `changed_when: false`, `set_fact` or `assert`, and the
+sixth — the corrective restart — must have skipped, or `skipped` would not be
+4. The Phase 1 log was deleted (it carried the rotated credentials in its
+diff), so this cannot now be recovered.
+
+**The candidate that would matter is `Update apt cache and upgrade packages`.**
+If that was it, an apt run happened inside the window — the exact thing Phase
+0.4 exists to move out of it — and it would help explain Phase 1 taking 12 min
+against a predicted 5. ⚠ On the next window, **capture the changed-task names
+from the real run**, not just the count. Do not treat this as settled.
 | Bare-`mysql` identity, before → after Phase 1 | `pfv_backup@localhost` → `root@localhost`. The `/root/.my.cnf` footgun (PR #675) confirmed removed **on the box**, not merely in the template |
 
 ## Timings — the point of this file
@@ -41,9 +55,25 @@ calibrated rather than asserted.
 |---|---|---|
 | 1 — play + secret re-encrypt | ~5 min | **~12 min** — inflated by an ordering mistake, see Deviations |
 | 2 — scale to 0 + cold snapshot | 5–10 min | **2 min 27 s** exactly: power-off 7 s (15:28:22→29), snapshot **58 s** (15:29:00→15:29:58), power-on 18 s (15:30:31→49). Scaling to 0 was **impossible**, see Deviations |
-| 3 — slow shutdown → 8.4 answering | **49 s** | **~3.5 min** (~15:31:30 → 15:35:00). The 49 s rehearsal figure measured shutdown→start only; package download and the DD upgrade are the rest |
-| 4 — verification | ~5 min | ~5 min, plus ~7 min on an unrelated Redis fault |
+| 3 — slow shutdown → 8.4 answering | **49 s** | **~3.5 min** (~15:31:30 → 15:35:00). ⚠ See the note below — the rehearsal figure was **not** mis-scoped |
+| 4 — verification | ~5 min | **~7 min total** (15:35 → 15:42), nearly all of it the unrelated Redis fault. The verification proper was minutes; the two overlap and do not sum |
 | 5 — rename | < 1 min | **NOT RUN** — deliberately deferred |
+
+⚠ **Why phase 3 took ~3.5 min against a measured 49 s, and what it is NOT.**
+The 49 s was not a narrower span: `rehearse-84-scratch-droplet.sh` starts its
+timer at `PACKAGE SWAP + DD UPGRADE — this is the measured window` and stops at
+`first authenticated query on 8.4`, i.e. the same shutdown→answering leg, full
+package download included, on a real droplet.
+
+The difference is that the rehearsal was **one scripted run with no human in
+it**, while production was executed as four separate operator-typed `$SSHQ`
+commands with turnaround between each (see Deviation 5 — every SSH step was
+operator-run), and 3.1 was run twice. The engine work was the same; the
+wall-clock is dominated by the hand-off.
+
+**For the next window: budget from the operator's cadence, not from the
+rehearsal.** A scripted leg and a copy/paste leg are different measurements of
+different things, and this sheet is copy/paste by design.
 
 ## Config, before and after
 
@@ -113,17 +143,26 @@ starting at $12.00/mo can manually scale or autoscale"). The runbook's headline
 quiesce step cannot be performed as written, and nobody had tried it before the
 window.
 
-What replaced it: **Phase 1 quiesces the app for free.** Rotating the
-credentials locks the backend out of both MySQL and Redis, so it cannot write.
-That is not a workaround bolted on — it is a property of Phase 1 that the sheet
-never noticed it had.
+⚠ **And nothing replaced it. Nothing quiesced the app.** An earlier draft of
+this record claimed Phase 1 quiesces it "for free" by locking the backend out
+of its own credentials. That is true only in the window created by Deviation 2
+below — the *mistake* of updating the env vars before running the play. On the
+order this sheet now mandates, 1.2 restores working credentials on purpose, and
+the app serves writes normally until MySQL stops in 2.2.
+
+**The real exposure: writes taken between 1.2 and the 2.2 shutdown are lost if
+the snapshot is ever used.** Measured here at roughly two minutes, and judged
+negligible for this app's traffic. It was an accepted risk, not an eliminated
+one, and the runbook now says so.
 
 **2. The env-var re-encrypt (1.2) was done BEFORE the play (1), not after.**
 That inverts the sheet and cost ~7 minutes. The save fired a deploy whose
 `migrate` PRE_DEPLOY job authenticated with the *new* password against a server
 that still had the *old* one; it failed at 6/12, App Platform kept the previous
-deployment alive, and a second deploy was needed after the play. Harmless, but
-the ordering in the sheet is load-bearing and should be stated as such.
+deployment alive, and a second deploy was needed after the play. Recoverable,
+but not harmless — it accounts for roughly seven of the twenty-four minutes —
+and the ordering in the sheet is load-bearing rather than stylistic. It now
+says so.
 
 **3. A clean slow shutdown was added BEFORE the snapshot** (not in the sheet,
 which powers off a running server). `SET GLOBAL innodb_fast_shutdown = 0` +
@@ -178,6 +217,15 @@ against the drop-in password, `appendonly yes` confirmed so the AOF replayed and
 sessions survived. `/etc/redis/redis.conf` backed up to `/root/redis.conf.bak-*`
 first. **The role itself is still wrong** — see follow-ups.
 
+⚠ **Only the two lines that were shadowing a credential were removed by hand.**
+`CONFIG REWRITE` also left `maxmemory`, `save`, `supervised` and
+`latency-tracking-info-percentiles` after the include. `maxmemory` is
+role-owned, and it happens to equal the drop-in's value today — which is
+exactly how the requirepass shadowing stayed invisible for months. TBD-412's
+purge removes it. ⚠ **Run that play before TBD-414's rotation**, and expect the
+purge to report `changed`; if it reports `ok`, the regex did not match what is
+on the box and that needs looking at.
+
 ## Follow-ups raised
 
 | | Ticket |
@@ -193,3 +241,6 @@ first. **The role itself is still wrong** — see follow-ups.
 | **Rotate `mysql_app_password` and `redis_password`** — exposed in a transcript during the window. ⚠ Do this AFTER TBD-412 | **TBD-414** |
 | Phase 5 rename `pfv2` → `tbd` — deliberately deferred, trivially reversible, do it as its own operation | TBD-360 follow-up |
 | Delete snapshot `241824729` once confident (holds a full copy of production; keep a few days) | — |
+| **Drop the `mysql: ["8.0","8.4"]` CI matrix leg** — `.github/workflows/test.yml` says to do this once the cutover lands. No environment runs 8.0 now. Safe for branch protection: only the two aggregate contexts are required, and `needs:` resolves over whatever legs exist | **TBD-415** |
+| **Clear the remaining "production is 8.0" notes** — `docker-compose.prod.yml`, `MYSQL-84-CUTOVER.md`, `MIGRATION.md`, `infra/ansible/README.md`, and add production as the final evidence row in `MYSQL-84-CUTOVER.md` | **TBD-415** |
+| ⚠ **Phase 5's rename needs a quiesce that does not exist.** `RENAME TABLE` takes metadata locks, so unlike Phase 2 the quiesce there is load-bearing — and scaling to zero is unavailable. Decide firewall rules vs. a plan bump *before* attempting it | **TBD-416** |
