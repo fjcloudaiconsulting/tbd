@@ -235,10 +235,31 @@ def get_report_templates() -> list[dict]:
                     "type": "stacked_bar",
                     "title": "Category by month",
                     "grid": {"x": 0, "y": 4, "w": 12, "h": 4},
+                    # TBD-382 R9. The two-dimension grouping is the point of
+                    # this panel: the frontend now stacks each month's bar by
+                    # category instead of collapsing every category onto the
+                    # month label. Two additions ship with that fix:
+                    #
+                    # - ``sort`` was ABSENT, so the compiler applied its
+                    #   default ``ORDER BY value DESC`` over (month, category)
+                    #   PAIRS. That is not a reading of a time axis in any
+                    #   state, and it is what made the client-side primary cap
+                    #   ambiguous. Changes no data.
+                    # - ``limit`` was ABSENT. With two dimensions the wire
+                    #   limit caps PAIRS, so the frontend raises the AST limit
+                    #   to the ceiling and treats this number as a cap on
+                    #   MONTH buckets. 12 is a no-op on any window holding
+                    #   twelve months or fewer.
+                    #
+                    # ⚠ ``measures`` stays length 1. stacked_bar stacks by
+                    # dimensions[1], never by measures: no pair of published
+                    # measures on any source has a meaningful sum.
                     "config": {
                         "dataset": "transactions",
                         "measures": [_series("sum", "Spend")],
                         "dimensions": ["month", "category"],
+                        "sort": {"by": "dimension", "dir": "asc"},
+                        "limit": 12,
                         "filters": {"txn_type": "expense"},
                     },
                 },

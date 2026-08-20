@@ -37,13 +37,10 @@ import {
   updateReport,
 } from "@/lib/reports/api";
 import type {
-  BarConfig,
   CanvasFilters,
-  KPIConfig,
   LayoutJson,
   ReportSummary,
   ReportVersionSummary,
-  SankeyConfig,
   Widget,
 } from "@/lib/reports/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -57,6 +54,7 @@ import WidgetShell from "@/components/reports/WidgetShell";
 import { renderReportWidget } from "@/components/reports/renderReportWidget";
 import { reportCurrency } from "@/lib/reports/series";
 import { mobileStackHeight, orderWidgetsForStack } from "@/lib/reports/stack";
+import { emptyWidget, newWidgetId } from "@/components/reports/widgetKit";
 import type { WidgetType } from "@/lib/reports/types";
 import { useIsMobile } from "@/lib/hooks/use-is-mobile";
 import { btnCanvas, btnCanvasActive } from "@/lib/styles";
@@ -70,144 +68,14 @@ interface PageProps {
 
 const DEFAULT_LAYOUT: LayoutJson = { version: 1, widgets: [] };
 
-function emptyKPI(id: string): Widget {
-  const config: KPIConfig = {
-    dataset: "transactions",
-    measure: { agg: "sum", field: "amount" },
-    compare_prior_period: false,
-  };
-  return {
-    id,
-    type: "kpi",
-    title: "New KPI",
-    grid: { x: 0, y: 0, w: 3, h: 2 },
-    config,
-  };
-}
-
-function emptyBar(id: string): Widget {
-  const config: BarConfig = {
-    dataset: "transactions",
-    measure: { agg: "sum", field: "amount" },
-    dimensions: ["category"],
-    sort: { by: "value", dir: "desc" },
-    limit: 10,
-  };
-  return {
-    id,
-    type: "bar",
-    title: "New bar chart",
-    grid: { x: 0, y: 0, w: 6, h: 4 },
-    config,
-  };
-}
-
-function emptyMultiSeries(
-  id: string,
-  type: "line" | "area" | "stacked_bar" | "table",
-): Widget {
-  const baseConfig = {
-    dataset: "transactions" as const,
-    measures: [{ measure: { agg: "sum" as const, field: "amount" as const } }],
-    dimensions: [type === "table" ? ("category" as const) : ("month" as const)],
-    sort: { by: "value" as const, dir: "desc" as const },
-    limit: type === "table" ? 50 : 100,
-  };
-  const baseGrid = type === "table" ? { x: 0, y: 0, w: 12, h: 6 } : { x: 0, y: 0, w: 6, h: 4 };
-  return {
-    id,
-    type,
-    title:
-      type === "line"
-        ? "New line chart"
-        : type === "area"
-          ? "New area chart"
-          : type === "stacked_bar"
-            ? "New stacked bar chart"
-            : "New table",
-    grid: baseGrid,
-    config: baseConfig,
-  } as Widget;
-}
-
-function emptyPie(id: string): Widget {
-  return {
-    id,
-    type: "pie",
-    title: "New pie chart",
-    grid: { x: 0, y: 0, w: 4, h: 4 },
-    config: {
-      dataset: "transactions",
-      measure: { agg: "sum", field: "amount" },
-      dimensions: ["category"],
-      sort: { by: "value", dir: "desc" },
-      limit: 50,
-      top_n: 8,
-    },
-  };
-}
-
-function emptySparkline(id: string): Widget {
-  return {
-    id,
-    type: "sparkline",
-    title: "New sparkline",
-    grid: { x: 0, y: 0, w: 3, h: 2 },
-    config: {
-      dataset: "transactions",
-      measure: { agg: "sum", field: "amount" },
-      dimensions: ["month"],
-      sort: { by: "dimension", dir: "asc" },
-      limit: 50,
-    },
-  };
-}
-
-function emptySankey(id: string): Widget {
-  const config: SankeyConfig = {
-    dataset: "transactions",
-    measure: { agg: "sum", field: "amount" },
-    spending_granularity: "category",
-  };
-  return {
-    id,
-    type: "sankey",
-    title: "Cash flow",
-    grid: { x: 0, y: 0, w: 8, h: 5 },
-    config,
-  };
-}
-
-function emptyWidget(type: WidgetType, id: string): Widget {
-  switch (type) {
-    case "kpi":
-      return emptyKPI(id);
-    case "bar":
-      return emptyBar(id);
-    case "line":
-      return emptyMultiSeries(id, "line");
-    case "area":
-      return emptyMultiSeries(id, "area");
-    case "stacked_bar":
-      return emptyMultiSeries(id, "stacked_bar");
-    case "table":
-      return emptyMultiSeries(id, "table");
-    case "pie":
-      return emptyPie(id);
-    case "sparkline":
-      return emptySparkline(id);
-    case "sankey":
-      return emptySankey(id);
-  }
-}
-
-function newWidgetId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `w_${crypto.randomUUID().slice(0, 8)}`;
-  }
-  return `w_${Math.random().toString(36).slice(2, 10)}`;
-}
-
+/**
+ * ⚠ TBD-382 R13: this module used to carry its OWN byte-identical copies of
+ * `emptyKPI` / `emptyBar` / `emptyMultiSeries` / `emptyWidget` / `newWidgetId`,
+ * and they were LIVE — the saved-report editor called the local copies while
+ * `/reports/new` called widgetKit's. Any change to a widget seed applied to
+ * one module only meant the two editors created different widgets. There is
+ * now exactly one factory; do not reintroduce a local copy.
+ */
 
 export default function ReportEditorPage({ params }: PageProps) {
   // Next 15 makes ``params`` a promise; ``use()`` unwraps it on the

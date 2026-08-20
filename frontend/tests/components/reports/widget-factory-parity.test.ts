@@ -72,10 +72,10 @@ describe("F20 — one widget factory, seeding a chronological time axis", () => 
 
     // …and the shared one is what the page uses.
     expect(src).toMatch(
-      /import\s*\{[^}]*\bemptyWidget\b[^}]*\}\s*from\s*"@\/components\/reports\/widgetKit"/s,
+      /import\s*\{[^}]*\bemptyWidget\b[^}]*\}\s*from\s*"@\/components\/reports\/widgetKit"/,
     );
     expect(src).toMatch(
-      /import\s*\{[^}]*\bnewWidgetId\b[^}]*\}\s*from\s*"@\/components\/reports\/widgetKit"/s,
+      /import\s*\{[^}]*\bnewWidgetId\b[^}]*\}\s*from\s*"@\/components\/reports\/widgetKit"/,
     );
   });
 });

@@ -151,6 +151,11 @@ export const HELP_TOOLTIPS = {
     learnMoreSection: "reports",
     triggerLabel: "What does Distinct count do?",
   },
+  "reports.series.exhausted": {
+    content: "Every measure this source publishes is already a series.",
+    learnMoreSection: "reports",
+    triggerLabel: "Why can't I add another series?",
+  },
   "reports.master-category": {
     content:
       "Groups by the master (parent) category instead of each subcategory, so Food rolls up Groceries, Dining, and Coffee into one total.",

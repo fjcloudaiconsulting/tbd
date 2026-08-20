@@ -15,6 +15,7 @@ import {
   dimensionOptionsFor,
   isMultiSeries,
   measureFieldOptionsFor,
+  measurePairOptionsFor,
 } from "@/components/reports/config/controlConstants";
 import { dimensionHeader } from "@/lib/reports/series";
 import { buildWidgetMutations } from "@/components/reports/config/useWidgetMutations";
@@ -27,6 +28,7 @@ import type {
   PieConfig,
   SankeyConfig,
   SparklineConfig,
+  StackedBarConfig,
   TableConfig,
   Widget,
 } from "@/lib/reports/types";
@@ -106,6 +108,9 @@ export default function DataTab({
   // Undefined while the catalog loads → the editors fall back to the
   // static ``FIELD_OPTIONS``.
   const fieldOptions = selected ? measureFieldOptionsFor(selected) : undefined;
+  // The same catalog as (agg, field) PAIRS — what R7's "+ Add series" seeds
+  // from. Undefined until the catalog resolves, which disables the control.
+  const measurePairs = selected ? measurePairOptionsFor(selected) : undefined;
 
   function onSourceChange(key: string) {
     const entry = sources.find((s) => s.key === key);
@@ -145,12 +150,40 @@ export default function DataTab({
       {/* Aggregation / measures section. Sankey has a fixed measure
           (transactions sum(amount)) so we skip this block for it. Single-
           measure widgets show one row; multi-series show one per series. */}
-      {widget.type !== "sankey" && (
-        isMultiSeries(widget) ? (
+      {widget.type !== "sankey" &&
+        (widget.type === "stacked_bar" ? (
+          /* TBD-382 R1/R8: stacked_bar is a SINGLE-measure widget — its only
+             stacking axis is dimensions[1], so a second measure has nothing
+             coherent to stack against. It still writes back through
+             ``setSeries`` as a length-1 ``measures`` array: the backend model
+             carries ``Field(min_length=1)`` and is shared with the dashboard
+             schema, so a singular ``config.measure`` is a missing required
+             field and 422s on the next save.
+             ⚠ Do NOT "simplify" by flipping ``isMultiSeries`` — that is also
+             the guard ``setSeries`` early-returns on. */
+          <SingleMeasureEditor
+            measure={
+              (widget.config as StackedBarConfig).measures[0]?.measure ?? {
+                agg: "sum",
+                field: "amount",
+              }
+            }
+            onChange={(measure) =>
+              setSeries([
+                {
+                  ...(widget.config as StackedBarConfig).measures[0],
+                  measure,
+                },
+              ])
+            }
+            fieldOptions={fieldOptions}
+          />
+        ) : isMultiSeries(widget) ? (
           <MeasuresEditor
             widget={widget}
             onChange={setSeries}
             fieldOptions={fieldOptions}
+            measurePairs={measurePairs}
           />
         ) : (
           <SingleMeasureEditor
@@ -161,8 +194,7 @@ export default function DataTab({
             onChange={setSingleMeasure}
             fieldOptions={fieldOptions}
           />
-        )
-      )}
+        ))}
 
       {/* Primary dimension: skip for kpi (no dimensions) and sankey (fixed schema). */}
       {widget.type !== "kpi" && widget.type !== "sankey" && (
@@ -184,31 +216,36 @@ export default function DataTab({
         </Section>
       )}
 
-      {/* Secondary dimension picker. For a bar widget this "Break down
-          by" slices each total bar into stacked segments (one color per
-          secondary value, e.g. per account) with a legend. For a table
-          it adds a second grouping column. Both consume
-          ``dimensions[1]`` and the backend AST already supports two
-          dimensions, so no query-layer change is needed. */}
-      {(widget.type === "bar" || widget.type === "table") && (
+      {/* Secondary dimension picker. For a bar / stacked_bar widget this
+          "Break down by" slices each total bar into segments (one color
+          per secondary value, e.g. per account or per category) with a
+          legend. For a table it adds a second grouping column.
+          ⚠ TBD-382: stacked_bar was gated OUT of this control while the
+          templates set ``dimensions[1]`` anyway — so its only stacking
+          axis was unreachable from the editor, and the widget silently
+          rendered each bucket's LAST pair as if it were the bucket total.
+          Do not narrow this gate back to ``bar || table``. */}
+      {(widget.type === "bar" ||
+        widget.type === "stacked_bar" ||
+        widget.type === "table") && (
         <Section
           label={
-            widget.type === "bar"
-              ? "Break down by (optional)"
-              : "Secondary dimension (optional)"
+            widget.type === "table"
+              ? "Secondary dimension (optional)"
+              : "Break down by (optional)"
           }
           help="reports.master-category"
         >
           <select
             value={
-              ((widget.config as BarConfig | TableConfig).dimensions ?? [])[1] ??
-              ""
+              ((widget.config as BarConfig | StackedBarConfig | TableConfig)
+                .dimensions ?? [])[1] ?? ""
             }
             onChange={(e) =>
               setSecondaryDimension((e.target.value || "") as Dimension | "")
             }
             aria-label={
-              widget.type === "bar" ? "Break down by" : "Secondary dimension"
+              widget.type === "table" ? "Secondary dimension" : "Break down by"
             }
             className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
           >
