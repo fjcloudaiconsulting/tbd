@@ -17,6 +17,14 @@ name: Deploy to Production (manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      allow_secret_drift:
+        description: >-
+          Deploy even if the committed .do/app.yaml would OVERWRITE a live
+          secret. Leave false unless you have read the drift report and
+          intend to replace production's values with the committed ones.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,6 +35,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+
+      # ⚠⚠ Refuse to deploy if the committed spec would overwrite a live
+      # secret. On 2026-08-20 exactly that took production's database and
+      # redis credentials down (TBD-425); infra/MIGRATION.md step 9 had
+      # warned about it since May and a runbook comment did not stop it.
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Verify the committed spec will not overwrite live secrets
+        env:
+          APP_NAME: pfv
+          ALLOW_SECRET_DRIFT: ${{ inputs.allow_secret_drift }}
+        run: |
+          pip install --quiet pyyaml
+          ./scripts/ci/assert-app-spec-secrets-synced.sh
 
       - name: Deploy to DigitalOcean App Platform
         uses: digitalocean/app_action/deploy@v2
