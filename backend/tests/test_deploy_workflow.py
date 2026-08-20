@@ -300,3 +300,234 @@ def test_the_break_glass_override_is_opt_in_and_defaults_to_false():
         "the override must DEFAULT to false; an emergency path that skips the "
         "guard by default is not a guard."
     )
+
+
+# ---------------------------------------------------------------------------
+# TBD-424 defect 2 -- release.yml must have NO trigger-level `paths:` filter,
+# and the removal must not be "fixed" by loosening the deploy condition or by
+# reintroducing the same question as in-workflow change detection.
+#
+# Why the filter went: `.releaserc.json` answers "should this merge ship?" by
+# commit INTENT, and since 1f246cbe its suppressions actually suppress (see
+# test_release_rules_ordering.py). The paths filter answered the same question
+# by a wrong proxy -- file paths -- and was a second, unfenced gate. Measured
+# over the last ~100 merges it changed zero release outcomes.
+# ---------------------------------------------------------------------------
+
+
+def _triggers(path: Path) -> dict:
+    """Return a workflow's `on:` trigger block.
+
+    ⚠⚠ `yaml.safe_load` parses the BARE key `on:` as the YAML 1.1 boolean
+    `True`, not the string `"on"`. A fence written as
+    `doc.get("on", {}).get("push", {})` therefore silently gets `{}` and then
+    PASSES WHILE ASSERTING NOTHING. Read both keys, and assert the result is
+    non-empty so a mis-parse is loud instead of vacuous.
+    """
+    doc = _yaml(path)
+    triggers = doc.get("on")
+    if triggers is None:
+        triggers = doc.get(True)
+    assert isinstance(triggers, dict) and triggers, (
+        f"{path.name}: could not read the `on:` block. Remember yaml.safe_load "
+        "parses the bare key `on:` as the boolean True, not the string 'on'."
+    )
+    return triggers
+
+
+def _normalise_expr(raw) -> str:
+    """Strip `${{ }}` wrapping and collapse whitespace in a workflow `if:`."""
+    text = " ".join(str(raw or "").split())
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+        text = " ".join(text.split())
+    return text
+
+
+def test_release_workflow_has_no_trigger_level_paths_filter():
+    """F1 (TBD-424). The teaching fence: it names the correct place to suppress.
+
+    A `paths:` filter here decides shippability from file paths. That is a
+    proxy for the real question, and it is the WRONG proxy: it cannot tell a
+    `chore(frontend):` apart from a `feat(frontend):`, and it silently
+    misattributes a suppressed merge's commits to whatever merge next happens
+    to touch an allowlisted path. `.releaserc.json` answers the real question
+    by commit type/scope and is fenced by test_release_rules_ordering.py.
+
+    ⚠ `paths-ignore` is checked too: it is the same gate spelled inversely and
+    would otherwise walk straight past a fence that only looked for `paths`.
+    """
+    push = _triggers(RELEASE_WORKFLOW).get("push")
+    assert isinstance(push, dict) and push, "release.yml lost its push trigger"
+    offenders = [k for k in ("paths", "paths-ignore") if k in push]
+    assert not offenders, (
+        f"release.yml's `on.push` reintroduced {offenders}. Do not suppress "
+        "releases by file path — a path filter cannot tell shipping intent "
+        "from a chore, and the commits it skips are silently attributed to a "
+        "later merge. Suppress in `.releaserc.json` instead (add a "
+        '`{"type"/"scope": ..., "release": false}` rule AFTER every rule that '
+        "grants a real release type -- see test_release_rules_ordering.py), "
+        "and let the `new_release_published` condition on `deploy` gate the "
+        "ship. TBD-424 defect 2."
+    )
+
+
+def test_release_workflow_push_trigger_is_only_branch_scoped():
+    """F2 (TBD-424). The invariant, stated positively.
+
+    F1 bans the two narrowings we know about; this bans every narrowing,
+    including forms nobody has thought of yet. Both are kept on purpose --
+    F1 is the one whose failure message teaches.
+    """
+    push = _triggers(RELEASE_WORKFLOW).get("push")
+    assert set(push) == {"branches"}, (
+        f"release.yml's `on.push` keys are {sorted(push)}; the only permitted "
+        "trigger-level narrowing is `branches`. Every push to main must start "
+        "a Release run; what ships is decided by .releaserc.json and by the "
+        "`new_release_published` condition on `deploy`. TBD-424."
+    )
+
+
+def test_release_deploy_still_gates_solely_on_new_release_published():
+    """F3 (TBD-424). The dangerous wrong fix.
+
+    Removing the paths filter AND loosening this condition turns release.yml
+    into deploy-on-every-merge -- a production push for every docs typo. The
+    filter's removal is only safe BECAUSE this condition is the gate.
+    """
+    deploy = _yaml(RELEASE_WORKFLOW)["jobs"]["deploy"]
+    condition = _normalise_expr(deploy.get("if"))
+    assert condition == "needs.release.outputs.new_release_published == 'true'", (
+        f"release.yml's `deploy` job guard is now {condition!r}. It must stay "
+        "exactly `needs.release.outputs.new_release_published == 'true'`: with "
+        "the trigger-level paths filter gone (TBD-424) this condition is the "
+        "ONLY thing standing between a docs-only merge and a production "
+        "deploy. Widening it -- or adding an `||` arm -- ships everything."
+    )
+
+
+def test_release_workflow_does_not_do_its_own_change_detection():
+    """F5 (TBD-424). The rejected alternative, banned explicitly.
+
+    `test.yml`'s detector (scripts/ci/detect-changed-areas.sh) is
+    VERDICT-NEUTRAL: it fails TRUE on any uncertainty and structurally cannot
+    turn a red suite green. The same detector on the release side would be
+    VERDICT-CHANGING -- it could veto a release semantic-release decided to
+    cut, a silent UNDER-release, a failure mode this pipeline has never had.
+    semantic-release's own commit analysis IS the change detection here.
+    """
+    # ⚠ Scans the PARSED steps, not the raw file: the `on:` block deliberately
+    # NAMES detect-changed-areas.sh in the comment explaining why it must not
+    # be used here, and a raw-text fence would forbid its own rationale.
+    offenders = []
+    for name, job in _yaml(RELEASE_WORKFLOW)["jobs"].items():
+        for step in job.get("steps") or []:
+            body = f"{step.get('run', '')} {step.get('uses', '')}"
+            if "detect-changed-areas" in body:
+                offenders.append(f"{name}:{step.get('name', '?')}")
+    assert not offenders, (
+        f"release.yml invokes detect-changed-areas.sh in {offenders}. "
+        "In-workflow change detection was deliberately rejected for the "
+        "release path (TBD-424): on test.yml it can only ever ADD work, here "
+        "it could silently SUPPRESS a release semantic-release decided to "
+        "cut. Let .releaserc.json decide."
+    )
+
+
+# ---------------------------------------------------------------------------
+# TBD-424 defect 4 -- somebody must be told when a release was PUBLISHED but
+# never DEPLOYED.
+#
+# `smoke-tests` has `needs: deploy`, so a FAILED deploy SKIPS it and
+# notify-smoke-failure.sh never runs. We had a notifier for "deployed but not
+# serving" and none at all for "did not deploy at all" -- the louder of the
+# two, because it leaves a three-way divergence: an immutable published tag,
+# a production app still running PRE-tag code, and a `main` that is neither.
+# ---------------------------------------------------------------------------
+
+NOTIFIER_JOB = "notify-undeployed-release"
+
+
+def test_release_notifies_when_a_published_release_did_not_deploy():
+    """F4 (TBD-424). Pins the three things that make this notifier fire at all.
+
+    ⚠ `if: failure()` would NOT work: when `deploy` is skipped or cancelled the
+    job's result is not `failure`, and `always()` is what keeps the job itself
+    alive past a failed upstream.
+    ⚠ Hanging it off `smoke-tests` reproduces the exact hole it closes --
+    `smoke-tests` is skipped precisely when the deploy failed.
+    ⚠ `cancelled` stays IN scope deliberately (no `!cancelled()`): a deploy
+    cancelled mid-push is the loudest case of all, DO may be half-rolled.
+    """
+    jobs = _yaml(RELEASE_WORKFLOW)["jobs"]
+    assert NOTIFIER_JOB in jobs, (
+        f"release.yml has no `{NOTIFIER_JOB}` job. A failed deploy skips "
+        "`smoke-tests`, so notify-smoke-failure.sh never runs and a published "
+        "tag that never reached production is announced to nobody. TBD-424."
+    )
+    job = jobs[NOTIFIER_JOB]
+
+    needs = job.get("needs") or []
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    assert "release" in needs and "deploy" in needs, (
+        f"`{NOTIFIER_JOB}` must depend on both `release` and `deploy`; got "
+        f"{needs}."
+    )
+    assert "smoke-tests" not in needs, (
+        f"`{NOTIFIER_JOB}` must NOT depend on `smoke-tests`. That job is "
+        "SKIPPED whenever the deploy failed, which is the exact hole this "
+        "notifier exists to close."
+    )
+
+    condition = _normalise_expr(job.get("if"))
+    for fragment in (
+        "always()",
+        "needs.release.outputs.new_release_published == 'true'",
+        "needs.deploy.result != 'success'",
+    ):
+        assert fragment in condition, (
+            f"`{NOTIFIER_JOB}`'s `if:` is {condition!r} and is missing "
+            f"{fragment!r}. Without `always()` the job is skipped along with "
+            "its failed upstream; without the `new_release_published` arm it "
+            "fires on every no-op release run; and `failure()` alone misses a "
+            "SKIPPED or CANCELLED deploy, which is most of the failure space."
+        )
+    assert "!cancelled()" not in condition, (
+        f"`{NOTIFIER_JOB}` must NOT exclude cancelled runs. A deploy cancelled "
+        "mid-push can leave DO half-rolled with the tag already published -- "
+        "the loudest case, not one to stay quiet about."
+    )
+
+    assert (job.get("permissions") or {}).get("issues") == "write", (
+        f"`{NOTIFIER_JOB}` needs `permissions: issues: write` to open or "
+        "comment the alert issue. Job-level permissions REPLACE the "
+        "workflow-level block (which grants `issues: read`), so omitting it "
+        "makes the notifier 403 exactly when it is needed."
+    )
+
+
+def test_the_undeployed_release_notifier_is_wired_into_both_deploy_paths():
+    """F4b (TBD-424). Half-wiring a guard into one deploy path only is the
+    shape the parametrized secret-drift fences above already exist to prevent.
+
+    `deploy.yml` is the manual escape hatch and has no `release` job, so its
+    arm gates on the deploy result alone -- but the same script must run, or
+    an operator's break-glass deploy can fail into silence.
+    """
+    jobs = _yaml(REPO_ROOT / ".github" / "workflows" / "deploy.yml")["jobs"]
+    assert NOTIFIER_JOB in jobs, (
+        f"deploy.yml has no `{NOTIFIER_JOB}` job. The manual deploy path fails "
+        "into silence: `smoke-tests` is skipped when `deploy` fails."
+    )
+    job = jobs[NOTIFIER_JOB]
+    condition = _normalise_expr(job.get("if"))
+    assert "always()" in condition and "needs.deploy.result" in condition, (
+        f"deploy.yml's `{NOTIFIER_JOB}` guard is {condition!r}; it must use "
+        "`always()` plus a `needs.deploy.result` test."
+    )
+    assert (job.get("permissions") or {}).get("issues") == "write"
+
+    steps = job.get("steps") or []
+    assert any(
+        "notify-undeployed-release.sh" in str(s.get("run", "")) for s in steps
+    ), "deploy.yml's notifier job must run scripts/notify-undeployed-release.sh"
