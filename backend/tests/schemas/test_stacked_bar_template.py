@@ -117,3 +117,50 @@ def test_category_deep_dive_canvas_window_is_untouched() -> None:
     assert _template(TEMPLATE_KEY)["canvas_filters_json"] == {
         "date_range": _this_month_range(today)
     }
+
+
+# ── TBD-426: the canvas must agree with itself on transaction type ──────────
+
+
+def _cdd_widgets() -> dict:
+    """All `category_deep_dive` widgets, keyed by id."""
+    template = next(
+        t for t in get_report_templates() if t["key"] == "category_deep_dive"
+    )
+    return {w["id"]: w for w in template["layout_json"]["widgets"]}
+
+
+def test_every_category_deep_dive_widget_filters_to_expenses():
+    """The canvas is described as "Category share of SPEND", so every panel on
+    it must agree on `txn_type`.
+
+    `cdd-table-top` carried no `filters` key at all while both its neighbours
+    filtered to expenses. It is titled "Top categories" and ranks by
+    `sum(amount)` desc, so it read as top *spending* categories and was not.
+
+    ⚠ The defect is INVISIBLE at the canvas's own `this_month` window, where a
+    single month's rent outranks a single month's salary. It only surfaces on a
+    wider window -- measured live at 12 months, `Paycheck/Salary` EUR 19,500
+    took the top row while the pie beside it showed EUR 9,297 of spend. A fence
+    that only checked the default window would therefore pass against the bug,
+    which is why this asserts the CONFIG rather than a rendered row.
+    """
+    widgets = _cdd_widgets()
+    assert len(widgets) >= 3, f"expected >= 3 widgets, got {sorted(widgets)}"
+
+    offenders = {
+        wid: w["config"].get("filters")
+        for wid, w in widgets.items()
+        if w["config"].get("filters", {}).get("txn_type") != "expense"
+    }
+    assert not offenders, (
+        "these category_deep_dive widgets do not filter to expenses, so income "
+        f"can rank into a spend canvas: {offenders}"
+    )
+
+
+def test_the_table_panel_specifically_filters_to_expenses():
+    """Pins the exact widget the defect was in, so a future refactor that drops
+    the filter names it rather than failing on a generic set-comparison."""
+    table = _cdd_widgets()["cdd-table-top"]
+    assert table["config"]["filters"]["txn_type"] == "expense"

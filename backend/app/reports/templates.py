@@ -222,10 +222,25 @@ def get_report_templates() -> list[dict]:
                     "type": "table",
                     "title": "Top categories",
                     "grid": {"x": 6, "y": 0, "w": 6, "h": 4},
+                    # TBD-426. This panel carried NO ``txn_type`` filter while
+                    # both of its canvas neighbours (``cdd-pie-share`` and
+                    # ``cdd-stacked-by-month``) filter to expenses. It is
+                    # titled "Top categories", ranks by ``sum(amount)`` desc,
+                    # and sits in a canvas whose own description reads
+                    # "Category share of SPEND" -- so it read as top spending
+                    # categories and was not.
+                    #
+                    # The defect was invisible at the canvas's ``this_month``
+                    # window, where rent outranks a monthly salary line. Widen
+                    # the window and ``Paycheck/Salary`` takes the top row of
+                    # an expense deep-dive. Measured live at 12 months:
+                    # EUR 19,500 income heading the table while the pie beside
+                    # it showed EUR 9,297 of spend.
                     "config": {
                         "dataset": "transactions",
                         "measures": [_series("sum", "Amount")],
                         "dimensions": ["category"],
+                        "filters": {"txn_type": "expense"},
                         "sort": {"by": "value", "dir": "desc"},
                         "limit": 20,
                     },
