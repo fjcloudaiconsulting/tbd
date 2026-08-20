@@ -1,5 +1,6 @@
 /**
- * Tests for the shared renderReportWidget function.
+ * Tests for the shared renderReportWidget function AND widgetKit's
+ * renderWidgetByType — the two type -> component routing tables (F15).
  *
  * Asserts that:
  *   - each report widget type dispatches to the correct component
@@ -7,42 +8,80 @@
  *     the dashboard path where the backend rejects sankey layouts)
  *
  * Mock strategy: lightweight stubs for all widget components so the
- * function can be exercised without SWR / API wiring.
+ * functions can be exercised without SWR / API wiring.
+ *
+ * ⚠ F29 — TBD-382 routes `stacked_bar` through `BarWidget`, so TWO rows of
+ * the table below now point at `bar-widget-stub`. A table that only asserts
+ * "some stub rendered" would then pass while certifying STRICTLY LESS than
+ * before: retargeting the `stacked_bar` row to the bar stub compiles and goes
+ * green even if the arm were deleted and the widget fell through. Each stub
+ * therefore ECHOES the widget it was handed via `data-widget-type`, and every
+ * case asserts that its OWN type came through.
  */
 import React from "react";
 import { render, screen } from "@testing-library/react";
 
 import { renderReportWidget } from "@/components/reports/renderReportWidget";
+import { renderWidgetByType } from "@/components/reports/widgetKit";
 import type { Widget } from "@/lib/reports/types";
 
 // ── Widget component stubs ────────────────────────────────────────────────────
 
 vi.mock("@/components/reports/widgets/KPIWidget", () => ({
-  default: () => <div data-testid="kpi-widget-stub">KPIWidget</div>,
+  default: ({ widget }: { widget: Widget }) => (
+    <div data-testid="kpi-widget-stub" data-widget-type={widget.type}>
+      KPIWidget
+    </div>
+  ),
 }));
 vi.mock("@/components/reports/widgets/BarWidget", () => ({
-  default: () => <div data-testid="bar-widget-stub">BarWidget</div>,
+  default: ({ widget }: { widget: Widget }) => (
+    <div data-testid="bar-widget-stub" data-widget-type={widget.type}>
+      BarWidget
+    </div>
+  ),
 }));
 vi.mock("@/components/reports/widgets/LineWidget", () => ({
-  default: () => <div data-testid="line-widget-stub">LineWidget</div>,
+  default: ({ widget }: { widget: Widget }) => (
+    <div data-testid="line-widget-stub" data-widget-type={widget.type}>
+      LineWidget
+    </div>
+  ),
 }));
 vi.mock("@/components/reports/widgets/AreaWidget", () => ({
-  default: () => <div data-testid="area-widget-stub">AreaWidget</div>,
+  default: ({ widget }: { widget: Widget }) => (
+    <div data-testid="area-widget-stub" data-widget-type={widget.type}>
+      AreaWidget
+    </div>
+  ),
 }));
 vi.mock("@/components/reports/widgets/PieWidget", () => ({
-  default: () => <div data-testid="pie-widget-stub">PieWidget</div>,
+  default: ({ widget }: { widget: Widget }) => (
+    <div data-testid="pie-widget-stub" data-widget-type={widget.type}>
+      PieWidget
+    </div>
+  ),
 }));
 vi.mock("@/components/reports/widgets/SparklineWidget", () => ({
-  default: () => <div data-testid="sparkline-widget-stub">SparklineWidget</div>,
-}));
-vi.mock("@/components/reports/widgets/StackedBarWidget", () => ({
-  default: () => <div data-testid="stacked-bar-widget-stub">StackedBarWidget</div>,
+  default: ({ widget }: { widget: Widget }) => (
+    <div data-testid="sparkline-widget-stub" data-widget-type={widget.type}>
+      SparklineWidget
+    </div>
+  ),
 }));
 vi.mock("@/components/reports/widgets/TableWidget", () => ({
-  default: () => <div data-testid="table-widget-stub">TableWidget</div>,
+  default: ({ widget }: { widget: Widget }) => (
+    <div data-testid="table-widget-stub" data-widget-type={widget.type}>
+      TableWidget
+    </div>
+  ),
 }));
 vi.mock("@/components/reports/widgets/SankeyWidget", () => ({
-  default: () => <div data-testid="sankey-widget-stub">SankeyWidget</div>,
+  default: ({ widget }: { widget: Widget }) => (
+    <div data-testid="sankey-widget-stub" data-widget-type={widget.type}>
+      SankeyWidget
+    </div>
+  ),
 }));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -74,16 +113,29 @@ describe("renderReportWidget", () => {
     ["area", "area-widget-stub"],
     ["pie", "pie-widget-stub"],
     ["sparkline", "sparkline-widget-stub"],
-    ["stacked_bar", "stacked-bar-widget-stub"],
+    ["stacked_bar", "bar-widget-stub"],
     ["table", "table-widget-stub"],
     ["sankey", "sankey-widget-stub"],
   ];
 
   it.each(CASES)(
-    "renders %s widget to the correct component",
+    "renders %s widget to the correct component, carrying its OWN type through",
     (type, testId) => {
       render(<>{renderReportWidget(stubWidget(type), CANVAS_FILTERS, false)}</>);
-      expect(screen.getByTestId(testId)).toBeInTheDocument();
+      const el = screen.getByTestId(testId);
+      expect(el).toBeInTheDocument();
+      expect(el).toHaveAttribute("data-widget-type", type);
+    },
+  );
+
+  // ── F15 ─────────────────────────────────────────────────────────────
+  it.each(CASES)(
+    "F15: widgetKit.renderWidgetByType routes %s to the SAME component",
+    (type, testId) => {
+      render(<>{renderWidgetByType(stubWidget(type), CANVAS_FILTERS, false)}</>);
+      const el = screen.getByTestId(testId);
+      expect(el).toBeInTheDocument();
+      expect(el).toHaveAttribute("data-widget-type", type);
     },
   );
 

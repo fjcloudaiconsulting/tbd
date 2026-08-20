@@ -12,7 +12,9 @@ import type {
   Aggregation,
   Dimension,
   LineConfig,
+  Measure,
   MeasureField,
+  SeriesConfig,
   SourceCatalogEntry,
   StackedBarConfig,
   TableConfig,
@@ -99,6 +101,39 @@ export function measureFieldOptionsFor(
     });
   }
   return out;
+}
+
+/**
+ * The source catalog's measures as (agg, field) PAIRS, in catalog order.
+ *
+ * ⚠ `measureFieldOptionsFor` above de-duplicates the catalog down to distinct
+ * FIELDS and throws the agg away — correct for a field picker, wrong for
+ * seeding a new series. The catalog's unit of truth is the PAIR: transactions
+ * publishes sum(amount), avg(amount) and count(id) over just two fields, so
+ * field-only seeding cannot produce a distinct series on a single-field
+ * source. That was Defect B — "+ Add series" seeded `{sum, fields[0]}`, which
+ * series 1 usually already was, and the new series drew pixel-identical on
+ * top of the old one.
+ */
+export function measurePairOptionsFor(entry: SourceCatalogEntry): Measure[] {
+  return entry.measures.map((m) => ({
+    agg: m.agg as Aggregation,
+    field: m.field as MeasureField,
+  }));
+}
+
+/** The first catalog pair not already present in ``measures``, if any. */
+export function nextUnusedMeasurePair(
+  pairs: Measure[] | undefined,
+  measures: SeriesConfig[],
+): Measure | undefined {
+  if (!pairs) return undefined;
+  return pairs.find(
+    (p) =>
+      !measures.some(
+        (m) => m.measure.agg === p.agg && m.measure.field === p.field,
+      ),
+  );
 }
 
 export const MAX_SERIES = 5;
