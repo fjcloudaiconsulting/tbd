@@ -1,9 +1,16 @@
 /**
- * Helpers for multi-series widgets (Line / Area / StackedBar / Table).
+ * Helpers for multi-series widgets (Line / Area / Table) and for the
+ * bar family's two-dimension break-down.
  *
  * Backend AST carries one ``measure`` per request, so a widget with N
  * series fires N parallel queries and stitches the rows here by the
  * shared dimension key.
+ *
+ * ⚠ ``mergeSeriesRows`` and ``pivotBySecondaryDimension`` answer DIFFERENT
+ * questions and must not be unified: merge N responses on one KNOWN key, vs
+ * pivot ONE response on two keys while discovering the secondary values.
+ * Only the pivot needs the null-prototype guard against ``__proto__``.
+ * Unifying them yields one function with a mode flag and a third bug.
  */
 import { formatAmount } from "@/lib/format";
 import type {

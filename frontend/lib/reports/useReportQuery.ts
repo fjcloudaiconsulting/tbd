@@ -146,6 +146,8 @@ export function buildQueryAst(
     // AST as a convenience for callers that just need the shared
     // dimension/filter shape; widgets that render >1 series compose
     // multiple queries via ``buildSeriesQueryAst``.
+    // ⚠ ``stacked_bar`` left this branch in TBD-382 — it is single-measure
+    // now, so there is nothing to fan out.
     const firstMeasure: Measure =
       widget.config.measures[0]?.measure ?? { agg: "sum", field: "amount" };
     return {
@@ -196,7 +198,7 @@ export function buildQueryAst(
 /**
  * Per-series AST builder. Reuses the widget's resolved filters and
  * dimension list, swapping the ``measure`` in for the specific series.
- * Used by multi-series widgets (line / area / stacked bar / table)
+ * Used by multi-series widgets (line / area / table)
  * that fire one query per measure and merge the rows client-side by
  * the first dimension key.
  */
