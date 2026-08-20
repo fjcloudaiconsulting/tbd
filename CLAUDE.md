@@ -87,6 +87,27 @@ with `cd backend && python -m scripts.gen_period_status_vectors` (that is the on
 invocation that works; a script path puts `backend/scripts` on `sys.path` and
 fails to import `app`).
 
+**Backend shard timings (TBD-421).** `backend/.test_durations` balances the
+`Backend Shard` matrix in CI. It is **generated, never hand-edited**, and it is
+regenerated from a runner, not locally:
+
+```bash
+gh workflow run test-durations.yml --ref <branch>   # then commit the artifact
+```
+
+⚠ Regenerating it in the dev container does not work: the image copy is
+root-owned while the container runs as uid 1001, so `--store-durations` runs the
+entire suite and only then dies with `PermissionError`. Local timings are also
+measurably not a uniform rescaling of runner timings, so a local harvest
+balances CI worse than it appears to.
+
+`backend/tests/test_test_durations_freshness.py` fails when the file drifts from
+the collected suite (it went 130 commits stale once, costing ~110s per CI run).
+The file is mounted into the backend container individually, like `seed.py` —
+and because its update path is `git pull`, that mount is severed by the very
+pull that refreshes it. If the container reports it missing, run
+`docker compose up -d --force-recreate backend`.
+
 ### Running backend tests in parallel agent sessions
 
 When dispatched as a parallel agent, NEVER run backend tests against the user's

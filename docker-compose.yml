@@ -80,6 +80,29 @@ services:
       - ./backend/seed.py:/app/seed.py
       # Read-only mounts so test_deploy_workflow.py can locate
       # repo-root .github/workflows/deploy.yml and .do/app.yaml.
+      # TBD-421: the shard-balance timing file. NOT covered by any directory
+      # mount (it sits at the backend root), so without this line a fence that
+      # reads it inside the container evaluates the copy baked in at image
+      # build. After regenerating the file on the host the fence would still
+      # read RED locally — and a false red is what gets a fence weakened
+      # rather than obeyed. Same trap as the seed.py mount above.
+      #
+      # ⚠ Read-only on purpose. Regeneration comes from the CI artifact
+      # produced by .github/workflows/test-durations.yml, never from a
+      # container run. Note also that pytest-split writing to this path inside
+      # the container fails anyway: the image copy is root-owned 0644 and the
+      # container runs as uid 1001.
+      #
+      # ⚠⚠ UNLIKE seed.py ABOVE, THE SEVERING PATH IS THE NORMAL ONE HERE.
+      # A single-file bind mount binds an INODE, and `git checkout` / `git pull`
+      # REPLACE the file rather than truncating it. Because this file is only
+      # ever updated by pulling a committed CI artifact, every developer hits
+      # the severed mount on exactly the pull that brings a fresh file: the
+      # container then reports `.test_durations` MISSING (measured), and the
+      # freshness fence fails pointing at the regeneration workflow, which is
+      # the wrong remedy. The right one is:
+      #     docker compose up -d --force-recreate backend
+      - ./backend/.test_durations:/app/.test_durations:ro
       - ./.github:/app/.github:ro
       - ./.do:/app/.do:ro
       # TBD-391: read-only mount so test_await_test_run_gate.py can execute the

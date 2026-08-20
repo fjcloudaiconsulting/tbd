@@ -2,7 +2,7 @@
 
 Audience: a contributor who just cloned the repo and wants to understand what happens between `git push` and a live change at `app.thebetterdecision.com` or `thebetterdecision.com`. Also a triage reference for CI/CD failures.
 
-All four pipelines described here are live on `main` today (`test.yml`, `release.yml`, `deploy.yml`, `apex-deploy.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
+All five pipelines described here are live on `main` today (`test.yml`, `release.yml`, `deploy.yml`, `apex-deploy.yml`, `test-durations.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
 
 For "how do I get my code ready to push", read [`CONTRIBUTING.md`](./CONTRIBUTING.md). For the env var matrix, read [`ENVIRONMENT.md`](./ENVIRONMENT.md). For the managed-to-droplet data move, read [`infra/MIGRATION.md`](./infra/MIGRATION.md). This file does not duplicate any of them.
 
@@ -90,6 +90,35 @@ How to read failures:
 - **Pytest**: known-flaky `tests/app/transactions-page.test.tsx` does not run here (that's a Jest test). For backend flake see `~/.claude/projects/-Users-flamarion-src-tbd/memory/` references; otherwise the failure is real.
 
 Re-run a single job from the PR's Checks tab.
+
+### 2b. Shard timing maintenance (`test-durations.yml`)
+
+Source: `.github/workflows/test-durations.yml`. Added by TBD-421.
+
+`test-durations.yml` deploys nothing. It regenerates `backend/.test_durations`,
+the per-test timing file `pytest-split` uses to balance `test.yml`'s
+`Backend Shard` matrix.
+
+- **Triggers:** `workflow_dispatch`, a monthly `schedule`, and `pull_request`
+  limited to changes to the workflow file itself (so a PR editing the generator
+  proves it still works).
+- **Output:** a `test-durations` artifact. A human downloads it and commits it
+  through an ordinary PR.
+- **Not a required status check**, and it must never become one — it runs the
+  whole suite unsharded and takes ~30 minutes.
+
+⚠ **It is deliberately a separate workflow, not a step in `test.yml`.**
+`scripts/ci/await-test-run.sh` gates production releases on the **run-level**
+conclusion of `test.yml`, so an artifact upload added there would let a
+transient upload failure block a deploy for reasons unrelated to the tests.
+
+⚠ **Do not regenerate the file locally.** `/app/.test_durations` is root-owned
+while the backend container runs as uid 1001, so `--store-durations` runs the
+whole suite and *then* dies at `pytest_sessionfinish`. Local per-test times are
+also measurably not a uniform rescaling of runner times.
+
+`backend/tests/test_test_durations_freshness.py` fails the build when the file
+drifts too far from the collected suite.
 
 ## 3. Backend + Frontend production deploy (`release.yml`)
 

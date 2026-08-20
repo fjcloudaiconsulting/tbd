@@ -50,9 +50,17 @@ concurrency:
 jobs:
   # Backend pytest is sharded across N parallel groups via pytest-split.
   # Each shard runs a deterministic, duration-balanced slice of the suite
-  # using the recorded backend/.test_durations file, so wall-clock per
-  # shard stays well under the 3-minute target even as the suite grows.
-  # See specs/ci-test-sharding.md for the rationale and the audit.
+  # using the recorded backend/.test_durations file.
+  #
+  # ⚠ The original "<3 minute backend check" target is RETIRED (TBD-421). It
+  # was not merely unmet, it was the wrong target: `Frontend Checks` is ~330s
+  # and is the run's floor, so backend time below that is unobservable in the
+  # run's wall clock. Successor target: `Backend Checks` stays below
+  # `Frontend Checks`.
+  #
+  # See specs/2026-08-19-ci-shard-rebalance.md for the current rationale, and
+  # specs/ci-test-sharding.md for the original audit (superseded on the shard
+  # count and the target; still accurate on why pytest-split over xdist).
   #
   # The suite is self-contained: tests use in-process aiosqlite + a fake
   # Redis (see backend/tests/conftest.py), so shards need NO MySQL and the
@@ -67,13 +75,28 @@ jobs:
   # The allowlist regression (tests/auth/test_sessions_invalidated_at_allowlist.py)
   # AST-scans backend/app/ source, not test files, so it works correctly in
   # whichever single shard pytest-split assigns it to — no replication needed.
+  # ⚠ THE SHARD COUNT IS DERIVED, NOT WRITTEN OUT. Change `matrix.group` and
+  # nothing else; the job name and `--splits` both read `strategy.job-total`.
+  #
+  # It used to be spelled literally in three places (job name, matrix, and
+  # `--splits`). A matrix LARGER than `--splits` is loud -- pytest-split raises
+  # UsageError. A matrix SMALLER than `--splits` is SILENT TOTAL LOSS: with
+  # `--splits 6` and `group: [1,2,3,4]`, one third of the suite never runs and
+  # every check stays green. backend/tests/test_ci_shard_config.py fences the
+  # invariant for anyone who reverts to literals.
+  #
+  # Six, not eight (TBD-421): `Frontend Checks` is ~347s and is the run's floor,
+  # so shards below that buy no wall-clock at all. Six is bought for headroom --
+  # it is where the backend stays under that floor for ~7 months of suite growth
+  # rather than ~2. Eight would also put two concurrent PRs over the 20-job
+  # public-runner budget, and queueing costs more than the extra shard saves.
   backend-shard:
-    name: Backend Shard ${{ matrix.group }}/4
+    name: Backend Shard ${{ matrix.group }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2, 3, 4, 5, 6]
     services:
       # Only the reuse-detection real-Lua tests use this, via TEST_REAL_REDIS_URL
       # below; the rest of the suite runs on the in-process fake Redis.
@@ -102,13 +125,13 @@ jobs:
       - name: Install backend dependencies
         run: pip install -r backend/requirements-dev.txt
 
-      - name: Run backend tests (shard ${{ matrix.group }}/4)
+      - name: Run backend tests (shard ${{ matrix.group }}/${{ strategy.job-total }})
         working-directory: backend
         env:
           # Dedicated var (NOT REDIS_URL) so only the opt-in real-Lua
           # reuse-detection tests use real Redis; app config stays unchanged.
           TEST_REAL_REDIS_URL: redis://localhost:6379/0
-        run: pytest --splits 4 --group ${{ matrix.group }} --durations-path .test_durations
+        run: pytest --splits ${{ strategy.job-total }} --group ${{ matrix.group }} --durations-path .test_durations
 
       - name: Run backend syntax smoke
         if: ${{ matrix.group == 1 }}
