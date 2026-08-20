@@ -48,7 +48,14 @@ export default function LineWidgetChart({
           interval={0}
         />
         <YAxis
-          width={92}
+          // TBD-432: `width="auto"` lets recharts measure the widest rendered
+          // tick (getCalculatedYAxisWidth) instead of reserving a fixed 92px.
+          // The literal was sized for the widest formatted currency tick, so
+          // it over-reserved on every narrower one: 5% of a `w:12` widget but
+          // 27% at `w:4` and 66% at the grid minimum, where it left the plot
+          // area a third of the card. Auto also cannot clip a LARGER value,
+          // which the fixed width could.
+          width="auto"
           tick={{ fill: chartColor.axisTick, fontSize: 11 }}
           tickFormatter={(v) => formatMeasureValue(Number(v), format, currency)}
         />
