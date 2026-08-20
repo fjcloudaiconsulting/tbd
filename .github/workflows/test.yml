@@ -251,17 +251,26 @@ jobs:
   migrations:
     name: Migration Checks
     runs-on: ubuntu-latest
-    # TBD-360: matrixed over BOTH engine versions for the duration of the
-    # migration. Production is still 8.0 and 8.4 is the target, and this job is
-    # the only place CI executes migrations against real MySQL at all - testing
-    # one of them would leave the other completely uncovered. `needs.migrations`
-    # in the `backend` aggregate resolves to success only when EVERY leg
-    # succeeds, so the required context still gates on both.
-    # Drop "8.0" from this list once the production cutover has landed.
+    # ⚠ Do not delete this job. The block above already explains why it is the
+    # only real-MySQL coverage in CI; the live production auth bypass it exists
+    # to catch was TBD-322.
+    #
+    # 8.0 was dropped from the matrix on 2026-08-20 (TBD-415): production cut
+    # over to 8.4.11 on 2026-08-19 (TBD-360), and dev and CI are both mysql:8.4,
+    # so the 8.0 leg covered an engine nothing runs.
+    #
+    # ⚠ The matrix SHAPE is kept deliberately even at one entry, so the job name
+    # stays `Migration Checks` and the per-leg names keep their `(8.4)` suffix.
+    # Collapsing to a plain job renames the check-runs.
+    #
+    # ⚠ Dropping the leg buys ZERO wall-clock. This job runs ~55s in parallel and
+    # finishes minutes before the critical path; it was never on it. The saving
+    # is runner-seconds on a public repo where they are free. This change is for
+    # correctness — testing an engine nothing runs — and nothing else.
     strategy:
       fail-fast: false
       matrix:
-        mysql: ["8.0", "8.4"]
+        mysql: ["8.4"]
     services:
       mysql:
         image: mysql:${{ matrix.mysql }}

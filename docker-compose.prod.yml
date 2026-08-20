@@ -10,11 +10,10 @@
 
 services:
   mysql:
-    # TBD-360: inherits `image:` from docker-compose.yml, which is now
-    # mysql:8.4. Until the production cutover lands, `./pfv prod` therefore
-    # runs a NEWER engine than production actually does (still 8.0), so it
-    # is not a faithful production rehearsal for anything engine-specific.
-    # Remove this note once the cutover is done.
+    # Inherits `image:` from docker-compose.yml, which is mysql:8.4 — the same
+    # major.minor production has run since the 2026-08-19 cutover (TBD-360),
+    # so `./pfv prod` is a faithful rehearsal on the engine axis again.
+    # ⚠ Production is 8.4.11 specifically; this pin floats within 8.4.
     restart: unless-stopped
 
   redis:
