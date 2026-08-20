@@ -156,6 +156,12 @@ export const HELP_TOOLTIPS = {
     learnMoreSection: "reports",
     triggerLabel: "Why can't I add another series?",
   },
+  "reports.bar-layout": {
+    content:
+      "On, each bar is one bucket with its break-down stacked inside. Off, the break-down sits side by side.",
+    learnMoreSection: "reports",
+    triggerLabel: "What does stacking change?",
+  },
   "reports.master-category": {
     content:
       "Groups by the master (parent) category instead of each subcategory, so Food rolls up Groceries, Dining, and Coffee into one total.",

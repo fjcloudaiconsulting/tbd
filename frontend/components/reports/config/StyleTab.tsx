@@ -2,11 +2,24 @@
 
 /**
  * Style tab of the widget editor: title plus the widget-type-specific
- * knobs (KPI compare-to-prior, Pie top-N, Area/StackedBar stack toggle).
- * The stacked branch keeps the original exact label split ("Stack mode"
- * for stacked_bar vs "Stack series" for area), the default split
- * (``stacked !== false`` vs ``Boolean(stacked)``), and the shared
- * ``aria-label="Stack series"``. Mutations come from ``buildWidgetMutations``.
+ * knobs (KPI compare-to-prior, Pie top-N, Area stack toggle, StackedBar
+ * bar layout).
+ *
+ * TBD-382 split the once-shared area/stacked_bar branch in two. They no
+ * longer describe the same thing: ``area`` still stacks N MEASURES, while
+ * a ``stacked_bar`` now carries exactly one measure and the flag flips its
+ * SECONDARY-DIMENSION break-down between stacked and side by side. The
+ * defaults still differ (``Boolean(stacked)`` for area vs
+ * ``stacked !== false`` for stacked_bar), and the stacked arm is gated on
+ * the break-down existing.
+ *
+ * The shared ``aria-label="Stack series"`` is GONE, deliberately: it did
+ * not contain either arm's visible text, so the accessible name failed
+ * WCAG 2.5.3 Label in Name (Level A) and a voice-control user saying the
+ * words on screen missed the control. Each ``<input>`` is already wrapped
+ * in its ``<label>``, so the visible text IS the accessible name.
+ *
+ * Mutations come from ``buildWidgetMutations``.
  */
 import Section from "@/components/reports/config/Section";
 import { buildWidgetMutations } from "@/components/reports/config/useWidgetMutations";
@@ -70,23 +83,39 @@ export default function StyleTab({
         </Section>
       )}
 
-      {(widget.type === "area" || widget.type === "stacked_bar") && (
-        <Section label={widget.type === "stacked_bar" ? "Stack mode" : "Stack series"}>
+      {widget.type === "area" && (
+        <Section label="Stack series">
           <label className="flex items-center gap-2 text-sm text-text-primary">
             <input
               type="checkbox"
-              checked={
-                widget.type === "stacked_bar"
-                  ? (widget.config as StackedBarConfig).stacked !== false
-                  : Boolean((widget.config as AreaConfig).stacked)
-              }
+              checked={Boolean((widget.config as AreaConfig).stacked)}
               onChange={(e) => setStacked(e.target.checked)}
-              aria-label="Stack series"
             />
             <span>Stack multiple series</span>
           </label>
         </Section>
       )}
+
+      {/* TBD-382: a stacked_bar now carries exactly ONE measure, so this no
+          longer stacks "series" -- it flips the SECONDARY-DIMENSION break-down
+          between stacked and side by side. Gated on that break-down existing:
+          with no dimensions[1] the flag is inert (BarWidgetChart ignores
+          `stacked` when `sliced` is false), and a control describing a mode the
+          widget does not have is the same false assertion this ticket removed
+          from the chart. Subtractive, per FilterEditor's TBD-381 rule. */}
+      {widget.type === "stacked_bar" &&
+        Boolean(((widget.config as StackedBarConfig).dimensions ?? [])[1]) && (
+          <Section label="Bar layout" help="reports.bar-layout">
+            <label className="flex items-center gap-2 text-sm text-text-primary">
+              <input
+                type="checkbox"
+                checked={(widget.config as StackedBarConfig).stacked !== false}
+                onChange={(e) => setStacked(e.target.checked)}
+              />
+              <span>Stack the break-down into one bar</span>
+            </label>
+          </Section>
+        )}
     </>
   );
 }

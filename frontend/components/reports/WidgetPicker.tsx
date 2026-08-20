@@ -91,7 +91,7 @@ const GROUPS: Group[] = [
       {
         type: "stacked_bar",
         label: "Stacked bar",
-        description: "Bars with stacked sub-series per bucket.",
+        description: "Bars split by a second dimension, stacked or side by side.",
         Icon: BarChartHorizontal,
       },
       {

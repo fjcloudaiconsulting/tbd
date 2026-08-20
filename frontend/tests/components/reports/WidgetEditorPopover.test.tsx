@@ -144,7 +144,9 @@ function makeStacked(): StackedBarWidget {
     config: {
       dataset: "transactions",
       measures: [{ measure: { agg: "sum", field: "amount" } }],
-      dimensions: ["month"],
+      // TBD-382: the "Bar layout" control is gated on the break-down it
+      // acts on, so the fixture has to carry one.
+      dimensions: ["month", "category"],
     },
   };
 }
@@ -227,7 +229,9 @@ describe("WidgetEditorPopover", () => {
     expect(screen.getByLabelText("Break down by")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: /style/i }));
     expect(screen.queryByLabelText("Top N slices")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Stack series")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Stack multiple series"),
+    ).not.toBeInTheDocument();
   });
 
   it("line: MeasuresEditor add/remove; no secondary", () => {
@@ -239,7 +243,7 @@ describe("WidgetEditorPopover", () => {
   it("area: stacked checkbox on Style", () => {
     renderPopover(makeArea());
     fireEvent.click(screen.getByRole("tab", { name: /style/i }));
-    expect(screen.getByLabelText("Stack series")).toBeInTheDocument();
+    expect(screen.getByLabelText("Stack multiple series")).toBeInTheDocument();
   });
 
   it("table: secondary dimension present", () => {
@@ -359,10 +363,12 @@ describe("WidgetEditorPopover", () => {
     expect(last.config.measure).toEqual({ agg: "count", field: "amount" });
   });
 
-  it("stacked_bar: Style tab shows the 'Stack mode' control", () => {
+  it("stacked_bar: Style tab shows the 'Bar layout' control", () => {
     renderPopover(makeStacked());
     fireEvent.click(screen.getByRole("tab", { name: /style/i }));
-    expect(screen.getByText("Stack mode")).toBeInTheDocument();
-    expect(screen.getByLabelText("Stack series")).toBeInTheDocument();
+    expect(screen.getByText("Bar layout")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Stack the break-down into one bar"),
+    ).toBeInTheDocument();
   });
 });
