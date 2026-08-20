@@ -14,6 +14,7 @@ Coverage:
 
 from __future__ import annotations
 
+import io
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -327,3 +328,222 @@ def test_safe_url_fields_returns_empty_on_garbage():
     # Critically: nothing leaked.
     for token in ("not", "a", "url"):
         assert token not in repr(bad)
+
+
+# ---------------------------------------------------------------------------
+# Connection resilience (TBD-424)
+#
+# On 2026-08-20 the PRE_DEPLOY migrate job failed at connect time
+# (`step_count: 0`, `revision: null`), which failed the deployment and triggered
+# an automated rollback of production. The wrapper made exactly ONE connection
+# attempt, and the failure event carried only `error_type: OperationalError` --
+# so the record could not distinguish a network blip from bad credentials, and
+# the incident has no proven root cause.
+#
+# These fences cover both halves of the fix: retry the transient case, and
+# record enough to name the deterministic one WITHOUT reintroducing the
+# credential leak the redaction exists to prevent.
+# ---------------------------------------------------------------------------
+
+
+class _FakeDriverError(Exception):
+    """Shaped like a DBAPI error wrapped by SQLAlchemy: `.orig.args = (code, msg)`."""
+
+    def __init__(self, code: int, message: str):
+        super().__init__(f"({code}, {message!r})")
+        self.orig = SimpleNamespace(args=(code, message))
+
+
+def test_driver_errno_extracts_the_code(monkeypatch):
+    assert migrate._driver_errno(_FakeDriverError(2003, "Can't connect")) == 2003
+    assert migrate._driver_errno(_FakeDriverError(1045, "Access denied")) == 1045
+
+
+def test_driver_errno_is_none_when_there_is_no_driver_code():
+    assert migrate._driver_errno(ValueError("no orig at all")) is None
+    assert migrate._driver_errno(RuntimeError()) is None
+    # A driver-ish exception whose first arg is not an int must not be coerced.
+    weird = SimpleNamespace(orig=SimpleNamespace(args=("not-a-code", "msg")))
+    assert migrate._driver_errno(weird) is None  # type: ignore[arg-type]
+
+
+def test_driver_errno_never_returns_the_message_string():
+    """⚠ The redaction guarantee. `args[1]` is the driver's message and embeds
+    username/host ("Access denied for user 'foo'@'10.1.2.3'"). Only `args[0]`
+    may ever leave this helper."""
+    secret = "Access denied for user 'pfv_app'@'10.108.0.3'"
+    got = migrate._driver_errno(_FakeDriverError(1045, secret))
+    assert got == 1045
+    assert not isinstance(got, str)
+    assert secret not in str(got)
+
+
+@pytest.mark.parametrize(
+    "errno,expected",
+    [
+        (2003, True),   # can't connect
+        (2006, True),   # server has gone away
+        (2013, True),   # lost connection
+        (4031, True),   # idle timeout
+        (1045, False),  # access denied - deterministic, do NOT retry
+        (1049, False),  # unknown database - deterministic
+        (1040, False),  # too many connections - retrying makes it worse
+        (1146, False),  # table doesn't exist
+    ],
+)
+def test_is_retryable_only_for_transient_driver_errors(errno, expected):
+    assert migrate._is_retryable(_FakeDriverError(errno, "x")) is expected
+
+
+def test_is_retryable_for_socket_errors_that_never_reached_mysql():
+    assert migrate._is_retryable(OSError("connection refused")) is True
+    assert migrate._is_retryable(ValueError("programming error")) is False
+
+
+def test_transient_connect_is_retried_and_then_succeeds(cap_logs, monkeypatch):
+    """The whole point: a blip must not fail the deploy."""
+    revs = [_fake_revision("001")]
+    _patch_alembic(monkeypatch, heads=["001"], revisions=revs)
+    _set_database_url(monkeypatch, "mysql+aiomysql://u:p@h/dbname")
+    monkeypatch.setattr(migrate, "CONNECT_BACKOFF_BASE_SECONDS", 0)
+
+    calls = {"n": 0}
+
+    def _flaky(_url):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _FakeDriverError(2003, "Can't connect to MySQL server")
+        return "001"  # equal to head -> no_op, so no subprocess needed
+
+    monkeypatch.setattr(migrate, "_get_current_revision_sync", _flaky)
+
+    rc = migrate.main()
+
+    assert rc == 0, "a transient connect failure must not fail the migrate job"
+    assert calls["n"] == 3
+    retries = [e for e in cap_logs.entries if e["event"] == "migrate.connect.retry"]
+    assert len(retries) == 2
+    assert retries[0]["driver_errno"] == 2003
+    assert retries[0]["retryable"] is True
+    assert [e["event"] for e in cap_logs.entries][-1] == "migrate.no_op"
+
+
+def test_non_retryable_connect_fails_immediately_without_burning_the_window(
+    cap_logs, monkeypatch
+):
+    """⚠ Bad credentials are deterministic. Retrying them delays the failure by
+    the full backoff and makes the logs read like a flaky network."""
+    _patch_alembic(monkeypatch, heads=["001"], revisions=[_fake_revision("001")])
+    _set_database_url(monkeypatch, "mysql+aiomysql://u:p@h/dbname")
+    monkeypatch.setattr(migrate, "CONNECT_BACKOFF_BASE_SECONDS", 0)
+
+    calls = {"n": 0}
+
+    def _denied(_url):
+        calls["n"] += 1
+        raise _FakeDriverError(1045, "Access denied for user 'x'@'10.1.2.3'")
+
+    monkeypatch.setattr(migrate, "_get_current_revision_sync", _denied)
+
+    rc = migrate.main()
+
+    assert rc == 1
+    assert calls["n"] == 1, "a deterministic failure must not be retried"
+    failed = [e for e in cap_logs.entries if e["event"] == "migrate.failed"]
+    assert failed and failed[-1]["driver_errno"] == 1045
+
+
+def test_persistent_transient_failure_is_bounded(cap_logs, monkeypatch):
+    _patch_alembic(monkeypatch, heads=["001"], revisions=[_fake_revision("001")])
+    _set_database_url(monkeypatch, "mysql+aiomysql://u:p@h/dbname")
+    monkeypatch.setattr(migrate, "CONNECT_BACKOFF_BASE_SECONDS", 0)
+
+    calls = {"n": 0}
+
+    def _always_down(_url):
+        calls["n"] += 1
+        raise _FakeDriverError(2003, "Can't connect")
+
+    monkeypatch.setattr(migrate, "_get_current_revision_sync", _always_down)
+
+    rc = migrate.main()
+
+    assert rc == 1
+    assert calls["n"] == migrate.CONNECT_MAX_ATTEMPTS
+    assert any(e["event"] == "migrate.connect.giving_up" for e in cap_logs.entries)
+
+
+def test_failure_event_carries_the_errno_but_never_the_driver_message(
+    cap_logs, monkeypatch
+):
+    """⚠ The whole reason this ticket exists: the record must name the cause
+    WITHOUT leaking the credential-bearing message."""
+    _patch_alembic(monkeypatch, heads=["001"], revisions=[_fake_revision("001")])
+    _set_database_url(monkeypatch, "mysql+aiomysql://pfv_app:s3cret@10.108.0.3/dbname")
+    monkeypatch.setattr(migrate, "CONNECT_BACKOFF_BASE_SECONDS", 0)
+
+    secret_message = "Access denied for user 'pfv_app'@'10.108.0.3' (using password: YES)"
+    monkeypatch.setattr(
+        migrate,
+        "_get_current_revision_sync",
+        lambda _url: (_ for _ in ()).throw(_FakeDriverError(1045, secret_message)),
+    )
+
+    rc = migrate.main()
+    assert rc == 1
+
+    blob = repr(cap_logs.entries)
+    assert "1045" in blob, "the errno must be present - it is the diagnostic"
+    for leak in ("s3cret", "pfv_app", "10.108.0.3", "using password"):
+        assert leak not in blob, f"{leak!r} leaked into the structured log"
+
+
+def test_retry_does_not_extend_to_the_alembic_upgrade(cap_logs, monkeypatch):
+    """⚠ SCOPE FENCE. Retrying a failed migration is a different and far more
+    dangerous thing than retrying a connect: the wrapper drives alembic per
+    revision so a failure stops at a KNOWN revision, and silently re-running one
+    would undo that guarantee.
+
+    ⚠⚠ THIS FENCE PATCHES `subprocess.Popen`, NOT `_run_alembic_upgrade`.
+    The first version patched `_run_alembic_upgrade` and was VACUOUS: a mutant
+    that renamed the real function and wrapped it in a 3x retry loop left this
+    test GREEN, because monkeypatching the outer name replaced the very loop
+    being tested. Counting Popen invocations sees retries introduced at ANY
+    layer above the subprocess. Do not "simplify" this back.
+    """
+    revs = [_fake_revision("001"), _fake_revision("002")]
+    _patch_alembic(monkeypatch, heads=["002"], revisions=revs)
+    _set_database_url(monkeypatch, "mysql+aiomysql://u:p@h/dbname")
+    monkeypatch.setattr(migrate, "CONNECT_BACKOFF_BASE_SECONDS", 0)
+    monkeypatch.setattr(migrate, "_get_current_revision_sync", lambda _url: "001")
+
+    popens = {"n": 0}
+
+    class _FailingProc:
+        """A subprocess that exits non-zero with no output."""
+
+        def __init__(self, *_a, **_kw):
+            popens["n"] += 1
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 9
+
+        def poll(self) -> int:
+            return 9
+
+        @property
+        def returncode(self) -> int:
+            return 9
+
+    monkeypatch.setattr(migrate.subprocess, "Popen", _FailingProc)
+
+    rc = migrate.main()
+
+    assert rc == 9
+    assert popens["n"] == 1, (
+        f"alembic was invoked {popens['n']} times for a failing revision; a "
+        "failed migration must be attempted EXACTLY ONCE. A retry here can "
+        "re-run a partially-applied revision."
+    )

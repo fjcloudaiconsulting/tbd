@@ -65,6 +65,57 @@ def _safe_url_fields(database_url: Optional[str]) -> dict[str, str]:
     return fields
 
 
+# ── Connection resilience (TBD-424) ──────────────────────────────────────────
+#
+# The PRE_DEPLOY migrate job used to make exactly ONE connection attempt. On
+# 2026-08-20 a single transient failure at connect time (`step_count: 0`,
+# `revision: null`) failed the deployment and triggered an automated rollback of
+# production. The app's own logs show a background rate of roughly one transient
+# socket failure per ~14 hours on the private VPC path to the data droplet, so a
+# single-attempt connect is a coin flip against every deploy.
+CONNECT_MAX_ATTEMPTS = 5
+CONNECT_BACKOFF_BASE_SECONDS = 1.0
+
+# ⚠ Retry ONLY errors that a retry can plausibly fix. A deterministic failure
+# (bad credentials, missing database) is not transient: retrying it burns ~15s
+# of deploy time and then reports the same thing, while making the logs look
+# like a flaky network rather than a misconfiguration.
+#   2003 can't connect        2006 server has gone away
+#   2013 lost connection      4031 connection idle-timed out
+# Deliberately NOT retried: 1045 access denied, 1049 unknown database,
+# 1044 access denied to database, 1040 too many connections (retrying a
+# saturated server makes it worse and the deploy should fail loudly).
+RETRYABLE_DRIVER_ERRNOS = frozenset({2003, 2006, 2013, 4031})
+
+
+def _driver_errno(exc: BaseException) -> Optional[int]:
+    """Numeric driver error code, or None.
+
+    ⚠ The code ONLY — never `args[1]`, which is the driver's message string and
+    routinely embeds username/host/port ("Access denied for user
+    'foo'@'10.x.x.x'"). That string is what the redaction guarantee on
+    migrate.failed exists to keep out of the logs; the code carries no such
+    payload and is what actually tells an operator whether a failed deploy was a
+    network blip (2003) or bad credentials (1045).
+    """
+    orig = getattr(exc, "orig", None) or exc
+    args = getattr(orig, "args", None)
+    if not args:
+        return None
+    code = args[0]
+    return code if isinstance(code, int) else None
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """True when another attempt could plausibly succeed."""
+    errno = _driver_errno(exc)
+    if errno is not None:
+        return errno in RETRYABLE_DRIVER_ERRNOS
+    # No driver code at all: a socket/DNS/TLS error that never reached MySQL.
+    # Those are the most transient failures there are, so retry them.
+    return isinstance(exc, (OSError, asyncio.TimeoutError))
+
+
 def _resolve_database_url(alembic_cfg: Config) -> Optional[str]:
     """Mirror env.py's resolution: DATABASE_URL env var wins."""
     return os.getenv("DATABASE_URL") or alembic_cfg.get_main_option(
@@ -88,6 +139,41 @@ def _get_current_revision_sync(database_url: str) -> Optional[str]:
             await engine.dispose()
 
     return asyncio.run(_run())
+
+
+def _get_current_revision_with_retry(
+    database_url: str, log: "structlog.BoundLogger", safe_url: dict[str, str]
+) -> Optional[str]:
+    """`_get_current_revision_sync` with a bounded retry on transient failures.
+
+    ⚠ SCOPE: this retries the PRE-FLIGHT READ ONLY — establishing a connection
+    and reading `alembic_version`. It does NOT retry `alembic upgrade`. A
+    migration that fails partway is a different and far more dangerous thing:
+    the wrapper drives alembic per revision precisely so a failure stops at a
+    known revision, and re-running one automatically would undo that guarantee.
+    """
+    last_exc: Optional[BaseException] = None
+    for attempt in range(1, CONNECT_MAX_ATTEMPTS + 1):
+        try:
+            return _get_current_revision_sync(database_url)
+        except Exception as exc:  # noqa: BLE001 - re-raised below
+            last_exc = exc
+            retryable = _is_retryable(exc)
+            final = attempt >= CONNECT_MAX_ATTEMPTS or not retryable
+            log.warning(
+                "migrate.connect.retry" if not final else "migrate.connect.giving_up",
+                attempt=attempt,
+                max_attempts=CONNECT_MAX_ATTEMPTS,
+                retryable=retryable,
+                error_type=type(exc).__name__,
+                driver_errno=_driver_errno(exc),
+                **safe_url,
+            )
+            if final:
+                raise
+            time.sleep(CONNECT_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+    # Unreachable: the loop either returns or raises.
+    raise last_exc  # type: ignore[misc]
 
 
 def _pump_stream(src: IO[str], dst: IO[str]) -> None:
@@ -189,7 +275,7 @@ def main() -> int:
         return 1
 
     try:
-        current = _get_current_revision_sync(database_url)
+        current = _get_current_revision_with_retry(database_url, log, safe_url)
     except Exception as exc:
         # Deliberately log only the exception class, not str(exc): driver
         # errors routinely embed username/host/port (e.g. pymysql's
@@ -204,6 +290,8 @@ def main() -> int:
             returncode=1,
             reason="unexpected_exception",
             error_type=type(exc).__name__,
+            # ⚠ The CODE only, never the message - see _driver_errno.
+            driver_errno=_driver_errno(exc),
             **safe_url,
         )
         return 1
@@ -255,6 +343,7 @@ def main() -> int:
                 returncode=1,
                 reason="unexpected_exception",
                 error_type=type(exc).__name__,
+                driver_errno=_driver_errno(exc),
             )
             return 1
 
