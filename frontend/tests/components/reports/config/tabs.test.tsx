@@ -103,8 +103,28 @@ function makeStacked(stacked?: boolean): StackedBarWidget {
     config: {
       dataset: "transactions",
       measures: [{ measure: { agg: "sum", field: "amount" } }],
-      dimensions: ["month"],
+      // TBD-382: the break-down is what the layout flag acts on, so it has
+      // to be present for the control to be offered at all.
+      dimensions: ["month", "category"],
       ...(stacked === undefined ? {} : { stacked }),
+    },
+  };
+}
+
+// The pre-TBD-382 shape: a stacked_bar with NO secondary dimension. Kept as
+// the negative case — with no break-down the flag is inert
+// (BarWidgetChart ignores ``stacked`` when ``sliced`` is false), so the
+// control must not be offered.
+function makeStackedNoSecondary(): StackedBarWidget {
+  return {
+    id: "w_stacked_flat",
+    type: "stacked_bar",
+    title: "Stacked",
+    grid: { x: 0, y: 0, w: 6, h: 4 },
+    config: {
+      dataset: "transactions",
+      measures: [{ measure: { agg: "sum", field: "amount" } }],
+      dimensions: ["month"],
     },
   };
 }
@@ -163,29 +183,70 @@ describe("StyleTab", () => {
     expect(screen.getByLabelText("Top N slices")).toBeInTheDocument();
   });
 
-  it("stacked_bar uses the 'Stack mode' label and defaults checked", () => {
+  it("stacked_bar uses the 'Bar layout' label and defaults checked", () => {
     renderStyle(makeStacked());
-    expect(screen.getByText("Stack mode")).toBeInTheDocument();
-    const cb = screen.getByLabelText("Stack series") as HTMLInputElement;
+    expect(screen.getByText("Bar layout")).toBeInTheDocument();
+    const cb = screen.getByLabelText(
+      "Stack the break-down into one bar",
+    ) as HTMLInputElement;
     expect(cb.checked).toBe(true);
   });
 
   it("stacked_bar with stacked:false is unchecked", () => {
     renderStyle(makeStacked(false));
-    const cb = screen.getByLabelText("Stack series") as HTMLInputElement;
+    const cb = screen.getByLabelText(
+      "Stack the break-down into one bar",
+    ) as HTMLInputElement;
     expect(cb.checked).toBe(false);
+  });
+
+  it("hides 'Bar layout' on a stacked_bar with no break-down", () => {
+    // TBD-382. ``stacked`` is ignored when there is no ``dimensions[1]``
+    // (BarWidgetChart: "Ignored when `sliced` is false"), and "Break down
+    // by" is now reachable-but-optional on stacked_bar, so "None" is a real
+    // state. A checkbox that changes nothing is the same false assertion
+    // this ticket removed from the chart. Subtractive, per FilterEditor's
+    // TBD-381 rule: a control is offered iff it applies.
+    renderStyle(makeStackedNoSecondary());
+    expect(screen.queryByText("Bar layout")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Stack the break-down into one bar"),
+    ).not.toBeInTheDocument();
   });
 
   it("area uses the 'Stack series' label and defaults unchecked", () => {
     renderStyle(makeArea());
     expect(screen.getByText("Stack series")).toBeInTheDocument();
-    const cb = screen.getByLabelText("Stack series") as HTMLInputElement;
+    const cb = screen.getByLabelText(
+      "Stack multiple series",
+    ) as HTMLInputElement;
     expect(cb.checked).toBe(false);
+  });
+
+  it("gives both stack toggles an accessible name matching their visible text", () => {
+    // TBD-382 / WCAG 2.5.3 Label in Name (Level A). Both arms carried
+    // ``aria-label="Stack series"`` while rendering different visible text,
+    // so the accessible name did NOT contain the visible label and a
+    // voice-control user saying the words they see missed the control.
+    // ``getByLabelText`` cannot see this — it matches the wrapping <label>
+    // text too — so the fence has to ask for the computed ACCESSIBLE NAME.
+    const area = renderStyle(makeArea());
+    expect(
+      screen.getByRole("checkbox", { name: "Stack multiple series" }),
+    ).toBeInTheDocument();
+    area.unmount();
+
+    renderStyle(makeStacked());
+    expect(
+      screen.getByRole("checkbox", { name: "Stack the break-down into one bar" }),
+    ).toBeInTheDocument();
   });
 
   it("area with stacked:true is checked", () => {
     renderStyle(makeArea(true));
-    const cb = screen.getByLabelText("Stack series") as HTMLInputElement;
+    const cb = screen.getByLabelText(
+      "Stack multiple series",
+    ) as HTMLInputElement;
     expect(cb.checked).toBe(true);
   });
 });

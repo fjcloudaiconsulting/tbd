@@ -236,7 +236,11 @@ function dateLabel(range: CanvasDateRange, now: Date): string {
     }
   }
   if (range.start && range.end) {
-    return `${shortDate(range.start)} – ${shortDate(range.end)}`;
+    // A window spanning two calendar years reads as a few DAYS without the
+    // year ("Aug 1 – Aug 20" for a 12-month window). Add the year only when
+    // it disambiguates, so same-year ranges keep the tighter label.
+    const withYear = range.start.slice(0, 4) !== range.end.slice(0, 4);
+    return `${shortDate(range.start, withYear)} – ${shortDate(range.end, withYear)}`;
   }
   if (range.start) return `From ${shortDate(range.start)}`;
   return `Until ${shortDate(range.end as string)}`;
@@ -257,10 +261,13 @@ const MONTHS = [
   "Dec",
 ];
 
-// "MMM D" from an ISO YYYY-MM-DD string. Parsed off the literal parts to
-// avoid a UTC-shift on ``new Date("YYYY-MM-DD")`` in negative offsets.
-function shortDate(iso: string): string {
+// "MMM D" (or "MMM D, YYYY" when ``withYear``) from an ISO YYYY-MM-DD
+// string. Parsed off the literal parts to avoid a UTC-shift on
+// ``new Date("YYYY-MM-DD")`` in negative offsets. The one-sided ``From`` /
+// ``Until`` labels keep the yearless form: with a single endpoint there is
+// no second year to be confused with.
+function shortDate(iso: string, withYear = false): string {
   const [y, m, d] = iso.split("-").map((p) => Number(p));
   if (!y || !m || !d) return iso;
-  return `${MONTHS[m - 1]} ${d}`;
+  return withYear ? `${MONTHS[m - 1]} ${d}, ${y}` : `${MONTHS[m - 1]} ${d}`;
 }

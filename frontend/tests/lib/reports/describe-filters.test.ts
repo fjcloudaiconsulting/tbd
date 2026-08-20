@@ -144,6 +144,38 @@ describe("describeWidgetFilters", () => {
     expect(date?.overridden).toBe(true);
   });
 
+  it("adds the year when a custom window spans two calendar years", () => {
+    // TBD-382. Templates freeze an ABSOLUTE window at instantiation, and
+    // ``last_12_months.end`` is *today*, so from day two onward the preset
+    // match fails and the chip falls through to the custom label. Without
+    // the year a trailing-12-month window renders as "Aug 1 – Aug 20" — a
+    // few days, not a year. The chip is the ONLY declaration of the window
+    // on the ``cdd-stacked-by-month`` panel, so it must not lie.
+    const DAY_AFTER = new Date(2026, 7, 21); // 2026-08-21
+    const chips = describeWidgetFilters(
+      bar({ date_range: { start: "2025-08-01", end: "2026-08-20" } }),
+      {},
+      NO_LOOKUPS,
+      DAY_AFTER,
+    );
+    expect(chips.find((c) => c.key === "date")?.label).toBe(
+      "Aug 1, 2025 – Aug 20, 2026",
+    );
+  });
+
+  it("keeps the tighter label when a custom window stays in one year", () => {
+    // ⚠ Kills an unconditional year-add, which would bloat every
+    // same-year chip. The year is added only when it disambiguates.
+    const DAY_AFTER = new Date(2026, 7, 21); // 2026-08-21
+    const chips = describeWidgetFilters(
+      bar({ date_range: { start: "2026-08-01", end: "2026-08-20" } }),
+      {},
+      NO_LOOKUPS,
+      DAY_AFTER,
+    );
+    expect(chips.find((c) => c.key === "date")?.label).toBe("Aug 1 – Aug 20");
+  });
+
   it("does NOT emit a date chip when neither widget nor canvas has a date", () => {
     const chips = describeWidgetFilters(bar({}), {}, NO_LOOKUPS, NOW);
     expect(chips.find((c) => c.key === "date")).toBeUndefined();

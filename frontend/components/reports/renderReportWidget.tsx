@@ -24,7 +24,6 @@ import LineWidget from "@/components/reports/widgets/LineWidget";
 import AreaWidget from "@/components/reports/widgets/AreaWidget";
 import PieWidget from "@/components/reports/widgets/PieWidget";
 import SparklineWidget from "@/components/reports/widgets/SparklineWidget";
-import StackedBarWidget from "@/components/reports/widgets/StackedBarWidget";
 import TableWidget from "@/components/reports/widgets/TableWidget";
 import SankeyWidget from "@/components/reports/widgets/SankeyWidget";
 
@@ -97,9 +96,12 @@ export function renderReportWidget(
           currency={currency}
         />
       );
+    // TBD-382: stacked_bar renders through BarWidget. It lost its
+    // measure-stacking axis, so it is a bar chart whose break-down by
+    // dimensions[1] stacks (or, with config.stacked === false, groups).
     case "stacked_bar":
       return (
-        <StackedBarWidget
+        <BarWidget
           widget={w}
           canvasFilters={canvasFilters}
           editMode={editMode}

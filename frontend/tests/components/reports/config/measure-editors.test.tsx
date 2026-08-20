@@ -14,6 +14,13 @@ import type {
   TableWidget,
 } from "@/lib/reports/types";
 
+/** The transactions source's published (agg, field) pairs, in catalog order. */
+const TRANSACTIONS_PAIRS: Measure[] = [
+  { agg: "sum", field: "amount" },
+  { agg: "avg", field: "amount" },
+  { agg: "count", field: "id" },
+];
+
 function makeLine(measures: SeriesConfig[]): LineWidget {
   return {
     id: "w_line",
@@ -65,7 +72,10 @@ describe("SingleMeasureEditor", () => {
 });
 
 describe("MeasuresEditor", () => {
-  it("appends a default series via measure-add", () => {
+  // ⚠ TBD-382 R7: this used to assert the DEFECT — the add button seeded
+  // `{agg:"sum", field: fields[0]}`, i.e. a duplicate of series 1, which drew
+  // pixel-identical on top of it. It now seeds the next unused CATALOG PAIR.
+  it("appends the next unused catalog pair via measure-add", () => {
     const calls: SeriesConfig[][] = [];
     renderWithSWR(
       <MeasuresEditor
@@ -74,14 +84,44 @@ describe("MeasuresEditor", () => {
           { measure: { agg: "avg", field: "amount" } },
         ])}
         onChange={(m) => calls.push(m)}
+        measurePairs={TRANSACTIONS_PAIRS}
       />,
     );
     fireEvent.click(screen.getByTestId("measure-add"));
     expect(calls.at(-1)).toEqual([
       { measure: { agg: "sum", field: "amount" } },
       { measure: { agg: "avg", field: "amount" } },
-      { measure: { agg: "sum", field: "amount" } },
+      { measure: { agg: "count", field: "id" } },
     ]);
+  });
+
+  it("refuses (and explains) once every catalog pair is already a series", () => {
+    const calls: SeriesConfig[][] = [];
+    renderWithSWR(
+      <MeasuresEditor
+        widget={makeLine(TRANSACTIONS_PAIRS.map((measure) => ({ measure })))}
+        onChange={(m) => calls.push(m)}
+        measurePairs={TRANSACTIONS_PAIRS}
+      />,
+    );
+    const btn = screen.getByTestId("measure-add");
+    expect(btn).toBeDisabled();
+    expect(
+      screen.getByTestId("measure-add-exhausted-help"),
+    ).toBeInTheDocument();
+    fireEvent.click(btn);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("is inert, with no explanation, while the catalog is unresolved", () => {
+    renderWithSWR(
+      <MeasuresEditor
+        widget={makeLine([{ measure: { agg: "sum", field: "amount" } }])}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("measure-add")).toBeDisabled();
+    expect(screen.queryByTestId("measure-add-exhausted-help")).toBeNull();
   });
 
   it("removes a series by index via measure-remove-1", () => {

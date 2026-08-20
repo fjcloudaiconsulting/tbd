@@ -18,7 +18,6 @@ import LineWidget from "@/components/reports/widgets/LineWidget";
 import AreaWidget from "@/components/reports/widgets/AreaWidget";
 import PieWidget from "@/components/reports/widgets/PieWidget";
 import SparklineWidget from "@/components/reports/widgets/SparklineWidget";
-import StackedBarWidget from "@/components/reports/widgets/StackedBarWidget";
 import TableWidget from "@/components/reports/widgets/TableWidget";
 import SankeyWidget from "@/components/reports/widgets/SankeyWidget";
 
@@ -58,15 +57,25 @@ function emptyMultiSeries(
   id: string,
   type: "line" | "area" | "stacked_bar" | "table",
 ): Widget {
+  const isTable = type === "table";
+  // ⚠ TBD-382 R13: a TIME primary is never seeded in spend order. Under R3
+  // branch 3 a `sort: {by:"value"}` on a `month` primary would rank the
+  // client-side primary cap by total and render every newly created chart's
+  // month axis in spend order — the arrangement R9 calls out as never the
+  // intended reading of a time axis. `table` keeps value-desc: its primary is
+  // `category`, where spend order IS the intended reading.
   const baseConfig = {
     dataset: "transactions" as const,
     measures: [{ measure: { agg: "sum" as const, field: "amount" as const } }],
-    dimensions: [type === "table" ? ("category" as const) : ("month" as const)],
-    sort: { by: "value" as const, dir: "desc" as const },
-    limit: type === "table" ? 50 : 100,
+    dimensions: [isTable ? ("category" as const) : ("month" as const)],
+    sort: isTable
+      ? { by: "value" as const, dir: "desc" as const }
+      : { by: "dimension" as const, dir: "asc" as const },
+    limit: isTable ? 50 : 100,
   };
-  const baseGrid =
-    type === "table" ? { x: 0, y: 0, w: 12, h: 6 } : { x: 0, y: 0, w: 6, h: 4 };
+  const baseGrid = isTable
+    ? { x: 0, y: 0, w: 12, h: 6 }
+    : { x: 0, y: 0, w: 6, h: 4 };
   return {
     id,
     type,
@@ -188,9 +197,12 @@ export function renderWidgetByType(
           editMode={editMode}
         />
       );
+    // TBD-382: stacked_bar renders through BarWidget. It lost its
+    // measure-stacking axis, so it is a bar chart whose break-down by
+    // dimensions[1] stacks (or, with config.stacked === false, groups).
     case "stacked_bar":
       return (
-        <StackedBarWidget
+        <BarWidget
           widget={w}
           canvasFilters={canvasFilters}
           editMode={editMode}

@@ -7,8 +7,15 @@
  * The "Secondary dimension" picker is Table-only. The bar widget exposes
  * a "Break down by" picker that slices each total bar into stacked,
  * per-secondary-value colored segments (e.g. per account). line / area /
- * stacked-bar / kpi / pie / sparkline still only consume
- * ``dimensions[0]``, so they expose no secondary picker.
+ * kpi / pie / sparkline still only consume ``dimensions[0]``, so they
+ * expose no secondary picker.
+ *
+ * ⚠ TBD-382: ``stacked_bar`` USED TO BE in HIDDEN_CASES below. That fixture
+ * actively certified Defect A — a stacked bar's only stacking axis is now
+ * ``dimensions[1]``, and gating the control to ``bar || table`` was what
+ * made the axis unreachable from the editor while templates set it anyway.
+ * It moves here (F10) rather than being deleted, so the gap it certified
+ * cannot quietly reopen.
  */
 import { renderWithSWR, fireEvent, screen } from "../../../utils/render-with-swr";
 
@@ -151,7 +158,6 @@ function makeTable(): TableWidget {
 const HIDDEN_CASES: Array<{ name: string; widget: Widget }> = [
   { name: "line", widget: makeLine() },
   { name: "area", widget: makeArea() },
-  { name: "stacked_bar", widget: makeStacked() },
   { name: "kpi", widget: makeKpi() },
   { name: "pie", widget: makePie() },
   { name: "sparkline", widget: makeSparkline() },
@@ -204,6 +210,71 @@ describe("DataTab — secondary dimension picker visibility", () => {
     const afterClear = updates.at(-1) as BarWidget;
     expect(afterClear.config.dimensions).toEqual(["category"]);
   });
+
+  // ── F10 ─────────────────────────────────────────────────────────────
+  it("F10: DOES render the 'Break down by' picker for stacked_bar", () => {
+    renderWithSWR(<DataTab widget={makeStacked()} onUpdate={() => {}} />);
+    expect(screen.getByLabelText("Break down by")).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Secondary dimension"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("F10: sets dimensions[1] on a stacked_bar break-down, and clears it on None", () => {
+    const updates: Widget[] = [];
+    const stacked = makeStacked();
+    const { rerender } = renderWithSWR(
+      <DataTab widget={stacked} onUpdate={(w) => updates.push(w)} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Break down by"), {
+      target: { value: "category" },
+    });
+    const afterSet = updates.at(-1) as StackedBarWidget;
+    expect(afterSet.config.dimensions).toEqual(["month", "category"]);
+
+    rerender(<DataTab widget={afterSet} onUpdate={(w) => updates.push(w)} />);
+
+    fireEvent.change(screen.getByLabelText("Break down by"), {
+      target: { value: "" },
+    });
+    const afterClear = updates.at(-1) as StackedBarWidget;
+    expect(afterClear.config.dimensions).toEqual(["month"]);
+  });
+});
+
+// ── F11 ───────────────────────────────────────────────────────────────
+describe("F11: stacked_bar is a SINGLE-measure widget that still persists `measures`", () => {
+  it("renders one measure editor and no add-series control", () => {
+    renderWithSWR(<DataTab widget={makeStacked()} onUpdate={() => {}} />);
+    expect(screen.getByLabelText("Aggregation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Field")).toBeInTheDocument();
+    expect(screen.queryByTestId("measure-add")).not.toBeInTheDocument();
+  });
+
+  it("writes back config.measures[0] — a length-1 array, and NEVER a singular `measure` key", () => {
+    // ⚠ The implementation trap is flipping `isMultiSeries`, which is also
+    // the type guard `setSeries` early-returns on: flipping it routes the
+    // write to `setSingleMeasure` and `config.measure`, which is a missing
+    // required field on the backend's `_MultiSeriesConfig` (min_length=1)
+    // and 422s on the next save — on BOTH the reports and dashboard paths.
+    const updates: Widget[] = [];
+    renderWithSWR(
+      <DataTab widget={makeStacked()} onUpdate={(w) => updates.push(w)} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Aggregation"), {
+      target: { value: "avg" },
+    });
+
+    const next = updates.at(-1) as StackedBarWidget;
+    expect(next.config.measures).toHaveLength(1);
+    expect(next.config.measures[0].measure).toEqual({
+      agg: "avg",
+      field: "amount",
+    });
+    expect(Object.keys(next.config)).not.toContain("measure");
+  });
 });
 
 describe("DataTab — measure editor + dimension by widget type", () => {
@@ -212,7 +283,6 @@ describe("DataTab — measure editor + dimension by widget type", () => {
   const MULTI: Array<{ name: string; widget: Widget }> = [
     { name: "line", widget: makeLine() },
     { name: "area", widget: makeArea() },
-    { name: "stacked_bar", widget: makeStacked() },
     { name: "table", widget: makeTable() },
   ];
 

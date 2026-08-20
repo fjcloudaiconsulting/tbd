@@ -2,8 +2,30 @@
 
 /**
  * Multi-series measure editor (one row per ``config.measures`` entry, with
- * add/remove and a per-type cap) for line / area / stacked_bar / table.
- * Extracted verbatim from the original widget config rail.
+ * add/remove and a per-type cap) for line / area / table.
+ *
+ * ``stacked_bar`` no longer uses this: TBD-382 made it a single-measure
+ * widget whose only stacking axis is ``dimensions[1]``. It still PERSISTS
+ * ``config.measures`` as a length-1 array (the backend model requires it),
+ * so it stays inside ``isMultiSeries`` — flipping that guard would route its
+ * writes through ``setSingleMeasure`` and ``config.measure``, which 422s on
+ * the next save.
+ *
+ * TBD-382 R7 — "+ Add series" seeds the next unused catalog (agg, field)
+ * PAIR, and DISABLES itself when the catalog's pairs are exhausted. The
+ * shipped bug seeded ``{agg:"sum", field: fields[0]}``: series 1 usually
+ * already was that pair, so the new series drew pixel-identical on top of
+ * the old one.
+ *
+ * ⚠ There is deliberately NO agg-rotation fallback when the pairs run out.
+ * `validate_against_catalog` is not the only backend validator
+ * (`CreditUtilizationSource` enforces the PAIR against an exhaustive
+ * `_DECLARED_AGG` map, so a rotated pair 422s the whole widget); rotation
+ * mints meaningless measures like ``COALESCE(SUM(transactions.id), 0)``,
+ * formatted as a plain number by the field-only backstop — a new
+ * silent-wrong-number vector introduced by the fix; and on ``networth``,
+ * whose ``build_rows`` ignores ``measure.agg``/``measure.field`` entirely,
+ * it reproduces Defect B verbatim. A control that refuses is honest.
  */
 import HelpTooltip from "@/components/help/HelpTooltip";
 import {
@@ -12,11 +34,13 @@ import {
   FIELD_OPTIONS,
   MAX_SERIES,
   MAX_TABLE_COLUMNS,
+  nextUnusedMeasurePair,
 } from "@/components/reports/config/controlConstants";
 import type {
   Aggregation,
   AreaConfig,
   LineConfig,
+  Measure,
   MeasureField,
   SeriesConfig,
   StackedBarConfig,
@@ -28,6 +52,7 @@ export default function MeasuresEditor({
   widget,
   onChange,
   fieldOptions,
+  measurePairs,
 }: {
   widget: Widget & { config: LineConfig | AreaConfig | StackedBarConfig | TableConfig };
   onChange: (m: SeriesConfig[]) => void;
@@ -35,15 +60,27 @@ export default function MeasuresEditor({
    * Field options narrowed to the selected data source's published
    * measures. When omitted (catalog not yet loaded), falls back to the
    * static ``FIELD_OPTIONS`` so the transactions path and existing tests
-   * are unchanged. Also seeds the field of a newly-added series so an
-   * accounts widget never adds a transactions-only ``amount`` row.
+   * are unchanged.
    */
   fieldOptions?: Array<{ value: string; label: string }>;
+  /**
+   * The selected source's published measures as (agg, field) PAIRS, in
+   * catalog order. ``undefined`` while ``/sources`` is still loading — R7
+   * is defined in terms of catalog pairs and has no meaning before they
+   * exist, so the add button stays disabled over that window.
+   */
+  measurePairs?: Measure[];
 }) {
   const measures = widget.config.measures;
   const cap = widget.type === "table" ? MAX_TABLE_COLUMNS : MAX_SERIES;
   const fields = fieldOptions ?? FIELD_OPTIONS;
-  const defaultField = (fields[0]?.value ?? "amount") as MeasureField;
+  const nextPair = nextUnusedMeasurePair(measurePairs, measures);
+  // "Unknown" and "exhausted" are different states and only one of them
+  // earns an explanation: before the catalog resolves there is nothing to
+  // say, so the button is merely inert.
+  const catalogResolved = measurePairs !== undefined;
+  const exhausted = catalogResolved && nextPair === undefined;
+  const addDisabled = !catalogResolved || nextPair === undefined;
 
   function update(idx: number, next: SeriesConfig) {
     const copy = [...measures];
@@ -52,11 +89,8 @@ export default function MeasuresEditor({
   }
 
   function add() {
-    if (measures.length >= cap) return;
-    onChange([
-      ...measures,
-      { measure: { agg: "sum", field: defaultField } },
-    ]);
+    if (measures.length >= cap || !nextPair) return;
+    onChange([...measures, { measure: nextPair }]);
   }
 
   function remove(idx: number) {
@@ -146,14 +180,29 @@ export default function MeasuresEditor({
         </div>
       ))}
       {measures.length < cap && (
-        <button
-          type="button"
-          data-testid="measure-add"
-          onClick={add}
-          className="rounded-md border border-dashed border-border px-2 py-1 text-xs text-text-secondary transition hover:border-accent hover:text-accent"
-        >
-          + Add {widget.type === "table" ? "column" : "series"}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            data-testid="measure-add"
+            onClick={add}
+            disabled={addDisabled}
+            // DESIGN.md's Pressable-Surfaces Rule requires a visible Brass
+            // Tally focus state on anything pressable; this button shipped
+            // with `hover:` only. Disabled treatment reuses the shipped
+            // primitive from lib/styles.ts.
+            className="rounded-md border border-dashed border-border px-2 py-1 text-xs text-text-secondary transition hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            + Add {widget.type === "table" ? "column" : "series"}
+          </button>
+          {exhausted && (
+            // The reason renders at normal contrast OUTSIDE the dimmed
+            // control, through HelpTooltip — not as a `title` attribute
+            // (not keyboard-reachable, not reliably announced).
+            <span data-testid="measure-add-exhausted-help">
+              <HelpTooltip k="reports.series.exhausted" />
+            </span>
+          )}
+        </div>
       )}
     </div>
   );
