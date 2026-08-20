@@ -464,7 +464,9 @@ if [[ "$TARGET" == local ]]; then
   echo "      against a snapshot of production to size the window."
 else
   echo "    ^ THIS is the number infra/MYSQL-84-CUTOVER.md sizes the window from."
-  echo "      Add the App Platform scale-down/up and the cold snapshot on top."
+  echo "      Add the cold snapshot on top. (An App Platform scale-down/up was"
+  echo "      also assumed here, but it is NOT available on this plan - TBD-416."
+  echo "      The executed 2026-08-19 window ran ~24 min, ~8 min DB-down.)"
 fi
 echo
 if [[ $FAILS -eq 0 ]]; then

@@ -72,7 +72,7 @@ def test_matrix_has_no_axis_other_than_group():
     `len(matrix.group)`.
 
     Adding a second axis is a normal, likely edit -- `Migration Checks` in this
-    same workflow already matrixes over MySQL 8.0/8.4. Do it here:
+    same workflow carries a `mysql` matrix of its own. Do it here:
 
         matrix:
           group: [1, 2, 3, 4, 5, 6]

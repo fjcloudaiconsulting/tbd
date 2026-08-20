@@ -13,9 +13,15 @@ the new `<data-droplet>` droplet provisioned by `infra/terraform`.
 Plan window: pick a quiet hour. Total downtime: ~10–20 min for the size of the
 PFV dataset today. Mostly waiting on dump + import.
 
-> **MySQL 8.0 -> 8.4 upgrade (TBD-360):** the ordered cutover checklist lives in
-> [`MYSQL-84-CUTOVER.md`](MYSQL-84-CUTOVER.md); the full analysis is in
-> `specs/2026-08-09-mysql-84-lts-upgrade.md`.
+> **MySQL 8.0 -> 8.4 upgrade (TBD-360) — DONE 2026-08-19. Production runs
+> 8.4.11.** The ordered checklist is in
+> [`MYSQL-84-CUTOVER.md`](MYSQL-84-CUTOVER.md) and the executed record, with the
+> deviations, is in `specs/2026-08-18-mysql-84-cutover-record.md`; the full
+> analysis is in `specs/2026-08-09-mysql-84-lts-upgrade.md`.
+>
+> ⚠ **The scale-to-0 procedure described further down this file was NOT usable**
+> — the `backend` component's plan pins it to one container. It was attempted
+> during the window and refused. TBD-416 owns choosing a real quiesce mechanism.
 
 ## Pre-flight checklist
 
@@ -102,7 +108,15 @@ zero-instance spec file:
 > Resize -> set instance count to `0` -> Save. App Platform redeploys
 > with no backend replica.
 
-CLI alternative (if you prefer to script it):
+⚠⚠ **THIS NO LONGER WORKS AND WAS NOT RE-TESTED AFTER THE 2026-05 MIGRATION.**
+Attempted on 2026-08-19 during the TBD-360 window and refused: the `backend`
+component is on the legacy `basic-xxs` plan, which the DO console pins to
+exactly one container ("This plan is limited to 1 container"), and the CLI form
+below is rejected too. Both the console and CLI steps here are retained as a
+record of the 2026-05 procedure, **not** as instructions you can follow today.
+TBD-416 owns choosing a quiesce mechanism that actually exists.
+
+CLI alternative (2026-05 procedure; see the warning above before using it):
 
 ```bash
 # Edit a copy of .do/app.yaml, set services.backend.instance_count: 0,
