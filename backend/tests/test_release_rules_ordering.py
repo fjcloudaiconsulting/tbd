@@ -139,11 +139,41 @@ def test_a_breaking_change_is_never_suppressed():
     )
 
 
-@pytest.mark.parametrize("scope", ["infra", "ci", "deps", "deps-dev", "test", "tests", "dev"])
+@pytest.mark.parametrize("scope", ["infra", "ci", "deps-dev", "test", "tests", "dev"])
 def test_every_intended_scope_suppression_is_still_present(scope):
     """Pins the suppressed set. Reordering must not silently drop one, and a
     future edit that removes a scope should be a deliberate two-place change."""
     rules = _release_rules()
     assert any(r.get("scope") == scope and not r.get("release") for r in rules), (
         f"scope {scope!r} is no longer suppressed"
+    )
+
+
+def test_deps_is_deliberately_NOT_suppressed():
+    """A production dependency bump MUST cut a release, because deploy is gated
+    on one.
+
+    `release.yml` runs its deploy job under
+    `if: needs.release.outputs.new_release_published == 'true'`. So a commit
+    that cuts no release also **never deploys**. `deps` bumps change the
+    shipped image, so suppressing them would leave a dependency fix -- a
+    security patch, typically -- tested and merged but sitting on `main`
+    undeployed until some unrelated commit happened to cut a release and drag
+    it out. Silent, and unbounded in duration.
+
+    `deps-dev` stays suppressed: dev/build tooling is not in the runtime
+    artifact, and if it changes emitted output the next real release carries
+    it. `infra` stays suppressed because Terraform/Ansible are applied outside
+    App Platform entirely.
+
+    This is a NEGATIVE fence on purpose. Re-adding `{"scope": "deps"}` is a
+    one-line edit that looks like tidying up an inconsistency, and it would
+    silently reopen the hole.
+    """
+    rules = _release_rules()
+    offenders = [r for r in rules if r.get("scope") == "deps" and not r.get("release")]
+    assert not offenders, (
+        "`deps` must NOT be release-suppressed: deploy is gated on "
+        "`new_release_published`, so suppressing it means production never "
+        "receives the dependency bump. See this test's docstring."
     )
