@@ -260,7 +260,21 @@ def get_report_templates() -> list[dict]:
                         "dimensions": ["month", "category"],
                         "sort": {"by": "dimension", "dir": "asc"},
                         "limit": 12,
-                        "filters": {"txn_type": "expense"},
+                        # TBD-382. This panel is the canvas's only TIME-SERIES view, so it carries
+                        # its OWN trailing-12-month window instead of inheriting the canvas's
+                        # `this_month`. Grouping by month over a one-month window is structurally a
+                        # ONE-BAR chart: it renders as a ~60px progress bar, not a chart, and cannot
+                        # show the stacking this panel exists to demonstrate. Widening the CANVAS was
+                        # rejected -- it silently redefines "Category share" and "Top categories" as
+                        # twelve-month questions, and puts an INCOME row at the top of a spend canvas.
+                        # The override is DECLARED, never silent: WidgetShell's filter-chip header
+                        # renders the effective window and marks it "overrides canvas" in the accent
+                        # register (isFieldOverridden). Do NOT also state the window in the title --
+                        # a frozen string asserting a live filter value is this ticket's own defect.
+                        "filters": {
+                            "txn_type": "expense",
+                            "date_range": last_12_months,
+                        },
                     },
                 },
             ],

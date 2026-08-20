@@ -22,9 +22,11 @@ every published measure pair on every source (R1).
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
-from app.reports.templates import get_report_templates
+from app.reports.templates import _this_month_range, get_report_templates
 from app.schemas.report_layout import validate_layout_json
 
 TEMPLATE_KEY = "category_deep_dive"
@@ -79,3 +81,39 @@ def test_no_starter_stacked_bar_carries_more_than_one_measure(tpl: dict) -> None
     for widget in tpl["layout_json"]["widgets"]:
         if widget["type"] == "stacked_bar":
             assert len(widget["config"]["measures"]) == 1
+
+
+def test_stacked_by_month_carries_its_own_multi_month_window() -> None:
+    """The panel declares its OWN window instead of inheriting the canvas.
+
+    Grouping by month over the canvas's one-month window is structurally a
+    ONE-BAR chart, so this panel -- the canvas's only time-series view --
+    carries a trailing-12-month ``date_range`` of its own.
+    """
+    config = _widget(TEMPLATE_KEY, WIDGET_ID)["config"]
+    date_range = config.get("filters", {}).get("date_range")
+    assert date_range is not None, (
+        "grouping by month over the canvas's one-month window renders a "
+        "single bar; the panel must declare its own window"
+    )
+    start = date.fromisoformat(date_range["start"])
+    end = date.fromisoformat(date_range["end"])
+    span_months = (end.year - start.year) * 12 + (end.month - start.month)
+    assert span_months > 1, (
+        f"window {date_range} spans {span_months} month(s); a month-grouped "
+        "chart needs more than one bucket to stack anything"
+    )
+
+
+def test_category_deep_dive_canvas_window_is_untouched() -> None:
+    """⚠ Kills the "just widen the canvas" implementation.
+
+    Widening ``canvas_filters_json`` silently redefines "Category share" and
+    "Top categories" as twelve-month questions and puts an INCOME row at the
+    top of a spend canvas. The override is per-widget, and the canvas stays
+    on the current month.
+    """
+    today = date.today()
+    assert _template(TEMPLATE_KEY)["canvas_filters_json"] == {
+        "date_range": _this_month_range(today)
+    }
