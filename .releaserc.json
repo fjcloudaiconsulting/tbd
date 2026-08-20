@@ -7,16 +7,11 @@
         "preset": "conventionalcommits",
         "releaseRules": [
           { "breaking": true, "release": "major" },
-          { "scope": "ci", "release": false },
-          { "scope": "deps", "release": false },
-          { "scope": "deps-dev", "release": false },
-          { "scope": "test", "release": false },
-          { "scope": "tests", "release": false },
-          { "scope": "dev", "release": false },
-          { "scope": "infra", "release": false },
+
           { "type": "feat", "release": "minor" },
           { "type": "fix", "release": "patch" },
           { "type": "revert", "release": "patch" },
+
           { "type": "chore", "release": false },
           { "type": "docs", "release": false },
           { "type": "style", "release": false },
@@ -24,7 +19,14 @@
           { "type": "test", "release": false },
           { "type": "build", "release": false },
           { "type": "ci", "release": false },
-          { "type": "perf", "release": false }
+          { "type": "perf", "release": false },
+
+          { "scope": "ci", "release": false },
+          { "scope": "deps-dev", "release": false },
+          { "scope": "test", "release": false },
+          { "scope": "tests", "release": false },
+          { "scope": "dev", "release": false },
+          { "scope": "infra", "release": false }
         ]
       }
     ],
