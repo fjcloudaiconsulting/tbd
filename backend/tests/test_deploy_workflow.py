@@ -202,3 +202,101 @@ def test_manual_deploy_workflow_is_deliberately_ungated():
         "deploy.yml must stay ungated — it is the recovery path for a broken "
         "gate. See scripts/ci/await-test-run.sh."
     )
+
+
+# ---------------------------------------------------------------------------
+# TBD-425 -- the app-spec secret drift guard must be wired, and wired BEFORE
+# the deploy. The script being correct is worth nothing if it runs after the
+# spec has already been pushed.
+# ---------------------------------------------------------------------------
+
+GUARD_SCRIPT = "assert-app-spec-secrets-synced.sh"
+DEPLOY_ACTION = "digitalocean/app_action/deploy"
+
+
+def _deploy_steps(workflow_path):
+    import yaml
+
+    doc = yaml.safe_load(workflow_path.read_text())
+    return doc["jobs"]["deploy"]["steps"]
+
+
+def _index_of(steps, predicate, label):
+    for i, step in enumerate(steps):
+        if predicate(step):
+            return i
+    raise AssertionError(f"no step matching {label} in the deploy job")
+
+
+import pytest
+
+
+@pytest.mark.parametrize("workflow", ["release.yml", "deploy.yml"])
+def test_secret_drift_guard_runs_before_the_spec_is_pushed(workflow):
+    """⚠ ORDER IS THE WHOLE POINT. `app_action/deploy@v2` pushes the committed
+    `.do/app.yaml` as the authoritative spec, so a guard that runs afterwards
+    reports on damage already done. On 2026-08-20 that push replaced
+    production's database and redis credentials with stale committed blobs.
+    """
+    steps = _deploy_steps(REPO_ROOT / ".github" / "workflows" / workflow)
+
+    guard = _index_of(
+        steps, lambda s: GUARD_SCRIPT in str(s.get("run", "")), GUARD_SCRIPT
+    )
+    deploy = _index_of(
+        steps, lambda s: DEPLOY_ACTION in str(s.get("uses", "")), DEPLOY_ACTION
+    )
+
+    assert guard < deploy, (
+        f"{workflow}: the secret-drift guard is at step {guard} but the deploy "
+        f"is at {deploy}. The guard must run BEFORE the spec is pushed, or it "
+        "only ever reports damage that has already happened."
+    )
+
+
+@pytest.mark.parametrize("workflow", ["release.yml", "deploy.yml"])
+def test_secret_drift_guard_has_doctl_available(workflow):
+    """The guard reads the live spec. Without doctl it exits 2 and the deploy
+    fails for a confusing reason instead of a clear one."""
+    steps = _deploy_steps(REPO_ROOT / ".github" / "workflows" / workflow)
+    setup = _index_of(
+        steps, lambda s: "action-doctl" in str(s.get("uses", "")), "action-doctl"
+    )
+    guard = _index_of(
+        steps, lambda s: GUARD_SCRIPT in str(s.get("run", "")), GUARD_SCRIPT
+    )
+    assert setup < guard, f"{workflow}: doctl is installed after the guard runs"
+
+
+def test_the_automatic_deploy_path_cannot_bypass_the_guard():
+    """⚠ `deploy.yml` is the documented break-glass and MAY override the guard.
+    `release.yml` is the automatic path and MUST NOT -- an override there would
+    make every merge able to overwrite production's secrets silently, which is
+    the failure this guard exists to stop.
+    """
+    steps = _deploy_steps(REPO_ROOT / ".github" / "workflows" / "release.yml")
+    guard = steps[
+        _index_of(steps, lambda s: GUARD_SCRIPT in str(s.get("run", "")), GUARD_SCRIPT)
+    ]
+    env = guard.get("env") or {}
+    assert "ALLOW_SECRET_DRIFT" not in env, (
+        "release.yml's drift guard accepts ALLOW_SECRET_DRIFT. The automatic "
+        "deploy path must never be able to skip it; only the manual "
+        "break-glass (deploy.yml) may."
+    )
+
+
+def test_the_break_glass_override_is_opt_in_and_defaults_to_false():
+    import yaml
+
+    doc = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text())
+    triggers = doc.get(True, doc.get("on"))
+    inputs = (triggers or {}).get("workflow_dispatch", {}).get("inputs", {})
+    assert "allow_secret_drift" in inputs, (
+        "deploy.yml is the break-glass path and must expose a deliberate "
+        "override, or a genuine emergency is blocked by this guard."
+    )
+    assert inputs["allow_secret_drift"].get("default") is False, (
+        "the override must DEFAULT to false; an emergency path that skips the "
+        "guard by default is not a guard."
+    )

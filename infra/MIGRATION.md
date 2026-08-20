@@ -305,6 +305,22 @@ Wait for `/api/v1/health` and `/api/v1/ready` to go green.
 
 ### 9. Persist the live spec to `.do/app.yaml` (REQUIRED before next deploy)
 
+> ✅ **This step is now ENFORCED, not merely documented (TBD-425).**
+> `scripts/ci/assert-app-spec-secrets-synced.sh` runs in both deploy paths
+> before the spec is pushed, and REFUSES the deploy when a committed secret
+> differs from the live app, naming every one that would be overwritten.
+>
+> ⚠ It exists because this step was skipped and the warning below was not
+> enough. On 2026-08-20 a deploy pushed stale `DATABASE_URL` and `REDIS_URL`
+> blobs over the working ones and took production's database and redis
+> credentials down:
+> `(1045, "Access denied for user 'pfv_app'@'10.42.0.3'")`. The app auto-rolled
+> back, but `main` was undeployable until the values were corrected by hand.
+>
+> The break-glass path (`deploy.yml`) can still override, deliberately, via its
+> `allow_secret_drift` input. `release.yml` cannot — the automatic path must
+> never be able to overwrite production's secrets silently.
+
 > **Why this step exists.** The GitHub Actions deploy workflow at
 > `.github/workflows/deploy.yml` pushes the committed `.do/app.yaml` as
 > the authoritative spec on every merge to `main`. After the cutover
