@@ -23,36 +23,43 @@ name: Release
 on:
   push:
     branches: [main]
-    # Coarse "is this a code or config change" filter. Skips runs for
-    # merges that only touch paths outside the allowlist (root-level docs,
-    # .github scaffolding, infra/terraform, memory snapshots, etc.) so we
-    # don't pay CI minutes to analyze a release that semantic-release
-    # would no-op anyway. This filter is NOT the deploy gate: chore/docs/
-    # refactor commits inside the allowlist still run release.yml, and
-    # the gated `deploy` job below decides whether to ship based on
-    # semantic-release's `new_release_published` output.
+    # ⚠ NO `paths:` FILTER, DELIBERATELY (TBD-424 defect 2). Do not
+    # reintroduce one -- not as `paths:`, and not as `paths-ignore:` either.
     #
-    # Landing-only paths are negated below. Those are owned by the apex
-    # S3 + CloudFront pipeline (.github/workflows/apex-deploy.yml) and a
-    # landing-only commit must not trigger a DO redeploy. Shared paths
-    # (frontend/lib/brand.ts, frontend/app/globals.css, frontend/public/**)
-    # are intentionally NOT negated so a brand / token / font change still
-    # rebuilds both surfaces.
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - "!frontend/app/page.tsx"
-      - "!frontend/app/privacy/**"
-      - "!frontend/app/terms/**"
-      - "!frontend/app/docs/**"
-      - "!frontend/components/landing/**"
-      - "!frontend/components/auth/AuthProviderApex.tsx"
-      - "!frontend/scripts/build-apex.sh"
-      - "!frontend/next.config.apex.ts"
-      - "!frontend/lib/links.ts"
-      - "nginx/**"
-      - ".do/**"
-      - "Dockerfile*"
+    # Shippability is decided in ONE place. `.releaserc.json` decides whether
+    # a version is cut, by commit type and scope; the `new_release_published`
+    # condition on the `deploy` job below decides whether that cut version is
+    # pushed to DO. One gate, one fence
+    # (backend/tests/test_release_rules_ordering.py). The path filter that
+    # used to live here was a SECOND, unfenced gate answering the same
+    # question by a wrong proxy -- file paths instead of commit intent -- and
+    # it was only load-bearing until 1f246cbe, which made the `scope:`
+    # suppressions in `.releaserc.json` actually suppress. Measured across the
+    # last ~100 merges, every merge the filter blocked would also have been
+    # suppressed by `.releaserc.json`, so removing it changes ZERO release
+    # outcomes: ~29 more Release runs, 0 more releases, 0 more deploys.
+    #
+    # ⚠ This is NOT the same reasoning as test.yml's ban on `paths:`. There, a
+    # filter is forbidden because a required status context that never reports
+    # blocks its PR forever, and because the deploy interlock waits for a
+    # `Test` run that must therefore always exist. Nothing here hangs: this
+    # filter was merely redundant where it was right, and wrong where it was
+    # not -- a suppressed merge's commits are silently folded into whatever
+    # merge next touches an allowlisted path, misattributing the release.
+    #
+    # ⚠ Do NOT replace it with in-workflow change detection either. test.yml's
+    # `changes` job (scripts/ci/detect-changed-areas.sh) is VERDICT-NEUTRAL:
+    # it fails TRUE on any uncertainty and can only ever add work, never turn
+    # a red suite green. The same detector here would be VERDICT-CHANGING --
+    # it could veto a release semantic-release decided to cut, i.e. a silent
+    # UNDER-release, a failure mode this pipeline has never had.
+    # semantic-release's own commit analysis IS the change detection.
+    #
+    # Cost, for the record: the `release-deploy` concurrency group below gains
+    # roughly 36% more entrants, so a merge that DOES release can now queue
+    # behind a no-op run. That is bounded to about one extra run of latency,
+    # because GitHub keeps at most one PENDING run per concurrency group and
+    # drops the rest.
 
 permissions:
   contents: write
@@ -215,3 +222,93 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           ACTOR: ${{ github.actor }}
         run: ./scripts/notify-smoke-failure.sh
+
+  # TBD-424 defect 4 -- the "published but never DEPLOYED" alarm.
+  #
+  # `smoke-tests` above carries `needs: deploy`, so when `deploy` FAILS that
+  # job is SKIPPED and notify-smoke-failure.sh never runs. The repo therefore
+  # had a notifier for "deployed but not serving" and NONE AT ALL for "did not
+  # deploy at all" -- the louder of the two, because it leaves a three-way
+  # divergence: an immutable tag and GitHub Release published, a production
+  # app still running PRE-tag code, and a `main` that matches neither. That
+  # divergence is the signal. "The deploy failed" on its own is not: a failed
+  # deploy that cut no tag leaves nothing inconsistent behind.
+  #
+  # ⚠ `always()` is required, or this job is skipped alongside its failed
+  # upstream. `if: failure()` alone is NOT enough either: `deploy` can end
+  # CANCELLED, which is not a failure. Cancelled stays deliberately IN scope
+  # (there is no `!cancelled()` here) -- a deploy cancelled mid-push can leave
+  # DO half-rolled with the tag already published, which is the loudest case.
+  #
+  # ⚠ It hangs off `release` + `deploy`, NEVER off `smoke-tests`. Depending on
+  # the job that is skipped by the very condition being detected is precisely
+  # the hole this closes.
+  notify-undeployed-release:
+    runs-on: ubuntu-latest
+    needs: [release, deploy]
+    if: >-
+      ${{ always()
+          && needs.release.outputs.new_release_published == 'true'
+          && needs.deploy.result != 'success' }}
+    permissions:
+      # ⚠ Job-level permissions REPLACE the workflow-level block (which grants
+      # only `issues: read`), so `issues: write` must be spelled out here or
+      # the notifier 403s at exactly the moment it is needed.
+      #
+      # `contents: write` is for the release annotation step below --
+      # `gh release edit` writes a release, which lives under the `contents`
+      # scope. With `contents: read` that step would 403 on every single run
+      # and, being `continue-on-error`, would do so silently: a dead step that
+      # looks alive. The issue step does not depend on it.
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # ⚠⚠ STEP ORDER IS LOAD-BEARING. The issue is opened FIRST so that a
+      # failure to annotate the GitHub Release can never suppress the alert.
+      # The annotation is cosmetic; the issue is the alarm.
+      - name: Open or update the undeployed-release issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          RELEASE_TAG: ${{ needs.release.outputs.new_release_git_tag }}
+        run: ./scripts/notify-undeployed-release.sh
+
+      # Best effort, and second on purpose. Demotes the published release to a
+      # prerelease and banners its body so anyone reading the releases page
+      # sees that this version corresponds to nothing in production.
+      #
+      # ⚠ The git TAG is never deleted. It is immutable by policy and other
+      # things (changelogs, issue references, the next semantic-release run's
+      # baseline) already point at it; deleting it would trade a visible
+      # inconsistency for an invisible one.
+      - name: Flag the published release as NOT DEPLOYED
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.new_release_git_tag }}
+          RUN_ID: ${{ github.run_id }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+        run: |
+          set -uo pipefail
+          if [[ -z "${TAG:-}" ]]; then
+            echo "No release tag on this run; nothing to annotate."
+            exit 0
+          fi
+          RUN_URL="https://github.com/${GH_REPO}/actions/runs/${RUN_ID}"
+          BANNER="> ⚠ **NOT DEPLOYED.** The \`deploy\` job for this release ended \`${DEPLOY_RESULT}\`, so production is still running PRE-\`${TAG}\` code and this tag corresponds to nothing deployed. See ${RUN_URL}."
+          CURRENT="$(gh release view "$TAG" --repo "$GH_REPO" --json body --jq .body || true)"
+          case "$CURRENT" in
+            *"NOT DEPLOYED"*) echo "Release ${TAG} is already bannered."; exit 0 ;;
+          esac
+          printf '%s\n\n%s\n' "$BANNER" "$CURRENT" > /tmp/release-body.md
+          gh release edit "$TAG" --repo "$GH_REPO" \
+            --prerelease --notes-file /tmp/release-body.md

@@ -546,32 +546,42 @@ For env var detail (`DATABASE_URL`, `APP_ENV`, etc.) on the migrate job, see [`E
 
 ## 9. What triggers what (decision tree)
 
+⚠ **`release.yml` has NO `paths:` filter (TBD-424, 2026-08-20).** Every push to
+`main` starts a Release run, whatever it touched — a README-only merge included.
+What a run then *does* is decided further down the pipe, in two steps:
+
+1. **`.releaserc.json` decides whether a version is cut**, from the merged
+   commit's conventional-commit type and scope. `feat` / `fix` / `revert` and
+   anything breaking cut one; `chore`, `docs`, `style`, `refactor`, `test`,
+   `build`, `ci`, `perf` and the suppressed scopes (`ci`, `deps-dev`, `test`,
+   `tests`, `dev`, `infra`) do not. ⚠ Those rules are ORDER-DEPENDENT — see
+   `backend/tests/test_release_rules_ordering.py`.
+2. **`new_release_published` decides whether it deploys.** No version cut means
+   the `deploy` job is skipped and `.do/app.yaml` is never pushed.
+
+So the common outcome for a non-shipping merge is now a Release run that
+concludes in about a minute having done nothing, rather than no run at all.
+That is deliberate: the previous path filter answered "should we ship?" from
+file paths, which cannot distinguish `chore(frontend):` from `feat(frontend):`,
+and silently folded a filtered-out merge's commits into whatever merge next
+touched an allowlisted path.
+
 ```mermaid
 flowchart TD
   start[Commit lands on main with type <type> touching path P]
-  start --> back{P in backend/**?}
-  back -- yes --> rel[release.yml fires]
-  back -- no --> front{P in frontend/**?}
+  start --> rel[release.yml ALWAYS fires: no paths filter]
+  rel --> semrel{Does .releaserc.json cut a version?}
+  semrel -- "feat / fix / revert / breaking" --> deploy[deploy job pushes .do/app.yaml, then smoke tests]
+  semrel -- "chore / docs / ci / perf / suppressed scope" --> noship[Release run completes. No tag, no deploy.]
 
-  front -- yes --> frontkind{Path matches apex-only?<br/>app/page.tsx, app/privacy/**,<br/>app/terms/**, app/docs/**,<br/>components/landing/**,<br/>scripts/build-apex.sh,<br/>next.config.apex.ts}
-  frontkind -- yes --> apex[apex-deploy.yml fires]
-  frontkind -- no --> frontshared{Path is shared?<br/>lib/brand.ts, lib/styles.ts,<br/>ThemeProvider, public/**,<br/>package.json}
-  frontshared -- yes --> both[release.yml AND apex-deploy.yml fire]
-  frontshared -- no --> rel
+  start --> apexq{P in the apex allowlist?<br/>app/page.tsx, app/privacy/**,<br/>app/terms/**, app/docs/**,<br/>components/landing/**, lib/brand.ts,<br/>globals.css, build-apex.sh, ...}
+  apexq -- yes --> apex[apex-deploy.yml also fires: S3 sync + CloudFront invalidation]
+  apexq -- no --> apexno[apex-deploy.yml does not fire]
 
-  front -- no --> infra{P in .do/** or nginx/** or Dockerfile*?}
-  infra -- yes --> rel
-  infra -- no --> tf1{P in infra/terraform/apex/**?}
+  start --> tf1{P in infra/terraform/apex/**?}
   tf1 -- yes --> tfapex[TFC apex workspace apply waits on Confirm and Apply]
   tf1 -- no --> tf2{P in infra/terraform/**?}
   tf2 -- yes --> tfpfv[TFC data workspace apply waits on Confirm and Apply]
-  tf2 -- no --> wf{P in .github/workflows/**?}
-  wf -- yes --> nothing[Workflow file updated.<br/>Next matching trigger uses the new file.]
-  wf -- no --> docs[Docs / memory / root-level only.<br/>Nothing fires.]
-
-  rel --> semrel{Conventional commit type bumps?}
-  semrel -- feat/fix/etc --> deploy[deploy job ships .do/app.yaml]
-  semrel -- chore/docs/perf --> noship[release.yml runs but does not deploy]
 ```
 
 Concrete cases:
@@ -580,16 +590,26 @@ Concrete cases:
 |---|---|
 | `backend/app/routers/transactions.py` (feat) | `release.yml` -> semantic-release publishes -> deploy -> migrate (no-op if no new revs) -> roll backend |
 | `frontend/components/dashboard/Foo.tsx` (feat) | `release.yml` -> publishes -> deploy -> roll frontend |
-| `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` (post-#267). `release.yml` does NOT fire (no path match). |
+| `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. `release.yml` **also runs now** and publishes a version, which redeploys DO. |
 | `frontend/lib/brand.ts` (feat) | Both `release.yml` AND `apex-deploy.yml`. |
 | `backend/alembic/versions/abc_new_migration.py` | `release.yml` -> deploy -> PRE_DEPLOY migrate applies it -> roll backend |
-| `infra/terraform/main.tf` | TFC `<data-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge |
-| `infra/terraform/apex/main.tf` | TFC `<apex-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge |
+| `infra/terraform/main.tf` | TFC `<data-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge. `release.yml` runs and no-ops (`chore`/`ci` type, or `infra` scope). |
+| `infra/terraform/apex/main.tf` | TFC `<apex-workspace>`; same `release.yml` no-op. |
 | `.do/app.yaml` (chore) | `release.yml` fires but semantic-release does not bump. Operator must run `gh workflow run deploy.yml --ref main`. |
-| `.github/workflows/test.yml` | Triggers itself on PR (path is on its allowlist). On merge, nothing else fires. |
-| `README.md` or `CLAUDE.md` only | Nothing fires. |
+| `.github/workflows/test.yml` | `test.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and no-ops on the `ci` type. |
+| `README.md` or `CLAUDE.md` only | `release.yml` **runs** and no-ops on the `docs` type. Nothing is tagged and nothing deploys. |
 
-The mutually exclusive apex / DO path-filter split is by design. The DO release watches `backend/`, `frontend/`, `nginx/`, `.do/`, and `Dockerfile*`. The apex deploy watches the apex-only frontend slice plus the shared brand/styling files. A landing-only commit must not redeploy the DO app, because the dashboard build is unchanged.
+⚠ The old "mutually exclusive apex / DO path-filter split" is **gone on the DO
+side**. A landing-only commit no longer skips `release.yml`; if its commit type
+warrants a version, it cuts one and redeploys DO. That is the correct
+behaviour — the version line should reflect what shipped, and a landing change
+that is worth a `feat` is worth a version — but it is a behaviour change from
+what this section used to describe. `apex-deploy.yml` keeps its own `paths:`
+filter, for a cost reason and not a correctness one: every apex run does an S3
+sync plus a CloudFront `/*` invalidation, and invalidations past 1,000/month
+are metered. It is now the only hand-maintained path allowlist in the repo, and
+it is known to have drifted (`features/`, `compare/`, `vs/`,
+`lib/dataPolicy.ts`) — tracked as **TBD-433**.
 
 ## 10. Rollback playbook
 

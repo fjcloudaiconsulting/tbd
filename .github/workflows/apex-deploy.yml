@@ -9,11 +9,30 @@
 # That is the load-bearing security boundary; this workflow's
 # `branches: [main]` trigger is belt-and-suspenders.
 #
-# The path filter mirrors the negation list in release.yml so that
-# landing-only commits deploy to AWS only and do NOT trigger the DO
-# release workflow. Shared paths (globals.css, lib/brand.ts,
-# public/fonts/**) intentionally trigger both: a brand or token change
-# legitimately affects both surfaces.
+# ⚠ THE PATH FILTER BELOW NO LONGER MIRRORS ANYTHING (TBD-424,
+# 2026-08-20). It used to be the positive half of a two-sided split with a
+# negation list in release.yml; release.yml's `paths:` filter is gone, so
+# this is now the ONLY hand-maintained path allowlist in the repo. Nothing
+# else agrees or disagrees with it, and nothing tests it.
+#
+# ⚠ It is KNOWN DRIFTED. The apex surface has grown paths this list never
+# gained: `frontend/app/features/`, `frontend/app/compare/`,
+# `frontend/app/vs/`, and `frontend/lib/dataPolicy.ts`. A change confined to
+# any of those ships to DO but NOT to the landing site, leaving
+# thebetterdecision.com stale until an unrelated commit happens to touch an
+# allowlisted path — or until an operator runs this workflow by hand
+# (`workflow_dispatch`, above). Reconciling the list is tracked as TBD-433.
+#
+# ⚠ Do NOT "fix" the drift by deleting the filter the way release.yml's was
+# deleted. The two are not analogous. release.yml's filter was redundant with
+# `.releaserc.json`; this one is the only thing bounding COST. Every run here
+# does an S3 sync plus a CloudFront `/*` invalidation, and invalidations past
+# 1,000/month are metered. Removing it buys one invalidation per merge to
+# main, forever.
+#
+# Shared paths (globals.css, lib/brand.ts, public/fonts/**) are listed here
+# AND still rebuild the DO app: a brand or token change legitimately affects
+# both surfaces.
 #
 # Required GitHub repository variables (Settings -> Secrets and variables
 # -> Actions -> Variables tab):
