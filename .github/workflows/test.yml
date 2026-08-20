@@ -21,6 +21,17 @@ name: Test
 # two runs report the same context name, and a real red suite can be
 # overwritten by the stub. That is this repo's half-fix-leaves-a-door pattern
 # with the door installed on purpose.
+#
+# ⚠ IN-WORKFLOW CHANGE DETECTION IS THE SANCTIONED ALTERNATIVE (TBD-404). The
+# `changes` job below diffs the PR against its merge base and every work job is
+# gated on its per-area output, so a docs-only PR skips the six backend shards,
+# `Migration Checks` and the frontend suite. That is NOT the banned filter, and
+# the difference is exactly the property the ban protects: every job still
+# STARTS and then decides to do nothing, so both required contexts always
+# report and the `Test` run always CONCLUDES. That is what keeps a docs-only PR
+# mergeable, and what keeps `scripts/ci/await-test-run.sh` -- and therefore
+# production deploys -- terminating on every push to `main`. A trigger-level
+# `paths:` filter would stop the jobs existing at all, which breaks both.
 on:
   pull_request:
   # Post-merge run on `main`. This is the deliberate substitute for branch
@@ -48,6 +59,45 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # ── Change detection (TBD-404) ───────────────────────────────────────────
+  # Emits the per-area booleans that gate every work job below. Read the
+  # header of this file first: this is the sanctioned alternative to the
+  # permanently banned trigger-level `paths:` filter, and the reason it is
+  # allowed is that the jobs still start.
+  #
+  # No third-party action, deliberately. These outputs gate two REQUIRED
+  # status checks, so a marketplace action here would put an unpinned
+  # third-party supply chain on the repo's merge gate. `git diff` is enough.
+  #
+  # The classification rules and every fail-safe branch live in
+  # scripts/ci/detect-changed-areas.sh and are fenced by
+  # backend/tests/test_ci_change_detection.py.
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.detect.outputs.backend }}
+      frontend: ${{ steps.detect.outputs.frontend }}
+      migrations: ${{ steps.detect.outputs.migrations }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          # ⚠ Load-bearing. The default depth-1 clone does not contain the PR's
+          # base commit, so the diff would fail — and the detector fails SAFE
+          # (every area true), so the symptom would not be a red build but a
+          # silent "scoping never does anything".
+          fetch-depth: 0
+
+      - name: Detect changed areas
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          # Empty on `push` and `workflow_dispatch`. The detector reports
+          # everything as changed for those events before it ever reads this.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/ci/detect-changed-areas.sh
+
   # Backend pytest is sharded across N parallel groups via pytest-split.
   # Each shard runs a deterministic, duration-balanced slice of the suite
   # using the recorded backend/.test_durations file.
@@ -93,6 +143,11 @@ jobs:
   backend-shard:
     name: Backend Shard ${{ matrix.group }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
+    needs: changes
+    # TBD-404: skipped entirely when no backend-relevant file changed. The
+    # `Backend Checks` aggregate accepts that skip ONLY because
+    # `needs.changes.outputs.backend` says `false` — see scripts/ci/assert-gate.sh.
+    if: ${{ needs.changes.outputs.backend == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -144,7 +199,7 @@ jobs:
   backend:
     name: Backend Checks
     runs-on: ubuntu-latest
-    needs: [backend-shard, migrations]
+    needs: [changes, backend-shard, migrations]
     if: ${{ always() }}
     steps:
       # ⚠ THE WIRING GUARD MUST STAY THE FIRST STEP IN THIS JOB.
@@ -179,8 +234,9 @@ jobs:
           # Positive baseline. Without this, a wrong path or a swallowed parse
           # error yields an empty set and "no unwired jobs" passes vacuously —
           # the unreachable-predicate class this repo has shipped before.
-          assert len(jobs) >= 4, f"parsed only {len(jobs)} job(s); expected >= 4"
+          assert len(jobs) >= 6, f"parsed only {len(jobs)} job(s); expected >= 6"
           assert "migrations" in jobs, f"did not find `migrations` in {sorted(jobs)}"
+          assert "changes" in jobs, f"did not find `changes` in {sorted(jobs)}"
 
           # Pin the allowlist itself. Otherwise the trivially-available fix for
           # a red guard is to widen the allowlist, which re-opens the hole
@@ -194,25 +250,55 @@ jobs:
           # Read `needs:` off the parsed YAML, never a hardcoded copy. A copy
           # is a second source of truth that drifts and re-creates the defect
           # inside the fix.
-          needs = set(doc["jobs"]["backend"].get("needs") or [])
+          #
+          # ⚠ TBD-404: this is the UNION of BOTH gates' `needs`, not just
+          # `backend`'s. `Frontend Checks` is now an aggregate too, and its
+          # work job (`frontend-work`) is wired into IT, not into `backend`.
+          # Requiring every job to hang off `backend` would force the frontend
+          # suite to gate the backend context and vice versa.
+          #
+          # This is NOT an allowlist widening and must not be mistaken for one.
+          # The allowlist below still names only the two gate jobs — the jobs
+          # that cannot depend on themselves. The union changes which `needs:`
+          # lists count as "wired", and the invariant is unchanged: every job
+          # in this file must be depended on by a REQUIRED context.
+          needs = set()
+          for gate in sorted(ALLOWLIST):
+              needs |= set(doc["jobs"][gate].get("needs") or [])
           unwired = sorted(jobs - (needs | ALLOWLIST))
 
           if unwired:
-              print(f"Job(s) not wired into the `Backend Checks` gate: {unwired}")
-              print("Add them to `jobs.backend.needs` and assert their result,")
-              print("or they will report an unrequired context and merge red.")
+              print(f"Job(s) not wired into a required gate: {unwired}")
+              print("Add them to `jobs.backend.needs` or `jobs.frontend.needs`")
+              print("and assert their result with scripts/ci/assert-gate.sh, or")
+              print("they will report an unrequired context and merge red.")
               sys.exit(1)
 
           print(f"All {len(jobs)} jobs are wired into a required gate.")
           PY
 
+      # ⚠ THE ACCEPT RULE LIVES IN scripts/ci/assert-gate.sh, NOT HERE.
+      # A `skipped` upstream means EITHER "its `if:` was false, nothing to
+      # test" OR "an upstream job failed", and `needs.<job>.result` cannot tell
+      # them apart. So the accept is conditional on the change-detection output
+      # for that area, and on nothing else. Inlining that comparison here would
+      # give the rule two implementations and one fence.
+      # Fenced by backend/tests/test_ci_gate_accept_rule.py.
+      #
+      # The detector itself has no area of its own, so it is asserted with a
+      # literal `true`, which reduces the rule to "only `success` passes" —
+      # exactly right for a job that must always run. Without this, a failed
+      # `changes` job would leave every output empty, skip every work job, and
+      # the whole suite would ride on the empty-string branch alone.
+      - name: Verify change detection ran
+        run: bash scripts/ci/assert-gate.sh "${{ needs.changes.result }}" "true" "Change detection"
+
       - name: Verify all backend shards passed
-        run: |
-          if [ "${{ needs.backend-shard.result }}" != "success" ]; then
-            echo "One or more backend shards failed: ${{ needs.backend-shard.result }}"
-            exit 1
-          fi
-          echo "All backend shards passed."
+        run: >-
+          bash scripts/ci/assert-gate.sh
+          "${{ needs.backend-shard.result }}"
+          "${{ needs.changes.outputs.backend }}"
+          "Backend shards"
 
       # `Migration Checks` is folded into this aggregate deliberately. It is
       # the one context branch protection is expected to require (TBD-347),
@@ -220,12 +306,11 @@ jobs:
       # second context name would reinstate exactly the hole that job exists
       # to close. Keeping one gate name means TBD-347 needs no new entry.
       - name: Verify migrations passed
-        run: |
-          if [ "${{ needs.migrations.result }}" != "success" ]; then
-            echo "Migration Checks failed: ${{ needs.migrations.result }}"
-            exit 1
-          fi
-          echo "Migration Checks passed."
+        run: >-
+          bash scripts/ci/assert-gate.sh
+          "${{ needs.migrations.result }}"
+          "${{ needs.changes.outputs.migrations }}"
+          "Migration Checks"
 
   # ── Migration Checks (TBD-212) ───────────────────────────────────────────
   # The ONLY place CI executes migrations against MySQL 8.
@@ -251,6 +336,12 @@ jobs:
   migrations:
     name: Migration Checks
     runs-on: ubuntu-latest
+    needs: changes
+    # TBD-404: this job boots the whole app against real MySQL and hits
+    # /ready, so its scope is every backend change, not just backend/alembic/.
+    # `detect-changed-areas.sh` derives `migrations` from `backend` for that
+    # reason; narrow it there, never by hand-wiring a different output here.
+    if: ${{ needs.changes.outputs.migrations == 'true' }}
     # ⚠ Do not delete this job. The block above already explains why it is the
     # only real-MySQL coverage in CI; the live production auth bypass it exists
     # to catch was TBD-322.
@@ -432,9 +523,26 @@ jobs:
           cat /tmp/uvicorn.log
           exit 1
 
-  frontend:
-    name: Frontend Checks
+  # ── Frontend (TBD-404) ───────────────────────────────────────────────────
+  # SPLIT INTO WORK + AGGREGATE, deliberately, even though there is only one
+  # work job.
+  #
+  # `Frontend Checks` is a REQUIRED status check. If the required job were
+  # itself the conditional one, a docs-only PR would skip it — and branch
+  # protection reads a SKIPPED required check as PASSING. That is
+  # indistinguishable from "skipped because an upstream failed", which is the
+  # exact confusion scripts/ci/assert-gate.sh exists to resolve, except that
+  # nothing would even get to run the rule. So the required name stays on an
+  # aggregate that always runs, and the work moves to `frontend-work`.
+  #
+  # `Backend Checks` already had this shape (it aggregates the shards); this
+  # brings the frontend side to the same shape rather than inventing a second
+  # one.
+  frontend-work:
+    name: Frontend Suite
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -479,3 +587,28 @@ jobs:
           # entry points landed before signaling green to the PR.
           test -f out-apex/index.html
           test -f out-apex/_meta.json
+
+  # Stable aggregate gate for the frontend, mirroring `Backend Checks`. This
+  # job — not `frontend-work` — is the required context on `main`, and it runs
+  # unconditionally so the context always reports.
+  frontend:
+    name: Frontend Checks
+    runs-on: ubuntu-latest
+    needs: [changes, frontend-work]
+    if: ${{ always() }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # Same rule, same script, same fence as the backend aggregate. See the
+      # comment block there for why the accept is conditional and why it is
+      # not written inline.
+      - name: Verify change detection ran
+        run: bash scripts/ci/assert-gate.sh "${{ needs.changes.result }}" "true" "Change detection"
+
+      - name: Verify the frontend suite passed
+        run: >-
+          bash scripts/ci/assert-gate.sh
+          "${{ needs.frontend-work.result }}"
+          "${{ needs.changes.outputs.frontend }}"
+          "Frontend suite"
