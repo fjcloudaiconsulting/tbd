@@ -32,8 +32,12 @@ authenticating with the old password until **both** `DATABASE_URL` bindings in
 `.do/app.yaml` (the backend service **and** the migrate PRE_DEPLOY job) are
 re-encrypted and redeployed. Between those two moments the app cannot connect.
 That is a sequenced operation, so it must never be what you get from typing the
-command bare. The TBD-360 window, where the backend is already scaled to 0, is
-its natural home.
+command bare. Pick a quiet hour.
+
+⚠ This used to point at the TBD-360 window, "where the backend is
+already scaled to 0". Both halves were wrong: that window closed on 2026-08-19,
+and scaling the backend to 0 was never possible on this component's plan — it
+was attempted during the window and refused (TBD-416).
 
 ### Why it is a wrapper and not a bare `ansible-playbook`
 

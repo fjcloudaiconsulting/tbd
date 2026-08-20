@@ -1,8 +1,13 @@
 # MySQL 8.0 → 8.4 cutover runbook (TBD-360)
 
-The repo-side pre-flight is done and verified. What remains touches the live
-droplet, and every step below is an **operator** action: the agent loop does not
-write to the production database and does not run the cutover.
+> **Status (2026-08-19). EXECUTED. Production runs MySQL 8.4.11.** This runbook
+> is now a historical record and the "why" companion to
+> `MYSQL-84-EXECUTE.md`. Do not re-run the steps as-is — two of them turned out
+> to be impossible (see the deviations below and in
+> `specs/2026-08-18-mysql-84-cutover-record.md`).
+
+Every step below was an **operator** action: the agent loop does not write to
+the production database and did not run the cutover.
 
 Full detail: `specs/2026-08-09-mysql-84-lts-upgrade.md`. **This file does not
 replace the spec** — it is the ordered checklist, and it names the spec where a
@@ -14,6 +19,7 @@ step has detail worth reading in full before the window.
 
 | Claim | How it was verified |
 |---|---|
+| **Production itself, executed 2026-08-19** | `<data-droplet>` cut over Ubuntu `mysql-server-8.0` 8.0.46 → Oracle `mysql-community-server` **8.4.11** via `mysql-apt-config`. ~24 minutes end to end, ~8 minutes with the database down. All post-checks green. ⚠ Two runbook steps were deviated from: scaling `backend` to 0 **proved impossible** (not available on the `basic-xxs` plan — TBD-416), and the Phase 5 schema rename was **deliberately deferred, never attempted** — the same constraint would have bitten it, and it is trivially reversible, so it is being done as its own operation. Full record: `specs/2026-08-18-mysql-84-cutover-record.md` |
 | 8.4 refuses to start on the current config | `mysqld --validate-config` on real `mysql:8.4`: exit 1, `unknown variable 'default-authentication-plugin=mysql_native_password'` |
 | Removing that line is rollback-safe | Same check on `mysql:8.0` with the fixed config: exit 0. The fix lands on the 8.0 box, which must still start |
 | `mysql_native_password` is unusable on 8.4 | `PLUGIN_STATUS` = `DISABLED`; `CREATE USER ... IDENTIFIED WITH mysql_native_password` → `ERROR 1524 Plugin ... is not loaded` |
@@ -21,9 +27,9 @@ step has detail worth reading in full before the window.
 | Ansible converts an EXISTING user correctly, with `plugin_auth_string` | Real `community.mysql` against real 8.0: `plugin_auth_string` → `hash_len=70`, login OK. `password:` → `hash_len=0`, `ERROR 1045`. See the warning below |
 | Schema applies on 8.4 | Real 8.4.11: all **80** alembic revisions to head, idempotent re-run, `utf8mb4_0900_ai_ci` preserved, `/ready` → 200 `database: connected` |
 | The driver stack works on 8.4 | `cryptography 44.0.3` present **in the image**, `aiomysql 0.2.0`, `PyMySQL 1.1.3`; app authenticates with `caching_sha2_password` |
-| CI executes migrations against 8.4 on a real runner | `Migration Checks` job, now matrixed over 8.0 **and** 8.4 |
+| CI executes migrations against 8.4 on a real runner | `Migration Checks` job. ⚠ Matrixed over 8.0 **and** 8.4 at the time; the 8.0 leg was dropped on 2026-08-20 (TBD-415) once nothing ran 8.0 |
 | The in-place upgrade runs, **on a synthetic schema, via a container-image swap — NOT the Ubuntu→Oracle package swap and NOT a production restore** | `infra/rehearse-84-upgrade.sh` (reproducible). DD `80023 → 80300` and server `80046 → 80411` completed; a STORED generated column keeps `utf8mb4_0900_as_cs` and its expression; a named CHECK and a UNIQUE on the generated column are both still **enforced** (deliberate bad INSERTs rejected); JSON readable. ⚠ Row/sum equality is near-tautological — a DD upgrade does not rewrite tablespaces. ⚠ Superseded for duration: see the scratch-droplet row below, which measured it |
-| **The full cutover, on a REAL droplet, end to end — and the window is MEASURED at 49 seconds** | `infra/rehearse-84-scratch-droplet.sh --target droplet` against a fresh `s-1vcpu-2gb` in ams3, provisioned by the actual playbook (so systemd, AppArmor, the real systemd unit and Ubuntu's own packaging are all exercised — the half no container can reach). Slow shutdown → `mysql-apt-config` swap → Oracle `mysql-community-server` **8.4.11** → first authenticated query: **0m 49s**. All gates green. ⚠ Production's dataset is **6.7 MB across 50 tables**, so the DD upgrade is not the constraint; size the window from the App Platform scale down/up and the cold snapshot of a 25 GB disk, with ~1 minute for MySQL itself |
+| **The full cutover, on a REAL droplet, end to end — and the window is MEASURED at 49 seconds** | `infra/rehearse-84-scratch-droplet.sh --target droplet` against a fresh `s-1vcpu-2gb` in ams3, provisioned by the actual playbook (so systemd, AppArmor, the real systemd unit and Ubuntu's own packaging are all exercised — the half no container can reach). Slow shutdown → `mysql-apt-config` swap → Oracle `mysql-community-server` **8.4.11** → first authenticated query: **0m 49s**. All gates green. ⚠ Production's dataset is **6.7 MB across 50 tables**, so the DD upgrade is not the constraint; size the window from ~~the App Platform scale down/up and~~ the cold snapshot of a 25 GB disk, with ~1 minute for MySQL itself. ⚠ The scale down/up turned out to be unavailable (TBD-416). Measured actual: ~24 minutes end to end, ~8 with the database down |
 | The **Ubuntu → Oracle package swap** completes, and `/etc/mysql/mysql.conf.d` is **still included** by Oracle's packaging | `infra/rehearse-84-scratch-droplet.sh --target local` (reproducible). Real `apt` install of Ubuntu `mysql-server-8.0` **8.0.46** — production's exact version — then the real dpkg transaction to Oracle `mysql-community-server` **8.4.11** on amd64, via the recommended `mysql-apt-config` release package (preseeded through debconf) rather than a hand-written sources list. After the swap all six section-5 variables still hold their configured values (`bind_address 0.0.0.0`, `collation_server utf8mb4_0900_ai_ci`, buffer pool 768M, io_capacity 1000/2000, `innodb_redo_log_capacity 268435456`), the CHECK and the UNIQUE-on-generated-column are still **enforced**, and `debian.cnf` plus the `debian-sys-maint` account both survived. ⚠ A **container**, so systemd and AppArmor are still unrehearsed, and the duration is meaningless (synthetic data). The scratch-droplet run remains the only source of the window size |
 | 8.4's re-defaults are enumerated **for a dev host, not for the droplet** | Same datadir under both, `SHOW GLOBAL VARIABLES` diffed: **26** value changes, **15 variables REMOVED** (including `default_authentication_plugin` — so a value-diff alone would have missed this ticket's own root cause), 7 new. io_capacity pins hold at 1000/2000. ⚠ Several 8.4 defaults are CPU-derived and **could not be measured for 1 vCPU** from this machine; read them on the box |
 
@@ -337,10 +343,18 @@ bash infra/rehearse-84-scratch-droplet.sh \
 the elapsed DD-upgrade time.
 
 **Already measured: 49 seconds** (2026-08-18, real droplet, full package swap).
-Production carries 6.7 MB across 50 tables, so MySQL is not the constraint. The
-window is dominated by the App Platform scale down/up and the cold snapshot of a
-25 GB disk — budget **~15–25 minutes end to end**, of which about one minute is
-the database. Re-run this only if the dataset or the droplet size changes
+Production carries 6.7 MB across 50 tables, so MySQL is not the constraint.
+
+⚠ **The budget this paragraph used to give was wrong, and the actual run proved
+it.** It said the window was "dominated by the App Platform scale down/up",
+budgeted ~15-25 minutes, and put about one minute on the database. The scale
+down/up **never happened** — it is not available on this component's plan
+(TBD-416) — and the executed window on 2026-08-19 was **~24 minutes end to end
+with ~8 minutes database-down**, phase 3 alone taking ~3.5 minutes.
+
+For a future window, budget from the operator's own cadence rather than from
+this rehearsal number: see `specs/2026-08-18-mysql-84-cutover-record.md`.
+Re-run the rehearsal only if the dataset or the droplet size changes
 materially.
 
 **9. Destroy the scratch droplet.** It holds a full copy of production data.
@@ -364,11 +378,21 @@ doctl compute droplet delete tbd360-rehearsal --force
 
 ### 3. Quiesce the app, then snapshot
 
-1. **Scale the App Platform `backend` to 0** (spec step 8; `infra/MIGRATION.md`
+1. ⚠⚠ **NOT POSSIBLE — this step was attempted on 2026-08-19 and failed.**
+   The `backend` component is on the legacy `basic-xxs` plan, which the DO
+   console pins to exactly one container, and `doctl apps update` with
+   `instance_count: 0` is refused. The cutover proceeded **without quiescing**,
+   accepting that writes taken in the window would be lost only on a rollback
+   that did not happen. ⚠ That trade is NOT available for the Phase 5 schema
+   rename, where `RENAME TABLE` takes metadata locks — see TBD-416, which owns
+   the choice of a quiesce mechanism.
+
+   ~~Scale the App Platform `backend` to 0 (spec step 8; `infra/MIGRATION.md`
    has the tested procedure: console → `backend` → Resize → instance count 0).
-   Confirm `/health` is unavailable before proceeding.
-   ⚠ Skipping this means the app serves **writes** through the package swap,
-   and any write taken after the snapshot is **lost** on rollback.
+   Confirm `/health` is unavailable before proceeding.~~
+   ~~⚠ Skipping this means the app serves **writes** through the package swap,
+   and any write taken after the snapshot is **lost** on rollback.~~ — this was
+   not a choice in the end; see the ⚠⚠ note above for what was actually done.
 2. Cold snapshot with the droplet powered off.
 
 ### 4. Cutover
@@ -481,7 +505,7 @@ left alone.
 
 ### 6. After
 
-- Scale `backend` back up (spec step 14)
+- ~~Scale `backend` back up (spec step 14)~~ — not applicable; it was never scaled down (see step 3.1)
 - ⚠⚠ **If you also run Phase 2 (the `pfv2` → `tbd` rename), `DATABASE_URL` is
   bound in `.do/app.yaml` TWICE** — once on the `backend` service and once on
   the `migrate` PRE_DEPLOY job — as two separately-encrypted `EV[]` values.

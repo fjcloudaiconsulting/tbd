@@ -659,10 +659,10 @@ fail so existence ≠ success, and no alerting. Tracked as **TBD-400**.
 |---|---|
 | `enable_backups = true` → `false` | `infra/terraform/main.tf` (TBD-399's stated revert) — **already prepared, see the open PR** |
 | ~~"production still on 8.0"~~ — done 2026-08-19 | `README.md`, `CLAUDE.md` |
-| Add production as the final evidence row | `MYSQL-84-CUTOVER.md` |
-| Decide whether CI keeps the `mysql: ["8.0","8.4"]` matrix | `.github/workflows/test.yml` |
+| ~~Add production as the final evidence row~~ — done 2026-08-20 | `MYSQL-84-CUTOVER.md` |
+| ~~Decide whether CI keeps the `mysql: ["8.0","8.4"]` matrix~~ — decided 2026-08-20 (TBD-415): dropped to `["8.4"]`, matrix shape kept so the job name is unchanged | `.github/workflows/test.yml` |
 | ~~Fill in the outcome record~~ — done 2026-08-19 | `specs/2026-08-18-mysql-84-cutover-record.md` |
-| ⚠ Still open: `mysql: ["8.0","8.4"]` matrix, and the `docker-compose.prod.yml` / `MYSQL-84-CUTOVER.md` / `MIGRATION.md` status notes | see the record's follow-ups |
+| ~~⚠ Still open: the matrix and the status notes~~ — all cleared 2026-08-20 (TBD-415), including `infra/ansible/README.md` and `infra/ansible/bin/run-playbook.sh`, which this row omitted | see the record's follow-ups |
 
 ```bash
 # Destroy the pre-cutover snapshot once you are confident (it holds a full copy

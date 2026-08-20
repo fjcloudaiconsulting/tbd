@@ -63,7 +63,8 @@ if [[ -z "$SCRATCH_HOST" && $PRODUCTION -eq 0 ]]; then
      values. The app authenticates with the OLD password until both
      DATABASE_URL bindings in .do/app.yaml -- the backend service AND the
      migrate PRE_DEPLOY job -- are re-encrypted and redeployed. Sequence it;
-     the TBD-360 window (backend already scaled to 0) is the natural home.
+     pick a quiet hour. (TBD-360's window closed 2026-08-19, and scaling the
+     backend to 0 was never available on its plan -- see TBD-416.)
 USAGE
   exit 2
 fi
