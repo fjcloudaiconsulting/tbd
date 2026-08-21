@@ -15,13 +15,25 @@
 # this is now the ONLY hand-maintained path allowlist in the repo. Nothing
 # else agrees or disagrees with it, and nothing tests it.
 #
-# ⚠ It is KNOWN DRIFTED. The apex surface has grown paths this list never
-# gained: `frontend/app/features/`, `frontend/app/compare/`,
-# `frontend/app/vs/`, and `frontend/lib/dataPolicy.ts`. A change confined to
-# any of those ships to DO but NOT to the landing site, leaving
-# thebetterdecision.com stale until an unrelated commit happens to touch an
-# allowlisted path — or until an operator runs this workflow by hand
-# (`workflow_dispatch`, above). Reconciling the list is tracked as TBD-433.
+# ⚠ It DID drift, for ~72 days (TBD-433, fixed 2026-08-21). `features/`,
+# `compare/` and `vs/` were added to build-apex.sh on 2026-06-09 (#421) and
+# never mirrored here, so a change confined to any of them published NOTHING
+# to thebetterdecision.com while still triggering a full DO redeploy of the
+# authed app — inverted from the intent, and masked only because the one
+# landing PR that touched `features/` also touched `privacy/`. The same
+# failure had already happened once (#466) and was patched by adding two
+# more entries rather than by making the lists check each other.
+#
+# ⚠⚠ IT IS NOW FENCED. `backend/tests/test_apex_deploy_paths.py` derives the
+# required entries from build-apex.sh's ALLOWED_ROUTE_DIRS and
+# ALLOWED_APP_FILES and FAILS if this list does not cover them. Adding a
+# route dir to build-apex.sh without adding it here is now a red build, not a
+# silent 72-day outage. If that fence goes red, add the path — do not widen
+# the fence.
+#
+# ⚠ A grep is NOT a substitute for that fence: while fixing this,
+# `grep -q "frontend/app/features/"` over this whole file PASSED, because the
+# string appears in THIS COMMENT. The fence parses `on.push.paths`.
 #
 # ⚠ Do NOT "fix" the drift by deleting the filter the way release.yml's was
 # deleted. The two are not analogous. release.yml's filter was redundant with
@@ -61,6 +73,16 @@ on:
       - "frontend/app/privacy/**"
       - "frontend/app/terms/**"
       - "frontend/app/docs/**"
+      # TBD-433. These three shipped to the apex from 2026-06-09 (#421) and
+      # were never mirrored here, so a change confined to any of them
+      # published NOTHING to thebetterdecision.com for ~72 days while still
+      # triggering a full DigitalOcean redeploy of the authed app. Exactly
+      # inverted from the intent. `backend/tests/test_apex_deploy_paths.py`
+      # now derives the required set from build-apex.sh and fails if they
+      # diverge again.
+      - "frontend/app/features/**"
+      - "frontend/app/compare/**"
+      - "frontend/app/vs/**"
       # Structural app-level files retained by build-apex.sh
       # (frontend/scripts/build-apex.sh's ALLOWED_APP_FILES allowlist).
       # Changing any of these can change what the apex bundle ships.
@@ -85,6 +107,11 @@ on:
       - "frontend/scripts/build-apex.sh"
       - "frontend/next.config.apex.ts"
       - "frontend/lib/links.ts"
+      # TBD-433: imported by app/privacy, app/terms, app/features and
+      # components/landing/faqData.ts. A retention-window change that ships to
+      # the authed app but not here publishes CONTRADICTORY legal claims across
+      # the two surfaces.
+      - "frontend/lib/dataPolicy.ts"
       # Shared dependencies imported by the retained app/layout.tsx,
       # page.tsx, and landing components (transitive grep of
       # `from "@/..."` across the apex-retained surface).
