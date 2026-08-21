@@ -1,0 +1,113 @@
+name: Deploy Drift Probe
+
+# Is production actually serving the latest published release?
+#
+# ⚠⚠ WHY THIS EXISTS (TBD-434, from the TBD-425 incident).
+#
+# Nothing in the pipeline answered that question on any schedule. Detection was
+# entirely incidental: it depended on somebody merging a change that happened to
+# trigger a deploy. On 2026-08-19/20 a broken deploy path sat unnoticed for ~18
+# hours for exactly that reason.
+#
+# ⚠ And removing release.yml's paths filter (TBD-424) did NOT close that window,
+# despite being blamed for it. Measured: every merge in that window was a
+# suppressed scope, so `deploy` was skipped by `new_release_published`
+# regardless. The blind window is a property of the DEPLOY GATE, not of any
+# trigger filter. This probe is the actual remedy.
+#
+# ⚠⚠ READ-ONLY, AND THAT IS THE WHOLE DESIGN. TBD-425 was caused BY a deploy:
+# `app_action/deploy@v2` pushes the committed `.do/app.yaml` as authoritative
+# and overwrote live database and redis credentials. A deploy-based liveness
+# probe would therefore have destroyed working credentials SOONER. This probe
+# only reads.
+
+on:
+  schedule:
+    # 06:23 and 18:23 UTC. Twice daily bounds the worst-case detection lag to
+    # ~12h against the ~18h that went unnoticed. The odd minute avoids the
+    # top-of-hour cron queue that delays scheduled workflows on shared runners
+    # (same reasoning as test-durations.yml).
+    - cron: "23 6,18 * * *"
+  # Self-test: run when the probe itself changes, so a PR editing it proves the
+  # thing works rather than waiting until the next scheduled firing.
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-drift-probe.yml"
+      - "scripts/ci/check-deploy-drift.sh"
+      - "scripts/notify-deploy-drift.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-drift-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Deploy Drift Probe
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          # Tags are required: the probe compares the deployed commit against
+          # the commit the LATEST RELEASE TAG points at. A shallow clone has no
+          # tags and the probe would exit 2 rather than silently pass.
+          fetch-depth: 0
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Resolve app id
+        id: app
+        env:
+          APP_NAME: pfv
+        run: |
+          APP_ID="$(doctl apps list --format ID,Spec.Name --no-header \
+            | awk -v n="$APP_NAME" '$2 == n {print $1}' | head -1)"
+          if [ -z "$APP_ID" ]; then
+            echo "could not resolve an app id for '$APP_NAME'" >&2
+            exit 1
+          fi
+          echo "id=$APP_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Check deploy drift
+        id: drift
+        env:
+          APP_ID: ${{ steps.app.outputs.id }}
+        run: |
+          set +e
+          REPORT="$(./scripts/ci/check-deploy-drift.sh)"
+          STATUS=$?
+          set -e
+          # 2 = the probe itself could not run (no doctl, no tags, API error).
+          # Fail the job loudly rather than reporting a false all-clear.
+          if [ "$STATUS" -eq 2 ]; then
+            echo "$REPORT"
+            echo "probe could not complete; failing closed" >&2
+            exit 1
+          fi
+          {
+            echo "drifted=$([ "$STATUS" -eq 1 ] && echo true || echo false)"
+            echo "report<<DRIFT_EOF"
+            echo "$REPORT"
+            echo "DRIFT_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "$REPORT"
+
+      - name: Open or update the drift issue
+        if: ${{ steps.drift.outputs.drifted == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          DRIFT_REPORT: ${{ steps.drift.outputs.report }}
+        run: ./scripts/notify-deploy-drift.sh
