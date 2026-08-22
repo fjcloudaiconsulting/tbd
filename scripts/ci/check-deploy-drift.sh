@@ -84,8 +84,44 @@ if [ "$PHASE" != "ACTIVE" ]; then
   add "The newest deployment is in phase **${PHASE}**, not ACTIVE."
 fi
 
+# ── Secret-spec drift (TBD-434 DoD 2) ───────────────────────────────────────
+#
+# The commit comparison above answers "is production running the released
+# code?". It CANNOT see the other half of the TBD-425 failure: the committed
+# `.do/app.yaml` silently disagreeing with the live app's secrets. That drift is
+# invisible until the next deploy, at which point it OVERWRITES production's
+# working credentials -- which is exactly what took the database and redis down
+# on 2026-08-20.
+#
+# `assert-app-spec-secrets-synced.sh` already answers that question and is
+# read-only (it fetches the live spec and compares ciphertext; App Platform does
+# not re-encrypt on read). Here it is a REPORTING input, not a gate: its
+# non-zero exit must not fail this job, it must fold into the drift report so
+# the notifier carries it.
+SPEC_GUARD="$(dirname "$0")/assert-app-spec-secrets-synced.sh"
+if [ -x "$SPEC_GUARD" ]; then
+  SPEC_OUT="$(APP_ID="$APP_ID" "$SPEC_GUARD" 2>&1)"
+  SPEC_STATUS=$?
+  if [ "$SPEC_STATUS" -ne 0 ]; then
+    DRIFTED=1
+    add "The committed \`.do/app.yaml\` **disagrees with the live app's secrets**. The next deploy would overwrite production's values (this is the TBD-425 mechanism)."
+    SPEC_DETAIL="
+
+<details><summary>assert-app-spec-secrets-synced output</summary>
+
+\`\`\`
+${SPEC_OUT}
+\`\`\`
+
+</details>"
+  fi
+else
+  DRIFTED=1
+  add "Could not run \`assert-app-spec-secrets-synced.sh\` (missing or not executable), so secret drift is UNCHECKED. Failing loud rather than reporting a partial all-clear."
+fi
+
 if [ "$DRIFTED" -eq 0 ]; then
-  echo "in-sync: ${TAG} (${TAG_SHA:0:8}) is live, phase ${PHASE}"
+  echo "in-sync: ${TAG} (${TAG_SHA:0:8}) is live, phase ${PHASE}; secrets match"
   exit 0
 fi
 
@@ -101,7 +137,7 @@ ${REASONS}
 ⚠ This probe is READ-ONLY by design. Do **not** \"fix\" this by triggering a
 deploy blindly: the committed \`.do/app.yaml\` is pushed as authoritative and can
 overwrite live secrets (TBD-425). Check \`scripts/ci/assert-app-spec-secrets-synced.sh\`
-first."
+first.${SPEC_DETAIL:-}"
 
 export DRIFT_REPORT="$REPORT"
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '%s\n' "$REPORT" >> "$GITHUB_STEP_SUMMARY"

@@ -145,3 +145,45 @@ def test_the_probe_job_can_open_issues():
         "job-level permissions REPLACE the workflow-level block, so `issues: write` "
         f"must be spelled out on the job; got {perms}"
     )
+
+
+def test_the_probe_actually_checks_secret_spec_drift():
+    """TBD-434 DoD 2: the probe must ALSO run assert-app-spec-secrets-synced.sh.
+
+    The commit comparison answers "is production running the released code?". It
+    cannot see the other half of the TBD-425 failure: the committed
+    `.do/app.yaml` disagreeing with the live app's secrets, which is invisible
+    until the next deploy OVERWRITES production's working credentials.
+
+    ⚠ THIS FENCE MUST NOT BE SATISFIABLE BY A COMMENT. The first cut of the
+    probe *mentioned* the guard in its drift-report text ("check
+    assert-app-spec-secrets-synced.sh first") while never invoking it, and a
+    naive `grep -c` on the file returned 1 and looked delivered. Same shape as
+    the TBD-433 trap where a whole-file grep was satisfied by the comment
+    documenting the defect. So: strip comment lines, then assert.
+    """
+    text = (REPO_ROOT / PROBE).read_text()
+    code = [
+        line for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    invocations = [l for l in code if "assert-app-spec-secrets-synced" in l]
+    assert invocations, (
+        "the probe does not INVOKE assert-app-spec-secrets-synced.sh in any "
+        "non-comment line, so secret-spec drift -- the actual TBD-425 "
+        "mechanism -- goes unchecked"
+    )
+    # And it must be executed, not merely named in a string.
+    assert any('"$SPEC_GUARD"' in l or "SPEC_GUARD=" in l for l in code), (
+        "the guard is named but never executed"
+    )
+
+
+def test_a_missing_secret_guard_fails_loud_rather_than_passing():
+    """If the guard is absent or non-executable the probe must report drift, not
+    a partial all-clear. A monitor that silently checks less than it claims is
+    worse than no monitor."""
+    code = (REPO_ROOT / PROBE).read_text()
+    assert "secret drift is UNCHECKED" in code, (
+        "the probe must fail loud when it cannot run the secret guard"
+    )
