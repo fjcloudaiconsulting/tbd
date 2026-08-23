@@ -14,7 +14,6 @@ assertion would pass vacuously. Read both spellings.
 import os
 import pathlib
 
-import pytest
 import yaml
 
 
@@ -33,10 +32,42 @@ if REPO_ROOT is None and os.environ.get("GITHUB_ACTIONS") == "true":  # pragma: 
         "not be allowed to skip on the runner."
     )
 
-pytestmark = pytest.mark.skipif(
-    REPO_ROOT is None,
-    reason="workflow tree is not mounted into the backend container; runs in CI",
-)
+# ⚠ The ``skipif`` that used to live here guarded on ``REPO_ROOT is None`` and
+# was UNREACHABLE. ``docker-compose.yml`` mounts ``./.github`` read-only at
+# ``/app/.github``, so the probe above finds ``deploy-drift-probe.yml`` and
+# returns ``/app`` inside the container too. The skip therefore never fired,
+# and the three fences that read repo-root ``scripts/`` died on
+# ``FileNotFoundError`` in every container run while staying green in CI --
+# ``/app/scripts`` is ``backend/scripts`` (docker-compose.yml), not the repo
+# root's. A false red is what gets a fence weakened rather than obeyed, so
+# resolution is per-artifact and explicit, and it RAISES with the remedy
+# rather than skipping, following ``test_await_test_run_gate.py``: a skip
+# makes a fence silently absent in whichever environment lacks the path.
+_CONTAINER_SCRIPTS = pathlib.Path("/app/repo-scripts")
+
+
+def _artifact(relpath: str) -> pathlib.Path:
+    """Locate a repo-root artifact in either layout.
+
+    The one path that genuinely differs is repo-root ``scripts/``: inside the
+    backend container ``/app/scripts`` is already ``backend/scripts``, so the
+    repo-root directory gets its own read-only mount at ``/app/repo-scripts``.
+    """
+    if REPO_ROOT is not None:
+        candidate = REPO_ROOT / relpath
+        if candidate.is_file():
+            return candidate
+    if relpath.startswith("scripts/"):
+        alt = _CONTAINER_SCRIPTS / relpath[len("scripts/") :]
+        if alt.is_file():
+            return alt
+    raise RuntimeError(
+        f"Could not locate {relpath}. On a checkout it sits at the repo root; "
+        "in the backend container repo-root scripts/ is mounted read-only at "
+        "/app/repo-scripts (docker-compose.yml). A container built before that "
+        "mount existed shows this module red -- run `docker compose up -d "
+        "--force-recreate backend` once, and do NOT weaken this fence."
+    )
 
 WORKFLOW = "deploy-drift-probe.yml"
 PROBE = "scripts/ci/check-deploy-drift.sh"
@@ -55,7 +86,7 @@ MUTATING = (
 
 
 def _doc() -> dict:
-    return yaml.safe_load((REPO_ROOT / ".github" / "workflows" / WORKFLOW).read_text())
+    return yaml.safe_load(_artifact(f".github/workflows/{WORKFLOW}").read_text())
 
 
 def _triggers() -> dict:
@@ -85,8 +116,8 @@ def test_the_probe_never_mutates_the_app():
     be added in either.
     """
     blobs = {
-        WORKFLOW: (REPO_ROOT / ".github" / "workflows" / WORKFLOW).read_text(),
-        PROBE: (REPO_ROOT / PROBE).read_text(),
+        WORKFLOW: _artifact(f".github/workflows/{WORKFLOW}").read_text(),
+        PROBE: _artifact(PROBE).read_text(),
     }
     offenders = []
     for name, text in blobs.items():
@@ -162,7 +193,7 @@ def test_the_probe_actually_checks_secret_spec_drift():
     the TBD-433 trap where a whole-file grep was satisfied by the comment
     documenting the defect. So: strip comment lines, then assert.
     """
-    text = (REPO_ROOT / PROBE).read_text()
+    text = _artifact(PROBE).read_text()
     code = [
         line for line in text.splitlines()
         if line.strip() and not line.strip().startswith("#")
@@ -183,7 +214,7 @@ def test_a_missing_secret_guard_fails_loud_rather_than_passing():
     """If the guard is absent or non-executable the probe must report drift, not
     a partial all-clear. A monitor that silently checks less than it claims is
     worse than no monitor."""
-    code = (REPO_ROOT / PROBE).read_text()
+    code = _artifact(PROBE).read_text()
     assert "secret drift is UNCHECKED" in code, (
         "the probe must fail loud when it cannot run the secret guard"
     )
