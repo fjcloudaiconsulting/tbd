@@ -461,11 +461,16 @@ async def test_anonymous_logout_succeeds_and_writes_no_audit_row(
 
     ⚠ This assertion was inverted deliberately, together with spec
     §5.3 step 5 / §8, which used to say "outcome=success even when 0". A
-    row carrying ``actor_user_id=None, sid_count=0, jti_count=0`` records
-    nothing an operator can act on, and writing one on every anonymous
-    POST to a public route was the unbounded-insert primitive TBD-353
-    exists to remove. The user-visible contract is unchanged, which is
-    why the 200 and both delete-cookie assertions below stay."""
+    row carrying ``actor_user_id=None, sid_count=0, jti_count=0`` names
+    no subject, and writing one on every anonymous POST to a public route
+    was the unbounded-insert primitive TBD-353 exists to remove. The
+    user-visible contract is unchanged, which is why the 200 and both
+    delete-cookie assertions below stay.
+
+    ⚠ The dropped row was NOT contentless: it was the forced-logout trace
+    (a cross-site POST sends no cookie but still clears the victim's).
+    The signal MOVES to the ``auth.session.terminated.anonymous``
+    structlog line, which carries the same IP, request id and rate."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:

@@ -58,9 +58,24 @@ else:
     logger.info("auth.session.terminated.anonymous", ...)
 ```
 
-A row with `actor_user_id=None, sid_count=0, jti_count=0` records nothing an
-operator can act on and is the entire attack payload. Every real logout carries
-a cookie or a bearer and keeps its row.
+A row with `actor_user_id=None, sid_count=0, jti_count=0` names no subject and
+is the entire attack payload. Every real logout carries a cookie or a bearer and
+keeps its row.
+
+⚠ **"Records nothing an operator can act on" was too strong and is corrected
+here.** The dropped row was the **forced-logout trace**. A cross-site
+`<form method=POST>` to `/api/v1/auth/logout` sends no refresh cookie
+(`SameSite=Lax`), but the browser still honours both `Set-Cookie ... Max-Age=0`,
+so the victim IS logged out — anonymously, with `sid_count=0`. That row carried
+the timestamp, the source IP and the rate, which is a real signal.
+
+The mitigation is adequate for a different reason than the one first written:
+**the signal moves to structlog.** `auth.session.terminated.anonymous` carries
+the same `ip_address` and `request_id` at the same rate, on the same request. It
+is a retention downgrade (platform logs are volume-capped; `audit_events` has no
+retention job at all), not a loss of the observation. What genuinely goes is the
+`/admin/audit` surfacing of it — and surfacing an unbounded anonymous insert in
+that view is the defect, not the feature.
 
 `jtis_seen` is deliberately **not** a third term: `decode_refresh_jti_sid`
 raises unless both claims are present (`security.py:194-196`), so the append at
@@ -130,14 +145,86 @@ Retained vs lost, precisely:
   the cleared-cookie case: real, small, and by construction indistinguishable
   from a forged GET.
 
+#### 3a. The four step-up branches BELOW the state check
+
+`sso_stepup_callback` has four more suppressions — the shape check
+(`len(parts) != 4 or parts[0] != "stepup"`), the `int(parts[1])` `ValueError`,
+the unknown `return_key`, and `user is None` — and they sit **after**
+`if not state_ok:`, so they run with `state_ok == True`.
+
+⚠ **The "anonymous by construction" argument above does NOT cover them**, and
+the first draft of this spec scoped suppression to "where `state_ok` is false",
+which they are not. They are suppressed anyway, for a different and weaker
+reason: `state_ok` is a **self-consistency** check, not an authentication —
+`oauth_state` is an unsigned nonce, so a caller sets both halves to the same
+junk and sails past it. These four are then reachable anonymously at **zero**
+outbound cost to the caller, strictly cheaper than the token-exchange writes
+below them. Nothing legitimate is lost: `sso_stepup_initiate` only ever mints a
+well-formed 4-part state.
+
+They were **unfenced**: nothing in the repo drove a `stepup:`-shaped state at a
+test that counts audit rows, so flipping any of the four back to `audit=True`
+left the entire suite green. Fenced as §F6.
+
+#### 3b. Two event names, not one
+
+`_log_unverified_callback` first emitted one name,
+`auth.oauth.callback.unverified_state`, and its docstring (and
+`_stepup_failure`'s) claimed it fired "on every path where the state did not
+round-trip". **That was false on exactly the four branches in §3a**, where the
+state DID round-trip and the payload inside it was junk.
+
+The consequence was a real regression, not a labelling nit. The `user is None`
+branch is the **user-id enumeration probe**, and the redirect past it still
+discriminates an existing id from a missing one (a live id proceeds to the token
+exchange and fails with `?sso_stepup_error=token`; a missing one stops at
+`?sso_stepup_error=state`). Before this PR that sweep left a **durable audit
+row**. Emitting it under a name an operator will correctly bulk-filter as forged
+drive-by noise strictly loses signal.
+
+Ships: a second event name, `auth.oauth.callback.invalid_state_payload`, for the
+state-consistent-but-invalid-payload paths, `state_ok` carried in the payload of
+both, and both docstrings corrected to say what is actually true. `state_ok` is
+keyword-only with **no default**, so a new suppressed path has to state which
+population it belongs to. `_stepup_failure` reads `state_ok` from its enclosing
+scope rather than taking it as an argument, so a new suppressed branch cannot
+label itself wrongly.
+
+#### 3c. Retained rows must be bounded in BYTES, not just in count
+
+With a matching cookie,
+`GET /google/callback?error=...&state=x&error_description=<multi-KB>` reaches
+`_record_google_callback_failure`, which copied `google_error` and
+`google_error_description` **straight out of the query string** into a JSON
+column with no cap, at the route's full 60/min/IP budget. Capping the row COUNT
+while leaving the row SIZE unbounded only changes the units of the same
+inflation.
+
+The sibling public writer already settled the shape: `routers/security.py` caps
+every persisted field at `_MAX_FIELD_LEN = 512` behind a bounded allowlist.
+`auth._MAX_AUDIT_DETAIL_FIELD_LEN = 512` matches it, applied at the one shared
+writer rather than at each call site. It truncates strings and passes everything
+else through — deliberately narrower than `security.py::_bounded`, which DROPS
+non-scalars because its input is a whole untrusted body; here every caller builds
+`detail_extra` from named locals.
+
+#### 3d. What this does and does not bound
+
 ⚠ **Neither the limit nor the conditioning bounds a determined attacker.**
 `oauth_state` is an **unsigned** cookie — the comment at `auth.py:3336` calling
 it "signed" is false and is corrected here — so an attacker supplies both halves
-of the comparison. Both changes are cost-raisers that remove drive-by and
-contentless rows. `get_client_ip` also returns raw un-collapsed addresses, so a
-routed IPv6 /64 is 2^64 buckets. The durable fix (retention / partitioning
-anonymous pre-auth rows out of the `/admin/audit` default view) is a separate
-ticket. The PR body must not overclaim this.
+of the comparison. `get_client_ip` also returns raw un-collapsed addresses, so a
+routed IPv6 /64 is 2^64 buckets.
+
+Both changes are cost-raisers. They remove drive-by rows and they bound the size
+of the rows that remain. ⚠ **They do not make the remaining rows "contentless" —
+an earlier draft said so and it was wrong.** A retained row carries a real
+`reason` plus up to 512 bytes each of `google_error` and
+`google_error_description`, which is exactly why §3c exists.
+
+The durable fix (retention / partitioning anonymous pre-auth rows out of the
+`/admin/audit` default view) is a separate ticket. The PR body must not
+overclaim this — see §6.
 
 ### 4. DoD 4 — correct the comment, do not implement `verify_exp=False`
 
@@ -176,6 +263,28 @@ decorators under `app/routers/` and **25** patterns. Six have no entry:
   `org_members.remove_member`
 
 Backfilled here, plus the five new pre-auth patterns, and fenced (§F5).
+
+### 6. NOT bounded here: `POST /api/v1/security/csp-report`
+
+⚠⚠ **This PR does not bound the anonymous-inflation surface. It bounds three
+routes on it, and the largest remaining writer is untouched.** Nothing in the PR
+body, the changelog or the ticket may say otherwise.
+
+`POST /api/v1/security/csp-report` is a **larger** anonymous `audit_events`
+writer than the one this PR closes: `_MAX_REPORTS_PER_REQUEST = 20` rows per
+body at `60/minute` is **1200 rows/min/IP**, against the 120/min the `/logout`
+gate closes. It is on the public allowlist and takes no credential.
+
+Its own docstring states the mitigation as: alerting and `/admin/audit` "MUST
+scope OUT `event_type=security.csp_violation`". **Verified: that exclusion does
+not exist anywhere.** `csp_violation` matches only inside `routers/security.py`
+— zero matches in `routers/admin_audit.py`, zero in the frontend. Ten anonymous
+POSTs bury page 1 of `/admin/audit`.
+
+Out of scope here on purpose: the fix is a **consumer-side** change (an
+`/admin/audit` default filter plus the alerting scope), not another writer-side
+gate, and mixing it into a writer-side security fix would put two unrelated
+review surfaces in one PR. Filed separately.
 
 ## Deferred, deliberately: DoD 3's `/refresh` item
 
@@ -216,6 +325,13 @@ so every call in a module shares one deterministic key. Storage is `MemoryStorag
 in CI (`REDIS_URL` unset) and Redis in the dev container; both count identically
 and `reset()` works on both (verified in-session against `FailOpenRedisStorage`).
 
+⚠ The limiter is a **process singleton**, so `sso-stepup/callback`'s `60/hour` is
+effectively per test **session**, not per test. `test_anonymous_audit_bounds.py`
+burns 61 of the 60 in F1 alone plus ~5 more across F3/F6 — the autouse reset
+clears them, but that leaves roughly **39 calls of suite-wide headroom** before a
+cross-module 429 flake becomes possible. Any new module that drives that route
+must carry the same reset fixture.
+
 **F1 — the five limits.** For each route: calls 1..N assert the route's **exact
 normal status**, call N+1 asserts **429**.
 - Wrong implementation killed: (i) decorator deleted; (ii) number loosened
@@ -239,7 +355,20 @@ normal status**, call N+1 asserts **429**.
    labelled as if it did.
 3. Valid bearer, no cookie → **one** row, `sid_count == 0`. Kills `if sids:`.
 4. Signature-valid cookie, empty Redis → **one** row, `sid_count == 1`,
-   `jti_count == 0`. Kills `if actor_user_id is not None:` alone.
+   `jti_count == 0`, `actor_user_id == <the seeded user>`. Pins the detail
+   payload on the **cookie-only** path.
+   ⚠ **This leg does NOT kill `if actor_user_id is not None:`, and an earlier
+   draft of this spec and of the leg's own docstring both claimed it did.**
+   Measured: the row comes back with `actor_user_id = 1`, because `logout` falls
+   back to the refresh JWT's own `sub` when no bearer is present. Both terms of
+   the predicate are therefore true on this leg, and **all three** mutants
+   survive it — `if actor_user_id is not None:`, `if sids:`, and deleting the
+   guard outright. **Leg 5 is the leg that kills it**, which is what leg 5's
+   docstring already says. Left uncorrected, a future reader deleting leg 5 as
+   redundant would find leg 4 claiming to cover it.
+   Measured mutant-by-leg (fence file only): `if actor_user_id is not None:` →
+   leg 5 alone red; `if sids:` → leg 3 alone red; guard deleted → legs 1 and 2
+   red.
 - Wrong implementation killed: the unconditional `record_audit_event`. Legs 1-2
   go red. Also run against the two **rewritten** existing tests — with the gate
   removed, `audit == []` must go red on both, or the rewrite is decoration.
@@ -263,6 +392,10 @@ normal status**, call N+1 asserts **429**.
    red here.
 8. Non-ASCII `state` (e.g. `state=\u00e9x`) with a mismatching cookie → **307**,
    not 500. Kills the `str`-operand form of `compare_digest`.
+9. Matching cookie + a 4096-char `error_description` and a 4096-char `error` →
+   **one** row whose two attacker-controlled detail fields are each exactly 512
+   chars, with `reason` untouched. Kills the truncation dropped entirely, and
+   the truncation applied to only one of the two fields (both measured red).
 - Every leg asserts the `Location` header **byte-for-byte** against today's value.
 - Wrong implementations killed: dropping the `state_ok` condition (legs 1/4/7);
   reordering the branches (leg 6); conditioning only the `error` and
@@ -277,6 +410,50 @@ pins behaviour we are deliberately keeping so a future `verify_exp: False` canno
 land as a silent no-op. Mutant: switch `decode_refresh_jti_sid` to
 `options={"verify_exp": False}` → red. The docstring says all of this; an
 unlabelled green-against-main test is indistinguishable from the vacuous pattern.
+
+⚠ **It carries a POSITIVE CONTROL.** `assert calls == []` is a no-op-shaped
+assertion: a spy that was never wired satisfies it for free, and it is green
+today only because `auth.py` happens to call `redis_client.session_revoke_family`
+through the module attribute. Rewriting that to
+`from app.redis_client import session_revoke_family` at module scope would make
+this test **vacuously green AND silently disarm its documented mutant**. The
+second half of the test therefore drives a LIVE cookie and asserts
+`calls == [live_sid]`. Verified red against exactly that import-time rebinding.
+⚠ The obvious cheaper injection — a **function-local** `from app.redis_client
+import session_revoke_family` — does NOT reproduce it: a local import still
+resolves the (patched) module attribute at call time. Only a module-scope bind
+detaches the spy.
+
+**F6 — the step-up callback's four POST-`state_ok` suppressions** (§3a/§3b).
+One leg per branch, each supplying a **matching** `oauth_state` cookie plus a
+`stepup:`-shaped state that trips exactly that branch, with `code` present so the
+earlier branches are passed:
+
+| state | branch | Location |
+|---|---|---|
+| `stepup:1:nonce` | `len(parts) != 4` | `/settings?sso_stepup_error=state` |
+| `stepup:notanint:nonce:security` | `int(parts[1])` raises | `/settings/security?sso_stepup_error=state` |
+| `stepup:1:nonce:bogus_key` | unknown `return_key` | `/settings?sso_stepup_error=state` |
+| `stepup:999999:nonce:settings` | `user is None` (a user IS seeded, so this is a lookup miss, not an empty table) | `/settings?sso_stepup_error=state` |
+
+Each asserts **zero** rows, the **byte-exact** `Location`, and the event **name**.
+- The `user_id_not_int` row deliberately uses the `security` return key so the
+  four `Location` assertions are not four copies of one string.
+- Wrong implementations killed, measured one-to-one — flipping branch *n* back to
+  `audit=True` reddens leg *n* and only leg *n*.
+- The event-name assertion kills the two names being collapsed back into one, in
+  **both** directions: collapse to `unverified_state` → all four F6 legs red;
+  collapse to `invalid_state_payload` → both F3 leg-7 legs red.
+- ⚠ **CONTROL**: a well-formed `stepup:{seeded_id}:nonce:settings` with the same
+  cookie must behave **differently** — it gets past all four branches and fails
+  later at the outbound exchange (`?sso_stepup_error=token`, no suppressed-callback
+  event logged). Without it, every F6 leg is satisfied by a handler that 307s
+  `?sso_stepup_error=state` unconditionally.
+- ⚠ Structlog assertions bind a recorder onto `auth._LOGGER` and never use
+  `structlog.testing.capture_logs()` — that swaps the processor chain on the
+  GLOBAL config, which other modules in this suite reconfigure without restoring,
+  so a `capture_logs` fence is green alone, green on either half, RED in a full
+  run.
 
 **F5 — catalogue drift.** An `ast` walk over `app/routers/*.py` collecting
 `(module, function)` for every `@limiter.limit` decorator, compared as a **set**

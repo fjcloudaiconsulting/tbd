@@ -306,6 +306,13 @@ renders bare JSON in the middle of a browser navigation. The anonymous
 the rows, not by the limits — see
 `specs/2026-08-22-tbd-353-anonymous-audit-write-bounds.md`.
 
+⚠ That bounds **those three routes**, not the anonymous `audit_events` write
+surface as a whole. `POST /api/v1/security/csp-report` is still an open,
+unauthenticated writer at 20 rows per body × 60/minute = **1200 rows/min/IP**,
+and the `/admin/audit` and alerting exclusion its own docstring names as the
+mitigation does not exist. Tracked separately; do not describe the surface as
+bounded.
+
 `POST /api/v1/auth/refresh` remains **unlimited**, deliberately (TBD-353): it
 writes no audit row for an anonymous caller, and a 429 there wedges the
 frontend's mount-path session restore into a permanent spinner whose only
