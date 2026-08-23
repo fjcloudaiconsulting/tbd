@@ -210,13 +210,21 @@ class _SharedFakeRedis:
     # Liveness. Added for TBD-413's ``/health/dependencies`` probe, which
     # calls ``client.ping()`` on the shared singleton.
     #
-    # ⚠ This fake is a PLAIN CLASS, not a Mock, so before this method
-    # existed ``fake.ping()`` raised ``AttributeError`` — which the probe's
-    # broad ``except Exception`` swallowed and reported as ``unreachable``
-    # in EVERY test touching the endpoint. That is a silent false red whose
-    # obvious "fix" is broadening the probe's except clause, which would
-    # mask real errors forever. The test double must not choose the
-    # probe's shape.
+    # ⚠ This fake is a PLAIN CLASS, not a Mock, so without this method
+    # ``fake.ping()`` raises ``AttributeError`` — which a probe's broad
+    # ``except Exception`` swallows and reports as ``unreachable``: a silent
+    # false red whose obvious "fix" is broadening the probe's except clause,
+    # which would mask real errors forever. The test double must not choose
+    # the probe's shape.
+    #
+    # It is NOT what the ``/health/dependencies`` fences depend on. Every test
+    # in ``test_readiness_dependencies.py`` substitutes ``get_client`` itself
+    # (see that module's header — ambient ``settings.redis_url`` differs
+    # between the dev container and the CI shards), so this fake is never that
+    # probe's client. The one real effect is latent and forward-looking: a
+    # future test that drives ``admin_dashboard_service``'s Redis probe
+    # through the ambient fake now gets ``{"ok": True}`` where it would
+    # previously have gotten an ``AttributeError``-shaped failure.
     async def ping(self):
         return True
 

@@ -20,6 +20,7 @@ from app.config import settings as app_settings
 from app import redis_client
 from redis.exceptions import AuthenticationError as RedisAuthenticationError
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import NoPermissionError as RedisNoPermissionError
 from redis.exceptions import RedisError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 from app.database import engine
@@ -584,21 +585,66 @@ async def health():
 # takes seconds, and a false alarm on a deploy gate is the expensive failure.
 _DB_PROBE_TIMEOUT_S = 3.0
 
-# DERIVED, not picked. ``redis_client.get_client()`` documents an honest worst
-# case of 3.2s for one call: socket_timeout 1.0 + backoff cap 0.2 + reconnect
-# 1.0 + PING 1.0. The infrastructure is documented to produce idle-dropped
-# pooled sockets (App Platform NAT / VPC router, the 2026-05-19 trace), and
-# ``_build_auth_redis_client``'s single retry exists to absorb exactly that.
-# A bound BELOW 3.2s would cancel the probe mid-retry and report a healthy
-# Redis as failing, while every real login absorbed the same blip — a
-# flapping false alarm on a deploy gate.
-_REDIS_PROBE_TIMEOUT_S = 3.5
+# DERIVED, not picked, and deliberately NOT derived tightly.
+#
+#   documented worst case = 1.0 + 1 * (1.0 + 1.0 + 0.2) = 3.2s
+#     socket_timeout 1.0 (first PING) + one retry of
+#     (connect 1.0 + PING 1.0 + backoff cap 0.2)
+#
+# per ``redis_client.get_client()``'s own docstring. The infrastructure is
+# documented to produce idle-dropped pooled sockets (App Platform NAT / VPC
+# router, the 2026-05-19 trace), and ``_build_auth_redis_client``'s single
+# retry exists to absorb exactly that. A bound BELOW 3.2s would cancel the
+# probe mid-retry and report a healthy Redis as failing while every real login
+# absorbed the same blip.
+#
+# ⚠ 3.2s is a bound on the LIBRARY's own waits, not on wall clock. This
+# coroutine also shares an event loop with the concurrent database probe and
+# with real traffic, so scheduling delay lands on top of it. 3.5s left only
+# 0.3s of headroom, which makes the single most common real event — an
+# idle-dropped socket, the one every login absorbs transparently — report
+# ``timeout`` + 503 under load. ``scripts/smoke-test.sh`` turns that 503 into
+# a FAILED DEPLOY, so the cost of being 1.5s slow on a genuinely dead Redis is
+# far below the cost of flapping.
+#
+# 5.0 still fits under ``_DEPS_PROBE_TOTAL_TIMEOUT_S`` because the two probes
+# run CONCURRENTLY under one ``gather``: the total is max(3.0, 5.0) = 5.0, not
+# 3.0 + 5.0. ``test_f17b_probe_bounds_fit_under_the_backstop`` fences that.
+_REDIS_PROBE_TIMEOUT_S = 5.0
 
 # Pure backstop above both per-probe bounds. If it ever fires, something
 # pathological happened outside the probes; it must still degrade into the
 # normal body with the unfinished checks reported as "timeout" — never a 500,
 # never an empty body.
 _DEPS_PROBE_TOTAL_TIMEOUT_S = 6.0
+
+
+# ── The CLOSED state vocabularies (TBD-413) ────────────────────────────────
+#
+# Declared HERE, in the module that produces them, so there is exactly one
+# place a new state can be introduced. Two fences hold them closed in both
+# directions: ``test_f16_every_produced_state_is_declared_and_every_declaration_is_reachable``
+# drives every scenario the probes can take and compares the SET of answers
+# against these names, and ``test_f16b_probes_return_no_undeclared_string_literal``
+# parses this module's AST so the same holds on branches no scenario reaches.
+# A new state string has to be added here before it can be returned, and the
+# endpoint's public contract cannot widen silently.
+_DB_STATES: frozenset[str] = frozenset({"ok", "timeout", "unreachable"})
+_REDIS_STATES: frozenset[str] = frozenset(
+    {
+        "ok",
+        "timeout",
+        "auth_failed",
+        "unreachable",
+        "disabled",
+        "not_configured",
+    }
+)
+# The subset of ``_REDIS_STATES`` that does NOT make the endpoint unhealthy.
+# ``disabled`` is a supported mode outside production; ``not_configured`` is
+# the same observation IN production and is deliberately absent here.
+_REDIS_HEALTHY_STATES: frozenset[str] = frozenset({"ok", "disabled"})
+_STATUS_VALUES: frozenset[str] = frozenset({"ok", "unhealthy"})
 
 
 async def _select_one() -> None:
@@ -658,6 +704,13 @@ async def _probe_redis() -> str:
     ``ConnectionError``, so catching ConnectionError first would collapse a
     credential incident into "unreachable" and send an operator hunting a
     network fault. The 2026-08-19 outage was a credential failure.
+
+    ⚠ ``NoPermissionError`` sits with it, and does NOT fall out of the same
+    subclassing. It is a ``ResponseError`` -> ``RedisError`` (asserted in
+    ``test_f4d_*``, exercised end-to-end by ``test_f4c_*``), so without naming
+    it explicitly a lost/narrowed Redis ACL
+    grant reports ``unreachable`` — the same misdiagnosis F4 exists to
+    prevent, one rung over: the credential is accepted, the command is not.
     """
     client = redis_client.get_client()
     if client is None:
@@ -670,7 +723,7 @@ async def _probe_redis() -> str:
         await asyncio.wait_for(client.ping(), _REDIS_PROBE_TIMEOUT_S)
     except asyncio.TimeoutError:
         return "timeout"
-    except RedisAuthenticationError:
+    except (RedisAuthenticationError, RedisNoPermissionError):
         return "auth_failed"
     except RedisTimeoutError:
         return "timeout"
@@ -700,7 +753,15 @@ async def ready():
         await asyncio.wait_for(_select_one(), _DB_PROBE_TIMEOUT_S)
         return {"status": "ready", "database": "connected"}
     except Exception as e:
-        logger.error("readiness check failed", error=str(e))
+        # ⚠ ``asyncio.wait_for`` raises a BARE ``TimeoutError()``, so
+        # ``str(e)`` is the empty string — on precisely the wedged-socket mode
+        # the ``wait_for`` was added to catch, where this line is the only
+        # discriminating detail an operator gets. Carry the class explicitly.
+        logger.error(
+            "readiness check failed",
+            error=str(e) or type(e).__name__,
+            error_class=type(e).__name__,
+        )
         return JSONResponse(
             status_code=503,
             content={"status": "not_ready", "database": "connection error"},
@@ -722,7 +783,7 @@ async def health_dependencies():
     """
     results = await _gather_dependency_checks()
     database, redis_state = results
-    healthy = database == "ok" and redis_state in ("ok", "disabled")
+    healthy = database == "ok" and redis_state in _REDIS_HEALTHY_STATES
     checks = {"database": database, "redis": redis_state}
     if healthy:
         return {"status": "ok", "checks": checks}
