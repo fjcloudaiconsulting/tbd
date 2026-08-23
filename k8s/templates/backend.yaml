@@ -51,12 +51,24 @@ spec:
               port: 8000
             initialDelaySeconds: 10
             periodSeconds: 15
+          # ⚠ /ready is DATABASE-ONLY on purpose (TBD-413). Never repoint
+          # this probe at /health/dependencies: Redis is a single shared
+          # instance, so a Redis outage would fail every replica's readiness
+          # at once and evict the whole deployment — including the data
+          # plane, which needs no Redis (app/deps.py has zero references and
+          # access tokens live 15 minutes).
+          #
+          # timeoutSeconds is explicit because the k8s DEFAULT IS 1s, which
+          # sits under the app's own database bound (3.0s) and would mark a
+          # merely-slow instance unready.
           readinessProbe:
             httpGet:
               path: /ready
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
 ---

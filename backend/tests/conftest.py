@@ -207,6 +207,19 @@ class _SharedFakeRedis:
         self._eval_arrival_event = asyncio.Event()
         self._eval_release_event = asyncio.Event()
 
+    # Liveness. Added for TBD-413's ``/health/dependencies`` probe, which
+    # calls ``client.ping()`` on the shared singleton.
+    #
+    # ⚠ This fake is a PLAIN CLASS, not a Mock, so before this method
+    # existed ``fake.ping()`` raised ``AttributeError`` — which the probe's
+    # broad ``except Exception`` swallowed and reported as ``unreachable``
+    # in EVERY test touching the endpoint. That is a silent false red whose
+    # obvious "fix" is broadening the probe's except clause, which would
+    # mask real errors forever. The test double must not choose the
+    # probe's shape.
+    async def ping(self):
+        return True
+
     # Plain KV
     async def get(self, key):
         return self._kv.get(key)
