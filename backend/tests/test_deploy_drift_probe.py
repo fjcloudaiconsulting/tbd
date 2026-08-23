@@ -42,6 +42,32 @@ WORKFLOW = "deploy-drift-probe.yml"
 PROBE = "scripts/ci/check-deploy-drift.sh"
 NOTIFIER = "scripts/notify-deploy-drift.sh"
 
+
+def _repo_script(relative: str) -> pathlib.Path:
+    """Locate a repo-ROOT script in either layout.
+
+    ⚠ `REPO_ROOT / "scripts/..."` is wrong inside the backend container and
+    right on a CI runner, which is why these fences were green in CI and red in
+    every dev container. REPO_ROOT resolves to `/app` (the `.github` mount puts
+    the workflow there), but `/app/scripts` is already `backend/scripts` -- the
+    repo-root `scripts/` has its own read-only mount at `/app/repo-scripts`.
+    Same resolver as test_await_test_run_gate.py, and raising rather than
+    skipping for the same reason: a skip would make the probe's central fence
+    silently absent in whichever environment lacked the path.
+    """
+    direct = REPO_ROOT / relative
+    if direct.is_file():
+        return direct
+    container_mount = pathlib.Path("/app/repo-scripts") / relative.split("scripts/", 1)[1]
+    if container_mount.is_file():
+        return container_mount
+    raise RuntimeError(
+        f"Could not locate {relative}. In the backend container this needs the "
+        "./scripts:/app/repo-scripts:ro mount; a container built before that "
+        "mount existed shows this module red. Run "
+        "`docker compose up -d --force-recreate backend` once."
+    )
+
 # `doctl` verbs that CHANGE the app. None may appear in the probe path.
 MUTATING = (
     "apps update",
@@ -86,7 +112,7 @@ def test_the_probe_never_mutates_the_app():
     """
     blobs = {
         WORKFLOW: (REPO_ROOT / ".github" / "workflows" / WORKFLOW).read_text(),
-        PROBE: (REPO_ROOT / PROBE).read_text(),
+        PROBE: _repo_script(PROBE).read_text(),
     }
     offenders = []
     for name, text in blobs.items():
@@ -162,7 +188,7 @@ def test_the_probe_actually_checks_secret_spec_drift():
     the TBD-433 trap where a whole-file grep was satisfied by the comment
     documenting the defect. So: strip comment lines, then assert.
     """
-    text = (REPO_ROOT / PROBE).read_text()
+    text = _repo_script(PROBE).read_text()
     code = [
         line for line in text.splitlines()
         if line.strip() and not line.strip().startswith("#")
@@ -183,7 +209,7 @@ def test_a_missing_secret_guard_fails_loud_rather_than_passing():
     """If the guard is absent or non-executable the probe must report drift, not
     a partial all-clear. A monitor that silently checks less than it claims is
     worse than no monitor."""
-    code = (REPO_ROOT / PROBE).read_text()
+    code = _repo_script(PROBE).read_text()
     assert "secret drift is UNCHECKED" in code, (
         "the probe must fail loud when it cannot run the secret guard"
     )

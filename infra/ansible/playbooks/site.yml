@@ -14,3 +14,20 @@
     - mysql
     - redis
     - backups
+
+  # TBD-419 -- re-apply the MySQL package holds AFTER every role has installed
+  # its packages. The pass inside `common` runs first, which is what protects an
+  # already-provisioned host before anything in this play can move a package;
+  # but on a REBUILT host that pass correctly resolves to an empty set, because
+  # MySQL is not installed yet. Without this second pass such a host finishes
+  # the run unheld and stays that way until somebody happens to converge it
+  # again. `include_role ... tasks_from:` rather than a `../common/tasks` path,
+  # so the role's own defaults and its filter plugins resolve normally.
+  post_tasks:
+    - name: Re-apply the MySQL package holds now every role has installed
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: holds
+        apply:
+          tags: [always]
+      tags: [always]

@@ -6,3 +6,57 @@ swap_file_size_mb: 1024
 
 # Timezone. UTC keeps logs/cron predictable across regions.
 system_timezone: UTC
+
+# --- Data-plane package pins (TBD-419) -------------------------------------
+# The play no longer upgrades packages on a routine converge (see the `patch`
+# tag on the upgrade task in tasks/main.yml). These holds are the second layer:
+# they also stop `unattended-upgrades` and a hand-typed `apt-get upgrade` from
+# moving MySQL underneath the running database.
+#
+# ⚠ THIS IS A SUPERSET, INTERSECTED AT RUNTIME with what is actually installed.
+# It has to cover BOTH naming families, because they occur on different hosts:
+# production runs Oracle's `mysql-community-*` (the TBD-360 cutover), a fresh
+# scratch droplet gets Ubuntu's `mysql-server-8.0`, and pre-cutover Ubuntu
+# remnants may still be installed. A static list hard-fails
+# `ansible.builtin.dpkg_selections` on whichever host is missing a name.
+#
+# ⚠ KEEP IT SHORT AND MYSQL-ONLY. Every entry is a permanent opt-out from
+# security patching for that package.
+#
+# ⚠⚠ `redis-server` IS DELIBERATELY ABSENT, and adding it is a regression.
+# Ubuntu noble ships exactly one Redis major and the security pocket only ever
+# ships 7.0.x for noble, so there is no track to jump -- a Redis hold prevents
+# nothing this ticket is about, while permanently blocking security patches on a
+# VPC-facing service. The MySQL holds cost nothing by comparison:
+# unattended-upgrades' allowed origins are the Ubuntu security pockets, and
+# Oracle's `MySQL` origin is not among them, so nothing automatic could ever
+# move those packages anyway. `backend/tests/test_dataplane_apt_pins.py`
+# fences this.
+mysql_hold_candidates:
+  - mysql-apt-config          # the repo SELECTOR -- the 2026-08-19 near miss
+  - mysql-common
+  - mysql-client
+  - mysql-server
+  - mysql-community-server
+  - mysql-community-server-core
+  - mysql-community-client
+  - mysql-community-client-core
+  - mysql-community-client-plugins
+  - mysql-server-8.0
+  - mysql-server-core-8.0
+  - mysql-client-8.0
+  - mysql-client-core-8.0
+
+# Which installed package counts as "the MySQL server", most specific first.
+# Resolved against package_facts in tasks/holds.yml; the fence and the mysql
+# role's install task both consume the result.
+mysql_server_detect_order:
+  - mysql-community-server
+  - mysql-server-8.0
+  - mysql-server
+
+# Fallback for a host with NO MySQL server installed yet (a fresh bootstrap).
+# Ubuntu's metapackage, because nothing in this repo configures Oracle's apt
+# repo -- see infra/MYSQL-84-EXECUTE.md. Override per host to bootstrap a
+# replacement data droplet onto the Oracle track deliberately.
+mysql_server_package: mysql-server

@@ -472,9 +472,15 @@ console OIDC setup).
   free.
 - **Watch backups**: `ls -lh /var/backups/mysql/` on the droplet. Logs
   at `/var/log/mysql-backup.log`.
-- **Apply OS updates**: unattended-upgrades runs daily; reboots are
-  manual. `sudo apt update && sudo apt upgrade && sudo reboot` during
-  a quiet window.
+- **Apply OS updates**: unattended-upgrades runs daily (`noble-security`);
+  reboots are manual. ⚠ Do **not** clear a pending upgrade with a bare
+  `sudo apt upgrade` on this droplet: the MySQL packages are held in the dpkg
+  database (TBD-419) and will report as `kept back`, and moving them is a
+  windowed operation that needs a snapshot first. The ansible play no longer
+  upgrades packages on a routine converge either. Both the deliberate patch
+  path (`run-playbook.sh --production -- --tags patch`) and the procedure for
+  moving a held package on purpose are in `infra/MIGRATION.md`, "Data-plane
+  package pins".
 - **Rotate creds**: re-run the playbook with new vault values; restart
   services as the handlers fire.
 

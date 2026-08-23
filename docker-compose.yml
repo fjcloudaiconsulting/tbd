@@ -104,6 +104,20 @@ services:
       #     docker compose up -d --force-recreate backend
       - ./backend/.test_durations:/app/.test_durations:ro
       - ./.github:/app/.github:ro
+      # TBD-419: read-only mount so backend/tests/test_dataplane_apt_pins.py and
+      # test_apt_policy_filter.py can parse the ansible tree and import the
+      # apt-policy filter plugin. Without it both modules skip locally, and a
+      # fence that only ever runs in CI cannot be inject-and-confirm-red
+      # validated by the person writing it -- green-in-CI is then
+      # indistinguishable from green-because-vacuous. The GITHUB_ACTIONS
+      # RuntimeError in those modules stays anyway: the mount makes the local
+      # skip rare, the RuntimeError makes it impossible on the runner.
+      #
+      # ⚠ A DIRECTORY mount, so none of the inode-severing behaviour the
+      # seed.py and .test_durations comments warn about applies here. It does
+      # still need `docker compose up -d --force-recreate backend` once, on a
+      # container built before this line existed.
+      - ./infra:/app/infra:ro
       - ./.do:/app/.do:ro
       # TBD-391: read-only mount so test_await_test_run_gate.py can execute the
       # repo-root CI gate script. It cannot go to /app/scripts — that path is

@@ -1,0 +1,76 @@
+---
+# TBD-419 -- fail the play when apt is offering a MySQL major.minor track that
+# is not the one this host is running.
+#
+# WHAT THIS IS FOR. The holds are what PREVENT a package moving; this fence is
+# what makes repo drift VISIBLE. They are not redundant: a drifted repo with the
+# holds in place is silent until somebody deliberately unholds, and the failure
+# apt then produces ("you have held broken packages") names the hold, not the
+# drift, so the obvious next move is the wrong one. Do not delete this on the
+# grounds that the holds already stop the upgrade.
+#
+# ⚠⚠ NOT GATED ON `ansible_check_mode`, AND THAT IS THE OPPOSITE OF THE FENCES
+# AT THE BOTTOM OF roles/mysql/tasks/main.yml AND roles/redis/tasks/main.yml.
+# Those assert properties of the CONVERGED server, and `--check` converges
+# nothing, so they must be skipped under it. This asserts a property of the APT
+# REPOSITORY, which is identical before and after the play -- and
+# `--production --check --diff` is the documented pre-flight, i.e. the single
+# run where finding repo drift is most valuable. `check_mode: false` on the read
+# makes it execute under `--check`; the assert is ungated. Do not "harmonise"
+# this with the fences below, and do not copy this gating onto them.
+#
+# ⚠ NO VERSION LITERAL, ANYWHERE. The invariant is candidate-track ==
+# installed-track, derived from the host. A hardcoded `8.4` would red every
+# scratch rehearsal against stock Ubuntu (which gets 8.0), and the reflexive fix
+# for that is to widen it to `8.` -- one character from permitting 9.0 -- or to
+# delete the fence. It would also have to be edited mid-window at the next
+# legitimate major move, which is the classic moment a fence gets defanged.
+#
+# ⚠ KNOWN AND ACCEPTED LIMIT: if installed AND candidate both move to the same
+# new track, this passes. That is a deliberate major upgrade, which is a
+# windowed operation with a snapshot (see infra/MIGRATION.md, "Data-plane
+# package pins"), not the accident this fence is for.
+#
+# ⚠ The parse deliberately lives in a filter plugin
+# (infra/ansible/filter_plugins/apt_policy.py), not in a Jinja expression. A
+# substring test like `'8.4' in stdout` passes on a host whose Candidate is
+# 9.0.1, because `apt-cache policy` prints the whole version table and 8.4.11 is
+# still in it. Nothing that asserts on Jinja expression TEXT can tell those two
+# apart; `backend/tests/test_apt_policy_filter.py` can.
+
+- name: Read apt's view of the MySQL server package
+  ansible.builtin.command:
+    cmd: "apt-cache policy {{ mysql_resolved_server_package }}"
+  changed_when: false
+  check_mode: false
+  register: common_mysql_apt_policy
+  when: mysql_installed_server_present | bool
+
+- name: Assert apt is not offering a MySQL track this host is not on
+  ansible.builtin.assert:
+    that:
+      # An empty read must FAIL, never pass. `apt-cache policy` on a package apt
+      # has never heard of exits 0 with EMPTY stdout (measured), and
+      # `apt-get update` exits 0 even against a repo whose signature failed --
+      # so neither exit status is evidence of anything.
+      - mysql_apt_installed_track | length > 0
+      - mysql_apt_candidate_track | length > 0
+      - mysql_apt_candidate_track == mysql_apt_installed_track
+    quiet: true
+    fail_msg: >-
+      apt is offering {{ mysql_resolved_server_package }}
+      "{{ common_mysql_apt_policy.stdout | apt_policy_candidate | default('<nothing>', true) }}"
+      (track "{{ mysql_apt_candidate_track | default('<unreadable>', true) }}")
+      while this host runs
+      "{{ common_mysql_apt_policy.stdout | apt_policy_installed | default('<nothing>', true) }}"
+      (track "{{ mysql_apt_installed_track | default('<unreadable>', true) }}").
+      The apt repository selection has drifted. Do NOT unhold and upgrade to
+      clear this: a MySQL major jump is not reversible in place and 9.x is an
+      Innovation release. Check `debconf-show mysql-apt-config` and
+      /etc/apt/sources.list.d/mysql.list against MYSQL-84-EXECUTE.md's
+      preseed (select-server = mysql-8.4-lts). An unreadable track means apt
+      returned no Candidate at all -- usually an expired repo signing key.
+  vars:
+    mysql_apt_installed_track: "{{ common_mysql_apt_policy.stdout | apt_policy_installed | apt_version_track }}"
+    mysql_apt_candidate_track: "{{ common_mysql_apt_policy.stdout | apt_policy_candidate | apt_version_track }}"
+  when: mysql_installed_server_present | bool

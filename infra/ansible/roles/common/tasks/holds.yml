@@ -1,0 +1,137 @@
+---
+# TBD-419 -- declare the MySQL package holds that were previously hand-applied.
+#
+# ⚠ INCLUDED TWICE, from two different places, and both are load-bearing:
+#   * `roles/common/tasks/main.yml`, FIRST, so an already-provisioned host is
+#     held before anything in this play can move a package;
+#   * `playbooks/site.yml` `post_tasks`, LAST, so a host that had MySQL
+#     installed BY THIS RUN does not finish the run unheld and stay that way
+#     until somebody happens to converge it again.
+# Both carry `tags: [always]`, because `run-playbook.sh`'s own usage banner
+# documents `-- --tags mysql` and the play now has a `patch`-tagged upgrade
+# task. A tag-limited run that skipped the holds would be the one run where
+# they matter most.
+#
+# ⚠⚠ `ansible.builtin.dpkg_selections` HARD FAILS on a package the host does
+# not have. Measured in a real ubuntu:24.04 container against ansible-core:
+#     fatal: [...]: FAILED! => "Failed to find package 'mysql-community-server'
+#                               to perform selection 'hold'."
+# because `dpkg --get-selections <absent>` exits 0 but writes "no packages found
+# matching" to stderr, which the module turns into `fail_json`. So the hold list
+# CANNOT be a static list: production runs Oracle's `mysql-community-server`
+# (TBD-360 cutover) while a fresh scratch droplet gets Ubuntu's `mysql-server`,
+# and either list hard-fails on the other host. It is intersected with what is
+# actually installed instead.
+#
+# ⚠ The intersection is also exactly what creates the vacuous-green risk: a list
+# naming only packages this host does not have intersects to the empty set, the
+# loop is a no-op, and the play is green with NOTHING held. That is what the two
+# assertions at the bottom exist to refuse. Do not weaken them.
+
+- name: Read which packages are installed (drives the hold intersection)
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Resolve the hold set and the server package this host actually runs
+  ansible.builtin.set_fact:
+    # Only names dpkg knows about, so dpkg_selections can never hard fail.
+    mysql_resolved_holds: >-
+      {{ mysql_hold_candidates | intersect(ansible_facts.packages.keys() | list) }}
+    # The server package to install/verify. Derived, never assumed: on
+    # production this is Oracle's `mysql-community-server`, on a fresh Ubuntu
+    # box nothing matches and the role default (`mysql-server`) is used.
+    #
+    # ⚠ THIS IS NOT COSMETIC. `mysql-community-server` Provides only
+    # `virtual-mysql-server`, NOT `mysql-server` -- measured against
+    # repo.mysql.com's noble Packages index. So `apt: name=mysql-server
+    # state=present` is NOT satisfied by production's installed server, and once
+    # `mysql-community-server` is HELD at 8.4.11 that task resolves
+    # `mysql-server 8.4.12`, whose `Depends: mysql-community-server (= 8.4.12)`
+    # cannot be met, and apt exits 100 with "you have held broken packages" on
+    # an ordinary patch release. Targeting the package that is actually
+    # installed makes `state: present` the no-op it was always meant to be,
+    # while leaving the hold to do its job on a drifted repo.
+    mysql_resolved_server_package: >-
+      {{ (mysql_server_detect_order
+          | intersect(ansible_facts.packages.keys() | list)
+          | first) | default(mysql_server_package, true) }}
+    mysql_installed_server_present: >-
+      {{ (mysql_server_detect_order
+          | intersect(ansible_facts.packages.keys() | list) | length) > 0 }}
+
+- name: Hold the MySQL packages so no apt operation can move them
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ mysql_resolved_holds }}"
+
+# CONVERGE, THEN ASSERT. `dpkg_selections` is idempotent, and `mysql-apt-config`
+# was already held BY HAND on production on 2026-08-19 -- so the first converge
+# after this change reports `ok`, not `changed`, and produces no evidence
+# whatsoever that the hold is now managed rather than hand-applied. Reading the
+# selections back is the only thing that turns "the module said so" into "the
+# dpkg database says so".
+#
+# ⚠⚠ GATED ON `not ansible_check_mode` -- THE OPPOSITE GATING FROM
+# mysql_track_fence.yml IN THIS SAME DIRECTORY. The two are different classes,
+# and that difference is the whole reason each is gated the way it is:
+#
+#   * the track fence asserts a property of the APT REPOSITORY, which is
+#     identical before and after the play, so it runs under --check;
+#   * this asserts a property of the CONVERGED dpkg database, and --check
+#     converges nothing.
+#
+# `ansible.builtin.dpkg_selections` declares FULL check-mode support: under
+# --check it reports `changed` and writes NOTHING. So an ungated read-back sees
+# a package that is genuinely not held yet and fails -- on a perfectly healthy
+# box, during the documented `--production --check --diff` pre-flight, with a
+# message claiming the pin is broken. MEASURED against a real ubuntu:24.04
+# while writing this file: the first cut had it ungated and went red exactly
+# that way. Same lesson the mysql and redis roles already carry.
+#
+# ⚠ The anti-vacuity assert below is deliberately NOT gated. It compares two
+# lists both derived from `package_facts`, which DOES run under --check, and a
+# dry run is precisely where you want to be told the package names are wrong.
+- name: Read the dpkg selections back (real runs only)
+  ansible.builtin.command:
+    cmd: dpkg --get-selections
+  changed_when: false
+  when: not ansible_check_mode
+  register: common_dpkg_selections
+
+- name: Assert every resolved package is actually held on the box
+  when: not ansible_check_mode
+  ansible.builtin.assert:
+    that:
+      - mysql_resolved_holds
+        | difference(common_dpkg_selections.stdout_lines
+                     | select('search', '\thold$') | map('split') | map('first') | list)
+        | length == 0
+    quiet: true
+    fail_msg: >-
+      These MySQL packages were supposed to be held and dpkg does not report
+      them as held:
+      {{ mysql_resolved_holds
+         | difference(common_dpkg_selections.stdout_lines
+                      | select('search', '\thold$') | map('split') | map('first') | list) }}.
+      An apt run can still move them. Do not proceed on the assumption that the
+      pin is in place.
+
+# ⚠ THE ANTI-VACUITY GATE. Without this, getting the package NAMES wrong is
+# silent forever: the intersection is empty, the loop runs zero times, the
+# read-back trivially passes, and the play is green while production is
+# completely unpinned. The `when:` is what keeps a genuinely fresh bootstrap
+# green -- on a box with no MySQL at all there is correctly nothing to hold.
+- name: Refuse a pin that pinned nothing on a host that runs MySQL
+  ansible.builtin.assert:
+    that:
+      - mysql_resolved_server_package in mysql_resolved_holds
+      - "'mysql-apt-config' not in ansible_facts.packages
+         or 'mysql-apt-config' in mysql_resolved_holds"
+    quiet: true
+    fail_msg: >-
+      This host runs "{{ mysql_resolved_server_package }}" but the resolved hold
+      set is {{ mysql_resolved_holds }}. The pin is vacuous, not satisfied --
+      mysql_hold_candidates does not match this host's package naming. Fix the
+      names in roles/common/defaults/main.yml. Do NOT widen this assertion.
+  when: mysql_installed_server_present | bool

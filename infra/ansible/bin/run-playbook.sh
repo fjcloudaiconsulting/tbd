@@ -56,7 +56,10 @@ if [[ -z "$SCRATCH_HOST" && $PRODUCTION -eq 0 ]]; then
   cat >&2 <<'USAGE'
 !! No target given, and there is no default. Pick one explicitly:
 
-     --scratch-host <ip>   rehearse against a throwaway droplet
+     --scratch-host <ip> --scratch-private-ip <ip>
+                           rehearse against a throwaway droplet.
+                           BOTH flags are required: the redis role binds to
+                           private_ipv4 and there is deliberately no fallback.
      --production          the real data droplet
 
    ⚠ --production ROTATES the data-plane credentials to the Terraform-generated
