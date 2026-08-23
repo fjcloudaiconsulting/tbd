@@ -8,12 +8,15 @@ plumbing around it.
 repo has three times shipped a "check" that a grep satisfied from the comment
 documenting the very absence being checked for.
 
-⚠ ``.github/``, ``infra/``, ``nginx/`` and ``k8s/`` are NOT mounted into the
-backend dev container (``docker-compose.yml`` mounts only ``backend/app``,
-``backend/alembic``, ``backend/scripts``, ``backend/tests`` plus a few single
-files). These therefore SKIP locally and run in CI, which is the same shape
-``test_deploy_drift_probe.py`` uses. The CI guard below makes a skip on the
-runner an error rather than a silent pass.
+⚠ These fences read repo-root artifacts, which the backend container does not
+lay out the way a checkout does: ``/app`` IS ``backend/``. They RAISE rather
+than skip when an artifact cannot be found, following
+``test_await_test_run_gate.py`` — a skip would make the fence silently absent
+in whichever environment happened to lack the path, which is exactly how a
+fence becomes decoration. ``docker-compose.yml`` carries the read-only mounts
+that make all six resolvable inside the container; a container built before
+those mounts existed shows this module red until it is force-recreated, and
+the error below says so.
 """
 from __future__ import annotations
 
@@ -21,7 +24,6 @@ import os
 import pathlib
 import re
 
-import pytest
 import yaml
 
 
@@ -44,22 +46,52 @@ def _find_repo_root(start: pathlib.Path) -> pathlib.Path | None:
 
 REPO_ROOT = _find_repo_root(pathlib.Path(__file__).resolve())
 
+# ⚠ The container mounts ``./.github`` read-only at ``/app/.github``, so the
+# probe above SUCCEEDS there and returns ``/app``. An earlier cut of this
+# module assumed the opposite and guarded itself with a ``skipif`` on
+# ``REPO_ROOT is None``: that condition was unreachable, the skip never fired,
+# and four fences hard-failed on FileNotFoundError in every container run. A
+# false red is what gets a fence weakened rather than obeyed, so resolution is
+# per-artifact and explicit below.
+_CONTAINER_SCRIPTS = pathlib.Path("/app/repo-scripts")
+
+
+def _artifact(relpath: str) -> pathlib.Path:
+    """Locate a repo-root artifact in either layout.
+
+    Raises rather than skipping, per ``test_await_test_run_gate.py``. The one
+    path that genuinely differs is repo-root ``scripts/``: inside the container
+    ``/app/scripts`` is already ``backend/scripts``, so the repo-root directory
+    gets its own read-only mount at ``/app/repo-scripts``.
+    """
+    if REPO_ROOT is not None:
+        candidate = REPO_ROOT / relpath
+        if candidate.is_file():
+            return candidate
+    if relpath.startswith("scripts/"):
+        alt = _CONTAINER_SCRIPTS / relpath[len("scripts/") :]
+        if alt.is_file():
+            return alt
+    raise RuntimeError(
+        f"Could not locate {relpath}. On a checkout it sits at the repo root; "
+        "in the backend container it needs the read-only mount added for it in "
+        "docker-compose.yml. A container built before that mount existed shows "
+        "this module red — run `docker compose up -d --force-recreate backend` "
+        "once, and do NOT weaken this fence."
+    )
+
+
 if REPO_ROOT is None and os.environ.get("GITHUB_ACTIONS") == "true":  # pragma: no cover
     raise RuntimeError(
         "repo root not found from a CI checkout; these fences must not skip "
         "on the runner"
     )
 
-pytestmark = pytest.mark.skipif(
-    REPO_ROOT is None,
-    reason="repo tree is not mounted into the backend container; runs in CI",
-)
-
 ENDPOINT = "/health/dependencies"
 
 
 def _migrations_job() -> dict:
-    doc = yaml.safe_load((REPO_ROOT / ".github/workflows/test.yml").read_text())
+    doc = yaml.safe_load(_artifact(".github/workflows/test.yml").read_text())
     return doc["jobs"]["migrations"]
 
 
@@ -111,7 +143,7 @@ def test_s3_nginx_routes_the_endpoint_exactly():
     neither covers the sub-path; without a block of its own the request falls
     through to Next.js and returns the SPA's 404 page.
     """
-    conf = (REPO_ROOT / "nginx/default.conf").read_text()
+    conf = _artifact("nginx/default.conf").read_text()
     directives = [
         line.strip()
         for line in conf.splitlines()
@@ -125,7 +157,7 @@ def test_s3_nginx_routes_the_endpoint_exactly():
 def test_s4_k8s_ingress_routes_the_endpoint_exactly():
     """S4 — the k8s chart's ``/health`` rule is ``pathType: Exact``."""
     doc = yaml.safe_load(
-        _strip_helm((REPO_ROOT / "k8s/templates/ingress.yaml").read_text())
+        _strip_helm(_artifact("k8s/templates/ingress.yaml").read_text())
     )
 
     # Collect path entries by walking the tree rather than navigating a fixed
@@ -164,7 +196,7 @@ def test_s5_k8s_readiness_probe_stays_on_ready_and_is_bounded():
     and it must carry an explicit ``timeoutSeconds`` because the k8s DEFAULT
     IS 1s — under the app's own 3.0s database bound.
     """
-    safe = _strip_helm((REPO_ROOT / "k8s/templates/backend.yaml").read_text())
+    safe = _strip_helm(_artifact("k8s/templates/backend.yaml").read_text())
     # The file holds several documents (Deployment, Service, ...).
     docs = [d for d in yaml.safe_load_all(safe) if isinstance(d, dict)]
     deployments = [d for d in docs if d.get("kind") == "Deployment"]
@@ -189,7 +221,7 @@ def test_s6_smoke_test_checks_the_endpoint_and_no_longer_lies_about_ready():
     That comment was the only place the Redis check was documented on
     2026-08-19, and the script passed a deploy on which login was 100% broken.
     """
-    script = (REPO_ROOT / "scripts/smoke-test.sh").read_text()
+    script = _artifact("scripts/smoke-test.sh").read_text()
 
     checks = [
         line.strip()
