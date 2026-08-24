@@ -1,9 +1,108 @@
 ---
-- name: Update apt cache and upgrade packages
+# ⚠ The apt cache refresh is SEPARATE from the upgrade below, deliberately.
+# Deleting the whole task when `upgrade: safe` was removed would leave
+# `Install baseline packages` and the candidate fence reading whatever cache
+# the DO image happened to ship with -- a fresh-bootstrap breakage nobody
+# would test until they needed it, and a repo-drift fence answering a question
+# about last week's repo.
+#
+# ⚠⚠ `tags: [always]` IS LOAD-BEARING, and leaving it off made the repo-drift
+# fence read a STALE CACHE IN THE ONLY RUN THAT UPGRADES. Measured with
+# `--list-tasks --tags patch`: the holds, both fence passes and the upgrade were
+# listed, and this task was NOT -- so on `-- --tags patch` the fence whose whole
+# job is to stop the upgrade on a drifted repo evaluated whatever `apt-cache`
+# had on disk, possibly from days earlier, and the cache was refreshed
+# afterwards by the upgrade task itself. The same gap hit the documented
+# `--production --check --diff` pre-flight, because `ansible.builtin.apt`
+# guards its refresh with `if not module.check_mode`, so the fence there also
+# read a cache nothing in the run had touched.
+#
+# It must be `always`, not `patch`. The holds and the fence it feeds are
+# `always`-tagged, so they run on EVERY invocation; a `patch`-tagged refresh
+# would leave them reading a stale cache on any other `--tags` run somebody
+# invents later. `always` is what makes "refresh, then fence" an ordering
+# guarantee rather than a property of the default invocation.
+#
+# ⚠ RESIDUAL, NAMED RATHER THAN HIDDEN: `cache_valid_time: 3600` means this is
+# a no-op when apt's cache was last updated under an hour ago, so the fence can
+# still read a cache up to an hour old. That is pre-existing behaviour and a far
+# smaller window than "whatever happened to be on disk", but it is not zero. Do
+# not "fix" it by dropping cache_valid_time -- that adds a network round trip to
+# every task in the play's critical path. If the residual ever matters, refresh
+# unconditionally in the fence file itself, where it is one read.
+- name: Update the apt cache
   ansible.builtin.apt:
     update_cache: true
-    upgrade: safe
     cache_valid_time: 3600
+  tags: [always]
+
+# TBD-419 -- hold the MySQL packages BEFORE anything in this play can move a
+# package. See roles/common/tasks/holds.yml for why the set is derived rather
+# than declared literally.
+- name: Pin the MySQL packages (declared, not hand-applied)
+  ansible.builtin.include_tasks:
+    file: holds.yml
+    apply:
+      tags: [always]
+  tags: [always]
+
+# TBD-419 -- the repo-drift fence. See roles/common/tasks/mysql_track_fence.yml.
+- name: Check apt is not offering MySQL from a different major.minor track
+  ansible.builtin.include_tasks:
+    file: mysql_track_fence.yml
+    apply:
+      tags: [always]
+  tags: [always]
+
+# ---------------------------------------------------------------------------
+# ⚠⚠ THIS TASK IS DISARMED ON PURPOSE. IT MUST STAY THAT WAY (TBD-419).
+#
+# It used to run unconditionally, as the first task of the first role, so
+# running this play to change a Redis `maxmemory` knob also performed an
+# unbounded package upgrade on the production database droplet. On 2026-08-19
+# that surfaced as a pending `mysql-apt-config` 0.8.39 -> 0.8.40, the package
+# whose postinst decides which MySQL major track is enabled. MySQL 9.0 is an
+# Innovation release and a major jump is not reversible in place.
+#
+# `never` is the opt-in, NOT a variable. A variable can be set from role
+# defaults, group_vars, `inventory.yml` or the extra-vars temp file
+# `run-playbook.sh` builds -- none of which the operator is looking at when
+# they hit return. A `never` tag can only be turned on by typing it on the
+# command line, so it appears in shell history and in the runbook:
+#
+#     infra/ansible/bin/run-playbook.sh --production -- --tags patch
+#
+# ⚠ Deleting this task rather than disarming it is NOT the safer choice: it
+# moves routine OS patching back to a hand-run ssh shell block, which is
+# exactly the undeclared-box-state defect class this ticket exists to kill.
+#
+# ⚠ Security patching does NOT depend on this task and never did.
+# `unattended-upgrades` is installed and enabled below and applies
+# `noble-security` daily. What this task uniquely covers is `noble-updates`
+# (non-security SRU bugfixes). Neither path reboots.
+#
+# ⚠ Rehearse it before using it in anger:
+#     run-playbook.sh --scratch-host <ip> --scratch-private-ip <ip> -- --tags patch
+# ---------------------------------------------------------------------------
+- name: Upgrade OS packages (deliberate, windowed -- never runs by default)
+  ansible.builtin.apt:
+    upgrade: safe
+    update_cache: true
+    cache_valid_time: 3600
+  tags: [patch, never]
+
+# ⚠ RE-RUN THE FENCE AFTER THE UPGRADE, not just before it. The upgrade above
+# can itself move `mysql-apt-config`, whose postinst rewrites
+# /etc/apt/sources.list.d/mysql.list from its stored debconf selections -- so
+# the repo the fence approved at the top of the play is not necessarily the
+# repo in force at the bottom of it. This is the only check on the one moment
+# the pin is deliberately lifted.
+- name: Re-check the MySQL track after a deliberate upgrade
+  ansible.builtin.include_tasks:
+    file: mysql_track_fence.yml
+    apply:
+      tags: [patch]
+  tags: [patch, never]
 
 - name: Install baseline packages
   ansible.builtin.apt:
