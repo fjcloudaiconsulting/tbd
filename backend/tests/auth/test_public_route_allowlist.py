@@ -108,6 +108,12 @@ PUBLIC_ROUTES: tuple[tuple[str, str], ...] = (
         # to be the app rather than the router set.
         ("GET", "/health"),
         ("GET", "/ready"),
+        # Per-dependency readiness (TBD-413). Anonymous for the same
+        # reason as the two above: an uptime monitor holds no bearer
+        # token. It reports a CLOSED vocabulary of coarse states and
+        # never exception text, hostnames or ports — fenced by
+        # tests/test_readiness_dependencies.py::test_f15_*.
+        ("GET", "/health/dependencies"),
         # Serves feature flags and auth state to anonymous AND authenticated
         # callers. Uses ``get_current_user_optional``, which returns ``None``
         # rather than raising, so the route is reachable anonymously by
@@ -395,14 +401,14 @@ def test_p6_allowlist_literal_is_the_expected_size():
     The count is asserted separately from the set so a diff that quietly
     reshapes the literal cannot land without touching this number.
     """
-    assert len(PUBLIC_ROUTES) == 25, (
-        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 25. If a "
+    assert len(PUBLIC_ROUTES) == 26, (
+        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 26. If a "
         "route was legitimately added to or removed from the public surface, "
         "update this number, CONTRIBUTING.md, and record the security review."
     )
     # Deduped count must match too: a duplicated (method, path) line would
     # otherwise inflate the literal while the comparison set stayed the same.
-    assert len(_PUBLIC_ROUTE_SET) == 25, (
+    assert len(_PUBLIC_ROUTE_SET) == 26, (
         "PUBLIC_ROUTES contains duplicate entries: "
         f"{sorted({e for e in PUBLIC_ROUTES if PUBLIC_ROUTES.count(e) > 1})}"
     )

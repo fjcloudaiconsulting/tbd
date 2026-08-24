@@ -290,7 +290,10 @@ Watch the deploy:
 doctl apps logs <app-id> --type RUN --follow
 ```
 
-Wait for `/api/v1/health` and `/api/v1/ready` to go green.
+Wait for `/health` and `/ready` to go green, then check `/health/dependencies`.
+(These are served at the app root, not under `/api/v1/` — the `/api/v1/health` and
+`/api/v1/ready` paths this line used to name have never existed.) `/ready` covers the
+database only; `/health/dependencies` is the one that also covers Redis.
 
 ### 8. Smoke test (manual)
 

@@ -285,17 +285,50 @@ All limits are per client IP via slowapi. Production and Docker Compose use Redi
 | `POST /api/v1/auth/mfa/recovery` | 10/minute |
 | `POST /api/v1/auth/mfa/email-code` | 3/minute |
 | `POST /api/v1/auth/mfa/email-verify` | 10/minute |
+| `POST /api/v1/auth/logout` | 120/minute |
+| `POST /api/v1/auth/reset-password` | 10/minute |
+| `GET /api/v1/auth/google` | 60/minute |
+| `GET /api/v1/auth/google/callback` | 60/minute |
+| `GET /api/v1/auth/sso-stepup/callback` | 60/hour |
+
+⚠ This table is a reader's summary of the auth surface, not the inventory.
+The authoritative one is `backend/app/rate_limit_endpoint_catalogue.py`, and
+since TBD-353 `backend/tests/test_rate_limit_catalogue_drift.py` fails the
+build when a `@limiter.limit` decorator has no catalogue pattern, when a
+pattern has no live decorator, or when a limit value changes without review.
+
+The three `/logout`, `/google/callback` and `/sso-stepup/callback` limits are
+deliberately loose. On those routes a 429 is worse than the traffic it stops:
+a rate-limited logout leaves the refresh cookie and the Redis session family
+alive while the client clears its own state, and a 429 on an OAuth callback
+renders bare JSON in the middle of a browser navigation. The anonymous
+`audit_events` writes those routes used to permit are bounded by suppressing
+the rows, not by the limits — see
+`specs/2026-08-22-tbd-353-anonymous-audit-write-bounds.md`.
+
+⚠ That bounds **those three routes**, not the anonymous `audit_events` write
+surface as a whole. `POST /api/v1/security/csp-report` is still an open,
+unauthenticated writer at 20 rows per body × 60/minute = **1200 rows/min/IP**,
+and the `/admin/audit` and alerting exclusion its own docstring names as the
+mitigation does not exist. Tracked separately; do not describe the surface as
+bounded.
+
+`POST /api/v1/auth/refresh` remains **unlimited**, deliberately (TBD-353): it
+writes no audit row for an anonymous caller, and a 429 there wedges the
+frontend's mount-path session restore into a permanent spinner whose only
+recovery — reload — re-issues the request. Tracked separately.
 
 ### Public endpoints (no auth required)
 
-Exactly **25** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 10 are genuinely **open**, and 15 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "25 public routes" is not 25 unauthenticated ones.
+Exactly **26** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 11 are genuinely **open**, and 15 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "26 public routes" is not 26 unauthenticated ones.
 
-**Open — no identity check at all (10)**
+**Open — no identity check at all (11)**
 
 | Route | Why it cannot carry auth |
 | --- | --- |
 | `GET /health` | Platform liveness probe. |
-| `GET /ready` | Platform readiness probe. |
+| `GET /ready` | Platform readiness probe. **Database only**, deliberately — it is the rotation gate a k8s readinessProbe pulls replicas out on. |
+| `GET /health/dependencies` | Per-dependency readiness (TBD-413): database **and** Redis, 503 when a required one is unusable. Anonymous because an uptime monitor holds no bearer token. Reports a closed vocabulary of coarse states and never exception text, hostnames or ports. |
 | `GET /api/v1/auth/status` | Serves feature flags to anonymous and authenticated callers alike. Uses `get_current_user_optional`, which returns `None` rather than raising. |
 | `GET /api/v1/auth/check-username` | Signup-time availability probe; runs before any account exists. |
 | `POST /api/v1/auth/register` | Account creation. Nothing to authenticate yet. |

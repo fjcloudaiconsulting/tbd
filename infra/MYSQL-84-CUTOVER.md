@@ -149,6 +149,7 @@ proves the other:
 ```bash
 # 1. The running app proves App Platform's secret matches the CURRENT server password
 curl -s https://<app-host>/ready          # expect database: connected
+curl -s https://<app-host>/health/dependencies   # expect both checks ok (TBD-413)
 
 # 2. The inventory holds a real value (prints no secret)
 cd infra/ansible
@@ -525,7 +526,7 @@ left alone.
   job cannot reach `pfv2` any more. Verified live on deployment
   `2026-08-17`: the job logs `{"database": "pfv2", "event": "migrate.no_op"}`,
   so it is genuinely reading its own binding, not inheriting the service's.
-- `/ready` green, one real authenticated request served
+- `/ready` green, `/health/dependencies` green (database AND Redis), one real authenticated request served
 - Run the backup script by hand; confirm a non-empty dump
 - ⚠ The nightly backup has four known holes — on-disk only, `pfv2` only so
   **grants are not backed up**, `gzip >` creates the file before `mysqldump`

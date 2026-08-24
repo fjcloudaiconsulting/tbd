@@ -125,6 +125,14 @@ services:
       # point. On a bare CI runner the whole repo is checked out and the test
       # finds it at REPO_ROOT/scripts/ci instead; the test tries both.
       - ./scripts:/app/repo-scripts:ro
+      # TBD-413: read-only mounts so test_readiness_dependencies_wiring.py can
+      # parse the dev nginx conf and the k8s chart that route
+      # /health/dependencies. Without them those fences raise FileNotFoundError
+      # in the container while staying green in CI — and a false red is what
+      # gets a fence weakened rather than obeyed. Read-only because nothing in
+      # a container run should ever write the deployment manifests.
+      - ./nginx:/app/nginx:ro
+      - ./k8s:/app/k8s:ro
       # TBD-345: read-only mount so test_seed_determinism.py can assert that
       # `pfv`'s cmd_seed still forwards SEED_* generically. Without it that
       # guard is green on a bare CI checkout (where the repo root is present)

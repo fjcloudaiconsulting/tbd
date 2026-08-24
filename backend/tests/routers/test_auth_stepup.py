@@ -630,8 +630,11 @@ async def test_stepup_callback_user_cancelled_redirects_to_settings(
     state = f"stepup:{user_id}:nonce:settings"
 
     with TestClient(app) as client:
-        # No oauth_state cookie — we want the cancelled branch to
-        # surface a friendly redirect regardless of state validity.
+        # TBD-353: the cookie is now set so this test keeps asserting the
+        # audit row, which is its subject. The cookie-ABSENT half (same
+        # redirect, NO row) is fenced in
+        # tests/auth/test_anonymous_audit_bounds.py::test_f3_leg1/leg4.
+        client.cookies.set("oauth_state", state)
         res = client.get(
             "/api/v1/auth/sso-stepup/callback",
             params={
@@ -688,6 +691,11 @@ async def test_stepup_callback_provider_error_redirects_with_provider_error_code
     state = f"stepup:{user_id}:nonce:security"
 
     with TestClient(app) as client:
+        # TBD-353: the cookie is now set so this test keeps asserting the
+        # audit row, which is its subject. The cookie-ABSENT half (same
+        # redirect, NO row) is fenced in
+        # tests/auth/test_anonymous_audit_bounds.py::test_f3_leg1/leg4.
+        client.cookies.set("oauth_state", state)
         res = client.get(
             "/api/v1/auth/sso-stepup/callback",
             params={"error": "server_error", "state": state},
@@ -717,6 +725,11 @@ async def test_stepup_callback_missing_code_and_error_redirects_with_token_code(
     state = f"stepup:{user_id}:nonce:security"
 
     with TestClient(app) as client:
+        # TBD-353: the cookie is now set so this test keeps asserting the
+        # audit row, which is its subject. The cookie-ABSENT half (same
+        # redirect, NO row) is fenced in
+        # tests/auth/test_anonymous_audit_bounds.py::test_f3_leg1/leg4.
+        client.cookies.set("oauth_state", state)
         res = client.get(
             "/api/v1/auth/sso-stepup/callback",
             params={"state": state},

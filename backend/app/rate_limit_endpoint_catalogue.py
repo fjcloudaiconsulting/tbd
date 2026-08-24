@@ -24,6 +24,12 @@ matching pattern below. When you remove one, delete the pattern; an
 override row referencing a removed pattern is harmless (it just
 no-ops) but the catalogue must be truthful.
 
+That instruction is no longer merely advisory: since TBD-353,
+``backend/tests/test_rate_limit_catalogue_drift.py`` AST-walks every
+router and fails when a decorator has no pattern, when a pattern has no
+live decorator, or when a limit value changes without review. It had
+drifted six times before that fence existed.
+
 Two-tier split (architect-locked, 2026-05-22).
 ``OVERRIDABLE_ENDPOINT_PATTERNS`` lists the patterns where per-org or
 per-user overrides ACTUALLY take effect at request time. These are
@@ -66,15 +72,22 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.sso_stepup_initiate",
     # feedback router
     "feedback.submit",
+    # org_members router. Backfilled by TBD-353: the decorator has
+    # existed without a pattern, so no override for it could be stored.
+    "org_members.remove_member",
     # onboarding router
     "onboarding.complete",
     "onboarding.restart_tour",
     "onboarding.seed_demo",
     # orgs router
     "orgs.rename",
-    # reports router
+    # reports router. ``sankey_query`` is a SECOND decorator that was
+    # sharing ``reports.query``'s pattern; backfilled by TBD-353 so the
+    # two are separately addressable.
     "reports.query",
+    "reports.sankey_query",
     # users router
+    "users.cancel_pending_email",
     "users.change_password",
     "users.update_profile",
 })
@@ -89,17 +102,33 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
 PRE_AUTH_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.check_username",
     "auth.forgot_password",
+    # TBD-353 added the next five. All five routes are on the closed
+    # public-endpoint allowlist and all five were unlimited; three of
+    # them (logout and the two OAuth callbacks) wrote an ``audit_events``
+    # row on a fully anonymous call.
+    "auth.google_callback",
+    "auth.google_login",
     "auth.login",
+    "auth.logout",
     "auth.mfa_email_code",
     "auth.mfa_email_verify",
     "auth.mfa_recovery",
     "auth.mfa_verify",
     "auth.register",
     "auth.resend_verification_public",
+    "auth.reset_password",
+    "auth.sso_stepup_callback",
     "auth.verify",
     "auth.verify_email",
     "org_members.accept_invitation",
     "org_members.preview_invitation",
+    # Backfilled by TBD-353. These three decorators pre-date this
+    # catalogue entry and had none, which made the module's own
+    # "single source of truth" claim false and left the admin UI's
+    # dropdown implying the routes were unlimited.
+    "public_stats.founder_count",
+    "security.csp_report",
+    "webhooks.mailgun",
 })
 
 
