@@ -11,7 +11,7 @@ AND IS BROKEN.** It is the obvious prior art an implementer will find. It says
 the endpoint "DOES NOT mutate `users.email` yet. Mints an `email_verify` token
 for the user with the NEW email baked in" and never mentions `pending_email`,
 because it predates TBD-361 by three months. Implemented literally today, the
-token reaches `backend/app/routers/auth.py:2308-2316`:
+token reaches `backend/app/routers/auth.py:2371-2379`:
 
 ```python
 promoting = (user.pending_email is not None and token_email == user.pending_email)
@@ -26,18 +26,24 @@ Annotate that spec; do not follow it.
 
 ## The premise, verified
 
-Verified at real file:line on `main` @ `0c69fdd0`. The ticket's own line numbers
-are stale; every one still lands on the right symbol, so the premise survives
-and only the citations rotted.
+Verified at real file:line, re-anchored to `main` @ `e9db50ee`. The ticket's own
+line numbers are stale; every one still lands on the right symbol, so the
+premise survives and only the citations rotted.
+
+⚠ This document was first written against `0c69fdd0`. TBD-353 (#695) then added
+~347 lines to `backend/app/routers/auth.py`, shifting every citation past ~1890
+by roughly +60. All have been re-derived. **If `auth.py` moves again, re-derive
+before trusting a number here** — this spec's own finding 3 is that stale
+citations are what rots a brief.
 
 * `email_verified` has **no operator writer anywhere**. Across the admin
   modules it appears only as reads and one filter: `admin_orgs.py:956`,
   `admin_orgs_service.py:230`, `admin_users_search_service.py:93` and `:184`,
   `admin_org_members_service.py:97`.
-* `resend_verification_public` (`auth.py:2349`) looks the user up by username
+* `resend_verification_public` (`auth.py:2412`) looks the user up by username
   OR email and re-sends to the **stored** address, so it cannot reach a typo'd
   or bouncing one.
-* `POST /auth/login` 403s unverified accounts unconditionally at `auth.py:512`.
+* `POST /auth/login` 403s unverified accounts unconditionally at `auth.py:516`.
 * Prerequisites TBD-361 and TBD-344 have both shipped.
 
 ## The ruling
@@ -87,9 +93,14 @@ trusting this section again.
 **Why the guard is safe to have.** `email_verified` is a **one-way latch**.
 Every write in `backend/app/` sets it `True`; the only `False` is the
 creation-time value at `auth.py:390` (`email_verified=is_first_user_setup`),
-inside the `User(...)` constructor, never a transition. Combined with the
-unconditional login 403, `email_verified=False` implies *never held a session*
-implies **owns no user-created data**. The guard's accepted population is a
+inside the `User(...)` constructor, never a transition.
+
+⚠ **The next step is conditional, and the condition is the measurement above.**
+Combined with the unconditional login 403, `email_verified=False` implies *never
+held a session* implies **owns no user-created data** — but only for rows
+created after the gate landed on 2026-04-30. For anything older the implication
+does not hold at all, which is why the cohort had to be measured rather than
+argued. Given that measurement, the guard's accepted population today is a
 username and an empty organization. An attacker-operator cannot push a
 protected target into the accepted set, and `user_merge_service.py:183-184`
 only ever pushes targets *into* protection.
@@ -98,7 +109,7 @@ only ever pushes targets *into* protection.
 **two** proof-of-presence branches: `password_set=True` supplies
 `current_password`; `password_set=False` supplies a `stepup_token` minted by
 the SSO step-up callback, which pins `google_email == user.email`
-(`auth.py:4182`). So every verified user has a working self-serve path through
+(`auth.py:4466`). So every verified user has a working self-serve path through
 one branch or the other, and the population the guard denies is a genuine
 two-failure conjunction: **lost inbox AND lost credential**.
 
@@ -123,8 +134,8 @@ victim login at the OLD address -> 401
 ```
 
 `forgot_password` matches `User.email` and gates only on `is_active`
-(`auth.py:1896-1901`); `reset_password` then flips `password_set = True`
-(`auth.py:1947`), so the chain completes **even against an SSO-only account**,
+(`auth.py:1951-1956`); `reset_password` then flips `password_set = True`
+(`auth.py:2010`), so the chain completes **even against an SSO-only account**,
 converting it into a password account the attacker owns. Verified that
 `users.reset_credentials`, `users.impersonate` and `users.invite` all have
 **zero call sites** today, so this would genuinely be the first such primitive,
@@ -142,7 +153,7 @@ Proposed by the build-it round as a middle line. It discriminates on
 while handing the takeover chain to the entire federated-IdP population. And it
 buys that population no containment: after a malicious promotion `users.email`
 no longer matches their Google address, so their next SSO sign-in falls through
-`auth.py:3685` and mints them a **new empty account and org** — locked out
+`auth.py:3893` and mints them a **new empty account and org** — locked out
 exactly as hard as with no guard at all.
 
 ## What ships
@@ -195,7 +206,7 @@ code on the wire. The L4.4 spec published that row and it was wrong there too.
 nobody later reads it as a missing failure row.
 
 ⚠ **`email_unchanged` compares NORMALIZED values, on both sides.**
-`_promote_pending_email`'s own comment (`auth.py:2036-2040`) records that
+`_promote_pending_email`'s own comment (`auth.py:2095-2103`) records that
 mixed-case `users.email` rows genuinely exist in production, because the old
 request path wrote `body.email` raw. With a byte comparison, a target stored as
 `Foo@Bar.com` and an operator typing `foo@bar.com` does **not** trip
@@ -218,11 +229,18 @@ owns the platform's most privileged account. Precedent:
 equality check, so repointing to the target's own current address takes the
 **promoting** branch, writing `sessions_invalidated_at` and a
 `user.email.changed` audit row whose `old_email == new_email`. Fix it at the
-admin endpoint only; the `_promote_pending_email` half is pre-existing, is
-reachable from `PUT /users/me`, and is filed separately.
+admin endpoint only. ⚠ The `_promote_pending_email` half is **not reachable
+from `PUT /users/me`** and is therefore NOT filed: `email_changing`
+(`users.py:124-126`) normalizes both sides, so a self-addressed change is
+`False`, the `cancelling_pending` branch (`:137-141`) clears the claim instead,
+and the whole two-phase block is skipped. This endpoint would be the **first**
+writer able to reach that state, which is exactly why the guard is required
+here.
 
-The uniqueness check is **advisory**, deliberately, exactly as
-`users.py:193-203`. The binding check is re-run at promote time with its
+The uniqueness check is **advisory**, deliberately — but ⚠ model it on the
+**promote-time** select, which already carries `User.id != user.id`, NOT on
+`users.py:193-203`, whose `select(User).where(User.email == new_email_norm)` has
+no id guard and is the version the `email_unchanged` fix above exists to refuse. The binding check is re-run at promote time with its
 `IntegrityError` → 409 backstop. ⚠ Do **not** add a unique index on
 `pending_email`: CLAUDE.md forbids it and it hands out an address-squatting
 primitive.
@@ -254,8 +272,11 @@ returns **204** (`users.py:357`); the divergence is deliberate — the operator
 needs to know whether anything was actually cleared — and is stated so it is not
 "harmonised" away.
 
-This is a genuine **fifth clearer** of `pending_email`, and CLAUDE.md's "exactly
-four writers" bullet must be corrected in the same PR.
+⚠ CLAUDE.md's `pending_email` bullet enumerates **reasons**, not functions, and
+this design adds **two**: this admin cancel, and the provenance abort in §5b
+(which routes through `_abandon_pending_email`). So the corrected count is
+**six**, not five. Documenting only this one leaves the provenance abort
+unlisted, which is precisely the drift that bullet exists to stop.
 
 It is not optional. The typed confirmation only *prevents* a mistyped address.
 If the operator mistypes the **correction** and mails a live promotion link to
@@ -277,10 +298,10 @@ changed" notices to the same inbox. It manufactures a false completion record.
 ⚠ This closes the one door the guard leaves open. The guard reads
 `email_verified` at **trigger** time; the claim redeems up to 24 hours later,
 and there are **four** arms by which an unverified target becomes verified in
-between — the registration link (`auth.py:2322`), Google sign-in on the
-existing row (`auth.py:3662`), invitation accept (`invitation_service.py:384`)
+between — the registration link (`auth.py:2385`), Google sign-in on the
+existing row (`auth.py:3870`), invitation accept (`invitation_service.py:384`)
 and admin merge (`user_merge_service.py:184`). The bootstrap arm deliberately
-does **not** clear `pending_email` (`auth.py:2316-2323`), so the operator's
+does **not** clear `pending_email` (`auth.py:2379-2386`), so the operator's
 link stays armed and still promotes on a now-verified, now-loginable account.
 
 `create_email_verification_token` (`security.py:253-269`) already mints a signed
@@ -314,10 +335,13 @@ bounded by the token's 24h TTL either way.
   (`notification_templates.py:180-206`) says *"cancel the pending change in
   Settings, reset your password, and contact support"* and links to
   `/settings`. Every target of this endpoint is `email_verified=False` and
-  therefore 403s at `auth.py:512`, and `DELETE /users/me/pending-email` sits
+  therefore 403s at `auth.py:516`, and `DELETE /users/me/pending-email` sits
   behind `require_interactive_session`. So the reused copy instructs a
-  locked-out victim to perform two actions behind a login they cannot pass, and
-  the in-app SECURITY row is equally unreadable to them. Net in-app mitigation
+  locked-out victim to cancel in Settings, which is behind a login they cannot
+  pass, and to reset their password — which is NOT behind a login
+  (`forgot_password` is public and gates only on `is_active`) but is useless
+  anyway, because the reset mail goes to the same dead `users.email`. The in-app
+  SECURITY row is equally unreadable to them. Net in-app mitigation
   would be **zero**.
   Mint an **admin-initiated** template instead, as the L4.4 spec did: name the
   acting operator, state that the account is locked out, say explicitly not to
@@ -332,7 +356,7 @@ bounded by the token's 24h TTL either way.
   Keep the §6 audit row — it is right for the general case and good hygiene —
   but not for that reason.
 * **In-app SECURITY row** via `dispatch_notification_best_effort`, gated on
-  `audit_event_id is not None` per the locked rule at `admin_users.py:497-506`.
+  `audit_event_id is not None` per the locked rule at `admin_users.py:512-524`.
 * ⚠ **No credential is ever mailed to `pending_email`.** The verification link
   is a proof-of-control challenge and grants nothing unless the recipient
   controls the mailbox. `forgot_password` stays `users.email`-only.
@@ -377,19 +401,28 @@ the only identity column; on an admin-triggered row the reader's question is
 
 ### 5b. The promote-time abort of an admin claim is silent — accepted, stated
 
-When the provenance check refuses, `_abandon_pending_email` (`auth.py:2229-2244`)
+When the provenance check refuses, `_abandon_pending_email` (`auth.py:2292-2307`)
 clears the claim and `verify_email` returns a generic refusal. No row names the
 admin claim that just died, and the operator gets no signal that their repoint
 evaporated. Accepted for v1: the operator sees the claim gone on next load, and
-adding a writer to that path widens a function four clear-sites depend on.
+`_abandon_pending_email` (`auth.py:2292`) has exactly **two** callers — the
+taken-conflict path (`:2120`) and the `IntegrityError` backstop (`:2171`) — both
+of which would inherit any writer added there.
 Stated so it is a decision, not an oversight.
 
 ### 6. Fix `cancel_pending_email` (`users.py:360-386`)
 
-It writes **no audit row** — verified. Under this design, cancelling is the
-target's only defence, and today that defence leaves nothing in `/admin/audit`,
-so an operator can retry silently after a victim cancels. Add
-`user.email.change_cancelled`.
+It writes **no audit row** — verified. Add `user.email.change_cancelled`.
+
+⚠ **Its justification is NOT "the target's only defence".** An earlier draft
+said that, and it is refuted: every target of this endpoint is unverified, so
+they 403 at login (`auth.py:516`) and cannot reach
+`DELETE /users/me/pending-email`, which sits behind `require_interactive_session`
+(`users.py:355-358`). This population cannot cancel at all, so "an operator can
+retry silently after a victim cancels" describes an event that cannot occur
+here. The row is still right — it closes the gap for every OTHER caller of that
+endpoint, where a live session (including a hijacked one) can void a claim with
+nothing in `/admin/audit` — but not for this reason.
 
 ⚠ Its **absence of re-auth is deliberate and correct** and must not be
 "fixed" — its docstring argues it, and demanding a password to undo a mistake
@@ -424,7 +457,7 @@ SSO-shaped row.
 
 **F3 `test_login_still_403s_before_the_click`** — both halves: 403 immediately
 after the operator acts, 200 after the click. The second half alone is
-satisfied by the wrong design. *Kills* any exemption sneaked into `auth.py:512`.
+satisfied by the wrong design. *Kills* any exemption sneaked into `auth.py:516`.
 
 **F4 `test_org_admin_cannot_call_it`** — table-driven over `Role.OWNER/ADMIN/
 MEMBER` × {same org, different org}, all `is_superadmin=False`. Assert **403
@@ -445,7 +478,7 @@ the real app.
 dispatched. A handler that commits then raises leaves the claim live.
 
 **F6 `test_admin_token_is_refused_after_the_row_becomes_verified`** — the
-provenance fence. ⚠ `_promote_pending_email` (`auth.py:2083`) is a **fifth**
+provenance fence. ⚠ `_promote_pending_email` (`auth.py:2146`) is a **fifth**
 site that verifies an existing row, excluded from the four arms only because it
 sets `pending_email = None` in the same transaction (and `_abandon_pending_email`
 clears it on the `IntegrityError` path). Say that in the test, or a refactor
@@ -471,7 +504,7 @@ row-exists check.
 **F10 `test_mail_goes_only_to_the_new_address_at_request_time`** — exactly one
 verification dispatch, to the new address; no password-reset or login-link
 sender called at all; **paired** with an assertion that promotion still mails
-both old and new (`auth.py:2205-2226`), or the fence is satisfiable by deleting
+both old and new (`auth.py:2266-2287`), or the fence is satisfiable by deleting
 the downstream notification instead.
 
 **F11 `test_email_verified_writer_set_is_closed`** — an AST fence modelled
@@ -494,11 +527,22 @@ inside one function count as one entry. The eight write sites collapse:
 | `services/user_merge_service.py::merge_users` | 184 |
 
 Writing eight entries produces two spurious MISSING failures against a correct
-implementation. Three further constraints, or it misfires the other way: key
+implementation.
+
+⚠⚠ **The model test does NOT collect call keywords.** Its `_find_write_sites`
+(`test_sessions_invalidated_at_allowlist.py:204-224`) matches `ast.Assign` with
+`ast.Attribute` targets only. Copied "function-for-function" as written,
+`routers/auth.py::register` — whose ONLY write is the `User(...)` keyword —
+reports as a spurious MISSING. The keyword collection is an extension this fence
+requires and the model lacks; build it deliberately.
+
+Three further constraints, or it misfires the other way: key
 `User(...)` keyword matches on the **callee name**, because `_user_response`
 passes `email_verified=` to `UserResponse(...)` (`auth.py:135`, `users.py:62`);
-exclude `ast.AnnAssign` (`models/user.py:62`, `schemas/auth.py:59` are
-annotations, not writes); and **declare the tree walked as `backend/app/` only**
+exclude `ast.AnnAssign` (`models/user.py:62`, `schemas/auth.py:59` and
+`schemas/admin_orgs.py:35` are annotations, not writes — harmless while the
+collector is Attribute-only, load-bearing the moment it is broadened to `Name`
+targets); and **declare the tree walked as `backend/app/` only**
 — `backend/seed.py:426` writes the column as raw SQL, which no attribute-store
 collector can see.
 This is what DoD item 2 actually wanted: it demanded parity with the
@@ -522,9 +566,11 @@ caller, which is the state the spec's own UI section was originally in.
 
 **F15 `test_the_modal_traps_focus_and_restores_it`** — Tab from the last
 focusable element returns to the first, Escape closes, and focus returns to the
-trigger. *Kills* a fourth hand-rolled modal that omits `useFocusTrap`. Every
-field-modal in this codebase implements this by hand, so an unfenced spec gets
-an inaccessible one.
+trigger. *Kills* a new modal that omits `useFocusTrap`. ⚠ The three existing
+field-modals all DO import it; the one that hand-rolls Tab/Escape/restore is
+`ConfirmModal`. What is missing is a shared field-modal *component*, not the
+hook — so the risk is a fourth bespoke modal that forgets to wire it, which is
+what this fence catches.
 
 ## UI
 
@@ -595,7 +641,7 @@ an inaccessible one.
   place and is not re-worded per surface. Plus a line naming the Google-SSO
   consequence:
   changing the address changes which Google identity can sign in
-  (`auth.py:3635` matches on `users.email`).
+  (`auth.py:3843` matches on `users.email`).
 * Primitives from `frontend/lib/styles.ts`; no raw Tailwind palette colours
   (`check-design-tokens.sh` is a CI gate).
 * ⚠ **New card and new modal is new design. Hard pause for operator visual
@@ -672,6 +718,6 @@ an inaccessible one.
 > write against the production database.
 
 Both architects agree this design needs no go/no-go from the operator, because
-it introduces no takeover primitive: its accepted population provably holds no
-data. The wider variants — which do ship the platform's first cross-tenant
+it introduces no takeover primitive: its accepted population holds no data —
+**measured**, not proven, per the precondition recorded above. The wider variants — which do ship the platform's first cross-tenant
 takeover primitive — would have needed one.
