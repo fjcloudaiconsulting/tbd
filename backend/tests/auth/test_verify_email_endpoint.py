@@ -6,7 +6,7 @@ tested behaviour: a reachability row in the public-route allowlist, and URL
 string assertions in the email-template tests. The endpoint had **zero**
 behavioural coverage.
 
-It is on the closed 25-pair public allowlist -- unauthenticated by design,
+It is on the closed 26-pair public allowlist -- unauthenticated by design,
 with the token as its only credential -- so its guards are the whole of its
 security:
 

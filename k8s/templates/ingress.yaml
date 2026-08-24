@@ -38,6 +38,15 @@ spec:
                 name: {{ .Release.Name }}-backend
                 port:
                   number: 8000
+          # TBD-413. Needs its own rule: /health and /ready above are both
+          # pathType Exact, so neither covers this sub-path.
+          - path: /health/dependencies
+            pathType: Exact
+            backend:
+              service:
+                name: {{ .Release.Name }}-backend
+                port:
+                  number: 8000
           - path: /
             pathType: Prefix
             backend:

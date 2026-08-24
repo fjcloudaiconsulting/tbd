@@ -226,7 +226,8 @@ On failure, `scripts/notify-smoke-failure.sh` opens (or comments on an existing)
 
 1. Watch the workflow run: `https://github.com/flamarion/pfv/actions/workflows/release.yml`
 2. Watch the DO deploy: DO console -> Apps -> `pfv` -> Activity. The PRE_DEPLOY job logs appear first; structured `migrate.*` JSON events stream there.
-3. Inspect the running app: `curl -fsS https://app.thebetterdecision.com/health` and `curl -fsS https://app.thebetterdecision.com/ready`.
+3. Inspect the running app: `curl -fsS https://app.thebetterdecision.com/health`, `curl -fsS https://app.thebetterdecision.com/ready`, and `curl -fsS https://app.thebetterdecision.com/health/dependencies`.
+   `/ready` is the database-only rotation gate; `/health/dependencies` is the one that also covers Redis, and therefore the one that tells you whether anybody can log in.
 
 ## 4. Manual deploy escape hatch (`deploy.yml`)
 
