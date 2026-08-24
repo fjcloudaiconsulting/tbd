@@ -14,7 +14,6 @@ assertion would pass vacuously. Read both spellings.
 import os
 import pathlib
 
-import pytest
 import yaml
 
 
@@ -33,10 +32,42 @@ if REPO_ROOT is None and os.environ.get("GITHUB_ACTIONS") == "true":  # pragma: 
         "not be allowed to skip on the runner."
     )
 
-pytestmark = pytest.mark.skipif(
-    REPO_ROOT is None,
-    reason="workflow tree is not mounted into the backend container; runs in CI",
-)
+# ⚠ The ``skipif`` that used to live here guarded on ``REPO_ROOT is None`` and
+# was UNREACHABLE. ``docker-compose.yml`` mounts ``./.github`` read-only at
+# ``/app/.github``, so the probe above finds ``deploy-drift-probe.yml`` and
+# returns ``/app`` inside the container too. The skip therefore never fired,
+# and the three fences that read repo-root ``scripts/`` died on
+# ``FileNotFoundError`` in every container run while staying green in CI --
+# ``/app/scripts`` is ``backend/scripts`` (docker-compose.yml), not the repo
+# root's. A false red is what gets a fence weakened rather than obeyed, so
+# resolution is per-artifact and explicit, and it RAISES with the remedy
+# rather than skipping, following ``test_await_test_run_gate.py``: a skip
+# makes a fence silently absent in whichever environment lacks the path.
+_CONTAINER_SCRIPTS = pathlib.Path("/app/repo-scripts")
+
+
+def _artifact(relpath: str) -> pathlib.Path:
+    """Locate a repo-root artifact in either layout.
+
+    The one path that genuinely differs is repo-root ``scripts/``: inside the
+    backend container ``/app/scripts`` is already ``backend/scripts``, so the
+    repo-root directory gets its own read-only mount at ``/app/repo-scripts``.
+    """
+    if REPO_ROOT is not None:
+        candidate = REPO_ROOT / relpath
+        if candidate.is_file():
+            return candidate
+    if relpath.startswith("scripts/"):
+        alt = _CONTAINER_SCRIPTS / relpath[len("scripts/") :]
+        if alt.is_file():
+            return alt
+    raise RuntimeError(
+        f"Could not locate {relpath}. On a checkout it sits at the repo root; "
+        "in the backend container repo-root scripts/ is mounted read-only at "
+        "/app/repo-scripts (docker-compose.yml). A container built before that "
+        "mount existed shows this module red -- run `docker compose up -d "
+        "--force-recreate backend` once, and do NOT weaken this fence."
+    )
 
 WORKFLOW = "deploy-drift-probe.yml"
 PROBE = "scripts/ci/check-deploy-drift.sh"
@@ -55,7 +86,7 @@ MUTATING = (
 
 
 def _doc() -> dict:
-    return yaml.safe_load((REPO_ROOT / ".github" / "workflows" / WORKFLOW).read_text())
+    return yaml.safe_load(_artifact(f".github/workflows/{WORKFLOW}").read_text())
 
 
 def _triggers() -> dict:
@@ -84,9 +115,14 @@ def test_the_probe_never_mutates_the_app():
     Scans both the workflow and the probe script, because a mutating call could
     be added in either.
     """
+    # ⚠ The NOTIFIER is scanned too. The workflow's final step runs it with
+    # `issues: write`, so a mutating `doctl` call added there is every bit as
+    # dangerous as one in the probe -- and before this it was invisible to
+    # "THE fence".
     blobs = {
-        WORKFLOW: (REPO_ROOT / ".github" / "workflows" / WORKFLOW).read_text(),
-        PROBE: (REPO_ROOT / PROBE).read_text(),
+        WORKFLOW: _artifact(f".github/workflows/{WORKFLOW}").read_text(),
+        PROBE: _artifact(PROBE).read_text(),
+        NOTIFIER: _artifact(NOTIFIER).read_text(),
     }
     offenders = []
     for name, text in blobs.items():
@@ -162,7 +198,7 @@ def test_the_probe_actually_checks_secret_spec_drift():
     the TBD-433 trap where a whole-file grep was satisfied by the comment
     documenting the defect. So: strip comment lines, then assert.
     """
-    text = (REPO_ROOT / PROBE).read_text()
+    text = _artifact(PROBE).read_text()
     code = [
         line for line in text.splitlines()
         if line.strip() and not line.strip().startswith("#")
@@ -173,9 +209,26 @@ def test_the_probe_actually_checks_secret_spec_drift():
         "non-comment line, so secret-spec drift -- the actual TBD-425 "
         "mechanism -- goes unchecked"
     )
-    # And it must be executed, not merely named in a string.
-    assert any('"$SPEC_GUARD"' in l or "SPEC_GUARD=" in l for l in code), (
-        "the guard is named but never executed"
+    # ⚠ And it must be EXECUTED. The two weaker forms this replaces both
+    # passed on a probe that never ran the guard:
+    #   * the first assertion above is satisfied by the drift-REPORT text,
+    #     which names the script on a non-comment line -- the very loophole
+    #     the docstring claims to close;
+    #   * `SPEC_GUARD=` alone is the assignment, and `[ -x "$SPEC_GUARD" ]`
+    #     alone is the existence test. A probe that assigns the path, tests
+    #     it for executability and never runs it stayed GREEN -- a partial
+    #     all-clear on the actual TBD-425 mechanism.
+    # So require a line that expands the variable and is NEITHER of those.
+    invoked = [
+        l for l in code
+        if '"$SPEC_GUARD"' in l
+        and not l.strip().startswith("SPEC_GUARD=")
+        and not l.strip().startswith("if [ -x")
+        and "[ -x" not in l
+    ]
+    assert invoked, (
+        "the guard is assigned and/or tested for executability but never "
+        "invoked, so secret-spec drift is not actually checked"
     )
 
 
@@ -183,7 +236,26 @@ def test_a_missing_secret_guard_fails_loud_rather_than_passing():
     """If the guard is absent or non-executable the probe must report drift, not
     a partial all-clear. A monitor that silently checks less than it claims is
     worse than no monitor."""
-    code = (REPO_ROOT / PROBE).read_text()
-    assert "secret drift is UNCHECKED" in code, (
+    text = _artifact(PROBE).read_text()
+    # ⚠ Strip comments FIRST. This was a whole-file substring test, i.e. the
+    # exact TBD-433 trap its sibling fence 15 lines above defends against:
+    # moving the sentence into a comment kept it green.
+    code = [
+        line for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    announces = [i for i, l in enumerate(code) if "secret drift is UNCHECKED" in l]
+    assert announces, (
         "the probe must fail loud when it cannot run the secret guard"
+    )
+    # ⚠ Announcing is not failing. The worse mutant kept the message and
+    # dropped `DRIFTED=1`, so the probe reported the guard was unchecked and
+    # then exited in-sync -- verbatim the "monitor that silently checks less
+    # than it claims" this fence exists to kill. Require the verdict too, in
+    # the same branch.
+    window = code[max(0, announces[0] - 4):announces[0] + 2]
+    assert any("DRIFTED=1" in l for l in window), (
+        "the probe announces that secret drift is UNCHECKED but does not set "
+        "DRIFTED=1, so it exits in-sync while admitting it checked less than "
+        "it claims"
     )
