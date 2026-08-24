@@ -120,7 +120,16 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
 def _find_decorated_routes() -> dict[tuple[str, str], str]:
     """Every ``(module_stem, function_name) -> limit-string`` under routers/.
 
-    Only ``limiter.limit("...")`` with a literal first argument is collected.
+    Both ``limiter.limit("...")`` and ``limiter.shared_limit("...", scope=...)``
+    with a literal first argument are collected.
+
+    ⚠ ``shared_limit`` MUST be matched here. slowapi buckets a plain ``limit``
+    on ``request.url.path`` -- the CONCRETE path -- so a route carrying a path
+    parameter gets one private budget per parameter value. ``shared_limit`` is
+    the only slowapi API that pins the scope. If this matcher knew only
+    ``limit``, converting a route to ``shared_limit`` to FIX that would make it
+    vanish from the inventory, silently un-fencing the very route being
+    hardened.
     A non-literal argument (the ``dynamic_limit(...)`` shape, if it ever gains
     call sites) is collected with its source unparsed, so it still shows up
     here rather than vanishing from the inventory.
@@ -135,7 +144,7 @@ def _find_decorated_routes() -> dict[tuple[str, str], str]:
                 if (
                     isinstance(dec, ast.Call)
                     and isinstance(dec.func, ast.Attribute)
-                    and dec.func.attr == "limit"
+                    and dec.func.attr in ("limit", "shared_limit")
                     and isinstance(dec.func.value, ast.Name)
                     and dec.func.value.id == "limiter"
                     and dec.args
@@ -222,3 +231,75 @@ def test_pre_auth_and_overridable_stay_disjoint():
     """
     overlap = OVERRIDABLE_ENDPOINT_PATTERNS & PRE_AUTH_ENDPOINT_PATTERNS
     assert overlap == frozenset(), overlap
+
+
+# ── A path-parameter route must pin its bucket (TBD-362 follow-up) ──────────
+
+# `(module_stem, function_name)` for every route whose bucket MUST be pinned
+# with `shared_limit`. Deliberately an explicit list rather than "every route
+# with a path parameter": three pre-existing routes
+# (`accounts.adjust_balance`, `org_members.remove_member`, `orgs.rename`)
+# carry the same split and are tracked separately, so a blanket rule would
+# fail on code this change does not touch.
+_MUST_PIN_SCOPE: tuple[tuple[str, str], ...] = (
+    ("admin_users", "trigger_email_change"),
+    ("admin_users", "cancel_admin_pending_email"),
+)
+
+
+def test_path_parameter_routes_pin_their_rate_limit_scope():
+    """slowapi buckets a plain ``limit`` on the CONCRETE request path.
+
+    ``limit_scope = lim.scope or endpoint`` in ``slowapi/extension.py``, and
+    ``endpoint`` is ``request.url.path`` -- not the route template. So a route
+    carrying ``{user_id}`` gets ONE PRIVATE BUDGET PER TARGET ID under a plain
+    ``@limiter.limit``. Measured on the running app before this fix: request
+    11 to ``/users/99999/email-change`` returned 429 while ``/users/99998``,
+    ``/users/99997`` and ``/users/99996`` were admitted immediately.
+
+    That is not a smaller bound, it is a different one. The abuse these limits
+    exist to stop -- a stolen interactive superadmin session mass-repointing
+    recovery channels -- varies ``user_id`` BY DEFINITION, so a plain ``limit``
+    bounds ten attempts per victim and nothing whatsoever in aggregate.
+
+    Wrong implementation killed: converting either route back to
+    ``@limiter.limit(...)``, which reads as a tightening and silently removes
+    the aggregate bound the catalogue comment claims.
+    """
+    import ast as _ast
+
+    pinned: dict[tuple[str, str], str | None] = {}
+    for path in sorted(ROUTERS_DIR.rglob("*.py")):
+        tree = _ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in _ast.walk(tree):
+            if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                continue
+            key = (path.stem, node.name)
+            if key not in _MUST_PIN_SCOPE:
+                continue
+            for dec in node.decorator_list:
+                if (
+                    isinstance(dec, _ast.Call)
+                    and isinstance(dec.func, _ast.Attribute)
+                    and isinstance(dec.func.value, _ast.Name)
+                    and dec.func.value.id == "limiter"
+                ):
+                    scope = next(
+                        (k.value.value for k in dec.keywords if k.arg == "scope"
+                         and isinstance(k.value, _ast.Constant)),
+                        None,
+                    )
+                    pinned[key] = scope if dec.func.attr == "shared_limit" else None
+
+    missing = [k for k in _MUST_PIN_SCOPE if k not in pinned]
+    assert not missing, (
+        f"expected a limiter decorator on {missing}; if a route was renamed or "
+        "its limit removed, update _MUST_PIN_SCOPE deliberately"
+    )
+    unpinned = [k for k, scope in pinned.items() if not scope]
+    assert not unpinned, (
+        "these routes carry a path parameter and MUST use "
+        f"`limiter.shared_limit(..., scope=...)`, not `limiter.limit(...)`: {unpinned}. "
+        "A plain `limit` buckets on the concrete request path, giving every "
+        "path-parameter value its own private budget."
+    )
