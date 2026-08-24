@@ -31,12 +31,63 @@
       unconditionally and would set the production password to "CHANGE_ME".
       Check that -i points at your real inventory.yml and that the vault opened.
 
+# ⚠ THE SERVER PACKAGE IS RESOLVED, NOT HARDCODED (TBD-419).
+# `mysql_resolved_server_package` is set from package_facts in
+# roles/common/tasks/holds.yml, which runs first: on production it is Oracle's
+# `mysql-community-server` (the TBD-360 cutover), on a fresh Ubuntu box nothing
+# matches and it falls back to the `mysql_server_package` default.
+#
+# ⚠ This is not cosmetic, and getting it wrong breaks the ROUTINE converge, not
+# a drifted one. `mysql-community-server` Provides only `virtual-mysql-server`,
+# NOT `mysql-server` -- measured against repo.mysql.com's noble Packages index.
+# So a hardcoded `mysql-server` is NOT satisfied by production's installed
+# server; once `mysql-community-server` is held at 8.4.11 this task resolves
+# `mysql-server 8.4.12` on an ordinary Oracle patch release, whose
+# `Depends: mysql-community-server (= 8.4.12)` cannot be met, and apt exits 100
+# with "you have held broken packages" -- a red play whose message names the
+# hold rather than the cause. Naming the installed package makes
+# `state: present` the no-op it was always meant to be.
+#
+# ⚠ Do NOT reach for `allow_change_held_packages` if you ever see that error.
+# It defeats the entire pin while leaving it declared and looking green;
+# backend/tests/test_dataplane_apt_pins.py fences it.
 - name: Install MySQL server
   ansible.builtin.apt:
     name:
-      - mysql-server
+      - "{{ mysql_resolved_server_package }}"
       - python3-pymysql
     state: present
+
+# ⚠⚠ RE-HOLD IMMEDIATELY, AT THE INSTALL SITE. TBD-419.
+#
+# `site.yml`'s `post_tasks` re-apply is NOT a guarantee: `post_tasks` DO NOT RUN
+# AFTER A ROLE FAILURE. The play's own header documents the exact run that
+# breaks it -- 2026-08-18, when the redis role failed AFTER the mysql role had
+# already installed MySQL. On a rebuilt host that run installs the server, dies
+# in `redis`, skips `post_tasks`, and leaves the production data plane UNHELD
+# until somebody happens to converge it again. The stated guarantee ("a host
+# that had MySQL installed BY THIS RUN does not finish the run unheld") failed
+# on the play's single documented failure mode.
+#
+# This closes it at the source rather than at the end of the run: the task above
+# is the ONLY task in the whole play that can put MySQL on a box, so holding
+# here means the window between "MySQL exists" and "MySQL is held" contains
+# nothing that can fail. The alternative -- wrapping `site.yml`'s roles in a
+# `block:`/`always:` -- was rejected: it requires converting `roles:` into
+# `include_role`/`import_role` tasks on the play that provisions the production
+# data plane (changing role variable scoping and, with `include_role`, emptying
+# `--list-tasks`), and it still only re-holds at the END of the run, which is a
+# strictly weaker guarantee than holding at the install site.
+#
+# The `post_tasks` pass STAYS. It is the backstop for a future role that
+# installs a MySQL package, and it costs one idempotent pass.
+- name: Re-apply the MySQL holds now this role has installed the server
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: holds
+    apply:
+      tags: [always]
+  tags: [always]
 
 - name: Ensure MySQL is started and enabled
   ansible.builtin.service:

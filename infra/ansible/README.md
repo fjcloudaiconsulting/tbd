@@ -8,16 +8,38 @@ post-boot config: packages, MySQL/Redis tuning, backups, fail2ban, swap.
 ## Run
 
 ```bash
-infra/ansible/bin/run-playbook.sh --scratch-host <ip>       # rehearse
-infra/ansible/bin/run-playbook.sh --production --check --diff   # dry run
-infra/ansible/bin/run-playbook.sh --production              # apply
+infra/ansible/bin/run-playbook.sh --scratch-host <ip> --scratch-private-ip <ip>   # rehearse
+infra/ansible/bin/run-playbook.sh --production --check --diff                     # dry run
+infra/ansible/bin/run-playbook.sh --production                                    # apply
+infra/ansible/bin/run-playbook.sh --production -- --tags patch                    # deliberate OS patch
 ```
 
 Nothing needs to be filled in by hand.
 
-⚠ **`--check` skips the mysql role's verification fences**, deliberately: they
-assert properties of the *converged* server, and check mode converges nothing.
-A clean dry run is therefore not evidence that the fences pass. ⚠ `--check` is
+⚠ **`--scratch-host` needs `--scratch-private-ip` too.** It is not optional and
+there is no fallback: the redis role binds to `private_ipv4`, and
+`bin/gen-inventory.py` exits 2 rather than silently reusing production's private
+address, which the scratch box does not own. This README used to show the
+one-flag form; it never worked.
+
+⚠ **The play does NOT upgrade packages on a routine converge (TBD-419).** It
+used to, unconditionally, as its very first task — so converging a Redis knob
+also performed an unbounded package upgrade on the production database droplet.
+OS patching is `unattended-upgrades` (daily, `noble-security`); a deliberate,
+windowed upgrade is `-- --tags patch`. The MySQL packages are held in the dpkg
+database by the `common` role, so they are `kept back` even then. Procedure and
+rationale: `infra/MIGRATION.md`, "Data-plane package pins".
+
+⚠ **`--check` skips the mysql and redis roles' verification fences**,
+deliberately: they assert properties of the *converged* server, and check mode
+converges nothing. A clean dry run is therefore not evidence that those fences
+pass. The same is true of the package-hold read-back, for the same reason.
+
+✅ **`--check` DOES run the MySQL repo-track fence, and that is the point.** It
+asserts a property of the apt *repository* (candidate track == installed
+track), which is identical before and after the play, so a dry run is exactly
+where repo drift should surface — before anyone is in a window. Do not
+"harmonise" its gating with the fences above. ⚠ `--check` is
 only meaningful against an **already-provisioned** host; against a fresh scratch
 droplet it cannot complete, because tasks downstream of a skipped one (the swap
 file, a running mysqld) have nothing to act on.
@@ -73,11 +95,16 @@ mis-pointed inventory aborts instead of writing `CHANGE_ME` into production.
 ### Rehearsing against a throwaway box
 
 ```bash
-infra/ansible/bin/run-playbook.sh --scratch-host <ip>
+infra/ansible/bin/run-playbook.sh --scratch-host <ip> --scratch-private-ip <ip>
 ```
 
 Regenerates the inventory pointed at that address instead of the data droplet,
-so the play can be exercised end to end without touching production.
+so the play can be exercised end to end without touching production. Both flags
+are required; see the warning above.
+
+⚠ This is the only way to exercise `--tags patch` before using it on
+production, and `infra/MIGRATION.md` makes that a required step of the
+deliberate-upgrade procedure.
 
 ### Prerequisites
 

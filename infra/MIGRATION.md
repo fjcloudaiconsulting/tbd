@@ -290,7 +290,10 @@ Watch the deploy:
 doctl apps logs <app-id> --type RUN --follow
 ```
 
-Wait for `/api/v1/health` and `/api/v1/ready` to go green.
+Wait for `/health` and `/ready` to go green, then check `/health/dependencies`.
+(These are served at the app root, not under `/api/v1/` — the `/api/v1/health` and
+`/api/v1/ready` paths this line used to name have never existed.) `/ready` covers the
+database only; `/health/dependencies` is the one that also covers Redis.
 
 ### 8. Smoke test (manual)
 
@@ -411,6 +414,146 @@ If smoke tests fail or production behaves badly:
      with what was set in `infra/ansible/inventory.yml` /
      `mysql_app_password`; root@localhost is socket-auth, no password to
      check there).
+
+## Data-plane package pins (TBD-419)
+
+The MySQL packages on `<data-droplet>` are held in the dpkg database, and the
+ansible play no longer upgrades packages on a routine converge. Both halves are
+declared in `infra/ansible/roles/common/`; neither is hand-applied box state any
+more.
+
+### What is pinned, and what is not
+
+| | State | Why |
+|---|---|---|
+| `mysql-apt-config` | **held** | Its postinst rewrites `/etc/apt/sources.list.d/mysql.list` from debconf, i.e. it decides which MySQL major track is enabled. This is the package the 2026-08-19 near miss was about. |
+| `mysql-community-*`, `mysql-server*`, `mysql-client*`, `mysql-common` | **held** | A MySQL major jump is not reversible in place, and 9.x is an Innovation release (quarterly EOL, not LTS). |
+| `redis-server` | **not held, deliberately** | Ubuntu noble ships one Redis major and its security pocket only ever ships 7.0.x, so there is no track to jump. Holding it would permanently block security patching on a VPC-facing service to prevent something that cannot happen. |
+| Everything else | **not held** | `unattended-upgrades` applies `noble-security` daily, unchanged. |
+
+The hold set is **derived, not literal**: it is the declared candidate list
+intersected with what `package_facts` reports as installed. `dpkg_selections`
+hard-fails on a package the host does not have, and production (Oracle
+`mysql-community-server`) and a scratch droplet (Ubuntu `mysql-server`) run
+different package families, so a static list breaks one of them.
+
+⚠ **What the pins cost.** MySQL patch releases (8.4.11 to 8.4.12) no longer
+arrive on their own. That is the intended trade: they are a database restart,
+and this node has no HA. They are applied by the procedure below.
+
+### The routine converge does not touch packages
+
+`ansible.builtin.apt: upgrade: safe` still exists but carries `tags: [patch,
+never]`, so it runs only when the tag is typed on the command line. It is not
+behind a variable on purpose: a variable can be set from role defaults,
+`group_vars`, `inventory.yml` or the extra-vars file `run-playbook.sh` builds,
+none of which the operator sees at the moment they hit return.
+
+### Deliberately moving MySQL or Redis forward
+
+This is a **windowed operation with a snapshot**. It does not ride along with a
+config change.
+
+1. **Snapshot first.** DO droplet backups are off at the IaC level
+   (`enable_backups = false`), so take an explicit one and wait for it to
+   complete:
+   ```bash
+   doctl compute droplet-action snapshot <droplet-id> --snapshot-name pre-patch-$(date +%F) --wait
+   ```
+   Also take a logical dump: `ls -lh /var/backups/mysql/` and confirm the
+   nightly file is from today, or run the backup script by hand.
+2. **Rehearse on a throwaway droplet, not on production:**
+   ```bash
+   infra/ansible/bin/run-playbook.sh --scratch-host <ip> --scratch-private-ip <ip> -- --tags patch
+   ```
+3. **Pre-flight production read-only.** A clean dry run here is meaningful for
+   the repo-track fence specifically, because that fence runs under `--check`:
+   ```bash
+   infra/ansible/bin/run-playbook.sh --production --check --diff
+   ```
+   ⚠ Do not tee that to a world-readable file; the template diffs contain the
+   MySQL and Redis passwords in cleartext.
+4. **Pick a quiet hour** and announce the window. A MySQL package upgrade
+   restarts the database; a Redis one drops every client connection.
+5. **Run the patch path.** The holds and the repo-track fence carry
+   `tags: [always]`, so they still execute on this invocation, and the fence
+   re-runs *after* the upgrade — the upgrade can itself move
+   `mysql-apt-config`, whose postinst re-points the repo:
+   ```bash
+   infra/ansible/bin/run-playbook.sh --production -- --tags patch
+   ```
+   Held packages will be reported as `kept back`. That is correct: the patch
+   task does not move MySQL.
+6. **To move MySQL forward on purpose**, unhold the **whole resolved set**, move
+   it, and let the next converge re-apply the holds.
+
+   ⚠⚠ **Unholding one package does not work, and fails in the middle of the
+   window.** Oracle's `mysql-community-server` depends on `mysql-common`,
+   `mysql-client`, `mysql-community-client`, `mysql-community-client-core` and
+   `mysql-community-client-plugins`, and every one of those `Depends:` is a
+   `= <version>` equality. So with only the server unheld, `apt-get install
+   --only-upgrade mysql-community-server` cannot pull the client packages it now
+   requires, and apt exits 100 with `E: Unable to correct problems, you have
+   held broken packages` — the exact failure measurement M6 in
+   `specs/2026-08-22-dataplane-package-pins.md` records, at the worst possible
+   moment. `--only-upgrade` cannot rescue it either: the blocker is the held
+   dependencies, not the addition of new ones.
+
+   Unhold everything the play holds, which is what `apt-mark showhold` prints:
+
+   ```bash
+   # (a) See exactly what is held, and keep the list -- it is the set to restore.
+   apt-mark showhold | tee /tmp/tbd-holds.txt
+
+   # (b) READ THE LIST FIRST. `showhold` reports every hold on the box, not
+   #     only the ones this play declares; anything in it that is not in
+   #     roles/common/defaults/main.yml's mysql_hold_candidates was put there
+   #     by hand, for a reason nothing in this repo records, and the play will
+   #     NOT restore it in step 7. Then unhold, without hand-picking within the
+   #     MySQL set:
+   xargs -r apt-mark unhold < /tmp/tbd-holds.txt
+
+   # (c) Move MySQL. `install` (not `--only-upgrade`) so a renamed or newly
+   #     required dependency can come in; step 3's repo-track pre-flight is what
+   #     proved this is a patch and not a major jump.
+   apt-get update
+   apt-get install -y mysql-community-server
+
+   # (d) Prove it came back.
+   systemctl status mysql
+   mysql --no-defaults -N -B -e "SELECT VERSION()"
+   ```
+
+   ⚠ `apt-get install` here is deliberate, and it is why steps 1 and 3 of this
+   procedure are not optional. Unpinned, apt installs whatever the repo offers:
+   the snapshot (step 1) and the repo-track pre-flight (step 3) are the only
+   things standing between this command and a major jump.
+
+7. **Re-converge to restore the pins.** Run the play with **no tags**. It
+   re-holds the packages, re-runs the read-back assert (so "held" becomes
+   something the dpkg database confirmed, not something a module claimed), and
+   re-asserts the running configuration.
+
+   ⚠ **Do not skip this or leave it for later.** Between step 6 and this run the
+   data droplet has NO MySQL pin at all, and `unattended-upgrades` runs daily.
+   Diff `apt-mark showhold` against `/tmp/tbd-holds.txt` afterwards and confirm
+   the set came back.
+8. **Verify the app, not just the box.** Confirm the mysql and redis roles'
+   running-config fences passed in step 7, then check `/ready`, a login, and
+   `SELECT VERSION()` from the application side.
+
+⚠ **A MySQL MAJOR move is not this procedure.** 8.4 to 9.x removes
+`mysql_native_password` entirely, cannot be reversed in place, and the whole
+evidence base in this repo — `Migration Checks`, both rehearsal scripts, the
+driver verification — is 8.4-only. See `MYSQL-84-CUTOVER.md`, and expect a
+rehearsal on a scratch droplet before anything touches production.
+
+⚠ **If the repo-track fence fails, do not clear it by unholding and
+upgrading.** It means `apt` is offering a different `major.minor` from the one
+this host runs, which is repo drift, not a pending patch. Check
+`debconf-show mysql-apt-config` (`select-server` must be `mysql-8.4-lts`) and
+`/etc/apt/sources.list.d/mysql.list` against the preseed in
+`MYSQL-84-EXECUTE.md`.
 
 ## Posture notes
 

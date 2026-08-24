@@ -149,6 +149,7 @@ proves the other:
 ```bash
 # 1. The running app proves App Platform's secret matches the CURRENT server password
 curl -s https://<app-host>/ready          # expect database: connected
+curl -s https://<app-host>/health/dependencies   # expect both checks ok (TBD-413)
 
 # 2. The inventory holds a real value (prints no secret)
 cd infra/ansible
@@ -446,6 +447,16 @@ the disk days later), different config layout, different AppArmor profile,
 different systemd unit, and unattended-upgrades needs a hold so it cannot
 reinstall 8.0 over the top.
 
+> ✅ **The hold is now declared configuration (TBD-419).**
+> `roles/common/tasks/holds.yml` holds the MySQL packages via
+> `dpkg_selections`, replacing the `apt-mark hold mysql-apt-config` applied by
+> hand on 2026-08-19. The set is **derived**, not literal — the declared
+> candidate list intersected with what is actually installed — because
+> `dpkg_selections` hard-fails on an absent package and production and a
+> scratch droplet run different MySQL package families. The play also no longer
+> runs `upgrade: safe` on a routine converge. See `infra/MIGRATION.md`,
+> "Data-plane package pins".
+
 **Validate the config before the window, not during it.** `mysqld
 --validate-config` with the 8.4 binary cannot be run while 8.0 is still
 installed — the package swap replaces the server in one dpkg transaction. Do it
@@ -515,7 +526,7 @@ left alone.
   job cannot reach `pfv2` any more. Verified live on deployment
   `2026-08-17`: the job logs `{"database": "pfv2", "event": "migrate.no_op"}`,
   so it is genuinely reading its own binding, not inheriting the service's.
-- `/ready` green, one real authenticated request served
+- `/ready` green, `/health/dependencies` green (database AND Redis), one real authenticated request served
 - Run the backup script by hand; confirm a non-empty dump
 - ⚠ The nightly backup has four known holes — on-disk only, `pfv2` only so
   **grants are not backed up**, `gzip >` creates the file before `mysqldump`

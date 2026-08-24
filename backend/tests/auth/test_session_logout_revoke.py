@@ -452,10 +452,25 @@ async def test_multi_cookie_logout_revokes_each_family(session_factory, fake_red
 # ─── 5. Anonymous logout (no cookie) ────────────────────────────────────────
 
 
-async def test_anonymous_logout_succeeds_with_zero_counts(session_factory, fake_redis):
-    """No refresh cookie at all. Logout still returns 200, clears the
-    cookie (no-op since none arrived), emits the audit row with
-    ``sid_count=0, jti_count=0, outcome=success``."""
+async def test_anonymous_logout_succeeds_and_writes_no_audit_row(
+    session_factory, fake_redis
+):
+    """No refresh cookie at all. Logout still returns 200 and still clears
+    the cookie (a no-op since none arrived) — and since TBD-353 it writes
+    NO audit row.
+
+    ⚠ This assertion was inverted deliberately, together with spec
+    §5.3 step 5 / §8, which used to say "outcome=success even when 0". A
+    row carrying ``actor_user_id=None, sid_count=0, jti_count=0`` names
+    no subject, and writing one on every anonymous POST to a public route
+    was the unbounded-insert primitive TBD-353 exists to remove. The
+    user-visible contract is unchanged, which is why the 200 and both
+    delete-cookie assertions below stay.
+
+    ⚠ The dropped row was NOT contentless: it was the forced-logout trace
+    (a cross-site POST sends no cookie but still clears the victim's).
+    The signal MOVES to the ``auth.session.terminated.anonymous``
+    structlog line, which carries the same IP, request id and rate."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -470,11 +485,7 @@ async def test_anonymous_logout_succeeds_with_zero_counts(session_factory, fake_
         f"missing Path=/ delete-cookie among {deletes}"
     )
 
-    audit = await _list_audit(session_factory, "auth.session.terminated")
-    assert len(audit) == 1
-    assert audit[0].detail["sid_count"] == 0
-    assert audit[0].detail["jti_count"] == 0
-    assert audit[0].outcome == "success"
+    assert await _list_audit(session_factory, "auth.session.terminated") == []
 
 
 # ─── 6. Cookie present but undecodable (corrupt JWT) ────────────────────────
@@ -482,8 +493,11 @@ async def test_anonymous_logout_succeeds_with_zero_counts(session_factory, fake_
 
 async def test_corrupt_refresh_cookie_logout_still_clears(session_factory, fake_redis):
     """Cookie value is not a valid refresh JWT. Logout swallows the
-    decode error, clears the cookie, emits a 200 + audit with
-    ``sid_count=0`` (no sids could be extracted)."""
+    decode error, clears the cookie and returns 200.
+
+    ⚠ TBD-353 inverted the audit assertion: no sid and no actor could be
+    extracted, so the row would have carried nothing actionable. See
+    ``test_anonymous_logout_succeeds_and_writes_no_audit_row``."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -501,10 +515,7 @@ async def test_corrupt_refresh_cookie_logout_still_clears(session_factory, fake_
         for d in deletes
     )
 
-    audit = await _list_audit(session_factory, "auth.session.terminated")
-    assert len(audit) == 1
-    assert audit[0].detail["sid_count"] == 0
-    assert audit[0].outcome == "success"
+    assert await _list_audit(session_factory, "auth.session.terminated") == []
 
 
 # ─── 7. Logout does NOT write sessions_invalidated_at ───────────────────────
