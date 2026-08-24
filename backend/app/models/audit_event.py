@@ -98,6 +98,51 @@ even before the emitting code arrives.
   target_org_id=target.org_id. Note: when the target user later
   confirms via verification link, an additional ``user.email.changed``
   row is written (existing user-initiated convention).
+
+  ⚠ SHIPPED 2026-08-24 (TBD-362), AND THE MECHANISM IS NOT THE ONE
+  THE PARAGRAPH ABOVE ORIGINALLY IMPLIED. This seed predates TBD-361
+  and was written against a SINGLE-PHASE change in which the endpoint
+  moved the address itself. It does not. The operator writes
+  ``users.pending_email`` and NOTHING else — not ``users.email``, not
+  ``email_verified``, not ``sessions_invalidated_at`` — and the
+  account stays locked out until the user proves control of the new
+  address by clicking. (The ``user.email.changed`` sentence above
+  survives unchanged and is still correct: that row is written by
+  ``auth.verify_email``'s promoting branch when they click.)
+
+  ``target_org_id`` is read off the TARGET and must be set:
+  ``/admin/audit``'s only org filter is that column, so a NULL row is
+  invisible to every org-scoped query. ⚠ ``actor_email`` is the
+  SUPERADMIN's, diverging from the self-initiated convention —
+  ``audit_events`` has no ``target_user_id`` column, so it is the only
+  identity column, and on an admin-triggered row the reader's question
+  is "which operator"; the target's old address survives in
+  ``detail``. ``detail`` carries ``target_user_id``,
+  ``target_email_old`` (promotion overwrites ``users.email`` and
+  nothing else preserves the typo), ``target_pending_email``,
+  ``previous_pending_email`` (this write IS the "overwrite by a later
+  request" clearer, so without it a destroyed claim leaves no trace),
+  ``reason``, and ``kind``.
+* ``admin.user.email_change.cancelled`` — an operator cleared a
+  pending claim via ``DELETE /api/v1/admin/users/{id}/pending-email``
+  (TBD-362). actor=superadmin, target_org_id=target.org_id,
+  ``outcome="success"``. ``detail`` carries ``target_user_id`` and
+  ``previous_pending_email``, which is the ONLY record of the
+  destroyed claim — the column is NULL after this write. Emitted only
+  when a claim was actually cleared: the idempotent no-op is not a
+  transition and records nothing.
+* ``admin.user.email_change.failed`` — every refusal of
+  ``POST /api/v1/admin/users/{id}/email-change`` (TBD-362), written on
+  the independent session AFTER the rollback, ``outcome="failure"``
+  always. ⚠ Includes the **404**, diverging from ``delete_user``,
+  which deliberately does not audit its 404: probing THIS path carries
+  an attacker-supplied DESTINATION address, where the delete path
+  carries no body at all. ``detail`` carries the PRE-REFUSAL snapshot
+  (``target_email_verified``, ``target_is_active``,
+  ``target_is_superadmin``) alongside ``code``, ``attempted_email`` and
+  ``reason``, because a row saying only "409" cannot distinguish "this
+  account was already locked out" from "an operator just attacked an
+  active superadmin".
 * ``admin.user.mfa_disabled`` — admin clears mfa_enabled +
   totp_secret + recovery_codes server-side; user re-enrols on next
   login. actor=superadmin, target_org_id=target.org_id. REQUIRED
@@ -145,6 +190,37 @@ Tenant org-membership types (TBD-364):
   ⚠ The success counterpart ``org.member.removed`` is deliberately
   NOT emitted yet — the name is reserved for TBD-375, which must
   first rule on notification parity. Do not squat it.
+
+User-initiated email-change types (TBD-361 / TBD-362):
+
+* ``user.email.change_requested`` — the user recorded a CLAIM on a new
+  address via ``PUT /api/v1/users/me``. Nothing about their identity
+  has changed; ``users.email`` still holds the old address.
+  actor=self, ``actor_email`` = the OLD address so a "who was this"
+  lookup after a malicious swap can recover it.
+* ``user.email.changed`` — the claim was PROVEN and promoted onto
+  ``users.email`` by ``auth.verify_email``'s promoting branch. This is
+  the row that says it happened, written where it happened.
+* ``user.email.change_cancelled`` — the user abandoned a live claim
+  via ``DELETE /api/v1/users/me/pending-email`` (added TBD-362; that
+  route wrote no audit row at all before). actor=self,
+  target_org_id=their org, ``outcome="success"``.
+  ``detail.cancelled_pending_email`` carries the destroyed address,
+  which nothing else preserves. Emitted only when a claim was actually
+  cleared — the idempotent no-op records nothing.
+
+  ⚠ The route's ABSENCE OF RE-AUTH is deliberate and correct, and was
+  deliberately left alone when this row was added. Requesting a change
+  moves the account's recovery channel and demands proof of presence;
+  cancelling one only restores the status quo and can move nothing.
+  Demanding a password to undo a mistake is the exact shape that made
+  the original TBD-361 defect unrecoverable.
+
+⚠ ``tests/models/test_audit_event_taxonomy.py`` is ONE-DIRECTIONAL: it
+asserts that documented strings appear in this docstring, and nothing
+fences a NEWLY EMITTED string that was never documented. Every new
+event type therefore has to be added here by hand, in the same PR that
+starts emitting it, or it ships undocumented and unfenced.
 """
 from __future__ import annotations
 

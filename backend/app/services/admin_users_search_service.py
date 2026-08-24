@@ -82,7 +82,23 @@ def _serialize_org(org: Organization, role: Role) -> dict:
 
 
 def _serialize_user_row(user: User, org: Optional[Organization]) -> dict:
-    """Common list-row payload. Caller embeds ``orgs`` as a list."""
+    """Common list-row payload. Caller embeds ``orgs`` as a list.
+
+    ⚠ THIS IS THE SHARED LIST **AND** DETAIL PAYLOAD. ``get_user_detail``
+    calls it and then appends a few detail-only keys, so anything added here
+    is exposed on ``GET /api/v1/admin/users`` too, not only on
+    ``GET /api/v1/admin/users/{id}``.
+
+    That breadth is INTENDED for ``pending_email`` (TBD-362) and is stated
+    here rather than left to be discovered. The operator UI needs the claim
+    on the detail page to render the "Pending email" row and the Cancel /
+    Resend controls; surfacing it on the list is a strict improvement, since
+    a live claim is exactly the in-flight state an operator scanning the user
+    table wants to see. It is an UNPROVEN, self- or operator-asserted
+    address rather than an identity, it is already visible to the account
+    holder on ``GET /users/me``, and the only new audience here is a platform
+    superadmin who can already read ``users.email``.
+    """
     return {
         "id": user.id,
         "email": user.email,
@@ -91,6 +107,10 @@ def _serialize_user_row(user: User, org: Optional[Organization]) -> dict:
         "is_superadmin": user.is_superadmin,
         "is_active": user.is_active,
         "email_verified": user.email_verified,
+        # Sits directly under ``email_verified`` so the two land adjacent in
+        # the payload, the way they read as one story in the UI: "not
+        # verified, and here is the address we are waiting on".
+        "pending_email": user.pending_email,
         "mfa_enabled": user.mfa_enabled,
         "password_changed_at": (
             user.password_changed_at.isoformat()

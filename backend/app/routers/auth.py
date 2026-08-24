@@ -2079,6 +2079,7 @@ async def _promote_pending_email(
     *,
     user: User,
     pending_email: str,
+    admin_initiated: bool = False,
 ) -> dict:
     """Promote a proven `pending_email` onto `users.email` (TBD-361).
 
@@ -2087,7 +2088,44 @@ async def _promote_pending_email(
     ``pending_email`` exactly. This is the moment the account's identity
     actually changes, which is why the session cutoff and the completion
     audit event both live here rather than at request time.
+
+    ``admin_initiated`` carries the redeemed token's claim provenance
+    (TBD-362): True when an OPERATOR moved the claim via
+    ``POST /api/v1/admin/users/{id}/email-change`` rather than the account
+    holder moving it themselves.
     """
+    # TBD-362. CLAIM PROVENANCE. The admin endpoint refuses a target that is
+    # already verified, but it reads `email_verified` at TRIGGER time and the
+    # claim redeems up to 24 hours later. FOUR arms can verify the row in
+    # between -- the registration link (the bootstrap arm below, which
+    # deliberately does NOT clear `pending_email`), Google sign-in on the
+    # existing row, invitation accept, and admin merge -- so without this
+    # check the operator's link stays armed and promotes onto a now-verified,
+    # now-loginable account. That defeats the endpoint's whole safety
+    # argument, which is that its accepted population owns no data.
+    #
+    # ⚠ MUST be gated on `admin_initiated`. A verified user changing their
+    # own address via `PUT /users/me` reaches here with `email_verified`
+    # already True and legitimately; an ungated check breaks that flow
+    # entirely.
+    #
+    # ⚠ This function is itself a FIFTH site that verifies an existing row.
+    # It is excluded from the four arms only because it sets
+    # `pending_email = None` in the same transaction (and
+    # `_abandon_pending_email` clears it on the IntegrityError path), so no
+    # claim can survive it. A refactor that stops clearing reopens the arm.
+    #
+    # Abandon rather than leave armed: a claim that can never promote would
+    # otherwise sit clickable for the rest of its 24h TTL. The refusal is
+    # SILENT by accepted decision (spec §5b) -- no row names the admin claim
+    # that just died; the operator sees the claim gone on next load.
+    if admin_initiated and user.email_verified:
+        await _abandon_pending_email(db, user_id=user.id)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token",
+        )
+
     # Re-check uniqueness. The advisory check ran when the claim was made,
     # and up to 24 hours can pass before it is proven, so somebody else may
     # have taken the address in between.
@@ -2386,8 +2424,17 @@ async def verify_email(
         await db.commit()
         return {"detail": "Email verified"}
 
+    # TBD-362. Read the claim provenance off the signed payload. `.get` with
+    # a bool coercion, because a token minted before TBD-362 shipped carries
+    # no such key and must fail OPEN into the user-initiated path — which is
+    # the right direction, since no admin-initiated token existed then.
     return await _promote_pending_email(
-        request, db, session_factory, user=user, pending_email=token_email
+        request,
+        db,
+        session_factory,
+        user=user,
+        pending_email=token_email,
+        admin_initiated=bool(payload.get("admin_initiated")),
     )
 
 

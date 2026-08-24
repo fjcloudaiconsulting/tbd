@@ -319,6 +319,42 @@ The notification fires REGARDLESS of whether the user opens the email — this i
 
 #### 4.2 Email reset / forced change
 
+> ⚠⚠ **SUPERSEDED, AND BROKEN AS WRITTEN. DO NOT IMPLEMENT THIS SECTION.**
+> Shipped instead by **TBD-362** — see
+> `specs/2026-08-23-tbd-362-admin-email-recovery.md`, which is the source of
+> truth for this endpoint.
+>
+> This section predates **TBD-361** (two-phase email change) by three months
+> and its central instruction is a dead end. It says the endpoint "DOES NOT
+> mutate `users.email` yet. Mints an `email_verify` token for the user with
+> the NEW email baked in", and never mentions `users.pending_email` — which
+> did not exist when this was written. Implemented literally today, the token
+> reaches `auth.verify_email`, where `promoting = (user.pending_email is not
+> None and token_email == user.pending_email)` evaluates **False** (the column
+> is NULL) and `token_email != user.email` is **True**, so the handler
+> **400s on every click, forever**. The endpoint still returns 200 and still
+> dispatches mail, so the failure is invisible to any "200 returned, mail
+> sent" test. `backend/tests/routers/test_admin_email_change.py::test_f2_*`
+> exists specifically to kill this implementation.
+>
+> Three further corrections, all argued in the TBD-362 spec:
+>
+> * **`400 invalid_email` does not exist and never could.** `normalize_email`
+>   is `value.strip().lower()` and cannot reject anything; with
+>   `new_email: EmailStr` a malformed address is a FastAPI **422** raised
+>   before the handler runs.
+> * **The precondition table is incomplete on the security-critical rows.** It
+>   has no `user_already_verified` (without which this is the platform's first
+>   superadmin account-takeover primitive), no `target_is_superadmin`, no
+>   `user_inactive` and no `email_unchanged`.
+> * **"Rate-limit: 10/hour per actor" is not implementable** against the
+>   single `Limiter(key_func=get_client_ip)`. It ships as 10/hour on the IP
+>   key.
+>
+> The notification copy below is also wrong for the shipped population: it
+> links to `/settings`-shaped destinations that a locked-out, unverified user
+> cannot reach. See `notification_templates.admin_initiated_email_change_*`.
+
 Admin-triggered email change is dangerous if mistyped. Two-step typed-confirmation pattern.
 
 ```

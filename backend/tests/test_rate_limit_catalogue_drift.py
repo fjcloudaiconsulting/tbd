@@ -68,6 +68,11 @@ ROUTERS_DIR = Path(__file__).resolve().parents[1] / "app" / "routers"
 # shows up in this file's diff and therefore in review.
 DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("accounts", "adjust_balance"): ("accounts.adjust_balance", "20/hour"),
+    ("admin_users", "trigger_email_change"): ("admin_users.email_change", "10/hour"),
+    ("admin_users", "cancel_admin_pending_email"): (
+        "admin_users.pending_email_cancel",
+        "10/hour",
+    ),
     ("api_tokens", "mint_token"): ("api_tokens.mint", "10/hour"),
     ("auth", "check_username"): ("auth.check_username", "20/minute"),
     ("auth", "forgot_password"): ("auth.forgot_password", "5/minute"),
