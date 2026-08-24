@@ -61,10 +61,19 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # behind ``users.reset_credentials`` + ``require_interactive_session``, so
     # the decorator runs with an authenticated identity behind it.
     #
-    # ⚠ The static ``10/hour`` is on the shared IP key, NOT per actor: the
-    # single ``Limiter(key_func=get_client_ip)`` cannot express a per-actor
-    # bound. That is a deliberate subtraction, not an oversight -- it bounds
-    # the same abuse at the same order of magnitude and fails CLOSED when two
+    # ⚠ Both use ``shared_limit``, NOT ``limit``, and that is load-bearing.
+    # slowapi buckets a plain ``limit`` on ``request.url.path`` -- the
+    # CONCRETE path (``limit_scope = lim.scope or endpoint``) -- so on a route
+    # carrying ``{user_id}`` every target id gets its own private 10/hour
+    # budget. Measured: request 11 to ``/users/99999/email-change`` 429s while
+    # ``/users/99998`` is admitted immediately. The abuse this bound exists to
+    # stop -- a stolen interactive superadmin session mass-repointing recovery
+    # channels -- varies ``user_id`` BY DEFINITION, so a plain ``limit`` bounds
+    # 10 attempts per victim and nothing in aggregate.
+    #
+    # ⚠ Still on the shared IP key, not per actor: the single
+    # ``Limiter(key_func=get_client_ip)`` cannot express a per-actor bound.
+    # That part remains a deliberate subtraction, and it fails CLOSED when two
     # operators share an IP.
     "admin_users.email_change",
     "admin_users.pending_email_cancel",

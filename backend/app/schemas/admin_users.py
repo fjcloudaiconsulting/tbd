@@ -41,8 +41,16 @@ class AdminEmailChangeRequest(BaseModel):
     ``invalid_email`` row; it was wrong there too.)
     """
 
-    new_email: EmailStr
-    new_email_confirm: EmailStr
+    # ⚠ max_length MUST match ``users.pending_email``'s String(120).
+    # ``EmailStr`` alone accepts up to 254 characters, so a syntactically
+    # VALID address longer than the column produced an unhandled 500 at
+    # ``db.commit()`` -- DataError 1406 -- with no audit row of any kind,
+    # contradicting this endpoint's "every refusal is audited" contract.
+    # ⚠⚠ The SQLite shards CANNOT see this: SQLite does not enforce
+    # VARCHAR(n), so the whole suite stayed green against a 141-char address.
+    # Same blindness class as the collation traps documented in this module.
+    new_email: EmailStr = Field(max_length=120)
+    new_email_confirm: EmailStr = Field(max_length=120)
     reason: str = Field(min_length=4, max_length=200)
 
 

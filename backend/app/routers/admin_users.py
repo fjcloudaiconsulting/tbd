@@ -644,9 +644,12 @@ async def delete_user(
 # `invitation_service.py` all refuse to mutate a superadmin.
 #
 # ⚠ NOT IMPLEMENTED, DELIBERATELY: per-actor rate limiting (not expressible
-# against the single `Limiter(key_func=get_client_ip)`; `10/hour` on the IP
-# key bounds the same abuse at the same order of magnitude and fails CLOSED
-# when two operators share an IP), password reset and MFA reset (out of
+# against the single `Limiter(key_func=get_client_ip)`; the `shared_limit`
+# below bounds the route in aggregate and fails CLOSED when two operators
+# share an IP). ⚠ It MUST stay `shared_limit`: a plain `limit` buckets on the
+# concrete `request.url.path`, so `{user_id}` would give every target its own
+# private budget and bound nothing in aggregate. Also out of scope: password
+# reset and MFA reset (out of
 # scope -- the shared `users.reset_credentials` permission must not drag the
 # whole L4.4 slice in), and any change to `resend_verification_public` (it is
 # unauthenticated and username-addressable, so letting a caller choose the
@@ -697,7 +700,7 @@ async def _record_email_change_failure(
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(require_interactive_session)],
 )
-@limiter.limit("10/hour")
+@limiter.shared_limit("10/hour", scope="admin_users.email_change")
 async def trigger_email_change(
     user_id: int,
     request: Request,
@@ -1008,7 +1011,7 @@ async def trigger_email_change(
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(require_interactive_session)],
 )
-@limiter.limit("10/hour")
+@limiter.shared_limit("10/hour", scope="admin_users.pending_email_cancel")
 async def cancel_admin_pending_email(
     user_id: int,
     request: Request,

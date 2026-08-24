@@ -11,7 +11,13 @@ class ProfileUpdate(BaseModel):
     # their other profile fields (email, phone, name) without hitting
     # the strict rule.
     username: str | None = Field(default=None, min_length=1, max_length=64)
-    email: EmailStr | None = None
+    # ⚠ max_length MUST match ``users.pending_email``'s String(120). This
+    # field feeds the two-phase claim, so an ``EmailStr`` alone (254 chars)
+    # lets a syntactically valid address exceed the column and raise an
+    # unhandled 500 at commit. ⚠⚠ The SQLite shards cannot see it -- SQLite
+    # does not enforce VARCHAR(n) -- so the fence for this lives beside the
+    # admin sibling in tests/routers/test_admin_email_change.py.
+    email: EmailStr | None = Field(default=None, max_length=120)
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
     phone: str | None = Field(default=None, max_length=20)

@@ -52,6 +52,12 @@ moment someone broadens it to ``Name`` targets.
 
 ⚠ THE TREE WALKED IS ``backend/app/`` ONLY, and that scope is a claim, not an
 accident: ``backend/seed.py`` writes this column as **raw SQL**, which no
+    ⚠ Two further shapes inside ``backend/app/`` are equally invisible to an
+    attribute-store collector and are NOT covered: ``update(User).values(
+    email_verified=True)`` (the callee is ``values``, not in
+    ``WRITING_CALLEES``) and ``setattr(user, "email_verified", True)``.
+    Neither exists today -- verified by grep -- so this is a stated blind
+    spot, not a live hole. The raw-SQL case is not the only one.
 attribute-store collector can see. Widening the walk to the backend root
 would silently keep missing it while implying it did not.
 

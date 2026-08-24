@@ -885,3 +885,156 @@ async def test_admin_user_payload_exposes_pending_email(factory):
     assert listing.status_code == 200, listing.text
     row = next(i for i in listing.json()["items"] if i["id"] == user_id)
     assert row["pending_email"] == GOOD_EMAIL
+
+
+# ── Post-merge review findings (TBD-362 follow-up) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_over_long_but_valid_address_is_refused_not_a_500(factory):
+    """F16 — a syntactically VALID address longer than the column is a 422.
+
+    ``users.pending_email`` is ``String(120)``; ``EmailStr`` alone accepts up
+    to 254. Before the bound, a 141-character address reached ``db.commit()``
+    and raised ``DataError 1406`` -- an unhandled 500 with **no audit row of
+    any kind**, contradicting this endpoint's "every refusal is audited"
+    contract.
+
+    ⚠⚠ THIS FENCE IS BLIND ON THE SHARDS' DEFAULT BACKEND BY NATURE. SQLite
+    does not enforce ``VARCHAR(n)``, so the 500 never reproduced there and the
+    entire TBD-362 suite stayed green against this input. What is asserted
+    here is therefore the SCHEMA bound (a 422 raised before the handler runs),
+    which IS backend-independent -- not the driver error, which is not.
+
+    Wrong implementation killed: dropping ``max_length=120`` from either
+    field, which restores the 500 on MySQL while staying green on SQLite.
+    """
+    user_id, org_id = await _seed(factory)
+    actor = await _seed_actor(factory, org_id)
+    long_address = ("x" * 130) + "@example.com"
+    assert len(long_address) > 120
+
+    with TestClient(_app(factory, actor)) as client:
+        response = client.post(
+            f"/api/v1/admin/users/{user_id}/email-change",
+            json={
+                "new_email": long_address,
+                "new_email_confirm": long_address,
+                "reason": "over-length probe",
+            },
+        )
+
+    assert response.status_code == 422, response.text
+
+    async with factory() as session:
+        stored = await session.scalar(
+            select(User.pending_email).where(User.id == user_id)
+        )
+        rows = (await session.scalars(select(AuditEvent))).all()
+    assert stored is None
+    assert not [r for r in rows if r.event_type.startswith("admin.user.email_change")]
+
+
+@pytest.mark.asyncio
+async def test_the_old_address_alert_uses_the_admin_copy_not_the_self_serve_one(
+    factory, monkeypatch
+):
+    """F17 — the spec forbids reusing the SELF-SERVE template BY NAME, and
+    nothing fenced it.
+
+    Substituting ``user_email_change_requested_old_address`` for the
+    admin-initiated template left every backend test green, because F10
+    asserts only the RECIPIENT ADDRESS and never the copy. That is the
+    design's most carefully argued output shipping unfenced.
+
+    Why the substitution is wrong: the self-serve copy says "cancel the
+    pending change in Settings" and links to ``/settings``. Every target of
+    this endpoint is ``email_verified=False`` and therefore 403s at login, and
+    the cancel route sits behind ``require_interactive_session`` -- so that
+    copy instructs a locked-out victim to perform an action behind a login
+    they cannot pass. Net in-app mitigation: zero.
+
+    Wrong implementation killed: swapping either admin template for its
+    self-serve sibling.
+    """
+    from app.routers import admin_users as admin_users_module
+    from app.services import notification_service
+
+    captured: list[tuple[str, str, str, str | None]] = []
+
+    async def fake_security_email(db, *, user_id, email, event_type, title,
+                                  body, link_url=None):
+        captured.append((email, title, body, link_url))
+
+    monkeypatch.setattr(
+        notification_service, "send_security_email_best_effort", fake_security_email
+    )
+    monkeypatch.setattr(
+        admin_users_module.notification_service,
+        "send_security_email_best_effort",
+        fake_security_email,
+        raising=False,
+    )
+
+    user_id, org_id = await _seed(factory)
+    actor = await _seed_actor(factory, org_id)
+
+    with TestClient(_app(factory, actor)) as client:
+        assert _post(client, user_id, new_email=GOOD_EMAIL).status_code == 200
+
+    assert len(captured) == 1, captured
+    _email, title, body, link_url = captured[0]
+
+    # Names the operator: the self-serve copy cannot, because there isn't one.
+    assert actor.email in body, body
+    # States the account is locked out -- the fact the self-serve copy omits.
+    assert "locked out" in body.lower(), body
+    # ⚠ Must NOT send a locked-out user to a page behind the login gate.
+    assert "settings" not in body.lower(), body
+    assert link_url is None, link_url
+    assert "support" in title.lower() or "operator" in body.lower(), (title, body)
+
+
+@pytest.mark.asyncio
+async def test_the_in_app_security_row_is_dispatched_and_gated_on_the_audit_id(
+    factory, monkeypatch
+):
+    """F18 — the in-app SECURITY row shipped unfenced.
+
+    Replacing ``if audit_event_id is not None:`` with ``if False:`` -- i.e.
+    deleting the row outright -- left all 26 tests in this module green.
+    Nothing asserted the row existed, and nothing asserted the gate.
+
+    The gate is the locked rule at ``admin_users.py``: a notification must
+    never claim an action that was not durably recorded, so the dispatch
+    hangs off the audit id rather than the request succeeding.
+
+    Wrong implementations killed: deleting the dispatch; ungating it from
+    ``audit_event_id``.
+    """
+    from app.routers import admin_users as admin_users_module
+    from app.services import notification_service
+
+    dispatched: list[dict] = []
+
+    async def fake_dispatch(db, **kwargs):
+        dispatched.append(kwargs)
+
+    monkeypatch.setattr(
+        admin_users_module.notification_service,
+        "dispatch_notification_best_effort",
+        fake_dispatch,
+        raising=False,
+    )
+
+    user_id, org_id = await _seed(factory)
+    actor = await _seed_actor(factory, org_id)
+
+    with TestClient(_app(factory, actor)) as client:
+        assert _post(client, user_id, new_email=GOOD_EMAIL).status_code == 200
+
+    assert dispatched, (
+        "no in-app SECURITY row was dispatched; the operator's action is "
+        "invisible to the target inside the app"
+    )
+    assert len(dispatched) == 1, dispatched
