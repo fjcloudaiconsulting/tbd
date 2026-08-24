@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 import {
+  EMAIL_RECOVERY_EMAIL_MAX,
   EMAIL_RECOVERY_NOTICE,
   EMAIL_RECOVERY_REASON_MAX,
   EMAIL_RECOVERY_REASON_MIN,
@@ -193,6 +194,7 @@ export default function AdminEmailChangeModal({
             id="admin-email-change-new"
             ref={firstFieldRef}
             type="email"
+          maxLength={EMAIL_RECOVERY_EMAIL_MAX}
             autoComplete="off"
             value={newEmail}
             onChange={(e) => setNewEmail(e.target.value)}
@@ -207,6 +209,7 @@ export default function AdminEmailChangeModal({
           <input
             id="admin-email-change-confirm"
             type="email"
+          maxLength={EMAIL_RECOVERY_EMAIL_MAX}
             autoComplete="off"
             value={confirmEmail}
             onChange={(e) => setConfirmEmail(e.target.value)}

@@ -17,7 +17,12 @@ class RegisterRequest(BaseModel):
         max_length=USERNAME_MAX_LENGTH,
         pattern=USERNAME_PATTERN,
     )
-    email: EmailStr
+    # ⚠ max_length MUST match the column this reaches (``String(120)``).
+    # ``EmailStr`` alone accepts 254 characters, so a syntactically VALID
+    # longer address reached the INSERT and raised an unhandled 500
+    # (MySQL DataError 1406 under STRICT_TRANS_TABLES). ⚠⚠ SQLite does not
+    # enforce ``VARCHAR(n)``, so the shards cannot see this class at all.
+    email: EmailStr = Field(max_length=120)
     password: str = Field(min_length=8, max_length=128)
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)

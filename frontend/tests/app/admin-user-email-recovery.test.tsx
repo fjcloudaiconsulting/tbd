@@ -370,11 +370,18 @@ describe("TBD-362 admin email recovery UI", () => {
 
   describe("F15: the modal traps focus and restores it", () => {
     // jsdom never lays anything out, so HTMLElement.offsetParent is always
-    // null and useFocusTrap's visibility filter would discard EVERY
-    // focusable element -- making the wrap-around assertion vacuously
-    // green against a modal with no trap at all. Give offsetParent a
-    // browser-shaped value for the duration of this block so the assertion
-    // actually discriminates.
+    // null and useFocusTrap's visibility filter discards EVERY focusable
+    // element. Give offsetParent a browser-shaped value for the duration of
+    // this block.
+    //
+    // ⚠ THIS SHIM PREVENTS A FALSE **RED**, NOT A FALSE GREEN -- an earlier
+    // comment here said the opposite, and that is the sentence a future
+    // reader would trust when deciding the shim can go. Measured: with
+    // offsetParent forced to null and the implementation CORRECT, the
+    // wrap-around assertion FAILS, because the hook's filter empties its
+    // candidate list, takes the `preventDefault(); return` branch, and focus
+    // never moves off the last element. Without the shim this block is
+    // unusable, not merely weak.
     let original: PropertyDescriptor | undefined;
     beforeAll(() => {
       original = Object.getOwnPropertyDescriptor(

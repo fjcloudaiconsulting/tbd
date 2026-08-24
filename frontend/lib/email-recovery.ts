@@ -43,3 +43,10 @@ export const EMAIL_RECOVERY_REASON_MAX = 200;
 export function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
 }
+
+/** Matches ``users.email`` / ``users.pending_email`` (``String(120)``).
+ *
+ * The server is authoritative and refuses a longer value with a 422; this
+ * only stops the operator typing past the limit and being told after the
+ * fact. Kept beside the reason bound so the two stay one pattern. */
+export const EMAIL_RECOVERY_EMAIL_MAX = 120;

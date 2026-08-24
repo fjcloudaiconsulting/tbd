@@ -61,6 +61,14 @@ The eight physical write sites collapse: ``google_callback`` holds two (an
 attribute assign on the existing row plus a ``User(...)`` keyword on the new
 one) and ``accept_invitation`` holds two (same shape). Writing eight entries
 produces two spurious MISSING failures against a correct implementation.
+
+
+Two further shapes inside ``backend/app/`` are equally invisible to an
+attribute-store collector and are NOT covered: ``update(User).values(
+email_verified=True)`` (the callee is ``values``, not in
+``WRITING_CALLEES``) and ``setattr(user, "email_verified", True)``.
+Neither exists today -- verified by grep -- so this is a stated blind
+spot, not a live hole. The raw-SQL case is not the only one.
 """
 from __future__ import annotations
 

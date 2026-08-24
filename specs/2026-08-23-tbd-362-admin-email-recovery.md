@@ -168,7 +168,7 @@ org-scoped under `orgs.manage`.
 ```
 dependencies=[Depends(require_interactive_session)]
 actor: User = Depends(require_permission("users.reset_credentials"))
-@limiter.limit("10/hour")
+@limiter.shared_limit("10/hour", scope="admin_users.email_change")
 ```
 
 `users.reset_credentials` already exists at `permissions.py:38` with zero call
@@ -656,9 +656,11 @@ what this fence catches.
    instruction, kept as the security frame. The design adds zero. Replaced by
    fence F11.
 3. **Per-actor rate limiting** — not implementable against the single
-   `Limiter(key_func=get_client_ip)`. `10/hour` on the existing IP key bounds
-   the same abuse at the same order of magnitude and fails **closed** when two
-   operators share an IP.
+   `Limiter(key_func=get_client_ip)`. `shared_limit("10/hour", scope=...)` on the existing IP key bounds the
+   route IN AGGREGATE and fails **closed** when two operators share an IP.
+   ⚠ A plain `limit` does NOT: slowapi buckets it on the concrete
+   `request.url.path`, so `{user_id}` gives every target its own private
+   budget. That shipped, and was fixed post-merge.
 4. **The L4.4 reset-spike Redis fanout** — peer detection across a family of
    three reset endpoints; one endpoint does not make a spike.
 5. **Password reset and MFA reset** — out of scope. The shared
