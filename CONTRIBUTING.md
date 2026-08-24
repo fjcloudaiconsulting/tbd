@@ -320,14 +320,15 @@ recovery — reload — re-issues the request. Tracked separately.
 
 ### Public endpoints (no auth required)
 
-Exactly **25** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 10 are genuinely **open**, and 15 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "25 public routes" is not 25 unauthenticated ones.
+Exactly **26** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 11 are genuinely **open**, and 15 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "26 public routes" is not 26 unauthenticated ones.
 
-**Open — no identity check at all (10)**
+**Open — no identity check at all (11)**
 
 | Route | Why it cannot carry auth |
 | --- | --- |
 | `GET /health` | Platform liveness probe. |
-| `GET /ready` | Platform readiness probe. |
+| `GET /ready` | Platform readiness probe. **Database only**, deliberately — it is the rotation gate a k8s readinessProbe pulls replicas out on. |
+| `GET /health/dependencies` | Per-dependency readiness (TBD-413): database **and** Redis, 503 when a required one is unusable. Anonymous because an uptime monitor holds no bearer token. Reports a closed vocabulary of coarse states and never exception text, hostnames or ports. |
 | `GET /api/v1/auth/status` | Serves feature flags to anonymous and authenticated callers alike. Uses `get_current_user_optional`, which returns `None` rather than raising. |
 | `GET /api/v1/auth/check-username` | Signup-time availability probe; runs before any account exists. |
 | `POST /api/v1/auth/register` | Account creation. Nothing to authenticate yet. |

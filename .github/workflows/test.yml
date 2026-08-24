@@ -500,7 +500,7 @@ jobs:
       # migrated schema on the real driver. This is the leg that would have
       # caught the 2026-05-20 aiomysql outage: /ready executes SELECT 1
       # through the app's own async engine.
-      - name: Boot the app and assert /ready against MySQL
+      - name: Boot the app and assert /ready and /health/dependencies against MySQL
         working-directory: backend
         run: |
           # The redirect is load-bearing: it detaches uvicorn from the step's
@@ -512,6 +512,42 @@ jobs:
             code=$(curl -s -o /tmp/ready.json -w '%{http_code}' http://127.0.0.1:8000/ready || true)
             if [ "$code" = "200" ]; then
               echo "ready: $(cat /tmp/ready.json)"
+
+              # ── TBD-413 ──────────────────────────────────────────────────
+              # Asserted in THIS step, deliberately, not a following one: the
+              # uvicorn above is backgrounded in this step's shell, and
+              # whether an orphan survives into the next step is a runner
+              # implementation detail this job should not depend on.
+              #
+              # This is the ONLY place in the system where a real uvicorn
+              # boot, a real MySQL and a genuinely empty REDIS_URL coincide.
+              # The pytest shards run in-process on aiosqlite with an autouse
+              # fake Redis, so they cannot reach this state except by
+              # hand-building it.
+              #
+              # ⚠ Deliberately NO REDIS_URL and no Redis service in this job.
+              # This asserts the NON-PRODUCTION branch: an unconfigured Redis
+              # is a supported mode outside production and must stay 200, or
+              # this required gate goes red on every run.
+              #
+              # ⚠ PARSE the JSON, never grep the body — a grep for a key is
+              # satisfied by a comment mentioning it. Assert the whole tuple:
+              # a bare 200 check is near-vacuous, since a handler that always
+              # returns 200 would pass it.
+              dcode=$(curl -s -o /tmp/deps.json -w '%{http_code}' \
+                http://127.0.0.1:8000/health/dependencies || true)
+              echo "dependencies: $(cat /tmp/deps.json)"
+              python - <<'PYCHECK'
+          import json
+          d = json.load(open("/tmp/deps.json"))
+          assert d["status"] == "ok", d
+          assert d["checks"]["database"] == "ok", d
+          assert d["checks"]["redis"] == "disabled", d
+          PYCHECK
+              [ "$dcode" = "200" ] || {
+                echo "expected 200 from /health/dependencies, got $dcode"
+                exit 1
+              }
               exit 0
             fi
             sleep 2
@@ -522,6 +558,7 @@ jobs:
           echo "----- uvicorn log -----"
           cat /tmp/uvicorn.log
           exit 1
+
 
   # ── Frontend (TBD-404) ───────────────────────────────────────────────────
   # SPLIT INTO WORK + AGGREGATE, deliberately, even though there is only one
