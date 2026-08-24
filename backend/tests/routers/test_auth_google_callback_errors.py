@@ -332,7 +332,13 @@ async def test_expired_oauth_state_cookie_redirects_with_state_code(
     dialog past the cookie TTL; on return the cookie was gone but the
     state query param was still there. Previously: 400 + DO error page.
     Now: 307 ``/login?sso_error=state`` so the LoginPageBody banner
-    renders the right copy, plus an audit row."""
+    renders the right copy.
+
+    ⚠ TBD-353 removed the audit row from this path. ``reason="state"`` is
+    reachable ONLY when the state check fails, so the row was anonymous by
+    construction and was an unbounded insert primitive for any caller. The
+    redirect — the whole point of the production fix this test pins — is
+    unchanged. A structlog line replaces the row."""
     app = _make_app(session_factory)
     with TestClient(app) as client:
         # Deliberately do NOT set the oauth_state cookie. This is the
@@ -347,13 +353,7 @@ async def test_expired_oauth_state_cookie_redirects_with_state_code(
     location = res.headers.get("location", "")
     assert location == "http://localhost/login?sso_error=state", location
 
-    rows = await _callback_failure_rows(session_factory)
-    assert len(rows) == 1
-    assert rows[0].outcome.value == "failure"
-    assert rows[0].detail == {"reason": "state"}
-    # No user identified at this stage of the flow.
-    assert rows[0].actor_user_id is None
-    assert rows[0].actor_email == ""
+    assert await _callback_failure_rows(session_factory) == []
 
 
 @pytest.mark.asyncio
@@ -1805,11 +1805,10 @@ async def test_stepup_expired_oauth_state_cookie_redirects_with_state_code(
     location = res.headers.get("location", "")
     assert location.endswith("/settings?sso_stepup_error=state"), location
 
-    rows = await _callback_failure_rows(
+    # TBD-353: no row on any path where the state did not round-trip.
+    assert await _callback_failure_rows(
         session_factory, event_type="auth.google.sso_stepup.callback.failed"
-    )
-    assert len(rows) == 1
-    assert rows[0].detail == {"reason": "state"}
+    ) == []
 
 
 # ── cancelled / provider_error / missing_code ───────────────────────────────
@@ -1826,8 +1825,11 @@ async def test_google_callback_user_cancelled_redirects_with_cancelled_code(
     page. Now we route to /login?sso_error=cancelled with audit row."""
     app = _make_app(session_factory)
     with TestClient(app) as client:
-        # No cookie set is fine — we want a friendly message even if
-        # the state cookie also got nuked.
+        # TBD-353: the cookie is now set so this test keeps asserting the
+        # audit row, which is its subject. The cookie-ABSENT half (same
+        # redirect, NO row) is fenced in
+        # tests/auth/test_anonymous_audit_bounds.py::test_f3_leg1/leg4.
+        client.cookies.set("oauth_state", "some-state-value")
         res = client.get(
             "/api/v1/auth/google/callback",
             params={
@@ -1859,6 +1861,11 @@ async def test_google_callback_provider_error_redirects_with_provider_error_code
     distinguishes the cancelled case from a provider issue."""
     app = _make_app(session_factory)
     with TestClient(app) as client:
+        # TBD-353: the cookie is now set so this test keeps asserting the
+        # audit row, which is its subject. The cookie-ABSENT half (same
+        # redirect, NO row) is fenced in
+        # tests/auth/test_anonymous_audit_bounds.py::test_f3_leg1/leg4.
+        client.cookies.set("oauth_state", "some-state-value")
         res = client.get(
             "/api/v1/auth/google/callback",
             params={"error": "server_error", "state": "some-state-value"},
@@ -1887,6 +1894,11 @@ async def test_google_callback_missing_code_and_error_redirects_with_token_code(
     a real token-exchange failure."""
     app = _make_app(session_factory)
     with TestClient(app) as client:
+        # TBD-353: the cookie is now set so this test keeps asserting the
+        # audit row, which is its subject. The cookie-ABSENT half (same
+        # redirect, NO row) is fenced in
+        # tests/auth/test_anonymous_audit_bounds.py::test_f3_leg1/leg4.
+        client.cookies.set("oauth_state", "some-state-value")
         res = client.get(
             "/api/v1/auth/google/callback",
             params={"state": "some-state-value"},

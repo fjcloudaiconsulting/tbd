@@ -1725,6 +1725,7 @@ async def me(
 
 
 @router.post("/logout")
+@limiter.limit("120/minute")
 async def logout(
     request: Request,
     response: Response,
@@ -1745,7 +1746,9 @@ async def logout(
     1. Read every refresh cookie via ``_extract_refresh_cookies``.
        Decode each value just enough to extract its ``sid`` (and ``jti``
        for diagnostics) — no validation chain, this endpoint accepts
-       anonymous logout as a successful cookie clear.
+       anonymous logout as a successful cookie clear (200 + both
+       delete-cookie headers), but since TBD-353 it does NOT write an
+       audit row for one.
     2. Collect the distinct ``sid`` values (typical case: one).
     3. For each ``sid`` run the atomic family-revoke from
        :func:`redis_client.session_revoke_family`. Round A's
@@ -1755,8 +1758,11 @@ async def logout(
        a successor.
     4. Clear the refresh cookie at both ``Path=/`` and the legacy path.
     5. Emit ``auth.session.terminated`` audit with detail
-       ``{sid_count, jti_count}``. Outcome=success even when 0 (an
-       anonymous logout is still a clean cookie clear).
+       ``{sid_count, jti_count}``, outcome=success — but ONLY when the
+       call identified a session family or an actor. A fully anonymous
+       logout still clears the cookie and still returns 200; it writes a
+       structlog line instead of a row (TBD-353, amending spec §5.3
+       step 5, which said outcome=success even when 0).
 
     Critically does NOT touch ``sessions_invalidated_at`` — that field
     is the global-invalidation cutoff and stays reserved for the five
@@ -1777,9 +1783,21 @@ async def logout(
     # Walk the raw Cookie header so duplicate ``refresh_token`` entries
     # (Path=/ + the legacy Path=/api/v1/auth/refresh after PR #211) are
     # both inspected. Each value is decoded ONLY to read its claims; the
-    # full validation chain is skipped on logout — even an expired or
-    # post-cutoff token still identifies a session family that should be
-    # cleaned up.
+    # full validation chain is skipped on logout, so a POST-CUTOFF token
+    # still identifies a session family that should be cleaned up.
+    #
+    # ⚠ An EXPIRED one does not, and that is deliberate (TBD-353 — this
+    # comment used to claim otherwise). ``decode_refresh_jti_sid`` calls
+    # ``jwt.decode`` with default options, so ``exp`` IS verified and an
+    # expired cookie raises straight into the ``except`` below. Nothing
+    # is lost: the JWT ``exp``, the cookie ``Max-Age``, the Redis primary
+    # key TTL and the family-set TTL are all the same ``ttl_seconds``
+    # written together, so an expired jti has no live Redis row to
+    # revoke, and any family still alive is named by an unexpired head
+    # cookie that decodes fine. Do NOT "fix" this with
+    # ``options={"verify_exp": False}``: it would revoke nothing in any
+    # reachable state while turning a dead credential into a working
+    # force-logout against a live family.
     refresh_tokens = _extract_refresh_cookies(request)
     sids: list[str] = []
     jtis_seen: list[str] = []
@@ -1787,7 +1805,15 @@ async def logout(
     for raw in refresh_tokens:
         try:
             jti, sid = decode_refresh_jti_sid(raw)
-        except (ValueError, Exception):  # noqa: BLE001 — corrupt/missing JWT is fine
+        except Exception as exc:  # noqa: BLE001 — corrupt/expired JWT is fine
+            # Stays deliberately broad: an unexpected exception type must
+            # not 500 a logout, which has to succeed. Logged rather than
+            # silently swallowed so the expired-cookie case the comment
+            # above describes is observable instead of invisible.
+            _LOGGER.debug(
+                "auth.logout.refresh_cookie_undecodable",
+                error_type=type(exc).__name__,
+            )
             continue
         jtis_seen.append(jti)
         if sid not in seen_sids:
@@ -1854,7 +1880,7 @@ async def logout(
     response.delete_cookie("refresh_token", path="/")
     _clear_legacy_refresh_cookie(response)
 
-    # ── 5. Audit. Always-success, even when sid_count = 0 ───────────────
+    # ── 5. Audit, but only when the call identified something ──────────
     request_id = structlog.contextvars.get_contextvars().get("request_id")
     detail: dict[str, Any] = {
         "sid_count": len(sids),
@@ -1862,18 +1888,54 @@ async def logout(
     }
     if redis_partial_revoke:
         detail["redis_partial_revoke"] = True
-    await audit_service.record_audit_event(
-        session_factory,
-        event_type="auth.session.terminated",
-        actor_user_id=actor_user_id,
-        actor_email=actor_email,
-        target_org_id=None,
-        target_org_name=None,
-        request_id=request_id,
-        ip_address=get_client_ip(request),
-        outcome="success",
-        detail=detail,
-    )
+    # ⚠ TBD-353. The row is written only when the call identified
+    # SOMETHING — a session family, or an actor. A row carrying
+    # ``actor_user_id=None, sid_count=0, jti_count=0`` names no subject,
+    # and writing one on every anonymous POST was the unbounded-insert
+    # primitive this ticket exists to remove. The rate limit above
+    # throttles it per address; it cannot remove it, because
+    # ``get_client_ip`` returns raw un-collapsed addresses and a routed
+    # IPv6 /64 is 2^64 buckets.
+    #
+    # ⚠ It is NOT true that the dropped row "records nothing an operator
+    # can act on" -- an earlier draft said that and it was too strong.
+    # The row was the FORCED-LOGOUT trace: a cross-site
+    # ``<form method=POST>`` here sends no refresh cookie (SameSite=Lax)
+    # but the browser still honours both delete-cookie headers, so the
+    # victim IS logged out, anonymously, with ``sid_count=0``. What makes
+    # dropping it adequate is that THE SIGNAL MOVES to the structlog line
+    # below: same ``ip_address``, same ``request_id``, same rate, same
+    # request. A retention downgrade, not a lost observation.
+    #
+    # ⚠ ``jtis_seen`` is deliberately NOT a third term.
+    # ``decode_refresh_jti_sid`` raises unless BOTH claims are present,
+    # so the jti append and the sid append happen in the same iteration:
+    # ``jtis_seen`` non-empty implies ``sids`` non-empty. A third term
+    # would be dead, and a dead term in a security guard asserts a case
+    # exists.
+    #
+    # The cookie clear above is unconditional and stays that way — the
+    # user-visible contract (200 + both delete-cookie headers) is
+    # unchanged. Only the row goes.
+    if sids or actor_user_id is not None:
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="auth.session.terminated",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=None,
+            target_org_name=None,
+            request_id=request_id,
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail=detail,
+        )
+    else:
+        _LOGGER.info(
+            "auth.session.terminated.anonymous",
+            ip_address=get_client_ip(request),
+            request_id=request_id,
+        )
 
     body: dict[str, Any] = {"detail": "Logged out"}
     if redis_partial_revoke:
@@ -1904,6 +1966,7 @@ async def forgot_password(
 
 
 @router.post("/reset-password")
+@limiter.limit("10/minute")
 async def reset_password(
     request: Request,
     body: ResetPasswordRequest,
@@ -2424,6 +2487,99 @@ async def _issue_tokens(
     return TokenResponse(access_token=access_token)
 
 
+def _oauth_state_matches(cookie_value: str | None, state_value: str | None) -> bool:
+    """Constant-time CSRF state check for the two OAuth callbacks.
+
+    ⚠ Compares BYTES, not ``str``. ``secrets.compare_digest`` raises
+    ``TypeError`` when either ``str`` operand contains a non-ASCII
+    character, and ``state`` is an attacker-controlled query parameter --
+    so the naive ``compare_digest(cookie_value, state_value)`` turns a
+    state mismatch into a 500 for anyone who sends ``?state=<non-ascii>``.
+
+    ⚠ A True result does NOT authenticate the caller. ``oauth_state`` is
+    an unsigned random nonce (see ``google_login``), so a caller can set
+    both halves themselves. It proves only that the two halves of one
+    round trip agree, which is enough to drop drive-by traffic and is
+    exactly as much as the callers below rely on (TBD-353).
+    """
+    if not cookie_value or not state_value:
+        return False
+    return secrets.compare_digest(
+        cookie_value.encode("utf-8"), state_value.encode("utf-8")
+    )
+
+
+# Two event names, because the suppressed callback failures split into two
+# populations that an operator must be able to separate (TBD-353 review).
+#
+#  * ``unverified_state`` -- the ``state`` did NOT round-trip. Forged
+#    drive-by traffic is indistinguishable from it, so it is noise and an
+#    operator is right to filter it out in bulk.
+#  * ``invalid_state_payload`` -- the ``state`` DID round-trip and the
+#    payload inside it was junk. Only reachable on the step-up callback,
+#    past ``state_ok``, on the four branches between the shape parse and
+#    the ``User`` lookup. It is NOT drive-by noise: a caller who supplies
+#    both halves of the nonce and then sweeps the ``user_id`` slot lands
+#    here, and the redirect still discriminates an existing id from a
+#    missing one. Before TBD-353 that sweep left a durable audit row; the
+#    trace now lives under this name so it stays alertable instead of
+#    being swept up with the forged-GET noise.
+#
+# ⚠ Emitting both under one name is the defect this split fixes -- do not
+# re-merge them, and do not widen ``unverified_state`` to cover a path
+# where ``state_ok`` is true.
+_UNVERIFIED_STATE_EVENT = "auth.oauth.callback.unverified_state"
+_INVALID_STATE_PAYLOAD_EVENT = "auth.oauth.callback.invalid_state_payload"
+
+
+def _log_unverified_callback(
+    request: Request, *, reason: str, state_ok: bool
+) -> None:
+    """Observability stand-in for the audit row we deliberately skip.
+
+    Emitted on every OAuth-callback failure path that writes no
+    ``audit_events`` row. ``state_ok`` selects the event name (see the
+    two constants above) and is also carried in the payload, so the two
+    populations are separable by name *and* by field.
+
+    ``state_ok`` is keyword-only and has no default on purpose: a new
+    suppressed path has to state which population it belongs to rather
+    than inheriting the wrong label by omission.
+    """
+    _LOGGER.info(
+        _INVALID_STATE_PAYLOAD_EVENT if state_ok else _UNVERIFIED_STATE_EVENT,
+        reason=reason,
+        state_ok=state_ok,
+        path=request.url.path,
+        ip_address=get_client_ip(request),
+    )
+
+
+# Per-string cap for any value copied from the request into a retained
+# ``audit_events`` detail (TBD-353 review). Mirrors ``_MAX_FIELD_LEN`` in
+# ``routers/security.py``, the sibling public writer that already solved
+# this: ``google_error_description`` is an unbounded attacker-controlled
+# query parameter, and with a matching ``oauth_state`` cookie a caller
+# reaches the RETAINED write path at the route's full budget. Bounding the
+# row count without bounding the row SIZE just changes the units of the
+# same inflation.
+_MAX_AUDIT_DETAIL_FIELD_LEN = 512
+
+
+def _bounded_detail_value(value: Any) -> Any:
+    """Truncate a string detail value; pass anything else through.
+
+    Deliberately narrow. ``security.py::_bounded`` DROPS non-scalars
+    because its input is a whole untrusted JSON body behind an allowlist;
+    here every caller builds ``detail_extra`` itself from named locals, so
+    the only untrusted values are strings and dropping a caller-built
+    non-string would silently lose a field we chose to record.
+    """
+    if isinstance(value, str):
+        return value[:_MAX_AUDIT_DETAIL_FIELD_LEN]
+    return value
+
+
 async def _record_google_callback_failure(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -2446,11 +2602,21 @@ async def _record_google_callback_failure(
     raw ``google_error`` and ``google_error_description`` Google
     returned on a cancelled consent) without forcing every call site
     to construct the full detail dict.
+
+    ⚠ Every string in ``detail_extra`` is truncated to
+    ``_MAX_AUDIT_DETAIL_FIELD_LEN``. Those fields are copied straight out
+    of the query string, and the rows this helper writes on a
+    state-consistent call are RETAINED, so an uncapped multi-KB
+    ``error_description`` is an inflation primitive in bytes rather than
+    in rows. Truncate here, at the one shared writer, rather than at each
+    call site (TBD-353 review).
     """
     request_id = structlog.contextvars.get_contextvars().get("request_id")
     detail: dict[str, Any] = {"reason": reason}
     if detail_extra:
-        detail.update(detail_extra)
+        detail.update(
+            {k: _bounded_detail_value(v) for k, v in detail_extra.items()}
+        )
     await audit_service.record_audit_event(
         session_factory,
         event_type=event_type,
@@ -3329,14 +3495,26 @@ def _validate_google_config() -> None:
 
 
 @router.get("/google")
-async def google_login(response: Response):
-    """Redirect to Google OAuth consent screen."""
+@limiter.limit("60/minute")
+async def google_login(request: Request, response: Response):
+    """Redirect to Google OAuth consent screen.
+
+    ``request`` is unused by the body and present only because slowapi
+    resolves the rate-limit key from a ``Request`` in the wrapped
+    signature; without it the decorator raises at call time, not at
+    import time.
+    """
     _validate_google_config()
 
-    # Generate CSRF state token and store in a signed cookie. The TTL
-    # (30 min) covers the user dwelling on Google's "Choose an account"
-    # dialog. The previous 10-min budget produced a hard 400 at the
-    # callback when users hesitated for ~11 min, which DO App Platform
+    # Generate a CSRF state token and store it in an httpOnly cookie. NOT
+    # a signed one -- the value is a bare random nonce, so the callback's
+    # state check proves only that the two halves of one round trip agree,
+    # never that the caller started at our /google (TBD-353; the comment
+    # here used to call the cookie "signed", which was false).
+    #
+    # The 30-minute TTL covers the user dwelling on Google's "Choose an
+    # account" dialog. The previous 10-min budget produced a hard 400 at
+    # the callback when users hesitated for ~11 min, which DO App Platform
     # then wrapped in its generic "Error / check logs" page.
     state = secrets.token_urlsafe(32)
     response.set_cookie(
@@ -3362,6 +3540,7 @@ async def google_login(response: Response):
 
 
 @router.get("/google/callback")
+@limiter.limit("60/minute")
 async def google_callback(
     request: Request,
     code: str | None = None,
@@ -3394,6 +3573,14 @@ async def google_callback(
     # the alert-worthy signal in DO logs / dashboards.
     _validate_google_config()
 
+    # TBD-353. One state check, evaluated ONCE and consulted by every
+    # audit write below. The branch ORDER is deliberately unchanged --
+    # only the audit writes are conditioned. Reordering would change what
+    # the user sees: a cancelled consent arriving with a nuked cookie
+    # would fall through to the state branch and render
+    # ``?sso_error=state`` instead of ``?sso_error=cancelled``.
+    state_ok = _oauth_state_matches(oauth_state, state)
+
     # ── Provider-side failure branch ─────────────────────────────────
     # If Google attached ``?error=...`` (the standard OAuth2 error
     # response), the user-facing flow already failed at the consent
@@ -3402,15 +3589,20 @@ async def google_callback(
     # got nuked) and route to /login with the matching banner code.
     if error is not None:
         google_reason = "cancelled" if error == "access_denied" else "provider_error"
-        await _record_google_callback_failure(
-            session_factory,
-            request=request,
-            reason=google_reason,
-            detail_extra={
-                "google_error": error,
-                "google_error_description": error_description,
-            },
-        )
+        if state_ok:
+            await _record_google_callback_failure(
+                session_factory,
+                request=request,
+                reason=google_reason,
+                detail_extra={
+                    "google_error": error,
+                    "google_error_description": error_description,
+                },
+            )
+        else:
+            _log_unverified_callback(
+                request, reason=google_reason, state_ok=state_ok
+            )
         return _google_error_redirect(google_reason)
 
     # Malformed callback: neither a code nor an error. Surface to the
@@ -3418,9 +3610,14 @@ async def google_callback(
     # audit the specific reason (``missing_code``) so ops can tell it
     # apart from a real token exchange failure.
     if code is None:
-        await _record_google_callback_failure(
-            session_factory, request=request, reason="missing_code"
-        )
+        if state_ok:
+            await _record_google_callback_failure(
+                session_factory, request=request, reason="missing_code"
+            )
+        else:
+            _log_unverified_callback(
+                request, reason="missing_code", state_ok=state_ok
+            )
         return _google_error_redirect("token")
 
     # Validate CSRF state. The cookie miss case is the common one in
@@ -3428,10 +3625,21 @@ async def google_callback(
     # "Error / check logs" splash, so users saw a broken-app screen
     # instead of "your sign-in expired, try again". Redirect to /login
     # with ?sso_error=state so the frontend can render the right copy.
-    if not oauth_state or not state or oauth_state != state:
-        await _record_google_callback_failure(
-            session_factory, request=request, reason="state"
-        )
+    if not state_ok:
+        # ⚠ No audit row here, deliberately, and this is the load-bearing
+        # half of TBD-353 rather than an afterthought. Conditioning only
+        # the two branches above would MOVE the anonymous-write primitive
+        # rather than remove it: a caller who omits the cookie simply
+        # falls through to here and gets an identical unbounded row.
+        # Nothing is lost -- ``reason="state"`` is reachable ONLY when the
+        # check fails, so that row was anonymous by construction.
+        #
+        # ⚠ ``state_ok`` is passed rather than hardcoded ``False`` so this
+        # site cannot drift into mislabelling itself if the branch ever
+        # moves. On ``google_callback`` there is no path past the check
+        # that suppresses a row, so this logger only ever emits
+        # ``unverified_state`` here.
+        _log_unverified_callback(request, reason="state", state_ok=state_ok)
         return _google_error_redirect("state")
 
     # Exchange authorization code for tokens.
@@ -3932,6 +4140,7 @@ async def sso_stepup_initiate(
 
 
 @router.get("/sso-stepup/callback")
+@limiter.limit("60/hour")
 async def sso_stepup_callback(
     request: Request,
     code: str | None = None,
@@ -3978,14 +4187,40 @@ async def sso_stepup_callback(
             return _STEPUP_RETURN_TARGETS[parts[3]]
         return _STEPUP_RETURN_TARGETS[_STEPUP_DEFAULT_TARGET]
 
+    # TBD-353: one state check, consulted by every audit write below.
+    # Branch order unchanged; only the writes are conditioned.
+    state_ok = _oauth_state_matches(oauth_state, state)
+
     async def _stepup_failure(
         reason: str,
         *,
         ui_code: str | None = None,
         actor_email: str | None = None,
         detail_extra: dict[str, Any] | None = None,
+        audit: bool = True,
     ) -> RedirectResponse:
         """Record the audit row and build the friendly redirect.
+
+        ``audit=False`` (TBD-353) keeps the redirect and the cookie
+        deletion but drops the ``audit_events`` row, emitting a structlog
+        line in its place. It is passed on two DIFFERENT kinds of path
+        and the distinction matters:
+
+        * the ``state`` did not round-trip -- indistinguishable from a
+          forged GET, so the row carries no forensic value and is the
+          anonymous-write primitive the ticket exists to remove. Logged
+          as ``auth.oauth.callback.unverified_state``;
+        * the ``state`` DID round-trip but its payload is junk (the four
+          branches between the shape parse and the ``User`` lookup).
+          Still anonymous -- ``oauth_state`` is an unsigned nonce, so a
+          caller supplies both halves -- but NOT drive-by noise. Logged
+          as ``auth.oauth.callback.invalid_state_payload`` so the
+          user-id sweep stays alertable.
+
+        ⚠ The docstring used to claim ``audit=False`` was used only on
+        the first kind. It never was: the four branches below the state
+        check take it too, and mislabelling them as forged traffic is
+        what the two event names now fix.
 
         ``ui_code`` defaults to ``reason`` and only differs when the
         audit needs a precise cause the frontend has no copy for (e.g.
@@ -3999,14 +4234,26 @@ async def sso_stepup_callback(
         should not outlive the exchange it authorised.
         """
         return_path = _resolve_return_path(state)
-        await _record_google_callback_failure(
-            session_factory,
-            request=request,
-            reason=reason,
-            actor_email=actor_email,
-            event_type="auth.google.sso_stepup.callback.failed",
-            detail_extra=detail_extra,
-        )
+        if audit:
+            await _record_google_callback_failure(
+                session_factory,
+                request=request,
+                reason=reason,
+                actor_email=actor_email,
+                event_type="auth.google.sso_stepup.callback.failed",
+                detail_extra=detail_extra,
+            )
+        else:
+            # ``state_ok`` comes from the enclosing scope, so the event
+            # name is always right for the branch that called us: the
+            # mismatch branch is ``unverified_state``, and the four
+            # post-check payload branches below are
+            # ``invalid_state_payload``. Deriving it here rather than
+            # taking it as a parameter is what stops a new suppressed
+            # branch from labelling itself wrongly.
+            _log_unverified_callback(
+                request, reason=reason, state_ok=state_ok
+            )
         resp = RedirectResponse(
             url=f"{app_settings.app_url}{return_path}?sso_stepup_error={ui_code or reason}",
             status_code=307,
@@ -4026,6 +4273,7 @@ async def sso_stepup_callback(
                 "google_error": error,
                 "google_error_description": error_description,
             },
+            audit=state_ok,
         )
 
     # Malformed callback: neither a code nor an error. Surface the
@@ -4034,12 +4282,17 @@ async def sso_stepup_callback(
     # real token-exchange failure. The frontend banner copy only keys
     # off the URL ``sso_stepup_error=token`` value.
     if code is None:
-        await _record_google_callback_failure(
-            session_factory,
-            request=request,
-            reason="missing_code",
-            event_type="auth.google.sso_stepup.callback.failed",
-        )
+        if state_ok:
+            await _record_google_callback_failure(
+                session_factory,
+                request=request,
+                reason="missing_code",
+                event_type="auth.google.sso_stepup.callback.failed",
+            )
+        else:
+            _log_unverified_callback(
+                request, reason="missing_code", state_ok=state_ok
+            )
         return_path = _resolve_return_path(state)
         resp = RedirectResponse(
             url=f"{app_settings.app_url}{return_path}?sso_stepup_error=token",
@@ -4048,8 +4301,13 @@ async def sso_stepup_callback(
         resp.delete_cookie("oauth_state", path="/api/v1/auth/sso-stepup")
         return resp
 
-    if not oauth_state or not state or oauth_state != state:
-        return await _stepup_failure("state")
+    if not state_ok:
+        # ⚠ audit=False is the load-bearing half of TBD-353: conditioning
+        # only the two branches above would MOVE the anonymous-write
+        # primitive here rather than remove it. ``reason="state"`` is
+        # reachable ONLY when the check fails, so the row it would write
+        # is anonymous by construction and nothing legitimate is lost.
+        return await _stepup_failure("state", audit=False)
 
     # State binds the redemption to a specific user_id chosen at
     # initiate time. Without an Authorization header here, the state
@@ -4057,22 +4315,48 @@ async def sso_stepup_callback(
     # 4-part shape carries the return-target chosen at initiate so the
     # callback redirects to the correct settings page (validated
     # against `_STEPUP_RETURN_TARGETS` to prevent open redirect).
+    #
+    # ⚠ Every failure below carries ``audit=False`` for the same reason the
+    # mismatch above does, and leaving them auditing would have left the
+    # TBD-353 fix half done. ``state_ok`` is a SELF-CONSISTENCY check, not
+    # an authentication: ``oauth_state`` is an unsigned nonce, so a caller
+    # can set the cookie and the query parameter to the same arbitrary junk
+    # and sail past it. Everything from here to the ``user`` lookup is then
+    # reachable anonymously and, unlike the token-exchange failures further
+    # down, costs the caller no outbound request at all -- a strictly
+    # cheaper write primitive than the one the ticket names.
+    #
+    # Nothing legitimate is lost: ``sso_stepup_initiate`` always mints a
+    # well-formed 4-part ``stepup:{user_id}:{nonce}:{return_key}``, so a
+    # shape failure cannot originate from a real flow. The missing-user
+    # branch is suppressed for a second reason -- it is the user-id
+    # enumeration probe, and auditing it would manufacture exactly the
+    # inventory signal the branch exists to withhold.
+    #
+    # ⚠ Suppressed is NOT unobserved. All four log
+    # ``auth.oauth.callback.invalid_state_payload`` (via ``_stepup_failure``
+    # reading ``state_ok`` from the enclosing scope), a name distinct from
+    # the forged-GET ``unverified_state`` precisely so an operator can alert
+    # on the sweep without drowning in drive-by noise. They share
+    # ``reason="state"``; the event name, not the reason, is the
+    # discriminator. Fenced in
+    # ``tests/auth/test_anonymous_audit_bounds.py`` F6.
     parts = state.split(":")
     if len(parts) != 4 or parts[0] != "stepup":
-        return await _stepup_failure("state")
+        return await _stepup_failure("state", audit=False)
     try:
         state_user_id = int(parts[1])
     except ValueError:
-        return await _stepup_failure("state")
+        return await _stepup_failure("state", audit=False)
     return_key = parts[3]
     if return_key not in _STEPUP_RETURN_TARGETS:
-        return await _stepup_failure("state")
+        return await _stepup_failure("state", audit=False)
 
     user = await db.get(User, state_user_id)
     if user is None:
         # Treat a missing user as a bad state rather than 404, so we
         # don't leak which user_ids exist.
-        return await _stepup_failure("state")
+        return await _stepup_failure("state", audit=False)
 
     # Exchange code → tokens → userinfo, identical shape to /google/callback,
     # including the aggregate bound: one absolute deadline shared by both
