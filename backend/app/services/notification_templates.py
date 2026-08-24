@@ -206,6 +206,88 @@ def user_email_change_requested_old_address(
     return (title, body, "/settings")
 
 
+# ── Admin-initiated email change (TBD-362) ──────────────────────────────────
+#
+# ⚠⚠ THESE ARE SEPARATE TEMPLATES ON PURPOSE. DO NOT REUSE THE TWO ABOVE.
+#
+# The two `user_email_change_requested*` templates address a user who is
+# SIGNED IN and can act: they say "cancel the pending change in Settings,
+# reset your password, and contact support", and they link to `/settings`.
+#
+# Every target of the admin endpoint is `email_verified=False` and therefore
+# 403s at `POST /auth/login`, and `DELETE /users/me/pending-email` sits behind
+# `require_interactive_session`. So the reused copy would instruct a
+# locked-out victim to cancel behind a login they cannot pass. "Reset your
+# password" is not behind a login (`forgot_password` is public and gates only
+# on `is_active`) but is useless anyway, because the reset mail goes to the
+# same dead `users.email` address that caused the incident. The in-app row is
+# equally unreadable to someone who cannot sign in. Net in-app mitigation
+# would be ZERO.
+#
+# What ships instead: name the acting operator, state plainly that the
+# account is locked out, tell the reader NOT to click the link if this was
+# unexpected, and point at support rather than `/settings`.
+
+
+def admin_initiated_email_change_requested(
+    *, actor_email: str, pending_email: str
+) -> tuple[str, str, Optional[str]]:
+    """IN-APP copy for ``admin.user.email_change.triggered``.
+
+    ⚠ Read the module-section note above before reaching for
+    ``user_email_change_requested``: reusing it points a locked-out user at a
+    Settings screen behind a login they cannot pass.
+
+    Args:
+        actor_email: the operator who triggered it. Named, because there is
+            no user consent anywhere in this request and the reader's first
+            question is who did it.
+        pending_email: the address the operator claimed on the account.
+    """
+    title = "Support started an email change on your account"
+    body = (
+        f"{actor_email} started a change of the login email on your account "
+        f"to {pending_email}. Your account is currently locked out because "
+        "its email address has never been confirmed, and it stays locked out "
+        f"until someone opens the confirmation link sent to {pending_email}. "
+        "Nothing about your account has changed yet. If you did not ask for "
+        "this, do not open that link and contact support immediately."
+    )
+    return (title, body, None)
+
+
+def admin_initiated_email_change_requested_old_address(
+    *, actor_email: str, pending_email: str
+) -> tuple[str, str, Optional[str]]:
+    """EMAIL copy for ``admin.user.email_change.triggered``, to the address
+    currently on the account.
+
+    ⚠ SENT UNCONDITIONALLY, INCLUDING WHEN THAT ADDRESS IS UNVERIFIED. That
+    looks wasteful and is not: "typo'd" and "attacker-chosen" are
+    indistinguishable to the system, and wherever the address is in fact live
+    this is the ONLY out-of-band signal the target ever gets that an operator
+    repointed their recovery channel.
+
+    Rendering goes through ``send_notification_email``, which HTML-escapes
+    title and body, so interpolating raw addresses here is safe.
+
+    Args:
+        actor_email: the operator who triggered it.
+        pending_email: the address the operator claimed on the account.
+    """
+    title = "Support started an email change on your account"
+    body = (
+        f"{actor_email}, an operator of The Better Decision, started a change "
+        f"of the login email on your account to {pending_email}. This notice "
+        "was sent to the address currently on the account. Your account is "
+        "locked out until someone opens the confirmation link sent to that "
+        "new address; nothing has changed yet. If you did not ask for this, "
+        "do NOT open that link, and contact support straight away so the "
+        "pending change can be cancelled."
+    )
+    return (title, body, None)
+
+
 def user_email_changed(*, new_email: str) -> tuple[str, str, Optional[str]]:
     """Copy for ``user.email.changed`` (security category).
 

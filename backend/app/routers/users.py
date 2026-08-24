@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.auth.pat import require_interactive_session
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
-from app.models.user import User
+from app.models.user import Organization, User
 from app.rate_limit import get_client_ip, limiter
 from app.schemas.auth import (
     USERNAME_MAX_LENGTH,
@@ -361,28 +361,80 @@ async def cancel_pending_email(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Abandon a pending email change (TBD-361). Idempotent.
 
-    ⚠ NO password and NO step-up, deliberately, and this is not an
+    ⚠⚠ NO password and NO step-up, deliberately, and this is not an
     oversight of the S-P1-2 re-auth gate on the change itself. Requesting a
     change moves the account's recovery channel and therefore demands proof
     of presence; cancelling one only restores the status quo and can move
     nothing. Demanding the password to undo a mistake is the exact shape
     that made the original defect unrecoverable — a user who mistyped their
     address and cannot reach their inbox must not also need to remember a
-    password to get out of it.
+    password to get out of it. **TBD-362 added the audit row below and
+    deliberately did NOT add re-auth here; do not "finish the job".**
 
     Idempotent 204 rather than 404 on "nothing pending": the caller's goal
     is a state, not a transition, and a user clicking Cancel twice has not
     made an error.
     """
-    if current_user.pending_email is not None:
-        # None, never "": an empty string still satisfies `is not None` in
-        # the promotion guard, and would serialize into the response as a
-        # pending change, rendering an empty row in the UI.
-        current_user.pending_email = None
-        await db.commit()
+    if current_user.pending_email is None:
+        # No state change, so nothing to record. Auditing the no-op would let
+        # any live session spray rows into `/admin/audit` at `10/hour` with
+        # no corresponding change for a reader to reconstruct.
+        return Response(status_code=204)
+
+    # Snapshot everything the post-commit audit needs BEFORE the commit: the
+    # commit expires the instance and `current_user.organization` would
+    # lazy-load, which under asyncio raises MissingGreenlet.
+    cancelled_pending_email = current_user.pending_email
+    actor_user_id = current_user.id
+    actor_email = current_user.email
+    org_id = current_user.org_id
+    # ⚠ Explicit SELECT, never `current_user.organization`: `get_current_user`
+    # loads the row with a plain `select(User)`, so the relationship is
+    # unloaded. Same trap `_promote_pending_email` documents.
+    org_row = await db.scalar(
+        select(Organization).where(Organization.id == org_id)
+    )
+    org_name = org_row.name if org_row is not None else None
+
+    # None, never "": an empty string still satisfies `is not None` in
+    # the promotion guard, and would serialize into the response as a
+    # pending change, rendering an empty row in the UI.
+    current_user.pending_email = None
+    await db.commit()
+
+    # TBD-362 §6. This endpoint wrote NO audit row at all until now, which
+    # left a real gap: a live session — INCLUDING A HIJACKED ONE — could void
+    # a pending claim with nothing whatsoever in `/admin/audit`, and the
+    # request-time `user.email.change_requested` row would stand forever as
+    # the unresolved half of a story.
+    #
+    # ⚠ The justification is NOT "the admin endpoint's target's only
+    # defence". That was an earlier draft's reasoning and it is refuted:
+    # every target of `POST /admin/users/{id}/email-change` is unverified, so
+    # they 403 at login and cannot reach this interactive-session-gated route
+    # at all. That population cannot cancel. The row is right for every OTHER
+    # caller, which is the general case.
+    #
+    # Independent session, after the business commit: a failure here must not
+    # roll back the cancel. `actor_email` is the user's own (self-target
+    # convention), and the destroyed address rides in `detail` because this
+    # write is what erases it.
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="user.email.change_cancelled",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=org_id,
+        target_org_name=org_name,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"cancelled_pending_email": cancelled_pending_email},
+    )
     return Response(status_code=204)
 
 

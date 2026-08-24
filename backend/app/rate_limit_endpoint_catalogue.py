@@ -57,6 +57,17 @@ from __future__ import annotations
 OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # accounts router
     "accounts.adjust_balance",
+    # admin_users router (TBD-362 operator email recovery). Both routes sit
+    # behind ``users.reset_credentials`` + ``require_interactive_session``, so
+    # the decorator runs with an authenticated identity behind it.
+    #
+    # ⚠ The static ``10/hour`` is on the shared IP key, NOT per actor: the
+    # single ``Limiter(key_func=get_client_ip)`` cannot express a per-actor
+    # bound. That is a deliberate subtraction, not an oversight -- it bounds
+    # the same abuse at the same order of magnitude and fails CLOSED when two
+    # operators share an IP.
+    "admin_users.email_change",
+    "admin_users.pending_email_cancel",
     # api-tokens router (superadmin PAT mint)
     "api_tokens.mint",
     # auth router (post-auth resend, requires get_current_user)

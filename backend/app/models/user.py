@@ -65,11 +65,25 @@ class User(Base):
     # live, verified ``email`` above and the user's session are untouched
     # until then, which is what stops a typo destroying the account.
     #
-    # ⚠ CLEARED BY EXACTLY FOUR WRITERS, and nothing else:
+    # ⚠ CLEARED FOR EXACTLY SIX REASONS, and nothing else. These are REASONS,
+    # not functions: 4, 5 and 6 all route through
+    # ``auth._abandon_pending_email``, and reason 2 now has two endpoints
+    # behind it.
     #   1. promotion            (``auth.verify_email``, on the promoting branch)
-    #   2. explicit cancel      (``DELETE /users/me/pending-email``)
-    #   3. overwrite            (a later ``PUT /users/me``; last write wins)
+    #   2. explicit cancel      (``DELETE /users/me/pending-email``, and since
+    #                            TBD-362 also
+    #                            ``DELETE /admin/users/{id}/pending-email``)
+    #   3. overwrite            (a later ``PUT /users/me``, last write wins --
+    #                            and since TBD-362 also a later
+    #                            ``POST /admin/users/{id}/email-change``)
     #   4. promote-time conflict abort (another row took the address first)
+    #   5. promote-time IntegrityError backstop (lost the race between the
+    #                            uniqueness SELECT and the commit; MySQL only)
+    #   6. promote-time PROVENANCE abort (TBD-362): an ADMIN-INITIATED token
+    #                            met a row that has since become verified, so
+    #                            the claim can never legitimately promote and
+    #                            is dropped rather than left armed for the
+    #                            rest of its 24h TTL
     #
     # NOT cleared by token expiry, by ``reset_password``, or by deactivation.
     # A stale claim is inert: every verification-token mint site reads

@@ -250,7 +250,9 @@ def create_mfa_email_token(user_id: int, code: str) -> tuple[str, str]:
     return token, jti
 
 
-def create_email_verification_token(user_id: int, email: str) -> str:
+def create_email_verification_token(
+    user_id: int, email: str, *, admin_initiated: bool = False
+) -> str:
     """Create a token for email verification (24 hours).
 
     The email is baked into the token so a token issued for one address
@@ -258,14 +260,42 @@ def create_email_verification_token(user_id: int, email: str) -> str:
     their email between issuance and click (S-P2-1). The /verify-email
     handler rejects the token if the email claim does not match the
     user's current email.
+
+    ``admin_initiated`` (TBD-362) marks a token minted by
+    ``POST /api/v1/admin/users/{id}/email-change``, where an OPERATOR moved
+    the claim rather than the account holder. It is the CLAIM PROVENANCE
+    carrier, and it exists because that endpoint's ``user_already_verified``
+    guard reads ``email_verified`` at TRIGGER time while the claim redeems up
+    to 24 hours later — during which four separate arms can verify the row.
+    ``_promote_pending_email`` refuses an admin-initiated token that meets a
+    row which has since become verified.
+
+    ⚠ The provenance rides in the TOKEN, deliberately, not in a
+    ``users.pending_email_admin_initiated`` column. A column needs a
+    migration and would have to be cleared at four existing sites; a flag
+    missed at one of them fails CLOSED on a legitimate claim, a new failure
+    mode with no counterpart here. The claim cannot be stripped or forged
+    without breaking the HS signature.
+
+    ⚠ The key is OMITTED, never written ``False``, on the user-initiated
+    path. A token minted before TBD-362 shipped carries no key either, so
+    both fail OPEN into the user-initiated path — the right direction, since
+    no admin-initiated token existed before this shipped.
+
+    ⚠ Deliberately NO ``verified_at_mint`` companion claim. The endpoint
+    refuses verified targets, so such a claim would always be ``False`` and
+    the redeem check reduces to this one anyway; a fence asserting it
+    "worked" would be vacuous by construction.
     """
     expire = datetime.now(timezone.utc) + timedelta(hours=24)
-    payload = {
+    payload: dict = {
         "sub": str(user_id),
         "email": email,
         "type": "email_verify",
         "exp": expire,
     }
+    if admin_initiated:
+        payload["admin_initiated"] = True
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 

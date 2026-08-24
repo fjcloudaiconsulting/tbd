@@ -53,6 +53,7 @@ const SAMPLE_DETAIL = {
   is_superadmin: false,
   is_active: true,
   email_verified: true,
+  pending_email: null,
   mfa_enabled: true,
   password_set: true,
   password_changed_at: "2026-04-30T10:00:00",

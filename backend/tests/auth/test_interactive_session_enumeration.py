@@ -91,6 +91,12 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/auth/sso-stepup/initiate"),    # sso_stepup_initiate
     ("POST", "/api/v1/admin/users/merge"),           # merge_users (destructive)
     ("DELETE", "/api/v1/admin/users/1"),             # delete_user
+    # TBD-362. Both repoint or revoke a locked-out account's recovery
+    # channel, which is the account-takeover surface this category names: a
+    # leaked PAT that could repoint `pending_email` at an inbox it controls
+    # owns the account the moment the link is clicked.
+    ("POST", "/api/v1/admin/users/1/email-change"),   # trigger_email_change
+    ("DELETE", "/api/v1/admin/users/1/pending-email"),  # cancel_admin_pending_email
     ("PATCH", "/api/v1/admin/orgs/1/members/1"),     # update_org_member (role grant)
     # ── C. Tier-0 destructive ops (spec §7C) ────────────────────────────────
     ("POST", "/api/v1/orgs/data/reset"),             # reset_org_data

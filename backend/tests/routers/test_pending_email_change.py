@@ -495,3 +495,112 @@ async def test_auth_me_carries_pending_email(session_factory, queued_verificatio
         assert me.status_code == 200, me.text
         assert me.json()["pending_email"] == "new@acme.io"
         assert me.json()["email"] == OLD_EMAIL
+
+
+# ── TBD-362 §6: cancelling a claim leaves an audit trail ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_writes_an_audit_row(session_factory, queued_verification):
+    """``DELETE /users/me/pending-email`` wrote NO audit row until TBD-362.
+
+    ⚠ WHY THIS ROW IS RIGHT, and it is NOT the reason an earlier draft gave.
+    That draft said the row is "the target's only defence" against an
+    operator retrying a repoint after the victim cancels. Refuted: every
+    target of the admin endpoint is unverified, so they 403 at login and
+    cannot reach this route at all (it sits behind
+    ``require_interactive_session``). That population cannot cancel, so the
+    event the draft described cannot occur here.
+
+    The row is still right, for the general case: for every OTHER caller of
+    this endpoint a live session — INCLUDING A HIJACKED ONE — could void a
+    pending claim with nothing whatsoever in ``/admin/audit``. Cancelling is
+    the natural undo of the one gesture that moves an account's recovery
+    channel, and the request-time ``user.email.change_requested`` row would
+    otherwise stand forever as an unresolved half of a story.
+
+    ⚠⚠ THE ABSENCE OF RE-AUTH ON THIS ROUTE IS DELIBERATE AND CORRECT, and
+    must not be "fixed" alongside this. Its docstring argues it: requesting a
+    change moves the recovery channel and demands proof of presence;
+    cancelling one only restores the status quo and can move nothing.
+    Demanding a password to undo a mistake is the exact shape that made the
+    original defect unrecoverable. The gap was the missing audit row ONLY.
+    """
+    from app.models.audit_event import AuditEvent
+
+    user_id = await _seed_user(session_factory)
+    app = _make_app(session_factory, user_id)
+    with TestClient(app) as client:
+        assert _request_change(client, "new@acme.io").status_code == 200
+        assert client.delete("/api/v1/users/me/pending-email").status_code == 204
+
+    async with session_factory() as db:
+        rows = list(
+            (
+                await db.execute(
+                    select(AuditEvent)
+                    .where(AuditEvent.event_type == "user.email.change_cancelled")
+                    .order_by(AuditEvent.id)
+                )
+            ).scalars().all()
+        )
+
+    assert len(rows) == 1, f"no cancel audit row: {rows!r}"
+    row = rows[0]
+    assert row.outcome.value == "success"
+    assert row.actor_user_id == user_id
+    assert row.actor_email == OLD_EMAIL
+    assert row.target_org_id is not None, (
+        "``/admin/audit``'s only org filter is ``target_org_id``; a NULL here "
+        "makes the row invisible to every org-scoped audit query"
+    )
+    assert row.detail["cancelled_pending_email"] == "new@acme.io", (
+        "the cancelled address must be recorded — it is destroyed by this "
+        "write and nothing else preserves it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_with_nothing_pending_writes_no_audit_row(session_factory):
+    """A no-op cancel is not a state transition and records nothing.
+
+    Idempotency is a 204 either way; auditing the no-op would let anyone with
+    a session spray rows into ``/admin/audit`` at ``10/hour`` with no
+    corresponding change to reconstruct.
+    """
+    from app.models.audit_event import AuditEvent
+
+    user_id = await _seed_user(session_factory)
+    app = _make_app(session_factory, user_id)
+    with TestClient(app) as client:
+        assert client.delete("/api/v1/users/me/pending-email").status_code == 204
+
+    async with session_factory() as db:
+        rows = list(
+            (
+                await db.execute(
+                    select(AuditEvent).where(
+                        AuditEvent.event_type == "user.email.change_cancelled"
+                    )
+                )
+            ).scalars().all()
+        )
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_still_requires_no_password(session_factory, queued_verification):
+    """Anti-regression pin on the DELIBERATE absence of re-auth.
+
+    A reviewer reading "add an audit row to the cancel path" will be tempted
+    to harden it at the same time. This fails the moment anyone does.
+    """
+    user_id = await _seed_user(session_factory)
+    app = _make_app(session_factory, user_id)
+    with TestClient(app) as client:
+        assert _request_change(client, "new@acme.io").status_code == 200
+        # No body, no password, no step-up token.
+        res = client.delete("/api/v1/users/me/pending-email")
+    assert res.status_code == 204, res.text
+    user = await _reload(session_factory, user_id)
+    assert user.pending_email is None
