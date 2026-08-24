@@ -454,7 +454,7 @@ from both passing `SISMEMBER` and both rotating.
        After step 1 the family set is gone, so step 4 of the refresh path (`EXISTS by_sid:{sid}`) returns 0 and rejects any in-flight grace ticket — even if its 30s TTL has not yet expired and step 2 has not yet run. That closes the architect's reported logout/grace bug.
     3. Clear the cookie at `Path=/` and the legacy path via the existing `_clear_legacy_refresh_cookie` helper.
     4. DO NOT touch `sessions_invalidated_at` (that's the global-invalidation path; see Section 6).
-    5. Emit audit event `auth.session.terminated`. Outcome=success even when 0 jtis were found (anonymous logout is still a clean cookie clear).
+    5. Emit audit event `auth.session.terminated`, outcome=success — but ONLY when the call identified a session family or an actor. **Amended by TBD-353** (was: "outcome=success even when 0 jtis were found"). A fully anonymous logout is still a clean cookie clear (200 + both delete-cookie headers) but writes a structlog line, not a row: a row carrying `actor_user_id=None, sid_count=0, jti_count=0` records nothing actionable, and writing one on every anonymous POST to a public route was an unbounded-insert primitive.
 
 - **Global invalidation:** unchanged. Writes to `sessions_invalidated_at` and the resolver's `iat < token_cutoff` check kill every JWT issued before that moment regardless of Redis state. We do NOT bulk-delete Redis keys on global invalidation: the DB cutoff is authoritative, and the orphan keys age out via their TTL.
 
@@ -557,7 +557,7 @@ NEW shape (architect feedback on PR #301 — revoke by `sid` family, not by `jti
 5. Best-effort: if the Authorization header carries a valid access token, no extra work (we do not put `jti` on access tokens). Called out so Team I does not re-add `sessions_invalidated_at = now` thinking it is missing.
 6. Clear the cookie at `Path=/` and the legacy path via the existing `_clear_legacy_refresh_cookie` helper.
 7. DO NOT touch `sessions_invalidated_at`.
-8. Emit audit event `auth.session.terminated`. Detail carries `{sid_count, jti_count}` (number of distinct sessions revoked, total `jti` values deleted across all families). Outcome=success even when 0 (anonymous logout is still a clean cookie clear).
+8. Emit audit event `auth.session.terminated`. Detail carries `{sid_count, jti_count}` (number of distinct sessions revoked, total `jti` values deleted across all families). Outcome=success. **Amended by TBD-353** (was: "outcome=success even when 0"): the row is gated on `sids or actor_user_id is not None`, so a fully anonymous logout clears the cookie, returns 200 and writes no row. See `specs/2026-08-22-tbd-353-anonymous-audit-write-bounds.md`.
 
 ### 5.4 `POST /api/v1/auth/login`, `/auth/google/callback`, `_issue_tokens`, `/auth/refresh` (issue side), `POST /api/v1/orgs/invitations/accept`
 
