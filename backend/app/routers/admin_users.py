@@ -45,7 +45,9 @@ they sit on independent service modules:
 """
 # ⚠⚠ NO ``from __future__ import annotations`` IN THIS MODULE, and it must
 # not be re-added. It was here until TBD-362 and is incompatible with the
-# ``@limiter.limit`` decorator on the two email-recovery routes below.
+# ``@limiter.shared_limit`` decorator on the two email-recovery routes below
+# (the same slowapi wrapper backs both ``limit`` and ``shared_limit``, so
+# this applies to either form).
 #
 # slowapi wraps the handler with a ``functools.wraps``-decorated closure
 # defined in ``slowapi/extension.py``. FastAPI resolves a route's parameter

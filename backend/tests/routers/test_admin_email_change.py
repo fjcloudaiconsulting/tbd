@@ -906,8 +906,13 @@ async def test_an_over_long_but_valid_address_is_refused_not_a_500(factory):
     here is therefore the SCHEMA bound (a 422 raised before the handler runs),
     which IS backend-independent -- not the driver error, which is not.
 
-    Wrong implementation killed: dropping ``max_length=120`` from either
-    field, which restores the 500 on MySQL while staying green on SQLite.
+    Wrong implementation killed: dropping ``max_length=120`` from
+    ``new_email``, which restores the 500 on MySQL while staying green on
+    SQLite. ⚠ Dropping it from ``new_email_confirm`` alone does NOT redden
+    this leg, and that is correct rather than a gap: the confirm value is
+    compared and discarded, never stored. ``tests/test_email_column_bounds.py``
+    covers both fields at the schema level, which is where the confirm field's
+    bound actually lives.
     """
     user_id, org_id = await _seed(factory)
     actor = await _seed_actor(factory, org_id)
@@ -988,7 +993,15 @@ async def test_the_old_address_alert_uses_the_admin_copy_not_the_self_serve_one(
     # Names the operator: the self-serve copy cannot, because there isn't one.
     assert actor.email in body, body
     # States the account is locked out -- the fact the self-serve copy omits.
-    assert "locked out" in body.lower(), body
+    # ⚠ An alternation, not a single literal: "locked out" is ordinary copy a
+    # writer may legitimately re-word. What must survive a re-word is the
+    # MEANING -- that the account still cannot be signed into. The structural
+    # legs below (no link, names the operator, never says "settings") are the
+    # robust ones.
+    assert any(
+        phrase in body.lower()
+        for phrase in ("locked out", "cannot sign in", "can't sign in", "still locked")
+    ), body
     # ⚠ Must NOT send a locked-out user to a page behind the login gate.
     assert "settings" not in body.lower(), body
     assert link_url is None, link_url
@@ -1012,8 +1025,9 @@ async def test_the_in_app_security_row_is_dispatched_and_gated_on_the_audit_id(
     Wrong implementations killed: deleting the dispatch; ungating it from
     ``audit_event_id``.
     """
+    from app.models.notification import NotificationCategory
     from app.routers import admin_users as admin_users_module
-    from app.services import notification_service
+    from app.services import notification_service  # noqa: F401
 
     dispatched: list[dict] = []
 
@@ -1038,3 +1052,92 @@ async def test_the_in_app_security_row_is_dispatched_and_gated_on_the_audit_id(
         "invisible to the target inside the app"
     )
     assert len(dispatched) == 1, dispatched
+
+    # WARNING: asserting only that SOMETHING was dispatched is what the first
+    # cut of this fence did, and three wrong implementations survived it:
+    # ungating the `if`, changing the category, and handing the target a
+    # `/settings` link -- the exact notification the design forbids, since
+    # every target of this endpoint 403s at login and cannot reach that page.
+    kwargs = dispatched[0]
+    assert kwargs["category"] is NotificationCategory.SECURITY, kwargs
+    assert kwargs["event_type"] == "admin.user.email_change.triggered", kwargs
+    assert kwargs["link_url"] is None, (
+        "a locked-out target cannot open any in-app link; the row must carry "
+        f"none. got={kwargs['link_url']!r}"
+    )
+    assert actor.email in kwargs["body"], kwargs["body"]
+    assert kwargs["audit_event_id"] is not None, kwargs
+
+    # WARNING: THE GATE ITSELF. Without this leg `if audit_event_id is not
+    # None:` can be changed to `if True:` and every assertion above still
+    # passes. A notification must never claim an action that was not durably
+    # recorded, so the dispatch hangs off the audit id, not off the request
+    # having succeeded.
+    dispatched.clear()
+
+    async def _audit_failed(*a, **k):
+        return None
+
+    monkeypatch.setattr(
+        admin_users_module.audit_service, "record_audit_event", _audit_failed,
+        raising=False,
+    )
+    user_id2, _org_id2 = await _seed(
+        factory,
+        email="second@example.com",
+        username="bob",
+        org_name="Bob Org",
+    )
+    with TestClient(_app(factory, actor)) as client:
+        assert _post(client, user_id2, new_email=GOOD_EMAIL).status_code == 200
+    assert dispatched == [], (
+        "the audit write failed and an in-app row was still dispatched: the "
+        "notification now claims an action nothing recorded"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_in_app_row_uses_the_admin_copy_not_the_self_serve_one(
+    factory, monkeypatch
+):
+    """F17b - the IN-APP admin template shipped unfenced.
+
+    Its sibling fence hooks ``send_security_email_best_effort``, which is the
+    OLD-ADDRESS EMAIL path only. Swapping the in-app template
+    ``_tpl_admin_email_change`` for its self-serve sibling left every test in
+    this module green, so ``notification_templates.py``'s "SEPARATE TEMPLATES
+    ON PURPOSE, DO NOT REUSE THE TWO ABOVE" was enforced on one half of the
+    pair and not the other.
+
+    The discriminator is the same one that matters for the email: the
+    self-serve copy sends the reader to Settings, and every target of this
+    endpoint 403s at login and cannot get there.
+
+    Wrong implementation killed: swapping the in-app admin template for
+    ``user_email_change_requested``.
+    """
+    from app.routers import admin_users as admin_users_module
+
+    dispatched: list[dict] = []
+
+    async def fake_dispatch(db, **kwargs):
+        dispatched.append(kwargs)
+
+    monkeypatch.setattr(
+        admin_users_module.notification_service,
+        "dispatch_notification_best_effort",
+        fake_dispatch,
+        raising=False,
+    )
+
+    user_id, org_id = await _seed(factory)
+    actor = await _seed_actor(factory, org_id)
+
+    with TestClient(_app(factory, actor)) as client:
+        assert _post(client, user_id, new_email=GOOD_EMAIL).status_code == 200
+
+    assert len(dispatched) == 1, dispatched
+    body = dispatched[0]["body"]
+    assert actor.email in body, body
+    assert "settings" not in body.lower(), body
+    assert dispatched[0]["link_url"] is None, dispatched[0]

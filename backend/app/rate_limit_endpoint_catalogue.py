@@ -16,10 +16,10 @@ single source of truth used to:
   pre-auth route (see ``PRE_AUTH_ENDPOINT_PATTERNS``).
 
 How the catalogue maps to the codebase. Each entry corresponds to one
-``@limiter.limit(...)`` decorator on a FastAPI route. The pattern
+``@limiter.limit(...)`` or ``@limiter.shared_limit(...)`` decorator on a FastAPI route. The pattern
 string is ``<router_module>.<short_action>`` chosen by the route
 author (not derived from the function name) so renames stay tracked
-here. When you add a new ``@limiter.limit(...)`` decorator, append the
+here. When you add a new ``@limiter.limit(...)`` or ``@limiter.shared_limit(...)`` decorator, append the
 matching pattern below. When you remove one, delete the pattern; an
 override row referencing a removed pattern is harmless (it just
 no-ops) but the catalogue must be truthful.
@@ -52,7 +52,7 @@ from __future__ import annotations
 # Patterns where per-org / per-user overrides ACTUALLY take effect at
 # request time. These are the only patterns the schema layer accepts
 # on create / update. Update this whenever a post-auth
-# ``@limiter.limit(...)`` decorator is added or removed. Order is
+# ``@limiter.limit(...)`` or ``@limiter.shared_limit(...)`` decorator is added or removed. Order is
 # alphabetical for human readability.
 OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # accounts router
@@ -153,7 +153,7 @@ PRE_AUTH_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
 
 
 # Convenience union for code paths that need the full surface (docs,
-# audits, drift checks against ``@limiter.limit(...)`` decorators in
+# audits, drift checks against ``@limiter.limit(...)`` or ``@limiter.shared_limit(...)`` decorators in
 # the routers). The schema validator does NOT use this set; it uses
 # ``OVERRIDABLE_ENDPOINT_PATTERNS`` exclusively.
 ALL_KNOWN_ENDPOINT_PATTERNS: frozenset[str] = (
