@@ -76,10 +76,22 @@ hold is not. Restart policy is filed separately.
 | `filter_plugins/apt_policy.py` | the parse, so it can be unit tested |
 
 Holds live in `common` because placement is decided by **tag reachability**, not
-topic: `run-playbook.sh`'s own banner documents `-- --tags mysql`, and the
-upgrade is now reachable only via `--tags patch`. The holds and the fence carry
-`tags: [always]` **and** `apply: {tags: [always]}`, so a tag-limited run still
-gets them. Verified by running both invocations.
+topic: the upgrade is now reachable only via `--tags patch`. The holds and the
+fence carry `tags: [always]` **and** `apply: {tags: [always]}`, so a tag-limited
+run still gets them.
+
+⚠ **Correction (review, 2026-08-23).** This paragraph originally justified the
+tags with "`run-playbook.sh`'s own banner documents `-- --tags mysql`" and
+claimed the design was "verified by running both invocations". Both were wrong.
+Measured with `--list-tasks --tags mysql`: no role in `site.yml` and no task in
+`roles/mysql`, `roles/redis` or `roles/backups` carries a topic tag, so that
+invocation runs ONLY the `always`-tagged tasks — zero mysql-role tasks. The
+banner advertising it has been corrected rather than a tagging scheme invented
+in this ticket. The `always` tags remain correct: `--tags patch` is a real
+invocation that needs them, and it is the one that can move a package.
+
+⚠ **The cache refresh needed the same treatment and did not have it.** See the
+correction under "Subtracted" below.
 
 ### The hold set is derived
 
@@ -130,6 +142,55 @@ cause. Targeting `mysql_resolved_server_package` makes `state: present` the
 no-op it was always meant to be, while leaving the hold to fire on a drifted
 repo.
 
+### Corrections from review (2026-08-23)
+
+Three defects in the play itself, all found by review before the branch merged.
+
+**`intersect` discards order, so the resolved server package was
+nondeterministic.** `mysql_resolved_server_package` read a POSITIONAL element
+(`| first`) off `mysql_server_detect_order | intersect(...)`, and ansible-core
+implements `intersect` as `list(set(a) & set(b))`; set iteration order over
+strings depends on `PYTHONHASHSEED`, which is randomised per process. Measured
+six times against ansible-core 2.21.3 with identical inputs: `mysql-server`
+three times, `mysql-server-8.0` three times. Every stock-Ubuntu host has more
+than one detect-order name installed (`apt install mysql-server` on noble brings
+in both), so the package the mysql role installed and the package the track
+fence probed flipped between converges of an unchanged host. Replaced with
+`select('in', ...) | list | first`, which filters the detect order in place;
+verified deterministic over four runs and across all three host shapes.
+`mysql_resolved_holds` and `mysql_installed_server_present` keep `intersect`
+deliberately — neither reads a positional element.
+
+⚠ This also made `test_the_hold_candidate_list_covers_both_mysql_package_families`
+vacuous: it asserted `detect[0] == "mysql-community-server"` on the rationale
+that detection "must prefer the Oracle package", certifying an ordering the
+runtime threw away. That assertion now means something, and a companion fence
+rejects a bare `intersect(...) | first` for this key.
+
+**The cache refresh was untagged.** See the correction under "Subtracted".
+
+**`post_tasks` do not run after a role failure.** The stated guarantee — "a host
+that had MySQL installed BY THIS RUN does not finish the run unheld" — failed on
+the play's own documented failure mode, the 2026-08-18 scratch run where the
+redis role failed after the mysql role had installed MySQL (`site.yml:5-10`).
+That host finished unheld. Fixed by re-applying the holds **at the install
+site**, immediately after `Install MySQL server` in the mysql role, rather than
+at the end of the run: that task is the only one in the play that can put MySQL
+on a box, so the window between "MySQL exists" and "MySQL is held" now contains
+nothing that can fail. Wrapping `site.yml`'s roles in a `block:`/`always:` was
+the alternative and was rejected — it requires converting `roles:` into
+`include_role`/`import_role` tasks on the play that provisions the production
+data plane, and it still only re-holds at the end of the run, a strictly weaker
+guarantee. The `post_tasks` pass stays as the backstop for a future role.
+
+**Latent, documented, not fixed: `Multi-Arch: same`.** `dpkg --get-selections`
+prints the arch qualifier for such packages (measured: `libext2fs2t64:arm64`)
+while `package_facts` keys them plain, so the read-back's `difference()` would
+report one as unheld and abort every converge. None of the 13 current candidates
+is `Multi-Arch: same`; `libmysqlclient24` (which is) is exactly what someone
+would add next, so the hazard is written next to the list rather than
+restructured around.
+
 ## Fences
 
 `backend/tests/` so they ride the existing CI shards — no new CI job, no
@@ -143,10 +204,30 @@ host whose Candidate is 9.0.1**, because `apt-cache policy` prints the whole
 version table and 8.4.11 is still in it. `POLICY_DRIFTED_TO_9` is that fixture,
 plus a meta-test asserting the fixture still traps the bug.
 
-`test_dataplane_apt_pins.py` — 16 shape fences, all `yaml.safe_load`, never
+`test_dataplane_apt_pins.py` — the shape fences, all `yaml.safe_load`, never
 grep: the role now carries a comment containing the literal string
 `upgrade: safe`, so a whole-file grep is satisfied by the comment documenting
 its own absence.
+
+⚠ **Review found ELEVEN of these green under the wrong implementation** (see
+the corrections section above for the three play defects; these are the fence
+defects). The pattern in almost every case was a fence asserting on a
+CONTAINER rather than on the thing inside it: `"never" in tags` rather than the
+tag SET (`always` beats `never` in ansible's own evaluation, so
+`[patch, never, always]` re-armed the defect and stayed green); `set(filters)`
+rather than the mapping's VALUES (a swapped mapping makes the whole repo-drift
+fence a tautology); a string search over `that:` + `vars:` rather than the
+`that:` CLAUSES (the entire assertion could be deleted with the filters left
+wired); `str(<the whole set_fact args dict>)` rather than the one key under
+test (two sibling keys satisfied it for free); `_flatten` stripping ancestors'
+`ignore_errors`/`rescue` off the children it pulls up; a glob that never read
+role HANDLER files; a sweep of module arguments that could not see
+`module_defaults`, which is a keyword, not a module. Every fence changed here
+was validated by injecting the implementation it names, confirming RED, and
+restoring — 27 mutations, plus 3 CORRECT edits confirmed still GREEN, because
+three of these assertions were also over-specified and would have reddened a
+legitimate change (an added fourth filter, a `that:` clause naming
+`mysql-server-8.0`, deduping `python3-pymysql` out of the mysql install task).
 
 ## Subtracted
 
@@ -157,10 +238,22 @@ its own absence.
 - **The `debconf-show mysql-apt-config` selection assert and the
   `debconf-utils` package it needs.** Both architects wanted it. It is
   redundant with detection already in place: a drifted selection reaches the
-  sources list, the play's own `update_cache` runs before the fence, and the
-  fence then sees the changed candidate. The only window it uniquely covered was
-  the deliberate unhold-and-upgrade moment, which the post-patch fence re-run
-  now covers for free. Not worth adding a package to production's baseline.
+  sources list, the cache refresh runs before the fence, and the fence then sees
+  the changed candidate. The only window it uniquely covered was the deliberate
+  unhold-and-upgrade moment, which the post-patch fence re-run now covers for
+  free. Not worth adding a package to production's baseline.
+
+  ⚠ **Correction (review, 2026-08-23).** "The play's own `update_cache` runs
+  before the fence" was only true of an untagged, non-check run. As first
+  written the cache-refresh task carried no tag, so `--list-tasks --tags patch`
+  listed the holds, both fence passes and the upgrade but NOT the refresh: on
+  the one invocation that upgrades, the fence read whatever was already on disk
+  and the cache was refreshed afterwards by the upgrade task itself. The
+  documented `--production --check --diff` pre-flight had the same gap, because
+  `ansible.builtin.apt` guards its refresh with `if not module.check_mode`. The
+  refresh now carries `tags: [always]`, which makes the sentence above true on
+  every invocation. The subtraction stands on its own merits — do **not** re-add
+  the debconf assert.
 
 ## What the operator must do on the droplet
 

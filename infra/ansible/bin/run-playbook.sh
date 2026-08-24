@@ -30,7 +30,15 @@
 #   bin/run-playbook.sh --scratch-host 1.2.3.4 --scratch-private-ip 10.x.x.x
 #   bin/run-playbook.sh --production             # the real data droplet
 #   bin/run-playbook.sh --production --check --diff   # dry run, changes nothing
-#   bin/run-playbook.sh --scratch-host 1.2.3.4 -- --tags mysql
+#   bin/run-playbook.sh --production -- --tags patch  # deliberate, windowed OS patch
+#
+# ⚠ THERE ARE NO TOPIC TAGS. This banner used to advertise
+# `-- --tags mysql`; that invocation has never done anything useful. Measured
+# with `--list-tasks --tags mysql`: no role in playbooks/site.yml and no task in
+# roles/mysql, roles/redis or roles/backups carries a topic tag, so it runs only
+# the `always`-tagged tasks -- the MySQL package holds and the repo-track fence
+# -- and ZERO mysql-role tasks. `patch`, `never` and `always` are the only tags
+# in this tree.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

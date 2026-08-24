@@ -481,18 +481,63 @@ config change.
    ```
    Held packages will be reported as `kept back`. That is correct: the patch
    task does not move MySQL.
-6. **To move a held package on purpose**, unhold exactly that package, move it,
-   and let the next converge re-apply the hold:
+6. **To move MySQL forward on purpose**, unhold the **whole resolved set**, move
+   it, and let the next converge re-apply the holds.
+
+   ⚠⚠ **Unholding one package does not work, and fails in the middle of the
+   window.** Oracle's `mysql-community-server` depends on `mysql-common`,
+   `mysql-client`, `mysql-community-client`, `mysql-community-client-core` and
+   `mysql-community-client-plugins`, and every one of those `Depends:` is a
+   `= <version>` equality. So with only the server unheld, `apt-get install
+   --only-upgrade mysql-community-server` cannot pull the client packages it now
+   requires, and apt exits 100 with `E: Unable to correct problems, you have
+   held broken packages` — the exact failure measurement M6 in
+   `specs/2026-08-22-dataplane-package-pins.md` records, at the worst possible
+   moment. `--only-upgrade` cannot rescue it either: the blocker is the held
+   dependencies, not the addition of new ones.
+
+   Unhold everything the play holds, which is what `apt-mark showhold` prints:
+
    ```bash
-   apt-mark unhold mysql-community-server
-   apt-get install -y --only-upgrade mysql-community-server
+   # (a) See exactly what is held, and keep the list -- it is the set to restore.
+   apt-mark showhold | tee /tmp/tbd-holds.txt
+
+   # (b) READ THE LIST FIRST. `showhold` reports every hold on the box, not
+   #     only the ones this play declares; anything in it that is not in
+   #     roles/common/defaults/main.yml's mysql_hold_candidates was put there
+   #     by hand, for a reason nothing in this repo records, and the play will
+   #     NOT restore it in step 7. Then unhold, without hand-picking within the
+   #     MySQL set:
+   xargs -r apt-mark unhold < /tmp/tbd-holds.txt
+
+   # (c) Move MySQL. `install` (not `--only-upgrade`) so a renamed or newly
+   #     required dependency can come in; step 3's repo-track pre-flight is what
+   #     proved this is a patch and not a major jump.
+   apt-get update
+   apt-get install -y mysql-community-server
+
+   # (d) Prove it came back.
    systemctl status mysql
+   mysql --no-defaults -N -B -e "SELECT VERSION()"
    ```
-   Then re-run the play with no tags, which re-holds it and re-asserts the
-   running configuration.
-7. **Verify.** Re-run the play with no tags and confirm the mysql and redis
-   roles' running-config fences pass, then check the app: `/ready`, a login, and
-   `SELECT VERSION()`.
+
+   ⚠ `apt-get install` here is deliberate, and it is why steps 1 and 3 of this
+   procedure are not optional. Unpinned, apt installs whatever the repo offers:
+   the snapshot (step 1) and the repo-track pre-flight (step 3) are the only
+   things standing between this command and a major jump.
+
+7. **Re-converge to restore the pins.** Run the play with **no tags**. It
+   re-holds the packages, re-runs the read-back assert (so "held" becomes
+   something the dpkg database confirmed, not something a module claimed), and
+   re-asserts the running configuration.
+
+   ⚠ **Do not skip this or leave it for later.** Between step 6 and this run the
+   data droplet has NO MySQL pin at all, and `unattended-upgrades` runs daily.
+   Diff `apt-mark showhold` against `/tmp/tbd-holds.txt` afterwards and confirm
+   the set came back.
+8. **Verify the app, not just the box.** Confirm the mysql and redis roles'
+   running-config fences passed in step 7, then check `/ready`, a login, and
+   `SELECT VERSION()` from the application side.
 
 ⚠ **A MySQL MAJOR move is not this procedure.** 8.4 to 9.x removes
 `mysql_native_password` entirely, cannot be reversed in place, and the whole

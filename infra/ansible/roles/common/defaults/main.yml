@@ -32,6 +32,22 @@ system_timezone: UTC
 # Oracle's `MySQL` origin is not among them, so nothing automatic could ever
 # move those packages anyway. `backend/tests/test_dataplane_apt_pins.py`
 # fences this.
+#
+# ⚠⚠ DO NOT ADD A `Multi-Arch: same` PACKAGE HERE WITHOUT FIXING THE READ-BACK
+# IN THE SAME COMMIT. `dpkg --get-selections` prints the architecture qualifier
+# for such packages -- measured on a real box: `libext2fs2t64:arm64\thold` --
+# while `package_facts` keys the same package as plain `libext2fs2t64`. The
+# read-back assert in `tasks/holds.yml` compares the two sets with
+# `difference()`, so a `Multi-Arch: same` entry would be resolved, held
+# SUCCESSFULLY, and then reported as not held: every converge of the data
+# droplet would abort at the top of the `common` role, on a box where nothing is
+# actually wrong, with a message saying the pin is broken.
+#
+# None of the 13 names below is `Multi-Arch: same`, so this is latent, not live.
+# It is written down because the obvious next addition is exactly the trap:
+# `libmysqlclient24` IS `Multi-Arch: same` in Oracle's index. If it or anything
+# like it is ever needed, normalise the qualifier off the read-back first
+# (`| map('split', ':') | map('first')`).
 mysql_hold_candidates:
   - mysql-apt-config          # the repo SELECTOR -- the 2026-08-19 near miss
   - mysql-common

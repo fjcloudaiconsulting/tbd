@@ -176,8 +176,37 @@ def test_a_substring_test_would_pass_on_the_drifted_fixture():
     Without this, `test_the_candidate_track_sees_the_drift` could be passing for
     the wrong reason (a fixture on which right and wrong implementations agree
     proves nothing -- this repo has shipped that shape before).
+
+    ⚠⚠ IT ASSERTS THE VERSION-TABLE PROPERTY, NOT JUST THE SUBSTRING. The
+    mechanism this meta-test exists to protect is stated in its own prose:
+    "8.4.11 is STILL PRINTED IN THE VERSION TABLE below the fields". A bare
+    `"8.4" in POLICY_DRIFTED_TO_9` is satisfied by the `Installed:` LINE alone
+    -- measured green with every version-table line stripped out, at which point
+    the fixture no longer resembles real `apt-cache policy` output and no longer
+    traps the bug it is named for.
     """
     assert "8.4" in POLICY_DRIFTED_TO_9, "the fixture no longer traps the substring bug"
+
+    lines = POLICY_DRIFTED_TO_9.splitlines()
+    table_at = next(
+        (i for i, line in enumerate(lines) if line.strip().startswith("Version table:")),
+        None,
+    )
+    assert table_at is not None, (
+        "the drifted fixture has no `Version table:` section, so it no longer "
+        "reproduces the shape that makes a substring test wrong"
+    )
+    table = lines[table_at + 1:]
+    assert any("8.4" in line for line in table), (
+        "the INSTALLED track no longer appears in the fixture's version table. "
+        "That table is the whole reason `'8.4' in stdout` is catastrophic: it "
+        "is True on a host whose Candidate is 9.0.1. Without it this fixture "
+        f"stops discriminating. table={table}"
+    )
+    assert any("9.0" in line for line in table), (
+        "the CANDIDATE track is missing from the version table; real apt output "
+        "lists it, and a fixture that does not is not the shape under test"
+    )
 
 
 def test_the_candidate_track_sees_the_drift():
@@ -229,10 +258,39 @@ def test_an_unreadable_candidate_yields_an_empty_track(name, stdout):
 
 def test_the_filter_plugin_exposes_all_three_filters_to_ansible():
     """The role calls these by name. A rename here is a runtime template error
-    on the production data droplet, at the top of a maintenance window."""
-    filters = _load().FilterModule().filters()
-    assert set(filters) == {
-        "apt_policy_installed",
-        "apt_policy_candidate",
-        "apt_version_track",
+    on the production data droplet, at the top of a maintenance window.
+
+    ⚠⚠ THE MAPPING'S VALUES ARE WHAT MATTER, AND THIS TEST USED TO CHECK ONLY
+    ITS KEYS. Every table test above calls the module functions DIRECTLY and
+    never goes through `filters()`, so nothing observed the wiring ansible
+    actually uses. Measured green: changing one line so `"apt_policy_candidate"`
+    maps to `apt_policy_installed` left the whole suite passing -- and it turns
+    the production fence into a TAUTOLOGY. The role would compute the candidate
+    track from the `Installed:` line, `that:` would become
+    `installed_track == installed_track`, and the repo-drift fence would be
+    permanently true on the data droplet while looking exactly as it does now.
+
+    ⚠ Membership is NON-EXHAUSTIVE on purpose. `set(filters) == {...}` went red
+    on a legitimate fourth filter -- an over-specified assertion that punishes a
+    correct edit while, as above, never checking a single value.
+    """
+    module = _load()
+    filters = module.FilterModule().filters()
+
+    expected = {
+        "apt_policy_installed": module.apt_policy_installed,
+        "apt_policy_candidate": module.apt_policy_candidate,
+        "apt_version_track": module.apt_version_track,
     }
+    missing = sorted(set(expected) - set(filters))
+    assert not missing, (
+        f"the role calls these filters by name and the plugin does not export "
+        f"them: {missing}. This is a runtime template error on the production "
+        "data droplet."
+    )
+    for name, function in expected.items():
+        assert filters[name] is function, (
+            f"filters()[{name!r}] is wired to {getattr(filters[name], '__name__', filters[name])!r}, "
+            f"not {function.__name__!r}. A swapped mapping makes the repo-drift "
+            "fence compare a value against itself and pass forever."
+        )

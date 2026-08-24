@@ -1,16 +1,35 @@
 ---
 # TBD-419 -- declare the MySQL package holds that were previously hand-applied.
 #
-# ⚠ INCLUDED TWICE, from two different places, and both are load-bearing:
+# ⚠ INCLUDED THREE TIMES, from three different places, and all three are
+# load-bearing:
 #   * `roles/common/tasks/main.yml`, FIRST, so an already-provisioned host is
 #     held before anything in this play can move a package;
-#   * `playbooks/site.yml` `post_tasks`, LAST, so a host that had MySQL
-#     installed BY THIS RUN does not finish the run unheld and stay that way
-#     until somebody happens to converge it again.
-# Both carry `tags: [always]`, because `run-playbook.sh`'s own usage banner
-# documents `-- --tags mysql` and the play now has a `patch`-tagged upgrade
-# task. A tag-limited run that skipped the holds would be the one run where
-# they matter most.
+#   * `roles/mysql/tasks/main.yml`, IMMEDIATELY AFTER the install task -- the
+#     only task in the play that can put MySQL on a box. `post_tasks` DO NOT RUN
+#     AFTER A ROLE FAILURE, so on the play's own documented failure mode
+#     (2026-08-18: the redis role failed after the mysql role had installed
+#     MySQL) the pass below never executed and a rebuilt host finished unheld;
+#   * `playbooks/site.yml` `post_tasks`, LAST, as the backstop for a future role
+#     that installs a MySQL package.
+# All three carry `tags: [always]` AND `apply: {tags: [always]}`, because the
+# play now has a `patch`-tagged upgrade task, and a tag-limited run that skipped
+# the holds would be the one run where they matter most.
+#
+# ⚠ The two re-includes really do re-run, and that was worth checking rather
+# than assuming: `roles/*/meta/main.yml` defaults `allow_duplicates` to FALSE,
+# which would have made both of them silent no-ops. `ansible.builtin.include_role`
+# declares its own `allow_duplicates` with default TRUE and assigns it onto the
+# role's metadata (`ansible/playbook/role_include.py`), so the include form is
+# exempt from the dedup that the `roles:` form is subject to.
+#
+# ⚠ `--tags mysql` is NOT the reason, whatever earlier revisions of this comment
+# said. MEASURED with `--list-tasks --tags mysql`: no role in `site.yml` and no
+# task in `roles/mysql`, `roles/redis` or `roles/backups` carries a topic tag,
+# so that invocation runs ONLY the `always`-tagged tasks -- zero mysql-role
+# tasks. `run-playbook.sh`'s banner advertising it has been corrected. The
+# `always` tags are still right, and `--tags patch` is a real invocation that
+# needs them.
 #
 # ⚠⚠ `ansible.builtin.dpkg_selections` HARD FAILS on a package the host does
 # not have. Measured in a real ubuntu:24.04 container against ansible-core:
@@ -51,10 +70,37 @@
     # an ordinary patch release. Targeting the package that is actually
     # installed makes `state: present` the no-op it was always meant to be,
     # while leaving the hold to do its job on a drifted repo.
+    #
+    # ⚠⚠ `select('in', ...)`, NOT `intersect(...)`, AND THAT IS NOT A STYLE
+    # CHOICE. This expression reads a POSITIONAL element (`| first`), and
+    # `intersect` DISCARDS ORDER: ansible-core implements it as
+    # `list(set(a) & set(b))` (`ansible/plugins/filter/mathstuff.py`), and set
+    # iteration order over strings depends on PYTHONHASHSEED, which is
+    # randomised per process. MEASURED against ansible-core 2.21.3, six runs,
+    # identical inputs: `mysql_server_detect_order | intersect([...]) | first`
+    # returned `mysql-server` three times and `mysql-server-8.0` three times.
+    # A coin flip, re-tossed on every converge, on any host where more than one
+    # detect-order name is installed -- which is every stock-Ubuntu host, since
+    # `apt install mysql-server` on noble installs `mysql-server` AND
+    # `mysql-server-8.0`. The resolved name feeds the mysql role's install task
+    # and the track fence's `apt-cache policy` probe, so both flipped between
+    # converges of an unchanged host.
+    #
+    # `select('in', ...)` filters `mysql_server_detect_order` IN PLACE, so
+    # "most specific first" is the property the runtime actually has, not just
+    # the property the defaults file claims. Verified deterministic over four
+    # runs, and across all three host shapes (Oracle production ->
+    # mysql-community-server, stock noble -> mysql-server-8.0, fresh bootstrap
+    # -> the `mysql_server_package` fallback).
+    #
+    # `mysql_resolved_holds` above and `mysql_installed_server_present` below
+    # keep `intersect` deliberately: one feeds a loop and one feeds
+    # `| length > 0`. Neither reads a positional element, so set ordering
+    # cannot reach either result.
     mysql_resolved_server_package: >-
       {{ (mysql_server_detect_order
-          | intersect(ansible_facts.packages.keys() | list)
-          | first) | default(mysql_server_package, true) }}
+          | select('in', ansible_facts.packages.keys() | list)
+          | list | first) | default(mysql_server_package, true) }}
     mysql_installed_server_present: >-
       {{ (mysql_server_detect_order
           | intersect(ansible_facts.packages.keys() | list) | length) > 0 }}

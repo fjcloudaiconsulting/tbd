@@ -58,6 +58,37 @@
       - python3-pymysql
     state: present
 
+# ⚠⚠ RE-HOLD IMMEDIATELY, AT THE INSTALL SITE. TBD-419.
+#
+# `site.yml`'s `post_tasks` re-apply is NOT a guarantee: `post_tasks` DO NOT RUN
+# AFTER A ROLE FAILURE. The play's own header documents the exact run that
+# breaks it -- 2026-08-18, when the redis role failed AFTER the mysql role had
+# already installed MySQL. On a rebuilt host that run installs the server, dies
+# in `redis`, skips `post_tasks`, and leaves the production data plane UNHELD
+# until somebody happens to converge it again. The stated guarantee ("a host
+# that had MySQL installed BY THIS RUN does not finish the run unheld") failed
+# on the play's single documented failure mode.
+#
+# This closes it at the source rather than at the end of the run: the task above
+# is the ONLY task in the whole play that can put MySQL on a box, so holding
+# here means the window between "MySQL exists" and "MySQL is held" contains
+# nothing that can fail. The alternative -- wrapping `site.yml`'s roles in a
+# `block:`/`always:` -- was rejected: it requires converting `roles:` into
+# `include_role`/`import_role` tasks on the play that provisions the production
+# data plane (changing role variable scoping and, with `include_role`, emptying
+# `--list-tasks`), and it still only re-holds at the END of the run, which is a
+# strictly weaker guarantee than holding at the install site.
+#
+# The `post_tasks` pass STAYS. It is the backstop for a future role that
+# installs a MySQL package, and it costs one idempotent pass.
+- name: Re-apply the MySQL holds now this role has installed the server
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: holds
+    apply:
+      tags: [always]
+  tags: [always]
+
 - name: Ensure MySQL is started and enabled
   ansible.builtin.service:
     name: mysql
