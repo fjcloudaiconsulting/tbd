@@ -9,7 +9,8 @@
     "start": "next start",
     "start:apex-preview": "cd out-apex && python3 -m http.server 4321",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run --reporter=default --reporter=./tests/act-guard/reporter.ts && node tests/act-guard/judge.mjs check",
+    "act:baseline": "node tests/act-guard/judge.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {
