@@ -38,8 +38,12 @@ console.error = function patchedConsoleError(this: unknown, ...args: unknown[]) 
 // Hand this file's tally to the main process. `task.meta` is serialised back
 // by Vitest; the reporter keys it by module path. Module state is per test
 // file under the default `isolate: true`, which is exactly the scope wanted.
-afterAll((suite: { meta: Record<string, unknown> }) => {
-  if (counts.size > 0) {
-    suite.meta.actWarnings = Object.fromEntries(counts);
-  }
+afterAll((suite) => {
+  if (counts.size === 0) return;
+  // Vitest types `meta` as its own TaskMeta interface; widening it here rather
+  // than annotating the parameter, because annotating it does not satisfy
+  // `AfterAllListener` and fails the production type-check while leaving the
+  // test run green.
+  const meta = (suite as unknown as { meta: Record<string, unknown> }).meta;
+  meta.actWarnings = Object.fromEntries(counts);
 });
