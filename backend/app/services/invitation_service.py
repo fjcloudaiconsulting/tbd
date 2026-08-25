@@ -339,10 +339,17 @@ async def accept_invitation(
         # flag — in either direction. REFUSE rather than clear: this endpoint is
         # unauthenticated (public route POST /api/v1/orgs/invitations/accept),
         # and clearing here would make it the only path in the codebase able to
-        # drive count(is_superadmin) to 0. The register and Google bootstraps
-        # (auth.py:350-353, auth.py:3377-3380) count that flag with NO is_active
-        # filter, so reaching 0 re-arms them and mints a superadmin for the next
-        # arbitrary signup. Matches admin_users_service.py:140 and
+        # drive count(is_superadmin) to 0.
+        #
+        # ⚠ TBD-365 CHANGED THE REASON, NOT THE RULING. Until TBD-365 the
+        # bootstraps in auth.py::register and auth.py::google_callback counted
+        # THIS FLAG, so reaching 0 re-armed them and minted a superadmin for
+        # the next arbitrary signup. They now count ROWS (user_count == 0), so
+        # reaching 0 arms nothing. The refusal stands on its own ground: an
+        # invitation carries an ORG role, this endpoint is unauthenticated, and
+        # a public route must never write a platform flag in either direction.
+        # Do not delete this guard on the grounds that the bootstrap coupling
+        # is gone. Matches admin_users_service.py and
         # admin_org_members_service.py:134, which both refuse rather than mutate
         # a superadmin. Recovery is out-of-band, as every superadmin grant
         # already is.
@@ -536,7 +543,8 @@ async def remove_member(
     # (is_superadmin=True, is_active=False) is exactly the state the unguarded
     # path produced, and answering 204 there would silence the one signal that
     # reveals the lockout. Both siblings order it the same way —
-    # admin_users_service.py:140 precedes its is_active precondition, and
+    # admin_users_service.delete_user's guard precedes its is_active
+    # precondition, and
     # admin_org_members_service.py:134 precedes its no-op computation.
     #
     # Also precedes the two OWNER guards below so the STRONGEST protection is
@@ -544,8 +552,13 @@ async def remove_member(
     # themselves should still read "You cannot remove yourself".
     #
     # There is no in-app undo. accept_invitation refuses to reactivate a
-    # superadmin (:354) and there is no promotion endpoint — is_superadmin is
-    # only ever set at construction (auth.py:367, auth.py:3426). A removal that
+    # superadmin (see its ConflictError) and there is no promotion endpoint —
+    # is_superadmin is
+    # only ever set at construction, in auth.py::register,
+    # auth.py::google_callback and this module's accept_invitation. (Cited by
+    # FUNCTION, not line: the previous line numbers here drifted by 500+ lines
+    # and were silently wrong. The set is pinned by
+    # tests/auth/test_superadmin_bootstrap_predicate.py.) A removal that
     # lands here is permanent and recoverable only by direct SQL (TBD-377).
     if target.is_superadmin:
         raise ConflictError(

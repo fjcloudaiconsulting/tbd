@@ -109,17 +109,16 @@ async def _seed_existing_user(
     """Seed one user so the next /register call goes through the
     captcha gate (the first-user-setup bypass requires user_count==0).
 
-    ``is_superadmin`` is LOAD-BEARING, not incidental tidiness (TBD-291).
-    The register handler derives two independent "is this the first?"
-    answers: ``is_first_user_setup`` from ``user_count == 0`` (the captcha
-    bypass) and ``is_first_user`` from ``existing_superadmin == 0`` (the
-    superadmin grant). Seeding a superadmin drives BOTH to False, which is
-    what lets the ordinary-signup tests assert
-    ``detail["granted_superadmin"] is False``. Flip this default and those
-    assertions silently invert instead of failing.
-    ``test_register_flags_distinguish_bootstrap_from_superadmin_grant``
-    passes ``is_superadmin=False`` on purpose, to build the state where the
-    two answers disagree.
+    ``is_superadmin`` is still explicit, but TBD-365 changed WHY. There is
+    now ONE first-ness predicate (``user_count == 0``), so this flag no
+    longer changes any grant outcome — seeding any user closes the bootstrap
+    regardless. It is kept because the *divergent* state (users present, zero
+    superadmins) is the one the retired predicate mis-answered, and
+    ``test_register_divergent_state_grants_no_superadmin`` below builds it
+    deliberately with ``is_superadmin=False``.
+
+    ⚠ Do NOT reintroduce a second first-ness predicate to make this parameter
+    load-bearing again. That is the escalation TBD-365 removed.
     """
     async with factory() as db:
         org = Organization(name="Existing Org", billing_cycle_day=1)
@@ -389,7 +388,9 @@ async def test_successful_registration_writes_an_audit_row(
     assert row.outcome == "success"
     assert row.detail["method"] == "password"
     assert row.detail["is_first_user"] is False
-    # A seeded superadmin already exists, so this signup grants nothing.
+    # A user already exists, so the bootstrap is closed and this signup
+    # grants nothing. (The seeded account's superadmin flag is incidental
+    # since TBD-365 — any seeded user closes it.)
     assert row.detail["granted_superadmin"] is False
     assert row.detail["captcha_required"] is True
 
@@ -447,9 +448,10 @@ async def test_first_user_setup_is_audited_and_flagged(
     indistinguishable from an ordinary signup and would skew the refusal rate
     it exists to help compute.
 
-    Here `user_count == 0` AND `existing_superadmin == 0`, so BOTH flags are
-    True and this test cannot tell them apart — that is
-    `test_register_flags_distinguish_bootstrap_from_superadmin_grant`'s job.
+    This is the COLD state, where every first-ness value is True under every
+    implementation — so this test cannot separate a correct predicate from a
+    reintroduced flag count. `test_register_divergent_state_grants_no_superadmin`
+    is the one that can.
 
     Wrong implementation killed: hardcoding `is_first_user: False`, which the
     test above cannot see because there a seeded user already exists.
@@ -478,32 +480,36 @@ async def test_first_user_setup_is_audited_and_flagged(
     rows = await _register_success_audit_rows(session_factory)
     assert len(rows) == 1
     assert rows[0].detail["is_first_user"] is True
-    # Both conditions hold on a cold DB, so both flags are True here.
+    # Cold DB, so every first-ness value is True here regardless of predicate.
     assert rows[0].detail["granted_superadmin"] is True
 
 
 @pytest.mark.asyncio
-async def test_register_flags_distinguish_bootstrap_from_superadmin_grant(
+async def test_register_divergent_state_grants_no_superadmin(
     session_factory, monkeypatch
 ) -> None:
-    """FENCE — `is_first_user` and `granted_superadmin` are DIFFERENT questions.
+    """FENCE — the divergent state grants nothing, and the row says so.
 
-    The handler computes two first-ness answers from two different counts:
-    ``is_first_user_setup`` (``user_count == 0``, the captcha bypass) and
-    ``is_first_user`` (``existing_superadmin == 0``, the superadmin grant).
-    Every other test in this file constructs a state where they agree, so any
-    one of them would accept the wrong variable in either slot.
+    TBD-365 retired the second first-ness predicate. This test previously
+    asserted the OPPOSITE of what it asserts now: that a signup in this state
+    legitimately receives superadmin. It was renamed and inverted rather than
+    deleted, because the state it constructs is still the only one that
+    separates the retired predicate from the surviving one.
 
-    This is the state where they disagree: a user exists (so this is NOT the
-    bootstrap and the captcha gate DOES run) but no superadmin exists among
-    them (so this signup silently receives superadmin anyway). That is the
-    more alert-worthy of the two events and it is invisible on a row that
-    records only the bootstrap flag.
+    A user exists (so this is NOT the bootstrap and the captcha gate DOES
+    run) and no superadmin exists among them. Pre-TBD-365 this signup
+    silently received superadmin.
 
-    Wrong implementation killed: recording ``is_first_user`` (the
-    superadmin-grant variable) under the ``is_first_user`` key, i.e. the code
-    exactly as first written — the two keys then carry the same value and the
-    ``is_first_user is False`` assertion below goes RED.
+    Wrong implementations killed:
+      * ``is_superadmin=(existing_superadmin == 0)`` — the retired predicate.
+      * a payload that RESTATES the predicate in the outcome slots instead of
+        reading the stored row: the assertions below compare
+        ``granted_superadmin`` against the account's real flag, so a row that
+        certifies an outcome the constructor did not produce goes red.
+
+    ``len(verify_calls) == 1`` is retained as an INDEPENDENT witness that this
+    is not the bootstrap path — it comes from the captcha gate, entirely
+    outside the users table, so it survives any fixture mistake.
     """
     monkeypatch.setattr(app_settings, "captcha_required", True)
     await _seed_default_plan(session_factory)
@@ -529,15 +535,31 @@ async def test_register_flags_distinguish_bootstrap_from_superadmin_grant(
             },
         )
     assert res.status_code == 201, res.text
-    # Pins the divergent state itself: the gate ran, so this is provably not
-    # the bootstrap path, while the 201 body shows superadmin was granted.
+    # Independent witness, from outside the users table: the gate ran, so this
+    # is provably not the bootstrap path.
     assert len(verify_calls) == 1
-    assert res.json()["is_superadmin"] is True
+    body = res.json()
+    assert body["is_superadmin"] is False, (
+        "a public self-signup received superadmin on an install that merely "
+        f"lacks one. body={body}"
+    )
+
+    async with session_factory() as db:
+        total = await db.scalar(select(func.count()).select_from(User))
+        supers = await db.scalar(
+            select(func.count()).select_from(User).where(User.is_superadmin.is_(True))
+        )
+    assert (int(total), int(supers)) == (2, 0), (
+        "register either did not run or minted a superadmin outside the "
+        f"bootstrap: {total} users / {supers} superadmins"
+    )
 
     rows = await _register_success_audit_rows(session_factory)
     assert len(rows) == 1
-    assert rows[0].detail["is_first_user"] is False
-    assert rows[0].detail["granted_superadmin"] is True
+    detail = rows[0].detail
+    assert detail["is_first_user"] is False
+    assert detail["granted_superadmin"] == body["is_superadmin"] is False
+    assert detail["email_verified_on_create"] == body["email_verified"] is False
 
 
 # ── TBD-291: `request_id` must be the SANITIZED value ────────────────────────

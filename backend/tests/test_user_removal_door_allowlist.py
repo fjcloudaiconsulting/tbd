@@ -163,9 +163,16 @@ def test_delete_org_cascade_has_exactly_one_caller():
     superadmin — so the actor's own row is structurally outside the delete set
     and `count(is_superadmin)` can never reach zero.
 
-    That proof rests entirely on the caller. A second caller without the
-    own-org guard breaks it, re-arming the first-registrant bootstrap
-    (`auth.py:351`, `auth.py:3407` count the flag with no is_active filter).
+    ⚠ TBD-365 RETIRED THE CONSEQUENCE, NOT THE GUARD. Driving
+    `count(is_superadmin)` to zero no longer re-arms the bootstraps — they now
+    count ROWS, not flags. What this guard still protects is the ability to
+    administer the platform at all: there is no promotion endpoint, so an
+    install that loses its last superadmin is recoverable only by direct SQL.
+
+    ⚠ The proof above rests on `ROLE_PERMISSIONS = {}` (`permissions.py`)
+    making `orgs.manage` superadmin-only. L4.8's platform-role editor is
+    exactly what breaks that premise. The service-level guard added by TBD-342
+    is independent of it and is what actually holds after L4.8.
 
     Kills: a self-serve org-closure endpoint, cleanup script, or scheduler
     sweep calling this service without the own-org guard.

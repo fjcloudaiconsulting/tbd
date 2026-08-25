@@ -191,6 +191,38 @@ async def _create_org_with_defaults(db: AsyncSession, org_name: str) -> Organiza
     return org
 
 
+async def _is_first_user_setup(db: AsyncSession) -> bool:
+    """True when the ``users`` table is EMPTY — the ONLY bootstrap condition.
+
+    Single source of truth for: ``/auth/status``'s ``needs_setup``,
+    ``register``'s captcha bypass, ``register``'s ``email_verified=``, and
+    ``is_superadmin=`` at BOTH grant sites (``register`` and
+    ``google_callback``).
+
+    ⚠ It does NOT gate ``email_verified=`` on the Google path. That constructor
+    hardcodes ``True`` and must keep doing so — a Google identity is verified
+    by the ``verified_email`` guard at the top of the callback, not by
+    first-ness. Rekeying it to this predicate would create every Google account
+    after the first as unverified, and ``/login`` 403s unverified accounts
+    unconditionally, so Google sign-in would become one-account-per-install.
+
+    Before TBD-365 the two grant sites keyed on ``count(is_superadmin) == 0``
+    instead. That predicate is strictly WEAKER — an empty table implies no
+    superadmin, but not the reverse — so it stayed true on any install whose
+    superadmins had all been deleted, and the next public self-signup (or the
+    next Google sign-in, which has no captcha gate) silently received
+    superadmin. Collapsing to this predicate can therefore only ever DENY a
+    grant the old code made in that degraded state; no legitimate install
+    loses its bootstrap.
+
+    NEVER add ``User.is_active.is_(True)`` here. It re-arms exactly the hazard
+    TBD-365 removed, the instant any user is soft-deleted, through a filter
+    that reads like tidiness. Explicitly rejected in the TBD-365 DoD and
+    fenced by ``tests/auth/test_superadmin_bootstrap_predicate.py``.
+    """
+    return await db.scalar(select(func.count()).select_from(User)) == 0
+
+
 @router.get("/status")
 async def auth_status(
     db: AsyncSession = Depends(get_db),
@@ -233,7 +265,7 @@ async def auth_status(
     fifteen round trips one-at-a-time, on an endpoint hit by every cold load.
     """
     org_id: int | None = user.org_id if user else None
-    user_count = await db.scalar(select(func.count()).select_from(User))
+    needs_setup = await _is_first_user_setup(db)
     resolved = await resolve_features(
         [
             Feature.REPORTS,
@@ -246,7 +278,7 @@ async def auth_status(
         db,
     )
     return {
-        "needs_setup": user_count == 0,
+        "needs_setup": needs_setup,
         "captcha_required": app_settings.captcha_required,
         "billing_ui_enabled": app_settings.billing_ui_enabled,
         "feature_reports_v2": app_settings.feature_reports_v2,
@@ -300,8 +332,7 @@ async def register(
     # token yet (no widget rendered before the app has finished
     # bootstrapping). Skip captcha for the first user only; every
     # subsequent registration goes through the gate.
-    user_count = await db.scalar(select(func.count()).select_from(User))
-    is_first_user_setup = user_count == 0
+    is_first_user_setup = await _is_first_user_setup(db)
     if is_first_user_setup:
         captcha_result = None
     else:
@@ -348,11 +379,6 @@ async def register(
             detail="Username or email already taken",
         )
 
-    existing_superadmin = await db.scalar(
-        select(func.count()).select_from(User).where(User.is_superadmin == True)
-    )
-    is_first_user = existing_superadmin == 0
-
     org = await _create_org_with_defaults(
         db, body.org_name or f"{body.username}'s Organization"
     )
@@ -365,7 +391,7 @@ async def register(
         last_name=body.last_name,
         password_hash=hash_password(body.password),
         role=Role.OWNER,
-        is_superadmin=is_first_user,
+        is_superadmin=is_first_user_setup,
         is_founder=True,
         # TBD-344: the bootstrap account is verified at creation. The column is
         # `server_default="0"` with no Python default, so omitting it here made
@@ -376,14 +402,14 @@ async def register(
         # install has no mailbox wired up yet and no second account to let them
         # back in, so the one account that cannot be locked out is this one.
         #
-        # ⚠ `is_first_user_setup` (user_count == 0), NEVER `is_first_user`
-        # (existing_superadmin == 0). See the audit comment below: the two
-        # predicates deliberately diverge. Keying this to `is_first_user` would
-        # mean that on any deployment where the superadmins were demoted or
-        # deleted, the next public self-signup from the open internet receives
-        # superadmin, a verified email, and an immediately usable session — a
-        # live privilege escalation. Only an EMPTY `users` table earns the
-        # bypass, because only then is there provably no one else to attack.
+        # ⚠ ONE predicate, `_is_first_user_setup` (user_count == 0), drives
+        # this AND `is_superadmin` above AND the captcha bypass. Until TBD-365
+        # the superadmin grant keyed on `count(is_superadmin) == 0` instead,
+        # so on any deployment whose superadmins had been deleted the next
+        # public self-signup from the open internet received superadmin, a
+        # verified email, and an immediately usable session. Only an EMPTY
+        # `users` table earns the bypass, because only then is there provably
+        # no one else to attack.
         #
         # The fix is at the mint, not at the check: `/login`'s gate is
         # untouched, and no environment or role exempts anyone from it.
@@ -432,17 +458,40 @@ async def register(
     # deleted, both of which matter for a row whose job is to be counted months
     # later. It does make `auth.register.success` the only auth event carrying one.
     #
-    # `detail` records BOTH first-ness flags, because they are different questions
-    # answered by different variables and they diverge:
-    #   * `is_first_user`      <- `is_first_user_setup`, user_count == 0. The
-    #                             captcha-bypass / bootstrap condition.
-    #   * `granted_superadmin` <- `is_first_user`, existing_superadmin == 0. The
-    #                             superadmin-grant condition.
-    # They agree on a normal install, so one can stand in for the other right up
-    # until they don't: users existing with no superadmin among them is a state
-    # where this signup is NOT the bootstrap yet still silently receives
-    # superadmin — the more alert-worthy of the two, and invisible if only the
-    # bootstrap flag is recorded.
+    # TBD-365: `detail` records ONE DECISION against TWO INDEPENDENTLY-READ
+    # OUTCOMES. That asymmetry is the whole point and must survive edits:
+    #   * `is_first_user`             <- `is_first_user_setup`, the PREDICATE.
+    #   * `granted_superadmin`        <- `user.is_superadmin`, READ OFF THE ROW.
+    #   * `email_verified_on_create`  <- `user.email_verified`, READ OFF THE ROW.
+    #
+    # INVARIANT: all three are equal on every correct row. Restating the local
+    # in the two outcome slots would make that a comparison of a variable with
+    # itself, which detects nothing. Bound to the row, a rekey of EITHER
+    # constructor keyword breaks the equality and the row reports it:
+    #
+    #   WHERE event_type = 'auth.register.success' AND NOT (
+    #     JSON_EXTRACT(detail,'$.is_first_user')
+    #         = JSON_EXTRACT(detail,'$.granted_superadmin')
+    #     AND JSON_EXTRACT(detail,'$.granted_superadmin')
+    #         = JSON_EXTRACT(detail,'$.email_verified_on_create'))
+    #
+    # ⚠ Written as two ANDed comparisons on purpose. SQL does NOT chain
+    # comparisons the way Python does: `a = b = c` parses as `(a = b) = c`,
+    # which compares an integer against a JSON value and matches EVERY row —
+    # a runbook query that reports the whole table as corrupt.
+    #
+    # Pre-TBD-365 rows may legitimately disagree (the two predicates were
+    # different questions then); post-TBD-365 rows cannot. The equality IS the
+    # era marker, so no separate era literal is needed.
+    #
+    # ⚠ Reading the row here is safe ONLY because `database.py:89` sets
+    # `expire_on_commit=False` and `db.refresh(user)` ran above. Flip that and
+    # these two attribute reads raise MissingGreenlet after the commit.
+    #
+    # ⚠ The AST fence in `tests/auth/test_superadmin_bootstrap_predicate.py`
+    # pins the (file, function) writer set; it CANNOT see a second grant
+    # condition added INSIDE this function. This row can. The two layers must
+    # fail independently — do not rebind these to the local.
     #
     # `captcha_required` records which era the row belongs to. With the gate off
     # there are no refusals to count, so the denominator changes meaning between
@@ -464,15 +513,11 @@ async def register(
         detail={
             "method": "password",
             "is_first_user": is_first_user_setup,
-            "granted_superadmin": is_first_user,
-            # TBD-344: which predicate granted the email-verification bypass.
-            # This block already records both first-ness flags BECAUSE they
-            # diverge; a bootstrap row has to show which one minted verification
-            # or the escalation described at the `User(...)` constructor above
-            # is invisible in `audit_events` after the fact. It reads as a
-            # duplicate of `is_first_user` today and that is the point — the day
-            # it stops matching is the day the constructor was rekeyed.
-            "email_verified_on_create": is_first_user_setup,
+            "granted_superadmin": user.is_superadmin,
+            # TBD-344 recorded which predicate minted the verification bypass;
+            # TBD-365 rebound it to the STORED value. It is an outcome, not a
+            # restatement — see the invariant above.
+            "email_verified_on_create": user.email_verified,
             "captcha_required": app_settings.captcha_required,
         },
     )
@@ -2812,8 +2857,35 @@ async def _record_google_callback_created_user(
     *,
     user: User,
     request: Request,
+    is_first_user: bool,
+    granted_superadmin: bool,
+    email_verified_on_create: bool,
 ) -> None:
     """Persist an ``auth.google.callback.created_user`` audit event.
+
+    TBD-365: reaches first-ness parity with ``auth.register.success`` — this
+    is an unauthenticated public ``GET`` that MINTS users, and before TBD-365
+    it could mint a *superadmin* with nothing on the row saying so.
+
+    ⚠ The invariant here is TWO-WAY, not three-way: ``is_first_user ==
+    granted_superadmin``. ``email_verified_on_create`` sits OUTSIDE it and is
+    always ``True``, because Google identities are verified by the
+    ``verified_email`` guard at the top of the callback, NOT by any first-ness
+    predicate. Do not "restore parity" by rekeying the constructor to a
+    first-ness predicate — that is the escalation TBD-365 removed, arriving
+    through a tidiness edit.
+
+    ⚠ ``captcha_required`` is deliberately ABSENT. This path never consults
+    Turnstile, so a refusal rate computed over a denominator including these
+    rows would be wrong (see TBD-291, where 33 rows read as a seven-week
+    registration outage).
+
+    ⚠ The two outcome flags are passed in as plain bools rather than read off
+    ``user`` inside this function, because this helper opens its OWN session
+    from ``session_factory`` and must not depend on an instance owned by the
+    request's session. (It is NOT a MissingGreenlet defence: the call site
+    reads those attributes post-commit too, and both reads are safe for the
+    same reason — ``database.py`` sets ``expire_on_commit=False``.)
 
     Emitted on the new-user branch of ``/api/v1/auth/google/callback``
     in addition to the existing ``user.login.success`` event, so ops
@@ -2832,7 +2904,12 @@ async def _record_google_callback_created_user(
         request_id=request_id,
         ip_address=get_client_ip(request),
         outcome="success",
-        detail={"method": "google_sso"},
+        detail={
+            "method": "google_sso",
+            "is_first_user": is_first_user,
+            "granted_superadmin": granted_superadmin,
+            "email_verified_on_create": email_verified_on_create,
+        },
     )
 
 
@@ -3900,6 +3977,19 @@ async def google_callback(
     # so it can show the first-run privacy disclosure surface before
     # the standard onboarding wizard.
     created_user = False
+    # TBD-365: bound on EVERY path. `created_user = True` is set only in the
+    # `else:` branch that also assigns this, so the guards coincide BY
+    # CONSTRUCTION, not by luck — this default is what makes a future refactor
+    # that moves the read safe rather than a NameError.
+    #
+    # ⚠ It does not fail closed, and could not: the read sits after
+    # `db.commit()` and after the session is issued, so a NameError there would
+    # leave the user durably created WITH the flag and a live session, and
+    # return a 500. What actually catches a moved READ is the two-way audit
+    # invariant (a stale False against a True read off the row). A moved WRITE
+    # is invisible to that invariant — both values agree — and is caught
+    # instead by the cold-install SSO fence.
+    sso_first_user_setup = False
 
     if user:
         # Existing user — login
@@ -3939,10 +4029,9 @@ async def google_callback(
     else:
         created_user = True
         # New user — register with Google profile
-        existing_superadmin = await db.scalar(
-            select(func.count()).select_from(User).where(User.is_superadmin == True)
-        )
-        is_first_user = existing_superadmin == 0
+        # TBD-365: the SAME single predicate as `register`. See
+        # `_is_first_user_setup` for why the flag count was removed.
+        sso_first_user_setup = await _is_first_user_setup(db)
 
         base_username = _suggest_username(first_name, last_name, email)
         username = await _find_available_username(db, base_username)
@@ -3959,7 +4048,7 @@ async def google_callback(
             password_hash=hash_password(secrets.token_urlsafe(32)),
             email_verified=True,  # guaranteed by the verified_email guard
             role=Role.OWNER,
-            is_superadmin=is_first_user,
+            is_superadmin=sso_first_user_setup,
             is_founder=True,
             # SSO users get a random unguessable hash they cannot use to
             # sign in with. Flag the row so the change-password endpoint
@@ -4073,7 +4162,12 @@ async def google_callback(
         # only the user id / email / request id, matching the
         # _record_login_success privacy posture.
         await _record_google_callback_created_user(
-            session_factory, user=user, request=request
+            session_factory,
+            user=user,
+            request=request,
+            is_first_user=sso_first_user_setup,
+            granted_superadmin=bool(user.is_superadmin),
+            email_verified_on_create=bool(user.email_verified),
         )
     await _record_login_success(
         session_factory, user=user, request=request, method="google_sso"
