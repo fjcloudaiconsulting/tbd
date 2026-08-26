@@ -124,6 +124,23 @@ function inspect(file: string): Offence[] {
         }
       }
     }
+
+    // `const chartProps = { isAnimationActive: true }`, later spread onto a
+    // chart. The property name is specific enough that this cannot collide
+    // with unrelated code.
+    if (
+      ts.isPropertyAssignment(node) &&
+      (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) &&
+      node.name.text === "isAnimationActive"
+    ) {
+      const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+      if (node.initializer.kind === ts.SyntaxKind.TrueKeyword) {
+        found.push({ file, line, kind: "literal-true" });
+      } else if (node.initializer.kind !== ts.SyntaxKind.FalseKeyword) {
+        found.push({ file, line, kind: "computed" });
+      }
+    }
+
     ts.forEachChild(node, visit);
   };
 

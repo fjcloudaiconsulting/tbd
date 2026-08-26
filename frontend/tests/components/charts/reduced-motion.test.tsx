@@ -21,6 +21,12 @@ import { BarChart, Bar, PieChart, Pie, Cell, Tooltip, XAxis } from "recharts";
  * ``CSSTransitionAnimate``, backed by recharts' own ``usePrefersReducedMotion``
  * subscribing to ``matchMedia("(prefers-reduced-motion: reduce)")``.
  *
+ * Verified true for every primitive this app uses: ``Bar``, ``Pie``, ``Area``,
+ * ``Line`` and ``Tooltip`` all default to ``"auto"``. ``ErrorBar`` is the one
+ * exception in the library -- it defaults to a literal ``true`` -- but it
+ * animates through a CSS transition, which ``globals.css:382`` does neutralize,
+ * and it is unused here.
+ *
  * So a chart that sets ``animationDuration`` and leaves ``isAnimationActive``
  * UNSET — the shape used by ``BudgetBarsWidget``, ``ForecastBarsWidget``,
  * ``BudgetOverviewChart``, ``ForecastPlanChart`` and the dashboard page — is
