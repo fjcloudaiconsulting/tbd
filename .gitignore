@@ -63,3 +63,9 @@ frontend/tsconfig.tsbuildinfo
 # Codex
 AGENTS.md
 docker-compose.loan-test.yml
+
+# TBD-393: transient act() warning tally, written by the vitest reporter and
+# consumed by tests/act-guard/judge.mjs in the same run. Never committed --
+# the committed artifact is tests/act-guard/act-baseline.json.
+frontend/.act-warnings.json
+frontend/tests/act-guard/.run*.json
