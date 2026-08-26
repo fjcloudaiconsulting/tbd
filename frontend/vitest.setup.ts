@@ -1,5 +1,10 @@
 import "@testing-library/jest-dom/vitest";
 
+// TBD-393: count React act() warnings per (test file, component). Imported
+// FIRST so the console patch is installed before any other setup or test code
+// can run. Observes only — it forwards every call to the real console.error.
+import "./tests/act-guard/counter";
+
 // jsdom's Blob/File do not implement the async ``Blob.text()`` reader that
 // every real browser provides. The import page's file-format sniff calls
 // ``await file.slice(0, 4096).text()`` to peek at an ambiguous upload, so
