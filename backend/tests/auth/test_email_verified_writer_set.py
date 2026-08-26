@@ -95,10 +95,12 @@ WRITING_CALLEES: frozenset[str] = frozenset({"User"})
 #       ``User(...)`` constructor — the ONLY ``False`` anywhere in the tree,
 #       and a creation-time value rather than a transition, which is exactly
 #       what makes the column a one-way latch.
-#       ⚠ Keyed on ``is_first_user_setup`` (``user_count == 0``), NOT on
-#       ``is_first_user`` (``existing_superadmin == 0``). The two predicates
-#       deliberately diverge; using the latter for a bypass grants it to a
-#       public self-signup on any install whose superadmins were demoted.
+#       ⚠ Keyed on ``is_first_user_setup`` (``user_count == 0``). Until
+#       TBD-365 a SECOND predicate (``existing_superadmin == 0``) coexisted
+#       and drove the superadmin grant; it was retired because it granted to a
+#       public self-signup on any install whose superadmins were deleted.
+#       There is now exactly one first-ness predicate, fenced by
+#       ``tests/auth/test_superadmin_bootstrap_predicate.py``.
 #
 #   * routers/auth.py::_promote_pending_email
 #       TBD-361 promotion. The claimed address proved itself, so identity

@@ -318,7 +318,10 @@ async def delete_org_cascade(
     # measurement: the caller refuses to delete its own org, org_id is NOT
     # NULL, and orgs.manage is reachable only via the is_superadmin
     # short-circuit, so the actor's own row is structurally outside the delete
-    # set and count(is_superadmin) >= 1 always. The harm is destroying platform
+    # set and count(is_superadmin) >= 1 always. (Since TBD-365 that no longer
+    # gates any bootstrap — the grants count rows, not flags — but it still
+    # gates whether the platform can be administered at all, since no
+    # promotion endpoint exists.) The harm is destroying platform
     # admins with no operator signal, and anonymising their entire audit
     # history — audit_events.actor_user_id is ON DELETE SET NULL, so those rows
     # survive only through the actor_email snapshot.
