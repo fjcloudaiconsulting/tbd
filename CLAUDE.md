@@ -57,6 +57,37 @@ docker compose exec frontend npm test -- tests/...
 docker compose exec frontend npx tsc --noEmit
 ```
 
+**act() warning ratchet (TBD-393).** `npm test` does two things now: it runs
+vitest AND compares the React `act()` warnings it emitted against
+`frontend/tests/act-guard/act-baseline.json`, per `(test file, component)`. A
+new warning fails the suite.
+
+⚠ **It uses STRICT equality, so it also fails on a DECREASE.** That is
+deliberate, not a bug: every way this gate can die silently — hook not
+installed, matcher drifted, reporter dropped from the npm script, a test
+silencing `console.error` — produces the same observable, the counts dropping.
+A ceiling cannot tell that apart from "somebody fixed some warnings". So if you
+genuinely fix warnings, regenerate and commit the baseline:
+
+```bash
+docker compose exec frontend npm run act:baseline -- --write
+```
+
+That hunk is the evidence of the fix. Same posture as
+`frontend/tests/fixtures/report-sources.json` and `backend/.test_durations`,
+which both fail rather than self-regenerate.
+
+⚠ **The filtered form above (`npm test -- tests/...`) does NOT arm the gate.**
+A filtered run cannot be compared against a whole-suite baseline, so it prints
+a notice and skips locally — but it **refuses under CI**, so the gate cannot be
+disarmed by adding a filter to the workflow. Run the full suite before trusting
+a green.
+
+⚠ `frontend/tests/act-guard/self-test.test.tsx` is **supposed** to emit exactly
+one act() warning. `ActCanary` is a deliberate leak pinned in the baseline at 1,
+so the whole chain (console patch → matcher → task meta → reporter → judge)
+re-proves itself on every run. Do not "fix" it.
+
 **Report-source catalog fixture (TBD-381).** The frontend derives every widget's
 number format AND every filter control's visibility from `GET /api/v1/reports/sources`,
 so its tests need the catalog. `frontend/tests/fixtures/report-sources.json` is
