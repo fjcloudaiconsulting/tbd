@@ -32,7 +32,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -161,9 +161,11 @@ async def _seed_user(
     """Seed a PRE-EXISTING row so `user_count > 0`.
 
     ⚠ This account is never the one under test — it exists only to move the
-    DB out of the cold-start state. `is_superadmin` is load-bearing: it drives
-    `existing_superadmin`, which is the OTHER first-ness predicate, and F3
-    depends on being able to set the two apart.
+    DB out of the cold-start state. Since TBD-365 there is only ONE first-ness
+    predicate, so `is_superadmin` no longer changes any grant outcome: seeding
+    any user closes the bootstrap. It stays explicit because F3 needs the
+    DIVERGENT state (`(1, 0)` — users present, none holding the flag), which
+    is the state a reintroduced flag-count predicate would mis-answer.
     """
     async with factory() as db:
         org = Organization(name=f"{username} org", billing_cycle_day=1)
@@ -182,6 +184,23 @@ async def _seed_user(
         db.add(user)
         await db.commit()
         return user.id
+
+
+async def _counts(factory) -> tuple[int, int]:
+    """``(total users, superadmins)`` read straight from the DB.
+
+    TBD-365: the controls in this file MUST be DB-level. The fix makes the
+    divergent state (users exist, zero superadmins) behaviourally INVISIBLE at
+    the HTTP layer — which is the point of the fix — so no assertion over the
+    response body, the login result, or the audit row can prove the fixture
+    built it any more. See the control notes on F3.
+    """
+    async with factory() as db:
+        total = await db.scalar(select(func.count()).select_from(User))
+        supers = await db.scalar(
+            select(func.count()).select_from(User).where(User.is_superadmin.is_(True))
+        )
+    return int(total or 0), int(supers or 0)
 
 
 async def _register_success_detail(factory) -> dict:
@@ -271,12 +290,41 @@ async def test_f1_bootstrap_register_then_login_succeeds(session_factory) -> Non
     )
 
     # The audit row must record that the grant happened. Positive side of the
-    # pin; F3 carries the negative side and is the one that distinguishes the
-    # two predicates. Asserted against the account's ACTUAL stored flag rather
+    # pin; F3 carries the negative side, in the one state where a correct
+    # predicate and a reintroduced flag count disagree. Asserted against the
+    # account's ACTUAL stored flag rather
     # than a bare literal, so the row cannot drift from the thing it describes.
+    # TBD-365: the cold install must still MINT AN OPERATOR. Without this
+    # assertion, `is_superadmin=False` unconditional satisfies F3 here AND
+    # every negative fence in `test_auth_google_callback_first_run.py`, and
+    # ships a fresh install with no superadmin account at all — the same class
+    # of defect as the one this file was created for, and equally invisible.
+    assert body["is_superadmin"] is True, (
+        "the first account on an empty install did not receive superadmin; "
+        f"the install has no operator. body={body}"
+    )
+    total, supers = await _counts(session_factory)
+    assert (total, supers) == (1, 1), (
+        f"expected exactly one user holding superadmin, got {total} users / "
+        f"{supers} superadmins"
+    )
+
     detail = await _register_success_detail(session_factory)
     assert detail["email_verified_on_create"] is True
     assert detail["email_verified_on_create"] == body["email_verified"]
+    # The three-way invariant, positive leg. ⚠ WEAK BY CONSTRUCTION: on a cold
+    # install every first-ness value is True under every implementation under
+    # consideration, so this cannot separate them. Its only kill is hardcoding
+    # one slot False. What actually pins the BINDING is the structural fence
+    # `test_audit_outcomes_read_the_row_not_the_local`, because no behavioural
+    # test can distinguish a row that reads the row from one that restates the
+    # local.
+    assert (
+        detail["is_first_user"]
+        == detail["granted_superadmin"]
+        == detail["email_verified_on_create"]
+        is True
+    )
 
 
 # ── F2 ───────────────────────────────────────────────────────────────────────
@@ -290,8 +338,10 @@ async def test_f2_second_user_is_not_auto_verified(session_factory) -> None:
     `User(...)` constructor. That passes F1 perfectly and silently disables
     email verification for every public self-signup on the internet.
 
-    A superadmin already exists here, so BOTH first-ness predicates are False
-    and this test cannot tell them apart — that is F3's job.
+    A superadmin already exists here. Since TBD-365 there is one predicate,
+    so this state and F3's divergent state now produce the SAME outcome — this
+    test therefore cannot separate a correct predicate from a reintroduced
+    flag count. F3 is the only one that can.
     """
     await _seed_default_plan(session_factory)
     await _seed_user(session_factory, is_superadmin=True, email_verified=True)
@@ -311,94 +361,120 @@ async def test_f2_second_user_is_not_auto_verified(session_factory) -> None:
     assert login.json()["detail"]["code"] == "email_not_verified"
 
 
-# ── F3 — the load-bearing one ────────────────────────────────────────────────
+# ── F3 (TBD-365: converted from the divergence fence) ────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_f3_verification_keys_on_user_count_not_superadmin_count(
+async def test_f3_bootstrap_grant_keys_on_empty_table_not_flag_count(
     session_factory,
 ) -> None:
-    """FENCE — the grant keys on `is_first_user_setup`, NOT `is_first_user`.
+    """FENCE — with users present and ZERO superadmins, register grants nothing.
 
-    The handler derives two first-ness answers from two different counts:
+    Before TBD-365 the handler carried two first-ness predicates:
 
-      * `is_first_user_setup` — `user_count == 0`      (the bootstrap)
-      * `is_first_user`       — `existing_superadmin == 0` (superadmin grant)
+      * `is_first_user_setup` — `user_count == 0`           (bootstrap)
+      * `is_first_user`       — `existing_superadmin == 0`  (superadmin grant)
 
-    They agree on a normal install, so F1 and F2 BOTH pass under either
-    predicate. This is the state where they disagree: users exist (so this is
-    NOT the bootstrap) but none of them is a superadmin. Keying verification to
-    `is_first_user` there hands the next public self-signup from the open
-    internet a superadmin account with a verified email and an immediately
-    usable session — a live privilege-escalation door on any deployment where
-    superadmins were demoted or deleted.
+    The second is strictly WEAKER: an empty table implies no superadmin, but
+    not the reverse. So on any install whose superadmins had all been deleted
+    it stayed true, and the next public self-signup from the open internet
+    received superadmin AND a verified email AND a usable session.
 
-    Wrong implementation killed: `email_verified=is_first_user`.
-    F1 and F2 do NOT kill it. Nothing else in the repo does either.
+    This is the ONLY state where the two predicates disagree. F1 (cold) and F2
+    (warm, superadmin present) both pass under either predicate.
 
-    ⚠ This fence is GREEN against `main`. It is an escalation-fence, not a
-    fix-fence: `main` never sets the field at all, so it satisfies (b) and (c)
-    for the wrong reason. Its injection leg is therefore *implement with the
-    wrong predicate -> confirm RED -> restore -> confirm GREEN*, not
-    *revert to main*.
+    Wrong implementations killed:
+      * `is_superadmin=(existing_superadmin == 0)`  — the pre-TBD-365 code
+      * `email_verified=(existing_superadmin == 0)` — the TBD-344 half of it
+      * `user_count == 0 or existing_superadmin == 0` — the "defensive" merge
 
-    Assertion (a) is the CONTROL. Without it, a fixture that silently failed to
-    produce the divergent state (e.g. seeded a superadmin by accident) would
-    make (b) pass for exactly the reason F2 already covers, and this fence
-    would pin nothing.
+    ⚠ CONTROL NOTE — why the controls are DB-level and not on the response.
+    This fence previously used `body["is_superadmin"] is True` as its control,
+    which was valid only while the divergent state had an observable
+    consequence. The fix REMOVES that consequence — that is the fix. Post-fix,
+    `is_superadmin: False` is produced identically by this state and by F2's
+    state, so a body assertion can no longer prove the fixture built anything.
+    Worse, a 409 from a username collision, a 500 from a missing `Plan`, or any
+    swallowed exception leaves "the new account is not a superadmin" trivially
+    true with the handler never having run.
+
+    The post-condition `(2, 0)` is the load-bearing assertion: it proves in one
+    step that register EXECUTED (a second row exists) and that it minted no
+    superadmin. No no-op fixture and no swallowed exception can produce it.
+
+    ⚠ Injection leg is *implement the wrong predicate -> confirm RED -> restore*,
+    never *revert to main* — see the note this fence inherited from its
+    predecessor.
     """
     await _seed_default_plan(session_factory)
     await _seed_user(session_factory, is_superadmin=False, email_verified=True)
 
+    # (a) PRE-CONDITION CONTROL — the fixture really built the divergent state.
+    before = await _counts(session_factory)
+    assert before == (1, 0), (
+        "fixture did not produce the divergent state (users exist, zero "
+        f"superadmins); the rest of this fence pins nothing. counts={before}"
+    )
+
     app = _make_app(session_factory)
     with TestClient(app) as client:
         res = _register(client, username="newuser", email="new@example.com")
+        # (b) LIVENESS — the handler ran to completion.
         assert res.status_code == 201, res.text
         body = res.json()
 
-        # (a) CONTROL — proves the fixture really built the divergent state.
-        # `existing_superadmin == 0` is the only way this comes back True while
-        # a user already exists.
-        assert body["is_superadmin"] is True, (
-            "fixture did not produce the divergent state (users exist, zero "
-            f"superadmins); the rest of this fence pins nothing. body={body}"
-        )
-        # (b) the flag under test
-        assert body["email_verified"] is False, (
-            "verification was granted on the superadmin-grant predicate "
-            "(`is_first_user`) rather than the bootstrap predicate "
-            "(`is_first_user_setup`) — a public signup just received a "
-            "superadmin account with a verified email"
+        # (c) POST-CONDITION CONTROL — the load-bearing one.
+        after = await _counts(session_factory)
+        assert after == (2, 0), (
+            "register either did not run or minted a superadmin in a state "
+            f"that is not the bootstrap. before={before} after={after}"
         )
 
-        # (c) and it is not merely a response-shaping difference
+        # (d) the flags under test, on the wire
+        assert body["is_superadmin"] is False, (
+            "a public self-signup received superadmin on an install that "
+            "merely lacks one — the escalation TBD-365 removed"
+        )
+        assert body["email_verified"] is False, (
+            "verification was granted on the superadmin-count predicate "
+            "rather than the empty-table predicate"
+        )
+
+        # (e) and it is not merely response shaping
         login = _login(client, login="newuser")
 
     assert login.status_code == 403, login.text
     assert login.json()["detail"]["code"] == "email_not_verified"
 
-    # (d) the AUDIT row must name the predicate that granted verification.
+    # (f) THE AUDIT ROW: one decision against two outcomes read off the row.
     #
-    # `auth.register.success` records `email_verified_on_create` precisely so a
-    # bootstrap row shows WHICH first-ness predicate minted verification —
-    # without it, a later rekey of the constructor is invisible in
-    # `audit_events` after the fact. Rekeying that field alone to
-    # `is_first_user` otherwise escapes the entire suite.
-    #
-    # This fixture is the only one that can catch it: here the two predicates
-    # disagree, so a row claiming the grant happened while the account is
-    # actually unverified is a contradiction. Compared against the account's
-    # real stored flag, not a literal, so the row is pinned to the truth it
-    # reports rather than to a constant.
+    # This is the state where a payload that RESTATES the local predicate in
+    # the outcome slots is indistinguishable from one that reads the row — so
+    # each outcome is compared against the account's real stored value, never
+    # against a literal. A rekey of either constructor keyword breaks the
+    # equality and this fence reports it.
     detail = await _register_success_detail(session_factory)
-    assert detail["email_verified_on_create"] is False, (
-        "the audit row says verification was granted on create, but the "
-        f"account came back unverified — detail={detail}, body={body}"
-    )
-    assert detail["email_verified_on_create"] == body["email_verified"]
-    # Sanity that this really is the divergent state on the row too.
     assert detail["is_first_user"] is False
-    assert detail["granted_superadmin"] is True
+    assert detail["granted_superadmin"] == body["is_superadmin"] is False, (
+        "the audit row disagrees with the account it describes — "
+        f"detail={detail}, body={body}"
+    )
+    assert detail["email_verified_on_create"] == body["email_verified"] is False
+    assert (
+        detail["is_first_user"]
+        == detail["granted_superadmin"]
+        == detail["email_verified_on_create"]
+    ), f"three-way invariant violated on a correct row: {detail}"
+    # No stray keys. Asserted as an exact key set rather than by naming one
+    # forbidden string: a named-absence check only rules out the one spelling
+    # somebody happened to think of, and the key it named never existed.
+    assert set(detail) == {
+        "method",
+        "is_first_user",
+        "granted_superadmin",
+        "email_verified_on_create",
+        "captcha_required",
+    }, f"unexpected key set on auth.register.success: {sorted(detail)}"
 
 
 # ── F4 ───────────────────────────────────────────────────────────────────────

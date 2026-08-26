@@ -196,8 +196,9 @@ async def update_my_preferences(
     behavior. The check lives in the route handler (NOT in a Pydantic
     validator) because a body-model validator raising ``ValueError``
     surfaces as a default 422 ``RequestValidationError``, never the
-    custom 400 envelope. Match the auth.py:241-247 envelope shape
-    verbatim.
+    custom 400 envelope. Match the envelope shape built by auth.py's
+    request-validation handler verbatim. (Cited by function rather than
+    line: the previous line reference had already drifted.)
     """
     if body.email_security is False:
         raise HTTPException(
