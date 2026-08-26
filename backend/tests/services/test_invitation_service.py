@@ -474,17 +474,27 @@ async def test_fence_reactivation_of_superadmin_is_refused(
           consults the role, so the retained flag would beat the "member"
           the invitation granted;
       (b) *clearing* the flag here — which closes (a) and opens something
-          worse. ``count(is_superadmin) >= 1`` is an inductive invariant on
-          ``main``: the only three write sites are constructions
-          (``auth.py:367``, ``auth.py:3397``, ``invitation_service.py:378``)
-          and nothing ever sets an existing row's flag to False. A clear on
-          this branch would be the first decrement primitive in the
-          codebase, reachable from an UNAUTHENTICATED public route. Once
-          the count hits 0 the register + Google bootstraps
-          (``auth.py:350-353``, ``auth.py:3377-3380``) re-arm — they count
-          the flag with NO ``is_active`` filter — and the Google callback
-          mints a superadmin, verifies the email and issues a session in
-          one uncaptcha'd redirect.
+          worse. ``count(is_superadmin) >= 1`` is an inductive invariant:
+          the only three write sites are constructions (``auth.register``,
+          ``auth.google_callback``, ``invitation_service.accept_invitation``,
+          the last hardcoding ``False``) and nothing ever sets an existing
+          row's flag to False. A clear on this branch would be the first
+          decrement primitive in the codebase, reachable from an
+          UNAUTHENTICATED public route.
+
+          ⚠ TBD-365 RETIRED THE CONSEQUENCE, NOT THE RULING. This docstring
+          used to continue: "once the count hits 0 the register + Google
+          bootstraps re-arm and mint a superadmin for the next signup". That
+          is no longer true — both bootstraps now count ROWS
+          (``user_count == 0``), so reaching 0 arms nothing.
+
+          The guard stands on ground that never depended on the bootstrap:
+          an invitation carries an ORG role and must never write the PLATFORM
+          flag, on a route that is in the public allowlist. And reaching 0
+          still costs the install its ability to be administered at all —
+          there is no promotion endpoint, so recovery is out-of-band SQL.
+          **Do not weaken this fence on the grounds that the bootstrap
+          coupling is gone.**
 
     The escalation assertion at the end is what pins (b) specifically: the
     platform superadmin count must be unchanged. Asserting only "refused"
@@ -836,9 +846,11 @@ async def test_remove_member_blocks_removing_last_owner(session_factory):
 # Spec: specs/2026-08-11-tbd-364-remove-member-superadmin-guard.md
 #
 # ⚠ Do NOT add a `count(is_superadmin) == 1` assertion to any fence below.
-# Both bootstrap predicates count that flag with NO is_active filter
-# (routers/auth.py:351, routers/auth.py:3407), so a soft delete leaves the
-# count unchanged and such an assertion passes against the UNFIXED code.
+# A soft delete does not touch the flag, so the count is unchanged either way
+# and such an assertion passes against the UNFIXED code. (Until TBD-365 the
+# stated reason was that both bootstrap predicates counted the flag with no
+# is_active filter. There is now one predicate and it counts ROWS — the
+# reason changed, the ruling did not.)
 # The load-bearing assertion is `is_active is True`, read INSIDE the session:
 # the ConflictError path never commits, so a post-close read shows the
 # pre-mutation row and is green even against a mutate-then-raise guard.

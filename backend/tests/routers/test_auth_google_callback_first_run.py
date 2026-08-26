@@ -29,7 +29,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -107,8 +107,19 @@ async def _seed_default_plan(factory: async_sessionmaker[AsyncSession]) -> None:
 
 
 async def _seed_existing_sso_user(
-    factory: async_sessionmaker[AsyncSession], *, email: str
+    factory: async_sessionmaker[AsyncSession],
+    *,
+    email: str,
+    is_superadmin: bool = False,
+    is_active: bool = True,
 ) -> int:
+    """Seed a pre-existing account.
+
+    TBD-365: `is_superadmin` / `is_active` are load-bearing for the bootstrap
+    fences below. `is_superadmin=False` builds the DIVERGENT state (users
+    exist, none carries the flag) — the only state where the retired
+    flag-count predicate and the empty-table predicate disagree.
+    """
     async with factory() as db:
         org = Organization(name="Acme", billing_cycle_day=1)
         db.add(org)
@@ -119,12 +130,45 @@ async def _seed_existing_sso_user(
             email=email,
             password_hash=hash_password("starting-password-1"),
             role=Role.OWNER,
-            is_active=True,
+            is_superadmin=is_superadmin,
+            is_active=is_active,
             email_verified=True,
         )
         db.add(user)
         await db.commit()
         return user.id
+
+
+async def _counts(factory: async_sessionmaker[AsyncSession]) -> tuple[int, int]:
+    """``(total users, superadmins)`` straight from the DB.
+
+    TBD-365: the controls here must be DB-level for the same reason as in
+    `tests/auth/test_register_login_bootstrap.py` — after the fix the
+    divergent state has no observable consequence at the HTTP layer, so only
+    the stored rows can prove the fixture built it and that the handler ran.
+    """
+    async with factory() as db:
+        total = await db.scalar(select(func.count()).select_from(User))
+        supers = await db.scalar(
+            select(func.count()).select_from(User).where(User.is_superadmin.is_(True))
+        )
+    return int(total or 0), int(supers or 0)
+
+
+def _drive_callback(client: TestClient) -> Any:
+    """Drive the callback's happy path.
+
+    ⚠ The 302 it returns is NOT a liveness signal — `_google_error_redirect`
+    also returns 302. Every fence below proves liveness with the `_counts`
+    assertions instead. Do not copy a bare `assert res.status_code == 302`
+    into a new fence and treat it as proof the handler ran.
+    """
+    client.cookies.set("oauth_state", "matching-state")
+    return client.get(
+        "/api/v1/auth/google/callback",
+        params={"code": "dummy", "state": "matching-state"},
+        follow_redirects=False,
+    )
 
 
 async def _audit_rows(
@@ -251,7 +295,19 @@ async def test_new_sso_user_records_created_user_audit_event(
     row = created_rows[0]
     assert row.outcome.value == "success"
     assert row.actor_email == "brand-new@example.com"
-    assert row.detail == {"method": "google_sso"}
+    # TBD-365: exact equality is deliberate HERE (unlike the register file's
+    # read-by-key posture) — this payload is the ticket's deliverable and is
+    # now specified. Exact matching is what kills a stray `captcha_required`
+    # (a gate this path never consults; see TBD-291 on poisoned denominators)
+    # and a reintroduced `existing_superadmin_count`.
+    #
+    # Cold install here, so every first-ness value is True.
+    assert row.detail == {
+        "method": "google_sso",
+        "is_first_user": True,
+        "granted_superadmin": True,
+        "email_verified_on_create": True,
+    }
     # The new-user branch still emits the standard login event.
     login_rows = await _audit_rows(session_factory, event_type="user.login.success")
     assert len(login_rows) == 1
@@ -359,3 +415,165 @@ async def test_existing_sso_user_does_not_record_created_user_audit(
     login_rows = await _audit_rows(session_factory, event_type="user.login.success")
     assert len(login_rows) == 1
     assert login_rows[0].detail == {"method": "google_sso"}
+
+
+# ── TBD-365 bootstrap fences ────────────────────────────────────────────────
+#
+# Before TBD-365 the SSO grant was unfenced in BOTH directions: nothing
+# asserted a cold install grants superadmin, and nothing asserted a warm one
+# does not. That mattered because this is an unauthenticated public GET that
+# mints users, has no captcha gate, and issues a session in the same redirect.
+
+
+@pytest.mark.asyncio
+async def test_tbd365_sso_divergent_state_grants_no_superadmin(
+    session_factory, google_config, monkeypatch
+) -> None:
+    """FENCE — users exist, zero superadmins: a fresh Google sign-in gets nothing.
+
+    Wrong implementation killed: `is_superadmin=(existing_superadmin == 0)` at
+    the Google constructor — i.e. the pre-TBD-365 code, and the SHAPE OF THE
+    MOST LIKELY PARTIAL FIX. Every existing test and the whole ticket
+    narrative sit on the register side, so fixing `register` alone and leaving
+    the callback on the flag count satisfies the register fences completely.
+    Only this fence is red against that.
+
+    The `existing_superadmin_count`-style control is the DB pre-condition: if
+    the fixture accidentally seeded a superadmin, `granted_superadmin False`
+    would pass for the boring reason the warm-install fence already covers.
+    """
+    await _seed_default_plan(session_factory)
+    await _seed_existing_sso_user(
+        session_factory, email="someone-else@example.com", is_superadmin=False
+    )
+
+    before = await _counts(session_factory)
+    assert before == (1, 0), f"fixture did not build the divergent state: {before}"
+
+    _patch_httpx(monkeypatch, userinfo_email="brand-new@example.com")
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = _drive_callback(client)
+    assert res.status_code == 302, res.text
+
+    after = await _counts(session_factory)
+    assert after == (2, 0), (
+        "the Google callback either did not create the user or minted a "
+        f"superadmin outside the bootstrap. before={before} after={after}"
+    )
+
+    rows = await _audit_rows(
+        session_factory, event_type="auth.google.callback.created_user"
+    )
+    assert len(rows) == 1
+    assert rows[0].detail == {
+        "method": "google_sso",
+        "is_first_user": False,
+        "granted_superadmin": False,
+        "email_verified_on_create": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_tbd365_sso_cold_install_still_bootstraps(
+    session_factory, google_config, monkeypatch
+) -> None:
+    """FENCE — the cold-install SSO bootstrap survives.
+
+    Wrong implementation killed: `is_superadmin=False` unconditional at the
+    Google constructor — the lazy way to satisfy the divergent-state fence
+    above, which would leave an install bootstrapped via Google with NO
+    operator account. Nothing in the repo noticed this before TBD-365.
+
+    Also kills reading the count AFTER `db.add(user)`/`flush`, which would see
+    the row being inserted, return 1, and deny the first user their grant.
+    """
+    await _seed_default_plan(session_factory)
+    assert await _counts(session_factory) == (0, 0)
+
+    _patch_httpx(monkeypatch, userinfo_email="founder@example.com")
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = _drive_callback(client)
+    assert res.status_code == 302, res.text
+
+    assert await _counts(session_factory) == (1, 1), (
+        "the first account on an empty install did not receive superadmin via "
+        "Google SSO; the install has no operator"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tbd365_sso_warm_install_with_superadmin_grants_nothing(
+    session_factory, google_config, monkeypatch
+) -> None:
+    """FENCE — a superadmin already exists: a new SSO signup gets nothing.
+
+    ⚠ THIS FENCE HAS NO UNIQUE KILL, and says so rather than claiming one.
+
+    An earlier draft claimed it killed "scoping the count to the new user's
+    org". It cannot: the predicate is read BEFORE `_create_org_with_defaults`
+    runs, so there is no org id to scope to at that point. And an org-scoped
+    count would already be red on the divergent-state fence above, which sees
+    `(2, 1)` instead of `(2, 0)`.
+
+    It is also GREEN against the retired flag-count predicate, because a
+    superadmin exists here so both predicates agree — the classic
+    "fixture where right and wrong agree" shape.
+
+    Kept as a plain behavioural assertion that the ordinary warm-install SSO
+    path grants nothing, which is worth pinning for its own sake. Do NOT count
+    it toward rekey coverage, and do not delete the divergent-state fence
+    believing this one covers it.
+    """
+    await _seed_default_plan(session_factory)
+    await _seed_existing_sso_user(
+        session_factory, email="boss@example.com", is_superadmin=True
+    )
+    assert await _counts(session_factory) == (1, 1)
+
+    _patch_httpx(monkeypatch, userinfo_email="brand-new@example.com")
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = _drive_callback(client)
+    assert res.status_code == 302, res.text
+
+    assert await _counts(session_factory) == (2, 1), (
+        "a second account received superadmin while one already existed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tbd365_deactivated_superadmin_does_not_rearm_the_bootstrap(
+    session_factory, google_config, monkeypatch
+) -> None:
+    """FENCE — a SOFT-DELETED superadmin still closes the bootstrap.
+
+    Wrong implementation killed: adding `User.is_active.is_(True)` to the
+    bootstrap count. Explicitly rejected in the TBD-365 DoD, and it re-arms
+    the exact hazard the ticket removed the instant any user is soft-deleted.
+
+    Not theoretical: `remove_member` soft-deletes, and `admin_orgs_service`
+    carries a large comment insisting its sibling count has NO `is_active`
+    filter — a reader moving between those files can easily add one here
+    believing it is the same question.
+    """
+    await _seed_default_plan(session_factory)
+    await _seed_existing_sso_user(
+        session_factory,
+        email="retired-boss@example.com",
+        is_superadmin=True,
+        is_active=False,
+    )
+    assert await _counts(session_factory) == (1, 1)
+
+    _patch_httpx(monkeypatch, userinfo_email="opportunist@example.com")
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = _drive_callback(client)
+    assert res.status_code == 302, res.text
+
+    assert await _counts(session_factory) == (2, 1), (
+        "a soft-deleted superadmin re-armed the bootstrap and a public Google "
+        "sign-in received the platform flag"
+    )
