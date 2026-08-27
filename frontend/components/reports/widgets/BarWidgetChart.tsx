@@ -147,13 +147,23 @@ export default function BarWidgetChart({
               radius={
                 stackId && i !== secondaryValues.length - 1 ? 0 : [4, 4, 0, 0]
               }
-              // TBD-382 R12: PRODUCT.md commits to respecting
-              // prefers-reduced-motion for chart animations, but globals.css
-              // implements that as a CSS block zeroing animation-duration and
-              // Recharts animates through react-smooth's rAF loop writing
-              // inline attributes per frame — so the block never reaches it.
-              // Five of the six reports charts already disable animation;
-              // BarWidgetChart was the family's lone outlier.
+              // Disabled so the whole reports family behaves alike: five of
+              // the six charts in this directory already set this, and
+              // BarWidgetChart was the lone outlier (TBD-382 R12).
+              //
+              // ⚠ This is a CONSISTENCY choice, not an accessibility one, and
+              // the original rationale here said otherwise (TBD-428). It
+              // claimed globals.css:382 cannot reach recharts' rAF loop and
+              // that reduced-motion users therefore get motion. The mechanism
+              // is right; the conclusion is not. recharts 3.x defaults
+              // isAnimationActive to "auto", which resolves to
+              // `!isSsr && !prefersReducedMotion` via its own
+              // usePrefersReducedMotion hook — so omitting this prop already
+              // honours the preference. Setting it false additionally removes
+              // animation for users who did NOT opt out. It also credited
+              // "react-smooth", which is not a dependency of this repo; that
+              // code lives in recharts' own animation/ directory.
+              // Fenced by tests/components/charts/reduced-motion.test.tsx.
               isAnimationActive={false}
             />
           ))
