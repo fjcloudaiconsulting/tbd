@@ -528,3 +528,28 @@ destroy.
   L5.2a direction lock and decision log.
 - `~/.claude/projects/-Users-flamarion-src-tbd/memory/feedback_terraform_vcs_only.md`:
   Terraform is VCS-driven; CLI is debug-only.
+
+## AWS accounts and Terraform workspaces
+
+⚠ **This repository spans TWO AWS accounts.** Neither is recorded in the
+Terraform code, because `aws_account_id` is declared with no default and set
+only in the TFC workspace -- which is how the split went unnoticed until
+TBD-400. Recorded here so it is discoverable:
+
+| Workspace | Directory | Cloud | What it owns |
+|---|---|---|---|
+| `FlamaCorp/tbd` | `infra/terraform/` | DigitalOcean | data droplet, VPC, cloud firewall, data-plane credentials |
+| `FlamaCorp/tbd-apex` | `infra/terraform/apex/` | AWS (**older/personal account**) | landing-site S3 + CloudFront + ACM |
+| `FlamaCorp/tbd-backups` | `infra/terraform/backups/` | AWS (**company account `884686184019`**) | off-host MySQL backup bucket, CMK, put-only uploader, probe role |
+
+All three are VCS-driven with **manual Confirm & Apply**; auto-apply is off
+everywhere.
+
+⚠ Do not copy an `aws_account_id` between `apex/` and `backups/`. They are
+different accounts, and `backups/main.tf` asserts the caller matches so a
+mistake dies at plan rather than creating a bucket in the wrong place.
+
+⚠ `infra/aws/bootstrap/` holds the trust and provisioner documents for the
+backups workspace. They were applied once by hand with root at genesis (an empty
+account has no other principal), then `terraform import`ed. They are the source
+of truth for recovery if the OIDC trust is ever broken -- see TBD-372.

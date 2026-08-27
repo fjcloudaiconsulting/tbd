@@ -1,4 +1,33 @@
 ---
+# ⚠ EVERY TASK IN THIS ROLE CARRIES THE `backups` TAG, and that is a
+# prerequisite of this feature rather than a convenience. bin/run-playbook.sh
+# records that this tree has NO topic tags, so without them the only way to
+# deploy a backup change is a FULL converge -- which rotates the data-plane
+# credentials and restarts MySQL. Tagging turns shipping this role from a
+# scheduled outage into `--tags backups`.
+
+- name: Assert the off-host backup is fully configured when enabled
+  # ⚠ Fail closed. A default-empty bucket variable alone is the wrong shape: a
+  # typo would silently disable the off-host copy on production and still
+  # report green, which is the exact silent-success class this whole ticket
+  # exists to remove.
+  ansible.builtin.assert:
+    that:
+      - mysql_backup_s3_bucket | length > 0
+      - mysql_backup_s3_kms_key_arn | length > 0
+      - mysql_backup_s3_access_key_id | length > 0
+      - mysql_backup_s3_secret_access_key | length > 0
+      - mysql_backup_s3_access_key_id != 'CHANGE_ME'
+      - mysql_backup_s3_secret_access_key != 'CHANGE_ME'
+    fail_msg: >-
+      mysql_backup_s3_enabled is true but the S3 destination is incomplete.
+      These values come from `terraform output` on the FlamaCorp/tbd-backups
+      workspace via bin/run-playbook.sh; if they are empty, that workspace has
+      not been applied or the wrapper did not merge its outputs.
+    quiet: true
+  when: mysql_backup_s3_enabled
+  tags: [backups]
+
 - name: Create MySQL backup directory
   ansible.builtin.file:
     path: "{{ mysql_backup_dir }}"
@@ -6,6 +35,7 @@
     owner: root
     group: root
     mode: "0750"
+  tags: [backups]
 
 # Pre-created so the migration runbook (infra/MIGRATION.md step 4) can
 # `scp dump.sql.gz droplet:/var/backups/mysql/migration/` without first
@@ -17,6 +47,74 @@
     owner: root
     group: root
     mode: "0750"
+  tags: [backups]
+
+# ⚠ boto3 comes from Ubuntu's own signed repository, NOT from a downloaded AWS
+# CLI zip. Measured on the box 2026-08-27: `awscli` has no apt candidate on
+# Ubuntu 24.04 here and `unzip` is not installed, so the CLI would mean
+# fetching ~60 MB over the internet and pinning a digest nobody in this repo
+# can independently re-derive. python3-boto3 was already present (1.34.46),
+# is apt-managed, and gets security updates.
+- name: Ensure boto3 is installed for the backup uploader
+  ansible.builtin.apt:
+    name: python3-boto3
+    state: present
+  tags: [backups]
+
+- name: Install the backup verification script
+  ansible.builtin.copy:
+    src: mysql-backup-verify.sh
+    dest: "{{ mysql_backup_verify_script }}"
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [backups]
+
+- name: Install the backup upload script
+  ansible.builtin.copy:
+    src: mysql-backup-upload.py
+    dest: "{{ mysql_backup_upload_script }}"
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [backups]
+
+- name: Create the root AWS configuration directory
+  ansible.builtin.file:
+    path: /root/.aws
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: mysql_backup_s3_enabled
+  tags: [backups]
+
+# ⚠⚠ no_log IS NOT OPTIONAL AND IS NOT ABOUT ansible-vault.
+# `--check --diff` prints a template's RENDERED CONTENT, which is one of the two
+# routes by which data-plane credentials became quotable in a transcript and had
+# to be rotated (TBD-414). Any task that renders a secret needs this flag even
+# when the secret itself is sourced correctly.
+# Fenced by backend/tests/test_ansible_secret_task_no_log.py.
+- name: Install the put-only AWS credential for the backup uploader
+  ansible.builtin.template:
+    src: aws-credentials.j2
+    dest: /root/.aws/credentials
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: mysql_backup_s3_enabled
+  tags: [backups]
+
+- name: Install the AWS region configuration
+  ansible.builtin.template:
+    src: aws-config.j2
+    dest: /root/.aws/config
+    owner: root
+    group: root
+    mode: "0600"
+  when: mysql_backup_s3_enabled
+  tags: [backups]
 
 - name: Install MySQL backup script
   ansible.builtin.template:
@@ -25,6 +123,7 @@
     owner: root
     group: root
     mode: "0750"
+  tags: [backups]
 
 - name: Schedule daily MySQL backup cron
   ansible.builtin.cron:
@@ -34,3 +133,4 @@
     minute: "{{ mysql_backup_cron_minute }}"
     job: "/usr/local/bin/mysql-backup.sh >> /var/log/mysql-backup.log 2>&1"
     state: present
+  tags: [backups]

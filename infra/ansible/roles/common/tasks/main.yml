@@ -230,7 +230,9 @@
        pfv data droplet
        Role: MySQL + Redis (single node, VPC-only data plane)
        Managed by: Terraform (provisioning) + Ansible (config)
-       Backups: weekly DO snapshots + nightly mysqldump (/var/backups/mysql)
+       Backups: nightly mysqldump -> /var/backups/mysql AND s3 (TBD-400)
+       ⚠ DO droplet snapshots are OFF (TBD-399). The local copy is on
+         THIS disk; the S3 copy is the only one that survives losing it.
       ============================================================
     owner: root
     group: root
