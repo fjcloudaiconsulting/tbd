@@ -1,0 +1,95 @@
+# `tbd-backups` — off-host MySQL backup (TBD-400)
+
+Owns the S3 bucket, CMK and IAM identities behind the nightly off-host copy of
+the production MySQL dump.
+
+⚠⚠ **This is a DIFFERENT AWS account from `infra/terraform/apex/`.** apex runs
+the public landing site from the operator's older account; this workspace
+targets the company account `884686184019`. `main.tf` asserts the caller matches
+`var.aws_account_id`, so a wrong-account apply dies at plan instead of creating
+a bucket in the wrong place. Never copy an account id between the two.
+
+## Why a separate workspace
+
+Folding these resources into `FlamaCorp/tbd` (the DigitalOcean data plane) would
+have made credential delivery free, since `bin/run-playbook.sh` already reads
+that directory. It was rejected:
+
+* The AWS provider validates credentials at **configure** time. A configure-time
+  failure fails the whole run, not just the AWS resources, so an AWS auth
+  problem would block **every DigitalOcean apply** — including the one needed to
+  repair the droplet.
+* It would import the TBD-372 rename-lockout hazard into the workspace named
+  `tbd`, where a rename breaks every DO apply rather than just backups.
+* `FlamaCorp/tbd`'s state already holds `do_token` and the data-plane passwords.
+  Adding the uploader key would make one state file yield the droplet **and**
+  write access to the only copy of its data — the adversarial twin of the
+  failure this ticket exists to fix.
+
+## Genesis (once, by hand, with root)
+
+The account was empty: no IAM users, no roles, no OIDC providers. Something has
+to mint the first principal, and only root could.
+
+```bash
+# 0. FIRST, in the console: enable MFA on the root user.
+#    AccountMFAEnabled=0 with a live root access key is a full account takeover
+#    from one leaked key pair, in the account holding every customer's password
+#    hash. This is a gate, not a nicety.
+
+# 1. Create an admin break-glass IAM user (console password + MFA, NO key).
+#    This is the named out-of-band hand for a TBD-372-class lockout.
+
+# 2. Create the OIDC provider and the provisioner role from the COMMITTED docs.
+aws iam create-open-id-connect-provider \
+  --url https://app.terraform.io --client-id-list aws.workload.identity \
+  --thumbprint-list 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
+aws iam create-role --role-name tfc-backups-provisioner \
+  --assume-role-policy-document file://../../aws/bootstrap/tfc-backups-trust.json
+aws iam put-role-policy --role-name tfc-backups-provisioner \
+  --policy-name tfc-backups-provisioner-inline \
+  --policy-document file://../../aws/bootstrap/tfc-backups-provisioner.json
+
+# 3. In TFC on FlamaCorp/tbd-backups set:
+#      TFC_AWS_PROVIDER_AUTH = true
+#      TFC_AWS_RUN_ROLE_ARN  = arn:aws:iam::884686184019:role/tfc-backups-provisioner
+#      aws_account_id        = 884686184019
+
+# 4. Merge the PR, Confirm & Apply, then import the two bootstrap resources so
+#    they are managed as code from here on:
+terraform import aws_iam_openid_connect_provider.tfc \
+  arn:aws:iam::884686184019:oidc-provider/app.terraform.io
+terraform import aws_iam_role.tfc_backups_provisioner tfc-backups-provisioner
+
+# 5. ONLY NOW delete the root access keys. Deleting them before a green apply is
+#    the TBD-372 lockout with root as the thing locked out.
+```
+
+## The self-authorization hazard, and why it is survivable here
+
+This workspace manages the trust policy that admits this workspace. That is the
+TBD-372 shape, and it is unavoidable inside one account touched by one
+workspace. Three defences:
+
+1. `backend/tests/test_backup_offhost.py` asserts at **PR time** that the
+   workspace named in `versions.tf` equals the workspace in the committed trust
+   document. TBD-372 happened because a rename was *applied* with the pattern
+   unchanged; this stops that from being applied at all.
+2. `prevent_destroy` on the role and the OIDC provider.
+3. A plan-time `precondition` on the role, so an apply from a branch that
+   skipped review still fails rather than locking the workspace out.
+
+To rename the workspace: **widen** the trust pattern to span both names, apply,
+rename, then narrow. Never rename first.
+
+## What the droplet can and cannot do
+
+`pfv-backup-uploader` holds `s3:PutObject` on one prefix plus
+`kms:GenerateDataKey`/`Encrypt`/`DescribeKey` on one key. It has **no**
+`GetObject`, no `ListBucket`, no `DeleteObject`, and an explicit **`Deny` on
+`kms:Decrypt` in the key policy** — which no IAM or bucket policy can override.
+The droplet writes ciphertext it cannot read. A stolen key is a nuisance, not a
+breach.
+
+Object Lock is GOVERNANCE mode: a compromised droplet cannot overwrite history,
+but break-glass can still clean up a mistake.

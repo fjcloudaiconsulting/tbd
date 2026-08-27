@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ManageBackupBucketAndKey",
+      "Effect": "Allow",
+      "Action": ["s3:*", "kms:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageBackupIdentities",
+      "Effect": "Allow",
+      "Action": ["iam:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadAccountIdentity",
+      "Effect": "Allow",
+      "Action": ["sts:GetCallerIdentity", "iam:ListOpenIDConnectProviders"],
+      "Resource": "*"
+    }
+  ]
+}

@@ -3,3 +3,21 @@ mysql_backup_dir: /var/backups/mysql
 mysql_backup_retention_days: 7
 mysql_backup_cron_hour: "2"
 mysql_backup_cron_minute: "0"
+mysql_backup_verify_script: /usr/local/bin/mysql-backup-verify.sh
+mysql_backup_upload_script: /usr/local/bin/mysql-backup-upload.py
+
+# --- Off-host copy (TBD-400) ------------------------------------------------
+# ⚠ Defaults OFF. The role must be safe to converge against a scratch droplet
+# that has no bucket and no credential; enabling is an explicit per-host
+# decision made in the generated inventory. The tasks additionally ASSERT that
+# every value below is set when this is true, so a typo cannot silently leave
+# production with no off-host backup while reporting green.
+mysql_backup_s3_enabled: false
+mysql_backup_s3_bucket: ""
+mysql_backup_s3_prefix: pfv-data-01
+mysql_backup_s3_region: eu-central-1
+mysql_backup_s3_kms_key_arn: ""
+# Supplied by bin/run-playbook.sh from `terraform output` on the tbd-backups
+# workspace. NEVER set these in inventory.yml or on the command line.
+mysql_backup_s3_access_key_id: ""
+mysql_backup_s3_secret_access_key: ""

@@ -1,0 +1,118 @@
+# Detect SILENCE in the off-host MySQL backup (TBD-400).
+#
+# ⚠ WHY THIS LIVES IN CI AND NOT ON THE DROPLET. An alert emitted by the machine
+# being backed up cannot fire when that machine is gone, or when its cron never
+# ran -- which is precisely the disaster the backup exists for. The failure mode
+# is silence, and only an off-host observer can read silence. The droplet's only
+# obligations are to fail loudly into its log and never to upload a bad artifact.
+#
+# ⚠ READ-ONLY BY CONSTRUCTION. The assumed role holds s3:ListBucket and nothing
+# else -- no GetObject, and an explicit key-policy Deny on kms:Decrypt. The
+# probe can see that a backup exists, is recent and is plausibly sized; it can
+# never read a customer's data to find out.
+name: Backup Freshness Probe
+
+on:
+  schedule:
+    # 04:17 UTC. The dump runs at 02:00 UTC, so this leaves ~2.3h of slack.
+    # Odd minute, off the top of the hour, where the scheduler queue is shortest.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+  # Self-test: a change to the probe proves the probe still runs, rather than
+  # waiting until the next firing to discover it was broken.
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/backup-freshness-probe.yml
+      - scripts/ci/check-backup-freshness.sh
+      - scripts/notify-backup-stale.sh
+
+concurrency:
+  group: backup-freshness-probe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Backup Freshness
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠ continue-on-error so a FAILED ROLE ASSUMPTION becomes a
+      # `could-not-run` verdict and raises the alarm, instead of dying here
+      # with a raw AWS error that notifies nobody. This is not hypothetical:
+      # between merging this PR and applying the tbd-backups workspace the role
+      # does not exist yet, and "the probe cannot authenticate" is exactly the
+      # sort of thing that must be visible rather than a red square in a tab
+      # nobody opens.
+      - name: Assume the read-only probe role
+        id: auth
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Created by infra/terraform/backups/. Trust is StringEquals on
+          # refs/heads/main, so a PR context cannot assume it even by rewriting
+          # this file in that PR.
+          role-to-assume: arn:aws:iam::884686184019:role/github-actions-backup-probe
+          aws-region: eu-central-1
+
+      - name: Check backup freshness
+        id: check
+        run: |
+          set -uo pipefail
+          if [[ "${{ steps.auth.outcome }}" != "success" ]]; then
+            echo "verdict=could-not-run" >> "$GITHUB_OUTPUT"
+            echo "detail=could not assume the probe role. If the tbd-backups Terraform workspace has not been applied yet, that is expected and this alarm is correct." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # ⚠ The listing and the verdict are separate steps on purpose: an AWS
+          # failure here must read as "could not run" (exit 2), not as "stale",
+          # and must not be mistaken for a healthy empty bucket.
+          if ! listing="$(aws s3api list-objects-v2 \
+                --bucket tbd-mysql-backups-884686184019 \
+                --prefix pfv-data-01/ --output json 2>err.txt)"; then
+            echo "verdict=could-not-run" >> "$GITHUB_OUTPUT"
+            echo "detail=listing the bucket failed: $(head -c 300 err.txt)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          detail="$(printf '%s' "$listing" | bash scripts/ci/check-backup-freshness.sh 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "verdict=fresh" >> "$GITHUB_OUTPUT" ;;
+            1) echo "verdict=stale" >> "$GITHUB_OUTPUT" ;;
+            *) echo "verdict=could-not-run" >> "$GITHUB_OUTPUT" ;;
+          esac
+          {
+            echo "detail<<DETAIL_EOF"
+            printf '%s\n' "$detail"
+            echo "DETAIL_EOF"
+          } >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$detail"
+
+      # ⚠ "could not run" RAISES THE ALARM, it does not merely fail the job.
+      # A red scheduled workflow notifies essentially nobody, and nothing else
+      # in this repo covers this signal. Fail closed INTO the alarm.
+      - name: Raise the alarm
+        if: steps.check.outputs.verdict != 'fresh'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          VERDICT: ${{ steps.check.outputs.verdict }}
+          DETAIL: ${{ steps.check.outputs.detail }}
+        run: bash scripts/notify-backup-stale.sh
+
+      - name: Fail the job when the backup is not fresh
+        if: steps.check.outputs.verdict != 'fresh'
+        run: |
+          echo "backup freshness verdict: ${{ steps.check.outputs.verdict }}" >&2
+          exit 1

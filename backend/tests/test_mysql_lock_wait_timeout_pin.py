@@ -592,17 +592,29 @@ def test_the_cleanup_trap_removes_the_TEMPORARY_file_and_not_the_backup():
     )
     cleanup = [(cmd, sig) for cmd, sig in traps if "rm" in cmd]
     assert cleanup, "no trap removes anything."
+    # ⚠ The rule is "the trap must never target a PUBLISHED artifact", not
+    # "every target ends in .part". Those were the same thing when the script
+    # produced one artifact; TBD-400 added a manifest that is built locally,
+    # uploaded, and deleted, and is legitimately neither a .part nor a backup.
+    # Asserting the proxy instead of the property turned a correct change red.
+    # Stated as the property, this is strictly stronger: it now names the exact
+    # thing that must never be deleted.
+    published = {"${DUMP}", "${GRANTS}"}
     for command, signal in cleanup:
         assert signal == "EXIT", f"the cleanup trap is on {signal}, not EXIT."
         targets = re.findall(r'"([^"]+)"', command)
         assert targets, f"could not read the trap's target from {command!r}."
         for target in targets:
-            assert target.endswith(".part"), (
-                f"the cleanup trap removes {target!r}. On the success path the "
-                "dump has already been renamed to the final name, so a trap "
-                "aimed at ${DUMP} deletes the COMPLETED backup on every "
-                "successful run."
+            assert target not in published, (
+                f"the cleanup trap removes {target!r}, which is a PUBLISHED "
+                "backup artifact. On the success path it has already been "
+                "renamed to its final name, so this trap would delete the "
+                "COMPLETED backup on every successful run."
             )
+        assert "${DUMP}.part" in targets, (
+            "the cleanup trap no longer removes the dump's .part file, so a "
+            "failed night leaves a dump-sized orphan behind."
+        )
 
 
 def test_retention_can_reap_a_temporary_file_left_by_a_kill():

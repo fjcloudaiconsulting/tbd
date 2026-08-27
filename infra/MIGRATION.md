@@ -304,15 +304,76 @@ a 1205 mid-dump leaves a *structurally valid* gzip of a truncated dump at the
 final name, which `gzip -t` happily passes. See the comment block in
 `roles/backups/templates/mysql-backup.sh.j2`.
 
-⚠⚠ **But nothing observes that failure.** The cron job redirects both streams to
-`/var/log/mysql-backup.log` (`roles/backups/tasks/main.yml`), there is no MTA and
-no `MAILTO` anywhere in `infra/`, and no freshness check exists. So the
-observable difference between "the backup ran" and "the backup has not run for a
-week" is a log file on a droplet nobody reads — against what is currently the
-only backup. Producing no file is a safer failure than producing a plausible bad
-one, which is what this change buys; it is **not** the same as being alerted.
-Closing that gap is TBD-400 (off-host copy, restore verification, and failure
-alerting), which is where a backup-age assertion belongs.
+⚠ **Since TBD-400, something does observe it** — but from off the box, not on
+it. `.github/workflows/backup-freshness-probe.yml` runs at 04:17 UTC, lists the
+bucket's object metadata through a read-only role, and opens a deduped
+`[backup-stale]` GitHub issue when the newest manifest is older than 25 hours,
+missing, or sits beside an implausibly small dump.
+
+⚠⚠ It runs in CI **because an alert emitted by the droplet cannot fire when the
+droplet is gone, or when its cron never ran** — which is exactly the disaster the
+backup exists for. The failure mode is silence, and only an external observer can
+read silence. The cron's `>> /var/log/mysql-backup.log 2>&1` is still not an
+alarm, and there is still no MTA anywhere in `infra/`; that is fine, because
+nothing now depends on anyone reading that log.
+
+### 2c. Restoring from the off-host copy (TBD-400)
+
+The nightly dump is copied to S3 in the company AWS account
+(`884686184019`, `eu-central-1`). ⚠ **The droplet cannot read it back.** Its
+credential is put-only and is explicitly denied `kms:Decrypt` in the key policy,
+so a restore is done from a workstation with a different principal.
+
+Each night writes three objects under `pfv-data-01/YYYY/MM/DD/`:
+
+| Object | What it is |
+|---|---|
+| `pfv2_<ts>.sql.gz` | the schema + data dump |
+| `grants_<ts>.sql.gz` | `CREATE USER` / `GRANT` for every account |
+| `manifest_<ts>.json` | keys, byte sizes, SHA-256s, table count, MySQL version |
+
+⚠ **The manifest is written LAST and is the completion marker.** S3 has no
+rename, so the `.part` trick does not lift. A day prefix without a manifest is a
+night that did not finish, however plausible the other objects look.
+
+```bash
+# 1. Pick the night and confirm it completed.
+aws s3 ls s3://tbd-mysql-backups-884686184019/pfv-data-01/2026/08/28/
+aws s3 cp  s3://tbd-mysql-backups-884686184019/pfv-data-01/2026/08/28/manifest_<ts>.json - | jq .
+
+# 2. Pull both artifacts and check them against the manifest, not against hope.
+aws s3 cp s3://.../pfv2_<ts>.sql.gz .
+aws s3 cp s3://.../grants_<ts>.sql.gz .
+sha256sum pfv2_<ts>.sql.gz grants_<ts>.sql.gz     # must match the manifest
+
+# 3. Restore GRANTS FIRST, then data.
+zcat grants_<ts>.sql.gz | mysql --force     # --force: skips reserved mysql.* accounts
+zcat pfv2_<ts>.sql.gz   | mysql pfv2
+```
+
+⚠ `--force` on the grants file is deliberate. The dump includes the reserved
+`mysql.sys` / `mysql.session` / `mysql.infoschema` accounts, which a fresh
+server already has. Filtering them at DUMP time is where you lose the account
+you forgot about; filtering at restore time is recoverable.
+
+⚠ **Grants are a TBD-360 rollback dependency, not a nicety.** A `pfv2`-only dump
+restores tables and zero logins, so it cannot recreate `pfv_app`.
+
+#### The quarterly restore drill
+
+⚠⚠ **Nothing automated proves a stored byte is readable.** The nightly checks
+cover content (before upload), transport (S3's server-side SHA-256 on the PUT)
+and presence (the freshness probe's metadata listing). A misconfigured KMS grant
+would pass all three every night for months and only surface at a restore. That
+gap is closed by doing a restore on purpose, on a schedule:
+
+- [ ] 2026-Q4 restore drill: pull the latest night, restore into a scratch
+      container, confirm the table count matches the manifest and that `pfv_app`
+      can authenticate. Record the date here.
+
+If quarterly feels too slow, shorten the interval. Do **not** close the gap by
+granting the droplet read access; that would undo the property that makes a
+stolen droplet key a nuisance rather than a breach.
 
 ### 3. Dump from managed MySQL
 
