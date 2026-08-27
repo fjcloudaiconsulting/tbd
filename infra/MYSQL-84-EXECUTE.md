@@ -381,12 +381,19 @@ restore the previous secrets. Nothing irreversible has happened yet.
 
 ### 2.1 Quiesce the app
 
-⚠⚠ **SCALING TO ZERO IS NOT AVAILABLE ON THIS APP.** The `backend` component
-runs on the legacy `basic-xxs` plan, which the console pins to exactly one
-container ("This plan is limited to 1 container. Plans starting at $12.00/mo
-can manually scale or autoscale"). The instruction that used to be here could
-not be carried out, and nobody discovered that until the middle of the 2026-08-19
-window. `doctl apps update` with `instance_count: 0` was not accepted either.
+⚠⚠ **SCALING TO ZERO IS NOT AVAILABLE ON THIS APP.** The instruction that used
+to be here could not be carried out, and nobody discovered that until the middle
+of the 2026-08-19 window. Two separate failures:
+
+* **Console:** the `backend` component runs on the legacy `basic-xxs` plan,
+  which pins it to exactly one container ("This plan is limited to 1 container.
+  Plans starting at $12.00/mo can manually scale or autoscale"). A visible
+  refusal.
+* **CLI:** `doctl apps update` with `instance_count: 0` was **not "not
+  accepted" — it was silently ignored.** `0` is Go's zero value and is dropped
+  by `omitempty` before the request leaves the client, so the command exits 0
+  and prints a plausible spec while nothing changes. Plan-independent; no tier
+  fixes it. This is why it read as tested.
 
 ⚠⚠ **SO NOTHING QUIESCES THE APP. Be honest with yourself about this rather
 than assuming something upstream handled it.** By the end of 1.2 the backend
@@ -402,11 +409,24 @@ and if you never roll back it is simply a normal write.
 Measured 2026-08-19, the interval was about two minutes and the accepted risk
 was judged negligible for this app's traffic.
 
-If you need a hard quiesce — a bigger dataset, a busier app, a rollback you
-consider likely — the two real levers are raising the plan to one that permits
-manual scaling, or dropping the cloud-firewall rules for 3306/6379 for the
-duration. The firewall route adds a step you must remember to undo, and
-forgetting it looks exactly like a failed cutover.
+⚠⚠ **This paragraph used to name two "real levers" — a plan bump and dropping
+the cloud-firewall rules. Both were ruled out on evidence in TBD-416; do not
+reach for either.**
+
+* **Plan bump** buys nothing for the CLI route: `doctl` discards
+  `instance_count: 0` client-side under `omitempty`, before any pricing rule is
+  consulted.
+* **Firewall rules are the WORST option, not the middle one.**
+  `backend/app/database.py:25-27` records that aiomysql 0.2.0 accepts no
+  read/write timeouts, so dropping the 3306 rule either leaves established
+  flows serving writes (stateful conntrack, quiescing nothing) or orphans a
+  mid-transaction connection with no RST that then holds its metadata locks
+  until the stock 8h `wait_timeout` — manufacturing the exact blocker a quiesce
+  exists to remove. It also mutates a Terraform-owned resource against the
+  VCS-only rule.
+
+What replaced them is to bound the waiting rather than stop the writers: see
+**"Quiescing without scaling to zero"** in `infra/MIGRATION.md`.
 
 ```bash
 curl -s https://$(doctl apps get $APP_ID --format DefaultIngress --no-header | sed 's|https://||')/ready
@@ -631,13 +651,23 @@ than a partial one. A non-zero count means stop and re-plan.
 
 ### 5.2 Generate and run the rename — one atomic statement
 
-⚠ There are **83 FK declarations**. Renaming table-by-table would leave foreign
-keys pointing at tables not yet moved and fail partway with the schema
-half-renamed. MySQL renames all pairs atomically in a single statement.
+⚠ There are **83 FK declarations**.
+
+⚠ **The reason is NOT that a table-by-table rename would fail partway.** That
+claim stood here for months and is FALSE. Measured on MySQL 8.4.11, production's
+exact version, 2026-08-27: renaming a parent out from under its child SUCCEEDS,
+and MySQL silently rewrites the child's foreign key to point ACROSS schemas —
+`src.child` was left holding a live, enforced FK to `dst.parent` (a bad
+reference still raised errno 1452, a good one still inserted). A truncated
+rename therefore does not announce itself; it yields a working database wired
+across two schemas that breaks later, most obviously when the old schema is
+dropped. Silent success is worse than failure, which is why the generator
+ASSERTS its pair count. MySQL renames all pairs atomically in a single
+statement.
 
 ```bash
 ./infra/ansible/bin/gen-rename-sql.sh --host $DROPLET_IP --from pfv2 --to tbd > /tmp/rename.sql
-head -3 /tmp/rename.sql; echo '...'; grep -c '^  pfv2\.' /tmp/rename.sql
+head -4 /tmp/rename.sql; echo '...'; grep -c '^  pfv2\.' /tmp/rename.sql
 ```
 
 ✅ EXPECT the table count to equal **50**. The generator asserts this itself and

@@ -19,7 +19,7 @@ step has detail worth reading in full before the window.
 
 | Claim | How it was verified |
 |---|---|
-| **Production itself, executed 2026-08-19** | `<data-droplet>` cut over Ubuntu `mysql-server-8.0` 8.0.46 → Oracle `mysql-community-server` **8.4.11** via `mysql-apt-config`. ~24 minutes end to end, ~8 minutes with the database down. All post-checks green. ⚠ Two runbook steps were deviated from: scaling `backend` to 0 **proved impossible** (not available on the `basic-xxs` plan — TBD-416), and the Phase 5 schema rename was **deliberately deferred, never attempted** — the same constraint would have bitten it, and it is trivially reversible, so it is being done as its own operation. Full record: `specs/2026-08-18-mysql-84-cutover-record.md` |
+| **Production itself, executed 2026-08-19** | `<data-droplet>` cut over Ubuntu `mysql-server-8.0` 8.0.46 → Oracle `mysql-community-server` **8.4.11** via `mysql-apt-config`. ~24 minutes end to end, ~8 minutes with the database down. All post-checks green. ⚠ Two runbook steps were deviated from: scaling `backend` to 0 **proved impossible** (the console refuses it on the `basic-xxs` plan, and — the half that matters — `doctl` SILENTLY IGNORES `instance_count: 0`, exiting 0 while changing nothing, which no plan tier fixes — TBD-416), and the Phase 5 schema rename was **deliberately deferred, never attempted** — the same constraint would have bitten it, and it is trivially reversible, so it is being done as its own operation. Full record: `specs/2026-08-18-mysql-84-cutover-record.md` |
 | 8.4 refuses to start on the current config | `mysqld --validate-config` on real `mysql:8.4`: exit 1, `unknown variable 'default-authentication-plugin=mysql_native_password'` |
 | Removing that line is rollback-safe | Same check on `mysql:8.0` with the fixed config: exit 0. The fix lands on the 8.0 box, which must still start |
 | `mysql_native_password` is unusable on 8.4 | `PLUGIN_STATUS` = `DISABLED`; `CREATE USER ... IDENTIFIED WITH mysql_native_password` → `ERROR 1524 Plugin ... is not loaded` |
@@ -381,12 +381,16 @@ doctl compute droplet delete tbd360-rehearsal --force
 
 1. ⚠⚠ **NOT POSSIBLE — this step was attempted on 2026-08-19 and failed.**
    The `backend` component is on the legacy `basic-xxs` plan, which the DO
-   console pins to exactly one container, and `doctl apps update` with
-   `instance_count: 0` is refused. The cutover proceeded **without quiescing**,
+   console pins to exactly one container. `doctl apps update` with
+   `instance_count: 0` is **not refused — it is silently ignored**: `0` is Go's
+   zero value, dropped by `omitempty` before the request is sent, so the command
+   exits 0 and changes nothing. No plan tier fixes the CLI route.
+   The cutover proceeded **without quiescing**,
    accepting that writes taken in the window would be lost only on a rollback
    that did not happen. ⚠ That trade is NOT available for the Phase 5 schema
-   rename, where `RENAME TABLE` takes metadata locks — see TBD-416, which owns
-   the choice of a quiesce mechanism.
+   rename, where `RENAME TABLE` takes metadata locks. ⚠ TBD-416 has since MADE
+   that choice: bound the metadata-lock wait rather than stop the writers. See
+   "Quiescing without scaling to zero" in `infra/MIGRATION.md`.
 
    ~~Scale the App Platform `backend` to 0 (spec step 8; `infra/MIGRATION.md`
    has the tested procedure: console → `backend` → Resize → instance count 0).

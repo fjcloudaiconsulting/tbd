@@ -19,9 +19,14 @@ PFV dataset today. Mostly waiting on dump + import.
 > deviations, is in `specs/2026-08-18-mysql-84-cutover-record.md`; the full
 > analysis is in `specs/2026-08-09-mysql-84-lts-upgrade.md`.
 >
-> ⚠ **The scale-to-0 procedure described further down this file was NOT usable**
-> — the `backend` component's plan pins it to one container. It was attempted
-> during the window and refused. TBD-416 owns choosing a real quiesce mechanism.
+> ⚠⚠ **The scale-to-0 procedure described further down this file does not
+> work, and its CLI form fails SILENTLY.** `doctl apps update --spec` with
+> `instance_count: 0` exits 0 and prints a plausible spec while changing
+> nothing — `0` is Go's zero value and is dropped by `omitempty` before the
+> request is sent. That is precisely how an impossible step survived here as a
+> "tested procedure". Step 2 has the full account; TBD-416 replaced the quiesce
+> with a bounded metadata-lock wait, recorded under "Quiescing without scaling
+> to zero" below.
 
 ## Pre-flight checklist
 
@@ -108,24 +113,206 @@ zero-instance spec file:
 > Resize -> set instance count to `0` -> Save. App Platform redeploys
 > with no backend replica.
 
-⚠⚠ **THIS NO LONGER WORKS AND WAS NOT RE-TESTED AFTER THE 2026-05 MIGRATION.**
-Attempted on 2026-08-19 during the TBD-360 window and refused: the `backend`
-component is on the legacy `basic-xxs` plan, which the DO console pins to
-exactly one container ("This plan is limited to 1 container"), and the CLI form
-below is rejected too. Both the console and CLI steps here are retained as a
-record of the 2026-05 procedure, **not** as instructions you can follow today.
-TBD-416 owns choosing a quiesce mechanism that actually exists.
+⚠⚠ **THIS DOES NOT WORK, AND THE CLI FORM FAILS SILENTLY.** Attempted on
+2026-08-19 during the TBD-360 window. There are two distinct failures here, and
+the second is the dangerous one:
 
-CLI alternative (2026-05 procedure; see the warning above before using it):
+- **Console:** refused on the legacy `basic-xxs` plan, which pins the component
+  to exactly one container ("This plan is limited to 1 container. Plans
+  starting at $12.00/mo can manually scale or autoscale"). A loud, visible
+  refusal — you cannot mistake it for success.
+- **CLI (`doctl apps update --spec`):** `instance_count: 0` never reaches the
+  API at all. `0` is Go's zero value and is discarded by `omitempty` during
+  serialisation. Measured by local round-trip through `doctl apps spec validate
+  --schema-only`: `0` comes back **absent** from the spec, while `1` and `2` are
+  preserved. **The command exits 0 and prints a plausible spec while the app
+  keeps whatever instance count it already had.**
+
+⚠ The CLI failure is **plan-independent**. No plan bump fixes it, because the
+value is dropped client-side before any pricing rule is ever consulted — so the
+$12/mo tier cannot buy this mechanism at any price. It is also how the step
+survived in a runbook as "tested": running it looks exactly like success. If you
+ever run it, **read `instance_count` back off the live spec**; never trust the
+exit code.
+
+⚠ Residual, stated honestly: the round-trip proves the *client* cannot transmit
+zero, not that the API would reject a zero arriving by some other route.
+`doctl` and the GitHub deploy action are the only routes in use, and both
+serialise through the same structs.
+
+**There is therefore no verified way to scale this app to zero today.** The
+console and CLI steps here are retained as a record of the 2026-05 procedure,
+**not** as instructions you can follow. When you need writes bounded rather than
+stopped, use "Quiescing without scaling to zero" below, which is what TBD-416
+shipped in place of this step.
+
+### 2b. Quiescing without scaling to zero
+
+Since the app cannot be taken offline (step 2), an operation that needs the
+database to hold still has to **bound its own waiting** rather than stop the
+writers. This is the mechanism TBD-416 settled on, and it is what replaced
+"scale backend to 0" everywhere that phrase used to appear.
+
+⚠ **First, separate the two concerns that the old instruction conflated.**
+
+* **Durability** — "we must not lose writes taken during the window". Real when
+  rollback means *restore a snapshot*, because the snapshot predates them.
+* **Liveness** — "the statement must not hang, and must not wedge the app
+  behind it". This is a metadata-lock (MDL) problem, and it has a one-variable
+  fix.
+
+They call for different things, and most operations only have the second.
+A schema rename, for instance, has **no** durability concern at all: rolling it
+back is another `RENAME TABLE`, which carries every intervening write with it.
+
+**1. The statement bounds its own MDL wait.**
+
+⚠⚠ **NOT YET TRUE OF PRODUCTION.** `lock_wait_timeout = 30` is pinned in
+`roles/mysql/templates/my.cnf.j2`, but that is a repo change. Until the play is
+converged against `<data-droplet>` the live server is still on **31536000**, and
+the nightly dump still streams to its final name. Confirm before relying on
+either:
 
 ```bash
-# Edit a copy of .do/app.yaml, set services.backend.instance_count: 0,
-# then push that copy. Restore the original count in step 7.
-doctl apps update <app-id> --spec /tmp/app.yaml.zero
+mysql --no-defaults -N -B -e "SELECT @@lock_wait_timeout"   # 30 once converged
 ```
 
-Confirm `/health` returns "service unavailable" (or the route 502s) before
-moving on.
+⚠ **Converging it RESTARTS MySQL.** `roles/mysql/tasks/main.yml` carries
+`notify: Restart mysql` on this template, and the play flushes handlers, so the
+first converge after this change restarts the single node holding all user data
+— with the backend still serving. Schedule it; do not let it ride along on a
+run whose purpose is some unrelated knob. (`lock_wait_timeout` is dynamic, so
+`SET GLOBAL` can bridge the gap, but it does not survive a restart and the play
+would not notice the drift — the file is still the source of truth.)
+
+Once converged, the generated rename artifact additionally carries its own
+stricter `SET SESSION lock_wait_timeout = 10;` as its first **executable** line
+(two `--` comment lines precede it). Measured on MySQL 8.4.11, production's
+exact version, 2026-08-27:
+
+```
+holder: START TRANSACTION; SELECT COUNT(*) FROM src.child;   -- holds SHARED_READ MDL
+
+  RENAME with SET SESSION lock_wait_timeout = 3
+    -> ERROR 1205 (HY000): Lock wait timeout exceeded, in 3s
+
+  RENAME with no bound (the 31536000s default)
+    -> still blocked at 13s with NO error returned; had to be killed
+```
+
+⚠ The bound must be **inside the same session** as the statement it protects.
+The runbook pipes the whole artifact into one client (`mysql --no-defaults <
+rename.sql`), so a `SET` issued as a separate `mysql -e` is a different session,
+evaporates before the statement runs, and reads in the runbook as though it did
+something. `bin/gen-rename-sql.sh` emits the line and **refuses to produce an
+artifact without it**, ahead of the `RENAME`.
+
+⚠ The session value is deliberately **below** the server value. The server pin
+is also the *victim's* timeout — what an ordinary app query waits while queued
+behind a pending exclusive MDL. Session below global means the DDL yields first
+and the queue drains with no user-visible errors. Inverted, real users get 1205
+while the statement keeps waiting.
+
+**2. Silence the largest MDL holder first**, by pre-taking the scheduler's tick
+lock:
+
+⚠⚠ **Do NOT use a bare `redis-cli` here.** Production Redis sets `requirepass`
+(`roles/redis/templates/00-static.conf.j2`), and **`redis-cli` EXITS 0 ON AUTH
+FAILURE** — it prints `NOAUTH Authentication required.` on *stdout* and returns
+0, so an unauthenticated `SET` looks exactly like a successful one. That is
+measured and already written up at `roles/redis/handlers/main.yml:33-39`. Use
+the authenticated form and **check the reply**:
+
+```bash
+REDISCLI_AUTH='<redis_password>' \
+  redis-cli --no-auth-warning SET scheduler:tick:lock 1 EX 1800
+# MUST print exactly: OK
+# Anything else -- NOAUTH, an error, empty -- means NOTHING WAS SET.
+```
+
+`acquire_tick_lock` uses `SET ... nx=True`
+(`backend/app/services/scheduler/loop.py:22`), so a key that already exists makes
+the tick log `scheduler.tick.skip_locked` and return (`loop.py:27-29`). One
+command, no deploy, and the TTL is a built-in dead man's switch — it undoes
+itself even if you are interrupted.
+
+⚠ This blocks the NEXT tick; it does not stop one already running. The operator
+`SET` deliberately omits `NX` so it takes effect regardless of current state,
+which means it can also overwrite a live tick's lock — and `run_one_tick` never
+deletes the key. So confirm no tick is in flight before you rely on this:
+
+```bash
+REDISCLI_AUTH='<redis_password>' redis-cli --no-auth-warning TTL scheduler:tick:lock
+```
+
+A TTL close to the tick lock's own (not the 1800 you just set) means a tick is
+running; wait it out rather than proceeding.
+
+**3. Look before you leap — at the right table.**
+
+```sql
+SELECT m.OBJECT_SCHEMA, m.OBJECT_NAME, m.LOCK_TYPE, m.LOCK_STATUS,
+       t.PROCESSLIST_ID, t.PROCESSLIST_USER, t.PROCESSLIST_TIME
+  FROM performance_schema.metadata_locks m
+  JOIN performance_schema.threads t ON t.THREAD_ID = m.OWNER_THREAD_ID
+ WHERE m.OBJECT_TYPE = 'TABLE' AND m.LOCK_STATUS = 'GRANTED';
+```
+
+⚠⚠ **Select `PROCESSLIST_ID`, never `OWNER_THREAD_ID`.** They are different
+numbers and `KILL` takes the former. Measured on 8.4.11: the same session was
+`THREAD_ID = 332` and `PROCESSLIST_ID = 295`. Killing the Performance Schema
+thread id mid-incident either errors or **terminates an unrelated
+connection** — hence the join above.
+
+⚠⚠ **Do NOT gate on `information_schema.innodb_trx` being empty.** That is not
+the metadata-lock table, and the difference is not academic — measured
+2026-08-27 on 8.4.11, a session holding a table MDL via `LOCK TABLES` showed
+`innodb_trx rows: 0` while `metadata_locks` showed the granted lock, and it
+still blocked a `RENAME`. Asserting `innodb_trx` empty and concluding "no MDL
+blockers" is a false all-clear from querying the wrong table.
+
+This is a glance, not a gate: the bound in (1) is what makes the operation safe.
+
+**4. `KILL` only as an evidenced escalation**, when the query above names a
+specific blocking session — and then `KILL <PROCESSLIST_ID>`, the joined column,
+not `OWNER_THREAD_ID`. Never pre-emptively.
+
+⚠ **The same bound applies to the alembic PRE_DEPLOY job, as an *actor*.** It
+issues `ALTER TABLE` against this server whenever a revision is pending and sets
+no session bound of its own, so it inherits the 30s. That is the trade this pin
+exists to make — previously such an `ALTER` could wait up to 365 days while its
+pending exclusive MDL queued the entire application behind it. The residual cost
+is real and worth knowing: MySQL DDL auto-commits per statement, and several
+revisions carry many DDL operations (`045_reconciliation_state.py` has 13), so a
+1205 partway leaves that revision half-applied with `alembic_version` unstamped,
+and the retry dies on `Duplicate column name` until someone clears it by hand.
+`backend/scripts/migrate.py` already bounds the blast radius to one revision by
+driving alembic per revision. **A deploy landing inside the backup window below
+is the likeliest way to meet this**, and unlike an operator the release pipeline
+has no instruction to stay out of it.
+
+**5. Stay off 02:00–02:30 UTC.** `mysql_backup_cron_hour: "2"`
+(`roles/backups/defaults/main.yml:4-5`) and `mysqldump --single-transaction`
+takes a shared MDL on each table as it reads it and holds it to end of
+transaction. It is a guaranteed collision, and it was absent from every version
+of this runbook.
+
+⚠ Once the pin is converged, the collision costs a **failed** nightly backup
+rather than a hung one. That is the better failure only because the dump now
+writes to a temporary name and is renamed into place on success — without that,
+a 1205 mid-dump leaves a *structurally valid* gzip of a truncated dump at the
+final name, which `gzip -t` happily passes. See the comment block in
+`roles/backups/templates/mysql-backup.sh.j2`.
+
+⚠⚠ **But nothing observes that failure.** The cron job redirects both streams to
+`/var/log/mysql-backup.log` (`roles/backups/tasks/main.yml`), there is no MTA and
+no `MAILTO` anywhere in `infra/`, and no freshness check exists. So the
+observable difference between "the backup ran" and "the backup has not run for a
+week" is a log file on a droplet nobody reads — against what is currently the
+only backup. Producing no file is a safer failure than producing a plausible bad
+one, which is what this change buys; it is **not** the same as being alerted.
+Closing that gap is TBD-400 (off-host copy, restore verification, and failure
+alerting), which is where a backup-age assertion belongs.
 
 ### 3. Dump from managed MySQL
 
@@ -264,6 +451,10 @@ committed spec stays authoritative for future deploys.
 > Redis URLs). Pushing that file here via `doctl apps update --spec`
 > reverts the live secrets and silently re-points the app at the old
 > managed services.
+
+⚠ Both paths below assume step 2 actually scaled the app down. It cannot
+today (see step 2), so on a present-day run there is nothing to scale back up
+and the only live concern in this step is which copy of the secrets wins.
 
 Pick the matching path:
 

@@ -61,8 +61,25 @@ command bare. Pick a quiet hour.
 
 ⚠ This used to point at the TBD-360 window, "where the backend is
 already scaled to 0". Both halves were wrong: that window closed on 2026-08-19,
-and scaling the backend to 0 was never possible on this component's plan — it
-was attempted during the window and refused (TBD-416).
+and **there is no way to scale this backend to 0 at all**. The console refuses
+it on the `basic-xxs` plan, and — the part that matters — `doctl apps update
+--spec` does not refuse it: `instance_count: 0` is Go's zero value, dropped by
+`omitempty` before the request is sent, so the command exits 0 and changes
+nothing. No plan tier fixes **the CLI route** — the value is dropped before any
+pricing rule is consulted. (The console refusal is separately plan-worded; what
+a paid tier's console would do was never measured, and does not matter while
+`doctl` and the deploy action are the only routes in use.) See
+`infra/MIGRATION.md`
+step 2, and "Quiescing without scaling to zero" for what replaced it (TBD-416).
+
+⚠⚠ **The MySQL role restarts the database when `my.cnf.j2` changes.** The
+template task carries `notify: Restart mysql` and the play flushes handlers, so
+the first converge after any change to that file restarts the single node
+holding all user data, while the backend is still serving. TBD-416 added a
+`lock_wait_timeout` pin to that template, so **the next production converge
+after that merge will restart MySQL.** Schedule it deliberately; do not let it
+ride along on a run whose purpose is an unrelated knob. That is the TBD-419
+shape — a play run for one reason doing something much larger.
 
 ### Why it is a wrapper and not a bare `ansible-playbook`
 
