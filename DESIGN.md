@@ -12,6 +12,7 @@ colors:
   text-secondary: "#9ba8bd"
   text-muted: "#5a6a82"
   accent: "#D4A64A"
+  focus: "#D4A64A"   # focus indicator; aliases accent, re-pointed on navy chrome
   accent-hover: "#B88A2E"
   accent-dim: "#D4A64A1F"
   accent-text: "#0B1F3A"
@@ -326,7 +327,11 @@ Badges are the inline status chips; banners are the full-width block messages. B
 
 **The Composed-Utility Rule.** Component primitives are exported strings in `lib/styles.ts`, not React components. New primitives go there; ad-hoc Tailwind classes that duplicate an existing primitive are wrong. If you find yourself writing `rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-text`, you are reinventing `btnPrimary`.
 
-**The Pressable-Surfaces Rule.** Anything pressable (`button`, `a`, role="button") has a visible focus state that uses Brass Tally — either as a border, a ring, or both. Default browser focus rings are forbidden; the brass focus is the visible commitment to AA accessibility.
+**The Pressable-Surfaces Rule.** The visible focus state is supplied **globally**: the `:focus-visible` baseline in `app/globals.css` (`@layer base`) paints a 2px Brass Tally outline at a 2px offset on every focusable element. A bare `<button>`, `<a>`, `<input>` or `<select>` is compliant **as written** — do not add a focus class to a new call site. Default browser focus rings are forbidden and are now structurally impossible.
+
+Removing that indicator (`outline-none`, `outline-hidden`) is allowed only where something else supplies a Brass Tally replacement of at least equal contrast. The sanctioned deviations are `focusInset` in `lib/styles.ts`, for a wrapper whose outset outline would be clipped by an `overflow-hidden` ancestor, and a `focus-within:` ring on a composite control whose real focus target is an inner input. A bare `outline-none` is a build failure (`tests/convention/focus-baseline.test.ts`).
+
+⚠ The app chrome carries `data-chrome="navy"`, which re-points `--color-focus` to the always-bright brass. The chrome is navy in both themes, so the light theme's darkened accent would put a focused active nav item at 2.70:1 against its own tint — below WCAG 1.4.11's 3:1. This is compliance, not preference.
 
 ## 6. Do's and Don'ts
 

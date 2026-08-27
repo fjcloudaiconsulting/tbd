@@ -342,7 +342,13 @@ export default function TagChipInput({
   return (
     <div ref={wrapperRef} className="relative">
       <div
-        className={`${input} flex flex-wrap items-center gap-1.5 ${
+        // TBD-319: the indicator lives on the WRAPPER, not the inner input.
+        // This div wears the `input` primitive, whose `focus:` / `focus-visible:`
+        // variants can never fire here -- a div does not take focus, the inner
+        // <input> does. So the control looked styled and had no focus state at
+        // all. `focus-within:` is the variant that actually matches when the
+        // inner input is focused.
+        className={`${input} flex flex-wrap items-center gap-1.5 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/30 ${
           disabled ? "opacity-60" : ""
         }`}
         onClick={() => {
@@ -413,6 +419,10 @@ export default function TagChipInput({
           onKeyDown={handleKeyDown}
           onFocus={handleFocus}
           maxLength={TAG_NAME_MAX_LENGTH}
+          // TBD-319: `outline-none` is correct HERE and only here -- the brass
+          // indicator is drawn by the wrapper's `focus-within:` ring above, so
+          // an outline on the bare input as well would double-draw inside it.
+          // Allowlisted in tests/convention/focus-baseline.test.ts.
           className="flex-1 min-w-[100px] bg-transparent text-sm text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed"
         />
       </div>
