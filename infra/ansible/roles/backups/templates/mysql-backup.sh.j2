@@ -10,6 +10,37 @@ DB={{ mysql_app_db }}
 DATE=$(date +%Y%m%d-%H%M%S)
 DUMP="${BACKUP_DIR}/${DB}_${DATE}.sql.gz"
 
+# TBD-416: write to a temporary name and rename ONLY on success, so a file at
+# the final name always means a COMPLETED dump.
+#
+# ⚠ This became load-bearing when lock_wait_timeout was pinned. Measured
+# 2026-08-27, same gzip, same pipeline shape:
+#
+#   producer HANGS (the old 365-day default)  -> gzip never sees EOF, never
+#       writes the CRC32/ISIZE trailer. `gzip -t` FAILS, "unexpected end of
+#       file". The bad artifact announces itself to the cheapest check there is.
+#   producer EXITS NONZERO mid-stream (errno 1205 under the pin) -> gzip sees
+#       EOF and finalizes. `gzip -t` PASSES. 55,953 lines of perfectly valid
+#       SQL, plausible size, correct name, and NO `-- Dump completed` marker as
+#       the only tell.
+#
+# So bounding the lock wait converts a self-announcing corrupt backup into a
+# silent one. That is unacceptable while this is the ONLY backup (TBD-399 is
+# held behind TBD-400), hence the rename-on-success below.
+#
+# The trap clears the orphan on the failure path immediately rather than
+# leaving it for the next successful night.
+#
+# ⚠ It is NOT a complete guarantee, and retention was widened because of that.
+# Measured: on SIGTERM bash runs the EXIT trap and the `.part` is removed, but
+# on SIGKILL (OOM-kill, hard reset) it is not -- and this box is 2 GB with a
+# 768M buffer pool plus Redis, so OOM-kill is a real path, not a theoretical
+# one. A surviving `.part` is dump-sized. The retention glob below therefore
+# ends `.sql.gz*` rather than `.sql.gz`, or the orphan would be unreapable
+# FOREVER -- a regression against the old code, which left its partial at the
+# final name where retention could still see it.
+trap 'rm -f "${DUMP}.part"' EXIT
+
 mkdir -p "${BACKUP_DIR}"
 
 mysqldump \
@@ -18,7 +49,16 @@ mysqldump \
   --triggers \
   --quick \
   --hex-blob \
-  "${DB}" | gzip > "${DUMP}"
+  "${DB}" | gzip > "${DUMP}.part"
+
+# ⚠ Disarm the trap FIRST. At this point the dump is complete and valid; if the
+# `mv` itself fails (EIO, read-only filesystem), `set -e` would abort with the
+# trap still armed and DELETE a good backup that the old code would have kept.
+trap - EXIT
+mv "${DUMP}.part" "${DUMP}"
 
 # Retention: keep last {{ mysql_backup_retention_days }} daily backups.
-find "${BACKUP_DIR}" -name "${DB}_*.sql.gz" -mtime +{{ mysql_backup_retention_days }} -delete
+# ⚠ The trailing `*` also matches `.sql.gz.part`. Without it a SIGKILL-orphaned
+# partial is never reaped, because the glob would require the name to END in
+# `.sql.gz`. Age-gated identically, so a completed dump is unaffected.
+find "${BACKUP_DIR}" -name "${DB}_*.sql.gz*" -mtime +{{ mysql_backup_retention_days }} -delete
