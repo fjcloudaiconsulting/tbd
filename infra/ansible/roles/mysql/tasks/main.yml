@@ -138,6 +138,28 @@
 # can still mysqldump). But do not read `changed` on these tasks as a
 # signal that anything actually differed.
 #
+# TBD-414: all three of these tasks carry `no_log: true`. `plugin_auth_string`
+# is cleartext, and Ansible echoes module arguments on failure and under -vvv --
+# which is one of the two routes by which these credentials ended up quotable in
+# a transcript and had to be rotated. The cost is that a failure here is
+# censored; the fail-closed `assert` at the top of this role catches the
+# commonest cause (an unset or defaulted secret) BEFORE these tasks run.
+#
+# ⚠ But the bound is SMALLER than "bounded" suggests, and review corrected an
+# earlier version of this comment that overclaimed it. `community.mysql` reports
+# connection and permission errors in `msg` with no `exception` key, and no_log
+# drops `msg` -- so a failure here reads as literally
+# `fatal: ... {"censored": "..."}`. The two failure modes this box has ALREADY
+# hit are both in that set and are NOT caught by the assert above: ERROR 1227
+# (the /root/.my.cnf downgrade, measured on production 2026-08-18) and ERROR
+# 1524 (mysql_native_password not loaded).
+#
+# If one of these fails, remove no_log temporarily to read the driver error,
+# then put it back. A register + explicit-fail wrapper would surface `msg`
+# without the credential and is the better answer; it is filed as a follow-up
+# rather than folded in, because it adds failure-handling tasks to a production
+# play. Fenced by backend/tests/test_ansible_secret_task_no_log.py.
+#
 # All privileged mysql tasks pin login_user: root + login_unix_socket so they
 # auth via root@localhost's auth_socket plugin regardless of whatever the
 # mysql client would otherwise pick up from /root/.my.cnf (which exists from
@@ -152,6 +174,7 @@
     plugin: caching_sha2_password
     plugin_auth_string: "{{ mysql_backup_password }}"
     state: present
+  no_log: true
 
 - name: Remove anonymous MySQL users
   community.mysql.mysql_user:
@@ -187,6 +210,7 @@
     plugin: caching_sha2_password
     plugin_auth_string: "{{ mysql_app_password }}"
     state: present
+  no_log: true
 
 # MySQL treats host='%' and host='localhost' as distinct user rows. The
 # host='%' grant covers private-VPC App Platform clients connecting over
@@ -207,6 +231,7 @@
     plugin: caching_sha2_password
     plugin_auth_string: "{{ mysql_app_password }}"
     state: present
+  no_log: true
 
 # Drop /root/.my.cnf AFTER all privileged mysql_user / mysql_db tasks complete.
 # The mysql client library reads /root/.my.cnf when present and authenticates
@@ -221,6 +246,12 @@
     owner: root
     group: root
     mode: "0600"
+  # TBD-414: root.my.cnf.j2 renders `mysql_backup_password` in cleartext, and
+  # `--check --diff` prints a template's rendered content. That is how these
+  # credentials became quotable in an agent transcript in the first place and
+  # earned themselves a rotation. Fenced by
+  # backend/tests/test_ansible_secret_task_no_log.py.
+  no_log: true
 
 - name: Drop pfv MySQL config override
   ansible.builtin.template:
