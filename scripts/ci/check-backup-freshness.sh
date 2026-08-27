@@ -60,11 +60,28 @@ if not isinstance(doc, dict):
     print("could not run: listing is not a JSON object")
     raise SystemExit(2)
 
+# ⚠ Pagination. `IsTruncated` is only absent-or-false on a complete listing.
+# The AWS CLI auto-paginates today, so this never fires -- but the moment
+# anyone adds --max-items to the workflow, a truncated listing would silently
+# hide the newest page and this check would be reading a partial bucket.
+# Refuse to answer rather than answer from half the data.
+if doc.get("IsTruncated"):
+    print("could not run: the listing is truncated, so the newest objects may "
+          "be missing. Remove any --max-items/--page-size from the caller.")
+    raise SystemExit(2)
+
 contents = doc.get("Contents")
 if contents is None:
-    # ⚠ An ABSENT Contents key means the listing itself failed or the caller
-    # passed the wrong document -- that is "could not run", not "stale". An
-    # EMPTY list means the bucket really has nothing, which IS stale.
+    # ⚠ `aws s3api list-objects-v2` OMITS Contents entirely for an empty
+    # result -- it does not emit `"Contents": []`. So an absent Contents with a
+    # KeyCount of 0 is a genuinely EMPTY BUCKET, which is STALE. Only an absent
+    # Contents with no KeyCount at all means the document is not a listing, i.e.
+    # we could not answer. Conflating the two labelled a real empty bucket as
+    # "could not run"; both alarm, but the operator was told the wrong thing.
+    if doc.get("KeyCount") == 0:
+        print("STALE: the bucket is empty. No backup has ever been uploaded, "
+              "or every object has expired.")
+        raise SystemExit(1)
     print("could not run: listing has no Contents key")
     raise SystemExit(2)
 
@@ -84,10 +101,23 @@ if not manifests:
           "its absence means no night has completed end to end.")
     raise SystemExit(1)
 
-newest = max(manifests, key=lambda o: str(o.get("LastModified", "")))
-age = age_hours(newest)
-if age is None:
-    print(f"could not run: manifest {newest.get('Key')} has no usable LastModified")
+# ⚠ Sort by the PARSED INSTANT, never by the timestamp string. AWS CLI v2
+# emits `+00:00` offsets while these fixtures emit `Z`, and once two formats
+# coexist a lexicographic max picks the wrong object -- a false STALE alarm
+# from a healthy bucket.
+dated = [(age_hours(o), o) for o in manifests]
+usable = [(a, o) for a, o in dated if a is not None]
+if not usable:
+    print("could not run: no manifest has a usable LastModified")
+    raise SystemExit(2)
+age, newest = min(usable, key=lambda pair: pair[0])
+
+# ⚠ A negative age means the object is stamped in the FUTURE -- a clock skew or
+# a doctored timestamp -- and would otherwise sail through the freshness test
+# forever. Refuse to answer rather than report healthy.
+if age < 0:
+    print(f"could not run: manifest {newest.get('Key')} is dated in the future "
+          f"({-age:.1f}h ahead). Refusing to call that fresh.")
     raise SystemExit(2)
 
 if age > max_age_hours:
