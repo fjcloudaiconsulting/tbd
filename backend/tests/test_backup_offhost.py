@@ -175,16 +175,52 @@ def test_verifier_refuses_a_nonsensical_table_count(tmp_path, expected):
     assert r.returncode == 2
 
 
-def test_the_table_count_is_never_hardcoded_in_the_backup_script():
-    """Kills: a literal count. 50 is a measurement of today's schema, not an
-    invariant, so a literal turns the next migration into a red check against a
-    perfectly good backup -- a wall-clock date bomb in a different costume."""
-    body = "\n".join(_script_lines(f"{BACKUPS_ROLE}/templates/mysql-backup.sh.j2"))
+SCRIPT = f"{BACKUPS_ROLE}/templates/mysql-backup.sh.j2"
+
+
+def _invocation(token: str) -> tuple[int, str]:
+    """Find the line where `token` is INVOKED, not merely mentioned.
+
+    ⚠ An earlier version of the ordering fences used "first line matching the
+    token", which an `echo "will verify with {{ ... }}"` satisfies. That let a
+    mutant publish the dump at its final name and verify afterwards -- the exact
+    defect the fence's own message describes -- while staying green. Command
+    position is the property; a mention is not.
+    """
+    lines = _script_lines(SCRIPT)
+    hits = [
+        (i, ln) for i, ln in enumerate(lines)
+        if re.match(r"^\s*" + re.escape(token) + r"(\s|$)", ln)
+    ]
+    assert len(hits) == 1, (
+        f"expected exactly one invocation of {token!r} in command position, "
+        f"found {len(hits)}: {[h[1].strip() for h in hits]}"
+    )
+    return hits[0]
+
+
+def test_the_table_count_is_read_live_and_passed_through():
+    """Kills: a literal count, in EITHER place.
+
+    50 is a measurement of today's schema, not an invariant, so a literal turns
+    the next migration into a red check against a perfectly good backup. ⚠ It is
+    not enough to check the assignment: a mutant kept `EXPECTED_TABLES=$(mysql
+    ...)` intact and passed a literal `50` to the verifier instead, which
+    satisfied an assignment-only fence.
+    """
+    body = "\n".join(_script_lines(SCRIPT))
     assert "information_schema.tables" in body, (
         "the backup script no longer reads the table count live."
     )
-    assert not re.search(r"EXPECTED_TABLES=\s*['\"]?\d+", body), (
+    assert not re.search(r"EXPECTED_TABLES=\s*['\"]?\d", body), (
         "the expected table count is hardcoded in the backup script."
+    )
+    _, line = _invocation("{{ mysql_backup_verify_script }}")
+    args = line.split()
+    assert args[-1] == '"${EXPECTED_TABLES}"', (
+        f"the verifier is called with {args[-1]!r} as its table count rather "
+        'than "${EXPECTED_TABLES}". A literal there is the same date bomb, one '
+        "argument to the right."
     )
 
 
@@ -255,15 +291,30 @@ def test_probe_reports_stale_for_an_empty_bucket():
 
 
 @pytest.mark.parametrize(
-    "payload", ["not json", '{"KeyCount": 0}', ""],
-    ids=["malformed", "no-contents-key", "empty-stdin"],
+    "payload", ["not json", '{"Name": "b"}', "", '{"IsTruncated": true, "Contents": []}'],
+    ids=["malformed", "not-a-listing", "empty-stdin", "truncated"],
 )
 def test_probe_reports_could_not_run_rather_than_healthy(payload):
     """⚠ Exit 2, never 0. A probe that cannot answer must not be mistaken for a
-    probe that answered 'fine' -- and an ABSENT Contents key means the listing
-    failed, which is not the same as an empty bucket."""
+    probe that answered 'fine'.
+
+    ⚠ A TRUNCATED listing is in here deliberately: answering from half the
+    objects could miss the newest page entirely. The CLI auto-paginates today,
+    so this only bites if someone adds --max-items -- which is exactly the kind
+    of change that would otherwise pass review."""
     r = _probe(payload)
     assert r.returncode == 2, f"rc={r.returncode} out={r.stdout}"
+
+
+def test_probe_reports_stale_for_a_genuinely_empty_bucket():
+    """⚠ `aws s3api list-objects-v2` OMITS Contents for an empty result rather
+    than emitting `"Contents": []`, so the real-world empty bucket arrives as
+    `{"KeyCount": 0, ...}`. Classifying that as 'could not run' told the
+    operator the wrong thing about a bucket that is genuinely, alarmingly
+    empty."""
+    r = _probe('{"KeyCount": 0, "Name": "tbd-mysql-backups-884686184019"}')
+    assert r.returncode == 1, f"rc={r.returncode} out={r.stdout}"
+    assert "empty" in r.stdout.lower()
 
 
 def test_the_probe_workflow_alarms_on_could_not_run_too():
@@ -274,11 +325,15 @@ def test_the_probe_workflow_alarms_on_could_not_run_too():
     steps = wf["jobs"]["probe"]["steps"]
     alarm = [s for s in steps if "notify-backup-stale.sh" in str(s.get("run", ""))]
     assert alarm, "the workflow never invokes the alarm script."
-    cond = str(alarm[0].get("if", ""))
-    assert "!=" in cond and "fresh" in cond, (
-        f"the alarm fires on {cond!r}. It must fire on anything that is not "
-        "'fresh', so a could-not-run verdict raises the alarm rather than "
-        "silently failing the job."
+    # ⚠ Normalized EXACT match, not a substring. `verdict == 'stale' &&
+    # verdict != 'fresh-x'` contains both "!=" and "fresh" and stayed green,
+    # while silencing the could-not-run verdict -- the one this test is named
+    # after, and the one that fires while the workspace is still unapplied.
+    cond = " ".join(str(alarm[0].get("if", "")).split())
+    assert cond == "steps.check.outputs.verdict != 'fresh'", (
+        f"the alarm fires on {cond!r}. It must be exactly "
+        "\"steps.check.outputs.verdict != 'fresh'\" so that ANY non-fresh "
+        "verdict, including could-not-run, raises the alarm."
     )
     # ⚠ PyYAML parses the workflow key `on:` as the BOOLEAN True (YAML 1.1
     # treats on/off/yes/no as booleans), so wf["on"] raises KeyError on a
@@ -321,6 +376,30 @@ def test_the_probe_policy_is_exactly_list():
     assert _actions(PROBE_POLICY) == {"s3:ListBucket"}
 
 
+@pytest.mark.parametrize("policy", [UPLOADER_POLICY, PROBE_POLICY],
+                         ids=["uploader", "probe"])
+def test_the_policies_grant_and_are_scoped(policy):
+    """⚠ Pinning Action alone says nothing about WHAT may be done WHERE.
+
+    A mutant flipped Effect to Deny and widened Resource to `arn:aws:s3:::*/*`
+    while keeping the action set identical, and stayed green. Effect and
+    Resource are as load-bearing as Action.
+    """
+    doc = json.loads(_p(policy).read_text())
+    for stmt in doc["Statement"]:
+        assert stmt["Effect"] == "Allow", (
+            f"{policy} contains a {stmt['Effect']} statement; these are grant "
+            "policies and a Deny here would silently disable the feature."
+        )
+        resources = stmt["Resource"]
+        for resource in resources if isinstance(resources, list) else [resources]:
+            assert "${bucket}" in resource or "${kms_key_arn}" in resource, (
+                f"{policy} grants on {resource!r}, which is not scoped to this "
+                "bucket or key. A wildcard here would let the droplet's "
+                "credential act on every bucket in the account."
+            )
+
+
 def test_the_uploader_must_name_the_encryption_key_explicitly():
     """The policy conditions on the SSE headers with StringEquals, and
     StringEquals against an ABSENT header FAILS. Relying on the bucket default
@@ -332,15 +411,24 @@ def test_the_uploader_must_name_the_encryption_key_explicitly():
     assert cond["s3:x-amz-server-side-encryption"] == "aws:kms"
     assert "kms-key-id" in " ".join(cond.keys())
 
-    src = _p(f"{BACKUPS_ROLE}/files/mysql-backup-upload.py").read_text()
-    assert "ServerSideEncryption" in src and "SSEKMSKeyId" in src, (
-        "the uploader does not send the SSE parameters the IAM policy requires."
-    )
-    assert 'ChecksumAlgorithm="SHA256"' in src, (
-        "the uploader does not request a SHA-256 checksum. That checksum IS the "
-        "transport verification: S3 recomputes it server-side and rejects a "
-        "mismatch, which is how the uploaded object is verified WITHOUT read "
-        "permission."
+    # ⚠ PARSED, NOT GREPPED. The uploader's comments discuss
+    # ServerSideEncryption, SSEKMSKeyId and ChecksumAlgorithm at length, so a
+    # substring check over its source is satisfied by prose explaining their
+    # absence -- mutants that deleted the real kwargs and left a `# TODO: re-add
+    # ServerSideEncryption=...` comment stayed green.
+    kwargs = _put_object_kwargs()
+    for required in ("ServerSideEncryption", "SSEKMSKeyId"):
+        assert required in kwargs, (
+            f"put_object does not pass {required}. The IAM policy conditions on "
+            "that header with StringEquals, and StringEquals against an ABSENT "
+            "header FAILS -- every upload would 403 in a way that reads like a "
+            "credential problem."
+        )
+    assert kwargs.get("ChecksumAlgorithm") == "SHA256", (
+        f"put_object passes ChecksumAlgorithm={kwargs.get('ChecksumAlgorithm')!r}. "
+        "That checksum IS the transport verification: S3 recomputes it "
+        "server-side and rejects a mismatch, which is how the uploaded object is "
+        "verified WITHOUT read permission."
     )
 
 
@@ -348,17 +436,19 @@ def test_the_uploader_must_name_the_encryption_key_explicitly():
 # F4. Ordering inside the backup script.
 # ---------------------------------------------------------------------------
 def test_nothing_is_published_or_uploaded_before_it_is_verified():
-    lines = _script_lines(f"{BACKUPS_ROLE}/templates/mysql-backup.sh.j2")
-    def first(pattern):
-        return next((i for i, ln in enumerate(lines) if re.search(pattern, ln)), None)
+    lines = _script_lines(SCRIPT)
+    verify, verify_line = _invocation("{{ mysql_backup_verify_script }}")
+    upload, _ = _invocation("{{ mysql_backup_upload_script }}")
 
-    verify = first(r"mysql_backup_verify_script")
-    mv = first(r"^\s*mv\s+")
-    upload = first(r"mysql_backup_upload_script")
-
-    assert verify is not None, "the backup script never calls the verifier."
-    assert mv is not None and upload is not None
-    assert verify < mv, (
+    # ⚠ Anchored on the dump's OWN rename, not on `^\s*mv\s`. The loose form
+    # went red when any unrelated `mv` appeared earlier in the script -- an
+    # inverse defect that punishes a correct change.
+    publish = next(
+        (i for i, ln in enumerate(lines) if re.match(r'^\s*mv\s+"\$\{DUMP\}\.part"', ln)),
+        None,
+    )
+    assert publish is not None, "the dump is never renamed into place."
+    assert verify < publish, (
         "the dump is renamed into place BEFORE it is verified, so a bad dump is "
         "published at the final name."
     )
@@ -367,17 +457,42 @@ def test_nothing_is_published_or_uploaded_before_it_is_verified():
         "corrupt artifact off-host and mark it verified."
     )
 
+    # ⚠ The verdict must GATE. `... || true` appended to the invocation left
+    # every other assertion here green while making the whole feature -- "no
+    # artifact is published or uploaded unless it verifies" -- a no-op.
+    assert not re.search(r"\|\||&&|;\s*true", verify_line), (
+        f"the verifier invocation is not a bare gating command: {verify_line.strip()!r}. "
+        "With `|| true` (or similar) its verdict is discarded and a failed "
+        "verification no longer stops the publish."
+    )
+    body = "\n".join(lines)
+    assert re.search(r"set\s+-\w*e", body), (
+        "the script does not `set -e`, so a failing verifier would not stop it."
+    )
+    assert "set +e" not in body, (
+        "the script disables errexit somewhere, which can un-gate the verifier."
+    )
+
 
 def test_the_manifest_is_uploaded_last():
     """S3 has no rename, so the .part trick does not lift. The manifest's
     presence is the completion marker; uploading it first would mark a night
     complete before its artifacts existed."""
-    body = "\n".join(_script_lines(f"{BACKUPS_ROLE}/templates/mysql-backup.sh.j2"))
-    call = re.search(r"mysql_backup_upload_script.*?\n\n", body, re.DOTALL)
-    assert call, "could not locate the upload invocation."
-    args = call.group(0)
-    assert args.index("${DUMP}") < args.index("${MANIFEST}")
-    assert args.index("${GRANTS}") < args.index("${MANIFEST}")
+    lines = _script_lines(SCRIPT)
+    start, _ = _invocation("{{ mysql_backup_upload_script }}")
+    # The invocation is line-continued; collect it to the first line that does
+    # not end in a backslash.
+    chunk = []
+    for ln in lines[start:]:
+        chunk.append(ln)
+        if not ln.rstrip().endswith("\\"):
+            break
+    args = " ".join(chunk)
+    for artifact in ("${DUMP}", "${GRANTS}"):
+        assert args.index(artifact) < args.index("${MANIFEST}"), (
+            f"{artifact} is uploaded after the manifest. The manifest is the "
+            "completion marker, so it must be last."
+        )
 
 
 def test_the_backup_script_never_reads_an_object_back():
@@ -412,22 +527,155 @@ def test_the_trust_document_names_the_workspace_this_configuration_declares():
         if k.endswith(":sub")
     ]
     assert subs, "the trust document has no sub condition at all."
-    for sub in subs:
-        assert f"workspace:{workspace}:" in sub, (
-            f"versions.tf declares workspace {workspace!r} but the committed "
-            f"trust document authorizes {sub!r}. Applying this would deny the "
-            "workspace its own role and it could not apply the fix (TBD-372). "
-            "Widen the pattern, apply, rename, then narrow."
-        )
+    # ⚠ ANY, not ALL. The documented safe rename is "widen the pattern to span
+    # both names, apply, rename, then narrow" -- and an ALL predicate makes both
+    # widened forms fail at PR time, so the only way past CI would be to rename
+    # FIRST, which is precisely the TBD-372 lockout this fence exists to
+    # prevent. The property is "the declared workspace is authorized by at least
+    # one statement", not "no other workspace is".
+    assert any(f"workspace:{workspace}:" in sub for sub in subs), (
+        f"versions.tf declares workspace {workspace!r} but no committed trust "
+        f"statement authorizes it (subs: {subs}). Applying this would deny the "
+        "workspace its own role and it could not apply the fix (TBD-372). "
+        "Widen the pattern, apply, rename, then narrow."
+    )
 
 
 def test_the_trust_document_does_not_glob_the_workspace_name():
     """apex carries `tbd-apex*` as scar tissue from the rename that caused
     TBD-372. A fresh anchor should not inherit a wildcard on the segment that IS
     the trust boundary."""
+    versions = _p("infra/terraform/backups/versions.tf").read_text()
+    declared = re.search(r'workspaces\s*\{[^}]*name\s*=\s*"([^"]+)"', versions, re.DOTALL)
+    workspace = declared.group(1)
     trust = _p("infra/aws/bootstrap/tfc-backups-trust.json").read_text()
+    # ⚠ Scoped to a glob that would MATCH the declared name. A widened pattern
+    # naming a DIFFERENT workspace is the legitimate mid-rename state; banning
+    # every glob outright would forbid it.
     for sub in re.findall(r'"app\.terraform\.io:sub":\s*"([^"]+)"', trust):
         seg = re.search(r"workspace:([^:]+):", sub)
-        assert seg and "*" not in seg.group(1), (
-            f"the workspace segment of {sub!r} is globbed; it must be exact."
-        )
+        if not seg:
+            continue
+        pattern = seg.group(1)
+        if "*" in pattern and pattern.split("*")[0] and workspace.startswith(pattern.split("*")[0]):
+            raise AssertionError(
+                f"the workspace segment {pattern!r} is a glob matching the "
+                f"declared workspace {workspace!r}. apex carries such a wildcard "
+                "only as scar tissue from the rename that caused TBD-372; a "
+                "fresh anchor must name its workspace exactly."
+            )
+
+
+# ---------------------------------------------------------------------------
+# F7. The uploader is DRIVEN, not read. Its own docstring justifies being a real
+# file on the grounds that "the test suite can import and drive it" -- until
+# these tests existed, nothing did, and a one-word mutant
+# (`for path in sorted(args.files)`) reordered the manifest AHEAD of the dump,
+# destroying the completion-marker property the whole design rests on, while
+# every ordering fence over the .j2 stayed green.
+# ---------------------------------------------------------------------------
+import importlib.util
+import types
+
+
+def _load_uploader():
+    path = _p(f"{BACKUPS_ROLE}/files/mysql-backup-upload.py")
+    spec = importlib.util.spec_from_file_location("mysql_backup_upload", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _put_object_kwargs() -> dict:
+    """Static keyword arguments of the put_object call, read from the AST."""
+    import ast as _ast
+    tree = _ast.parse(_p(f"{BACKUPS_ROLE}/files/mysql-backup-upload.py").read_text())
+    for node in _ast.walk(tree):
+        if (isinstance(node, _ast.Call)
+                and isinstance(node.func, _ast.Attribute)
+                and node.func.attr == "put_object"):
+            out = {}
+            for kw in node.keywords:
+                try:
+                    out[kw.arg] = _ast.literal_eval(kw.value)
+                except ValueError:
+                    out[kw.arg] = "<dynamic>"
+            return out
+    raise AssertionError("the uploader no longer calls put_object at all.")
+
+
+class _FakeS3:
+    def __init__(self):
+        self.calls = []
+
+    def put_object(self, **kwargs):
+        kwargs.pop("Body", None)
+        self.calls.append(kwargs)
+        return {}
+
+
+def _drive_uploader(monkeypatch, tmp_path, filenames):
+    module = _load_uploader()
+    fake = _FakeS3()
+    boto3_stub = types.SimpleNamespace(client=lambda *a, **k: fake)
+    monkeypatch.setattr(module, "_load_boto3", lambda: True)
+    monkeypatch.setattr(module, "boto3", boto3_stub, raising=False)
+
+    paths = []
+    for name in filenames:
+        f = tmp_path / name
+        f.write_bytes(b"payload")
+        paths.append(str(f))
+
+    rc = module.main([
+        "--bucket", "B", "--kms-key-id", "arn:aws:kms:eu-central-1:1:key/k",
+        "--region", "eu-central-1", "--prefix", "pfv-data-01/2026/08/28", *paths,
+    ])
+    return rc, fake
+
+
+def test_the_uploader_preserves_argument_order_so_the_manifest_lands_last(
+    monkeypatch, tmp_path
+):
+    rc, fake = _drive_uploader(
+        monkeypatch, tmp_path,
+        ["pfv2_x.sql.gz", "grants_x.sql.gz", "manifest_x.json"],
+    )
+    assert rc == 0
+    keys = [c["Key"].rsplit("/", 1)[-1] for c in fake.calls]
+    assert keys == ["pfv2_x.sql.gz", "grants_x.sql.gz", "manifest_x.json"], (
+        f"uploaded in the order {keys}. The caller puts the manifest last "
+        "deliberately -- it is the completion marker, and S3 has no rename. "
+        "Sorting or reordering here silently destroys that property."
+    )
+
+
+def test_the_uploader_sends_encryption_and_checksum_on_every_object(
+    monkeypatch, tmp_path
+):
+    _, fake = _drive_uploader(monkeypatch, tmp_path, ["a.gz", "b.gz"])
+    assert fake.calls, "nothing was uploaded."
+    for call in fake.calls:
+        assert call["ChecksumAlgorithm"] == "SHA256"
+        assert call["ServerSideEncryption"] == "aws:kms"
+        assert call["SSEKMSKeyId"].startswith("arn:aws:kms:")
+
+
+def test_the_uploader_refuses_a_missing_file_before_touching_s3(
+    monkeypatch, tmp_path
+):
+    """Exit 2 and NO uploads: a partial batch is worse than none, because the
+    manifest could land beside artifacts that were never written."""
+    module = _load_uploader()
+    fake = _FakeS3()
+    monkeypatch.setattr(module, "_load_boto3", lambda: True)
+    monkeypatch.setattr(module, "boto3", types.SimpleNamespace(client=lambda *a, **k: fake),
+                        raising=False)
+    good = tmp_path / "a.gz"
+    good.write_bytes(b"x")
+    rc = module.main([
+        "--bucket", "B", "--kms-key-id", "k", "--region", "r", "--prefix", "p",
+        str(good), str(tmp_path / "missing.gz"),
+    ])
+    assert rc == 2
+    assert fake.calls == [], "uploaded despite a missing file in the batch."

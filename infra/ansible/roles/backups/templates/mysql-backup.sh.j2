@@ -62,8 +62,13 @@ mysqldump \
 # USER emits a replayable statement carrying the password hash, so a restore
 # yields working logins with the same passwords.
 #
-# ⚠ No privilege change is needed: pfv_backup already holds global SELECT,
-# which covers mysql.user. Do not widen it.
+# ⚠ These queries run with `--no-defaults`, so they deliberately SKIP
+# /root/.my.cnf and connect as root@localhost over the unix socket. That is not
+# an oversight and must not be "tidied" by dropping the flag: /root/.my.cnf
+# forces user=pfv_backup, and reading it would silently downgrade the client
+# (see MYSQL-84-CUTOVER.md). pfv_backup does hold global SELECT, so it would
+# also work -- but the code does not rely on that, and the comment should not
+# claim a rationale the code does not use.
 {
   echo "-- Users and grants for ${DB}, generated ${DATE}."
   echo "-- Restore BEFORE the data dump. Reserved mysql.* accounts are excluded."
@@ -150,4 +155,15 @@ rm -f "${MANIFEST}"
 # ⚠ The trailing `*` also matches `.sql.gz.part`. Without it a SIGKILL-orphaned
 # partial is never reaped, because the glob would require the name to END in
 # `.sql.gz`. Age-gated identically, so a completed dump is unaffected.
-find "${BACKUP_DIR}" -name "${DB}_*.sql.gz*" -mtime +{{ mysql_backup_retention_days }} -delete
+#
+# ⚠⚠ THE GRANTS AND MANIFEST ARTIFACTS NEED THEIR OWN GLOBS. They do not start
+# with "${DB}_", so the first rule never matched them and they accumulated
+# FOREVER -- on a 2 GB droplet whose every other artifact is reaped after a
+# week. That mattered more than disk: each grants file carries SHOW CREATE USER
+# output, i.e. every account's password hash, so an unreaped pile is a growing
+# heap of credential material on the most exposed machine in the system.
+# A manifest is normally deleted moments after upload; one survives only when
+# the upload failed after the trap was disarmed, and its timestamp never recurs.
+find "${BACKUP_DIR}" -maxdepth 1 \
+  \( -name "${DB}_*.sql.gz*" -o -name "grants_*.sql.gz*" -o -name "manifest_*.json" \) \
+  -mtime +{{ mysql_backup_retention_days }} -delete

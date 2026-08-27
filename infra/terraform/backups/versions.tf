@@ -38,9 +38,10 @@ terraform {
   # workspace. Renaming without widening first denies
   # AssumeRoleWithWebIdentity, and the workspace then cannot apply its own fix
   # (that is TBD-372, which cost an out-of-band trust-policy edit on
-  # 2026-08-11). Procedure: widen the pattern to span both names, apply, rename,
-  # then narrow. NEVER rename first.
-  # backend/tests/test_backup_trust_anchor.py fences the two against each other
+  # 2026-08-11). Procedure: ADD A SECOND STATEMENT naming the new workspace,
+  # apply, rename, update var.tfc_workspace_name, apply, then delete the old
+  # statement. Do not widen by globbing. NEVER rename first.
+  # backend/tests/test_backup_offhost.py fences the two against each other
   # at PR time, which is what prevents the event rather than easing recovery.
   cloud {
     organization = "FlamaCorp"

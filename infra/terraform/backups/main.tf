@@ -2,7 +2,12 @@ data "aws_caller_identity" "current" {}
 
 locals {
   bucket_arn = "arn:aws:s3:::${var.bucket_name}"
-  tfc_sub    = "organization:${var.tfc_organization}:project:*:workspace:${var.tfc_workspace_name}:run_phase:*"
+
+  # ⚠ Both the ORGANIZATION and the WORKSPACE segment are checked. An earlier
+  # version built this string and never referenced it, so the org segment was
+  # unverified on every path -- a trust document naming a different org would
+  # have applied cleanly and locked the workspace out the TBD-372 way.
+  tfc_sub_fragment = "organization:${var.tfc_organization}:project:*:workspace:${var.tfc_workspace_name}:run_phase:"
 }
 
 # ---------------------------------------------------------------------------
@@ -22,7 +27,8 @@ locals {
 # policy that admits this workspace. That is the TBD-372 shape. Three defences,
 # in increasing order of value:
 #   1. backend/tests/test_backup_trust_anchor.py asserts, at PR time, that the
-#      workspace named in versions.tf equals the one in the trust document. That
+#      workspace named in versions.tf equals the one in the trust document
+#      (backend/tests/test_backup_offhost.py). That
 #      is what PREVENTS the event -- TBD-372 happened because a rename was
 #      APPLIED with the pattern unchanged.
 #   2. prevent_destroy below, so state surgery or a -target mistake cannot
@@ -57,10 +63,43 @@ resource "aws_iam_role" "tfc_backups_provisioner" {
     # the fence catches it in review, this catches it if someone applies from a
     # branch that skipped review.
     precondition {
-      condition     = can(regex("workspace:${var.tfc_workspace_name}:", file("${path.module}/../../aws/bootstrap/tfc-backups-trust.json")))
-      error_message = "The committed trust document does not name workspace '${var.tfc_workspace_name}'. Applying would deny this workspace its own role (TBD-372). Widen the pattern, apply, rename, then narrow."
+      condition     = can(regex(replace(local.tfc_sub_fragment, ".", "\\."), file("${path.module}/../../aws/bootstrap/tfc-backups-trust.json")))
+      error_message = "The committed trust document does not authorize '${local.tfc_sub_fragment}...'. Applying would deny this workspace its own role (TBD-372). Widen the pattern, apply, rename, then narrow."
     }
   }
+}
+
+# ⚠⚠ SEPARATE PLAN AND APPLY ROLES, AND THIS IS A SECURITY BOUNDARY, NOT TIDINESS.
+#
+# HCP Terraform runs a SPECULATIVE PLAN on every PR touching this directory,
+# before any approval and before any Confirm & Apply. A single role trusted at
+# `run_phase:*` and holding s3:*/kms:*/iam:* would therefore let an UNMERGED PR
+# assume account-admin and read production backups -- the PR's own HCL decides
+# what runs at plan time. "Auto-apply is off" governs apply; it does not govern
+# plan.
+#
+# So: this role is trusted only at run_phase:apply, and a separate read-only
+# role is trusted at run_phase:plan. Set them as TFC_AWS_APPLY_ROLE_ARN and
+# TFC_AWS_PLAN_ROLE_ARN respectively.
+#
+# ⚠ BOTH policies additionally carry an explicit Deny on s3:GetObject and
+# kms:Decrypt. Terraform manages the bucket; it never needs to read a backup's
+# CONTENT. That Deny means even an approved apply cannot decrypt customer data.
+resource "aws_iam_role" "tfc_backups_plan" {
+  name                 = "tfc-backups-plan"
+  description          = "Assumed by TFC at PLAN phase only. Read-only, and explicitly denied any path to backup content."
+  assume_role_policy   = file("${path.module}/../../aws/bootstrap/tfc-backups-plan-trust.json")
+  max_session_duration = 3600
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_iam_role_policy" "tfc_backups_plan" {
+  name   = "tfc-backups-plan-read-only"
+  role   = aws_iam_role.tfc_backups_plan.id
+  policy = file("${path.module}/../../aws/bootstrap/tfc-backups-plan.json")
 }
 
 resource "aws_iam_role_policy" "tfc_backups_provisioner" {
@@ -77,6 +116,15 @@ resource "aws_kms_key" "backups" {
   enable_key_rotation     = true
   deletion_window_in_days = 30
   policy                  = data.aws_iam_policy_document.kms.json
+
+  # ⚠ Without this the bucket can outlive its only key. A -target mistake or a
+  # forced replacement schedules key deletion; 30 days later every object that
+  # prevent_destroy and Object Lock successfully protected is permanently
+  # unreadable -- and the freshness probe reports `fresh` throughout, because it
+  # reads metadata and never touches KMS.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_kms_alias" "backups" {
@@ -151,9 +199,14 @@ resource "aws_s3_bucket" "backups" {
       error_message = "Refusing to apply: caller is account ${data.aws_caller_identity.current.account_id} but aws_account_id is ${var.aws_account_id}. This repo spans two AWS accounts and apex uses the other one."
     }
 
+    # ⚠ The earlier version of this message claimed expiration would "silently
+    # fail on every object" if it raced Object Lock. That cannot happen:
+    # expiration on a versioned bucket only writes a DELETE MARKER, which Object
+    # Lock never blocks. The value that genuinely has to clear the lock is when
+    # the noncurrent version is purged, and the guard belongs there.
     precondition {
       condition     = var.retention_days > var.object_lock_days
-      error_message = "retention_days (${var.retention_days}) must exceed object_lock_days (${var.object_lock_days}), or the lifecycle rule fights Object Lock and expiration silently fails on every object."
+      error_message = "retention_days (${var.retention_days}) must exceed object_lock_days (${var.object_lock_days}); otherwise a version is purged while still under Object Lock retention and the purge is refused."
     }
   }
 }
@@ -228,8 +281,13 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
       days = var.retention_days
     }
 
+    # ⚠ 1, not retention_days. Keys are date-partitioned so nothing is ever
+    # overwritten; a version only becomes noncurrent when the expiration rule
+    # above puts a delete marker over it on day 8. Counting another 8 days from
+    # THERE meant bytes actually left at day 16, not day 8 -- twice the stated
+    # retention, silently. The 7-day Object Lock has long expired by then.
     noncurrent_version_expiration {
-      noncurrent_days = var.retention_days
+      noncurrent_days = 1
     }
 
     abort_incomplete_multipart_upload {
@@ -346,7 +404,7 @@ resource "aws_iam_user_policy" "uploader" {
   user = aws_iam_user.uploader.name
 
   # Loaded from a committed JSON rather than written inline, so
-  # backend/tests/test_backup_iam_least_privilege.py can json.load it and assert
+  # backend/tests/test_backup_offhost.py can json.load it and assert
   # the action set in BOTH directions. A regex over HCL could not.
   policy = templatefile("${path.module}/policies/backup-uploader.json", {
     bucket      = var.bucket_name

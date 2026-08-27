@@ -351,10 +351,12 @@ zcat grants_<ts>.sql.gz | mysql --force     # --force: skips reserved mysql.* ac
 zcat pfv2_<ts>.sql.gz   | mysql pfv2
 ```
 
-⚠ `--force` on the grants file is deliberate. The dump includes the reserved
-`mysql.sys` / `mysql.session` / `mysql.infoschema` accounts, which a fresh
-server already has. Filtering them at DUMP time is where you lose the account
-you forgot about; filtering at restore time is recoverable.
+⚠ `--force` on the grants file is deliberate, but NOT for the reason you might
+assume: the generator already excludes `mysql.sys` / `mysql.session` /
+`mysql.infoschema`. It is needed because accounts that a fresh server already
+has -- `root@localhost` above all -- will collide, and a collision must not
+abort the rest of the file. Do not drop the flag after checking for the reserved
+accounts and finding them absent.
 
 ⚠ **Grants are a TBD-360 rollback dependency, not a nicety.** A `pfv2`-only dump
 restores tables and zero logins, so it cannot recreate `pfv_app`.

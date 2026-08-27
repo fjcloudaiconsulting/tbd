@@ -52,8 +52,15 @@ variable "tfc_workspace_name" {
   # this first denies AssumeRoleWithWebIdentity and the workspace cannot apply
   # its own fix (TBD-372, 2026-08-11, recovered by an out-of-band edit).
   #
-  # If it must change: widen to a pattern spanning both names, apply, rename,
-  # then narrow. Never rename first.
+  # ⚠ HOW TO RENAME THIS WORKSPACE SAFELY. Widen by ADDING A SECOND STATEMENT to
+  # tfc-backups-trust.json naming the new workspace, apply, rename the workspace,
+  # update this value, apply again, then delete the old statement. Do NOT widen
+  # by globbing the workspace segment (`tbd-backups*`): apex carries such a
+  # wildcard only as scar tissue from the rename that caused TBD-372, a glob is
+  # indistinguishable from a permanent widening once the rename is over, and
+  # backend/tests/test_backup_offhost.py rejects one that matches the declared
+  # name. The two-statement form is explicit, reviewable, and self-cleaning.
+  # NEVER rename first.
   description = "TFC workspace name allowed to assume the provisioner role. Must equal the workspace in versions.tf -- fenced by backend/tests/test_backup_trust_anchor.py."
   type        = string
   default     = "tbd-backups"

@@ -87,9 +87,23 @@ rename, then narrow. Never rename first.
 `pfv-backup-uploader` holds `s3:PutObject` on one prefix plus
 `kms:GenerateDataKey`/`Encrypt`/`DescribeKey` on one key. It has **no**
 `GetObject`, no `ListBucket`, no `DeleteObject`, and an explicit **`Deny` on
-`kms:Decrypt` in the key policy** — which no IAM or bucket policy can override.
-The droplet writes ciphertext it cannot read. A stolen key is a nuisance, not a
-breach.
+`kms:Decrypt`** in the key policy. An explicit key-policy Deny is not
+overridable by an IAM policy or a bucket policy, so the droplet writes
+ciphertext it cannot read. A stolen key is a nuisance, not a breach.
+
+⚠ One honest bound on that claim: `bucket_key_enabled = true` means S3 caches a
+bucket-level data key rather than calling KMS on every object read, so the key
+policy is not necessarily evaluated on every individual GET within the cache
+window. No principal here holds `s3:GetObject` at all, so there is no live path
+today — but do not lean on the KMS Deny as an absolute second gate without
+re-checking that interaction. The IAM and bucket-policy Denies are the ones that
+hold unconditionally.
+
+⚠ The TFC roles are split by run phase because HCP Terraform runs a speculative
+plan on every PR, before approval. A single `run_phase:*` role with broad
+permissions would let an unmerged PR read production backups. Both roles also
+carry an explicit Deny on `s3:GetObject` and `kms:Decrypt`: Terraform manages
+the bucket, and never needs a backup's contents.
 
 Object Lock is GOVERNANCE mode: a compromised droplet cannot overwrite history,
 but break-glass can still clean up a mistake.

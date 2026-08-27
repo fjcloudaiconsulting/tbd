@@ -43,3 +43,8 @@ output "tfc_provisioner_role_arn" {
   description = "Set as TFC_AWS_RUN_ROLE_ARN on the tbd-backups workspace."
   value       = aws_iam_role.tfc_backups_provisioner.arn
 }
+
+output "tfc_plan_role_arn" {
+  description = "Set as TFC_AWS_PLAN_ROLE_ARN on the tbd-backups workspace. Read-only, and explicitly denied any path to backup content -- speculative plans run on unapproved PRs."
+  value       = aws_iam_role.tfc_backups_plan.arn
+}
