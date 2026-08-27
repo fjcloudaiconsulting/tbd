@@ -4,6 +4,32 @@ export const input =
 export const label =
   "mb-1.5 block text-xs font-semibold uppercase tracking-[0.08em] text-text-muted";
 
+// ─── Focus ───────────────────────────────────────────────────────────
+// TBD-319. The visible focus state is supplied GLOBALLY by the
+// `:focus-visible` rule in app/globals.css (@layer base). Every link, button,
+// input, select and textarea gets a 2px brass outline for free.
+//
+// ⚠ Do NOT add a focus class to a new call site. That habit is what produced
+// 910 untreated elements and two competing idioms, and the convention fence
+// will not stop you -- it polices removals, not omissions.
+//
+// This is the ONE sanctioned way to opt out, and it exists for a PHYSICAL
+// constraint rather than a preference: a wrapper whose 2px-outset outline is
+// clipped by an `overflow-hidden` ancestor. A negative offset draws the
+// outline inside the element's own box, where the clip cannot reach it
+// (WCAG 2.4.11, Focus Not Obscured).
+//
+// ⚠ Never on inline prose -- a negative offset draws the outline through the
+// glyphs.
+//
+// There is deliberately no exported `focusRing`. Blessing a ring would make
+// the opt-out fence a rubber stamp: anyone who found the outline
+// inconvenient could paste it and stay green. The ~57 inline ring strings
+// that predate this baseline are tracked for deletion, not promotion --
+// after the baseline lands most of them have nothing left to do.
+export const focusInset =
+  "focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus";
+
 // `min-h-[44px]` is baked in to enforce the WCAG / DESIGN.md touch-target
 // floor across every primary button without per-call overrides. Callers
 // that intentionally collapse the floor on larger viewports may still

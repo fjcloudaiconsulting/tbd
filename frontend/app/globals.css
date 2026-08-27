@@ -34,6 +34,14 @@
   --theme-accent-dim: rgba(212, 166, 74, 0.12);
   --theme-accent-text: #0B1F3A;
 
+  /* Focus-indicator colour (TBD-319). Aliases the brass accent so a theme
+     switch carries it automatically, but is a SEPARATE NAME so a region
+     painted on the always-navy chrome can re-point it without touching the
+     accent. Only ONE definition is needed: var(--theme-accent) substitutes
+     against the element's own cascaded --theme-accent, which the light block
+     below already redefines. */
+  --theme-focus: var(--theme-accent);
+
   --theme-danger: #f87171;
   --theme-danger-hover: #ef4444;
   --theme-danger-dim: rgba(248, 113, 113, 0.12);
@@ -157,6 +165,9 @@
   --color-accent-hover: var(--theme-accent-hover);
   --color-accent-dim: var(--theme-accent-dim);
   --color-accent-text: var(--theme-accent-text);
+  /* Mints the `outline-focus` utility, which check-design-tokens.sh's
+     phantom-token check requires before any className may reference it. */
+  --color-focus: var(--theme-focus);
 
   --color-danger: var(--theme-danger);
   --color-danger-hover: var(--theme-danger-hover);
@@ -230,6 +241,65 @@ input:-webkit-autofill:focus {
 ::selection {
   background: var(--color-accent-dim);
   color: var(--color-accent);
+}
+
+/* ─── The focus baseline (TBD-319) ───────────────────────────────────────
+   DESIGN.md §5 forbids the user-agent focus ring outright. Before this rule
+   globals.css carried exactly ONE focus declaration
+   (input:-webkit-autofill:focus), so 910 of the app's 973 focusable elements
+   painted the browser default: 427 buttons, 254 inputs, 147 links, 71
+   selects, 8 textareas. The ticket was filed as "prose links have no focus
+   state"; links were 17% of it.
+
+   ⚠⚠ TWO properties are load-bearing and BOTH must survive edits. Both are
+   fenced by tests/convention/focus-baseline.test.ts.
+
+   1. It is inside `@layer base`. Tailwind v4 emits utilities into
+      `@layer utilities`, which outranks `base` REGARDLESS of specificity, so
+      any element wanting its own treatment overrides this from its className
+      and wins (verified from compiled output, not assumed). Lift this block
+      out of the layer and it becomes UNLAYERED -- which beats every layered
+      rule in the document -- silently re-painting an outline over every
+      deliberate opt-out and inverting the design. That mutant looks like a
+      tidy-up in review.
+
+   2. The selector is exactly `:focus-visible`, specificity (0,1,0), the
+      lowest a rule can have. Belt to the layer's braces: even if layer order
+      were ever disturbed, `.focus\:outline-none:focus` (0,2,0) still wins on
+      specificity alone. Do NOT "strengthen" this selector.
+
+   `outline` and not a ring, deliberately: outline is the property the UA
+   default uses, so ONE declaration both removes the forbidden default and
+   supplies the compliant one. A global ring (box-shadow) would need a
+   companion `outline: none`, and a global `outline: none` is one bad merge
+   away from being the only surviving half -- the forbidden default with extra
+   steps.
+
+   ⚠ The offset is POSITIVE. It puts surface between the element and the
+   indicator, which is what gives a brass-filled control a >=3:1 neighbour
+   (WCAG 1.4.11); a brass outline drawn directly on a brass fill is 1:1.
+   Wrappers whose outline would be clipped by an `overflow-hidden` ancestor
+   opt into `focusInset` from lib/styles.ts.
+
+   Mouse users see nothing: `:focus-visible`, not `:focus`. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  /* The app chrome is navy in BOTH themes, but --theme-accent in the light
+     theme is the DARKENED brass (#8a6a1f) tuned for white surfaces. Against
+     the active nav item's brass-12% tint over navy (#232f3c) that measures
+     2.70:1 -- a WCAG 1.4.11 FAILURE, on the item a keyboard user lands on
+     most often. The always-bright brass reads 6.06:1.
+     ⚠ This is COMPLIANCE, not polish. Re-points the colour SOURCE rather
+     than patching this one selector, so `focusInset` used inside the chrome
+     picks up the retint too -- a selector-only override would leave that path
+     silently at 2.70:1. */
+  [data-chrome="navy"] {
+    --color-focus: var(--color-sidebar-active-text);
+  }
 }
 
 a, button { transition: all 0.15s ease; }

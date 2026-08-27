@@ -175,7 +175,7 @@ export default function OverflowMenu({
               onClick={() => selectItem(item)}
               aria-label={item.ariaLabel}
               data-testid={item.testId}
-              className={`flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm hover:bg-surface-raised focus:bg-surface-raised focus:outline-none ${
+              className={`flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm hover:bg-surface-raised focus:bg-surface-raised focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus ${
                 item.danger
                   ? "text-danger hover:text-danger"
                   : "text-text-primary"

@@ -259,7 +259,7 @@ export default function AppShellAddTransactionCta() {
             role="menuitem"
             onClick={openTransaction}
             data-testid="appshell-quick-add-menu-transaction"
-            className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-text-primary hover:bg-surface-raised focus:bg-surface-raised focus:outline-none"
+            className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-text-primary hover:bg-surface-raised focus:bg-surface-raised focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
           >
             <Receipt className="h-4 w-4 text-text-muted" aria-hidden="true" />
             <span>New transaction</span>
@@ -269,7 +269,7 @@ export default function AppShellAddTransactionCta() {
             role="menuitem"
             onClick={openTransfer}
             data-testid="appshell-quick-add-menu-transfer"
-            className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-text-primary hover:bg-surface-raised focus:bg-surface-raised focus:outline-none"
+            className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-text-primary hover:bg-surface-raised focus:bg-surface-raised focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
           >
             <ArrowLeftRight
               className="h-4 w-4 text-text-muted"

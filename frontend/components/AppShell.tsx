@@ -564,7 +564,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       )}
 
       {/* Dark sidebar — fixed height, never scrolls */}
-      <aside ref={sidebarRef} className={`fixed inset-y-0 left-0 z-50 flex w-56 flex-col bg-sidebar-bg transition-transform duration-200 lg:relative lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+      <aside ref={sidebarRef} data-chrome="navy" className={`fixed inset-y-0 left-0 z-50 flex w-56 flex-col bg-sidebar-bg transition-transform duration-200 lg:relative lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
         <div className="flex items-center justify-between px-5 pt-5 pb-6">
           <Link
             href="/dashboard"

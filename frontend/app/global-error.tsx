@@ -84,6 +84,34 @@ export default function GlobalError({
     textAlign: "center",
   };
 
+  // TBD-319 — this page's own focus indicator.
+  //
+  // ⚠ It cannot use the global `:focus-visible` baseline in globals.css,
+  // because this file deliberately loads NO stylesheet: it is the root error
+  // boundary and must still render when the CSS pipeline is the thing that
+  // broke. check-design-tokens.sh excludes it for exactly that reason, which
+  // is also why the hex literals here are sanctioned rather than a token
+  // violation.
+  //
+  // An inline <style> tag is not an option either: layout.tsx supplies the
+  // CSP nonce and this page runs outside layout-level setup, so an unnonced
+  // style block stands a good chance of being blocked outright. Handlers on
+  // the two controls are what is left, and `matches(":focus-visible")` keeps
+  // the mouse behaviour identical to the rest of the app.
+  //
+  // Fenced by tests/convention/focus-baseline.test.ts -- a baseline that
+  // certifies "this app has a token-based focus indicator" while one page is
+  // silently exempt guarantees a property the app does not have.
+  const paintFocus = (e: React.FocusEvent<HTMLElement>) => {
+    if (!e.currentTarget.matches(":focus-visible")) return;
+    e.currentTarget.style.outline = "2px solid #D4A64A";
+    e.currentTarget.style.outlineOffset = "2px";
+  };
+  const clearFocus = (e: React.FocusEvent<HTMLElement>) => {
+    e.currentTarget.style.outline = "";
+    e.currentTarget.style.outlineOffset = "";
+  };
+
   return (
     <html lang="en">
       <body style={wrapStyle}>
@@ -98,11 +126,17 @@ export default function GlobalError({
             </p>
           )}
           <div style={buttonRowStyle}>
-            <button type="button" onClick={() => reset()} style={buttonStyle}>
+            <button
+              type="button"
+              onClick={() => reset()}
+              style={buttonStyle}
+              onFocus={paintFocus}
+              onBlur={clearFocus}
+            >
               Reload application
             </button>
             {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- global-error replaces the root layout on a fatal error and renders outside Next's router tree, where next/link is unsafe; a plain <a> is required here. */}
-            <a href="/" style={buttonStyle}>
+            <a href="/" style={buttonStyle} onFocus={paintFocus} onBlur={clearFocus}>
               Go to home page
             </a>
           </div>
