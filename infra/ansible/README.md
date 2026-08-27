@@ -44,8 +44,11 @@ only meaningful against an **already-provisioned** host; against a fresh scratch
 droplet it cannot complete, because tasks downstream of a skipped one (the swap
 file, a running mysqld) have nothing to act on.
 
-⚠ **`--check --diff` prints the rotated MySQL and Redis passwords in cleartext**
-— the template diffs are the payload and neither task is `no_log`. Do not tee it
+⚠ **`--check --diff` NO LONGER prints the MySQL and Redis passwords** — since
+TBD-414 both secret-bearing template tasks carry `no_log: true`, so their diffs
+are censored. ⚠ But `-vvv` still prints `redis_password`: it rides an
+`environment:` prefix on the module command line, and `SSH: EXEC` is not
+censored by `no_log`. Do not tee it
 to a world-readable file; see `infra/MYSQL-84-EXECUTE.md` 0.3.
 
 ⚠⚠ **A target is mandatory; there is no default.** Since TBD-207 the credentials
