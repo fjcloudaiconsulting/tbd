@@ -555,6 +555,72 @@ this host runs, which is repo drift, not a pending patch. Check
 `/etc/apt/sources.list.d/mysql.list` against the preseed in
 `MYSQL-84-EXECUTE.md`.
 
+## Credential rotation (TBD-414)
+
+Rotating `mysql_app_password`, `mysql_backup_password` or `redis_password`.
+All three are Terraform-generated and live in TFC state.
+
+⚠⚠ **The obvious four-step version of this is what caused the 2026-08-20
+production outage.** Re-encrypting the values in the DO console and stopping
+there leaves the committed `.do/app.yaml` holding the OLD `EV[...]` values, and
+`digitalocean/app_action/deploy@v2` pushes that file as authoritative on the
+next deploy — silently reverting the credentials you just fixed. Step 5 below
+is not optional, and `scripts/ci/assert-app-spec-secrets-synced.sh` will now
+block the deploy if you skip it.
+
+### Order
+
+The ordering below is not stylistic. Steps 3 and 4 the other way round fires a
+deploy whose `migrate` PRE_DEPLOY job authenticates with the new password
+against a server that still holds the old one; it fails at 6/12, App Platform
+keeps the previous deployment alive, and a second deploy is needed. That cost
+roughly seven minutes of the 24-minute outage on 2026-08-19.
+
+1. **Force new values.** `random_password` keeps its value in state across
+   applies; it regenerates only if the resource is tainted or its `keepers`
+   change. Either taint the three resources in TFC, or add a `keepers` map to
+   them in `infra/terraform/main.tf` and bump it.
+
+   ⚠ Adding `keepers` where there were none is itself a change, so it
+   regenerates on the first apply. Do it in the sitting you intend to complete
+   the rotation, not ahead of time — between the apply and step 3, TFC state
+   and the live box disagree.
+
+2. **Confirm & Apply in TFC.** Terraform is VCS-driven; the apply is manual on
+   merge. Nothing on the droplet has changed yet — state now holds new values
+   the box has never seen.
+
+3. **Run the play.** `infra/ansible/bin/run-playbook.sh --production`. This
+   rotates both MySQL accounts, rewrites the Redis drop-in, and is what
+   actually puts the new credentials on the box.
+
+   Since TBD-419 the play no longer performs an unbounded `apt upgrade` as a
+   side effect, so this step is safe to run for a credential change alone. The
+   MySQL packages are held; `redis-server` deliberately is not.
+
+4. **Re-encrypt THREE values in the DO console** — `DATABASE_URL` on the
+   `backend` service, `DATABASE_URL` on the `migrate` PRE_DEPLOY job, and
+   `REDIS_URL`. Three, not two: the migrate job binds its own copy.
+
+5. **Sync the re-encrypted spec back into `.do/app.yaml` and commit it**, per
+   step 9 above. This is the step that was skipped in 2026-08-20.
+
+6. **Redeploy and verify** `/ready`, `/health/dependencies`, and a real login —
+   not just a 200 from the health endpoint.
+
+### Why these are quotable in the first place
+
+The 2026-08-19 exposure happened because `--check --diff` prints a template's
+rendered content, and two templates render credentials (`root.my.cnf.j2`,
+`00-static.conf.j2`). Those tasks, and the three `mysql_user` tasks that pass a
+cleartext `plugin_auth_string`, now carry `no_log: true`, fenced by
+`backend/tests/test_ansible_secret_task_no_log.py`.
+
+⚠ One task deliberately omits `no_log` and is allowlisted there: the Redis
+read-back passes its credential via `environment:` rather than argv, and
+keeping its stderr visible is the only way a Redis auth failure is diagnosable
+(that is the signal TBD-412 needed).
+
 ## Posture notes
 
 - MySQL listens on `0.0.0.0`. MySQL 8 only accepts a single `bind-address`,

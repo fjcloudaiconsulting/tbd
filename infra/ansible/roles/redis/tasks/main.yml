@@ -54,6 +54,10 @@
     group: redis
     mode: "0640"
   notify: Restart redis
+  # TBD-414: 00-static.conf.j2 renders `requirepass {{ redis_password }}`, and
+  # `--check --diff` prints a template's rendered content. Fenced by
+  # backend/tests/test_ansible_secret_task_no_log.py.
+  no_log: true
 
 # Live-tunable knobs (maxmemory, maxmemory-policy). Applying via
 # `redis-cli CONFIG SET` keeps every existing client connection alive,
