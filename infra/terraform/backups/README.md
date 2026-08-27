@@ -50,10 +50,27 @@ aws iam put-role-policy --role-name tfc-backups-provisioner \
   --policy-name tfc-backups-provisioner-inline \
   --policy-document file://../../aws/bootstrap/tfc-backups-provisioner.json
 
-# 3. In TFC on FlamaCorp/tbd-backups set:
-#      TFC_AWS_PROVIDER_AUTH = true
-#      TFC_AWS_RUN_ROLE_ARN  = arn:aws:iam::884686184019:role/tfc-backups-provisioner
-#      aws_account_id        = 884686184019
+# 3. CREATE the TFC workspace itself -- it does not exist yet, and nothing in
+#    this repo can create it. Until it does, no speculative plan runs for this
+#    directory and no `Terraform Cloud/FlamaCorp/tbd-backups` check appears on a
+#    PR: its ABSENCE is not a pass.
+#
+#      Organization:       FlamaCorp
+#      Name:               tbd-backups        (must match versions.tf exactly)
+#      Type:               VCS-driven, this repo
+#      Working directory:  infra/terraform/backups
+#      Trigger pattern:    infra/terraform/backups/**
+#      Auto-apply:         OFF  (matches tbd and tbd-apex)
+#
+#    Then set on that workspace:
+#      TFC_AWS_PROVIDER_AUTH  = true
+#      TFC_AWS_PLAN_ROLE_ARN  = arn:aws:iam::884686184019:role/tfc-backups-plan
+#      TFC_AWS_APPLY_ROLE_ARN = arn:aws:iam::884686184019:role/tfc-backups-provisioner
+#      aws_account_id         = 884686184019
+#
+#    ⚠ TWO role ARNs, not one. A single TFC_AWS_RUN_ROLE_ARN would use the same
+#    role for plan and apply, which re-opens the plan-phase read this design
+#    exists to close: speculative plans run on unapproved PRs.
 
 # 4. Merge the PR, Confirm & Apply, then import the two bootstrap resources so
 #    they are managed as code from here on:
