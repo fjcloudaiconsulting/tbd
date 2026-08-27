@@ -143,6 +143,21 @@ starting at $12.00/mo can manually scale or autoscale"). The runbook's headline
 quiesce step cannot be performed as written, and nobody had tried it before the
 window.
 
+⚠ **Correction, 2026-08-27 (TBD-416): the diagnosis recorded above is only half
+right, and the missing half is the dangerous one.** The console limit is real
+and was observed. But the CLI was never "refused": `doctl apps update --spec`
+with `instance_count: 0` **exits 0 and changes nothing**, because `0` is Go's
+zero value and is dropped by `omitempty` before the request is sent (measured by
+local round-trip through `doctl apps spec validate --schema-only`: `0` comes
+back absent, `1` and `2` are preserved). No plan tier fixes **that CLI route**,
+because the value is dropped before any pricing rule is consulted. ⚠ Stated
+precisely, the round-trip proves the CLIENT cannot transmit zero, not that the
+API would reject a zero arriving another way; `doctl` and the deploy action are
+the only routes in use, and both serialise through the same structs. It explains how an
+impossible step became a *tested* runbook step in the first place: running it
+looks exactly like success. This paragraph is left as written because it records
+what was believed during the window; the correction is what to act on.
+
 ⚠ **And nothing replaced it. Nothing quiesced the app.** An earlier draft of
 this record claimed Phase 1 quiesces it "for free" by locking the backend out
 of its own credentials. That is true only in the window created by Deviation 2
@@ -243,4 +258,4 @@ on the box and that needs looking at.
 | Delete snapshot `241824729` once confident (holds a full copy of production; keep a few days) | — |
 | ~~**Drop the `mysql: ["8.0","8.4"]` CI matrix leg**~~ — DONE 2026-08-20 (the `test.yml` comment that asked for it was removed in the same change). No environment runs 8.0 now. Safe for branch protection: only the two aggregate contexts are required, and `needs:` resolves over whatever legs exist | **TBD-415** |
 | ~~**Clear the remaining "production is 8.0" notes**~~ — DONE 2026-08-20. ⚠ The list that followed was INCOMPLETE: it omitted `infra/ansible/bin/run-playbook.sh`, which carried the identical scale-to-0 sentence as `infra/ansible/README.md`, plus further scale-to-0 and window claims inside `MYSQL-84-CUTOVER.md`. The real count was ~11 sites across 8 files, not 5. — `docker-compose.prod.yml`, `MYSQL-84-CUTOVER.md`, `MIGRATION.md`, `infra/ansible/README.md`, and add production as the final evidence row in `MYSQL-84-CUTOVER.md` | **TBD-415** |
-| ⚠ **Phase 5's rename needs a quiesce that does not exist.** `RENAME TABLE` takes metadata locks, so unlike Phase 2 the quiesce there is load-bearing — and scaling to zero is unavailable. Decide firewall rules vs. a plan bump *before* attempting it | **TBD-416** |
+| ~~⚠ **Phase 5's rename needs a quiesce that does not exist.**~~ — **RESOLVED 2026-08-27, and the fork as stated was a false choice.** Neither option was viable: a **plan bump** buys nothing, because `doctl` drops `instance_count: 0` under `omitempty` client-side (exits 0, changes nothing) — plan-independent; and **firewall rules** are the worst option, not the middle one, because `backend/app/database.py:25-27` records that aiomysql 0.2.0 accepts no read/write timeouts, so dropping the 3306 rule either leaves established flows serving writes (stateful conntrack, quiescing nothing) or orphans a mid-transaction connection with no RST that then holds its metadata locks until the stock 8h `wait_timeout` — manufacturing the exact blocker the quiesce exists to remove. It also mutates a Terraform-owned resource against the VCS-only rule. **What shipped instead:** bound the MDL wait rather than stop the writers — see `infra/MIGRATION.md` "Quiescing without scaling to zero". Do not re-open this fork from this row | **TBD-416** |

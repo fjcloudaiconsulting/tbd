@@ -159,13 +159,13 @@ The fact-check flagged one genuinely unverified item: aiomysql 0.2.0 predates 8.
 
 ## Cutover
 
-8. Announce the window. App Platform: scale backend to 0 (same lever `infra/MIGRATION.md` uses).
+8. Announce the window. ⚠ **There is no way to scale the backend to 0** — this step said "same lever `infra/MIGRATION.md` uses" and that lever does not exist: `doctl apps update --spec` drops `instance_count: 0` under Go's `omitempty`, exits 0, and changes nothing, while the console refuses it on the `basic-xxs` plan. The app serves writes throughout. See TBD-416 and `infra/MIGRATION.md` step 2.
 9. Final dump.
 10. `SET GLOBAL innodb_fast_shutdown = 0;` then `mysqladmin shutdown`. **Slow shutdown, not 2** — required for in-place upgrade.
 11. Swap packages to the Oracle 8.4 repo; hold the Ubuntu ones.
 12. Start 8.4. The server performs the data-dictionary upgrade itself at startup — `mysql_upgrade` was removed in 8.4 and must not be invoked.
 13. Verify: `SELECT VERSION()`, `/ready`, a real authenticated request, the nightly backup script by hand, and the `SHOW GLOBAL VARIABLES` diff.
-14. Scale the backend back up.
+14. ⚠ **Nothing to scale back up** — step 8 could not scale it down (see above). Retained so the step numbering matches the executed record.
 
 ## Rollback
 
@@ -196,7 +196,7 @@ Run it **after** the 8.4 upgrade is verified (step 13), never interleaved. Two r
 
 ## ⚠ It must be ONE atomic statement
 
-There are **83 FK declarations** across the models. `RENAME TABLE` executed per-table would leave foreign keys pointing at tables not yet moved, and fail partway with the schema half-renamed. MySQL renames all pairs in a single statement atomically:
+There are **83 FK declarations** across the models. ⚠ **The reason is NOT that a per-table rename would "fail partway" — that claim is FALSE.** Measured on MySQL 8.4.11 on 2026-08-27: it SUCCEEDS, and MySQL silently rewrites the child's foreign key to point across schemas, leaving a live and enforced cross-schema FK. A truncated rename is therefore silent, not self-announcing, which is strictly worse and is why the generator asserts its pair count. MySQL renames all pairs in a single statement atomically:
 
 ```sql
 CREATE DATABASE tbd CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
@@ -223,7 +223,7 @@ The production app user is **`pfv_app`** (`infra/ansible/roles/mysql/defaults/ma
 ## Sequence (after upgrade step 13 has passed)
 
 1. Confirm the app is healthy on 8.4 against `pfv2`. Do not proceed otherwise.
-2. Scale backend to 0 again (writes must be quiesced — `RENAME TABLE` takes metadata locks).
+2. ⚠ **Not "scale backend to 0 again" — that was never possible** (see step 8 above). It also conflated two concerns: quiescing writes is a *durability* concern that does not apply in this phase at all, because rollback here is `RENAME TABLE` back, which carries every write with it. What is real is a *liveness* concern: metadata locks. Bound them instead — see "Quiescing without scaling to zero" in `infra/MIGRATION.md`.
 3. `CREATE DATABASE tbd` with the charset/collation above.
 4. Generate and length-assert the rename statement; execute it as one statement.
 5. `GRANT` on `tbd.*` to `pfv_app`.

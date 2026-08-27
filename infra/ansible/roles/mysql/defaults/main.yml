@@ -33,3 +33,11 @@ mysql_max_heap_table_size: 32M
 # what the L4.7 audit-log + L4.9 request-log write workload wants.
 mysql_innodb_io_capacity: 1000
 mysql_innodb_io_capacity_max: 2000
+
+# TBD-416. The server default is 31536000 seconds -- 365 DAYS. That is not a
+# timeout, and nobody chose it. Measured on MySQL 8.4.11 (production's exact
+# version) 2026-08-27: an unbounded RENAME TABLE behind one held metadata lock
+# was still waiting when the probe gave up, with no error ever returned; the
+# same statement under a bounded timeout failed cleanly in exactly that many
+# seconds. See roles/mysql/templates/my.cnf.j2 for why 30 and not less.
+mysql_lock_wait_timeout: 30

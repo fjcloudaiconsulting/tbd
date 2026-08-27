@@ -34,6 +34,39 @@ max_connections = {{ mysql_max_connections }}
 # leaves cores idle when one query is blocked on I/O.
 innodb_thread_concurrency = 0
 
+# --- Metadata-lock waits (TBD-416) ---
+# The default is 31536000 (365 days), which is a hang wearing a timeout's name.
+# A blocked DDL statement does not fail: it waits, AND its PENDING exclusive MDL
+# outranks every new shared request on the same table, so the whole application
+# queues behind it. It does not self-heal -- killing the client does not release
+# a server thread parked in an MDL wait; only KILL does. The standing exposure is
+# not the schema rename (one attended statement, which sets its own lower bound);
+# it is the alembic PRE_DEPLOY job, which issues ALTER TABLE against this server
+# whenever a revision is pending, with no bound of its own. (The job runs on
+# every deploy; it only emits DDL when there is something to apply.)
+#
+# ⚠ That job is therefore also an ACTOR under this bound, not just a victim. The
+# residual: MySQL DDL auto-commits per statement and some revisions carry many
+# operations (045_reconciliation_state.py has 13), so a 1205 partway leaves a
+# revision half-applied with alembic_version unstamped, and the retry dies on
+# "Duplicate column name" until cleared by hand. Accepted deliberately: the
+# alternative is an ALTER that waits up to a year while queueing the whole app
+# behind its pending exclusive MDL. migrate.py already bounds this to a single
+# revision by driving alembic one revision at a time.
+#
+# 30s is far above any legitimate wait on a 6.7 MB / 50-table dataset, so a
+# nonzero wait here always means something is genuinely stuck. It is deliberately
+# not lower: this value is also the VICTIM's timeout -- what an ordinary app
+# query waits while queued behind a pending exclusive MDL -- so a tight global
+# turns a legitimate migration into user-visible errors.
+#
+# ⚠ This is NOT innodb_lock_wait_timeout, which bounds ROW-lock waits and stays
+# at its default of 50. Different lock class, different lever; do not conflate.
+#
+# ⚠ Valid on both 8.0 and 8.4 (present since 5.5), so this does not repeat the
+# `default-authentication-plugin` unknown-variable trap documented above.
+lock_wait_timeout = {{ mysql_lock_wait_timeout }}
+
 # --- Buffer pool / memory ---
 innodb_buffer_pool_size = {{ mysql_innodb_buffer_pool_size }}
 innodb_buffer_pool_instances = {{ mysql_innodb_buffer_pool_instances }}
