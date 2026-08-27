@@ -248,10 +248,19 @@
       args:
         executable: /bin/bash
       environment:
-        # Not `-a <password>`: that puts the credential in argv, where any `ps`
-        # on the droplet can read it for the duration. Via the environment it
-        # also means this task needs no no_log, so stderr -- the only place the
-        # real cause of a failure appears -- stays visible.
+        # Not `-a <password>`: that would put the credential in `redis-cli`'s
+        # OWN argv on every one of the seven invocations below.
+        #
+        # ⚠ CORRECTION (TBD-414). This comment used to claim `environment:`
+        # keeps the credential out of argv entirely. It does not. Ansible
+        # renders `environment:` into a shell prefix on the module command, so
+        # the target runs `/bin/sh -c 'REDISCLI_AUTH=<pw> python AnsiballZ...'`
+        # -- the password is in THAT argv for the whole task, and `-vvv` prints
+        # it via SSH: EXEC, which no_log does not censor.
+        #
+        # So no_log here would hide the diagnostic and NOT close the leak. It
+        # stays off because this task's stdout/stderr are the only Redis-auth
+        # diagnostic there is. The argv exposure is filed separately.
         REDISCLI_AUTH: "{{ redis_password }}"
       changed_when: false
       failed_when: false

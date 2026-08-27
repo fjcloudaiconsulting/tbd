@@ -96,7 +96,8 @@ less /tmp/tbd360-dryrun.txt      # read the diff, then:  rm -f /tmp/tbd360-dryru
 ```
 
 ⚠⚠ **That file contains two production secrets in cleartext.** `--check --diff`
-renders the template diffs, and neither secret-bearing task is `no_log`: the
+rendered the template diffs. Since TBD-414 both secret-bearing tasks carry
+`no_log: true`, so this no longer applies to them. Historically: the
 rotated `mysql_backup_password` (`roles/mysql/templates/root.my.cnf.j2`) and the
 rotated `redis_password` (`roles/redis/templates/00-static.conf.j2`) are both in
 the payload you are being asked to read. Hence the subshell `umask 077`, and
@@ -143,7 +144,7 @@ expect one fewer.
 | `Create backup user` + 2 × `Create application MySQL user` | the password rotation + `caching_sha2_password` conversion |
 | `Drop /root/.my.cnf` | removes the `[client]` section — the footgun is **still live on production** |
 | `Drop pfv MySQL config override` | drops `default-authentication-plugin`, and restates `innodb_log_file_size 128M` as `innodb_redo_log_capacity 256M` (**same 268435456 bytes** — 128M × the default `innodb_log_files_in_group=2`; a restatement, not a resize). **Notifies a MySQL restart** |
-| `Drop pfv Redis static config override` | `requirepass` rotation. **Notifies a Redis restart.** ⚠ Confirm the diff touches *only* that line — the same file carries `bind 127.0.0.1 <private_ipv4>`, and a change there means Redis stops listening on the address App Platform uses |
+| `Drop pfv Redis static config override` | `requirepass` rotation. **Notifies a Redis restart.** ⚠⚠ **This task is `no_log: true` since TBD-414, so its diff is CENSORED and the check below can no longer be done from the dry run.** The same file carries `bind 127.0.0.1 <private_ipv4>`, and a change there means Redis stops listening on the address App Platform uses. Verify `bind` by reading `roles/redis/templates/00-static.conf.j2` against the inventory *before* the run, and rely on the role's live `bind` fence, which runs after apply |
 | 2 handlers | the two restarts above |
 
 ⚠⚠ **Phase 1 therefore restarts BOTH MySQL and Redis while the app is still
