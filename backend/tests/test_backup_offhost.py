@@ -81,12 +81,32 @@ def _script_lines(rel: str) -> list[str]:
 # ---------------------------------------------------------------------------
 VERIFY = f"{BACKUPS_ROLE}/files/mysql-backup-verify.sh"
 
-GOOD_GRANTS = (
+# ⚠⚠ THE BACKTICK FORM IS WHAT PRODUCTION ACTUALLY EMITS, and getting this
+# fixture wrong shipped a defect that this very suite reported green.
+#
+# MySQL's SHOW CREATE USER quotes identifiers with BACKTICKS:
+#
+#   CREATE USER `pfv_app`@`%` IDENTIFIED WITH 'caching_sha2_password' AS '...'
+#
+# The original fixture invented the single-quoted form, so the verifier's
+# single-quote grep matched the fixture, passed every test, and then refused
+# EVERY REAL BACKUP on the first production run. A fabricated fixture that does
+# not match the shape the real producer emits is not a test of that producer.
+#
+# Both forms are pinned below, and the backtick one is listed first because it
+# is the real one.
+GRANTS_BACKTICK = (
+    b"-- grants\n"
+    b"CREATE USER `pfv_app`@`%` IDENTIFIED WITH 'caching_sha2_password' AS '$A$005$x';\n"
+    b"GRANT ALL ON pfv2.* TO `pfv_app`@`%`;\n"
+)
+GRANTS_SINGLE_QUOTED = (
     b"-- grants\n"
     b"CREATE USER 'pfv_app'@'%' IDENTIFIED WITH 'caching_sha2_password' AS '$A$005$x';\n"
     b"GRANT ALL ON pfv2.* TO 'pfv_app'@'%';\n"
 )
-GRANTS_NO_APP = b"-- grants\nGRANT USAGE ON *.* TO 'someone'@'%';\n"
+GOOD_GRANTS = GRANTS_BACKTICK
+GRANTS_NO_APP = b"-- grants\nGRANT USAGE ON *.* TO `someone`@`%`;\n"
 
 
 def _gz(tmp_path, name: str, payload: bytes) -> pathlib.Path:
@@ -143,6 +163,27 @@ def test_verifier_rejects_a_partial_schema(tmp_path):
                 _gz(tmp_path, "g.gz", GOOD_GRANTS), "50")
     assert r.returncode == 1
     assert "49" in r.stderr and "50" in r.stderr
+
+
+@pytest.mark.parametrize(
+    "grants",
+    [GRANTS_BACKTICK, GRANTS_SINGLE_QUOTED],
+    ids=["backtick-as-production-emits", "single-quoted"],
+)
+def test_verifier_accepts_the_grants_quoting_mysql_actually_produces(tmp_path, grants):
+    """⚠ REGRESSION FENCE for a defect that shipped.
+
+    `SHOW CREATE USER` emits backticks. The verifier grepped for single quotes,
+    so it refused every real backup while this suite stayed green against a
+    fixture that invented the single-quoted form. Both are pinned now, and the
+    backtick case is the one that reflects production.
+    """
+    r = _verify(tmp_path,
+                _gz(tmp_path, "d.gz", _dump_bytes(50)),
+                _gz(tmp_path, "g.gz", grants), "50")
+    assert r.returncode == 0, (
+        f"the verifier rejected grants that MySQL really produces:\n{r.stderr}"
+    )
 
 
 def test_verifier_rejects_grants_without_the_app_account(tmp_path):
