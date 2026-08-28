@@ -91,6 +91,14 @@ frontend=false
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   case "$f" in
+    # ── Shared: `backend/tests/test_rotation_runbook_credential_bindings.py`
+    # PARSES this runbook, so a prose-only edit to it IS a backend change.
+    # Matched ABOVE the `*.md` case deliberately: without this the fence is
+    # skipped on exactly the docs-only PR that drifts the runbook away from
+    # `.do/app.yaml`, which is the drift it exists to catch.
+    infra/MIGRATION.md)
+      backend=true
+      ;;
     # ── Inert: prose. Nothing in either test suite reads these files, and
     # they are matched FIRST so `backend/NOTES.md` counts as prose rather
     # than as a backend change.
