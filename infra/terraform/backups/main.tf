@@ -39,10 +39,20 @@ locals {
 resource "aws_iam_openid_connect_provider" "tfc" {
   url            = "https://app.terraform.io"
   client_id_list = ["aws.workload.identity"]
-  # ⚠ AWS validates OIDC providers on well-known public CAs against its own
-  # trust store, so this value is not load-bearing; it is required by the API.
-  # Do not hand-maintain it as though it were a pin.
-  thumbprint_list = ["9e99a48a9960b14926bb7f3b02e22da2b0ab7280"]
+  # ⚠ MEASURED, not remembered. This is the SHA-1 of the LAST certificate in
+  # app.terraform.io's chain, read on 2026-08-28 and confirmed by reading the
+  # created provider back from IAM -- so `terraform import` sees no drift.
+  #
+  # An earlier value here was written from memory and matched neither the leaf
+  # nor the chain root. It would have applied cleanly anyway, because since 2023
+  # AWS validates providers on well-known public CAs against its own trust store
+  # and ignores this list -- which is precisely why a wrong value here is easy to
+  # ship and hard to notice. Re-derive it, do not copy it:
+  #
+  #   openssl s_client -servername app.terraform.io -connect app.terraform.io:443 \
+  #     -showcerts </dev/null 2>/dev/null | <take the LAST cert> |
+  #     openssl x509 -fingerprint -sha1 -noout
+  thumbprint_list = ["06b25927c42a721631c1efd9431e648fa62e1e39"]
 
   lifecycle {
     prevent_destroy = true
