@@ -72,9 +72,16 @@ resource "aws_iam_role" "tfc_backups_provisioner" {
     # workspace this configuration declares. Belt to the PR-time fence's braces:
     # the fence catches it in review, this catches it if someone applies from a
     # branch that skipped review.
+    # ⚠ strcontains, NOT regex. The fragment contains a literal `*` (the
+    # wildcarded project segment), and in a regex that is a QUANTIFIER: `:*`
+    # means "zero or more colons", which can never match the literal `:*:` in
+    # the document. The first version escaped `.` and forgot `*`, so this
+    # precondition failed against a perfectly correct trust document and blocked
+    # the apply. The invariant is a literal substring, so use the literal
+    # substring function and stop hand-rolling escapes.
     precondition {
-      condition     = can(regex(replace(local.tfc_sub_fragment, ".", "\\."), file("${path.module}/../../aws/bootstrap/tfc-backups-trust.json")))
-      error_message = "The committed trust document does not authorize '${local.tfc_sub_fragment}...'. Applying would deny this workspace its own role (TBD-372). Widen the pattern, apply, rename, then narrow."
+      condition     = strcontains(file("${path.module}/../../aws/bootstrap/tfc-backups-trust.json"), local.tfc_sub_fragment)
+      error_message = "The committed trust document does not authorize '${local.tfc_sub_fragment}...'. Applying would deny this workspace its own role (TBD-372). Add a second statement naming the new workspace, apply, rename, then remove the old one."
     }
   }
 }
