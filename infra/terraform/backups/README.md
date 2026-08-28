@@ -40,15 +40,35 @@ to mint the first principal, and only root could.
 # 1. Create an admin break-glass IAM user (console password + MFA, NO key).
 #    This is the named out-of-band hand for a TBD-372-class lockout.
 
-# 2. Create the OIDC provider and the provisioner role from the COMMITTED docs.
-aws iam create-open-id-connect-provider \
-  --url https://app.terraform.io --client-id-list aws.workload.identity \
-  --thumbprint-list 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
+# 2a. The OIDC provider.  ✅ DONE 2026-08-28 --
+#     arn:aws:iam::884686184019:oidc-provider/app.terraform.io
+#
+#     ⚠ Do not copy a thumbprint from a runbook. Derive it, or you ship a value
+#     that applies cleanly and is simply wrong -- AWS validates well-known
+#     public CAs against its own trust store and ignores this list, so a bad
+#     value has no symptom. The command that produced the committed value:
+#
+#     THUMB=$(openssl s_client -servername app.terraform.io \
+#               -connect app.terraform.io:443 -showcerts </dev/null 2>/dev/null \
+#             | <extract the LAST certificate> \
+#             | openssl x509 -fingerprint -sha1 -noout | cut -d= -f2 \
+#             | tr -d ':' | tr 'A-Z' 'a-z')
+#     aws iam create-open-id-connect-provider --url https://app.terraform.io \
+#       --client-id-list aws.workload.identity --thumbprint-list "$THUMB"
+
+# 2b. BOTH roles, from the COMMITTED documents. Two, not one: the plan role is
+#     what stops a speculative plan on an unapproved PR from reading backups.
 aws iam create-role --role-name tfc-backups-provisioner \
   --assume-role-policy-document file://../../aws/bootstrap/tfc-backups-trust.json
 aws iam put-role-policy --role-name tfc-backups-provisioner \
   --policy-name tfc-backups-provisioner-inline \
   --policy-document file://../../aws/bootstrap/tfc-backups-provisioner.json
+
+aws iam create-role --role-name tfc-backups-plan \
+  --assume-role-policy-document file://../../aws/bootstrap/tfc-backups-plan-trust.json
+aws iam put-role-policy --role-name tfc-backups-plan \
+  --policy-name tfc-backups-plan-read-only \
+  --policy-document file://../../aws/bootstrap/tfc-backups-plan.json
 
 # 3. CREATE the TFC workspace itself -- it does not exist yet, and nothing in
 #    this repo can create it. Until it does, no speculative plan runs for this
@@ -77,6 +97,11 @@ aws iam put-role-policy --role-name tfc-backups-provisioner \
 terraform import aws_iam_openid_connect_provider.tfc \
   arn:aws:iam::884686184019:oidc-provider/app.terraform.io
 terraform import aws_iam_role.tfc_backups_provisioner tfc-backups-provisioner
+terraform import aws_iam_role.tfc_backups_plan tfc-backups-plan
+terraform import aws_iam_role_policy.tfc_backups_provisioner \
+  tfc-backups-provisioner:tfc-backups-provisioner-inline
+terraform import aws_iam_role_policy.tfc_backups_plan \
+  tfc-backups-plan:tfc-backups-plan-read-only
 
 # 5. ONLY NOW delete the root access keys. Deleting them before a green apply is
 #    the TBD-372 lockout with root as the thing locked out.
