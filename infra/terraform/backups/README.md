@@ -107,6 +107,33 @@ terraform import aws_iam_role_policy.tfc_backups_plan \
 #    the TBD-372 lockout with root as the thing locked out.
 ```
 
+## Genesis status and the measured boundary
+
+✅ **Done 2026-08-28, by CLI, from the committed documents:**
+
+| Resource | ARN |
+|---|---|
+| OIDC provider | `arn:aws:iam::884686184019:oidc-provider/app.terraform.io` |
+| Apply role | `arn:aws:iam::884686184019:role/tfc-backups-provisioner` |
+| Plan role | `arn:aws:iam::884686184019:role/tfc-backups-plan` |
+
+The permission boundary was then verified with `aws iam
+simulate-principal-policy` rather than asserted — 28 checks, all as intended:
+
+* the **apply** role can create the bucket, its versioning, policy, lifecycle,
+  object-lock and encryption config, the uploader user and its access key, the
+  probe role, and the GitHub OIDC provider;
+* the **plan** role can read all of that state and can write **none** of it;
+* **neither** role can read backup content: `s3:GetObject`,
+  `s3:GetObjectVersion`, `kms:Decrypt` and `kms:ReEncryptFrom` all evaluate to
+  `explicitDeny`;
+* neither can touch a bucket or an IAM principal outside this feature
+  (`implicitDeny`).
+
+⚠ Re-run that simulation after any edit to either policy. The scoping is tight
+enough that a genuine apply failure is plausible; the fix is a policy update,
+and it is far preferable to the account-admin role this replaced.
+
 ## The self-authorization hazard, and why it is survivable here
 
 This workspace manages the trust policy that admits this workspace. That is the
