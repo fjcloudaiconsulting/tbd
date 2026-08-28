@@ -72,7 +72,18 @@ found_tables="$(gzip -dc "$DUMP" | grep -c '^CREATE TABLE ' || true)"
 # A grants file that omits pfv_app yields a restore with tables and zero
 # logins, which is the exact hole this artifact exists to close (and a TBD-360
 # rollback dependency).
-found_app="$(gzip -dc "$GRANTS" | grep -c "^CREATE USER 'pfv_app'@" || true)"
+# ⚠ MySQL quotes identifiers with BACKTICKS in SHOW CREATE USER output:
+#
+#   CREATE USER `pfv_app`@`%` IDENTIFIED WITH 'caching_sha2_password' AS '...'
+#
+# The first version of this check looked for 'pfv_app' in SINGLE quotes and
+# therefore never matched, refusing every backup on a grants file that was
+# perfectly correct. Measured against production 8.4.11 on 2026-08-28.
+#
+# Normalise the quoting and then match ONE canonical form, rather than writing
+# an alternation that is easy to get subtly wrong a second time. Under
+# ANSI_QUOTES the server would emit double quotes, so both are folded.
+found_app="$(gzip -dc "$GRANTS" | tr '`"' "''" | grep -c "^CREATE USER 'pfv_app'@" || true)"
 [[ "$found_app" -ge 1 ]] || \
   die "grants file has no CREATE USER for 'pfv_app': a restore from it would produce tables and zero logins."
 
