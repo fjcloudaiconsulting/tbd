@@ -558,10 +558,17 @@ def test_the_dump_is_renamed_from_the_temporary_name_to_the_final_one():
     dump_at = next(i for i, l in enumerate(lines) if re.search(r"\|\s*gzip\s*>", l))
     source = re.search(r"\|\s*gzip\s*>\s*(\S+)", lines[dump_at]).group(1).strip('"')
 
-    movers = [(i, l) for i, l in enumerate(lines) if re.match(r"\s*mv\s+", l)]
+    # ⚠ Select the rename OF THE DUMP, not merely the first `mv` in the file.
+    # Anchoring on "the first mv" made this fence go red whenever an unrelated
+    # `mv` appeared earlier -- an inverse defect that punishes a correct change,
+    # and one that fired as soon as the off-host work added other moves.
+    movers = [
+        (i, l) for i, l in enumerate(lines)
+        if re.match(r'\s*mv\s+"' + re.escape(source) + r'"', l)
+    ]
     assert movers, (
-        "nothing renames the temporary dump into place, so a successful run "
-        "never produces a file at the final name."
+        f"nothing renames {source!r} into place, so a successful run never "
+        "produces a file at the final name."
     )
     index, line = movers[0]
     assert index > dump_at, "the rename does not follow the dump."
@@ -592,17 +599,29 @@ def test_the_cleanup_trap_removes_the_TEMPORARY_file_and_not_the_backup():
     )
     cleanup = [(cmd, sig) for cmd, sig in traps if "rm" in cmd]
     assert cleanup, "no trap removes anything."
+    # ⚠ The rule is "the trap must never target a PUBLISHED artifact", not
+    # "every target ends in .part". Those were the same thing when the script
+    # produced one artifact; TBD-400 added a manifest that is built locally,
+    # uploaded, and deleted, and is legitimately neither a .part nor a backup.
+    # Asserting the proxy instead of the property turned a correct change red.
+    # Stated as the property, this is strictly stronger: it now names the exact
+    # thing that must never be deleted.
+    published = {"${DUMP}", "${GRANTS}"}
     for command, signal in cleanup:
         assert signal == "EXIT", f"the cleanup trap is on {signal}, not EXIT."
         targets = re.findall(r'"([^"]+)"', command)
         assert targets, f"could not read the trap's target from {command!r}."
         for target in targets:
-            assert target.endswith(".part"), (
-                f"the cleanup trap removes {target!r}. On the success path the "
-                "dump has already been renamed to the final name, so a trap "
-                "aimed at ${DUMP} deletes the COMPLETED backup on every "
-                "successful run."
+            assert target not in published, (
+                f"the cleanup trap removes {target!r}, which is a PUBLISHED "
+                "backup artifact. On the success path it has already been "
+                "renamed to its final name, so this trap would delete the "
+                "COMPLETED backup on every successful run."
             )
+        assert "${DUMP}.part" in targets, (
+            "the cleanup trap no longer removes the dump's .part file, so a "
+            "failed night leaves a dump-sized orphan behind."
+        )
 
 
 def test_retention_can_reap_a_temporary_file_left_by_a_kill():
@@ -613,10 +632,21 @@ def test_retention_can_reap_a_temporary_file_left_by_a_kill():
     REGRESSION against the old code, whose partial sat at the final name where
     retention still matched it.
     """
-    body = "\n".join(_backup_lines())
-    finds = [l for l in _backup_lines() if l.strip().startswith("find")]
-    assert finds, "retention no longer runs."
-    globs = re.findall(r'-name\s+"([^"]+)"', " ".join(finds))
+    lines = _backup_lines()
+    body = "\n".join(lines)
+    start = next((i for i, l in enumerate(lines) if l.strip().startswith("find")), None)
+    assert start is not None, "retention no longer runs."
+    # ⚠ The find is line-continued, and its -name globs sit on CONTINUATION
+    # lines. Reading only the `find` line found zero globs and failed against a
+    # correct implementation -- an inverse defect introduced when retention grew
+    # to cover the grants and manifest artifacts.
+    chunk = []
+    for line in lines[start:]:
+        chunk.append(line)
+        if not line.rstrip().endswith("\\"):
+            break
+    statement = " ".join(chunk)
+    globs = re.findall(r'-name\s+"([^"]+)"', statement)
     assert globs, "the retention find has no -name glob."
     assert any(not g.endswith(".sql.gz") for g in globs), (
         f"the retention globs are {globs}. None can match a "
@@ -641,7 +671,12 @@ def test_the_trap_is_disarmed_before_the_rename_into_place():
     lines = _backup_lines()
     disarm_at = next((i for i, l in enumerate(lines)
                       if re.match(r"\s*trap\s+-\s+EXIT\s*$", l)), None)
-    mv_at = next((i for i, l in enumerate(lines) if re.match(r"\s*mv\s+", l)), None)
+    # ⚠ The dump's OWN rename, not the first `mv` in the file -- an unrelated
+    # earlier `mv` would otherwise fail this fence against a correct script.
+    mv_at = next(
+        (i for i, l in enumerate(lines) if re.match(r'\s*mv\s+"\$\{DUMP\}\.part"', l)),
+        None,
+    )
     assert mv_at is not None, "nothing renames the dump into place."
     assert disarm_at is not None, (
         "the cleanup trap is never disarmed, so it stays armed across the "
