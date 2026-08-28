@@ -92,16 +92,9 @@ aws iam put-role-policy --role-name tfc-backups-plan \
 #    role for plan and apply, which re-opens the plan-phase read this design
 #    exists to close: speculative plans run on unapproved PRs.
 
-# 4. Merge the PR, Confirm & Apply, then import the two bootstrap resources so
-#    they are managed as code from here on:
-terraform import aws_iam_openid_connect_provider.tfc \
-  arn:aws:iam::884686184019:oidc-provider/app.terraform.io
-terraform import aws_iam_role.tfc_backups_provisioner tfc-backups-provisioner
-terraform import aws_iam_role.tfc_backups_plan tfc-backups-plan
-terraform import aws_iam_role_policy.tfc_backups_provisioner \
-  tfc-backups-provisioner:tfc-backups-provisioner-inline
-terraform import aws_iam_role_policy.tfc_backups_plan \
-  tfc-backups-plan:tfc-backups-plan-read-only
+# 4. Merge the PR and Confirm & Apply. The hand-created resources are adopted
+#    by the `import` blocks in imports.tf -- there is nothing to run by hand.
+#    ⚠ Delete imports.tf once that apply has succeeded.
 
 # 5. ONLY NOW delete the root access keys. Deleting them before a green apply is
 #    the TBD-372 lockout with root as the thing locked out.
