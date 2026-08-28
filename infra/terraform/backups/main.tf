@@ -431,9 +431,18 @@ resource "aws_iam_access_key" "uploader" {
 # The off-host freshness probe's read-only identity.
 # ---------------------------------------------------------------------------
 resource "aws_iam_openid_connect_provider" "github" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+
+  # ⚠ MEASURED 2026-08-28: SHA-1 of the root of the live chain (ISRG Root YR).
+  # The value here previously was 6938fd4d..., the DigiCert-era thumbprint that
+  # is quoted in half the GitHub OIDC tutorials on the internet. GitHub has
+  # since moved to Let's Encrypt, and that literal matches NOTHING in the
+  # current chain. It would still have applied cleanly, because AWS validates
+  # well-known public CAs against its own trust store and ignores this list --
+  # which is exactly how a stale copied thumbprint survives review. Derive it;
+  # never copy it from a tutorial or from another repo.
+  thumbprint_list = ["ab9d0263244dd0326eb67015705a667e79cfe998"]
 }
 
 data "aws_iam_policy_document" "probe_trust" {
