@@ -9,6 +9,8 @@ BACKUP_DIR={{ mysql_backup_dir }}
 DB={{ mysql_app_db }}
 DATE=$(date +%Y%m%d-%H%M%S)
 DUMP="${BACKUP_DIR}/${DB}_${DATE}.sql.gz"
+GRANTS="${BACKUP_DIR}/grants_${DATE}.sql.gz"
+MANIFEST="${BACKUP_DIR}/manifest_${DATE}.json"
 
 # TBD-416: write to a temporary name and rename ONLY on success, so a file at
 # the final name always means a COMPLETED dump.
@@ -39,7 +41,7 @@ DUMP="${BACKUP_DIR}/${DB}_${DATE}.sql.gz"
 # ends `.sql.gz*` rather than `.sql.gz`, or the orphan would be unreapable
 # FOREVER -- a regression against the old code, which left its partial at the
 # final name where retention could still see it.
-trap 'rm -f "${DUMP}.part"' EXIT
+trap 'rm -f "${DUMP}.part" "${GRANTS}.part" "${MANIFEST}"' EXIT
 
 mkdir -p "${BACKUP_DIR}"
 
@@ -51,14 +53,117 @@ mysqldump \
   --hex-blob \
   "${DB}" | gzip > "${DUMP}.part"
 
+# --- Users and grants (TBD-400 hole 2) --------------------------------------
+# A ${DB}-only dump restores tables and ZERO LOGINS. This is also a TBD-360
+# rollback dependency: without it a rebuild-from-dump cannot recreate pfv_app.
+#
+# ⚠ NOT `mysqldump --databases mysql`. Restoring the mysql schema wholesale
+# across builds is unsupported and drags in every internal table. SHOW CREATE
+# USER emits a replayable statement carrying the password hash, so a restore
+# yields working logins with the same passwords.
+#
+# ⚠ These queries run with `--no-defaults`, so they deliberately SKIP
+# /root/.my.cnf and connect as root@localhost over the unix socket. That is not
+# an oversight and must not be "tidied" by dropping the flag: /root/.my.cnf
+# forces user=pfv_backup, and reading it would silently downgrade the client
+# (see MYSQL-84-CUTOVER.md). pfv_backup does hold global SELECT, so it would
+# also work -- but the code does not rely on that, and the comment should not
+# claim a rationale the code does not use.
+{
+  echo "-- Users and grants for ${DB}, generated ${DATE}."
+  echo "-- Restore BEFORE the data dump. Reserved mysql.* accounts are excluded."
+  mysql --no-defaults -N -B -e \
+    "SELECT CONCAT(QUOTE(user),'@',QUOTE(host)) FROM mysql.user
+      WHERE user NOT IN ('mysql.sys','mysql.session','mysql.infoschema')" \
+  | while read -r acct; do
+      [ -n "$acct" ] || continue
+      mysql --no-defaults -N -B -e "SHOW CREATE USER ${acct}" | sed 's/$/;/'
+      mysql --no-defaults -N -B -e "SHOW GRANTS FOR ${acct}"  | sed 's/$/;/'
+    done
+} | gzip > "${GRANTS}.part"
+
+# --- Gate: neither artifact is published or uploaded unless it verifies ------
+# ⚠ The expected table count is read LIVE, never hardcoded. A literal here
+# would turn the next migration into a red check against a correct backup.
+EXPECTED_TABLES=$(mysql --no-defaults -N -B -e \
+  "SELECT COUNT(*) FROM information_schema.tables
+    WHERE table_schema = '${DB}' AND table_type = 'BASE TABLE'")
+
+{{ mysql_backup_verify_script }} "${DUMP}.part" "${GRANTS}.part" "${EXPECTED_TABLES}"
+
 # ⚠ Disarm the trap FIRST. At this point the dump is complete and valid; if the
 # `mv` itself fails (EIO, read-only filesystem), `set -e` would abort with the
 # trap still armed and DELETE a good backup that the old code would have kept.
 trap - EXIT
 mv "${DUMP}.part" "${DUMP}"
+mv "${GRANTS}.part" "${GRANTS}"
+
+{% if mysql_backup_s3_enabled %}
+# --- Off-host copy (TBD-400 hole 1) -----------------------------------------
+# ⚠ Uploaded AFTER the mv, from the finished files, never streamed. Streaming
+# `mysqldump | gzip | aws s3 cp -` is the tempting form and is wrong twice: it
+# destroys the local copy (still the fast-restore path), and a streamed body
+# forces an unsigned/multipart upload, which loses the whole-object checksum
+# that is the entire transport verification below.
+#
+# ⚠ There is deliberately NO "upload the newest file in the backup dir" path.
+# Until the play is converged, production still streams to the final name, so a
+# file there can be a truncated dump that `gzip -t` passes. Uploading by
+# discovery would faithfully replicate a corrupt artifact off-host and mark it
+# verified. Only the artifacts this run just verified are uploaded.
+S3_PREFIX="{{ mysql_backup_s3_prefix }}/$(date -u +%Y/%m/%d)"
+
+# ⚠ The manifest is generated here and uploaded LAST, and that ordering is the
+# whole design. S3 has no rename, so the .part trick does not lift; the
+# manifest's PRESENCE is the only thing distinguishing "this night completed
+# end to end" from "the dump uploaded and the grants upload then died". The
+# freshness probe asserts the manifest, not merely that some object exists.
+cat > "${MANIFEST}" <<MANIFEST_EOF
+{
+  "date": "${DATE}",
+  "host": "$(hostname)",
+  "database": "${DB}",
+  "tables": ${EXPECTED_TABLES},
+  "mysql_version": "$(mysql --no-defaults -N -B -e 'SELECT VERSION()')",
+  "dump": {
+    "key": "${S3_PREFIX}/$(basename "${DUMP}")",
+    "bytes": $(wc -c < "${DUMP}"),
+    "sha256": "$(sha256sum "${DUMP}" | cut -d" " -f1)"
+  },
+  "grants": {
+    "key": "${S3_PREFIX}/$(basename "${GRANTS}")",
+    "bytes": $(wc -c < "${GRANTS}"),
+    "sha256": "$(sha256sum "${GRANTS}" | cut -d" " -f1)"
+  }
+}
+MANIFEST_EOF
+
+# Uploaded in argument order, manifest last, fail-fast. See the script's own
+# header for why boto3 rather than the AWS CLI, and for the checksum and SSE
+# parameters it sends -- both are load-bearing, not decoration.
+{{ mysql_backup_upload_script }} \
+  --bucket "{{ mysql_backup_s3_bucket }}" \
+  --kms-key-id "{{ mysql_backup_s3_kms_key_arn }}" \
+  --region "{{ mysql_backup_s3_region }}" \
+  --prefix "${S3_PREFIX}" \
+  "${DUMP}" "${GRANTS}" "${MANIFEST}"
+
+rm -f "${MANIFEST}"
+{% endif %}
 
 # Retention: keep last {{ mysql_backup_retention_days }} daily backups.
 # ⚠ The trailing `*` also matches `.sql.gz.part`. Without it a SIGKILL-orphaned
 # partial is never reaped, because the glob would require the name to END in
 # `.sql.gz`. Age-gated identically, so a completed dump is unaffected.
-find "${BACKUP_DIR}" -name "${DB}_*.sql.gz*" -mtime +{{ mysql_backup_retention_days }} -delete
+#
+# ⚠⚠ THE GRANTS AND MANIFEST ARTIFACTS NEED THEIR OWN GLOBS. They do not start
+# with "${DB}_", so the first rule never matched them and they accumulated
+# FOREVER -- on a 2 GB droplet whose every other artifact is reaped after a
+# week. That mattered more than disk: each grants file carries SHOW CREATE USER
+# output, i.e. every account's password hash, so an unreaped pile is a growing
+# heap of credential material on the most exposed machine in the system.
+# A manifest is normally deleted moments after upload; one survives only when
+# the upload failed after the trap was disarmed, and its timestamp never recurs.
+find "${BACKUP_DIR}" -maxdepth 1 \
+  \( -name "${DB}_*.sql.gz*" -o -name "grants_*.sql.gz*" -o -name "manifest_*.json" \) \
+  -mtime +{{ mysql_backup_retention_days }} -delete

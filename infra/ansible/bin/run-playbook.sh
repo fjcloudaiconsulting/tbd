@@ -44,6 +44,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANSIBLE_DIR="$(dirname "$HERE")"
 TERRAFORM_DIR="$(dirname "$ANSIBLE_DIR")/terraform"
+BACKUPS_TERRAFORM_DIR="$TERRAFORM_DIR/backups"
 VENV_ANSIBLE="${VENV_ANSIBLE:-$HOME/.virtualenvs/ansible/bin}"
 
 SCRATCH_HOST=""; SCRATCH_PRIVATE_IP=""; HOST_NAME="pfv-data-01"; PRODUCTION=0; PASSTHRU=()
@@ -106,6 +107,14 @@ fi
 echo "==> reading credentials from Terraform state"
 # `terraform output -json` includes sensitive values; plain `terraform output`
 # redacts them. Piped straight into python so no secret is ever an argv element.
+#
+# ⚠ TWO WORKSPACES, TWO READS (TBD-400). The data-plane credentials live in
+# FlamaCorp/tbd; the put-only S3 uploader key lives in FlamaCorp/tbd-backups.
+# They are deliberately NOT one workspace: the AWS provider validates
+# credentials at CONFIGURE time, so an AWS auth failure in a combined workspace
+# would fail the whole run and block every DigitalOcean apply -- including the
+# one needed to repair the droplet. Both reads merge into the SAME mode-0600
+# temp file, and both fail closed.
 terraform -chdir="$TERRAFORM_DIR" output -json 2>/dev/null | python3 -c '
 import json, sys
 raw = json.load(sys.stdin)
@@ -113,7 +122,7 @@ WANT = ("mysql_app_password", "mysql_backup_password", "redis_password")
 missing = [k for k in WANT if not (raw.get(k) or {}).get("value")]
 if missing:
     sys.exit(
-        "!! Terraform has not produced these outputs yet: " + ", ".join(missing) +
+        "!! FlamaCorp/tbd has not produced these outputs yet: " + ", ".join(missing) +
         "\n   TBD-207 adds them. They exist only after a TFC apply, which is"
         "\n   operator-gated (manual Confirm & Apply). Refusing to run with"
         "\n   role defaults -- that would set the production password to CHANGE_ME."
@@ -121,6 +130,40 @@ if missing:
 out = {k: raw[k]["value"] for k in WANT}
 json.dump(out, open(sys.argv[1], "w"))
 ' "$VARS_FILE"
+
+# The off-host backup destination. Only the production target uses it; a
+# scratch droplet has no bucket, so the role's mysql_backup_s3_enabled stays
+# false there and these values are never referenced.
+if [[ "$PRODUCTION" -eq 1 ]]; then
+  echo "==> reading backup destination from Terraform state (tbd-backups)"
+  terraform -chdir="$BACKUPS_TERRAFORM_DIR" output -json 2>/dev/null | python3 -c '
+import json, sys
+raw = json.load(sys.stdin)
+WANT = ("backup_s3_bucket", "backup_s3_prefix", "backup_s3_region",
+        "backup_s3_kms_key_arn", "backup_s3_access_key_id",
+        "backup_s3_secret_access_key")
+missing = [k for k in WANT if not (raw.get(k) or {}).get("value")]
+if missing:
+    sys.exit(
+        "!! FlamaCorp/tbd-backups has not produced these outputs yet: " + ", ".join(missing) +
+        "\n   TBD-400 adds them, in infra/terraform/backups/. They exist only"
+        "\n   after that workspace has been applied (manual Confirm & Apply)."
+        "\n   Refusing to converge a backups role with no destination -- that"
+        "\n   would leave production believing it has an off-host backup."
+    )
+existing = json.load(open(sys.argv[1]))
+existing.update({
+    "mysql_backup_s3_enabled": True,
+    "mysql_backup_s3_bucket": raw["backup_s3_bucket"]["value"],
+    "mysql_backup_s3_prefix": raw["backup_s3_prefix"]["value"],
+    "mysql_backup_s3_region": raw["backup_s3_region"]["value"],
+    "mysql_backup_s3_kms_key_arn": raw["backup_s3_kms_key_arn"]["value"],
+    "mysql_backup_s3_access_key_id": raw["backup_s3_access_key_id"]["value"],
+    "mysql_backup_s3_secret_access_key": raw["backup_s3_secret_access_key"]["value"],
+})
+json.dump(existing, open(sys.argv[1], "w"))
+' "$VARS_FILE"
+fi
 
 echo "==> running playbook against ${SCRATCH_HOST:-the data droplet}"
 PATH="$VENV_ANSIBLE:$PATH" \

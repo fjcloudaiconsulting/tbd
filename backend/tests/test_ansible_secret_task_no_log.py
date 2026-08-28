@@ -74,7 +74,19 @@ pytestmark = pytest.mark.skipif(
 # The credentials that are Terraform-generated, live in TFC state, and land in
 # DATABASE_URL / REDIS_URL. `mysql_app_user` and friends are NOT secrets.
 SECRET_VARS = frozenset(
-    {"mysql_app_password", "mysql_backup_password", "redis_password"}
+    {
+        "mysql_app_password",
+        "mysql_backup_password",
+        "redis_password",
+        # TBD-400. Added when the off-host backup landed, and its absence was a
+        # LIVE GAP for exactly as long as it took to notice: with the set as it
+        # was, deleting `no_log` from the task that templates
+        # /root/.aws/credentials left the whole suite green. Same shape as the
+        # handlers omission this file's docstring already records. ⚠ A new
+        # secret that reaches a template MUST be added here in the same change
+        # that introduces it, or this fence is blind to it by construction.
+        "mysql_backup_s3_secret_access_key",
+    }
 )
 
 _SECRET_REF = re.compile(r"\{\{-?\s*(?:" + "|".join(sorted(SECRET_VARS)) + r")\b")
@@ -335,6 +347,12 @@ def test_the_scan_actually_reaches_the_credential_tasks():
         # credential via `environment:` -- both allowlisted, see above
         "Read the live Redis configuration back, authenticating as the app does",
         "Apply redis live tunables",
+        # TBD-400: renders the put-only S3 uploader key into
+        # /root/.aws/credentials. Added together with
+        # mysql_backup_s3_secret_access_key in SECRET_VARS -- without that entry
+        # the detector could not SEE this task, and deleting its no_log left the
+        # suite green. This line is the evidence that it is now seen.
+        "Install the put-only AWS credential for the backup uploader",
     }, f"detected set changed: {sorted(names)}"
 
 
