@@ -92,9 +92,10 @@ aws iam put-role-policy --role-name tfc-backups-plan \
 #    role for plan and apply, which re-opens the plan-phase read this design
 #    exists to close: speculative plans run on unapproved PRs.
 
-# 4. Merge the PR and Confirm & Apply. The hand-created resources are adopted
-#    by the `import` blocks in imports.tf -- there is nothing to run by hand.
-#    ⚠ Delete imports.tf once that apply has succeeded.
+# 4. Merge the PR and Confirm & Apply.  ✅ DONE 2026-08-28: the apply reported
+#    5 to import, 16 to add, 3 to change, 0 to destroy. The hand-created
+#    resources were adopted by `import` blocks, which have since been removed
+#    now that state holds them.
 
 # 5. ONLY NOW delete the root access keys. Deleting them before a green apply is
 #    the TBD-372 lockout with root as the thing locked out.
