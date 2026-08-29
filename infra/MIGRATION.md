@@ -455,14 +455,20 @@ DDL drifted somewhere — investigate before proceeding.
 ### 6. Update App Platform secrets
 
 App Platform stores secrets per-component and does NOT auto-inherit them
-across components. The `pfv` spec has THREE secret values that must all be
-updated atomically to point at the droplet:
+across components. The `pfv` spec has FOUR data-plane secret values that
+must all be updated atomically to point at the droplet:
 
 | Component | Secret | New value |
 |---|---|---|
 | `services.backend.envs[DATABASE_URL]` | `DATABASE_URL` | `mysql+aiomysql://pfv_app:<PASSWORD>@<DROPLET_PRIVATE_IPV4>:3306/pfv2` |
 | `services.backend.envs[REDIS_URL]` | `REDIS_URL` | `redis://:<REDIS_PASSWORD>@<DROPLET_PRIVATE_IPV4>:6379/0` |
 | `jobs.migrate.envs[DATABASE_URL]` | `DATABASE_URL` | (same as backend's `DATABASE_URL` above) |
+| `jobs.migrate.envs[REDIS_URL]` | `REDIS_URL` | (same as backend's `REDIS_URL` above) |
+
+⚠ This table said THREE from the 2026-05 cutover until 2026-08-28; the
+migrate job gained its own `REDIS_URL` on 2026-08-20 and nothing made the
+prose follow. Do not enumerate from memory — read the set off the spec
+with `grep -n 'key: DATABASE_URL\|key: REDIS_URL' .do/app.yaml`.
 
 **WARNING:** if you only update the backend service's `DATABASE_URL` but
 leave the migrate pre-deploy job pointing at the old managed cluster,
@@ -473,7 +479,7 @@ until something breaks.
 Two ways to apply, in order of preference:
 
 - **DO web console** (RECOMMENDED): App -> Settings -> per-component
-  "Environment Variables" -> edit each of the three secret values listed
+  "Environment Variables" -> edit each of the secret values listed
   above. Saving triggers a redeploy that re-encrypts the new plaintext.
   The plaintext only ever sits in the browser form field; nothing hits
   the local filesystem.
@@ -610,16 +616,38 @@ The diff should show exactly:
 - `services.backend.envs[DATABASE_URL]` — new `EV[...]` blob.
 - `services.backend.envs[REDIS_URL]` — new `EV[...]` blob.
 - `jobs.migrate.envs[DATABASE_URL]` — new `EV[...]` blob.
+- `jobs.migrate.envs[REDIS_URL]` — new `EV[...]` blob.
+
+⚠ That fourth entry was added 2026-08-28. This list said THREE from the
+2026-05 cutover until then, because the migrate job only gained its own
+`REDIS_URL` on 2026-08-20. Do not enumerate from memory — read the set
+off the spec with
+`grep -n 'key: DATABASE_URL\|key: REDIS_URL' .do/app.yaml`.
 
 Anything else (instance counts, regions, env-var values you didn't
 touch) MUST match. If something else differs, investigate before
 proceeding — the live spec may have drifted from its source-of-truth.
 
+⚠ `diff -u` is noisy here: the committed file is comment-dense and the
+live spec is machine-generated with no comments. For a check that reads
+only the secrets, run the same script CI runs (it needs PyYAML and an
+authenticated `doctl`):
+
+```bash
+pip3 install --quiet pyyaml
+APP_NAME=pfv ./scripts/ci/assert-app-spec-secrets-synced.sh
+```
+
+⚠ During the **cutover** this script is EXPECTED to exit 1 — committed and
+live differ by design at that point. Its value here is the
+`component/key` list it prints, not a pass. It is a pass/fail gate only in
+the credential-rotation runbook, after the sync.
+
 #### 9c. Update the committed file
 
 Copy the verified differences from `/tmp/live-app.yaml` into
 `.do/app.yaml`. Keep the existing comments / structure intact; only
-swap the four target sections (vpc + three EV blobs).
+swap the target sections (vpc + the EV blobs listed in 9b).
 
 #### 9d. Commit and push
 
@@ -627,7 +655,7 @@ swap the four target sections (vpc + three EV blobs).
 git checkout -b chore/post-cutover-spec-persist
 git add .do/app.yaml
 git diff --staged                       # final read-through
-git commit -m "chore(infra): persist post-cutover app spec (vpc + 3 EV secrets)"
+git commit -m "chore(infra): persist post-cutover app spec (vpc + EV secrets)"
 git push -u origin chore/post-cutover-spec-persist
 gh pr create --title "chore(infra): persist post-cutover app spec" --body "Reflects the live App Platform state after the managed-to-droplet cutover. Required before any subsequent main deploy or the GH Actions workflow will revert vpc.id and rotate secrets back to pre-cutover values."
 ```
@@ -664,10 +692,12 @@ If smoke tests fail or production behaves badly:
      `/etc/mysql/mysql.conf.d/pfv.cnf`).
    - ufw blocking the connection (check `ufw status verbose`).
    - Firewall rule missing (`doctl compute firewall list`).
-   - Wrong password on `pfv_app` (compare the App Platform secret value
-     with what was set in `infra/ansible/inventory.yml` /
-     `mysql_app_password`; root@localhost is socket-auth, no password to
-     check there).
+   - Wrong password on `pfv_app` — compare the App Platform secret
+     against `terraform -chdir=infra/terraform output -raw
+     mysql_app_password`. ⚠ **Not** `infra/ansible/inventory.yml`: it has
+     deliberately held no secrets since TBD-207
+     (`bin/gen-inventory.py:12-16`), so it is an empty lead.
+     root@localhost is socket-auth, no password to check there.
 
 ## Data-plane package pins (TBD-419)
 
@@ -823,6 +853,20 @@ next deploy — silently reverting the credentials you just fixed. Step 5 below
 is not optional, and `scripts/ci/assert-app-spec-secrets-synced.sh` will now
 block the deploy if you skip it.
 
+⚠⚠ **This is a hard outage, not a rolling change.** Step 3 restarts Redis every
+time, and — until TBD-416's `lock_wait_timeout` pin has converged — MySQL as
+well. From that restart until **the console saves in step 4** land, **every
+database-backed request returns 500 while `/health` keeps answering 200**, which
+is the check App Platform is configured to use — so nothing restarts, nothing
+rolls back, and no alarm fires. Steps 3 and 4 are the outage; run them back to
+back in a quiet hour, and **not between 01:45 and 02:30 UTC** (step 3).
+
+Steps 5 and 6 are not part of the outage, but `main` is undeployable until they
+land, so do not leave them for another day. ⚠ Expect the twice-daily
+`Deploy Drift Probe` (`cron: "23 6,18 * * *"`) to open a drift issue if it runs
+between step 4 and step 5's merge: committed and live legitimately disagree in
+that gap. That is the procedure working, not a new incident.
+
 ### Order
 
 The ordering below is not stylistic. Steps 3 and 4 the other way round fires a
@@ -832,26 +876,175 @@ keeps the previous deployment alive, and a second deploy is needed. That cost
 roughly seven minutes of the 24-minute outage on 2026-08-19.
 
 1. **Force new values.** `random_password` keeps its value in state across
-   applies; it regenerates only if the resource is tainted or its `keepers`
-   change. Either taint the three resources in TFC, or add a `keepers` map to
-   them in `infra/terraform/main.tf` and bump it.
+   applies; it regenerates only when the resource is **replaced**.
+
+   The three resources are `random_password.mysql_app`,
+   `random_password.mysql_backup` and `random_password.redis`, at
+   `infra/terraform/main.tf:153-166`. ⚠ The `mysql_app_password` /
+   `mysql_backup_password` / `redis_password` names above are **outputs**
+   (`infra/terraform/outputs.tf:29-45`), not resource addresses — searching for
+   a resource by those names finds nothing.
+
+   **Use `keepers`.** The workspace is VCS-driven with manual Confirm & Apply
+   (`infra/terraform/main.tf:4-16`) and every CLI use of it in this repo is
+   read-only (`bin/run-playbook.sh:118`, `:139`, `bin/gen-inventory.py:41-44`).
+   The taint / `-replace` path has never been exercised here and this runbook
+   does not support it; `keepers` is the route below. Add a `keepers` map to the
+   three resources and bump it:
+
+   ```hcl
+   keepers = { rotated = "2026-08-28" }   # bump this value to rotate
+   ```
 
    ⚠ Adding `keepers` where there were none is itself a change, so it
    regenerates on the first apply. Do it in the sitting you intend to complete
    the rotation, not ahead of time — between the apply and step 3, TFC state
    and the live box disagree.
 
+   ⚠ `keepers` values are **not** sensitive and appear in plaintext in plan
+   output. Use a date or a counter, never anything derived from a password.
+
+   ⚠ **This is a PR and a full CI cycle, not an edit.** The workspace triggers
+   on `infra/terraform/**` from `main`, and `main` is protected (both required
+   checks plus one approval, `enforce_admins: true`). Open this PR **first**,
+   before anything else in the procedure. Once `keepers` exists, every later
+   rotation is a one-line bump.
+
 2. **Confirm & Apply in TFC.** Terraform is VCS-driven; the apply is manual on
    merge. Nothing on the droplet has changed yet — state now holds new values
    the box has never seen.
+
+   ⚠⚠ **This apply is a one-way door.** `random_password` discards the previous
+   value. Reverting the `keepers` bump does not restore the old password, it
+   generates a *third* one. From here the only route is forward through step 6.
+
+   ⚠⚠ **PROVE THE VALUES ACTUALLY CHANGED, AND KEEP THE FINGERPRINTS.** Every
+   way step 1 can fail is silent, and nothing downstream will tell you: the play
+   rewrites all three accounts and reports `changed` even when the value is
+   identical, because `plugin_auth_string` is cleartext and uncomparable
+   (`roles/mysql/tasks/main.yml:132-139`). A rotation that quietly re-applied
+   the same password is a security failure, not an inconvenience — these
+   credentials are being rotated precisely because they reached a transcript.
+
+   ⚠ The commands below read the cloud backend, so `terraform login` must be
+   current already at this step — not first at step 3.
+
+   In the TFC plan, confirm all three resources are marked **`must be
+   replaced`**. `~ update in-place`, or `0 to change`, means step 1 did not
+   take. Then record fingerprints:
+
+   ```bash
+   for o in mysql_app_password mysql_backup_password redis_password; do
+     printf '%s %s\n' "$o" \
+       "$(terraform -chdir=infra/terraform output -raw "$o" | shasum -a 256 | cut -c1-12)"
+   done
+   ```
+
+   All three digests MUST differ from the pre-apply run. ⚠ **Re-run this
+   immediately before step 3 and confirm it still matches.** `run-playbook.sh:118`
+   reads TFC state with stderr discarded, so a read taken while the apply was
+   still queued silently returns the OLD values, writes them to the box, and
+   **every fence in the play still passes** — the mysql role has no credential
+   read-back at all, and the redis fence (`roles/redis/tasks/main.yml:236-294`)
+   only proves the box matches the play, never that the play matches TFC. That
+   is the one failure here that leaves you with a green run and a dead
+   production.
 
 3. **Run the play.** `infra/ansible/bin/run-playbook.sh --production`. This
    rotates both MySQL accounts, rewrites the Redis drop-in, and is what
    actually puts the new credentials on the box.
 
+   ⚠ **Do not start between 01:45 and 02:30 UTC.** The nightly dump fires at
+   02:00 (`roles/backups/defaults/main.yml:4-5`) and this play restarts MySQL,
+   which kills `mysqldump` mid-stream; the `EXIT` trap then deletes the partial
+   and that night produces **no** backup. It is caught only by
+   `backup-freshness-probe.yml` at 04:17 UTC the following morning, at the
+   25-hour threshold.
+
+   ⚠⚠ **"No package moves" is not "no restarts". This play restarts MySQL *and*
+   Redis.**
+
+   * **Redis restarts, always.** `00-static.conf.j2` renders
+     `requirepass {{ redis_password }}`, so any password change rewrites it and
+     notifies `Restart redis` (`roles/redis/tasks/main.yml:49-56`, flushed at
+     `:188`). Every client connection drops, the backend's redis-py pool
+     included.
+   * **MySQL restarts too, until TBD-416's pin has converged.** `my.cnf.j2:68`
+     gained `lock_wait_timeout` in `df7151cd`, so the first converge after that
+     commit rewrites `pfv.cnf` and notifies `Restart mysql`
+     (`roles/mysql/tasks/main.yml:256-263`, flushed at `:337`). Even if the
+     handler did not fire, the running-config fence expects `30` and issues its
+     own corrective restart at `:375-379`. See also the ⚠ at line 180.
+   * `playbooks/site.yml:11` sets `force_handlers: true`, so these fire even if
+     a later role fails.
+
+   Check before you start whether the MySQL restart is still ahead of you:
+
+   ```bash
+   # 30 = TBD-416 already converged, so this run restarts Redis only.
+   # 31536000 = the pin has not landed yet; expect a MySQL restart too.
+   ssh root@<data-droplet> "mysql --no-defaults -N -B -e 'SELECT @@lock_wait_timeout'"
+   ```
+
+   A password change **alone** never restarts MySQL — `mysql_user` carries no
+   `notify`. The third handler, `Apply redis live tunables`
+   (`roles/redis/handlers/main.yml:40-55`), is `CONFIG SET` only and drops
+   nothing; it is not a second restart.
+
+   **What production looks like from here until step 6 completes:**
+
+   * Every database-backed API call returns **500**, not a graceful 503 — there
+     is no SQLAlchemy exception handler registered, and login hits the database
+     before it ever reaches Redis (`routers/auth.py:538`).
+   * `/health` returns **200** unconditionally (`backend/app/main.py:548-550`)
+     — **and it is the health check DO is configured to use**
+     (`.do/app.yaml:84`; the frontend has its own at `:325`, served by Next.js).
+     App Platform will not restart, replace or roll back anything. Nothing pages.
+   * `/ready` **503** (database-only by design). `/health/dependencies` **503**
+     with `{"database": "unreachable", "redis": "auth_failed"}`. The **database**
+     probe has no `auth_failed` state deliberately
+     (`backend/app/main.py:661-666`), so read `database: unreachable` as "wrong
+     credential" here. The **redis** probe *does* distinguish them
+     (`main.py:726-727`): `auth_failed` is the expected value in this window,
+     whereas `redis: unreachable` means Redis did not come back from the step-3
+     restart — a different problem.
+   * **Rate limiting fails OPEN for the whole window.** `RedisError` is a
+     degraded-storage error (`backend/app/rate_limit_failopen.py:63-68`), so
+     login, register, refresh and forgot-password serve unthrottled. Keep the
+     window short and do not announce it publicly.
+   * Sessions themselves survive the Redis restart (AOF is on), so users are
+     not logged out once the credential is repaired.
+
+   **Pre-flight — the wrapper aborts before it touches the box if any of these
+   is missing:**
+
+   * `terraform login` must be current; the inventory is regenerated from
+     `terraform output` at run time (`run-playbook.sh:96-105`).
+   * **Both** TFC workspaces must have applied outputs — `FlamaCorp/tbd` **and**
+     `FlamaCorp/tbd-backups`. `--production` reads the off-host backup
+     destination too and exits if that workspace has not produced its outputs
+     (`run-playbook.sh:137-166`).
+   * Set `SSH_KEY` if your key is not `~/.ssh/id_rsa.home` (`:173`).
+   * Dry-run the inventory first: `infra/ansible/bin/gen-inventory.py --stdout`.
+
    Since TBD-419 the play no longer performs an unbounded `apt upgrade` as a
-   side effect, so this step is safe to run for a credential change alone. The
-   MySQL packages are held; `redis-server` deliberately is not.
+   side effect, so no package moves on a routine converge. The MySQL packages
+   are held; `redis-server` deliberately is not.
+
+   ⚠ **If the play fails, re-run it. Do not try to roll back, and prefer
+   letting a failure finish over Ctrl-C.** The account tasks
+   (`roles/mysql/tasks/main.yml:167-234`) and the Redis restart
+   (`roles/redis/tasks/main.yml:188`) both run *before* their verification
+   fences, so a fence failure leaves a box whose credentials have already moved.
+   Re-running is safe: the three account tasks rewrite unconditionally.
+   `force_handlers: true` makes a failed *task* still flush the restart
+   handlers, but **a SIGINT does not** — a Ctrl-C after
+   `roles/redis/tasks/main.yml:49-60` leaves the new `requirepass` on disk and
+   the old one in memory, and `redis-server` is deliberately unheld, so the next
+   unattended restart or reboot flips the enforced credential at an hour nobody
+   chose. If a `mysql_user` task itself fails its message is censored by
+   `no_log`; remove `no_log` temporarily to read the driver error, then restore
+   it (`roles/mysql/tasks/main.yml:156-161`).
 
 4. **Re-encrypt FOUR values in the DO console.** Do not take that count on
    trust — the enumeration below has already gone stale once. Read it off the
@@ -861,22 +1054,148 @@ roughly seven minutes of the 24-minute outage on 2026-08-19.
    grep -n 'key: DATABASE_URL\|key: REDIS_URL' .do/app.yaml
    ```
 
-   As of 2026-08-27 that is `services.backend` `DATABASE_URL` and `REDIS_URL`,
+   As of 2026-08-28 that is `services.backend` `DATABASE_URL` and `REDIS_URL`,
    and `jobs.migrate` `DATABASE_URL` and `REDIS_URL`. **The migrate job binds
    its own copy of BOTH.**
 
-   ⚠ Step 6's table above says THREE. It predates 2026-08-20, when the migrate
-   job gained its own `REDIS_URL`, and is stale. Missing that fourth binding is
-   silent: `assert-app-spec-secrets-synced.sh` compares committed against live,
-   so it happily syncs a stale value, and `Settings.redis_url` defaults to `""`
-   — so the rotation "succeeds" and the first PRE_DEPLOY job that touches Redis
-   fails on a credential the runbook said was rotated.
+   ⚠ **All four must land before any deploy runs.** Secrets are stored per
+   component, so `backend` and `jobs.migrate` are separate saves, and this
+   file's own cutover notes record that saving in the console starts a deploy
+   (see step 6's note around line 477 — worth re-confirming, it is the one
+   behaviour here not evidenced in the repo). If it does, saving `backend`
+   first fires a deploy whose PRE_DEPLOY `migrate` job still holds the old
+   `DATABASE_URL` and fails at 6/12 — the same failure the ordering note above
+   describes. Save `jobs.migrate` first and `backend` last. ⚠ The intermediate
+   deploy will then **succeed** — its migrate job has the new credential — and
+   still come up with a backend 500ing on every database call, because
+   `/health` returns 200 regardless. Do not read that green deploy as "done";
+   the second save is what repairs it. Editing all four into a single
+   `doctl apps update <APP_ID> --spec` avoids the intermediate state, at the
+   cost of hand-editing a generated spec.
 
-5. **Sync the re-encrypted spec back into `.do/app.yaml` and commit it**, per
-   step 9 above. This is the step that was skipped in 2026-08-20.
+   ⚠ **This count went stale twice before 2026-08-28** — the cutover's step 6
+   table and step 9's diff list both said THREE, because the migrate job gained
+   its own `REDIS_URL` on 2026-08-20 and nothing made the prose follow. Both are
+   corrected now, and all three sites are machine-checked against the spec by
+   `backend/tests/test_rotation_runbook_credential_bindings.py`. Missing a
+   binding produces
+   **no error at all, ever** — not a loud failure on the next deploy, as this
+   runbook previously claimed. `backend/scripts/migrate.py` contains zero Redis
+   references and `Settings.redis_url` defaults to `""`
+   (`backend/app/config.py:90`), so nothing fails. And
+   `assert-app-spec-secrets-synced.sh` compares **committed against live** only
+   (`:84-114`), so a value that is stale in *both* matches and passes the guard.
+   You are left with a rotation you believe is complete, a dead credential in
+   the spec, and a trap for the first job that ever does use Redis.
 
-6. **Redeploy and verify** `/ready`, `/health/dependencies`, and a real login —
-   not just a 200 from the health endpoint.
+5. **Sync the re-encrypted spec back into `.do/app.yaml` and commit it.** This
+   is the step that was skipped in 2026-08-20.
+
+   Follow step 9's mechanics (9a fetch, 9c copy, 9d PR). Its enumeration was
+   corrected on 2026-08-28 and now agrees with this one, but note a rotation
+   swaps **four EV blobs and no `vpc:` change**:
+
+   * `services.backend.envs[DATABASE_URL]`
+   * `services.backend.envs[REDIS_URL]`
+   * `jobs.migrate.envs[DATABASE_URL]`
+   * `jobs.migrate.envs[REDIS_URL]`
+
+   ⚠ Step 9b's `diff -u` is close to unusable here: the committed file is
+   comment-dense and the live spec is machine-generated with no comments, so the
+   diff is dominated by noise. Use the two checks below instead.
+
+   **Check A — all four actually moved.** The sync guard cannot see this,
+   because it compares committed against live rather than against the previous
+   value. ⚠ Run this **before** `git commit`, or `HEAD` is already the new spec
+   and the diff is empty — which reads as "zero of four moved":
+
+   ```bash
+   git show origin/main:.do/app.yaml > /tmp/prev-app.yaml
+   diff <(grep -A3 'key: DATABASE_URL\|key: REDIS_URL' /tmp/prev-app.yaml) \
+        <(grep -A3 'key: DATABASE_URL\|key: REDIS_URL' .do/app.yaml)
+   ```
+
+   All four `EV[...]` values must differ. If only three do, you missed a binding
+   in step 4.
+
+   **Check B — committed now agrees with live.** Run the same script CI runs,
+   locally, rather than eyeballing a diff:
+
+   ```bash
+   pip3 install --quiet pyyaml          # the script needs it; CI installs it too
+   APP_NAME=pfv ./scripts/ci/assert-app-spec-secrets-synced.sh
+   ```
+
+   `doctl` must be authenticated. It must print
+   `all 16 secrets match the live app`. Anything else names the
+   offending `component/key` explicitly.
+
+   ⚠ This list and step 4's count are machine-checked against `.do/app.yaml`
+   by `backend/tests/test_rotation_runbook_credential_bindings.py`. Keep the
+   `component.envs[KEY]` form; reformatting it into a table goes red.
+
+   ⚠ **`main` is undeployable until this PR merges.** Between step 4 and the
+   merge, any unrelated merge to `main` hits the same guard and is refused.
+   Land it before anything else.
+
+   ⚠⚠ **This PR will NOT deploy itself, and nothing will tell you.** Titled the
+   way every infra change in this repo is titled — `fix(infra):`,
+   `chore(infra):`, even `feat(infra):` — it publishes **no release**:
+   `.releaserc.json`'s `{"scope": "infra", "release": false}` is the last rule
+   and a suppression that comes last wins (TBD-424). `release.yml:147` gates
+   `deploy` on `new_release_published == 'true'`, so the deploy is skipped —
+   and `notify-undeployed-release` is gated on the **same** output
+   (`release.yml:251`), so the alarm cannot fire either. Measured 2026-08-28:
+   the last release is `v0.259.3` (2026-08-27) and the five infra merges since
+   it all show a green `Release` run that published and deployed nothing.
+   Step 6 therefore has to deploy explicitly.
+
+6. **Deploy explicitly, then verify.** Merging step 5 does not deploy (see the
+   warning above), and `.do/app.yaml` sets `deploy_on_push: false`. Once the
+   step-5 PR is merged, run the documented escape hatch:
+
+   ```bash
+   gh workflow run deploy.yml --ref main
+   ```
+
+   ⚠ **Only after step 5 has merged** — but running it early is *refused*, not
+   destructive. `deploy.yml:48-54` runs the same secret-sync guard `release.yml`
+   does, so an early run exits 1 and names the drifted `component/key` values.
+   It is "ungated" only against the post-merge **test** interlock, not against
+   the secret guard.
+
+   ⚠⚠ **Never set the workflow's `allow_secret_drift` input to `true` during a
+   rotation.** It defaults to `false` (`deploy.yml:27`) and it is the single
+   switch that turns this step into the 2026-08-20 failure by hand — its own
+   description is "Deploy even if the committed .do/app.yaml would OVERWRITE a
+   live secret". If the guard refuses you, step 4 or step 5 is incomplete; fix
+   that instead.
+
+   Verify `/ready`, `/health/dependencies`, and a real login — not just a 200
+   from the health endpoint. `/ready` is database-only by design
+   (`backend/app/main.py:738`); `/health/dependencies` is the one that covers
+   Redis (`:771`). `/health` proves nothing here.
+
+   ⚠ **Prove the MySQL credential directly — nothing in the play does.** The
+   play connects as `root` over the unix socket throughout and never
+   authenticates as `pfv_app`, so a wrong app password survives every fence. On
+   the droplet, using the value whose fingerprint you recorded in step 2:
+
+   ```bash
+   mysql -u pfv_app -p -h 127.0.0.1 pfv2 -e 'SELECT 1'
+   ```
+
+   ⚠ **Verify the backup account too.** `mysql_backup_password` was rotated
+   (`roles/mysql/tasks/main.yml:167-177`) and its only on-box consumer,
+   `/root/.my.cnf`, is re-templated in the same run (`:242-254`) — so a
+   completed play is self-consistent, but a play interrupted between those two
+   tasks silently kills the nightly dump, which is the only durability floor
+   this file records. None of the checks above touch `pfv_backup`:
+
+   ```bash
+   ssh root@<data-droplet> "/usr/local/bin/mysql-backup.sh" \
+     && ssh root@<data-droplet> "ls -la /var/backups/mysql/ | tail -3"
+   ```
 
 ⚠ **`--check --diff` no longer shows you the Redis config diff.** The task that
 installs `00-static.conf` now carries `no_log: true`, so its diff is censored.
@@ -886,6 +1205,21 @@ means Redis stops listening on the address App Platform uses. That check is no
 longer available from the dry run. Verify `bind` instead by reading the rendered
 template source against the inventory before the run, and rely on the role's own
 live `bind` fence — which runs after apply, and is what actually catches it.
+
+⚠ Reading the *existing* `inventory.yml` is not sufficient for that check:
+`run-playbook.sh:96-105` **regenerates** the inventory at run time, so the
+`private_ipv4` the run will use may differ from the one on disk. Compare the
+generated value against Terraform:
+
+```bash
+diff <(infra/ansible/bin/gen-inventory.py --stdout | awk '/private_ipv4:/ {print $2}') \
+     <(terraform -chdir=infra/terraform output -raw droplet_private_ipv4; echo)
+```
+
+⚠ The `awk` and the trailing `echo` are both load-bearing: `gen-inventory.py`
+emits an indented `private_ipv4: <value>` line and `terraform output -raw` emits
+the bare value with no trailing newline, so the naive `grep` form can never
+produce an empty diff and trains you to ignore it.
 
 ### Why these are quotable in the first place
 

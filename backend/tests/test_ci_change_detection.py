@@ -237,6 +237,31 @@ def test_a_deleted_file_still_counts_as_a_change(tmp_path):
 
 
 @needs_git
+def test_the_migration_runbook_is_a_backend_change_despite_being_markdown(tmp_path):
+    """⚠ `backend/tests/test_rotation_runbook_credential_bindings.py` PARSES
+    `infra/MIGRATION.md`, so a prose-only edit to it is a backend change. It is
+    matched ABOVE the inert `*.md` pattern on purpose: classified as prose, the
+    six shards skip and the fence is disarmed on exactly the docs-only PR that
+    drifts the runbook away from `.do/app.yaml` -- the drift it exists to catch.
+
+    This is the same exception `frontend/tests/fixtures/` already carries, for
+    the same reason: a test reads the file."""
+    repo, base = _repo(tmp_path, {"infra/MIGRATION.md": "runbook v2\n"})
+    out = _detect(repo, tmp_path, base=base)
+    assert out == {"backend": "true", "frontend": "false", "migrations": "true"}
+
+
+@needs_git
+def test_another_infra_markdown_file_is_still_prose(tmp_path):
+    """The exception above is scoped to ONE file, not to `infra/*.md`. No test
+    reads the others, and widening it would run the backend suite for every
+    infra note."""
+    repo, base = _repo(tmp_path, {"infra/NOTES.md": "notes\n"})
+    out = _detect(repo, tmp_path, base=base)
+    assert out == {"backend": "false", "frontend": "false", "migrations": "false"}
+
+
+@needs_git
 def test_a_nested_markdown_file_is_still_prose(tmp_path):
     """`backend/README.md` must not run the backend suite: the inert patterns
     are checked BEFORE the area prefixes, on purpose."""
