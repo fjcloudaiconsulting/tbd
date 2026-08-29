@@ -145,12 +145,39 @@ const PIE = ".recharts-pie-sector path";
 describe("TBD-428: recharts honours prefers-reduced-motion", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+    // ⚠⚠ FAKE TIMERS ARE LOAD-BEARING HERE, NOT TIDINESS (TBD-459).
+    //
+    // recharts 3.x drives its internal store with Redux Toolkit, whose
+    // ``autoBatchEnhancer`` schedules notifications through
+    // ``createRafWithFallbackTimer``: it arms BOTH ``raf(callback)`` and
+    // ``setTimeout(callback, timeout)``, and whichever fires first calls
+    // ``cancelAnimationFrame(rafId)`` — a BARE global lookup, resolved when it
+    // runs — then clears the other.
+    //
+    // The rAF stub below returns a handle and never invokes its callback, by
+    // design (see the Discriminator note above). So the rAF arm can never fire,
+    // ``clearTimeout`` never runs, and the fallback timer is left armed. On a
+    // loaded runner it lands AFTER vitest tears the jsdom environment down, at
+    // which point ``cancelAnimationFrame`` no longer exists:
+    //
+    //   ReferenceError: cancelAnimationFrame is not defined
+    //     ❯ Timeout.callback @reduxjs/toolkit/src/autoBatchEnhancer.ts:23
+    //
+    // That is an UNHANDLED error, so vitest fails the whole suite while
+    // reporting every test passed — measured on main 2026-08-29, and green on a
+    // re-run of the identical commit. Two timers are left pending per render;
+    // faking them keeps them off the real event loop, and ``useRealTimers`` in
+    // the teardown below discards them. Do not "simplify" this away.
+    vi.useFakeTimers();
     // No animation frame ever lands — see the Discriminator note above.
     vi.stubGlobal("requestAnimationFrame", () => 0);
     vi.stubGlobal("cancelAnimationFrame", () => {});
   });
 
   afterEach(() => {
+    // Order matters: drop the faked clock (discarding recharts' still-armed
+    // autobatch timers) before restoring the globals it would have reached for.
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
