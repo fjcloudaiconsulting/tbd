@@ -126,11 +126,11 @@ services:
       - key: DATABASE_URL
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: EV[1:XUT1TlqcW/HdmQtZ0noDVLR8Epn/jJn2:8OzPDgoF7seCPEoqk7s+svSyhIiGZijKVtTxrFUUxrRKP2DR67tZ11koB0fdEQ2hmUA7Mf+VKpFNhJQjSuIvE/DlB8HDmHZwmgjMv0eo7HOYwfyp+GMSSi4YxEronQWyzPiEFqo=]
+        value: EV[1:MiEyB8QYpUb3N2DI4RPeO84UZWHXqJRy:vmO08+9FABFEcbfKJV9l1P0SAFcNOtEIh7VGw0S4si4SyENurmMtCW/PL3Q21cumPvabvJ6rGku73wrQp8Op/6Pxt/XSeFaAmNnhS/HJE3qPPQD1Z+iMWYdBeBdnf2t6DzwUwRY=]
       - key: REDIS_URL
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: EV[1:im+RTL38BgkEtYc08E2S4l60v4n4wDPQ:KhTIHkx+rdQXwI6vH3qT4xz6SaYTRpNe0geYITuwOAnLQDpII+BJDbeBpbfI2DCTuJVr+vTLf/932nSa9f6Z5CHN0zxUwvNJlWpddeNbpCUmWA==]
+        value: EV[1:a+BRM+6nsG7tKCi6Z/1mxIDaLdvxdbCb:CUcOpneEgsJVX17+HgunBRmEztglfpgNO53km7htlVYBlDtd/CsxC/P1e51FPiqRqs/cDL+zWWBzatlrLkhS0ulUQRq/uXPTYf5Va2U/h642ow==]
       - key: JWT_SECRET_KEY
         scope: RUN_AND_BUILD_TIME
         type: SECRET
@@ -399,7 +399,7 @@ jobs:
       - key: DATABASE_URL
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: EV[1:CgW1iHYJXh470rWzyOT/Nqo1jh7Eal5J:CrA6IoXAdW3lA90cwvnb18vNOirc5pq8k1UUuI7Lsz4W3ZbpJ5llu/NCBPyHlfmZYREXn60wYDYqqFnZecHGBr0yg+IXM7/614vIlddj2x6CvekDpZwHHEt9iE1AS9+LiOctGa0=]
+        value: EV[1:T+Ygh+qjAAPfBgXkthTDcFGwnmYGoVor:wRA9ROqu8UNLLUlkD5V+6z7t1luPk2VjjsEgQSkzO2qU7XhAGsHX7gE5+wkD0qtltG5orIL4jbSptMFLv7eJlEUxu6syoyrP3gkc1cUI77H+wYj1yKDVhdDzipFUIz0c74gv59U=]
       # Present on the live app since 2026-08-20. migrate.py imports
       # app.config, whose Settings declares `redis_url: str = ""`, so the
       # job does NOT require this. Synced rather than dropped: deleting a
@@ -407,7 +407,7 @@ jobs:
       - key: REDIS_URL
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: EV[1:rj351YUZH0T+k3OsR8t7NpazBpuQfI1P:KR3DX+4Aw1E/JU/+GbwzM9Ft0hqii4U2shJjM4RRw6H5DQC/WGeP3wPtsbAm6yVFVptZSbO4W1tdY6pT+v+KvXWMwK//WoUxpyGtbLgPt8t/aQ==]
+        value: EV[1:mZXRtt5VUTL8luXHuIIkLwMtLxORJ5km:i3D3hjxuyQjo1cRK6khYa0UEkuTn4wSGNRCx3DZVufDHA+W/FuPhIIxfY+S252fWeQIMbFDtaxWIzJ5D6ZFqlPnwj/3dHVkOyGV8hKOsb98gtQ==]
       - key: JWT_SECRET_KEY
         scope: RUN_AND_BUILD_TIME
         type: SECRET
