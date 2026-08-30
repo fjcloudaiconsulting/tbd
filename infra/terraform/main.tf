@@ -150,17 +150,42 @@ module "firewall" {
 # @ / : # ? or % silently corrupts the userinfo section unless every consumer
 # percent-encodes it identically, and they do not. 40 chars of [A-Za-z0-9] is
 # ~238 bits of entropy -- far past anything special characters would buy.
+#
+# ⚠ ROTATING THESE: bump `keepers.rotated` below (all three together) and follow
+# infra/MIGRATION.md "Credential rotation (TBD-414)" END TO END. `random_password`
+# keeps its value in state across applies and regenerates only when the resource
+# is REPLACED, which is what a changed keeper forces.
+#
+# ⚠⚠ The apply is a ONE-WAY DOOR. The previous value is discarded; reverting the
+# bump generates a THIRD password, it does not restore the old one. From the apply
+# onward, TFC state and the live droplet disagree until the ansible play has run
+# (runbook step 3) -- so only bump this in the sitting you intend to finish.
+#
+# ⚠ keepers are NOT sensitive and appear in plaintext in plan output. Use a date
+# or a counter, never anything derived from a password.
 resource "random_password" "mysql_app" {
   length  = 40
   special = false
+
+  keepers = {
+    rotated = "2026-08-30"
+  }
 }
 
 resource "random_password" "mysql_backup" {
   length  = 40
   special = false
+
+  keepers = {
+    rotated = "2026-08-30"
+  }
 }
 
 resource "random_password" "redis" {
   length  = 40
   special = false
+
+  keepers = {
+    rotated = "2026-08-30"
+  }
 }
