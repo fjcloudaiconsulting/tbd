@@ -49,15 +49,16 @@ class Transaction(Base):
       8. The reserved TransactionType.TRANSFER value is not used by the
          pairing model; legs are typed by direction.
 
-    ``linked_transaction_id`` has two writers. ``transaction_service._link_pair``
-    sets it **bidirectionally** for transfer pairs and import pairing (and
-    ``unpair_transactions`` clears that pairing). ``reconciliation_service._apply_match``
-    also writes it **one-way** to point an imported row at its reconcile match.
+    ``linked_transaction_id`` has THREE writers. ``transaction_service._link_pair``
+    sets it **bidirectionally** for transfer pairs and import pairing;
+    ``transaction_service.unpair_transactions`` clears both sides; and
+    ``reconciliation_service._apply_match`` writes it **one-way** to point an
+    imported row at its reconcile match.
     Because a reconcile match reuses this column, forecast/balance queries must
     gate CC payment-in legs with ``balance_contribution_filter`` (transaction_filters.py)
     rather than assume every ``linked_transaction_id`` is a transfer leg (the Slice-3 gotcha).
 
-    The SAME two-writer hazard governs list display. ``list_transactions``
+    The SAME shared-column hazard governs list display. ``list_transactions``
     (``collapse_transfers=True``, TBD-268) folds a transfer pair to one row
     server-side, BEFORE the LIMIT, and its predicate
     (``transaction_service._transfer_collapse_clause``) tests MUTUALITY for
