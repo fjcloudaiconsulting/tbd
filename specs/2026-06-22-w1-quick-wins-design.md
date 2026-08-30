@@ -84,7 +84,7 @@ This is enough signal for the later inactivity rule; no scheduler is built now.
 The apex is a **static export** (no server runtime; client-side fetch only). A bearer token would be exposed in the public bundle, so we use a **public, count-only** endpoint (the number is non-sensitive by design).
 
 - **New public router** `backend/app/routers/public_stats.py` (or extend an existing public surface): `GET /api/v1/public/founder-count` → `{ "count": <int> }`. No auth.
-- **Count query**: `is_founder = 1 AND is_active = 1`, **excluding** a configurable username list `FOUNDER_COUNT_EXCLUDE_USERNAMES` (CSV env, default `pfv_smoke_l05`). Parse like the existing CSV env settings in `config.py`.
+- **Count query**: `is_founder = 1 AND is_active = 1`, **excluding** a configurable username list `FOUNDER_COUNT_EXCLUDE_USERNAMES` (CSV env, default `<smoke-account-username>`). Parse like the existing CSV env settings in `config.py`.
 - **Cache**: Redis with a short TTL (e.g. 300 s) keyed `public:founder_count`; fall back to a direct COUNT if Redis is unavailable (never 500 — return a sane number or the cached/last value).
 - **Rate-limit**: apply the existing slowapi limiter (mirror other public routes), generous but bounded.
 - **CORS**: add the apex origins (`https://thebetterdecision.com`, `https://www.thebetterdecision.com`) to `BACKEND_CORS_ORIGINS` (`config.py:148` default for dev, and the prod value in `.do/app.yaml`). GET only is already allowed.

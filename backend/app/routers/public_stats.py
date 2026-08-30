@@ -53,6 +53,14 @@ async def founder_count(
     excluded = settings.founder_count_exclude_list
     if excluded:
         stmt = stmt.where(User.username.notin_(excluded))
+    elif settings.app_env == "production":
+        # TBD-371. An empty list is not an error the query can surface: the
+        # count simply comes back one too high (the smoke account is a real,
+        # active founder row) and the page renders it. Nothing else in the
+        # system notices. This is deliberately a LOG and not a refusal --
+        # the blast radius of the value being unset is one wrong integer on
+        # a marketing counter, and refusing would trade that for an outage.
+        logger.error("public.founder_count.no_exclusions")
     try:
         count = int(await db.scalar(stmt) or 0)
     except Exception:  # noqa: BLE001 — a public counter must never 500

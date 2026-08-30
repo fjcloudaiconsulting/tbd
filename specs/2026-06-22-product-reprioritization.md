@@ -42,7 +42,7 @@ Operator-chosen sequence: **quick wins first → visual refresh → customizable
 - **Flag founders from now**, and **grandfather all existing users** (`is_founder` default `1`) — the friends testing today are the most-founding members.
 - **Track activity now, enforce later** — stamp `last_active_at`; the revoke-on-30-days-inactivity logic ships with payments (no scheduler built prematurely).
 - **Referral**: referred user gets **30% off year 1** when charging begins — designed/activated in the payments wave, not now.
-- **Counter delivery**: hardened **public count-only** endpoint (no token — the apex is a static export, so any token would be exposed in the browser; the count is non-sensitive by design). Excludes a config username list (e.g. `pfv_smoke_l05`).
+- **Counter delivery**: hardened **public count-only** endpoint (no token — the apex is a static export, so any token would be exposed in the browser; the count is non-sensitive by design). Excludes a config username list (e.g. `<smoke-account-username>`).
 
 ### W5 AI agent — scope captured (for its later brainstorm)
 Goal: an AI assistant that can perform **all actions available to users in the UI** via natural language, with **consistent answers** (seed the model where it helps). Plans actions **wired but left off** for now. This is an agentic tool-registry over the service layer with **preview-confirm-before-write** semantics and per-user auth scoping. XL; its own spec.

@@ -12,7 +12,7 @@
 - Alembic head is `8e83c1dbe51b`; new migration `066_founder_fields` chains off it. Migration revision-id convention: `revision = "066_founder_fields"`, `down_revision = "8e83c1dbe51b"`.
 - `is_founder` server_default `"1"` ⇒ existing rows grandfathered as founders (operator decision).
 - Soft cap: NO gating — every registration is a founder during the window.
-- Counter is **count-only** + public (apex is a static export; any token would leak in the bundle). Excludes a config username list (default `pfv_smoke_l05`).
+- Counter is **count-only** + public (apex is a static export; any token would leak in the bundle). Excludes a config username list (default `<smoke-account-username>`).
 - Backend tests run in an isolated compose project: `docker compose -p team-w1b ...` (per CLAUDE.md — never the default stack).
 - No em-dashes in customer copy (`feedback_no_em_dashes`); No-Off-Token for any UI color.
 - Hero offer line (operator-locked): **"Join as a founding member — free for life."** with the counter appended (`· N founding members so far`). NOTE: the apostrophe/dash policy test (`no-em-dash-in-customer-copy`) — use an en/em-dash-free phrasing; the existing Hero uses `&middot;`-style separators. Verify the copy passes `tests/voice/no-em-dash-in-customer-copy.test.ts` (use a regular hyphen "-" not "—").
@@ -196,7 +196,7 @@ Add `from app.services.user_activity_service import maybe_stamp_last_active` (im
 **Files:**
 - Create: `backend/app/routers/public_stats.py`
 - Modify: `backend/app/redis_client.py` (add `founder_count_cache_get/set` helpers)
-- Modify: `backend/app/config.py` (`founder_count_exclude_usernames: str = "pfv_smoke_l05"` + `founder_count_exclude_list` property)
+- Modify: `backend/app/config.py` (`founder_count_exclude_usernames: str = "<smoke-account-username>"` + `founder_count_exclude_list` property)
 - Modify: `backend/app/main.py` (import + `app.include_router(public_stats.router)`)
 - Modify: `.do/app.yaml` (BACKEND_CORS_ORIGINS line 104 → add apex origins)
 - Test: `backend/tests/routers/test_public_stats.py`
@@ -204,7 +204,7 @@ Add `from app.services.user_activity_service import maybe_stamp_last_active` (im
 **Interfaces:**
 - Produces: `GET /api/v1/public/founder-count` → `{"count": int}`. No auth.
 
-- [ ] **Step 1: Write failing tests** — seed N founders (incl. one named `pfv_smoke_l05` and one inactive), GET the endpoint: `count` excludes the smoke user AND the inactive user; endpoint is reachable without auth; never 500 when Redis is absent (dev). Read `test_public_stats`-style siblings / an existing public test for the client fixture.
+- [ ] **Step 1: Write failing tests** — seed N founders (incl. one named `<smoke-account-username>` and one inactive), GET the endpoint: `count` excludes the smoke user AND the inactive user; endpoint is reachable without auth; never 500 when Redis is absent (dev). Read `test_public_stats`-style siblings / an existing public test for the client fixture.
 
 - [ ] **Step 2: Run, verify fail.**
 
@@ -212,7 +212,7 @@ Add `from app.services.user_activity_service import maybe_stamp_last_active` (im
 
 `config.py`:
 ```python
-    founder_count_exclude_usernames: str = "pfv_smoke_l05"
+    founder_count_exclude_usernames: str = "<smoke-account-username>"
 ```
 and a property:
 ```python
