@@ -880,7 +880,7 @@ roughly seven minutes of the 24-minute outage on 2026-08-19.
 
    The three resources are `random_password.mysql_app`,
    `random_password.mysql_backup` and `random_password.redis`, at
-   `infra/terraform/main.tf:153-166`. ⚠ The `mysql_app_password` /
+   `infra/terraform/main.tf:166-191`. ⚠ The `mysql_app_password` /
    `mysql_backup_password` / `redis_password` names above are **outputs**
    (`infra/terraform/outputs.tf:29-45`), not resource addresses — searching for
    a resource by those names finds nothing.
@@ -889,17 +889,24 @@ roughly seven minutes of the 24-minute outage on 2026-08-19.
    (`infra/terraform/main.tf:4-16`) and every CLI use of it in this repo is
    read-only (`bin/run-playbook.sh:118`, `:139`, `bin/gen-inventory.py:41-44`).
    The taint / `-replace` path has never been exercised here and this runbook
-   does not support it; `keepers` is the route below. Add a `keepers` map to the
-   three resources and bump it:
+   does not support it; `keepers` is the route. All three resources now carry
+   one, so a rotation is a **one-line bump on each** — change the date and keep
+   the three identical:
 
    ```hcl
-   keepers = { rotated = "2026-08-28" }   # bump this value to rotate
+   keepers = {
+     rotated = "2026-08-30"   # bump this value to rotate
+   }
    ```
 
-   ⚠ Adding `keepers` where there were none is itself a change, so it
-   regenerates on the first apply. Do it in the sitting you intend to complete
-   the rotation, not ahead of time — between the apply and step 3, TFC state
-   and the live box disagree.
+   ⚠ Bump **all three together.** Bumping one replaces only that password, and
+   nothing downstream notices: steps 3-6 rewrite and re-encrypt all three
+   regardless, so a partial rotation completes green and leaves two credentials
+   exactly as exposed as they were before.
+
+   ⚠ A changed keeper regenerates on the **next apply**. Do it in the sitting
+   you intend to complete the rotation, not ahead of time — between the apply
+   and step 3, TFC state and the live box disagree.
 
    ⚠ `keepers` values are **not** sensitive and appear in plaintext in plan
    output. Use a date or a counter, never anything derived from a password.
