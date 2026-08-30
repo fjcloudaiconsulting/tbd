@@ -1,7 +1,6 @@
 import React from "react";
 import {
   renderWithSWR,
-  fireEvent,
   screen,
   waitFor,
 } from "../utils/render-with-swr";
@@ -206,16 +205,8 @@ describe("ForecastPlans page — proportional layout", () => {
     renderClient(plan);
 
     // Wait for the toggle to appear (defaults off), then click to show details.
-    await waitFor(() => {
-      expect(
-        screen.getByRole("switch", { name: /show details/i }),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
-
-    // The chart heading renders only when showDetails is true AND chartData
-    // is non-empty (the expense item above populates chartData).
+    // The chart heading renders whenever chartData is non-empty (the
+    // expense item above populates chartData). TBD-465 removed the toggle.
     await waitFor(() => {
       expect(
         screen.getByText("Planned vs Actual (Expenses)"),
@@ -227,7 +218,7 @@ describe("ForecastPlans page — proportional layout", () => {
     expect(chartContainer).toContainElement(chartHeading);
   });
 
-  it("Show details toggle on via click: legend card renders beside the chart", async () => {
+  it("legend card renders beside the chart", async () => {
     const plan = makePlan([
       {
         category_id: 20,
@@ -243,15 +234,6 @@ describe("ForecastPlans page — proportional layout", () => {
     renderClient(plan);
 
     // Wait for the toggle to appear (defaults off).
-    await waitFor(() => {
-      expect(
-        screen.getByRole("switch", { name: /show details/i }),
-      ).toBeInTheDocument();
-    });
-
-    // Toggle on via click (not localStorage pre-seed) to avoid coupling to key.
-    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
-
     await waitFor(() => {
       expect(
         screen.getByText("Planned vs Actual (Expenses)"),

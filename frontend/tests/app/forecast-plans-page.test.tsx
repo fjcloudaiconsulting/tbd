@@ -819,14 +819,9 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     mockApiFetch(plan);
     renderClient(plan);
 
-    // Refresh from sources is gated behind the Show details toggle
+    // Refresh from sources renders unconditionally on a draft (TBD-465)
     // (defaults off post-PR-B forecasts UX restructure). Flip it on
     // before asserting the button is visible.
-    await waitFor(() => {
-      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
-    });
-    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
-
     await waitFor(() => {
       expect(screen.getByText("Refresh from sources")).toBeTruthy();
     });
@@ -909,7 +904,13 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     expect(combobox.value).toBe("");
   });
 
-  it("Show details toggle defaults off: Variance/Source columns and Refresh-from-sources are hidden on a draft plan", async () => {
+  // FENCE (TBD-465). Kills the wrong implementation "the toggle still
+  // exists and merely defaults to on" — which an assertion that the
+  // details are VISIBLE would happily pass. The load-bearing assertion
+  // is the negative one: there is no switch on the page at all. The
+  // positive assertions below then prove the removal revealed the
+  // content rather than deleting it.
+  it("the Show details toggle is gone, and everything it used to gate renders unconditionally", async () => {
     const plan = makePlan([
       {
         category_id: 20,
@@ -928,42 +929,51 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
       expect(screen.getByText("Groceries")).toBeTruthy();
     });
 
-    // Toggle is off by default — labelled "Show details".
-    const toggle = screen.getByRole("switch", { name: /show details/i });
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    // The control itself is gone. Not "off", not "on" — absent.
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    expect(screen.queryByText("Show details")).toBeNull();
+    expect(screen.queryByText("Hide details")).toBeNull();
 
-    // Variance + Source columns hidden.
-    expect(screen.queryByText("Variance")).toBeNull();
-    expect(screen.queryByText("Source")).toBeNull();
-    // Auto label (source) is also hidden.
-    expect(screen.queryByText("Auto")).toBeNull();
-    // Refresh-from-sources hidden on draft when details off.
+    // Everything the toggle used to hide is now always rendered.
+    expect(screen.getByText("Variance")).toBeTruthy();
+    expect(screen.getByText("Source")).toBeTruthy();
+    expect(screen.getByText("Auto")).toBeTruthy();
     expect(
-      screen.queryByRole("button", { name: "Refresh from sources" }),
-    ).toBeNull();
+      screen.getByRole("button", { name: "Refresh from sources" }),
+    ).toBeTruthy();
   });
 
-  it("Show details toggle persists in localStorage and rehydrates on reload", async () => {
-    mockApiFetch(makePlan());
-    const { unmount } = renderClient(makePlan());
+  // FENCE (TBD-465). The preference key must be dead, not merely unread:
+  // a surviving write would keep re-persisting state for a control that
+  // no longer exists.
+  it("no longer reads or writes the show-details preference key", async () => {
+    localStorage.setItem("forecast-plans:show-details", "false");
+    const plan = makePlan([
+      {
+        category_id: 20,
+        category_name: "Groceries",
+        type: "expense",
+        planned_amount: 500,
+        source: "history",
+        actual_amount: 300,
+        variance: -200,
+      },
+    ]);
+    mockApiFetch(plan);
+    renderClient(plan);
 
+    // Wait for the DATA, not for the switch: "no switch" is vacuously
+    // true on the pre-load render, so waiting on it races the table.
     await waitFor(() => {
-      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
+      expect(screen.getByText("Groceries")).toBeTruthy();
     });
-    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
 
-    // Persisted to localStorage.
-    await waitFor(() => {
-      expect(localStorage.getItem("forecast-plans:show-details")).toBe("true");
-    });
-    unmount();
-
-    // Re-render with the same localStorage state — the toggle should
-    // come back as "Hide details" (i.e. on).
-    renderClient(makePlan());
-    await waitFor(() => {
-      expect(screen.getByRole("switch", { name: /hide details/i })).toBeTruthy();
-    });
+    // A stale "false" from before the removal must not suppress anything,
+    // and nothing may write the key back.
+    expect(localStorage.getItem("forecast-plans:show-details")).toBe("false");
+    expect(screen.getByText("Variance")).toBeTruthy();
+    localStorage.removeItem("forecast-plans:show-details");
   });
 
   it("Finalized plan + details on: Refresh from sources opens 'Edit and refresh plan' modal with locked copy and confirm label", async () => {
@@ -984,11 +994,6 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
 
     mockApiFetch(finalized);
     renderClient(finalized);
-
-    await waitFor(() => {
-      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
-    });
-    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
 
     await waitFor(() => {
       expect(
@@ -1055,11 +1060,6 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     renderClient(finalized);
 
     await waitFor(() => {
-      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
-    });
-    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
-
-    await waitFor(() => {
       expect(
         screen.getByRole("button", { name: "Refresh from sources" }),
       ).toBeTruthy();
@@ -1118,11 +1118,6 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     renderClient(finalized);
 
     await waitFor(() => {
-      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
-    });
-    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
-
-    await waitFor(() => {
       expect(
         screen.getByRole("button", { name: "Refresh from sources" }),
       ).toBeTruthy();
@@ -1163,13 +1158,6 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     ]);
     mockApiFetch(plan);
     renderClient(plan);
-
-    // Source column is gated behind Show details (off by default
-    // post-PR-B). Flip it on so the label is visible.
-    await waitFor(() => {
-      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
-    });
-    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
 
     await waitFor(() => {
       expect(screen.getByText("Groceries")).toBeTruthy();
