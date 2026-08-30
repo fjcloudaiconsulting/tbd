@@ -1099,6 +1099,39 @@ roughly seven minutes of the 24-minute outage on 2026-08-19.
    and `jobs.migrate` `DATABASE_URL` and `REDIS_URL`. **The migrate job binds
    its own copy of BOTH.**
 
+   **Where the new values come from.** There is no URL output — you assemble
+   them from TFC state. Four fields, but only **two distinct strings**: backend
+   and migrate take identical values (the full table is at step 6 of the
+   cutover, but do not go looking for it — it is reproduced here because a
+   reader of THIS procedure never reaches that section):
+
+   ```
+   DATABASE_URL = mysql+aiomysql://pfv_app:<mysql_app_password>@<droplet_private_ipv4>:3306/pfv2
+   REDIS_URL    = redis://:<redis_password>@<droplet_private_ipv4>:6379/0
+   ```
+
+   ⚠ `REDIS_URL` has an **empty username** — `redis://:` — which is correct for
+   `requirepass`-only auth. Do not "correct" it to `redis://default:`.
+
+   Assemble them without ever printing a credential to the terminal:
+
+   ```bash
+   PRIV=$(terraform -chdir=infra/terraform output -raw droplet_private_ipv4)
+   DB="mysql+aiomysql://pfv_app:$(terraform -chdir=infra/terraform output -raw mysql_app_password)@${PRIV}:3306/pfv2"
+   RD="redis://:$(terraform -chdir=infra/terraform output -raw redis_password)@${PRIV}:6379/0"
+
+   # verify the shape without exposing the secret
+   echo "$DB" | sed -E 's#(//[^:]*:)[^@]+(@)#\1<REDACTED>\2#'
+   echo "$RD" | sed -E 's#(//[^:]*:)[^@]+(@)#\1<REDACTED>\2#'
+
+   printf '%s' "$DB" | pbcopy    # paste into BOTH DATABASE_URL fields
+   printf '%s' "$RD" | pbcopy    # paste into BOTH REDIS_URL fields
+   ```
+
+   ⚠ These credentials are being rotated because they reached an agent
+   transcript. Do not echo them, and do not paste them into a chat window —
+   the clipboard hop above exists for that reason.
+
    ⚠ **All four must land before any deploy runs.** Secrets are stored per
    component, so `backend` and `jobs.migrate` are separate saves, and this
    file's own cutover notes record that saving in the console starts a deploy
@@ -1158,6 +1191,21 @@ roughly seven minutes of the 24-minute outage on 2026-08-19.
 
    All four `EV[...]` values must differ. If only three do, you missed a binding
    in step 4.
+
+   ⚠⚠ **An EMPTY diff has TWO causes and they need opposite responses.** Either
+   `HEAD` is already the new spec (you committed before checking — the case
+   above), **or 9c has not been done at all** and `.do/app.yaml` is still
+   untouched. The second is the likelier one on a first run through this
+   procedure and it looks identical. Tell them apart before doing anything:
+
+   ```bash
+   git diff --numstat .do/app.yaml     # 4 4 = the copy landed; empty = 9c not done
+   ```
+
+   Measured 2026-08-30: an operator ran 9a and both checks but not 9c, got an
+   empty Check A, and read it as the four values having failed to move. The
+   sync guard then correctly refused the deploy, naming all four as drifted —
+   which is what the *pre-copy* state looks like, not a failure.
 
    **Check B — committed now agrees with live.** Run the same script CI runs,
    locally, rather than eyeballing a diff:
