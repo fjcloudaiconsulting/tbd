@@ -937,8 +937,42 @@ roughly seven minutes of the 24-minute outage on 2026-08-19.
    current already at this step — not first at step 3.
 
    In the TFC plan, confirm all three resources are marked **`must be
-   replaced`**. `~ update in-place`, or `0 to change`, means step 1 did not
-   take. Then record fingerprints:
+   replaced`**. A correct rotation plan reads:
+
+   ```
+   Plan: 3 to add, 0 to change, 3 to destroy.
+   ```
+
+   ⚠⚠ **`0 to change` is the CORRECT reading here, not a failure.** Terraform
+   counts a replacement as an add plus a destroy, never as a change, so the
+   success path always shows zero changes. This line previously named
+   `0 to change` as evidence that step 1 had not taken, which would abort the
+   procedure on a perfectly good plan. What actually means step 1 did not take
+   is `No changes` / `0 to add, 0 to destroy`, or the three resources showing
+   `~ update in-place` instead of `-/+ must be replaced`.
+
+   ⚠ Confirm the plan touches **only** those three. A rotation must not carry a
+   droplet, VPC or firewall change in with it; if it does, that belongs in its
+   own PR. Verified on the speculative plan rather than eyeballed:
+
+   ```bash
+   TOK=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser(
+     '~/.terraform.d/credentials.tfrc.json')))['credentials']['app.terraform.io']['token'])")
+   curl -sL -H "Authorization: Bearer $TOK" \
+     "https://app.terraform.io/api/v2/plans/<PLAN_ID>/json-output" \
+   | python3 -c "
+   import json,sys
+   for r in json.load(sys.stdin).get('resource_changes',[]):
+       a=r['change']['actions']
+       if a!=['no-op']: print('+'.join(a), r['address'])
+   "
+   ```
+
+   Expect exactly three `delete+create` lines, one per `random_password`. The
+   `<PLAN_ID>` comes from the run the PR's `Terraform Cloud/FlamaCorp/tbd`
+   status links to (`gh api repos/<owner>/<repo>/commits/<sha>/status`).
+
+   Then record fingerprints:
 
    ```bash
    for o in mysql_app_password mysql_backup_password redis_password; do
