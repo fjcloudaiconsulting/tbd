@@ -1,0 +1,161 @@
+# Detect DRIFT in main's classic branch protection (TBD-420).
+#
+# ⚠⚠ WHAT A GREEN RUN MEANS, EXACTLY: the normalized fields of main's CLASSIC
+# branch protection equal `.github/branch-protection/main.json`. It does NOT mean
+# "nothing about main's protection changed". NOT COVERED:
+#
+#   * `allow_merge_commit` / `allow_rebase_merge` / `allow_squash_merge` -- these
+#     live on `GET /repos/{o}/{r}`, NOT on /protection. CLAUDE.md asserts
+#     squash-merge-only and the release pipeline depends on it, because the
+#     squash subject IS the string semantic-release parses. Re-enabling merge
+#     commits leaves this probe green. The most important uncovered setting here.
+#   * repository and organization rulesets
+#   * organization-level policy; required-workflow configuration
+#   * any field whose key ends `_url` (stripped during normalization)
+#   * whether a red required check ACTUALLY blocks a merge -- never once observed
+#
+# A monitor that overstates its coverage is worse than none, because the next
+# design decision will cite it. See .github/branch-protection/README.md.
+#
+# ⚠ WHY `push: branches: [main]` IS UNFILTERED AND IS THE PRIMARY TRIGGER. The
+# suspected primary cause -- a break-glass merge whose re-arm POST failed --
+# PRODUCES a push to main, so this collapses detection for that cause from nine
+# days to about a minute. A `paths:` filter would silently disable that, leaving
+# a probe that only fires when the probe itself changes. FENCED (F7), not merely
+# commented: in this repo a grep is routinely satisfied by a comment. Public-repo
+# scheduled workflows are auto-disabled after 60 days of inactivity, so the cron
+# is the backstop, not the mechanism. Safe because this workflow reports no
+# commit status and can never block a PR.
+name: Branch Protection Probe
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 05:41 UTC. Odd minute, off the top of the hour, where the queue is shortest.
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+# ⚠ `cancel-in-progress: false`. The DISTINGUISHING PROPERTY, not the conclusion:
+# this probe reads GLOBAL state and produces no per-run answer, so no run is
+# meaningfully superseded by a later one. A run does not end at the fetch, it
+# ends at the `gh issue` write, and cancelling between those points destroys an
+# alarm already earned: floor disarmed -> run A confirms drifted -> a later merge
+# kills run A mid-notify -> run B reads a healed floor and reports in-posture.
+# Observed drift, zero alarms. If this probe ever gains a per-run input, that
+# reasoning re-inverts and this must be revisited.
+concurrency:
+  group: branch-protection-probe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Branch Protection
+    runs-on: ubuntu-latest
+    # ⚠ A DEPARTURE FROM THE SIBLING PROBES, which carry no timeout. This one
+    # fires on every push to main, so a hung `gh` call would occupy the
+    # concurrency group (`cancel-in-progress: false`) and queue every later run
+    # behind it. Six minutes is ~20x the observed runtime.
+    timeout-minutes: 6
+    # ⚠ Job-level `permissions:` REPLACES workflow-level, it does not merge.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠ `GITHUB_TOKEN` structurally cannot read branch protection: the workflow
+      # `permissions:` key has no `administration` scope. A fine-grained PAT
+      # works but dies on a calendar date, and a recurring manual chore in a
+      # solo-maintainer repo is exactly what decays -- the same reasoning that
+      # rejects "rely on periodic manual checks", applied consistently.
+      #
+      # ⚠ continue-on-error so a revoked App or rotated key becomes a LOUD
+      # `could-not-run` alarm rather than a raw red square nobody opens.
+      # Removing key expiry does not make the mint infallible.
+      #
+      # ⚠⚠ SEQUENCING: the App and its secrets must exist BEFORE this merges.
+      # This probe fires on EVERY push to main, unfiltered; merging
+      # credential-less would spend the alarm's whole credibility on unactionable
+      # noise before it ever reports something true.
+      - name: Mint an installation token
+        id: auth
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.PROTECTION_PROBE_APP_ID }}
+          private-key: ${{ secrets.PROTECTION_PROBE_APP_KEY }}
+
+      # ⚠⚠ TWO CREDENTIALS, DELIBERATELY. The App token reads /protection; the
+      # workflow token reads `.protected`. Sharing one would mean a suspended App
+      # makes `.protected` unknown too, so a genuinely NAKED main would report
+      # `could-not-run` -- the fail-open that putting `.protected` first exists
+      # to prevent.
+      - name: Read main's protection and compare it to the posture
+        id: check
+        env:
+          PROBE_ADMIN_TOKEN: ${{ steps.auth.outputs.token }}
+          PROBE_METADATA_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          POSTURE_FILE: .github/branch-protection/main.json
+        run: |
+          set -uo pipefail
+          set +e
+          detail="$(bash scripts/ci/probe-branch-protection.sh 2>&1)"
+          rc=$?
+          set -e
+          # ⚠⚠ `|| true` IS LOAD-BEARING. `set -e` is restored two lines up and
+          # `pipefail` is on, so a no-match `grep` makes this ASSIGNMENT exit 1
+          # and kills the step before any output is written. With no outputs set,
+          # both the alarm and the fail step carry an implicit `success() &&` and
+          # are SKIPPED: red square, no issue, no alarm -- exactly what
+          # `continue-on-error` on the auth step exists to prevent, reintroduced
+          # three lines later. Measured: probe emits no `verdict=` line (script
+          # missing or renamed) -> step exit 1, zero outputs.
+          verdict="$(printf '%s\n' "$detail" | grep '^verdict=' | tail -n1 | cut -d= -f2 || true)"
+          if [[ "${{ steps.auth.outcome }}" != "success" && "$verdict" != "drifted" ]]; then
+            verdict="could-not-run"
+            detail="could not mint an installation token for the probe App. If the App has not been created and installed yet, that is expected and this alarm is correct."$'\n'"$detail"
+          fi
+          echo "verdict=${verdict:-could-not-run}" >> "$GITHUB_OUTPUT"
+          {
+            echo "detail<<DETAIL_EOF"
+            printf '%s\n' "$detail"
+            echo "DETAIL_EOF"
+          } >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$detail"
+          exit 0
+
+      # ⚠ GATED ON `!= 'in-posture'`, NEVER ON `== 'drifted'`. Gating on drift is
+      # SILENT on could-not-run, so an expired credential becomes permanent
+      # invisible blindness: the probe stops working and nothing says so.
+      #
+      # ⚠ GH_TOKEN here is the WORKFLOW token, not the App token. The App holds
+      # `Administration: read` and cannot open issues; using it would 403.
+      - name: Raise the alarm
+        id: alarm
+        if: steps.check.outputs.verdict != 'in-posture'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          VERDICT: ${{ steps.check.outputs.verdict }}
+          DETAIL: ${{ steps.check.outputs.detail }}
+        run: bash scripts/notify-protection-drift.sh
+
+      # ⚠⚠ `always() &&` IS LOAD-BEARING, NOT DECORATION. Actions implicitly ANDs
+      # `success()` into every `if:` that lacks a status function, so without it
+      # this step is SKIPPED whenever the alarm step failed -- and the alarm step
+      # hard-exits 2 if any of GH_TOKEN/GH_REPO/RUN_ID/VERDICT is empty
+      # (notify-protection-drift.sh:27-32). The result would be: drift detected,
+      # no issue opened, and a bare red square nobody opens, which is precisely
+      # the outcome this probe's design calls unacceptable.
+      - name: Fail the job when the posture does not hold
+        id: fail
+        if: always() && steps.check.outputs.verdict != 'in-posture'
+        run: |
+          echo "branch-protection verdict: ${{ steps.check.outputs.verdict }}" >&2
+          exit 1
