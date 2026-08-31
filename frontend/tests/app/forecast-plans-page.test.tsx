@@ -935,12 +935,19 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     expect(screen.queryByText("Hide details")).toBeNull();
 
     // Everything the toggle used to hide is now always rendered.
-    expect(screen.getByText("Variance")).toBeTruthy();
-    expect(screen.getByText("Source")).toBeTruthy();
-    expect(screen.getByText("Auto")).toBeTruthy();
+    //
+    // ⚠ toBeVisible, not toBeTruthy. Presence alone is satisfied by an
+    // element that is in the DOM but suppressed — a re-added preference read
+    // wired to `hidden=` or `display:none` keeps the node and passes a
+    // presence assertion, which is this repo's "a fence asserts existence,
+    // not behaviour" class. Measured: a `hidden={...}` mutant passed the
+    // presence form of this fence and fails the visibility form.
+    expect(screen.getByText("Variance")).toBeVisible();
+    expect(screen.getByText("Source")).toBeVisible();
+    expect(screen.getByText("Auto")).toBeVisible();
     expect(
       screen.getByRole("button", { name: "Refresh from sources" }),
-    ).toBeTruthy();
+    ).toBeVisible();
   });
 
   // FENCE (TBD-465). The preference key must be dead, not merely unread:
@@ -972,7 +979,10 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     // A stale "false" from before the removal must not suppress anything,
     // and nothing may write the key back.
     expect(localStorage.getItem("forecast-plans:show-details")).toBe("false");
-    expect(screen.getByText("Variance")).toBeTruthy();
+    // ⚠ Visibility, not presence — see the note on the fence above. A stale
+    // "false" must not suppress the column by ANY mechanism, whether that is
+    // unmounting it or merely hiding it.
+    expect(screen.getByText("Variance")).toBeVisible();
     localStorage.removeItem("forecast-plans:show-details");
   });
 
