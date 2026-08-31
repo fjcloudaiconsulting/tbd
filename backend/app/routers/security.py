@@ -43,13 +43,20 @@ from app.deps import get_session_factory
 from app.rate_limit import get_client_ip, limiter
 from app.services import audit_service
 
+# ⚠ Re-exported, NOT redefined (TBD-439). The default-view exclusion in
+# ``audit_service.list_audit_events`` must name the SAME string this writer
+# emits; two spellings would silently stop excluding while every unit test
+# stayed green, because each side's tests read the symbol its own module
+# uses. ``tests/test_csp_report.py::test_csp_row_is_hidden_from_the_default_
+# audit_view`` is the end-to-end fence that closes that gap.
+from app.services.audit_service import CSP_VIOLATION_EVENT_TYPE  # noqa: F401
+
 
 logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/api/v1/security", tags=["security"])
 
 
-CSP_VIOLATION_EVENT_TYPE = "security.csp_violation"
 
 # Hard cap on the request body we will read. CSP reports are small
 # JSON blobs; anything past this is either malformed or hostile. We

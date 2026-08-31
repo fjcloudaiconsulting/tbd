@@ -48,6 +48,14 @@ async def list_audit_events(
     sort_dir: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    # TBD-439. CSP violation rows are excluded from the default view because
+    # a public, unauthenticated endpoint writes up to 1200 of them per minute
+    # per IP and they bury everything else. Set this to get the COMPLETE log
+    # with them interleaved in time order -- which filtering by event_type
+    # cannot do, since that returns CSP rows alone. Documented here rather
+    # than only in the service so it appears in the OpenAPI schema, which is
+    # the one surface an operator can discover it from.
+    include_csp: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
 ) -> AuditEventListResponse:
     try:
@@ -64,6 +72,7 @@ async def list_audit_events(
             sort_dir=sort_dir,
             limit=limit,
             offset=offset,
+            include_csp=include_csp,
         )
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail) from exc
