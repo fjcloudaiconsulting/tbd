@@ -22,7 +22,11 @@ from sqlalchemy.pool import StaticPool
 
 from app.models import Base
 from app.models.audit_event import AuditEvent, AuditOutcome
-from app.services.audit_service import list_audit_events, record_audit_event
+from app.services.audit_service import (
+    CSP_VIOLATION_EVENT_TYPE,
+    list_audit_events,
+    record_audit_event,
+)
 
 
 @pytest_asyncio.fixture
@@ -263,3 +267,155 @@ async def test_list_audit_events_pagination(session_factory):
         rows2, total2 = await list_audit_events(db, limit=2, offset=2)
     assert total2 == 3
     assert len(rows2) == 1
+
+
+# ── TBD-439: the anonymous CSP stream must not bury the default audit view ──
+#
+# ``POST /api/v1/security/csp-report`` is public, takes no credential, and
+# writes one audit row per report body -- 20 per request at 60/minute, so 1200
+# rows/min from a single anonymous IP. Ten such requests fill page 1 of
+# /admin/audit, every row ``outcome=failure`` / ``actor_email=anonymous``.
+#
+# ``routers/security.py`` has always DOCUMENTED that the mitigation is
+# consumer-side. Nothing implemented it: before this change the string
+# ``security.csp_violation`` appeared only in that router.
+#
+# ⚠ These are BEHAVIOURAL, deliberately. The ticket's DoD warns against
+# asserting by grepping for the event-type string, because it already appears
+# in ``security.py``'s own docstring -- "a grep is satisfied by a comment" has
+# bitten this repo three times. Seeding rows and reading the result back
+# cannot be satisfied by a comment.
+
+
+async def _seed_csp_and_normal(factory) -> None:
+    """3 CSP rows + 2 ordinary rows, CSP newest so it would dominate page 1."""
+    base = datetime.datetime(2026, 5, 1, 9, 0, 0)
+    async with factory() as db:
+        db.add_all(
+            [
+                AuditEvent(
+                    event_type="admin.org.delete",
+                    actor_user_id=None,
+                    actor_email="a@x.io",
+                    target_org_id=None,
+                    target_org_name="A",
+                    request_id="r1",
+                    ip_address=None,
+                    outcome=AuditOutcome.SUCCESS,
+                    detail=None,
+                    created_at=base,
+                ),
+                AuditEvent(
+                    event_type="user.login.success",
+                    actor_user_id=None,
+                    actor_email="b@x.io",
+                    target_org_id=None,
+                    target_org_name="B",
+                    request_id="r2",
+                    ip_address=None,
+                    outcome=AuditOutcome.SUCCESS,
+                    detail=None,
+                    created_at=base + datetime.timedelta(hours=1),
+                ),
+            ]
+            + [
+                AuditEvent(
+                    event_type=CSP_VIOLATION_EVENT_TYPE,
+                    actor_user_id=None,
+                    actor_email="anonymous",
+                    target_org_id=None,
+                    target_org_name=None,
+                    request_id=f"csp{i}",
+                    ip_address="203.0.113.7",
+                    outcome=AuditOutcome.FAILURE,
+                    detail=None,
+                    # Newest, so an unfiltered newest-first query returns
+                    # these THREE before either real row.
+                    created_at=base + datetime.timedelta(hours=2 + i),
+                )
+                for i in range(3)
+            ]
+        )
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_default_view_excludes_csp_violations(session_factory):
+    """Mutant killed: dropping the ``else`` exclusion branch.
+
+    Without it the three CSP rows -- being newest -- are the first three rows
+    of the default view, which is the burying this ticket exists to stop.
+    """
+    await _seed_csp_and_normal(session_factory)
+    async with session_factory() as db:
+        rows, total = await list_audit_events(db)
+
+    assert [r.event_type for r in rows] == [
+        "user.login.success",
+        "admin.org.delete",
+    ]
+    assert all(r.event_type != CSP_VIOLATION_EVENT_TYPE for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_default_view_total_also_excludes_csp_violations(session_factory):
+    """⚠ The half that is easy to get wrong, and silent when you do.
+
+    The exclusion has to reach the COUNT query as well as the row query. If it
+    is applied to rows only, ``total`` still counts the hidden rows and the
+    table advertises pages it cannot produce -- an off-by-1200/min pagination
+    bug that looks like nothing on page 1.
+
+    Mutant killed: appending the clause to ``base`` instead of to ``where``.
+    """
+    await _seed_csp_and_normal(session_factory)
+    async with session_factory() as db:
+        rows, total = await list_audit_events(db)
+
+    assert total == 2, "total must count only what the default view returns"
+    assert len(rows) == total
+
+
+@pytest.mark.asyncio
+async def test_csp_violations_are_returned_when_asked_for_by_name(session_factory):
+    """Control, and the direction that stops this becoming a censor.
+
+    Mutant killed: excluding UNCONDITIONALLY (appending the ``!=`` clause
+    outside the ``else``). That passes both fences above while making the
+    stream unreachable, so an operator investigating a CSP incident would be
+    told there is nothing to see.
+    """
+    await _seed_csp_and_normal(session_factory)
+    async with session_factory() as db:
+        rows, total = await list_audit_events(
+            db, event_type=CSP_VIOLATION_EVENT_TYPE
+        )
+
+    assert total == 3
+    assert len(rows) == 3
+    assert all(r.event_type == CSP_VIOLATION_EVENT_TYPE for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_filtering_by_another_event_type_is_unaffected(session_factory):
+    """Regression GUARD, not a fence -- and labelled honestly as such.
+
+    ⚠ I first wrote this claiming it killed "ANDing the ``!=`` alongside the
+    ``==`` rather than in the ``else``". Measured against that mutant, it does
+    NOT: ``event_type == X AND event_type != CSP`` differs from ``== X`` only
+    when X IS CSP, and that case is already covered from the other side by the
+    opt-in control above. None of the three mutants run against this suite
+    killed this test uniquely.
+
+    So it is a net, not a fence: it pins that an explicit non-CSP filter still
+    returns exactly its own rows, which is the behaviour a future rewrite of
+    this branch is most likely to break silently. Claiming a mutant it does
+    not kill would be the "a fence's justification does not match its
+    mechanism" failure this repo has hit before.
+    """
+    await _seed_csp_and_normal(session_factory)
+    async with session_factory() as db:
+        rows, total = await list_audit_events(db, event_type="user.login.success")
+
+    assert total == 1
+    assert [r.event_type for r in rows] == ["user.login.success"]
