@@ -155,3 +155,138 @@ export function isMultiSeries(
 export function isSingleAggLocked(w: Widget): boolean {
   return w.type === "pie" || w.type === "sparkline";
 }
+
+// ── TBD-402: one measure select, not an agg × field cross product ───────────
+//
+// The editor used to offer an ``AGG_OPTIONS`` select beside a field select.
+// Their cross product is not the catalog: a source publishes specific PAIRS.
+// ``credit_utilization`` publishes only ``avg(utilization_pct)``, so picking
+// ``sum`` beside it produced ``sum(utilization_pct)`` — a 422 on that source
+// (it overrides ``validate`` with a declared-agg guard), and on sources that
+// do NOT override it, something worse: ``validate_against_catalog`` checks the
+// measure FIELD and never the agg (``reports/sources/base.py:80-84``), so
+// ``avg(id)`` or ``count(amount)`` sails through and renders a plausible,
+// meaningless number.
+//
+// Collapsing to one select makes an invalid pair UNREPRESENTABLE rather than
+// merely validated, which is why this beats narrowing the agg list.
+
+export interface MeasureOption {
+  /** The catalog's own measure key — the select's value. */
+  key: string;
+  label: string;
+  agg: Aggregation;
+  field: MeasureField;
+}
+
+/**
+ * Sentinel for a persisted measure the catalog does not publish (e.g. a
+ * legacy ``distinct(id)``, or a widget whose source changed underneath it).
+ *
+ * ⚠ Such a pair is shown and preserved, NEVER silently rewritten. Rewriting
+ * would change the number a saved report renders without telling anyone,
+ * which is strictly worse than showing that it needs attention.
+ */
+export const UNSUPPORTED_MEASURE_KEY = "__unsupported__";
+
+/**
+ * The source catalog's measures as labelled picker options, in catalog order.
+ *
+ * ⚠ Keyed by the catalog's ``key``, not by ``agg:field``. Nothing guarantees
+ * (agg, field) is unique across a source's measures, and the ruling in
+ * ``specs/2026-08-14-tbd-381-catalog-driven-widget-editor.md`` names the key.
+ */
+export function measureOptionsFor(entry: SourceCatalogEntry): MeasureOption[] {
+  return entry.measures.map((m) => ({
+    key: m.key,
+    label: m.label,
+    agg: m.agg as Aggregation,
+    field: m.field as MeasureField,
+  }));
+}
+
+/**
+ * Everything the measure select needs, in one place so the two editors
+ * cannot drift.
+ *
+ * Three states, and they are genuinely different:
+ *   - catalog still loading  → show the current measure, disabled. There is
+ *     no list to choose from yet, and offering a stale fallback list is how
+ *     an invalid pair got picked in the first place.
+ *   - pair is in the catalog → ordinary select.
+ *   - pair is NOT published  → an extra "(unsupported)" option, selected, plus
+ *     a notice from the caller. Selecting a real option repairs it.
+ */
+export function measureSelectState(
+  options: MeasureOption[] | undefined,
+  measure: Measure,
+  fallbackLabel: string,
+): {
+  options: MeasureOption[];
+  value: string;
+  disabled: boolean;
+  unsupported: boolean;
+} {
+  if (options === undefined) {
+    return {
+      options: [
+        {
+          key: UNSUPPORTED_MEASURE_KEY,
+          label: fallbackLabel,
+          agg: measure.agg,
+          field: measure.field,
+        },
+      ],
+      value: UNSUPPORTED_MEASURE_KEY,
+      disabled: true,
+      unsupported: false,
+    };
+  }
+  const match = options.find(
+    (o) => o.agg === measure.agg && o.field === measure.field,
+  );
+  if (match) {
+    return { options, value: match.key, disabled: false, unsupported: false };
+  }
+  return {
+    options: [
+      {
+        key: UNSUPPORTED_MEASURE_KEY,
+        label: `${fallbackLabel} (unsupported)`,
+        agg: measure.agg,
+        field: measure.field,
+      },
+      ...options,
+    ],
+    value: UNSUPPORTED_MEASURE_KEY,
+    disabled: false,
+    unsupported: true,
+  };
+}
+
+/**
+ * "<Agg> of <Field>" for a measure the catalog cannot label — a legacy pair,
+ * or any pair while the catalog is still loading.
+ *
+ * Mirrors ``seriesLabel``'s fallback in ``lib/reports/series.ts``, which owns
+ * the same string for chart names. That module's ``HUMAN_AGG`` is private, so
+ * the agg word comes from ``AGG_OPTIONS`` — the labels are the same four
+ * words, and both are here in one file rather than a third spelling.
+ */
+export function measureFallbackLabel(measure: Measure): string {
+  const agg =
+    AGG_OPTIONS.find((a) => a.value === measure.agg)?.label ?? measure.agg;
+  const field =
+    MEASURE_FIELD_LABELS[measure.field as MeasureField] ?? measure.field;
+  return `${agg} of ${field}`;
+}
+
+/**
+ * The one sentence shown when a persisted measure is not in the catalog.
+ *
+ * ⚠ Shared by both editors deliberately — same precedent as
+ * ``lib/demotion.ts``: a user meeting this on a KPI and on a line series
+ * must not be told two different things about the same condition.
+ */
+export const UNSUPPORTED_MEASURE_NOTICE =
+  "This measure is not offered by the selected data source. It has been left as-is; pick one from the list to change it.";

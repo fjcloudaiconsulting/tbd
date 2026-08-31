@@ -9,7 +9,8 @@
  * tooltip triggers render (by their ARIA label from the content map)
  * rather than driving the portal open.
  */
-import { renderWithSWR, fireEvent, screen } from "../../../utils/render-with-swr";
+import { mockReportSources } from "../../../utils/mock-report-sources";
+import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
 
 import DataTab from "@/components/reports/config/DataTab";
 import MeasuresEditor from "@/components/reports/config/MeasuresEditor";
@@ -67,7 +68,19 @@ describe("Widget editor — help tooltips", () => {
     ).toBeInTheDocument();
   });
 
-  it("swaps the aggregation tooltip to match the selected aggregation", () => {
+  it("swaps the aggregation tooltip to match the selected measure's agg", async () => {
+    // ⚠ TBD-402. The per-agg explainer used to hang off a dedicated
+    // Aggregation select. That select is gone — an agg is now only reachable
+    // by picking a measure the source actually publishes — but the tooltip
+    // content is still per-AGGREGATION, so it now keys off the selected
+    // row's agg. This asserts that it follows a measure change.
+    //
+    // The old version drove it to `distinct`, which NO source publishes
+    // (`AGG_OPTIONS` offered it regardless), so it was exercising an
+    // unreachable state.
+    vi.mocked(apiFetch).mockImplementation(
+      mockReportSources() as unknown as typeof apiFetch,
+    );
     const updates: BarWidget[] = [];
     renderWithSWR(
       <DataTab
@@ -75,11 +88,11 @@ describe("Widget editor — help tooltips", () => {
         onUpdate={(w) => updates.push(w as BarWidget)}
       />,
     );
-    fireEvent.change(screen.getByLabelText("Aggregation"), {
-      target: { value: "distinct" },
-    });
+    const select = screen.getByLabelText("Measure") as HTMLSelectElement;
+    await waitFor(() => expect(select.disabled).toBe(false));
+    fireEvent.change(select, { target: { value: "count_rows" } });
     const next = updates.at(-1) as BarWidget;
-    expect(next.config.measure.agg).toBe("distinct");
+    expect(next.config.measure.agg).toBe("count");
   });
 
   it("renders the master-category explainer next to the dimension label", () => {
