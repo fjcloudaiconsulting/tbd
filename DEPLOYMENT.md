@@ -331,12 +331,19 @@ before a deploy finds out for you:
 export NEW_USER NEW_PASS
 echo "sanity: user=$NEW_USER pass-len=${#NEW_PASS}"   # pass-len 0 => not set
 
-python3 -c 'import json,os;print(json.dumps({"username":os.environ["NEW_USER"],"password":os.environ["NEW_PASS"]}))' \
+python3 -c 'import json,os;print(json.dumps({"login":os.environ["NEW_USER"],"password":os.environ["NEW_PASS"]}))' \
  | curl -fsS -X POST https://app.thebetterdecision.com/api/v1/auth/login \
      -H 'Content-Type: application/json' --data @-
 ```
 
 An `access_token` in the response is the only proof the hash round-tripped.
+
+⚠ The login body field is **`login`**, not `username` — `LoginRequest` is
+`{login, password}` (`backend/app/schemas/auth.py:37-39`), and it accepts a
+username OR an email. Sending `username` omits a required field, so the API
+answers **422**, which reads like a rejected credential but is the schema
+refusing the request before any password is checked. A genuinely wrong password
+returns 401. `scripts/smoke-test.sh` is the authoritative example of this call.
 
 ⚠ Run this from the host that generated the password, not from the droplet —
 the variables live wherever step 1 ran.
@@ -359,7 +366,7 @@ BASE=https://app.thebetterdecision.com
 # 1. Log in as the CURRENT smoke account.
 TOKEN=$(curl -fsS -X POST "$BASE/api/v1/auth/login" \
   -H 'Content-Type: application/json' \
-  -d "{\"username\":\"$OLD_USER\",\"password\":\"$OLD_PASS\"}" \
+  -d "{\"login\":\"$OLD_USER\",\"password\":\"$OLD_PASS\"}" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
 
 # 2. Rename it (PUT /users/me; uniqueness and the username rule are enforced).
