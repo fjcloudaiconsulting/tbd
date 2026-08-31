@@ -275,6 +275,46 @@ username is in git history permanently, so unpublishing it from HEAD does not
 un-know it. Rotating the password alone leaves a known, MFA-less account name
 reachable at the public login form.
 
+**If the account's email is fake** — as production's is — the reset above cannot
+land and there is no API route in. Registering a replacement does not work
+either: `is_founder=True` is hardcoded at registration, so a new account still
+needs excluding, and more fundamentally a fake-email account can never verify
+while `/login` 403s unverified accounts unconditionally and **no operator
+surface can write `email_verified`**. The only route is out-of-band SQL on the
+data droplet, which can do the rename and the rotation in one statement without
+needing a login at all.
+
+```bash
+# 1. Generate the hash with the app's OWN hasher, so the format matches.
+#    Read the password from stdin -- never argv, which is world-readable.
+printf %s "$NEW_PASS" | docker compose exec -T backend python -c \
+  'import sys; from app.security import hash_password; print(hash_password(sys.stdin.read()))'
+
+# 2. On the droplet. ⚠ --no-defaults is REQUIRED: /root/.my.cnf makes a bare
+#    `mysql` authenticate as the low-privilege pfv_backup, where reads succeed
+#    and only the writes fail -- so a runbook can look like it worked.
+mysql --no-defaults -e "SELECT CURRENT_USER()"      # must print root@localhost
+
+mysql --no-defaults pfv2 -e "
+  UPDATE users
+     SET username      = '<new-name>',
+         password_hash = '<hash from step 1>',
+         email         = '<a mailbox you actually control>',
+         email_verified = 1,
+         password_set   = 1
+   WHERE username = '<old-name>';
+"
+```
+
+⚠ Set a **real** email while you are in there. That is what stops this recurring:
+with a reachable address the account is recoverable through `forgot-password`
+next time, and none of this is needed again.
+
+⚠ `username` is `String(64) UNIQUE` and the API enforces `^[a-zA-Z0-9._-]+$`,
+3-64 chars. SQL bypasses that check, so pick a name that satisfies it or the
+next `PUT /users/me` on that row will fail validation. `email` is
+`String(120) UNIQUE`.
+
 ⚠⚠ **Order matters.** Renaming changes what the founder-count exclusion list must
 contain, and changing the password invalidates the session you are using — so
 rename first, then rotate, then re-point the secrets.
