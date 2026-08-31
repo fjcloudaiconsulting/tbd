@@ -222,6 +222,75 @@ App Platform holds the new revision back until this job exits 0. A long migratio
 
 On failure, `scripts/notify-smoke-failure.sh` opens (or comments on an existing) GitHub issue using `GH_TOKEN`. DO marking the deploy `ACTIVE` is necessary but not sufficient: smoke tests assert end-to-end traffic actually works.
 
+#### ⚠ The smoke account cannot have MFA, and that is an accepted risk (TBD-371)
+
+`smoke-test.sh` authenticates with `POST /api/v1/auth/login` and expects a
+`TokenResponse`. With MFA enabled that endpoint returns an `MfaChallengeResponse`
+(`mfa_required` + `mfa_token`) instead, and the smoke test cannot proceed. Making
+it proceed would mean storing the account's **TOTP seed** as a CI secret — a
+shared secret that mints valid codes forever, which is strictly worse than no
+second factor at all.
+
+So the account stays single-factor. The compensating controls are:
+
+1. **Its username is not published.** It is `secrets.SMOKE_USERNAME` and an App
+   Platform SECRET, never a plaintext value in source. Until TBD-371 this was a
+   default in `backend/app/config.py` and a plaintext `value:` in
+   `.do/app.yaml` — the repository named the weakest authenticated account in
+   production and documented that it was weak, in the same breath.
+2. **A strong, rotated credential**, `secrets.SMOKE_PASSWORD`.
+3. **No elevated rights.** It reads `GET /api/v1/categories` and nothing more.
+   It must never be a superadmin or hold an org role beyond the minimum.
+
+⚠ Usernames are enumerable through `POST /api/v1/auth/check-username` by design,
+so a non-published name is not secrecy — it just means an attacker must guess
+rather than be handed a confirmed-valid, MFA-less target.
+
+#### Rotating the smoke account
+
+Do this whenever the credential may have been exposed. The account can rename
+itself; no database access is required.
+
+⚠⚠ **Order matters.** Renaming changes what the founder-count exclusion list must
+contain, and changing the password invalidates the session you are using — so
+rename first, then rotate, then re-point the secrets.
+
+```bash
+BASE=https://app.thebetterdecision.com
+# 1. Log in as the CURRENT smoke account.
+TOKEN=$(curl -fsS -X POST "$BASE/api/v1/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$OLD_USER\",\"password\":\"$OLD_PASS\"}" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+
+# 2. Rename it (PUT /users/me; uniqueness and the username rule are enforced).
+curl -fsS -X PUT "$BASE/api/v1/users/me" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$NEW_USER\"}"
+
+# 3. Rotate the password. ⚠ 5/hour rate limit; this invalidates the token above.
+curl -fsS -X POST "$BASE/api/v1/users/me/password" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"current_password\":\"$OLD_PASS\",\"new_password\":\"$NEW_PASS\"}"
+
+# 4. Re-point the CI secrets.
+gh secret set SMOKE_USERNAME --body "$NEW_USER"
+gh secret set SMOKE_PASSWORD --body "$NEW_PASS"
+```
+
+Then update the founder-count exclusion list to the new name, or
+`/api/v1/public/founder-count` counts the smoke account and advertises a number
+one too high. It is not silent — `public_stats` logs
+`public.founder_count.no_exclusions` at ERROR on every production request while
+the list is empty — but it is wrong until fixed.
+
+⚠⚠ **`FOUNDER_COUNT_EXCLUDE_USERNAMES` must be an App Platform SECRET, and the
+committed spec must carry its `EV[...]` ciphertext BEFORE the next deploy.** The
+committed `.do/app.yaml` is pushed as authoritative on every deploy, so a value
+set only in the DO console is erased by the next merge that ships (TBD-425).
+Set it in the console, read the blob back with `doctl apps spec get <APP_ID>`,
+commit it, and only then deploy.
+
 ### How to verify a deploy
 
 1. Watch the workflow run: `https://github.com/flamarion/pfv/actions/workflows/release.yml`
