@@ -35,7 +35,7 @@
     "tests/components/reports/WidgetEditorPopover.test.tsx": {
       "AccountFilter": 2,
       "CategoryPicker": 2,
-      "DataTab": 11,
+      "DataTab": 10,
       "FilterEditor": 2,
       "TagFilter": 2
     },
@@ -43,10 +43,10 @@
       "DataTab": 9
     },
     "tests/components/reports/config/data-tab-secondary-dimension.test.tsx": {
-      "DataTab": 19
+      "DataTab": 18
     },
     "tests/components/reports/config/data-tab-tooltips.test.tsx": {
-      "DataTab": 3
+      "DataTab": 2
     },
     "tests/components/reports/config/filter-editor-catalog.test.tsx": {
       "AccountFilter": 1,

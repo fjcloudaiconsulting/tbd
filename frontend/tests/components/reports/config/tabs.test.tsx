@@ -141,14 +141,14 @@ describe("DataTab", () => {
   it("renders single measure + primary + secondary for bar", () => {
     renderData(makeBar());
     expect(screen.getByLabelText("Data source")).toBeInTheDocument();
-    expect(screen.getByLabelText("Aggregation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Measure")).toBeInTheDocument();
     expect(screen.getByLabelText("Primary dimension")).toBeInTheDocument();
     expect(screen.getByLabelText("Break down by")).toBeInTheDocument();
   });
 
   it("hides dimensions entirely for kpi", () => {
     renderData(makeKpi());
-    expect(screen.getByLabelText("Aggregation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Measure")).toBeInTheDocument();
     expect(screen.queryByLabelText("Primary dimension")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Break down by")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Secondary dimension")).not.toBeInTheDocument();

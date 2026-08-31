@@ -17,7 +17,8 @@
  * It moves here (F10) rather than being deleted, so the gap it certified
  * cannot quietly reopen.
  */
-import { renderWithSWR, fireEvent, screen } from "../../../utils/render-with-swr";
+import { mockReportSources } from "../../../utils/mock-report-sources";
+import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
 
 import DataTab from "@/components/reports/config/DataTab";
 import { apiFetch } from "@/lib/api";
@@ -247,25 +248,32 @@ describe("DataTab — secondary dimension picker visibility", () => {
 describe("F11: stacked_bar is a SINGLE-measure widget that still persists `measures`", () => {
   it("renders one measure editor and no add-series control", () => {
     renderWithSWR(<DataTab widget={makeStacked()} onUpdate={() => {}} />);
-    expect(screen.getByLabelText("Aggregation")).toBeInTheDocument();
-    expect(screen.getByLabelText("Field")).toBeInTheDocument();
+    expect(screen.getByLabelText("Measure")).toBeInTheDocument();
     expect(screen.queryByTestId("measure-add")).not.toBeInTheDocument();
   });
 
-  it("writes back config.measures[0] — a length-1 array, and NEVER a singular `measure` key", () => {
+  it("writes back config.measures[0] — a length-1 array, and NEVER a singular `measure` key", async () => {
     // ⚠ The implementation trap is flipping `isMultiSeries`, which is also
     // the type guard `setSeries` early-returns on: flipping it routes the
     // write to `setSingleMeasure` and `config.measure`, which is a missing
     // required field on the backend's `_MultiSeriesConfig` (min_length=1)
     // and 422s on the next save — on BOTH the reports and dashboard paths.
+    // TBD-402: the measure select is catalog-driven, so this test needs the
+    // real catalog. With an empty one the control is deliberately DISABLED —
+    // there is no list to pick from, and offering a stale fallback is how an
+    // invalid pair got chosen before.
+    vi.mocked(apiFetch).mockImplementation(
+      mockReportSources() as unknown as typeof apiFetch,
+    );
     const updates: Widget[] = [];
     renderWithSWR(
       <DataTab widget={makeStacked()} onUpdate={(w) => updates.push(w)} />,
     );
 
-    fireEvent.change(screen.getByLabelText("Aggregation"), {
-      target: { value: "avg" },
-    });
+    const select = screen.getByLabelText("Measure") as HTMLSelectElement;
+    await waitFor(() => expect(select.disabled).toBe(false));
+    // The catalog KEY, not an agg: `avg_amount` is transactions' avg(amount).
+    fireEvent.change(select, { target: { value: "avg_amount" } });
 
     const next = updates.at(-1) as StackedBarWidget;
     expect(next.config.measures).toHaveLength(1);
@@ -295,7 +303,7 @@ describe("DataTab — measure editor + dimension by widget type", () => {
 
   it("renders a single measure editor (no add button) for bar", () => {
     renderWithSWR(<DataTab widget={makeBar()} onUpdate={() => {}} />);
-    expect(screen.getByLabelText("Aggregation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Measure")).toBeInTheDocument();
     expect(screen.queryByTestId("measure-add")).not.toBeInTheDocument();
   });
 
