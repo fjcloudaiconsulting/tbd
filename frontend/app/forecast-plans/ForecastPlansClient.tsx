@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
-import HelpTooltip from "@/components/Tooltip";
 import Spinner from "@/components/ui/Spinner";
 import StatCard from "@/components/ui/StatCard";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -177,37 +176,6 @@ export default function ForecastPlansClient({
     confirmLabel?: string;
     action: () => void;
   } | null>(null);
-
-  // Show details toggle. Default off; persisted under
-  // forecast-plans:show-details. Initial render reads localStorage in a
-  // mount effect so server/client HTML stays identical (no hydration
-  // mismatch). Until the effect runs, treat the toggle as "off" — the
-  // simpler view — so flipping after hydration only ever reveals more.
-  const [showDetails, setShowDetails] = useState<boolean>(false);
-  const [showDetailsHydrated, setShowDetailsHydrated] = useState<boolean>(false);
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("forecast-plans:show-details");
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- restore persisted show-details preference from localStorage after mount (client-only, avoids SSR hydration mismatch)
-      if (raw === "true") setShowDetails(true);
-    } catch {
-      // localStorage unavailable (private mode etc.) — keep default off.
-    }
-    setShowDetailsHydrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (!showDetailsHydrated) return;
-    try {
-      localStorage.setItem(
-        "forecast-plans:show-details",
-        showDetails ? "true" : "false",
-      );
-    } catch {
-      // ignore
-    }
-  }, [showDetails, showDetailsHydrated]);
 
   // Plan SWR. Key is the period-scoped GET endpoint that get-or-creates a
   // draft for the visible period. `fallbackData` seeds the server-fetched
@@ -896,36 +864,6 @@ export default function ForecastPlansClient({
           <HelpAnchor section="forecast-plans" label="Forecast Plans" />
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {/* Show/hide details toggle. Hides variance/source/chart/refresh
-              and the technical (?) help markers when off. */}
-          <HelpTooltip
-            content="Show details reveals variance vs plan, source breakdowns, the chart, and refresh from sources. Hide details keeps the page light."
-            learnMoreSection="forecast-plans"
-            triggerLabel="What does Show details include?"
-          />
-          <button
-            type="button"
-            role="switch"
-            aria-checked={showDetails}
-            aria-label={showDetails ? "Hide details" : "Show details"}
-            onClick={() => setShowDetails((v) => !v)}
-            className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            <span
-              aria-hidden="true"
-              className={`inline-block h-3 w-6 rounded-full transition-colors ${
-                showDetails ? "bg-accent" : "bg-border"
-              }`}
-            >
-              <span
-                className={`block h-3 w-3 rounded-full bg-surface transition-transform ${
-                  showDetails ? "translate-x-3" : "translate-x-0"
-                }`}
-              />
-            </span>
-            <span>{showDetails ? "Hide details" : "Show details"}</span>
-          </button>
-
           {isDraft && (
             <>
               {hasItems && (
@@ -939,16 +877,12 @@ export default function ForecastPlansClient({
               <button
                 onClick={handlePopulate}
                 className={btnPrimary}
-                title={
-                  showDetails ? HELP_AUTO_POPULATE + DOCS_HINT : undefined
-                }
+                title={HELP_AUTO_POPULATE + DOCS_HINT}
               >
                 Auto-populate
               </button>
-              {showDetails && (
-                <HelpIcon label="Auto-populate" text={HELP_AUTO_POPULATE} />
-              )}
-              {showDetails && hasItems && (
+              <HelpIcon label="Auto-populate" text={HELP_AUTO_POPULATE} />
+              {hasItems && (
                 <>
                   <button
                     onClick={handleRefreshFromSources}
@@ -970,27 +904,21 @@ export default function ForecastPlansClient({
           )}
           {isActive && (
             <>
-              {showDetails && (
-                <button
-                  onClick={handleEditAndRefresh}
-                  className={btnPrimary}
-                  title={HELP_REFRESH + DOCS_HINT}
-                >
-                  Refresh from sources
-                </button>
-              )}
+              <button
+                onClick={handleEditAndRefresh}
+                className={btnPrimary}
+                title={HELP_REFRESH + DOCS_HINT}
+              >
+                Refresh from sources
+              </button>
               <button
                 onClick={handleRevertToDraft}
                 className={btnPrimary}
-                title={
-                  showDetails ? HELP_EDIT_PLAN + DOCS_HINT : undefined
-                }
+                title={HELP_EDIT_PLAN + DOCS_HINT}
               >
                 Edit Plan
               </button>
-              {showDetails && (
-                <HelpIcon label="Edit Plan" text={HELP_EDIT_PLAN} />
-              )}
+              <HelpIcon label="Edit Plan" text={HELP_EDIT_PLAN} />
             </>
           )}
         </div>
@@ -1293,7 +1221,7 @@ export default function ForecastPlansClient({
           )}
 
           {/* Planned vs Actual chart — contained at ~66% on xl+ */}
-          {showDetails && chartData.length > 0 && (
+          {chartData.length > 0 && (
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
               <div data-testid="forecast-chart-container" className={`${card} p-5 overflow-hidden xl:col-span-2`}>
                 <h2 className={`${cardTitle} mb-4`}>
@@ -1350,7 +1278,6 @@ export default function ForecastPlansClient({
                 title="Income"
                 groups={incomeGroups}
                 readOnly={isActive}
-                showDetails={showDetails}
                 editingId={editingId}
                 editAmount={editAmount}
                 onStartEdit={(item) => {
@@ -1370,7 +1297,6 @@ export default function ForecastPlansClient({
                 title="Expenses"
                 groups={expenseGroups}
                 readOnly={isActive}
-                showDetails={showDetails}
                 editingId={editingId}
                 editAmount={editAmount}
                 onStartEdit={(item) => {
@@ -1425,7 +1351,6 @@ function ItemSection({
   title,
   groups,
   readOnly,
-  showDetails,
   editingId,
   editAmount,
   onStartEdit,
@@ -1437,7 +1362,6 @@ function ItemSection({
   title: string;
   groups: MasterGroup[];
   readOnly: boolean;
-  showDetails: boolean;
   editingId: number | null;
   editAmount: string;
   onStartEdit: (item: ForecastPlanItem) => void;
@@ -1446,16 +1370,11 @@ function ItemSection({
   onDelete: (id: number) => void;
   setEditAmount: (v: string) => void;
 }) {
-  // When details are off, drop variance + source columns. The grid
-  // template tracks the visible column count so cells don't wrap
-  // around an invisible slot.
+  // The grid template tracks the visible column count so cells don't
+  // wrap around an invisible slot.
   const colTemplate = readOnly
-    ? showDetails
-      ? "grid-cols-[1fr_100px] md:grid-cols-[1fr_100px_100px_100px_80px]"
-      : "grid-cols-[1fr_100px] md:grid-cols-[1fr_100px_100px]"
-    : showDetails
-      ? "grid-cols-[1fr_100px_100px] md:grid-cols-[1fr_100px_100px_100px_80px_100px]"
-      : "grid-cols-[1fr_100px_100px] md:grid-cols-[1fr_100px_100px_100px]";
+    ? "grid-cols-[1fr_100px] md:grid-cols-[1fr_100px_100px_100px_80px]"
+    : "grid-cols-[1fr_100px_100px] md:grid-cols-[1fr_100px_100px_100px_80px_100px]";
 
   // Renders one editable/display row for a single plan item. Subcategory
   // rows pass `indented` so they sit visually under their master header.
@@ -1493,12 +1412,8 @@ function ItemSection({
                       <span className="hidden text-right text-sm tabular-nums text-text-secondary md:block">
                         {formatAmount(item.actual_amount)}
                       </span>
-                      {showDetails && (
-                        <>
-                          <span className="hidden md:block" />
-                          <span className="hidden md:block" />
-                        </>
-                      )}
+                      <span className="hidden md:block" />
+                      <span className="hidden md:block" />
                       <div className="flex justify-end gap-2">
                         {/* Save + Cancel rendered as proper buttons (PR
                             #forecast-plans-cancel). Before, both were
@@ -1534,21 +1449,17 @@ function ItemSection({
                         {item.category_name}
                         <div className="md:hidden mt-1 text-xs text-text-muted">
                           Actual {formatAmount(item.actual_amount)}
-                          {showDetails && (
-                            <>
-                              {" · "}Variance{" "}
-                              <span
-                                className={`font-medium ${
-                                  isOver ? "text-danger" : "text-success"
-                                }`}
-                              >
-                                {variance > 0 ? "+" : ""}
-                                {formatAmount(variance)}
-                              </span>
-                              {" · "}
-                              {SOURCE_LABELS[item.source] ?? item.source}
-                            </>
-                          )}
+                          {" · "}Variance{" "}
+                          <span
+                            className={`font-medium ${
+                              isOver ? "text-danger" : "text-success"
+                            }`}
+                          >
+                            {variance > 0 ? "+" : ""}
+                            {formatAmount(variance)}
+                          </span>
+                          {" · "}
+                          {SOURCE_LABELS[item.source] ?? item.source}
                         </div>
                       </div>
                       <span className="text-right text-sm tabular-nums text-text-primary">
@@ -1557,21 +1468,17 @@ function ItemSection({
                       <span className="hidden text-right text-sm tabular-nums text-text-secondary md:block">
                         {formatAmount(item.actual_amount)}
                       </span>
-                      {showDetails && (
-                        <>
-                          <span
-                            className={`hidden text-right text-sm tabular-nums font-medium md:block ${
-                              isOver ? "text-danger" : "text-success"
-                            }`}
-                          >
-                            {variance > 0 ? "+" : ""}
-                            {formatAmount(variance)}
-                          </span>
-                          <span className="hidden text-center text-[11px] text-text-muted md:block">
-                            {SOURCE_LABELS[item.source] ?? item.source}
-                          </span>
-                        </>
-                      )}
+                      <span
+                        className={`hidden text-right text-sm tabular-nums font-medium md:block ${
+                          isOver ? "text-danger" : "text-success"
+                        }`}
+                      >
+                        {variance > 0 ? "+" : ""}
+                        {formatAmount(variance)}
+                      </span>
+                      <span className="hidden text-center text-[11px] text-text-muted md:block">
+                        {SOURCE_LABELS[item.source] ?? item.source}
+                      </span>
                       {!readOnly && (
                         <div className="flex justify-end gap-2">
                           <button
@@ -1618,19 +1525,15 @@ function ItemSection({
         <span className="hidden text-right text-sm font-semibold tabular-nums text-text-secondary md:block">
           {formatAmount(group.actual)}
         </span>
-        {showDetails && (
-          <>
-            <span
-              className={`hidden text-right text-sm font-semibold tabular-nums md:block ${
-                isOver ? "text-danger" : "text-success"
-              }`}
-            >
-              {group.variance > 0 ? "+" : ""}
-              {formatAmount(group.variance)}
-            </span>
-            <span className="hidden md:block" />
-          </>
-        )}
+        <span
+          className={`hidden text-right text-sm font-semibold tabular-nums md:block ${
+            isOver ? "text-danger" : "text-success"
+          }`}
+        >
+          {group.variance > 0 ? "+" : ""}
+          {formatAmount(group.variance)}
+        </span>
+        <span className="hidden md:block" />
         {!readOnly && <span />}
       </div>
     );
@@ -1650,15 +1553,11 @@ function ItemSection({
             <span>Category</span>
             <span className="text-right">Planned</span>
             <span className="hidden text-right md:block">Actual</span>
-            {showDetails && (
-              <>
-                <span className="hidden text-right md:block">
-                  Variance
-                  <HelpIcon label="Variance" text={HELP_VARIANCE} />
-                </span>
-                <span className="hidden text-center md:block">Source</span>
-              </>
-            )}
+            <span className="hidden text-right md:block">
+              Variance
+              <HelpIcon label="Variance" text={HELP_VARIANCE} />
+            </span>
+            <span className="hidden text-center md:block">Source</span>
             {!readOnly && <span className="text-right">Actions</span>}
           </div>
           <div className="divide-y divide-border-subtle">
