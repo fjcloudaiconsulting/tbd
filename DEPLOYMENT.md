@@ -295,16 +295,41 @@ printf %s "$NEW_PASS" | docker compose exec -T backend python -c \
 #    and only the writes fail -- so a runbook can look like it worked.
 mysql --no-defaults -e "SELECT CURRENT_USER()"      # must print root@localhost
 
+# ⚠⚠ QUOTED heredoc ('SQL'), never -e "..." — a bcrypt hash is $2b$12$...,
+#    and inside double quotes the shell expands $2, $1 and $12 to EMPTY
+#    positional parameters. The UPDATE then succeeds, writing a MANGLED hash,
+#    and the account silently cannot log in. Measured 2026-08-31: a hash
+#    stored this way begins `b2.OTaD` instead of `$2b$12$`.
+mysql --no-defaults pfv2 <<'SQL'
+UPDATE users
+   SET username       = '<new-name>',
+       password_hash  = '<hash from step 1>',
+       email          = '<a mailbox you actually control>',
+       email_verified = 1,
+       password_set   = 1
+ WHERE username = '<old-name>';
+SQL
+
+# 3. VERIFY. `mysql -e "UPDATE ..."` prints nothing on success AND nothing when
+#    zero rows matched, so the write is unevidenced until you look.
 mysql --no-defaults pfv2 -e "
-  UPDATE users
-     SET username      = '<new-name>',
-         password_hash = '<hash from step 1>',
-         email         = '<a mailbox you actually control>',
-         email_verified = 1,
-         password_set   = 1
-   WHERE username = '<old-name>';
-"
+  SELECT id, username, email, email_verified, password_set,
+         LEFT(password_hash,7) AS hash_prefix
+    FROM users WHERE username = '<new-name>';"
+#    hash_prefix MUST be \$2b\$12\$. Anything else means the shell ate the
+#    dollars and the credential is dead.
 ```
+
+Then prove the login works **from a host where the password variable exists**,
+before a deploy finds out for you:
+
+```bash
+python3 -c 'import json,os;print(json.dumps({"username":"<new-name>","password":os.environ["NEW_PASS"]}))' \
+ | curl -fsS -X POST https://app.thebetterdecision.com/api/v1/auth/login \
+     -H 'Content-Type: application/json' --data @-
+```
+
+An `access_token` in the response is the only proof the hash round-tripped.
 
 ⚠ Set a **real** email while you are in there. That is what stops this recurring:
 with a reachable address the account is recoverable through `forgot-password`
