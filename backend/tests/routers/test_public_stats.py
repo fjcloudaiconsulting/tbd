@@ -56,7 +56,7 @@ async def _seed(factory) -> None:
                      password_hash=hash_password("pw"), role=Role.MEMBER,
                      is_active=True, is_founder=True),
                 # Excluded smoke account → NOT counted.
-                User(org_id=org.id, username="pfv_smoke_l05", email="s@acme.io",
+                User(org_id=org.id, username="smoke_excluded_user", email="s@acme.io",
                      password_hash=hash_password("pw"), role=Role.MEMBER,
                      is_active=True, is_founder=True),
                 # Inactive founder → NOT counted.
@@ -72,8 +72,28 @@ async def _seed(factory) -> None:
         await db.commit()
 
 
+@pytest.fixture
+def exclude_smoke(monkeypatch):
+    """Set the exclusion list explicitly.
+
+    ⚠ TBD-371: these tests used to rely on ``Settings``' shipped DEFAULT
+    happening to equal the seeded username — so the fixture was coupled to a
+    production value, and the assertion silently depended on that value never
+    changing. The default is now empty (the username is a production secret),
+    so the list has to be stated by the test that needs it. Stating it is also
+    the honest form: the test exercises exclusion, not a default.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(
+        settings, "founder_count_exclude_usernames", "smoke_excluded_user"
+    )
+
+
 @pytest.mark.asyncio
-async def test_founder_count_excludes_smoke_inactive_and_nonfounders(session_factory):
+async def test_founder_count_excludes_smoke_inactive_and_nonfounders(
+    session_factory, exclude_smoke
+):
     await _seed(session_factory)
     app = make_test_app(session_factory, routers=public_stats_router)
     with TestClient(app) as client:
@@ -112,7 +132,7 @@ async def test_founder_count_returns_cached_value_without_db(session_factory, mo
 
 @pytest.mark.asyncio
 async def test_founder_count_swallows_cache_error_and_counts_directly(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, exclude_smoke
 ):
     # A Redis error on the read must not 500 — fall through to a direct count.
     await _seed(session_factory)
@@ -149,3 +169,131 @@ async def test_founder_count_degrades_to_zero_on_db_error(session_factory, monke
         res = client.get("/api/v1/public/founder-count")
     assert res.status_code == 200, res.text
     assert res.json() == {"count": 0}
+
+
+# ── TBD-371: an empty exclusion list in production must be observable ────────
+#
+# ⚠ These monkeypatch the module logger rather than using structlog's
+# ``capture_logs()``. TBD-367 (open) leaks global structlog config from another
+# module, which makes ``capture_logs()`` assertions order-dependent — green
+# alone, red in a full run. Patching the bound logger sidesteps global state.
+#
+# ⚠ There is deliberately no "refuses to boot" fence. An earlier draft raised
+# from a ``model_validator`` in production; the full suite rejected it (7
+# unrelated failures in ``test_api_token_config.py``) and it was disproportionate
+# anyway: an unset value costs one wrong integer on a marketing counter, a boot
+# refusal costs the whole application.
+
+
+class _LogRecorder:
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+
+    def error(self, event, *a, **kw):
+        self.errors.append(event)
+
+    def warning(self, event, *a, **kw):
+        pass
+
+    def info(self, event, *a, **kw):
+        pass
+
+
+@pytest.fixture
+def log_recorder(monkeypatch):
+    from app.routers import public_stats
+
+    rec = _LogRecorder()
+    monkeypatch.setattr(public_stats, "logger", rec)
+    return rec
+
+
+def _set_env(monkeypatch, *, exclusions: str, app_env: str) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "founder_count_exclude_usernames", exclusions)
+    monkeypatch.setattr(settings, "app_env", app_env)
+
+
+@pytest.mark.asyncio
+async def test_empty_exclusions_in_production_logs_an_error(
+    session_factory, log_recorder, monkeypatch
+):
+    """Mutant killed: dropping the ``elif app_env == "production"`` branch.
+
+    Without it an unset value is completely silent while the advertised count
+    runs one too high — the smoke account is a real, active founder row.
+    """
+    await _seed(session_factory)
+    _set_env(monkeypatch, exclusions="", app_env="production")
+
+    app = make_test_app(session_factory, routers=public_stats_router)
+    with TestClient(app) as client:
+        res = client.get("/api/v1/public/founder-count")
+
+    assert res.status_code == 200, res.text
+    assert "public.founder_count.no_exclusions" in log_recorder.errors
+    # The defect this alarm exists for, made explicit: smoke is counted.
+    assert res.json() == {"count": 3}
+
+
+@pytest.mark.asyncio
+async def test_populated_exclusions_in_production_is_silent(
+    session_factory, log_recorder, monkeypatch
+):
+    """Control. Proves the alarm fires on EMPTINESS, not merely on production.
+
+    Without this, an unconditional ``logger.error`` — crying wolf on every
+    correctly-configured request — still passes the test above.
+    """
+    await _seed(session_factory)
+    _set_env(monkeypatch, exclusions="smoke_excluded_user", app_env="production")
+
+    app = make_test_app(session_factory, routers=public_stats_router)
+    with TestClient(app) as client:
+        res = client.get("/api/v1/public/founder-count")
+
+    assert res.status_code == 200, res.text
+    assert log_recorder.errors == []
+    assert res.json() == {"count": 2}
+
+
+@pytest.mark.asyncio
+async def test_empty_exclusions_outside_production_is_silent(
+    session_factory, log_recorder, monkeypatch
+):
+    """Control. Dev and CI run with this unset by design.
+
+    Mutant killed: dropping the ``app_env`` term, which would log an ERROR on
+    every local and CI request and train everyone to ignore the event.
+    """
+    await _seed(session_factory)
+    _set_env(monkeypatch, exclusions="", app_env="development")
+
+    app = make_test_app(session_factory, routers=public_stats_router)
+    with TestClient(app) as client:
+        res = client.get("/api/v1/public/founder-count")
+
+    assert res.status_code == 200, res.text
+    assert log_recorder.errors == []
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_exclusions_count_as_empty(
+    session_factory, log_recorder, monkeypatch
+):
+    """A CSV of blanks parses to [] and must alarm too.
+
+    ``founder_count_exclude_list`` strips and drops empties, so "  ,  " yields
+    an empty list. A guard written against the raw string rather than the
+    parsed list would accept it and re-open the silent path.
+    """
+    await _seed(session_factory)
+    _set_env(monkeypatch, exclusions="  ,  ", app_env="production")
+
+    app = make_test_app(session_factory, routers=public_stats_router)
+    with TestClient(app) as client:
+        res = client.get("/api/v1/public/founder-count")
+
+    assert res.status_code == 200, res.text
+    assert "public.founder_count.no_exclusions" in log_recorder.errors

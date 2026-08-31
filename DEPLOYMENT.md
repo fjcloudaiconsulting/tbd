@@ -222,6 +222,203 @@ App Platform holds the new revision back until this job exits 0. A long migratio
 
 On failure, `scripts/notify-smoke-failure.sh` opens (or comments on an existing) GitHub issue using `GH_TOKEN`. DO marking the deploy `ACTIVE` is necessary but not sufficient: smoke tests assert end-to-end traffic actually works.
 
+#### ⚠ The smoke account cannot have MFA, and that is an accepted risk (TBD-371)
+
+`smoke-test.sh` authenticates with `POST /api/v1/auth/login` and expects a
+`TokenResponse`. With MFA enabled that endpoint returns an `MfaChallengeResponse`
+(`mfa_required` + `mfa_token`) instead, and the smoke test cannot proceed. Making
+it proceed would mean storing the account's **TOTP seed** as a CI secret — a
+shared secret that mints valid codes forever, which is strictly worse than no
+second factor at all.
+
+So the account stays single-factor. The compensating controls are:
+
+1. **Its username is not published.** It is `secrets.SMOKE_USERNAME` and an App
+   Platform SECRET, never a plaintext value in source. Until TBD-371 this was a
+   default in `backend/app/config.py` and a plaintext `value:` in
+   `.do/app.yaml` — the repository named the weakest authenticated account in
+   production and documented that it was weak, in the same breath.
+2. **A strong, rotated credential**, `secrets.SMOKE_PASSWORD`.
+3. **No PLATFORM rights, and a blast radius of one throwaway org.**
+
+   ⚠ It IS `role: owner` — of its own dedicated organization, and that is not
+   avoidable: `register` hardcodes `role=Role.OWNER` and creates a fresh org
+   per signup (`routers/auth.py:386-395`), so a standalone account cannot hold
+   a lesser role. A lower role would need a second org and an invitation.
+
+   What is actually load-bearing, and what to verify:
+
+   * **`is_superadmin` must be 0.** That is the platform flag, and it is the
+     difference between "owner of an empty org" and "owner of the fleet". It is
+     written only at construction and has no promote path
+     (`is_superadmin=is_first_user_setup`), so only the very first account on
+     an install gets it — but verify rather than assume:
+
+     ```bash
+     mysql --no-defaults pfv2 -e \
+       "SELECT username, is_superadmin, is_founder FROM users WHERE id = 4;"
+     ```
+
+   * **Its org holds nothing of value.** The smoke test reads
+     `GET /api/v1/categories` and writes nothing, so the org should contain
+     only the bootstrap categories. Never point the smoke account at a real
+     tenant.
+
+⚠ Usernames are enumerable through `POST /api/v1/auth/check-username` by design,
+so a non-published name is not secrecy — it just means an attacker must guess
+rather than be handed a confirmed-valid, MFA-less target.
+
+#### Rotating the smoke account
+
+Do this whenever the credential may have been exposed. The account can rename
+itself; no database access is required.
+
+**If you do not know the current password** — likely, since it lives only in
+`secrets.SMOKE_PASSWORD` and GitHub never shows a secret's value back — recover
+it self-service first. This satisfies the rotation on its own, and yields the
+login the rename needs:
+
+1. Find the account's email: sign in as a superadmin, `/admin/users`, search the
+   username from `secrets.SMOKE_USERNAME`.
+2. `POST /api/v1/auth/forgot-password` with `{"email": "<that address>"}`
+   (5/minute).
+3. Open the link from that mailbox and `POST /api/v1/auth/reset-password` with
+   `{"token": "<from the link>", "new_password": "<one you choose>"}`.
+
+⚠ This requires read access to that mailbox. If you do not have it, the admin
+email-change endpoint is **not** a way around it: it refuses an already-verified
+target with `409 user_already_verified`, deliberately, because repointing a
+verified account's address is an account-takeover primitive (TBD-362). The
+remaining routes are an out-of-band database write, or standing up a fresh smoke
+account and retiring the old one.
+
+⚠ **Renaming is the part that actually remediates the disclosure.** The old
+username is in git history permanently, so unpublishing it from HEAD does not
+un-know it. Rotating the password alone leaves a known, MFA-less account name
+reachable at the public login form.
+
+**If the account's email is fake** — as production's is — the reset above cannot
+land and there is no API route in. Registering a replacement does not work
+either: `is_founder=True` is hardcoded at registration, so a new account still
+needs excluding, and more fundamentally a fake-email account can never verify
+while `/login` 403s unverified accounts unconditionally and **no operator
+surface can write `email_verified`**. The only route is out-of-band SQL on the
+data droplet, which can do the rename and the rotation in one statement without
+needing a login at all.
+
+```bash
+# 1. Generate the hash with the app's OWN hasher, so the format matches.
+#    Read the password from stdin -- never argv, which is world-readable.
+printf %s "$NEW_PASS" | docker compose exec -T backend python -c \
+  'import sys; from app.security import hash_password; print(hash_password(sys.stdin.read()))'
+
+# 2. On the droplet. ⚠ --no-defaults is REQUIRED: /root/.my.cnf makes a bare
+#    `mysql` authenticate as the low-privilege pfv_backup, where reads succeed
+#    and only the writes fail -- so a runbook can look like it worked.
+mysql --no-defaults -e "SELECT CURRENT_USER()"      # must print root@localhost
+
+# ⚠⚠ QUOTED heredoc ('SQL'), never -e "..." — a bcrypt hash is $2b$12$...,
+#    and inside double quotes the shell expands $2, $1 and $12 to EMPTY
+#    positional parameters. The UPDATE then succeeds, writing a MANGLED hash,
+#    and the account silently cannot log in. Measured 2026-08-31: a hash
+#    stored this way begins `b2.OTaD` instead of `$2b$12$`.
+mysql --no-defaults pfv2 <<'SQL'
+UPDATE users
+   SET username       = '<new-name>',
+       password_hash  = '<hash from step 1>',
+       email          = '<a mailbox you actually control>',
+       email_verified = 1,
+       password_set   = 1
+ WHERE username = '<old-name>';
+SQL
+
+# 3. VERIFY. `mysql -e "UPDATE ..."` prints nothing on success AND nothing when
+#    zero rows matched, so the write is unevidenced until you look.
+mysql --no-defaults pfv2 -e "
+  SELECT id, username, email, email_verified, password_set,
+         LEFT(password_hash,7) AS hash_prefix
+    FROM users WHERE username = '<new-name>';"
+#    hash_prefix MUST be \$2b\$12\$. Anything else means the shell ate the
+#    dollars and the credential is dead.
+```
+
+Then prove the login works **from a host where the password variable exists**,
+before a deploy finds out for you:
+
+```bash
+# ⚠ EXPORT first. `NEW_PASS=...` makes a SHELL variable; `os.environ` only sees
+#   EXPORTED ones, so python raises KeyError, curl posts an empty body and the
+#   API answers 422 — which reads like a rejected credential rather than a
+#   variable that never reached the process.
+export NEW_USER NEW_PASS
+echo "sanity: user=$NEW_USER pass-len=${#NEW_PASS}"   # pass-len 0 => not set
+
+python3 -c 'import json,os;print(json.dumps({"login":os.environ["NEW_USER"],"password":os.environ["NEW_PASS"]}))' \
+ | curl -fsS -X POST https://app.thebetterdecision.com/api/v1/auth/login \
+     -H 'Content-Type: application/json' --data @-
+```
+
+An `access_token` in the response is the only proof the hash round-tripped.
+
+⚠ The login body field is **`login`**, not `username` — `LoginRequest` is
+`{login, password}` (`backend/app/schemas/auth.py:37-39`), and it accepts a
+username OR an email. Sending `username` omits a required field, so the API
+answers **422**, which reads like a rejected credential but is the schema
+refusing the request before any password is checked. A genuinely wrong password
+returns 401. `scripts/smoke-test.sh` is the authoritative example of this call.
+
+⚠ Run this from the host that generated the password, not from the droplet —
+the variables live wherever step 1 ran.
+
+⚠ Set a **real** email while you are in there. That is what stops this recurring:
+with a reachable address the account is recoverable through `forgot-password`
+next time, and none of this is needed again.
+
+⚠ `username` is `String(64) UNIQUE` and the API enforces `^[a-zA-Z0-9._-]+$`,
+3-64 chars. SQL bypasses that check, so pick a name that satisfies it or the
+next `PUT /users/me` on that row will fail validation. `email` is
+`String(120) UNIQUE`.
+
+⚠⚠ **Order matters.** Renaming changes what the founder-count exclusion list must
+contain, and changing the password invalidates the session you are using — so
+rename first, then rotate, then re-point the secrets.
+
+```bash
+BASE=https://app.thebetterdecision.com
+# 1. Log in as the CURRENT smoke account.
+TOKEN=$(curl -fsS -X POST "$BASE/api/v1/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"login\":\"$OLD_USER\",\"password\":\"$OLD_PASS\"}" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+
+# 2. Rename it (PUT /users/me; uniqueness and the username rule are enforced).
+curl -fsS -X PUT "$BASE/api/v1/users/me" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$NEW_USER\"}"
+
+# 3. Rotate the password. ⚠ 5/hour rate limit; this invalidates the token above.
+curl -fsS -X POST "$BASE/api/v1/users/me/password" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"current_password\":\"$OLD_PASS\",\"new_password\":\"$NEW_PASS\"}"
+
+# 4. Re-point the CI secrets.
+gh secret set SMOKE_USERNAME --body "$NEW_USER"
+gh secret set SMOKE_PASSWORD --body "$NEW_PASS"
+```
+
+Then update the founder-count exclusion list to the new name, or
+`/api/v1/public/founder-count` counts the smoke account and advertises a number
+one too high. It is not silent — `public_stats` logs
+`public.founder_count.no_exclusions` at ERROR on every production request while
+the list is empty — but it is wrong until fixed.
+
+⚠⚠ **`FOUNDER_COUNT_EXCLUDE_USERNAMES` must be an App Platform SECRET, and the
+committed spec must carry its `EV[...]` ciphertext BEFORE the next deploy.** The
+committed `.do/app.yaml` is pushed as authoritative on every deploy, so a value
+set only in the DO console is erased by the next merge that ships (TBD-425).
+Set it in the console, read the blob back with `doctl apps spec get <APP_ID>`,
+commit it, and only then deploy.
+
 ### How to verify a deploy
 
 1. Watch the workflow run: `https://github.com/flamarion/pfv/actions/workflows/release.yml`
