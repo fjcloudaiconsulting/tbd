@@ -251,6 +251,30 @@ rather than be handed a confirmed-valid, MFA-less target.
 Do this whenever the credential may have been exposed. The account can rename
 itself; no database access is required.
 
+**If you do not know the current password** — likely, since it lives only in
+`secrets.SMOKE_PASSWORD` and GitHub never shows a secret's value back — recover
+it self-service first. This satisfies the rotation on its own, and yields the
+login the rename needs:
+
+1. Find the account's email: sign in as a superadmin, `/admin/users`, search the
+   username from `secrets.SMOKE_USERNAME`.
+2. `POST /api/v1/auth/forgot-password` with `{"email": "<that address>"}`
+   (5/minute).
+3. Open the link from that mailbox and `POST /api/v1/auth/reset-password` with
+   `{"token": "<from the link>", "new_password": "<one you choose>"}`.
+
+⚠ This requires read access to that mailbox. If you do not have it, the admin
+email-change endpoint is **not** a way around it: it refuses an already-verified
+target with `409 user_already_verified`, deliberately, because repointing a
+verified account's address is an account-takeover primitive (TBD-362). The
+remaining routes are an out-of-band database write, or standing up a fresh smoke
+account and retiring the old one.
+
+⚠ **Renaming is the part that actually remediates the disclosure.** The old
+username is in git history permanently, so unpublishing it from HEAD does not
+un-know it. Rotating the password alone leaves a known, MFA-less account name
+reachable at the public login form.
+
 ⚠⚠ **Order matters.** Renaming changes what the founder-count exclusion list must
 contain, and changing the password invalidates the session you are using — so
 rename first, then rotate, then re-point the secrets.
