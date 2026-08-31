@@ -174,7 +174,34 @@ class Settings(BaseSettings):
     last_active_stamp_throttle_seconds: int = 3600
     # Usernames excluded from the public founder count (smoke/seed accounts).
     # CSV, mirrors the cors-origins parsing pattern.
-    founder_count_exclude_usernames: str = "pfv_smoke_l05"
+    #
+    # ⚠⚠ NO DEFAULT VALUE, DELIBERATELY (TBD-371). This list names the
+    # production post-deploy smoke account -- an account DEPLOYMENT.md
+    # requires to be email-verified and to have NO MFA. Publishing it as a
+    # source default handed anyone reading the repo a confirmed-valid,
+    # MFA-less target for password spraying against a public login form.
+    # Usernames are enumerable via ``/auth/check-username`` by design, so
+    # this is not a unique disclosure channel -- but guessing is not the
+    # same as being handed the answer.
+    #
+    # Supply it from the environment. In CI it is ``secrets.SMOKE_USERNAME``
+    # (deploy.yml, release.yml); in production it must come from an App
+    # Platform SECRET, never a plaintext ``value:`` in ``.do/app.yaml``.
+    #
+    # ⚠ Empty is SILENTLY WRONG in production, never loud: the endpoint
+    # guards with ``if excluded:`` (routers/public_stats.py), so an empty list
+    # simply stops excluding and inflates an advertised public number by one.
+    #
+    # ⚠⚠ That is NOT guarded by refusing to boot, deliberately. The blast
+    # radius of this value being unset is one wrong integer on a marketing
+    # counter; the blast radius of a boot refusal is the whole application
+    # down. ``api_token_hmac_key`` earns its prod-required validator because
+    # losing it breaks PAT authentication -- a security primitive. This does
+    # not, and treating the two the same trades an outage for a cosmetic
+    # defect. ``public_stats`` logs ``public.founder_count.no_exclusions``
+    # at ERROR instead, which is greppable and alertable without taking
+    # production down.
+    founder_count_exclude_usernames: str = ""
 
     # Billing
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live

@@ -106,11 +106,39 @@ services:
         value: "https://app.thebetterdecision.com,https://thebetterdecision.com,https://www.thebetterdecision.com"
       # Usernames excluded from the public founder count. MUST match the
       # production smoke account (CI secret SMOKE_USERNAME) + any seed
-      # accounts, or the advertised count is inflated. Operator: confirm
-      # this equals secrets.SMOKE_USERNAME.
+      # accounts, or the advertised count is inflated.
+      #
+      # ⚠⚠ TBD-371, STILL OPEN HERE. This is a plaintext `value:`, so it
+      # publishes the production smoke account username — an account
+      # DEPLOYMENT.md requires to be email-verified and to have NO MFA. The
+      # source default was removed from `backend/app/config.py`, but this
+      # file is source too, so the exposure is not closed until this entry
+      # becomes a SECRET.
+      #
+      # ⚠ TBD-371. This is a SECRET, and it must stay one. It previously
+      # carried the production post-deploy smoke account username in
+      # plaintext, and this file is source, so it published an account
+      # DEPLOYMENT.md requires to have NO MFA. The account has since been
+      # renamed and its credential rotated; the old name is dead.
+      #
+      # ⚠ Do NOT replace this with a plaintext `value:`, and do NOT delete the
+      # key to "clean it up". The committed spec is authoritative on every
+      # deploy, so deleting the key drops the exclusion list and inflates the
+      # public founder count by one — the smoke account is a real, active
+      # founder row. `public_stats` logs `public.founder_count.no_exclusions`
+      # at ERROR when that happens, and
+      # `test_deploy_workflow.test_founder_count_exclusion_is_never_a_plaintext_value`
+      # fences the shape of this entry in both directions.
+      #
+      # To rotate: set it in the DO console, read the new EV[...] back with
+      # `doctl apps spec get <APP_ID>`, commit that here, then deploy.
+      # Never leave this file and the live spec disagreeing —
+      # scripts/ci/assert-app-spec-secrets-synced.sh refuses the deploy.
+      # Rotation procedure for the account itself: DEPLOYMENT.md, "Smoke tests".
       - key: FOUNDER_COUNT_EXCLUDE_USERNAMES
         scope: RUN_AND_BUILD_TIME
-        value: "pfv_smoke_l05"
+        type: SECRET
+        value: EV[1:vBlPPW/Bc6QPc8nAW1L61rsa1ZGItKY4:iwQMu/CcsrNPXS3k4mvSfUjTNZciF08vuGnVDbNygrro3ClmJc4=]
       - key: COOKIE_SECURE
         scope: RUN_AND_BUILD_TIME
         value: "true"
