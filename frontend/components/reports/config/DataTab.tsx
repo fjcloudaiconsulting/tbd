@@ -14,7 +14,7 @@ import {
   DIMENSION_OPTIONS,
   dimensionOptionsFor,
   isMultiSeries,
-  measureFieldOptionsFor,
+  measureOptionsFor,
   measurePairOptionsFor,
 } from "@/components/reports/config/controlConstants";
 import { dimensionHeader } from "@/lib/reports/series";
@@ -104,13 +104,13 @@ export default function DataTab({
     ? dimensionOptionsFor(selected)
     : dimensionOptionsWithCurrent(currentDims);
 
-  // Field options narrowed to the selected source's published measures.
-  // Undefined while the catalog loads → the editors fall back to the
-  // static ``FIELD_OPTIONS``.
-  const fieldOptions = selected ? measureFieldOptionsFor(selected) : undefined;
   // The same catalog as (agg, field) PAIRS — what R7's "+ Add series" seeds
   // from. Undefined until the catalog resolves, which disables the control.
   const measurePairs = selected ? measurePairOptionsFor(selected) : undefined;
+  // The catalog as LABELLED measure options — the single measure select
+  // (TBD-402). Undefined until the catalog resolves, which shows the current
+  // measure disabled rather than offering a stale list to pick a 422 from.
+  const measureOptions = selected ? measureOptionsFor(selected) : undefined;
 
   function onSourceChange(key: string) {
     const entry = sources.find((s) => s.key === key);
@@ -176,13 +176,13 @@ export default function DataTab({
                 },
               ])
             }
-            fieldOptions={fieldOptions}
+            measureOptions={measureOptions}
           />
         ) : isMultiSeries(widget) ? (
           <MeasuresEditor
             widget={widget}
             onChange={setSeries}
-            fieldOptions={fieldOptions}
+            measureOptions={measureOptions}
             measurePairs={measurePairs}
           />
         ) : (
@@ -192,7 +192,7 @@ export default function DataTab({
                 .measure
             }
             onChange={setSingleMeasure}
-            fieldOptions={fieldOptions}
+            measureOptions={measureOptions}
           />
         ))}
 
