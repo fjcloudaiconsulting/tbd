@@ -324,12 +324,22 @@ Then prove the login works **from a host where the password variable exists**,
 before a deploy finds out for you:
 
 ```bash
-python3 -c 'import json,os;print(json.dumps({"username":"<new-name>","password":os.environ["NEW_PASS"]}))' \
+# ⚠ EXPORT first. `NEW_PASS=...` makes a SHELL variable; `os.environ` only sees
+#   EXPORTED ones, so python raises KeyError, curl posts an empty body and the
+#   API answers 422 — which reads like a rejected credential rather than a
+#   variable that never reached the process.
+export NEW_USER NEW_PASS
+echo "sanity: user=$NEW_USER pass-len=${#NEW_PASS}"   # pass-len 0 => not set
+
+python3 -c 'import json,os;print(json.dumps({"username":os.environ["NEW_USER"],"password":os.environ["NEW_PASS"]}))' \
  | curl -fsS -X POST https://app.thebetterdecision.com/api/v1/auth/login \
      -H 'Content-Type: application/json' --data @-
 ```
 
 An `access_token` in the response is the only proof the hash round-tripped.
+
+⚠ Run this from the host that generated the password, not from the droplet —
+the variables live wherever step 1 ran.
 
 ⚠ Set a **real** email while you are in there. That is what stops this recurring:
 with a reachable address the account is recoverable through `forgot-password`
