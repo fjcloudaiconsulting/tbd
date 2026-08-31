@@ -115,38 +115,30 @@ services:
       # file is source too, so the exposure is not closed until this entry
       # becomes a SECRET.
       #
-      # ⚠⚠ TBD-371. The value is BLANK ON PURPOSE. It previously carried the
-      # production smoke account username in plaintext, and this file is
-      # source, so it published an account DEPLOYMENT.md requires to have NO
-      # MFA. Only DigitalOcean can mint the `EV[...]` ciphertext that a
-      # `type: SECRET` entry needs, and minting one means writing to the live
-      # app — so the literal is removed here and the secret is set out of
-      # band.
+      # ⚠ TBD-371. This is a SECRET, and it must stay one. It previously
+      # carried the production post-deploy smoke account username in
+      # plaintext, and this file is source, so it published an account
+      # DEPLOYMENT.md requires to have NO MFA. The account has since been
+      # renamed and its credential rotated; the old name is dead.
       #
-      # ⚠ WHILE THIS IS BLANK the public founder count is INFLATED BY ONE:
-      # the smoke account is a real, active founder row, and with no
-      # exclusion list it gets counted. This is a deliberate, visible,
-      # reversible trade against publishing the username. It is not silent —
-      # `public_stats` logs `public.founder_count.no_exclusions` at ERROR on
-      # every request in production.
+      # ⚠ Do NOT replace this with a plaintext `value:`, and do NOT delete the
+      # key to "clean it up". The committed spec is authoritative on every
+      # deploy, so deleting the key drops the exclusion list and inflates the
+      # public founder count by one — the smoke account is a real, active
+      # founder row. `public_stats` logs `public.founder_count.no_exclusions`
+      # at ERROR when that happens, and
+      # `test_deploy_workflow.test_founder_count_exclusion_is_never_a_plaintext_value`
+      # fences the shape of this entry in both directions.
       #
-      # Operator, to close it:
-      #   1. Set FOUNDER_COUNT_EXCLUDE_USERNAMES as a SECRET in the DO
-      #      console, equal to secrets.SMOKE_USERNAME (plus any seed
-      #      accounts, comma-separated).
-      #   2. Sync the encrypted EV[...] blob back into this file
-      #      (infra/MIGRATION.md step 9) and replace `value: ""` with
-      #      `type: SECRET` + that blob. Never leave the two disagreeing —
-      #      scripts/ci/assert-app-spec-secrets-synced.sh refuses the deploy.
-      #   3. `gh workflow run deploy.yml --ref main`. An *(infra) merge
-      #      publishes no release and so never deploys on its own (TBD-458).
-      #
-      # ⚠ Do NOT delete this key to "clean it up". The committed spec is
-      # authoritative on every deploy, so the key must exist here for the
-      # secret to survive; deleting it silently drops the value again.
+      # To rotate: set it in the DO console, read the new EV[...] back with
+      # `doctl apps spec get <APP_ID>`, commit that here, then deploy.
+      # Never leave this file and the live spec disagreeing —
+      # scripts/ci/assert-app-spec-secrets-synced.sh refuses the deploy.
+      # Rotation procedure for the account itself: DEPLOYMENT.md, "Smoke tests".
       - key: FOUNDER_COUNT_EXCLUDE_USERNAMES
         scope: RUN_AND_BUILD_TIME
-        value: ""
+        type: SECRET
+        value: EV[1:vBlPPW/Bc6QPc8nAW1L61rsa1ZGItKY4:iwQMu/CcsrNPXS3k4mvSfUjTNZciF08vuGnVDbNygrro3ClmJc4=]
       - key: COOKIE_SECURE
         scope: RUN_AND_BUILD_TIME
         value: "true"
