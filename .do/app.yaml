@@ -115,21 +115,38 @@ services:
       # file is source too, so the exposure is not closed until this entry
       # becomes a SECRET.
       #
-      # Operator procedure, in this order — the order matters, because
-      # `config.py` now REFUSES TO BOOT production with an empty list:
+      # ⚠⚠ TBD-371. The value is BLANK ON PURPOSE. It previously carried the
+      # production smoke account username in plaintext, and this file is
+      # source, so it published an account DEPLOYMENT.md requires to have NO
+      # MFA. Only DigitalOcean can mint the `EV[...]` ciphertext that a
+      # `type: SECRET` entry needs, and minting one means writing to the live
+      # app — so the literal is removed here and the secret is set out of
+      # band.
+      #
+      # ⚠ WHILE THIS IS BLANK the public founder count is INFLATED BY ONE:
+      # the smoke account is a real, active founder row, and with no
+      # exclusion list it gets counted. This is a deliberate, visible,
+      # reversible trade against publishing the username. It is not silent —
+      # `public_stats` logs `public.founder_count.no_exclusions` at ERROR on
+      # every request in production.
+      #
+      # Operator, to close it:
       #   1. Set FOUNDER_COUNT_EXCLUDE_USERNAMES as a SECRET in the DO
-      #      console, to the same value as secrets.SMOKE_USERNAME.
+      #      console, equal to secrets.SMOKE_USERNAME (plus any seed
+      #      accounts, comma-separated).
       #   2. Sync the encrypted EV[...] blob back into this file
-      #      (infra/MIGRATION.md step 9) and change `value:` to
-      #      `type: SECRET`. Never leave the two disagreeing —
+      #      (infra/MIGRATION.md step 9) and replace `value: ""` with
+      #      `type: SECRET` + that blob. Never leave the two disagreeing —
       #      scripts/ci/assert-app-spec-secrets-synced.sh refuses the deploy.
       #   3. `gh workflow run deploy.yml --ref main`. An *(infra) merge
-      #      publishes no release and therefore never deploys on its own
-      #      (TBD-458).
-      # Removing this entry BEFORE step 1 takes production down at boot.
+      #      publishes no release and so never deploys on its own (TBD-458).
+      #
+      # ⚠ Do NOT delete this key to "clean it up". The committed spec is
+      # authoritative on every deploy, so the key must exist here for the
+      # secret to survive; deleting it silently drops the value again.
       - key: FOUNDER_COUNT_EXCLUDE_USERNAMES
         scope: RUN_AND_BUILD_TIME
-        value: "pfv_smoke_l05"
+        value: ""
       - key: COOKIE_SECURE
         scope: RUN_AND_BUILD_TIME
         value: "true"

@@ -531,3 +531,97 @@ def test_the_undeployed_release_notifier_is_wired_into_both_deploy_paths():
     assert any(
         "notify-undeployed-release.sh" in str(s.get("run", "")) for s in steps
     ), "deploy.yml's notifier job must run scripts/notify-undeployed-release.sh"
+
+
+# ── TBD-371: the founder-count exclusion list must never be plaintext here ───
+
+
+_EXCLUSION_KEY = "FOUNDER_COUNT_EXCLUDE_USERNAMES"
+
+
+def _all_env_entries(doc) -> list[dict]:
+    """Every `envs:` entry anywhere in the spec (services, jobs, workers).
+
+    Walks rather than indexing a known path: the founder-count variable is a
+    RUN_AND_BUILD_TIME var on the api service today, but a future spec that
+    also set it on `jobs.migrate` -- which already binds its own REDIS_URL --
+    must be covered too, not silently skipped.
+    """
+    found: list[dict] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "envs" and isinstance(value, list):
+                    found.extend(e for e in value if isinstance(e, dict))
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(doc)
+    return found
+
+
+def test_founder_count_exclusion_is_never_a_plaintext_value():
+    """The smoke-account username must not be published in the app spec.
+
+    `.do/app.yaml` is source. It previously carried the production
+    post-deploy smoke account username as a plaintext `value:` -- an account
+    `DEPLOYMENT.md` requires to have NO MFA -- so the repo named the weakest
+    authenticated account in production (TBD-371).
+
+    Two accepted shapes:
+
+      * `type: SECRET` with an `EV[...]` ciphertext (the real fix; only
+        DigitalOcean can mint that blob, so it lands out of band), or
+      * an EMPTY `value:`, the interim state.
+
+    Anything else means a username -- or some other real identifier -- has
+    been pasted back in.
+
+    ⚠ This fence names no username. Asserting "the literal is absent" would
+    have to EMBED the literal to search for it, republishing the exact string
+    the ticket exists to unpublish. It asserts the shape instead, so it also
+    catches a DIFFERENT account being pasted in later.
+    """
+    import yaml
+
+    doc = yaml.safe_load(APP_SPEC.read_text())
+    entries = _all_env_entries(doc)
+
+    # Positive baseline: a mis-parsed spec would make the assertions below
+    # pass vacuously, which is how this class of fence usually dies.
+    assert len(entries) > 5, (
+        f"parsed only {len(entries)} env entries from {APP_SPEC} — the spec "
+        "did not parse as expected, so this fence proves nothing"
+    )
+
+    matches = [e for e in entries if e.get("key") == _EXCLUSION_KEY]
+
+    assert matches, (
+        f"{_EXCLUSION_KEY} is missing from {APP_SPEC}. Do not delete this key "
+        "to 'clean it up': the committed spec is authoritative on every "
+        "deploy, so the key must exist here for the value to survive. "
+        "Deleting it silently drops the exclusion list and inflates the "
+        "public founder count (TBD-371)."
+    )
+
+    for entry in matches:
+        value = entry.get("value", "")
+        if entry.get("type") == "SECRET":
+            assert isinstance(value, str) and value.startswith("EV["), (
+                f"{_EXCLUSION_KEY} is typed SECRET but its value is not an "
+                "EV[...] ciphertext. A SECRET carrying plaintext publishes it "
+                "just as loudly as a plain value does."
+            )
+            continue
+        assert value == "", (
+            f"{_EXCLUSION_KEY} carries a non-empty plaintext value in "
+            f"{APP_SPEC}. That file is source, so this publishes the account "
+            "it names — and the production smoke account has no MFA "
+            "(TBD-371). Set it as a SECRET in the DO console, sync the "
+            'EV[...] blob back here, and replace `value: ""` with '
+            "`type: SECRET`."
+        )
