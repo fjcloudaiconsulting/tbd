@@ -239,8 +239,30 @@ So the account stays single-factor. The compensating controls are:
    `.do/app.yaml` — the repository named the weakest authenticated account in
    production and documented that it was weak, in the same breath.
 2. **A strong, rotated credential**, `secrets.SMOKE_PASSWORD`.
-3. **No elevated rights.** It reads `GET /api/v1/categories` and nothing more.
-   It must never be a superadmin or hold an org role beyond the minimum.
+3. **No PLATFORM rights, and a blast radius of one throwaway org.**
+
+   ⚠ It IS `role: owner` — of its own dedicated organization, and that is not
+   avoidable: `register` hardcodes `role=Role.OWNER` and creates a fresh org
+   per signup (`routers/auth.py:386-395`), so a standalone account cannot hold
+   a lesser role. A lower role would need a second org and an invitation.
+
+   What is actually load-bearing, and what to verify:
+
+   * **`is_superadmin` must be 0.** That is the platform flag, and it is the
+     difference between "owner of an empty org" and "owner of the fleet". It is
+     written only at construction and has no promote path
+     (`is_superadmin=is_first_user_setup`), so only the very first account on
+     an install gets it — but verify rather than assume:
+
+     ```bash
+     mysql --no-defaults pfv2 -e \
+       "SELECT username, is_superadmin, is_founder FROM users WHERE id = 4;"
+     ```
+
+   * **Its org holds nothing of value.** The smoke test reads
+     `GET /api/v1/categories` and writes nothing, so the org should contain
+     only the bootstrap categories. Never point the smoke account at a real
+     tenant.
 
 ⚠ Usernames are enumerable through `POST /api/v1/auth/check-username` by design,
 so a non-published name is not secrecy — it just means an attacker must guess
