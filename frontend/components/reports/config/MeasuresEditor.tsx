@@ -30,18 +30,19 @@
 import HelpTooltip from "@/components/help/HelpTooltip";
 import {
   AGG_HELP_KEY,
-  AGG_OPTIONS,
-  FIELD_OPTIONS,
   MAX_SERIES,
   MAX_TABLE_COLUMNS,
+  UNSUPPORTED_MEASURE_KEY,
+  UNSUPPORTED_MEASURE_NOTICE,
+  measureFallbackLabel,
+  measureSelectState,
   nextUnusedMeasurePair,
+  type MeasureOption,
 } from "@/components/reports/config/controlConstants";
 import type {
-  Aggregation,
   AreaConfig,
   LineConfig,
   Measure,
-  MeasureField,
   SeriesConfig,
   StackedBarConfig,
   TableConfig,
@@ -51,18 +52,18 @@ import type {
 export default function MeasuresEditor({
   widget,
   onChange,
-  fieldOptions,
+  measureOptions,
   measurePairs,
 }: {
   widget: Widget & { config: LineConfig | AreaConfig | StackedBarConfig | TableConfig };
   onChange: (m: SeriesConfig[]) => void;
   /**
-   * Field options narrowed to the selected data source's published
-   * measures. When omitted (catalog not yet loaded), falls back to the
-   * static ``FIELD_OPTIONS`` so the transactions path and existing tests
-   * are unchanged.
+   * The selected source's published measures as labelled options, in catalog
+   * order (TBD-402). ``undefined`` while ``/sources`` is still loading — the
+   * select then shows the current measure and is disabled, because offering
+   * a stale fallback list is exactly how an invalid pair got chosen before.
    */
-  fieldOptions?: Array<{ value: string; label: string }>;
+  measureOptions?: MeasureOption[];
   /**
    * The selected source's published measures as (agg, field) PAIRS, in
    * catalog order. ``undefined`` while ``/sources`` is still loading — R7
@@ -73,7 +74,6 @@ export default function MeasuresEditor({
 }) {
   const measures = widget.config.measures;
   const cap = widget.type === "table" ? MAX_TABLE_COLUMNS : MAX_SERIES;
-  const fields = fieldOptions ?? FIELD_OPTIONS;
   const nextPair = nextUnusedMeasurePair(measurePairs, measures);
   // "Unknown" and "exhausted" are different states and only one of them
   // earns an explanation: before the catalog resolves there is nothing to
@@ -103,7 +103,13 @@ export default function MeasuresEditor({
       <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
         {widget.type === "table" ? "Columns" : "Series"}
       </div>
-      {measures.map((s, idx) => (
+      {measures.map((s, idx) => {
+        const sel = measureSelectState(
+          measureOptions,
+          s.measure,
+          measureFallbackLabel(s.measure),
+        );
+        return (
         <div
           key={idx}
           data-testid={`measure-row-${idx}`}
@@ -139,46 +145,40 @@ export default function MeasuresEditor({
           />
           <div className="flex items-center gap-1">
             <select
-              value={s.measure.agg}
-              onChange={(e) =>
+              value={sel.value}
+              disabled={sel.disabled}
+              onChange={(e) => {
+                const opt = sel.options.find((o) => o.key === e.target.value);
+                // The "(unsupported)" entry is inert: it exists to SHOW a
+                // legacy pair, never to let one be re-selected.
+                if (!opt || opt.key === UNSUPPORTED_MEASURE_KEY) return;
                 update(idx, {
                   ...s,
-                  measure: { ...s.measure, agg: e.target.value as Aggregation },
-                })
-              }
-              aria-label={`Series ${idx + 1} aggregation`}
-              className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-primary"
+                  measure: { agg: opt.agg, field: opt.field },
+                });
+              }}
+              aria-label={`Series ${idx + 1} measure`}
+              className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {AGG_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
+              {sel.options.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
                 </option>
               ))}
             </select>
+            {/* Per-agg explainer, keyed off the SELECTED row's agg — the
+                content is per-aggregation, not per-select, so it survives
+                the two selects collapsing into one. */}
             <HelpTooltip k={AGG_HELP_KEY[s.measure.agg]} />
-            <select
-              value={s.measure.field}
-              onChange={(e) =>
-                update(idx, {
-                  ...s,
-                  measure: {
-                    ...s.measure,
-                    field: e.target.value as MeasureField,
-                  },
-                })
-              }
-              aria-label={`Series ${idx + 1} field`}
-              className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-primary"
-            >
-              {fields.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
           </div>
+          {sel.unsupported && (
+            <p className="text-[11px] leading-snug text-text-muted">
+              {UNSUPPORTED_MEASURE_NOTICE}
+            </p>
+          )}
         </div>
-      ))}
+        );
+      })}
       {measures.length < cap && (
         <div className="flex items-center gap-1">
           <button

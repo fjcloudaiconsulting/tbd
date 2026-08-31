@@ -5,7 +5,10 @@
  */
 import { renderWithSWR, fireEvent, screen } from "../../../utils/render-with-swr";
 
+import { TRANSACTIONS_ENTRY } from "../../../utils/mock-report-sources";
+
 import SingleMeasureEditor from "@/components/reports/config/SingleMeasureEditor";
+import { measureOptionsFor } from "@/components/reports/config/controlConstants";
 import MeasuresEditor from "@/components/reports/config/MeasuresEditor";
 import type {
   LineWidget,
@@ -13,6 +16,9 @@ import type {
   SeriesConfig,
   TableWidget,
 } from "@/lib/reports/types";
+
+/** The transactions source's published measures as labelled options. */
+const TRANSACTIONS_OPTIONS = measureOptionsFor(TRANSACTIONS_ENTRY);
 
 /** The transactions source's published (agg, field) pairs, in catalog order. */
 const TRANSACTIONS_PAIRS: Measure[] = [
@@ -42,21 +48,55 @@ function makeTable(measures: SeriesConfig[]): TableWidget {
 }
 
 describe("SingleMeasureEditor", () => {
-  it("changing Aggregation reports the new agg, keeping the field", () => {
+  // ⚠ TBD-402. There is ONE select now, over the catalog's published
+  // measures, not an Aggregation select beside a Field select. The old pair
+  // of tests drove each half independently and asserted the cross product —
+  // which is exactly the defect: `count(amount)` is not a transactions
+  // measure (it counts `id`), and `validate_against_catalog` checks the
+  // FIELD only, so such a pair renders a meaningless number rather than
+  // 422ing. Both halves are replaced by selecting a real catalog measure.
+  it("selecting a catalog measure reports that exact published pair", () => {
     const calls: Measure[] = [];
     renderWithSWR(
       <SingleMeasureEditor
         measure={{ agg: "sum", field: "amount" }}
         onChange={(m) => calls.push(m)}
+        measureOptions={TRANSACTIONS_OPTIONS}
       />,
     );
-    fireEvent.change(screen.getByLabelText("Aggregation"), {
-      target: { value: "count" },
+    // `count_rows` is count(id) — note the field moves WITH the agg, which
+    // is the whole point of collapsing the two selects.
+    fireEvent.change(screen.getByLabelText("Measure"), {
+      target: { value: "count_rows" },
     });
-    expect(calls.at(-1)).toEqual({ agg: "count", field: "amount" });
+    expect(calls.at(-1)).toEqual({ agg: "count", field: "id" });
+
+    fireEvent.change(screen.getByLabelText("Measure"), {
+      target: { value: "avg_amount" },
+    });
+    expect(calls.at(-1)).toEqual({ agg: "avg", field: "amount" });
   });
 
-  it("changing Field reports the new field, keeping the agg", () => {
+  it("offers ONLY the catalog's measures, so an invalid pair is unrepresentable", () => {
+    renderWithSWR(
+      <SingleMeasureEditor
+        measure={{ agg: "sum", field: "amount" }}
+        onChange={() => {}}
+        measureOptions={TRANSACTIONS_OPTIONS}
+      />,
+    );
+    const select = screen.getByLabelText("Measure") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      "sum_amount",
+      "avg_amount",
+      "count_rows",
+    ]);
+  });
+
+  it("disables the select while the catalog is unresolved, showing the current measure", () => {
+    // Mutant this kills: falling back to a static option list before the
+    // catalog resolves. That fallback is precisely how a pair the source
+    // does not publish got selected in the first place.
     const calls: Measure[] = [];
     renderWithSWR(
       <SingleMeasureEditor
@@ -64,10 +104,33 @@ describe("SingleMeasureEditor", () => {
         onChange={(m) => calls.push(m)}
       />,
     );
-    fireEvent.change(screen.getByLabelText("Field"), {
-      target: { value: "id" },
-    });
-    expect(calls.at(-1)).toEqual({ agg: "sum", field: "id" });
+    const select = screen.getByLabelText("Measure") as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+    expect(Array.from(select.options)).toHaveLength(1);
+    expect(select.options[0].textContent).toBe("Sum of Amount");
+    expect(calls).toEqual([]);
+  });
+
+  it("shows an unpublished persisted measure instead of silently rewriting it", () => {
+    // A legacy `distinct(id)` — `distinct` is published by NO source, so this
+    // is reachable from saved layouts. Rewriting it would change the number a
+    // saved report renders without telling anyone.
+    const calls: Measure[] = [];
+    renderWithSWR(
+      <SingleMeasureEditor
+        measure={{ agg: "distinct", field: "id" }}
+        onChange={(m) => calls.push(m)}
+        measureOptions={TRANSACTIONS_OPTIONS}
+      />,
+    );
+    const select = screen.getByLabelText("Measure") as HTMLSelectElement;
+    expect(select.value).toBe("__unsupported__");
+    expect(select.options[0].textContent).toContain("(unsupported)");
+    expect(
+      screen.getByText(/not offered by the selected data source/i),
+    ).toBeInTheDocument();
+    // Untouched until the user picks something.
+    expect(calls).toEqual([]);
   });
 });
 
