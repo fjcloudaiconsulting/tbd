@@ -34,6 +34,7 @@ from app.deps import get_session_factory
 from app.models import Base
 from app.models.audit_event import AuditEvent, AuditOutcome
 from app.rate_limit import limiter
+from app.services.audit_service import list_audit_events
 from app.routers.security import CSP_VIOLATION_EVENT_TYPE, router as security_router
 
 
@@ -311,3 +312,67 @@ async def test_csp_report_rate_limited(client, session_factory):
     # 61st within the same minute for the same IP → 429.
     throttled = await client.post("/api/v1/security/csp-report", json=body)
     assert throttled.status_code == 429
+
+
+# ── TBD-439: the writer and the default-view exclusion must agree ───────────
+
+
+@pytest.mark.asyncio
+async def test_csp_row_is_hidden_from_the_default_audit_view(
+    client, session_factory
+):
+    """END-TO-END fence over the constant both sides share.
+
+    ⚠⚠ THIS IS THE ONLY TEST THAT CAN SEE THE DRIFT, and the reason is worth
+    stating. ``routers/security.py`` WRITES ``CSP_VIOLATION_EVENT_TYPE`` and
+    ``audit_service.list_audit_events`` EXCLUDES it. Re-define the constant in
+    the router (shadowing the import) with a different spelling and the writer
+    emits one string while the exclusion filters another -- CSP rows flood
+    ``/admin/audit`` again.
+
+    Every unit test on either side stays GREEN through that, because each
+    side's tests import the same symbol the code under test uses, so the
+    assertion and the code move together. Measured during review: 48 tests
+    across five files all pass against that mutant. It is the "assertion
+    compares a value to itself" class, one module apart.
+
+    This test names NO event type. It POSTs a real report through the real
+    endpoint, then asks the real reader whether the row it just wrote is
+    hidden. That question cannot be satisfied by both sides moving together.
+    """
+    resp = await client.post(
+        "/api/v1/security/csp-report",
+        json={
+            "csp-report": {
+                "document-uri": "https://app.example.com/dashboard",
+                "violated-directive": "script-src",
+                "blocked-uri": "https://evil.example.com/x.js",
+            }
+        },
+        headers={"content-type": "application/csp-report"},
+    )
+    assert resp.status_code == 204
+
+    # The row exists...
+    written = await _audit_rows(session_factory)
+    assert len(written) == 1
+
+    async with session_factory() as db:
+        default_rows, default_total = await list_audit_events(db)
+        by_name_rows, _ = await list_audit_events(
+            db, event_type=written[0].event_type
+        )
+        complete_rows, _ = await list_audit_events(db, include_csp=True)
+
+    # ...and the default view does not show it. Note this asserts on the row
+    # the ENDPOINT wrote, never on a literal, so a renamed constant cannot
+    # keep it green.
+    assert default_rows == []
+    assert default_total == 0
+
+    # Asking for it by its own recorded type returns it.
+    assert len(by_name_rows) == 1
+    assert by_name_rows[0].id == written[0].id
+
+    # And the complete log still contains it.
+    assert [r.id for r in complete_rows] == [written[0].id]

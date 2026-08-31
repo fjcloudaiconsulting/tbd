@@ -236,6 +236,7 @@ async def list_audit_events(
     sort_dir: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    include_csp: bool = False,
 ) -> tuple[list[AuditEvent], int]:
     """Return ``(rows, total)`` for the admin audit table.
 
@@ -270,9 +271,19 @@ async def list_audit_events(
         # views "MUST scope OUT" this event type. Until now nothing did: the
         # string appeared ONLY in that router, never here.
         #
-        # Excluded from the DEFAULT view only. Asking for the stream by name
-        # (``?event_type=security.csp_violation``) still returns it, which is
-        # what makes this a default rather than a censor.
+        # Excluded from the DEFAULT view only. Two ways back to the rows:
+        # ask for the stream by name (``?event_type=security.csp_violation``),
+        # or set ``include_csp`` to get the COMPLETE log with CSP interleaved
+        # in time order.
+        #
+        # ⚠ ``include_csp`` is not redundant with the by-name filter, and the
+        # difference matters during an incident. Filtering by name returns CSP
+        # rows ALONE; it cannot show a CSP probe interleaved with the auth
+        # attempts it correlates with, and the two result sets cannot be
+        # joined back into one time-ordered page. Without this flag
+        # ``/admin/audit`` -- the only read path over this table -- could not
+        # produce a complete audit log at all, which is not an acceptable
+        # property for a security log.
         #
         # ⚠ Appended to ``where``, which feeds BOTH the row query and the
         # count query below. Excluding from the rows alone would leave
@@ -282,7 +293,8 @@ async def list_audit_events(
         # ⚠ ``event_type`` is ``nullable=False`` (models/audit_event.py:263),
         # so a bare ``!=`` cannot silently drop NULL rows the way it would on
         # a nullable column.
-        where.append(AuditEvent.event_type != CSP_VIOLATION_EVENT_TYPE)
+        if not include_csp:
+            where.append(AuditEvent.event_type != CSP_VIOLATION_EVENT_TYPE)
     if outcome:
         # The HTTP route now types this as Literal["success", "failure"]
         # so FastAPI returns 422 for typos before this branch runs.
