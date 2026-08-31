@@ -198,17 +198,27 @@ it("switches dataset and drops a now-invalid dimension on source change", () => 
   expect(dims[0]).toBe("account_type");
 });
 
-it("narrows measure FIELD options to the accounts source (balance, not amount)", () => {
-  // Render a widget already on the accounts source so the field select is
+it("narrows MEASURE options to the accounts source (balance, not amount)", () => {
+  // Render a widget already on the accounts source so the measure select is
   // driven by the accounts catalog.
+  //
+  // ⚠ TBD-402: this asserted distinct FIELDS (["balance", "id"]) when the
+  // editor had a separate field select. The catalog's unit is the PAIR, so
+  // the select now offers the accounts source's three published measures.
+  // Asserting fields alone could not distinguish sum(balance) from
+  // avg(balance) — and the cross product of the old two selects could build
+  // pairs, like count(balance), that accounts never publishes.
   renderWithSWR(<DataTab widget={makeAccountsBar()} onUpdate={vi.fn()} />);
 
-  const fieldSelect = screen.getByLabelText("Field") as HTMLSelectElement;
-  const optionValues = Array.from(fieldSelect.options).map((o) => o.value);
-  expect(optionValues).toContain("balance");
-  expect(optionValues).not.toContain("amount");
-  // The distinct fields the accounts source publishes: balance + id.
-  expect(optionValues).toEqual(["balance", "id"]);
+  const measureSelect = screen.getByLabelText("Measure") as HTMLSelectElement;
+  const optionValues = Array.from(measureSelect.options).map((o) => o.value);
+  expect(optionValues).toEqual([
+    "sum_balance",
+    "avg_balance",
+    "count_accounts",
+  ]);
+  // No transactions-only measure leaks in.
+  expect(optionValues).not.toContain("sum_amount");
 });
 
 it("resets the measure to a valid accounts measure on switch to accounts", () => {
@@ -505,9 +515,18 @@ it("persisted accounts widget rendered before /sources resolves has no value/opt
     Array.from(dimSelect.options).map((o) => o.value),
   ).toContain(dimSelect.value);
 
-  const fieldSelect = screen.getByLabelText("Field") as HTMLSelectElement;
-  expect(fieldSelect.value).toBe("balance");
+  // ⚠ TBD-402. Before the catalog resolves there is no list to pick from, so
+  // the measure select renders the CURRENT measure as its single option and
+  // disables itself. That still satisfies what this test exists to assert —
+  // the value is one of the select's own options, never an orphan — and it
+  // is the safer shape: a fallback list here is how a pair the source does
+  // not publish got selected in the first place.
+  const measureSelect = screen.getByLabelText("Measure") as HTMLSelectElement;
+  expect(measureSelect.disabled).toBe(true);
   expect(
-    Array.from(fieldSelect.options).map((o) => o.value),
-  ).toContain(fieldSelect.value);
+    Array.from(measureSelect.options).map((o) => o.value),
+  ).toContain(measureSelect.value);
+  // The persisted measure is still what is SHOWN — it is not blanked while
+  // loading, which would read as "this widget has no measure".
+  expect(measureSelect.options[0].textContent).toBe("Sum of Balance");
 });

@@ -4,7 +4,8 @@
  * so no waitFor is needed. ResizeObserver is polyfilled globally in
  * vitest.setup.ts.
  */
-import { renderWithSWR, fireEvent, screen } from "../../utils/render-with-swr";
+import { mockReportSources } from "../../utils/mock-report-sources";
+import { renderWithSWR, fireEvent, screen, waitFor } from "../../utils/render-with-swr";
 
 import WidgetEditorPopover from "@/components/reports/WidgetEditorPopover";
 import { apiFetch } from "@/lib/api";
@@ -174,7 +175,7 @@ describe("WidgetEditorPopover", () => {
   it("defaults to the Data tab", () => {
     renderPopover(makeBar());
     expect(screen.getByLabelText("Data source")).toBeInTheDocument();
-    expect(screen.getByLabelText("Aggregation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Measure")).toBeInTheDocument();
     // Style/Filters panels not visible: no title input, no Filters block.
     expect(screen.queryByLabelText("Widget title")).not.toBeInTheDocument();
   });
@@ -352,15 +353,26 @@ describe("WidgetEditorPopover", () => {
     expect(last.title).toBe("Spending");
   });
 
-  it("changing the aggregation on the Data tab fires onUpdate", () => {
+  it("changing the measure on the Data tab fires onUpdate with a PUBLISHED pair", async () => {
+    // ⚠ TBD-402. This test previously changed an "Aggregation" select to
+    // `count` and asserted `{agg: "count", field: "amount"}` — a pair the
+    // transactions catalog does NOT publish. It measures `count` over `id`
+    // (`count_rows`). So the old assertion encoded the very defect this
+    // ticket removes: the agg × field cross product could build a measure
+    // the source never offered, and `validate_against_catalog` checks the
+    // FIELD only, so `count(amount)` would not even 422 — it would return a
+    // plausible, meaningless number.
+    vi.mocked(apiFetch).mockImplementation(
+      mockReportSources() as unknown as typeof apiFetch,
+    );
     const onUpdate = vi.fn();
     renderPopover(makeBar(), { onUpdate });
-    fireEvent.change(screen.getByLabelText("Aggregation"), {
-      target: { value: "count" },
-    });
+    const select = screen.getByLabelText("Measure") as HTMLSelectElement;
+    await waitFor(() => expect(select.disabled).toBe(false));
+    fireEvent.change(select, { target: { value: "count_rows" } });
     expect(onUpdate).toHaveBeenCalled();
     const last = onUpdate.mock.calls.at(-1)?.[0] as BarWidget;
-    expect(last.config.measure).toEqual({ agg: "count", field: "amount" });
+    expect(last.config.measure).toEqual({ agg: "count", field: "id" });
   });
 
   it("stacked_bar: Style tab shows the 'Bar layout' control", () => {
