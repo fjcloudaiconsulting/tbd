@@ -285,10 +285,108 @@ class ReportsQuery(BaseModel):
     include_non_reportable: bool = False
 
 
+# ─── truncation disclosure ───────────────────────────────────────────
+#
+# ⚠ WHY THIS IS ON THE WIRE AND NOT INFERRED ON THE CLIENT (TBD-484).
+#
+# ``truncated`` alone cannot be worded. A sentence describing truncation
+# has to name WHICH END was dropped, and the client cannot derive that
+# from ``(dataset, dimensions)``: the answer also depends on the SORT the
+# query actually ran with, and on a per-source branch the client cannot
+# see. Two independent defects in two days proved the inference
+# insufficient:
+#
+#   1. ``networth`` tail-keeps ONLY when a time dimension is present
+#      (``rows[-limit:] if time_dim is not None else rows[:limit]``), so a
+#      source-keyed map was already wrong; a compound
+#      ``(dataset, dimensions)`` key papered over it.
+#   2. ``sort.dir`` inverts the answer for the ranking sources too.
+#      ``emptyMultiSeries`` seeds line/area/stacked_bar with
+#      ``sort: {by: "dimension", dir: "asc"}, limit: 100`` over ``month``
+#      on ``transactions``, so a truncated line chart keeps the OLDEST 100
+#      months and drops the NEWEST — while a source-keyed map says
+#      "lowest-ranked" and words it "the first 100 rows". True in sort
+#      order, actively misleading to a reader.
+#
+# The server knows; the client was guessing. Each source populates this
+# from what it ACTUALLY did, never from a table.
+
+
+class TruncatedEnd(str, enum.Enum):
+    """Which end of the result the limit dropped.
+
+    Named for what a READER needs, not for the implementation:
+
+    - ``lowest-ranked`` / ``highest-ranked`` — the result was ranked by the
+      measure, and the dropped rows sit at that end of the ranking.
+    - ``oldest`` / ``newest`` — the result was ordered chronologically, and
+      the dropped rows sit at that end of time.
+
+    ⚠ There is deliberately NO value for "ordered by a non-time dimension"
+    (a category or account NAME). The dropped rows there are simply the
+    ones latest in an alphabetical ordering, which none of these four
+    names describes honestly. That case emits ``None`` and the client
+    falls back to the unqualified sentence — an honest absence beats a
+    confident guess, which is the entire point of this field.
+    """
+
+    LOWEST_RANKED = "lowest-ranked"
+    HIGHEST_RANKED = "highest-ranked"
+    OLDEST = "oldest"
+    NEWEST = "newest"
+
+
+# Dimensions whose ordering IS chronology. Ordering by any other dimension
+# is alphabetical and has no reader-facing end (see TruncatedEnd).
+TIME_DIMENSIONS = frozenset({Dimension.MONTH, Dimension.WEEK, Dimension.DAY})
+
+
+def resolve_truncated_end(
+    sort: Optional["SortSpec"],
+    dimensions: List[Dimension],
+) -> Optional[TruncatedEnd]:
+    """Map the EFFECTIVE ordering of a query onto the end its limit dropped.
+
+    Shared by every source whose ordering is driven by ``query.sort``
+    (transactions, accounts, recurring, credit_utilization) so the four
+    cannot drift on the semantics. ``networth`` does NOT use it: that
+    source ignores ``sort`` entirely and orders from its own branch, so it
+    reports from the branch it took.
+
+    ``sort=None`` is the compilers' shared default of ``value DESC`` — the
+    top-N reading — so the dropped rows are the lowest-ranked.
+
+    Returns ``None`` when the ordering has no honest reader-facing end.
+    """
+    by = sort.by if sort is not None else SortBy.VALUE
+    direction = sort.dir if sort is not None else SortDir.DESC
+
+    if by is SortBy.VALUE:
+        # Ranked by the measure: DESC keeps the top, so the tail is what went.
+        return (
+            TruncatedEnd.LOWEST_RANKED
+            if direction is SortDir.DESC
+            else TruncatedEnd.HIGHEST_RANKED
+        )
+
+    # by == DIMENSION. The compilers order on the FIRST dimension.
+    if not dimensions:
+        # The compilers raise on this shape; never reached from the wire.
+        return None
+    if dimensions[0] in TIME_DIMENSIONS:
+        return TruncatedEnd.NEWEST if direction is SortDir.ASC else TruncatedEnd.OLDEST
+    return None
+
+
 class QueryMeta(BaseModel):
     row_count: int
     truncated: bool
     query_ms: int
+    # Which end the limit dropped. ``None`` when nothing was truncated, and
+    # ALSO when the source cannot answer honestly (see TruncatedEnd).
+    # Additive + optional on the wire: a client that does not read it is
+    # unaffected.
+    truncated_end: Optional[TruncatedEnd] = None
     # Optional non-blocking notice a source can surface to the client
     # (e.g. NetWorthSource's multi-currency "showing per-currency" warning).
     # Without this field QueryMeta's default extra="ignore" would silently

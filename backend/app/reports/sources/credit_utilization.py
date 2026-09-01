@@ -61,6 +61,7 @@ from app.reports.sources.base import (
 )
 from app.schemas.reports_query import (
     MAX_LIMIT,
+    resolve_truncated_end,
     Aggregation,
     Dimension,
     FilterField,
@@ -350,6 +351,15 @@ class CreditUtilizationSource:
         meta = {
             "row_count": len(out_rows),
             "truncated": truncated,
+            # ⚠ Derived from the IN-PYTHON sort above (same semantics as the
+            # SQL sources: value DESC keeps the top, so the tail is what
+            # went). This source publishes no time dimension either, so a
+            # by-dimension sort resolves to None rather than a guess.
+            "truncated_end": (
+                resolve_truncated_end(query.sort, query.dimensions)
+                if truncated
+                else None
+            ),
             "query_ms": int((time.perf_counter() - started) * 1000),
         }
         if notices:

@@ -28,6 +28,7 @@ from app.reports.sources.base import (
 )
 from app.schemas.reports_query import (
     MAX_LIMIT,
+    resolve_truncated_end,
     Aggregation,
     Dimension,
     FilterField,
@@ -255,6 +256,16 @@ class AccountsSource:
         meta = {
             "row_count": len(out_rows),
             "truncated": truncated,
+            # ⚠ Derived from the ORDER BY above, not from the dataset. This
+            # source publishes NO time dimension, so a by-dimension sort here
+            # is alphabetical and honestly has no reader-facing end — the
+            # resolver returns None and the client falls back to the
+            # unqualified sentence rather than being handed a guess.
+            "truncated_end": (
+                resolve_truncated_end(query.sort, query.dimensions)
+                if truncated
+                else None
+            ),
             "query_ms": elapsed_ms,
         }
         return out_rows, meta

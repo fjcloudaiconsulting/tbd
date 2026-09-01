@@ -36,6 +36,7 @@ from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.reports_query import (
     MAX_LIMIT,
+    resolve_truncated_end,
     Aggregation,
     Dimension,
     Filter,
@@ -471,6 +472,14 @@ async def execute_query(
     meta = {
         "row_count": len(out_rows),
         "truncated": truncated,
+        # ⚠ Derived from the ORDER BY this query ACTUALLY ran with, not from
+        # the dataset. Step 5 above orders by ``sort`` (defaulting to value
+        # DESC), so a caller passing ``dir: "asc"`` over ``month`` — the shape
+        # every seeded line/area/stacked_bar widget sends — truthfully reports
+        # "newest" instead of a source-keyed map's "lowest-ranked".
+        "truncated_end": (
+            resolve_truncated_end(ast.sort, ast.dimensions) if truncated else None
+        ),
         "query_ms": elapsed_ms,
     }
     return out_rows, meta
