@@ -126,12 +126,40 @@ export interface ReportsQuery {
   include_non_reportable?: boolean;
 }
 
+/**
+ * Which END of the result the server's limit dropped (TBD-484).
+ *
+ * Named for what a READER needs, not for the implementation:
+ * `lowest-ranked` / `highest-ranked` when the result was ranked by the
+ * measure, `oldest` / `newest` when it was ordered chronologically.
+ *
+ * ⚠ Do NOT reconstruct this on the client from `(dataset, dimensions)`.
+ * That inference was tried and was wrong twice: `networth` tail-keeps only
+ * when a time dimension is present, and `sort.dir` inverts the answer for
+ * the ranking sources too — every seeded line/area/stacked_bar widget
+ * sends `sort: {by: "dimension", dir: "asc"}` over `month`, so it keeps the
+ * OLDEST rows and drops the NEWEST. Only the server knows.
+ */
+export type TruncatedEnd =
+  | "lowest-ranked"
+  | "highest-ranked"
+  | "oldest"
+  | "newest";
+
 export interface QueryMeta {
   row_count: number;
   truncated: boolean;
   query_ms: number;
   /** Non-blocking source notice (e.g. NetWorth multi-currency warning). */
   warning?: string;
+  /**
+   * Which end the limit dropped. `null` / absent when nothing was
+   * truncated — and ALSO when the source cannot answer honestly (ordering
+   * by a non-time dimension is alphabetical and has no reader-facing end).
+   * Callers must handle the absent case with an unqualified sentence: an
+   * honest absence beats a confident guess.
+   */
+  truncated_end?: TruncatedEnd | null;
 }
 
 export type QueryRow = Record<string, string | number | null>;

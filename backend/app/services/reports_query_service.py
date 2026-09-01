@@ -36,6 +36,7 @@ from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.reports_query import (
     MAX_LIMIT,
+    resolve_truncated_end,
     Aggregation,
     Dimension,
     Filter,
@@ -268,6 +269,7 @@ def compile_ast_to_query(
     *,
     org_id: int,
     dialect_name: str = "mysql",
+    overfetch: bool = False,
 ) -> Select:
     """Compile a validated ``ReportsQuery`` AST into a SQLAlchemy Core
     ``Select`` bound to a single org.
@@ -275,6 +277,11 @@ def compile_ast_to_query(
     The AST has no way to specify ``org_id``; it is injected here from
     the authenticated caller's context. All other values reach the
     statement as bound parameters (SQLAlchemy's default).
+
+    ``overfetch=True`` asks for ONE row beyond the effective limit — the
+    probe row that lets ``execute_query`` tell "a complete result that
+    exactly fills the limit" apart from "there was more". The caller MUST
+    slice it off before it reaches the payload; ``execute_query`` does.
     """
     # 1) Measure projection + base select.
     measure_expr = _measure_expr(ast.measure)
@@ -358,7 +365,12 @@ def compile_ast_to_query(
     # 6) Hard limit cap. Pydantic already enforced ``limit <= 500`` on
     # the AST; the ``min()`` is defence-in-depth in case the AST is ever
     # constructed in Python without going through validation.
-    stmt = stmt.limit(min(ast.limit, MAX_LIMIT))
+    #
+    # ⚠ The ``+ 1`` probe rides on the CAPPED value, never on ``ast.limit``:
+    # a request at exactly ``MAX_LIMIT`` must still be able to report
+    # ``truncated: true``, and capping after the ``+1`` would swallow the
+    # probe row and make truncation unreportable at the cap.
+    stmt = stmt.limit(min(ast.limit, MAX_LIMIT) + (1 if overfetch else 0))
     return stmt
 
 
@@ -419,12 +431,25 @@ async def execute_query(
         dialect = db.get_bind().dialect.name
     except Exception:
         dialect = "mysql"
-    stmt = compile_ast_to_query(ast, org_id=org_id, dialect_name=dialect)
+    stmt = compile_ast_to_query(
+        ast, org_id=org_id, dialect_name=dialect, overfetch=True
+    )
     stmt = _apply_query_timeout(stmt, dialect)
     started = time.perf_counter()
     result = await db.execute(stmt)
     rows = result.mappings().all()
     elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+    # ⚠ ``truncated`` means "there was MORE than we returned" (TBD-484).
+    # It CANNOT be derived from ``out_rows`` after a SQL ``LIMIT n``:
+    # ``len(out_rows) >= n`` is true for every complete result that
+    # happens to fill the limit exactly, which is an ordinary shape (the
+    # seeded widget limits are 10, 50 and 100). So we fetch ``n + 1``,
+    # read the answer off the probe row, then slice it away — ``row_count``
+    # and the payload stay exactly what the client asked for.
+    cap = min(ast.limit, MAX_LIMIT)
+    truncated = len(rows) > cap
+    rows = rows[:cap]
 
     out_rows = []
     for r in rows:
@@ -446,7 +471,15 @@ async def execute_query(
 
     meta = {
         "row_count": len(out_rows),
-        "truncated": len(out_rows) >= ast.limit,
+        "truncated": truncated,
+        # ⚠ Derived from the ORDER BY this query ACTUALLY ran with, not from
+        # the dataset. Step 5 above orders by ``sort`` (defaulting to value
+        # DESC), so a caller passing ``dir: "asc"`` over ``month`` — the shape
+        # every seeded line/area/stacked_bar widget sends — truthfully reports
+        # "newest" instead of a source-keyed map's "lowest-ranked".
+        "truncated_end": (
+            resolve_truncated_end(ast.sort, ast.dimensions) if truncated else None
+        ),
         "query_ms": elapsed_ms,
     }
     return out_rows, meta

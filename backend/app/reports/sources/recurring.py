@@ -39,6 +39,7 @@ from app.reports.sources.base import (
 )
 from app.schemas.reports_query import (
     MAX_LIMIT,
+    resolve_truncated_end,
     Aggregation,
     Dimension,
     FilterField,
@@ -263,12 +264,25 @@ class RecurringSource:
         if dim_exprs:
             stmt = stmt.order_by(func.min(RecurringTransaction.id).asc())
 
-        stmt = stmt.limit(min(query.limit, MAX_LIMIT))
+        # ⚠ ``truncated`` means "there was MORE than we returned" (TBD-484).
+        # It CANNOT be derived from the returned rows after a SQL ``LIMIT n``:
+        # ``len(out_rows) >= n`` is true for every COMPLETE result that happens
+        # to fill the limit exactly, which is an ordinary shape (the seeded
+        # widget limits are 10, 50 and 100). So fetch ``n + 1`` and read the
+        # answer off the probe row. The ``+ 1`` rides on the CAPPED value so a
+        # request at exactly ``MAX_LIMIT`` can still report truncation, and the
+        # probe row is sliced away below — it must never reach the payload or
+        # ``row_count``.
+        limit = min(query.limit, MAX_LIMIT)
+        stmt = stmt.limit(limit + 1)
 
         started = time.perf_counter()
         result = await db.execute(stmt)
         rows = result.mappings().all()
         elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+        truncated = len(rows) > limit
+        rows = rows[:limit]
 
         out_rows = []
         for r in rows:
@@ -293,7 +307,17 @@ class RecurringSource:
 
         meta = {
             "row_count": len(out_rows),
-            "truncated": len(out_rows) >= query.limit,
+            "truncated": truncated,
+            # ⚠ Derived from the ORDER BY above, not from the dataset. This
+            # source publishes NO time dimension, so a by-dimension sort here
+            # is alphabetical and honestly has no reader-facing end — the
+            # resolver returns None and the client falls back to the
+            # unqualified sentence rather than being handed a guess.
+            "truncated_end": (
+                resolve_truncated_end(query.sort, query.dimensions)
+                if truncated
+                else None
+            ),
             "query_ms": elapsed_ms,
         }
         return out_rows, meta
