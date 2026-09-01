@@ -43,6 +43,7 @@ from app.reports.sources.base import (
 )
 from app.schemas.reports_query import (
     MAX_LIMIT,
+    TruncatedEnd,
     Dimension,
     FilterField,
     FilterOp,
@@ -283,9 +284,26 @@ class NetWorthSource:
         total = len(rows)
         rows = rows[-limit:] if time_dim is not None else rows[:limit]
 
+        truncated = total > limit
         meta: dict = {
             "row_count": len(rows),
-            "truncated": total > limit,
+            "truncated": truncated,
+            # ⚠ Read off the BRANCH THIS CALL TOOK, not from a table and not
+            # from ``query.sort`` — this source ignores ``sort`` entirely and
+            # imposes its own ordering. A time series tail-keeps, so the
+            # OLDEST periods went; the by-currency branch is value-desc, so
+            # the lowest-ranked went. That per-branch split inside ONE dataset
+            # is what a client-side ``(dataset, dimensions)`` map could not
+            # represent (TBD-484).
+            "truncated_end": (
+                None
+                if not truncated
+                else (
+                    TruncatedEnd.OLDEST
+                    if time_dim is not None
+                    else TruncatedEnd.LOWEST_RANKED
+                )
+            ),
             "query_ms": int((time.perf_counter() - started) * 1000),
         }
         if not currency_requested and multi_currency:
