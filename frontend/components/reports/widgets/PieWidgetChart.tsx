@@ -17,12 +17,24 @@ export interface PieWidgetChartProps {
   format: "currency" | "number" | "percent";
   /** Org currency ISO code; prefixes the symbol when format is "currency". */
   currency?: string;
+  /**
+   * Withhold the donut total (TBD-430).
+   *
+   * ⚠ Set under `meta.truncated`. `rows.reduce(...)` sums only the rows
+   * that came back, and the sum was painted in the donut hole AND
+   * exposed as an `sr-only` "Total: …" — so under truncation the WRONG
+   * number was what assistive tech announced. Both go, together: dropping
+   * only the visible one would leave the wrong figure audible and
+   * invisible, which is worse. The header's loud notice explains it.
+   */
+  suppressTotal?: boolean;
 }
 
 export default function PieWidgetChart({
   rows,
   format,
   currency,
+  suppressTotal,
 }: PieWidgetChartProps) {
   // Self-guard: parent already ensures rows is non-empty, but be defensive.
   if (rows.length === 0) return null;
@@ -32,25 +44,29 @@ export default function PieWidgetChart({
 
   return (
     <div className="relative h-full w-full">
-      {/* Visually-hidden accessible alternative for the center total (SC 1.3.1).
-          Must live OUTSIDE the aria-hidden overlay so screen readers find it. */}
-      <span className="sr-only">Total: {formattedTotal}</span>
-      {/* Center total — absolutely positioned over the donut hole */}
-      <div
-        className="pointer-events-none absolute inset-0 flex items-center justify-center"
-        aria-hidden="true"
-      >
-        {/*
-         * -mt-8 compensates for the bottom Legend row (~32px / 2rem).
-         * Revisit if the legend wraps to two lines (e.g. many slices).
-         */}
-        <span
-          className="-mt-8 text-sm font-bold text-text-primary"
-          data-testid="pie-center-total"
-        >
-          {formattedTotal}
-        </span>
-      </div>
+      {!suppressTotal && (
+        <>
+          {/* Visually-hidden accessible alternative for the center total (SC 1.3.1).
+              Must live OUTSIDE the aria-hidden overlay so screen readers find it. */}
+          <span className="sr-only">Total: {formattedTotal}</span>
+          {/* Center total — absolutely positioned over the donut hole */}
+          <div
+            className="pointer-events-none absolute inset-0 flex items-center justify-center"
+            aria-hidden="true"
+          >
+            {/*
+             * -mt-8 compensates for the bottom Legend row (~32px / 2rem).
+             * Revisit if the legend wraps to two lines (e.g. many slices).
+             */}
+            <span
+              className="-mt-8 text-sm font-bold text-text-primary"
+              data-testid="pie-center-total"
+            >
+              {formattedTotal}
+            </span>
+          </div>
+        </>
+      )}
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
           <Pie

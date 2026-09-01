@@ -33,4 +33,26 @@ describe("PieWidgetChart", () => {
     // Total = 3000
     expect(screen.getByTestId("pie-center-total").textContent).toMatch(/3,000|3000/);
   });
+
+  // TBD-430. KILLS: annotating a wrong number instead of withholding it,
+  // and KILLS hiding only the VISIBLE half — `rows.reduce(...)` is painted
+  // in the donut hole AND exposed as an `sr-only` "Total: …", so under
+  // truncation the wrong figure is what assistive tech announces. Both go
+  // together or the fix is cosmetic.
+  it("withholds the donut total AND its sr-only twin under suppressTotal", () => {
+    const rows = [
+      { label: "A", value: 1000 },
+      { label: "B", value: 2000 },
+    ];
+    const shown = render(<PieWidgetChart rows={rows} format="number" />);
+    expect(screen.getByTestId("pie-center-total")).toBeInTheDocument();
+    expect(shown.container.textContent).toContain("Total:");
+    shown.unmount();
+
+    const hidden = render(
+      <PieWidgetChart rows={rows} format="number" suppressTotal />,
+    );
+    expect(screen.queryByTestId("pie-center-total")).toBeNull();
+    expect(hidden.container.textContent).not.toContain("Total:");
+  });
 });

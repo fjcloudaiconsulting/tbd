@@ -21,6 +21,7 @@ import { useReportSources } from "./use-report-sources";
 import type {
   CanvasFilters,
   Measure,
+  QueryMeta,
   ReportsQuery,
   ReportsQueryResponse,
   Widget,
@@ -252,6 +253,17 @@ export function useSeriesQueries(
   measures: Measure[],
 ): {
   series: Array<ReportsQueryResponse | undefined>;
+  /**
+   * Per-series ``meta``, index-aligned with ``series``.
+   *
+   * ⚠ TBD-430: this hook used to discard ``meta`` entirely, which made
+   * ``truncated`` and ``warning`` structurally invisible to line, area,
+   * table and the multi-measure stacked bar — half the widget catalog.
+   * Anything deriving a notice must read EVERY entry, not ``[0]``: a
+   * two-measure table whose SECOND query hit the cap renders an
+   * incomplete merge just as surely as one whose first did.
+   */
+  metas: Array<QueryMeta | undefined>;
   isLoading: boolean;
   error: Error | undefined;
 } {
@@ -285,8 +297,15 @@ export function useSeriesQueries(
     },
   );
 
+  const series = useMemo(
+    () => data ?? measures.map(() => undefined),
+    [data, measures],
+  );
+  const metas = useMemo(() => series.map((r) => r?.meta), [series]);
+
   return {
-    series: data ?? measures.map(() => undefined),
+    series,
+    metas,
     isLoading: !!isLoading,
     error: (error as Error | undefined) ?? undefined,
   };

@@ -45,6 +45,7 @@ import dynamic from "next/dynamic";
 import { useMemo } from "react";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
+import { widgetDataState } from "@/lib/reports/notices";
 import { buildBreakdown, EMPTY_BREAKDOWN } from "@/lib/reports/breakdown";
 import { dimensionHeader, measureFieldLabel } from "@/lib/reports/series";
 import { useWidgetFormat } from "@/lib/reports/widget-format";
@@ -55,6 +56,7 @@ import type {
   StackedBarWidget as StackedBarWidgetType,
 } from "@/lib/reports/types";
 import WidgetCsvButton from "./WidgetCsvButton";
+import WidgetNotices from "@/components/reports/WidgetNotices";
 import type { CsvCell } from "@/lib/reports/csv";
 
 /** The two widget types this component renders. */
@@ -216,16 +218,48 @@ export default function BarWidget({
     <div
       data-testid={tid}
       data-widget-id={widget.id}
-      // R10 — `meta.truncated` is PLUMBED but not yet rendered. Surfacing
-      // it is a new inline surface (a design change) and is deferred; this
-      // keeps the follow-up a render change rather than a re-plumb, and
-      // MAX_LIMIT 500 is not infinity.
+      // R10 — retained as a debugging affordance. The USER-facing surface
+      // is `WidgetNotices` in the header row (TBD-430); this attribute is
+      // not what anything reads for severity.
       data-truncated={data?.meta?.truncated ? "true" : "false"}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="text-sm font-semibold text-text-primary">{title}</div>
-        <WidgetCsvButton title={title} dataset={csvDataset} editMode={editMode} />
+      <div
+        data-testid="widget-header"
+        // ⚠ `pr-12` is not spacing taste. `WidgetShell`'s edit overlay is
+        // absolutely positioned at `right-1 top-1` and occupies
+        // x ∈ [W−52, W−4]; `WidgetCsvButton` renders `null` in edit mode,
+        // so without this reservation the notice glyph lands at
+        // x ∈ [W−42, W−16] and its top-right corner overlaps the REMOVE
+        // control. See the geometry note in `WidgetNotices.tsx`.
+        className={`mb-2 flex items-center justify-between gap-2${
+          editMode ? " pr-12" : ""
+        }`}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <span className="min-w-0 truncate text-sm font-semibold text-text-primary">
+            {title}
+          </span>
+          {/* ⚠ COMPUTED, never a literal. With ONE dimension every bar is
+              its own complete group and truncation is quiet. With TWO,
+              `astLimitForBarFamily` asks for `limit: 500` and a row is a
+              (primary, secondary) PAIR, so past that cap `capPrimaryBuckets`
+              ranks on a partial `rowTotal`, the "Other" fold sums a partial
+              tail, and every bar height is a partial sum — loud. Nothing is
+              withheld: those sums ARE the chart. */}
+          <WidgetNotices
+            metas={[data?.meta]}
+            derivesCrossRowAggregate={sliced}
+            withholdsCrossRowAggregate={false}
+            widgetTitle={title}
+            state={widgetDataState(isLoading, error, hasRows)}
+          />
+        </div>
+        <WidgetCsvButton
+          title={title}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       <div className="flex-1">
         {isLoading ? (
@@ -275,10 +309,18 @@ export default function BarWidget({
           stays visible in headless layouts (jsdom collapses the chart)
           and so swatch colors stay theme-token driven. */}
       {sliced && !isLoading && !error && hasRows && (
+        // TBD-430: capped + scrollable. Uncapped, this `flex-wrap` list
+        // grew without bound and bled out of the card on a wide break-down.
+        // `tabIndex={0}` is not decoration — WCAG 2.1.1 requires a
+        // scrollable region to be keyboard-scrollable, and the list already
+        // carries an accessible name. No notice accompanies this: a
+        // scrollbar says "there is more" natively, and the colour key stays
+        // reachable where it belongs.
         <ul
           data-testid={`${tid}-legend`}
           aria-label={legendLabel}
-          className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-secondary"
+          tabIndex={0}
+          className="mt-2 flex max-h-16 flex-wrap gap-x-3 gap-y-1 overflow-y-auto text-xs text-text-secondary"
         >
           {breakdown.secondaryValues.map((sv, i) => (
             <li
