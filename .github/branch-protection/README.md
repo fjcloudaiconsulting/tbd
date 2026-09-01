@@ -9,12 +9,13 @@ all, so no reading of it could be classified as either — which is how
 
 ## It is measured, not ratified
 
-**Nobody chose these values. They are what the repository has.** Two of them in
-particular are recorded because they are true, not because they are correct:
+**These values are measured from the live API, never hand-written.** Most are
+recorded because they are true rather than because anyone chose them; the two
+below have been looked at directly:
 
 | field | recorded | note |
 |---|---|---|
-| `allow_force_pushes` | `true` | **Not ratified.** `reference_branch_protection_and_breakglass` recorded the intent as `false`. Flipping it is an operator decision and a one-line diff to this file. |
+| `allow_force_pushes` | `false` | **Ratified 2026-09-01.** It had drifted to `true` for at least three weeks; the operator ruled it back to `false` and the setting was restored before this file recorded it. Nothing in this repo pushes to `main` — semantic-release tags but never commits back. |
 | `allow_deletions` | `false` | Matches the recorded intent. Listed here only because it is the other field that has drifted before. |
 
 Seeding this file with the *aspirational* values instead would make the probe red

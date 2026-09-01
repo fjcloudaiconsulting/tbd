@@ -1,6 +1,6 @@
 {
   "allow_deletions": false,
-  "allow_force_pushes": true,
+  "allow_force_pushes": false,
   "allow_fork_syncing": false,
   "block_creations": false,
   "enforce_admins": true,

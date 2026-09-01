@@ -251,7 +251,7 @@ def _raw_live() -> dict:
         "required_signatures": {"url": f"{API}/required_signatures", "enabled": False},
         "enforce_admins": {"url": f"{API}/enforce_admins", "enabled": True},
         "required_linear_history": {"enabled": False},
-        "allow_force_pushes": {"enabled": True},
+        "allow_force_pushes": {"enabled": False},
         "allow_deletions": {"enabled": False},
         "block_creations": {"enabled": False},
         "required_conversation_resolution": {"enabled": False},
