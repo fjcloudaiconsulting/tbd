@@ -17,8 +17,22 @@
 # an emergency, and admin enforcement is off indefinitely with no alarm. That
 # failure mode is not hypothetical here: `allow_deletions: true` was found set
 # on `main` with no one having chosen it, and an interrupted partial update is
-# the most likely explanation. The `trap` below re-arms on EVERY exit path,
-# including Ctrl-C and an unexpected error.
+# the most likely explanation. The `trap` below re-arms on Ctrl-C, on an
+# unexpected error, and on an untrapped SIGHUP (bash runs the EXIT trap, then
+# exits 129) -- so closing the terminal does NOT defeat it.
+#
+# ⚠⚠ IT DOES NOT RE-ARM ON EVERY EXIT PATH, AND THIS COMMENT USED TO CLAIM IT
+# DID. Two windows survive: `SIGKILL` or power loss, and -- far likelier -- the
+# re-arm POST itself RETURNING NON-ZERO, which is probable precisely because you
+# break glass when the API is unwell. In that case line 38 prints `!!! FAILED TO
+# RE-ARM enforce_admins`, and the evidence is that such a message can be printed
+# and not read: `allow_deletions: true` sat unnoticed once, and
+# `allow_force_pushes: true` sat unnoticed for at least three weeks after it.
+#
+# The out-of-band check for that window is the branch-protection posture probe
+# (`.github/workflows/branch-protection-probe.yml`, TBD-420). It runs on every
+# push to `main` -- which a break-glass merge produces -- and compares the whole
+# protection payload against `.github/branch-protection/main.json`.
 #
 # Usage:  scripts/breakglass-merge.sh <pr-number> "<reason>"
 #
