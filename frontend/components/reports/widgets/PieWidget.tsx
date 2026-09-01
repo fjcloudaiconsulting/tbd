@@ -15,6 +15,7 @@
 import dynamic from "next/dynamic";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
+import { widgetDataState } from "@/lib/reports/notices";
 import { dimensionHeader, topNWithOther } from "@/lib/reports/series";
 import { useWidgetFormat } from "@/lib/reports/widget-format";
 import type {
@@ -22,6 +23,7 @@ import type {
   PieWidget as PieWidgetType,
 } from "@/lib/reports/types";
 import WidgetCsvButton from "./WidgetCsvButton";
+import WidgetNotices from "@/components/reports/WidgetNotices";
 import type { CsvCell } from "@/lib/reports/csv";
 
 const PieWidgetChart = dynamic(() => import("./PieWidgetChart"), {
@@ -80,12 +82,37 @@ export default function PieWidget({
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div
-          className="text-sm font-semibold text-text-primary"
-          aria-label={widget.title || "Pie chart"}
-        >
-          {widget.title || "Pie chart"}
+      <div
+        data-testid="widget-header"
+        // ⚠ `pr-12` is not spacing taste. `WidgetShell`'s edit overlay is
+        // absolutely positioned at `right-1 top-1` and occupies
+        // x ∈ [W−52, W−4]; `WidgetCsvButton` renders `null` in edit mode,
+        // so without this reservation the notice glyph lands at
+        // x ∈ [W−42, W−16] and its top-right corner overlaps the REMOVE
+        // control. See the geometry note in `WidgetNotices.tsx`.
+        className={`mb-2 flex items-center justify-between gap-2${
+          editMode ? " pr-12" : ""
+        }`}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <span
+            className="min-w-0 truncate text-sm font-semibold text-text-primary"
+            aria-label={widget.title || "Pie chart"}
+          >
+            {widget.title || "Pie chart"}
+          </span>
+          {/* LOUD on truncation: the donut total and `topNWithOther`'s
+              "Other" slice are both composed from ACROSS the returned
+              rows, so a short result makes them wrong rather than merely
+              partial. The total is withheld (see `suppressTotal`); this
+              notice is what explains why it is gone. */}
+          <WidgetNotices
+            metas={[data?.meta]}
+            derivesCrossRowAggregate
+            withholdsCrossRowAggregate
+            widgetTitle={widget.title || "Pie chart"}
+            state={widgetDataState(isLoading, error, rows.length > 0)}
+          />
         </div>
         <WidgetCsvButton
           title={widget.title || "Pie chart"}
@@ -115,7 +142,12 @@ export default function PieWidget({
             No data
           </div>
         ) : (
-          <PieWidgetChart rows={rows} format={format} currency={currency} />
+          <PieWidgetChart
+            rows={rows}
+            format={format}
+            currency={currency}
+            suppressTotal={!!data?.meta?.truncated}
+          />
         )}
       </div>
     </div>

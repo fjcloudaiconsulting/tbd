@@ -21,6 +21,7 @@
  * button in the header; the rollout-table PR2 row says "Save layout
  * (PATCH)" — both align with explicit-save.
  */
+import { TriangleAlert } from "lucide-react";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -58,6 +59,7 @@ import { emptyWidget, newWidgetId } from "@/components/reports/widgetKit";
 import type { WidgetType } from "@/lib/reports/types";
 import { useIsMobile } from "@/lib/hooks/use-is-mobile";
 import { btnCanvas, btnCanvasActive } from "@/lib/styles";
+import { useReportSources } from "@/lib/reports/use-report-sources";
 
 interface PageProps {
   // Next 15 makes ``params`` a promise on server-rendered pages; in
@@ -122,6 +124,11 @@ export default function ReportEditorPage({ params }: PageProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // TBD-430: surfaced, not swallowed. `sources: []` is BOTH "empty
+  // catalog" and (until TBD-403 part 1) "catalog is down"; only the SWR
+  // error separates them, and only the failure warrants a banner.
+  const { error: sourcesError } = useReportSources();
+
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
@@ -634,6 +641,33 @@ export default function ReportEditorPage({ params }: PageProps) {
           className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-sm text-danger"
         >
           {saveError}
+        </div>
+      )}
+
+      {/* Page-scoped notice (TBD-430). `/reports/sources` is ONE constant
+          SWR key, so its failure is one fact about the whole canvas and is
+          never a per-widget notice. Copy states the REAL blast radius:
+          with `sources: []`, `sourceSupportsField` returns `true` by
+          design, so some widgets push a filter their source does not
+          publish and take a 422 — they render "Couldn't load", not a wrong
+          symbol. No acknowledgement, no dismissal, no persistence: it
+          disappears when the fetch recovers. */}
+      {sourcesError && (
+        <div className="border-b border-border px-4 py-2">
+          <div
+            role="alert"
+            data-testid="report-sources-unavailable"
+            className="flex items-start gap-2 rounded-md bg-warning-dim px-4 py-3 text-sm text-text-primary"
+          >
+            <TriangleAlert
+              aria-hidden="true"
+              className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+            />
+            <span>
+              The data-source catalog is unavailable. Some widgets may be
+              missing units or failing to load.
+            </span>
+          </div>
         </div>
       )}
 
