@@ -96,7 +96,7 @@ describe("formatForMeasure", () => {
     ).toBe("percent");
   });
 
-  it("returns undefined without a catalog, so callers can hold their skeleton", () => {
+  it("returns undefined without a catalog", () => {
     // KILLS: defaulting to "number" while the catalog loads, which would flash
     // an unformatted value and then flip once /sources lands.
     expect(formatForMeasure(undefined, { agg: "sum", field: "amount" })).toBeUndefined();
@@ -134,6 +134,63 @@ describe("sharedFormatFor", () => {
 
   it("is undefined with no catalog", () => {
     expect(sharedFormatFor(undefined, [{ agg: "sum", field: "amount" }])).toBeUndefined();
+  });
+
+  // ── TBD-403: PARTIAL resolution degrades, it does not silently shrink ──
+  //
+  // Three branches, asserted separately because they are three different
+  // answers. Folding "nothing resolved" into the degrade branch is the
+  // over-eager fix, and only the `[undefined]` case catches it -- `[]` cannot,
+  // because `0 !== 0` is false.
+
+  it("degrades to number when only SOME measures resolve", () => {
+    // KILLS: `.filter(f => f !== undefined)` before the agreement check, which
+    // is what shipped. It dropped the unresolvable series and then agreed with
+    // whatever survived, so this returned "currency" -- stamping the currency
+    // symbol on the ONE shared tickFormatter of an axis one of whose series is
+    // UNKNOWN. Unknown is not absent: the series is still drawn, so this is
+    // the same mislabelling the differing-formats branch above exists to stop.
+    expect(
+      sharedFormatFor(TRANSACTIONS, [{ agg: "sum", field: "amount" }, undefined]),
+    ).toBe("number");
+    expect(
+      sharedFormatFor(TRANSACTIONS, [undefined, { agg: "sum", field: "amount" }]),
+    ).toBe("number");
+    expect(
+      sharedFormatFor(CREDIT_UTILIZATION, [
+        { agg: "avg", field: "utilization_pct" },
+        undefined,
+      ]),
+    ).toBe("number");
+  });
+
+  it("stays undefined when NOTHING resolves, keeping unknown distinct from disagreeing", () => {
+    // KILLS: an over-eager version of the fix above that degrades to "number"
+    // the moment `known.length !== measures.length`. Neither of these has
+    // anything to be partial ABOUT.
+    //
+    // ⚠ `[]` alone does NOT kill that mutant (`0 !== 0` is false); only the
+    // `[undefined]` forms do. Both are asserted, deliberately.
+    //
+    // ⚠ This preserves `useWidgetFormat`'s contract, NOT a loading skeleton.
+    // Measured: no consumer branches on `format === undefined` -- each holds
+    // its skeleton on `useReportSources().isLoading` and then evaluates
+    // `derivedFormat ?? "number"` unconditionally, so `undefined` and "number"
+    // are observationally identical at every call site today.
+    expect(sharedFormatFor(TRANSACTIONS, [])).toBeUndefined();
+    expect(sharedFormatFor(TRANSACTIONS, [undefined])).toBeUndefined();
+    expect(sharedFormatFor(TRANSACTIONS, [undefined, undefined])).toBeUndefined();
+  });
+
+  it("still returns the common format when every measure resolves and agrees", () => {
+    // The UNCHANGED branch, restated beside the two above so a "fix" that
+    // degrades everything to "number" cannot pass this block.
+    expect(
+      sharedFormatFor(CREDIT_UTILIZATION, [
+        { agg: "avg", field: "utilization_pct" },
+        { agg: "avg", field: "utilization_pct" },
+      ]),
+    ).toBe("percent");
   });
 });
 
