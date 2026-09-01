@@ -333,6 +333,8 @@ Removing that indicator (`outline-none`, `outline-hidden`) is allowed only where
 
 ⚠ The app chrome carries `data-chrome="navy"`, which re-points `--color-focus` to the always-bright brass. The chrome is navy in both themes, so the light theme's darkened accent would put a focused active nav item at 2.70:1 against its own tint — below WCAG 1.4.11's 3:1. This is compliance, not preference.
 
+**The Notice Register.** A widget states a fact its chart cannot draw through one shared notice surface, never a per-feature treatment. **Notice severity is a property of the *(condition, widget)* pair, never of the condition alone.** A notice is **loud** when a number the widget renders was computed from an incomplete set — the reader would act on a figure that is wrong, not merely partial. It is **quiet** when every rendered value is itself correct and only the set is short. The same condition takes both tones: row truncation is quiet on a bar, line, area or sparkline chart, where each mark is its own complete group; it is loud on a pie or a table, where a displayed "total" sums only what came back. **A condition that affects every widget identically is a page notice, never a widget notice.** Scope decides placement; the pair decides tone. Tone is never colour alone — the glyph shape and the sentence both change with it.
+
 ## 6. Do's and Don'ts
 
 ### Do

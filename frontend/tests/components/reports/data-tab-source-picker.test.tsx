@@ -104,6 +104,7 @@ beforeEach(() => {
   vi.mocked(useReportSources).mockReturnValue({
     sources: CATALOG,
     isLoading: false,
+    error: undefined,
   });
 });
 
@@ -502,6 +503,7 @@ it("persisted accounts widget rendered before /sources resolves has no value/opt
   vi.mocked(useReportSources).mockReturnValue({
     sources: [],
     isLoading: true,
+    error: undefined,
   });
 
   renderWithSWR(<DataTab widget={makeAccountsBar()} onUpdate={vi.fn()} />);

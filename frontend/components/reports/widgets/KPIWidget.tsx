@@ -15,6 +15,7 @@ import { formatMeasureValue } from "@/lib/reports/series";
 import { useWidgetFormat } from "@/lib/reports/widget-format";
 import type { CanvasFilters, KPIWidget as KPIWidgetType } from "@/lib/reports/types";
 import WidgetCsvButton from "./WidgetCsvButton";
+import WidgetNotices from "@/components/reports/WidgetNotices";
 import type { CsvCell } from "@/lib/reports/csv";
 
 interface Props {
@@ -77,8 +78,18 @@ export default function KPIWidget({
       className="flex h-full flex-col justify-center gap-1 rounded-lg border border-border bg-surface p-4"
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-          {widget.title || "KPI"}
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <span className="min-w-0 truncate text-[11px] font-medium uppercase tracking-wider text-text-muted">
+            {widget.title || "KPI"}
+          </span>
+          {/* Quiet: a KPI renders ONE group's own aggregate. Truncation of
+              a one-row result set does not make that number wrong. */}
+          <WidgetNotices
+            metas={[data?.meta]}
+            derivesCrossRowAggregate={false}
+            widgetTitle={widget.title || "KPI"}
+            suppressed={isLoading || !!error || value === null}
+          />
         </div>
         <WidgetCsvButton
           title={widget.title || "KPI"}

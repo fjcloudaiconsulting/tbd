@@ -23,6 +23,7 @@ import type {
   CanvasFilters,
 } from "@/lib/reports/types";
 import WidgetCsvButton from "./WidgetCsvButton";
+import WidgetNotices from "@/components/reports/WidgetNotices";
 import { buildSeriesCsvDataset } from "./seriesCsv";
 
 const AreaWidgetChart = dynamic(() => import("./AreaWidgetChart"), {
@@ -50,7 +51,7 @@ export default function AreaWidget({
   currency,
 }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
-  const { series, isLoading: dataLoading, error } = useSeriesQueries(
+  const { series, metas, isLoading: dataLoading, error } = useSeriesQueries(
     widget,
     canvasFilters,
     measures,
@@ -89,11 +90,22 @@ export default function AreaWidget({
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div
-          className="text-sm font-semibold text-text-primary"
-          aria-label={widget.title || "Area chart"}
-        >
-          {widget.title || "Area chart"}
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <span
+            className="min-w-0 truncate text-sm font-semibold text-text-primary"
+            aria-label={widget.title || "Area chart"}
+          >
+            {widget.title || "Area chart"}
+          </span>
+          {/* Quiet: each point is its own group's own value. Even when
+              `stacked`, the stack is drawn from those per-group values, not
+              from a total this widget computes. */}
+          <WidgetNotices
+            metas={metas}
+            derivesCrossRowAggregate={false}
+            widgetTitle={widget.title || "Area chart"}
+            suppressed={isLoading || !!error || rows.length === 0}
+          />
         </div>
         <WidgetCsvButton
           title={widget.title || "Area chart"}

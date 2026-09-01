@@ -15,6 +15,7 @@
  * there is nothing saved to act on yet. Those live on the saved-report
  * editor at `/reports/[id]`.
  */
+import { TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -23,6 +24,7 @@ import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useFilterChipState } from "@/lib/reports/use-filter-chip-state";
 import { btnCanvas } from "@/lib/styles";
+import { useReportSources } from "@/lib/reports/use-report-sources";
 import { createReport, listTemplates } from "@/lib/reports/api";
 import { blankDraftSeed } from "@/lib/reports/draft";
 import type {
@@ -67,6 +69,11 @@ export default function ReportDraftPage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // TBD-430: surfaced, not swallowed. `sources: []` is BOTH "empty
+  // catalog" and (until TBD-403 part 1) "catalog is down"; only the SWR
+  // error separates them, and only the failure warrants a banner.
+  const { error: sourcesError } = useReportSources();
+
   // Guards the one-time draft seed so re-renders don't clobber edits.
   const seeded = useRef(false);
 
@@ -282,6 +289,33 @@ export default function ReportDraftPage() {
             className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-sm text-danger"
           >
             {saveError}
+          </div>
+        )}
+
+        {/* Page-scoped notice (TBD-430). `/reports/sources` is ONE constant
+            SWR key, so its failure is one fact about the whole canvas and is
+            never a per-widget notice. Copy states the REAL blast radius:
+            with `sources: []`, `sourceSupportsField` returns `true` by
+            design, so some widgets push a filter their source does not
+            publish and take a 422 — they render "Couldn't load", not a wrong
+            symbol. No acknowledgement, no dismissal, no persistence: it
+            disappears when the fetch recovers. */}
+        {sourcesError && (
+          <div className="border-b border-border px-4 py-2">
+            <div
+            role="alert"
+            data-testid="report-sources-unavailable"
+            className="flex items-start gap-2 rounded-md bg-warning-dim px-4 py-3 text-sm text-text-primary"
+          >
+            <TriangleAlert
+              aria-hidden="true"
+              className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+            />
+            <span>
+              The data-source catalog is unavailable. Some widgets may be
+              missing units or failing to load.
+            </span>
+          </div>
           </div>
         )}
 

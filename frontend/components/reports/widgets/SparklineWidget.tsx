@@ -24,6 +24,7 @@ import type {
   SparklineWidget as SparklineWidgetType,
 } from "@/lib/reports/types";
 import WidgetCsvButton from "./WidgetCsvButton";
+import WidgetNotices from "@/components/reports/WidgetNotices";
 import type { CsvCell } from "@/lib/reports/csv";
 
 const SparklineWidgetChart = dynamic(
@@ -85,8 +86,18 @@ export default function SparklineWidget({
       aria-label={widget.title || "Sparkline"}
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-          {widget.title || "Sparkline"}
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <span className="min-w-0 truncate text-[11px] font-medium uppercase tracking-wider text-text-muted">
+            {widget.title || "Sparkline"}
+          </span>
+          {/* Quiet: every point is its own group's value, and the big
+              number is the LAST point, not a cross-row aggregate. */}
+          <WidgetNotices
+            metas={[data?.meta]}
+            derivesCrossRowAggregate={false}
+            widgetTitle={widget.title || "Sparkline"}
+            suppressed={isLoading || !!error || rows.length === 0}
+          />
         </div>
         <WidgetCsvButton
           title={widget.title || "Sparkline"}

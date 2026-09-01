@@ -38,6 +38,7 @@ import type {
 import Pagination from "@/components/ui/Pagination";
 import { pageCount } from "@/lib/hooks/use-table-state";
 import WidgetCsvButton from "./WidgetCsvButton";
+import WidgetNotices from "@/components/reports/WidgetNotices";
 import type { CsvCell } from "@/lib/reports/csv";
 
 interface Props {
@@ -57,11 +58,15 @@ export default function TableWidget({
   currency,
 }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
-  const { series, isLoading: dataLoading, error } = useSeriesQueries(
+  const { series, metas, isLoading: dataLoading, error } = useSeriesQueries(
     widget,
     canvasFilters,
     measures,
   );
+  // ANY series hitting the cap truncates the table: the rendered body is
+  // a client-side merge of every series, so one short query makes the
+  // whole merge short.
+  const truncated = metas.some((m) => m?.truncated);
 
   const measuresConfig = widget.config.measures;
   // Memoize the derived series keys/labels and the merged table rows on
@@ -140,9 +145,11 @@ export default function TableWidget({
   // avg/distinct/min/max a column sum is meaningless, so we render a
   // placeholder rather than fabricate a wrong number.
   //
-  // Caveat: this totals the rows the query returned, which are subject
-  // to the widget's ``limit``. It is NOT a separate server-side grand
-  // total. Fine for v1.
+  // ⚠ TBD-430 extended that same predicate to ``meta.truncated``. This
+  // sums the rows the query RETURNED, which under truncation is not the
+  // result set — so the footer is withheld entirely (here AND in the CSV
+  // below), and the loud notice in the header is what says why. A warning
+  // glyph beside a wrong number is the weaker half of the fix.
   const columnTotals = useMemo(() => {
     return widget.config.measures.map((m, i) => {
       const agg = m.measure.agg;
@@ -173,7 +180,7 @@ export default function TableWidget({
         typeof row[key] === "number" ? (row[key] as number) : null,
       ),
     ]);
-    if (dataRows.length > 0) {
+    if (dataRows.length > 0 && !truncated) {
       const totalRow: CsvCell[] = [
         ...dimensions.map((_, di) => (di === 0 ? "Total" : "")),
         ...columnTotals.map((t) => (t === null ? "" : t)),
@@ -181,7 +188,7 @@ export default function TableWidget({
       dataRows.push(totalRow);
     }
     return { headers, rows: dataRows };
-  }, [dimensions, seriesLabels, sortedRows, seriesKeys, columnTotals]);
+  }, [dimensions, seriesLabels, sortedRows, seriesKeys, columnTotals, truncated]);
 
   return (
     <div
@@ -190,11 +197,22 @@ export default function TableWidget({
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div
-          className="text-sm font-semibold text-text-primary"
-          aria-label={widget.title || "Table"}
-        >
-          {widget.title || "Table"}
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <span
+            className="min-w-0 truncate text-sm font-semibold text-text-primary"
+            aria-label={widget.title || "Table"}
+          >
+            {widget.title || "Table"}
+          </span>
+          {/* LOUD on truncation: the totals row sums ACROSS the returned
+              rows, so a short result makes it wrong rather than partial.
+              The row is withheld; this notice says why. */}
+          <WidgetNotices
+            metas={metas}
+            derivesCrossRowAggregate
+            widgetTitle={widget.title || "Table"}
+            suppressed={isLoading || !!error || rows.length === 0}
+          />
         </div>
         <WidgetCsvButton
           title={widget.title || "Table"}
@@ -274,25 +292,27 @@ export default function TableWidget({
                 </tr>
               ))}
             </tbody>
-            <tfoot>
-              <tr
-                data-testid="table-widget-total-row"
-                className="border-t-2 border-border font-semibold text-text-primary"
-              >
-                {dimensions.map((d, di) => (
-                  <td key={d} className="py-1.5 pr-3">
-                    {di === 0 ? "Total" : ""}
-                  </td>
-                ))}
-                {seriesKeys.map((key, i) => (
-                  <td key={key} className="py-1.5 pr-3 text-right font-mono">
-                    {columnTotals[i] === null
-                      ? "—"
-                      : formatCell(columnTotals[i], columnFormats[i], currency)}
-                  </td>
-                ))}
-              </tr>
-            </tfoot>
+            {!truncated && (
+              <tfoot>
+                <tr
+                  data-testid="table-widget-total-row"
+                  className="border-t-2 border-border font-semibold text-text-primary"
+                >
+                  {dimensions.map((d, di) => (
+                    <td key={d} className="py-1.5 pr-3">
+                      {di === 0 ? "Total" : ""}
+                    </td>
+                  ))}
+                  {seriesKeys.map((key, i) => (
+                    <td key={key} className="py-1.5 pr-3 text-right font-mono">
+                      {columnTotals[i] === null
+                        ? "—"
+                        : formatCell(columnTotals[i], columnFormats[i], currency)}
+                    </td>
+                  ))}
+                </tr>
+              </tfoot>
+            )}
           </table>
         )}
       </div>
