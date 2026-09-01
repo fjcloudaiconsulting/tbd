@@ -118,18 +118,67 @@ export function formatForMeasure(
  * `TableWidget` is the exception and does NOT use this: it formats cell by
  * cell, so per-column derivation is coherent there. Use `formatForMeasure` per
  * column instead.
+ *
+ * ## The three branches, and why PARTIAL resolution degrades (TBD-403)
+ *
+ *   zero measures resolvable          -> `undefined`
+ *   all resolvable AND all equal      -> that format
+ *   otherwise (they differ, OR only
+ *   SOME of them resolved)            -> `"number"`
+ *
+ * The third branch's second half is the change. This used to `filter` the
+ * unresolvable entries out and then agree with whatever survived, so
+ * `sharedFormatFor(entry, [sum(amount), undefined])` returned `"currency"` --
+ * it dropped the unknown entry rather than degrading the answer. Differing-and-
+ * known and partly-unknown are the same situation for one `tickFormatter`, so
+ * they take the same branch.
+ *
+ * ⚠⚠ THIS IS HARDENING, NOT A LIVE FIX, AND THE DISTINCTION IS THE POINT.
+ * Two independent reviews measured the following. Do not restore a stronger
+ * claim here without re-measuring it first.
+ *
+ *  - The partial branch is UNREACHABLE from every current caller.
+ *    `formatForMeasure` returns `undefined` only when `!entry || !measure`, and
+ *    `sharedFormatFor` already early-returns on `!entry`. So reaching it needs
+ *    a literal `undefined` ELEMENT, which the types forbid at all seven sites:
+ *    `measures.map((m) => m.measure)` is `Measure[]`, and the single-measure
+ *    sites pass a 1-tuple while a partial needs one known AND one unknown.
+ *  - Nor is it reachable from a malformed persisted layout. Measured against
+ *    the real schemas: a missing `measure` key, a null `measure`, an empty dict
+ *    entry and a null element are ALL rejected by `validate_layout_json`, on
+ *    the dashboard writer too. That function returns its input verbatim to
+ *    preserve EXTRA keys; it does not weaken required-field validation.
+ *  - An `undefined` element would not draw an unlabelled line anyway. It is
+ *    serialised into the query AST, 422s the fan-out, and the widget renders
+ *    its `error` state instead of a chart.
+ *
+ * What the branch buys is that the signature `Array<Measure | undefined>` can
+ * no longer be satisfied by silently dropping an entry. Narrowing the parameter
+ * to `Measure[]` would make it dead by construction -- the other honest option,
+ * deliberately not taken, because the defensive signature is what lets callers
+ * stay unaware of catalog timing.
+ *
+ * ⚠ The FIRST branch stays `undefined` to preserve `useWidgetFormat`'s
+ * documented contract and keep "nothing known" distinguishable from "known to
+ * disagree" for a future caller. It is NOT a skeleton signal. Every consumer
+ * computes `isLoading` from `useReportSources().isLoading` and then evaluates
+ * `derivedFormat ?? "number"` unconditionally, and `TableWidget` ignores
+ * `format` entirely -- so `undefined` and `"number"` are observationally
+ * identical at all seven sites today. An earlier revision of this comment
+ * claimed the skeleton depended on it. It does not.
  */
 export function sharedFormatFor(
   entry: SourceCatalogEntry | undefined,
   measures: Array<Measure | undefined>,
 ): WidgetFormat | undefined {
   if (!entry) return undefined;
-  const resolved = measures
-    .map((m) => formatForMeasure(entry, m))
-    .filter((f): f is WidgetFormat => f !== undefined);
-  if (resolved.length === 0) return undefined;
-  const [first] = resolved;
-  return resolved.every((f) => f === first) ? first : DEFAULT_FORMAT;
+  const resolved = measures.map((m) => formatForMeasure(entry, m));
+  const known = resolved.filter((f): f is WidgetFormat => f !== undefined);
+  if (known.length === 0) return undefined;
+  // A partially-resolved set is as unanswerable as a disagreeing one.
+  if (known.length !== resolved.length) return DEFAULT_FORMAT;
+  const [first] = known;
+  return known.every((f) => f === first) ? first : DEFAULT_FORMAT;
 }
 
 /** Look a dataset up in the catalog. */
