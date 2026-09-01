@@ -45,6 +45,7 @@ import dynamic from "next/dynamic";
 import { useMemo } from "react";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
+import { widgetDataState } from "@/lib/reports/notices";
 import { buildBreakdown, EMPTY_BREAKDOWN } from "@/lib/reports/breakdown";
 import { dimensionHeader, measureFieldLabel } from "@/lib/reports/series";
 import { useWidgetFormat } from "@/lib/reports/widget-format";
@@ -223,19 +224,35 @@ export default function BarWidget({
       data-truncated={data?.meta?.truncated ? "true" : "false"}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
+      <div
+        data-testid="widget-header"
+        // ⚠ `pr-12` is not spacing taste. `WidgetShell`'s edit overlay is
+        // absolutely positioned at `right-1 top-1` and occupies
+        // x ∈ [W−52, W−4]; `WidgetCsvButton` renders `null` in edit mode,
+        // so without this reservation the notice glyph lands at
+        // x ∈ [W−42, W−16] and its top-right corner overlaps the REMOVE
+        // control. See the geometry note in `WidgetNotices.tsx`.
+        className={`mb-2 flex items-center justify-between gap-2${
+          editMode ? " pr-12" : ""
+        }`}
+      >
         <div className="flex min-w-0 flex-1 items-center gap-1">
           <span className="min-w-0 truncate text-sm font-semibold text-text-primary">
             {title}
           </span>
-          {/* Quiet on this widget: `LIMIT` lands after `GROUP BY`, so every
-              bar drawn is its own complete group. Nothing here sums across
-              rows. */}
+          {/* ⚠ COMPUTED, never a literal. With ONE dimension every bar is
+              its own complete group and truncation is quiet. With TWO,
+              `astLimitForBarFamily` asks for `limit: 500` and a row is a
+              (primary, secondary) PAIR, so past that cap `capPrimaryBuckets`
+              ranks on a partial `rowTotal`, the "Other" fold sums a partial
+              tail, and every bar height is a partial sum — loud. Nothing is
+              withheld: those sums ARE the chart. */}
           <WidgetNotices
             metas={[data?.meta]}
-            derivesCrossRowAggregate={false}
+            derivesCrossRowAggregate={sliced}
+            withholdsCrossRowAggregate={false}
             widgetTitle={title}
-            suppressed={isLoading || !!error || !hasRows}
+            state={widgetDataState(isLoading, error, hasRows)}
           />
         </div>
         <WidgetCsvButton

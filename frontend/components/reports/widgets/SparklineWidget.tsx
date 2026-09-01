@@ -17,6 +17,7 @@
 import dynamic from "next/dynamic";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
+import { widgetDataState } from "@/lib/reports/notices";
 import { dimensionHeader, formatMeasureValue } from "@/lib/reports/series";
 import { useWidgetFormat } from "@/lib/reports/widget-format";
 import type {
@@ -85,7 +86,18 @@ export default function SparklineWidget({
       className="flex h-full flex-col justify-center gap-1 rounded-lg border border-border bg-surface p-3"
       aria-label={widget.title || "Sparkline"}
     >
-      <div className="flex items-center justify-between gap-2">
+      <div
+        data-testid="widget-header"
+        // ⚠ `pr-12` is not spacing taste. `WidgetShell`'s edit overlay is
+        // absolutely positioned at `right-1 top-1` and occupies
+        // x ∈ [W−52, W−4]; `WidgetCsvButton` renders `null` in edit mode,
+        // so without this reservation the notice glyph lands at
+        // x ∈ [W−42, W−16] and its top-right corner overlaps the REMOVE
+        // control. See the geometry note in `WidgetNotices.tsx`.
+        className={`flex items-center justify-between gap-2${
+          editMode ? " pr-12" : ""
+        }`}
+      >
         <div className="flex min-w-0 flex-1 items-center gap-1">
           <span className="min-w-0 truncate text-[11px] font-medium uppercase tracking-wider text-text-muted">
             {widget.title || "Sparkline"}
@@ -95,8 +107,9 @@ export default function SparklineWidget({
           <WidgetNotices
             metas={[data?.meta]}
             derivesCrossRowAggregate={false}
+            withholdsCrossRowAggregate={false}
             widgetTitle={widget.title || "Sparkline"}
-            suppressed={isLoading || !!error || rows.length === 0}
+            state={widgetDataState(isLoading, error, rows.length > 0)}
           />
         </div>
         <WidgetCsvButton

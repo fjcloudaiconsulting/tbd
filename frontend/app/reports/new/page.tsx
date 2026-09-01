@@ -303,19 +303,19 @@ export default function ReportDraftPage() {
         {sourcesError && (
           <div className="border-b border-border px-4 py-2">
             <div
-            role="alert"
-            data-testid="report-sources-unavailable"
-            className="flex items-start gap-2 rounded-md bg-warning-dim px-4 py-3 text-sm text-text-primary"
-          >
-            <TriangleAlert
-              aria-hidden="true"
-              className="mt-0.5 h-4 w-4 shrink-0 text-warning"
-            />
-            <span>
-              The data-source catalog is unavailable. Some widgets may be
-              missing units or failing to load.
-            </span>
-          </div>
+              role="alert"
+              data-testid="report-sources-unavailable"
+              className="flex items-start gap-2 rounded-md bg-warning-dim px-4 py-3 text-sm text-text-primary"
+            >
+              <TriangleAlert
+                aria-hidden="true"
+                className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+              />
+              <span>
+                The data-source catalog is unavailable. Some widgets may be
+                missing units or failing to load.
+              </span>
+            </div>
           </div>
         )}
 

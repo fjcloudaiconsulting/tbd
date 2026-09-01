@@ -8,15 +8,22 @@
  * ⚠ NOT the card corner. `WidgetShell.tsx` already parks the drag /
  * remove overlay there absolutely at `right-1 top-1 z-10`.
  *
- * ⚠ And not the header row's RIGHT cluster either, next to
- * `WidgetCsvButton`. That overlay is absolute and ~48px wide, and the
- * widget card's own `p-4` puts the right cluster at 16-42px from the
- * card edge — squarely underneath it whenever the widget has no filter
- * chips (the common case), which is exactly why `WidgetCsvButton` hides
- * itself in edit mode. The notice must NOT hide in edit mode: it is the
- * only thing that explains a total the editor can see is missing. So it
- * sits immediately after the TITLE instead, where the overlay never
- * reaches and both modes can show it.
+ * ⚠⚠ Sitting after the TITLE is NOT on its own enough, and an earlier
+ * revision of this comment claimed otherwise. Measured against
+ * `WidgetShell`: the overlay is `right-1 top-1` with two `p-1` + 14px
+ * controls, so it occupies x ∈ [W−52, W−4], y ∈ [4, 26], and Remove
+ * ALONE occupies x ∈ [W−26, W−4]. In edit mode `WidgetCsvButton` returns
+ * `null`, so the title group (`flex-1 min-w-0`) spans the row and pushes
+ * this `shrink-0` glyph flush right: with the card's `p-4` that is
+ * x ∈ [W−42, W−16], y ∈ [16, 42] — a 10×10px intersection with REMOVE.
+ * Clicking the glyph's top-right corner deleted the widget, with no
+ * confirmation, and it also voided the 26×16 unobstructed-target claim
+ * below. The fix is geometric, not positional: every widget's header row
+ * reserves `pr-12` (48px) in edit mode, which puts the glyph's right edge
+ * at W−64, clear of the overlay's W−52 by 12px.
+ *
+ * The notice must NOT take `WidgetCsvButton`'s edit-mode opt-out: it is
+ * the only thing that explains a total the editor can see is missing.
  *
  * ## Why `Tooltip`, not `@floating-ui/react`
  *
@@ -51,7 +58,10 @@ import { useMemo } from "react";
 import { Info, TriangleAlert } from "lucide-react";
 
 import Tooltip from "@/components/Tooltip";
-import { deriveWidgetNotices } from "@/lib/reports/notices";
+import {
+  deriveWidgetNotices,
+  type WidgetDataState,
+} from "@/lib/reports/notices";
 import type { QueryMeta } from "@/lib/reports/types";
 
 interface Props {
@@ -59,29 +69,41 @@ interface Props {
   metas: Array<QueryMeta | undefined>;
   /**
    * True when the widget composes a quantity from ACROSS the returned
-   * rows (pie, table). Drives truncation's severity — see
-   * `lib/reports/notices.ts`.
+   * rows — pie, table, and a TWO-dimension bar. Drives truncation's
+   * severity; see `lib/reports/notices.ts`.
    */
   derivesCrossRowAggregate: boolean;
+  /**
+   * True when that composed quantity is WITHHELD under truncation (pie,
+   * table); false when it is the chart itself (a two-dimension bar).
+   * Chooses which loud sentence is true.
+   */
+  withholdsCrossRowAggregate: boolean;
   /** The widget's displayed title; part of the button's accessible name. */
   widgetTitle: string;
   /**
-   * Loading / error / empty. A notice about the SHAPE of data that failed
-   * to arrive is noise, so the register goes silent in all three.
+   * The widget's render state. ⚠ NOT a `suppressed` boolean: the two
+   * tenants diverge on `"empty"`, where a source warning is often the
+   * explanation FOR the emptiness and must survive.
    */
-  suppressed: boolean;
+  state: WidgetDataState;
 }
 
 export default function WidgetNotices({
   metas,
   derivesCrossRowAggregate,
+  withholdsCrossRowAggregate,
   widgetTitle,
-  suppressed,
+  state,
 }: Props) {
   const set = useMemo(
     () =>
-      suppressed ? null : deriveWidgetNotices(metas, { derivesCrossRowAggregate }),
-    [suppressed, metas, derivesCrossRowAggregate],
+      deriveWidgetNotices(
+        metas,
+        { derivesCrossRowAggregate, withholdsCrossRowAggregate },
+        state,
+      ),
+    [metas, derivesCrossRowAggregate, withholdsCrossRowAggregate, state],
   );
 
   if (!set) return null;
@@ -96,7 +118,6 @@ export default function WidgetNotices({
   return (
     // `WidgetShell` wraps every widget in `onClick={onSelect}`, so without
     // this the notice would also open the widget-config popover.
-    // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events
     <span
       className="inline-flex shrink-0 items-center"
       onClick={(e) => e.stopPropagation()}

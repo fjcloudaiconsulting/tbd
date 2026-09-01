@@ -11,6 +11,7 @@
  * handle, title bar) wraps it.
  */
 import { useReportQuery } from "@/lib/reports/useReportQuery";
+import { widgetDataState } from "@/lib/reports/notices";
 import { formatMeasureValue } from "@/lib/reports/series";
 import { useWidgetFormat } from "@/lib/reports/widget-format";
 import type { CanvasFilters, KPIWidget as KPIWidgetType } from "@/lib/reports/types";
@@ -77,7 +78,18 @@ export default function KPIWidget({
       data-widget-id={widget.id}
       className="flex h-full flex-col justify-center gap-1 rounded-lg border border-border bg-surface p-4"
     >
-      <div className="flex items-center justify-between gap-2">
+      <div
+        data-testid="widget-header"
+        // ⚠ `pr-12` is not spacing taste. `WidgetShell`'s edit overlay is
+        // absolutely positioned at `right-1 top-1` and occupies
+        // x ∈ [W−52, W−4]; `WidgetCsvButton` renders `null` in edit mode,
+        // so without this reservation the notice glyph lands at
+        // x ∈ [W−42, W−16] and its top-right corner overlaps the REMOVE
+        // control. See the geometry note in `WidgetNotices.tsx`.
+        className={`flex items-center justify-between gap-2${
+          editMode ? " pr-12" : ""
+        }`}
+      >
         <div className="flex min-w-0 flex-1 items-center gap-1">
           <span className="min-w-0 truncate text-[11px] font-medium uppercase tracking-wider text-text-muted">
             {widget.title || "KPI"}
@@ -87,8 +99,9 @@ export default function KPIWidget({
           <WidgetNotices
             metas={[data?.meta]}
             derivesCrossRowAggregate={false}
+            withholdsCrossRowAggregate={false}
             widgetTitle={widget.title || "KPI"}
-            suppressed={isLoading || !!error || value === null}
+            state={widgetDataState(isLoading, error, value !== null)}
           />
         </div>
         <WidgetCsvButton

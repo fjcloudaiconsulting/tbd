@@ -131,12 +131,21 @@ describe("report canvas — data-source catalog banner", () => {
     });
   });
 
+  // ⚠ Located by ROLE, not by testid. The banner appears asynchronously,
+  // after the canvas has already rendered, so `role="alert"` is the only
+  // thing that announces it to a screen-reader user who is already
+  // reading the page. A testid-only fence keeps passing when the live
+  // region is dropped.
   it("shows ONE banner naming the real blast radius when /sources rejects", async () => {
     sourcesMode = "reject";
     renderWithSWR(<ReportDraftPage />);
-    const banner = await screen.findByTestId("report-sources-unavailable");
+    const banner = await screen.findByRole("alert");
     expect(banner).toHaveTextContent(BANNER);
-    expect(screen.getAllByTestId("report-sources-unavailable")).toHaveLength(1);
+    expect(banner).toHaveAttribute(
+      "data-testid",
+      "report-sources-unavailable",
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
 
   // KILLS: `sources.length === 0` used as the failure predicate. An empty
@@ -176,9 +185,13 @@ describe("report canvas — data-source catalog banner", () => {
   it("mirrors the banner on the saved-report canvas", async () => {
     sourcesMode = "reject";
     renderWithSWR(<ReportEditorPage params={{ id: "10" }} />);
-    const banner = await screen.findByTestId("report-sources-unavailable");
+    const banner = await screen.findByRole("alert");
     expect(banner).toHaveTextContent(BANNER);
-    expect(screen.getAllByTestId("report-sources-unavailable")).toHaveLength(1);
+    expect(banner).toHaveAttribute(
+      "data-testid",
+      "report-sources-unavailable",
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
 
   it("shows NO banner on the saved-report canvas when the catalog loads", async () => {

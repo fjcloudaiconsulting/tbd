@@ -16,6 +16,7 @@
 import dynamic from "next/dynamic";
 
 import { useSeriesQueries } from "@/lib/reports/useReportQuery";
+import { widgetDataState } from "@/lib/reports/notices";
 import { mergeSeriesRows, seriesLabel } from "@/lib/reports/series";
 import { useWidgetFormat } from "@/lib/reports/widget-format";
 import type {
@@ -89,7 +90,18 @@ export default function AreaWidget({
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
+      <div
+        data-testid="widget-header"
+        // ⚠ `pr-12` is not spacing taste. `WidgetShell`'s edit overlay is
+        // absolutely positioned at `right-1 top-1` and occupies
+        // x ∈ [W−52, W−4]; `WidgetCsvButton` renders `null` in edit mode,
+        // so without this reservation the notice glyph lands at
+        // x ∈ [W−42, W−16] and its top-right corner overlaps the REMOVE
+        // control. See the geometry note in `WidgetNotices.tsx`.
+        className={`mb-2 flex items-center justify-between gap-2${
+          editMode ? " pr-12" : ""
+        }`}
+      >
         <div className="flex min-w-0 flex-1 items-center gap-1">
           <span
             className="min-w-0 truncate text-sm font-semibold text-text-primary"
@@ -103,8 +115,9 @@ export default function AreaWidget({
           <WidgetNotices
             metas={metas}
             derivesCrossRowAggregate={false}
+            withholdsCrossRowAggregate={false}
             widgetTitle={widget.title || "Area chart"}
-            suppressed={isLoading || !!error || rows.length === 0}
+            state={widgetDataState(isLoading, error, rows.length > 0)}
           />
         </div>
         <WidgetCsvButton
