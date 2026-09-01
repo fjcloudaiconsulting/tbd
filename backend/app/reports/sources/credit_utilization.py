@@ -301,6 +301,10 @@ class CreditUtilizationSource:
                 reverse=descending,
             )
 
+        # ⚠ ``truncated`` is measured PRE-slice, on the unsliced in-memory
+        # rows — "there was MORE than we returned". Do not "unify" this on
+        # ``len(out_rows) >= limit`` after the slice: that is true for every
+        # complete result that exactly fills the limit (TBD-484).
         limit = min(query.limit, MAX_LIMIT)
         truncated = len(out_rows) > limit
         out_rows = out_rows[:limit]
