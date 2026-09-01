@@ -65,3 +65,72 @@ command, verified against the API:
 gh api …/protection | python3 scripts/ci/normalize_protection.py \
   | diff - .github/branch-protection/main.json      # IDENTICAL
 ```
+
+## First-time setup: the probe's GitHub App
+
+⚠⚠ **Do this BEFORE the probe merges.** It fires on every push to `main`,
+unfiltered, so a credential-less merge alarms `could-not-run` once per merge
+forever — spending the alarm's credibility before it ever reports something
+true. This is written down because it is a hand-created, out-of-band step that a
+future reader cannot infer from the checkout, the same reason
+`infra/aws/bootstrap/` exists.
+
+**Why an App and not the workflow token or a PAT.** `GITHUB_TOKEN` structurally
+cannot read branch protection — the workflow `permissions:` key has no
+`administration` scope. A fine-grained PAT *can*, but it expires on a calendar
+date, and a recurring manual chore on a solo-maintainer repo is exactly what
+decays. That is the same argument that rejects "just check it manually", so
+using a PAT here would apply it inconsistently.
+
+### 1. Create the App
+
+GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App**.
+
+| field | value |
+|---|---|
+| Name | anything unique, e.g. `tbd-branch-protection-probe` |
+| Homepage URL | the repo URL is fine |
+| Webhook | **uncheck Active** — the probe polls, it receives nothing |
+| Repository permissions | **Administration: Read-only**, and nothing else |
+| Where can this be installed | **Only on this account** |
+
+⚠ `Administration: Read-only` is the entire permission set. It cannot merge,
+push, read code, or touch production. Do not widen it "to make debugging
+easier" — the probe never needs write, and the whole design rests on it being
+unable to repair what it observes.
+
+### 2. Install it on this repo only
+
+App page → **Install App** → your account → **Only select repositories** →
+`tbd`. Note the **App ID** from the App's settings page, and
+**Generate a private key** (downloads a `.pem`).
+
+### 3. Give the workflow its two inputs
+
+```bash
+gh variable set PROTECTION_PROBE_APP_ID --body "<the App ID>"
+gh secret   set PROTECTION_PROBE_APP_KEY < ~/Downloads/<app-name>.private-key.pem
+```
+
+The App ID is a **variable** (not secret — it is not sensitive and a variable is
+readable in logs, which helps when the mint fails). The private key is a
+**secret**. Delete the local `.pem` afterwards; you can always generate another.
+
+### 4. Verify, and do not skip this
+
+```bash
+gh workflow run branch-protection-probe.yml
+gh run watch
+```
+
+Expect `in-posture` and a green run. A `could-not-run` verdict means the App ID,
+the key, or the installation is wrong — **that is the probe working**, not a
+bug: it refuses to report health it cannot verify. Fix the credential and re-run
+until it is green, because an alarm nobody trusts is worse than no alarm.
+
+### Rotating or replacing the key
+
+Generate a new key on the App page, `gh secret set PROTECTION_PROBE_APP_KEY`
+again, then re-run step 4. There is no expiry to track — that is the point of an
+App over a PAT — but a revoked or rotated-away key surfaces as `could-not-run`
+within one push to `main`, never as a silent green.
