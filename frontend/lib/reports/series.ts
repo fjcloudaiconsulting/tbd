@@ -172,12 +172,87 @@ export function seriesLabel(
 }
 
 /**
+ * TBD-486 — the second dimension a line / area chart cannot draw.
+ *
+ * ``mergeSeriesRows`` below keys on ONE dimension and ASSIGNS
+ * (``existing[key] = …``), so with ``dimensions: ["month", "category"]``
+ * every ``(2026-01, *)`` row keys to ``"2026-01"`` and the last one wins.
+ * The chart then plots one arbitrary category's value, and the axis, the
+ * tooltip and the CSV all present it as the month's figure. Same shape
+ * TBD-382 fixed for ``stacked_bar``, which called this function instead of
+ * pivoting.
+ *
+ * ⚠ The renderers REFUSE such a config; they never repair it. Dropping
+ * ``dimensions[1]`` would re-point the query at a different question and
+ * change the number a saved report renders without telling anyone — the
+ * identical ruling ``UNSUPPORTED_MEASURE_KEY`` records in
+ * ``components/reports/config/controlConstants.ts``.
+ *
+ * ⚠ That is a ban on SILENT repair, not on repair. ``setDataset`` prunes
+ * ``dimensions`` to what the NEWLY SELECTED source publishes and refills the
+ * primary from its catalog, so switching dataset collapses the config and
+ * un-refuses the widget. Undiscoverable, but it is the route out today, and
+ * it does not violate the ruling: a dataset switch re-points the query
+ * wholesale and says so.
+ *
+ * ⚠ It only collapses what the target does NOT publish, so it is not a
+ * general repair. It happens to cover the realistic pairs because no source
+ * but ``transactions`` publishes both a time dimension and ``category``
+ * (see ``tests/fixtures/report-sources.json``); a pair both sources carry
+ * would survive the switch untouched.
+ *
+ * There is no "Break down by" control on line / area to clear (``DataTab``
+ * gates it to the bar family and ``table``), and no widget-type switcher.
+ *
+ * ⚠ This is NOT a member of the Notice Register (``lib/reports/notices.ts``),
+ * whose docstring closes its tenant list at two. The register annotates a
+ * chart that IS drawn; this replaces the chart. Do not fold them together.
+ *
+ * ⚠ Actually DRAWING a two-dimension line / area is TBD-383 and needs four
+ * design rulings that have not been made. If you are making this render, you
+ * are on the wrong ticket — and this sentence is the last place that records
+ * that last-pair-wins was ever wrong.
+ */
+export const SECOND_DIMENSION_UNSUPPORTED_NOTICE =
+  "This chart is grouped by more than one dimension, which it cannot draw: " +
+  "it plots one value per point, so the extra grouping would show one " +
+  "group's value as if it were the whole. The configuration has been left " +
+  "as-is; a bar or stacked bar chart can break down by a second dimension.";
+
+/**
+ * True when a ``mergeSeriesRows`` consumer's config carries a dimension
+ * beyond the one it merges on.
+ *
+ * ⚠ ``> 1``, not ``=== 2``. The layout schema
+ * (``_MultiSeriesConfig.dimensions``, backend/app/schemas/report_layout.py:157)
+ * constrains no length at all — the ``max_length=MAX_DIMENSIONS`` ceiling
+ * lives on the QUERY AST (``backend/app/schemas/reports_query.py:274``), so a
+ * persisted layout carries three happily and only 422s later, at query time.
+ * An ``=== 2`` guard therefore draws that config through the same broken
+ * merge, and (because the 422 lands in the error branch) the user is told
+ * "Couldn't load" instead of the real reason.
+ *
+ * ⚠ The NOTICE above says "more than one dimension" for the same reason. It
+ * must not say "two": at three dimensions that sentence is factually false
+ * about the config it is describing.
+ */
+export function hasSecondDimension(
+  dimensions: readonly string[] | undefined,
+): boolean {
+  return (dimensions?.length ?? 0) > 1;
+}
+
+/**
  * Merge per-series query responses into a single row list, keyed by
  * the dimension value. Each series' rows are aligned by their
  * dimension key and the measure value lands under ``seriesKeys[i]``.
  *
  * Missing dimension values across series are filled with 0 so
  * Recharts doesn't drop the data point.
+ *
+ * ⚠ ONE dimension only. See ``hasSecondDimension`` above: callers must
+ * refuse a two-dimension config before reaching here, or this merge
+ * silently reports the last pair's value as the bucket's.
  */
 export function mergeSeriesRows(
   series: Array<ReportsQueryResponse | undefined>,

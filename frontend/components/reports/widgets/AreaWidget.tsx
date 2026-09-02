@@ -17,7 +17,12 @@ import dynamic from "next/dynamic";
 
 import { useSeriesQueries } from "@/lib/reports/useReportQuery";
 import { widgetDataState } from "@/lib/reports/notices";
-import { mergeSeriesRows, seriesLabel } from "@/lib/reports/series";
+import {
+  hasSecondDimension,
+  mergeSeriesRows,
+  SECOND_DIMENSION_UNSUPPORTED_NOTICE,
+  seriesLabel,
+} from "@/lib/reports/series";
 import { useWidgetFormat } from "@/lib/reports/widget-format";
 import type {
   AreaWidget as AreaWidgetType,
@@ -59,6 +64,11 @@ export default function AreaWidget({
   );
 
   const dimensionKey = widget.config.dimensions[0] ?? "dimension";
+  // TBD-486: this widget merges on `dimensionKey` ALONE, so a second
+  // dimension makes every bucket report its last pair's value. The
+  // config is shown and PRESERVED, never rewritten — see
+  // `SECOND_DIMENSION_UNSUPPORTED_NOTICE` in lib/reports/series.ts.
+  const twoDimensional = hasSecondDimension(widget.config.dimensions);
   // TBD-381: one derived format for the shared Y axis. Series with
   // differing formats fall to "number" rather than stamping series[0]'s
   // unit on a scale the others do not share.
@@ -120,14 +130,50 @@ export default function AreaWidget({
             state={widgetDataState(isLoading, error, rows.length > 0)}
           />
         </div>
-        <WidgetCsvButton
-          title={widget.title || "Area chart"}
-          dataset={csvDataset}
-          editMode={editMode}
-        />
+        {/* ⚠ Withheld under the two-dimension refusal. `csvDataset` is
+            built from the same last-write-wins merge the chart is refusing
+            to draw, so offering it would export exactly the wrong number
+            the refusal exists to stop. */}
+        {!twoDimensional && (
+          <WidgetCsvButton
+            title={widget.title || "Area chart"}
+            dataset={csvDataset}
+            editMode={editMode}
+          />
+        )}
       </div>
       <div className="flex-1">
-        {isLoading ? (
+        {/* ⚠ FIRST in the chain, ahead of loading / error / empty. This is a
+            fact about the CONFIG, known before any row arrives; showing a
+            skeleton that then flips to a refusal would be a worse frame, and
+            an error state would blame the fetch for a shape the widget
+            simply does not draw. */}
+        {twoDimensional ? (
+          // NB-5: deliberately NO `role`. ARIA's `note` is for content
+          // ANCILLARY to the main content, and this REPLACES the chart --
+          // it is the widget's whole content in this state. The closest
+          // sibling, the "No data" empty branch, carries no role either,
+          // and inventing one here would be the least conventional of the
+          // three options. `alert` is wrong too: nothing changed, and the
+          // text is present on first paint in document order.
+          //
+          // NB-4: every sibling branch is <=13 characters; this is the
+          // first whose copy can exceed a small or user-shrunk tile, and
+          // neither this card nor `WidgetShell` clips. So it scrolls --
+          // and WCAG 2.1.1 makes a scrollable region keyboard-reachable,
+          // which is why `tabIndex` is here for the same reason (and with
+          // the same precedent) as `BarWidget`'s legend list.
+          //
+          // ⚠ No `aria-label`: it would REPLACE the sentence for assistive
+          // tech with a shorter one, and the sentence is the deliverable.
+          <div
+            data-testid="area-widget-unsupported"
+            tabIndex={0}
+            className="flex h-full items-center justify-center overflow-y-auto px-2 text-center text-sm text-text-muted"
+          >
+            {SECOND_DIMENSION_UNSUPPORTED_NOTICE}
+          </div>
+        ) : isLoading ? (
           <div
             data-testid="area-widget-loading"
             className="h-full w-full animate-pulse rounded bg-border/40"
