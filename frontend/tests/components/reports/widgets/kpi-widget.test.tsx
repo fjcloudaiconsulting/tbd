@@ -68,20 +68,32 @@ describe("KPIWidget", () => {
     expect(value.textContent).toContain("€1,234.56");
   });
 
-  it("renders a delta vs the supplied prior-period value when compare_prior_period is on", async () => {
+  // ⚠ TBD-383: these two used to pass a `priorValue={100}` prop. NO
+  // production caller ever passed it, so they certified a feature that never
+  // rendered in the app. The prop is gone; the widget computes its own
+  // comparison from `config.compare_prior_period` + its resolved date window.
+  // The decisive fences — through `renderReportWidget` AND
+  // `widgetKit.renderWidgetByType` — live in `kpi-prior-period.test.tsx`.
+  it("renders a delta from its OWN comparison query when compare_prior_period is on", async () => {
     const widget = makeWidget({
       config: {
         dataset: "transactions",
         measure: { agg: "sum", field: "amount" },
+        filters: { date_range: { start: "2026-01-01", end: "2026-01-31" } },
         compare_prior_period: true,
       },
     });
-    runQueryMock.mockResolvedValueOnce({
-      rows: [{ value: 200 }],
-      meta: { row_count: 1, truncated: false, query_ms: 1 },
+    runQueryMock.mockImplementation(async (q) => {
+      const date = q.filters.find((f) => f.field === "date");
+      const isPrior =
+        Array.isArray(date?.value) && date?.value[0] === "2025-12-01";
+      return {
+        rows: [{ value: isPrior ? 100 : 200 }],
+        meta: { row_count: 1, truncated: false, query_ms: 1 },
+      };
     });
 
-    renderWithSWR(<KPIWidget widget={widget} priorValue={100} />);
+    renderWithSWR(<KPIWidget widget={widget} />);
 
     const delta = await screen.findByTestId("kpi-widget-delta");
     // 100 → 200 is a +100% change.
@@ -96,10 +108,26 @@ describe("KPIWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 1 },
     });
 
-    renderWithSWR(<KPIWidget widget={makeWidget()} priorValue={100} />);
+    renderWithSWR(<KPIWidget widget={makeWidget()} />);
 
     await screen.findByTestId("kpi-widget-value");
     expect(screen.queryByTestId("kpi-widget-delta")).toBeNull();
+  });
+
+  it("renders a headline value of ZERO as a number, not as the empty em-dash", async () => {
+    // ⚠ `readMeasureValue` returning `null` for `0` is indistinguishable from
+    // "no data" everywhere else in this file, and the widget renders an
+    // em-dash for null. Zero is a legitimate total.
+    runQueryMock.mockResolvedValueOnce({
+      rows: [{ value: 0 }],
+      meta: { row_count: 1, truncated: false, query_ms: 1 },
+    });
+
+    renderWithSWR(<KPIWidget widget={makeWidget()} currency="EUR" />);
+
+    const value = await screen.findByTestId("kpi-widget-value");
+    expect(value.textContent).toContain("0.00");
+    expect(value.textContent).not.toContain("—");
   });
 
   it("renders an inline error when the query fails", async () => {
