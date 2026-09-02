@@ -91,7 +91,14 @@ const GROUPS: Group[] = [
       {
         type: "stacked_bar",
         label: "Stacked bar",
-        description: "Bars split by a second dimension, stacked or side by side.",
+        // Naming the time break-down is the point: `dimensions: ["month",
+        // "category"]` is how "a category over time" is expressed today, and
+        // the old copy mentioned neither time nor a month axis, so the one
+        // widget that draws it read as unrelated to trends. It stays in
+        // "Categories" deliberately — it is genuinely both, and moving it
+        // would break the reader's model without adding a capability.
+        description:
+          "Bars split by a second dimension, such as a category over months. Stacked or side by side.",
         Icon: BarChartHorizontal,
       },
       {
