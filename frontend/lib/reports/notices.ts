@@ -71,14 +71,16 @@
  * "Silent exclusion is not acceptable."
  *
  * ⚠ This module never INFERS truncation — not from `widget.config.limit`,
- * not from `row_count === limit`. But the flag it trusts is not yet
- * trustworthy: `reports_query_service.py:449` computes
- * `truncated = len(out_rows) >= ast.limit`, which is a false positive on
- * any complete page whose length happens to equal the limit, and is
- * unconditionally true for a KPI (`limit: 1`, one row back). So a
- * correct frontend still renders a wrong notice, and pie/table still
- * withhold a correct total, until that is fixed. Tracked as TBD-484;
- * do NOT paper over it here with a second inference.
+ * not from `row_count === limit`. Do NOT add a second inference here: the
+ * flag is authoritative and the frontend cannot tell a true positive from
+ * a false one.
+ *
+ * It is now trustworthy. TBD-484 (`cd5af9b6`) fixed the three SQL-limited
+ * sources, which computed `truncated = len(out_rows) >= limit` against
+ * rows the DATABASE had already limited — true for any complete page that
+ * exactly filled the limit, and unconditionally true for a KPI
+ * (`limit: 1`, one row back). They now over-fetch one row and compare
+ * `> limit`.
  */
 import type { QueryMeta, TruncatedEnd } from "@/lib/reports/types";
 
