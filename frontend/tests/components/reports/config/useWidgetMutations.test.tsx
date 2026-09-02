@@ -15,6 +15,7 @@ import type {
   LineWidget,
   PieWidget,
   StackedBarWidget,
+  TableWidget,
   Widget,
 } from "@/lib/reports/types";
 
@@ -118,7 +119,23 @@ function makeStacked(): StackedBarWidget {
   };
 }
 
-function makeLine(): LineWidget {
+function makeTable(): TableWidget {
+  return {
+    id: "w_table",
+    type: "table",
+    title: "Table",
+    grid: { x: 0, y: 0, w: 6, h: 4 },
+    config: {
+      dataset: "transactions",
+      measures: [{ measure: { agg: "sum", field: "amount" } }],
+      dimensions: ["month"],
+    },
+  };
+}
+
+function makeLine(
+  dimensions: LineWidget["config"]["dimensions"] = ["month"],
+): LineWidget {
   return {
     id: "w_line",
     type: "line",
@@ -127,7 +144,7 @@ function makeLine(): LineWidget {
     config: {
       dataset: "transactions",
       measures: [{ measure: { agg: "sum", field: "amount" } }],
-      dimensions: ["month"],
+      dimensions,
     },
   };
 }
@@ -227,5 +244,66 @@ describe("buildWidgetMutations", () => {
     const updates = renderHarness(makeBar());
     fireEvent.click(screen.getByText("set-series"));
     expect(updates).toHaveLength(0);
+  });
+
+  // ── TBD-486 ───────────────────────────────────────────────────────────
+  //
+  // `line` and `area` merge on the PRIMARY dimension only
+  // (`mergeSeriesRows` is last-write-wins per primary label), so a second
+  // dimension makes them render one arbitrary secondary group's value
+  // labelled as the whole primary bucket's. The setter refuses rather than
+  // writing a config the renderer cannot draw.
+  //
+  // ⚠ BOTH DIRECTIONS. A guard that refused every widget type would pass a
+  // refusal-only test while silently killing the bar family's break-down
+  // and the table's second grouping column — the exact axis TBD-382
+  // restored to `stacked_bar`.
+
+  it("setSecondaryDimension is a no-op on a line widget (TBD-486)", () => {
+    const widget = makeLine();
+    const updates = renderHarness(widget);
+    fireEvent.click(screen.getByText("set-secondary"));
+    expect(updates).toHaveLength(0);
+    expect(widget.config.dimensions).toEqual(["month"]);
+  });
+
+  it("setSecondaryDimension is a no-op on an area widget (TBD-486)", () => {
+    const widget = makeArea();
+    const updates = renderHarness(widget);
+    fireEvent.click(screen.getByText("set-secondary"));
+    expect(updates).toHaveLength(0);
+    expect(widget.config.dimensions).toEqual(["month"]);
+  });
+
+  it("setSecondaryDimension('') is also a no-op on line (TBD-486)", () => {
+    // The refusal covers the CLEAR path too, and this exercises the case the
+    // sentence describes: a line that ALREADY carries two dimensions is
+    // preserved, never repaired from here. Repairing silently is the one
+    // thing this ticket rules out; the user's route out is a dataset switch
+    // (`setDataset` re-points the query wholesale and prunes `dimensions`),
+    // or a widget type that can actually draw a break-down.
+    const widget = makeLine(["month", "category"]);
+    const updates = renderHarness(widget);
+    fireEvent.click(screen.getByText("clear-secondary"));
+    expect(updates).toHaveLength(0);
+    expect(widget.config.dimensions).toEqual(["month", "category"]);
+  });
+
+  it("setSecondaryDimension still sets dimensions[1] on stacked_bar (TBD-486)", () => {
+    const updates = renderHarness(makeStacked());
+    fireEvent.click(screen.getByText("set-secondary"));
+    expect((updates.at(-1) as StackedBarWidget).config.dimensions).toEqual([
+      "month",
+      "account",
+    ]);
+  });
+
+  it("setSecondaryDimension still sets dimensions[1] on table (TBD-486)", () => {
+    const updates = renderHarness(makeTable());
+    fireEvent.click(screen.getByText("set-secondary"));
+    expect((updates.at(-1) as TableWidget).config.dimensions).toEqual([
+      "month",
+      "account",
+    ]);
   });
 });
