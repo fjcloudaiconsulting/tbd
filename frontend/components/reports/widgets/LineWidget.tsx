@@ -146,10 +146,27 @@ export default function LineWidget({
             an error state would blame the fetch for a shape the widget
             simply does not draw. */}
         {twoDimensional ? (
+          // NB-5: deliberately NO `role`. ARIA's `note` is for content
+          // ANCILLARY to the main content, and this REPLACES the chart --
+          // it is the widget's whole content in this state. The closest
+          // sibling, the "No data" empty branch, carries no role either,
+          // and inventing one here would be the least conventional of the
+          // three options. `alert` is wrong too: nothing changed, and the
+          // text is present on first paint in document order.
+          //
+          // NB-4: every sibling branch is <=13 characters; this is the
+          // first whose copy can exceed a small or user-shrunk tile, and
+          // neither this card nor `WidgetShell` clips. So it scrolls --
+          // and WCAG 2.1.1 makes a scrollable region keyboard-reachable,
+          // which is why `tabIndex` is here for the same reason (and with
+          // the same precedent) as `BarWidget`'s legend list.
+          //
+          // ⚠ No `aria-label`: it would REPLACE the sentence for assistive
+          // tech with a shorter one, and the sentence is the deliverable.
           <div
-            role="note"
             data-testid="line-widget-unsupported"
-            className="flex h-full items-center justify-center px-2 text-center text-sm text-text-muted"
+            tabIndex={0}
+            className="flex h-full items-center justify-center overflow-y-auto px-2 text-center text-sm text-text-muted"
           >
             {SECOND_DIMENSION_UNSUPPORTED_NOTICE}
           </div>

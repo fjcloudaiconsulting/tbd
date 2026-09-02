@@ -133,7 +133,9 @@ function makeTable(): TableWidget {
   };
 }
 
-function makeLine(): LineWidget {
+function makeLine(
+  dimensions: LineWidget["config"]["dimensions"] = ["month"],
+): LineWidget {
   return {
     id: "w_line",
     type: "line",
@@ -142,7 +144,7 @@ function makeLine(): LineWidget {
     config: {
       dataset: "transactions",
       measures: [{ measure: { agg: "sum", field: "amount" } }],
-      dimensions: ["month"],
+      dimensions,
     },
   };
 }
@@ -274,12 +276,17 @@ describe("buildWidgetMutations", () => {
   });
 
   it("setSecondaryDimension('') is also a no-op on line (TBD-486)", () => {
-    // The refusal covers the CLEAR path too: a config that already carries
-    // two dimensions is preserved, never repaired from here. Repair belongs
-    // to the user, through a control that says what it is doing.
-    const updates = renderHarness(makeLine());
+    // The refusal covers the CLEAR path too, and this exercises the case the
+    // sentence describes: a line that ALREADY carries two dimensions is
+    // preserved, never repaired from here. Repairing silently is the one
+    // thing this ticket rules out; the user's route out is a dataset switch
+    // (`setDataset` re-points the query wholesale and prunes `dimensions`),
+    // or a widget type that can actually draw a break-down.
+    const widget = makeLine(["month", "category"]);
+    const updates = renderHarness(widget);
     fireEvent.click(screen.getByText("clear-secondary"));
     expect(updates).toHaveLength(0);
+    expect(widget.config.dimensions).toEqual(["month", "category"]);
   });
 
   it("setSecondaryDimension still sets dimensions[1] on stacked_bar (TBD-486)", () => {

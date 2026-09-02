@@ -188,6 +188,22 @@ export function seriesLabel(
  * identical ruling ``UNSUPPORTED_MEASURE_KEY`` records in
  * ``components/reports/config/controlConstants.ts``.
  *
+ * ⚠ That is a ban on SILENT repair, not on repair. ``setDataset`` prunes
+ * ``dimensions`` to what the NEWLY SELECTED source publishes and refills the
+ * primary from its catalog, so switching dataset collapses the config and
+ * un-refuses the widget. Undiscoverable, but it is the route out today, and
+ * it does not violate the ruling: a dataset switch re-points the query
+ * wholesale and says so.
+ *
+ * ⚠ It only collapses what the target does NOT publish, so it is not a
+ * general repair. It happens to cover the realistic pairs because no source
+ * but ``transactions`` publishes both a time dimension and ``category``
+ * (see ``tests/fixtures/report-sources.json``); a pair both sources carry
+ * would survive the switch untouched.
+ *
+ * There is no "Break down by" control on line / area to clear (``DataTab``
+ * gates it to the bar family and ``table``), and no widget-type switcher.
+ *
  * ⚠ This is NOT a member of the Notice Register (``lib/reports/notices.ts``),
  * whose docstring closes its tenant list at two. The register annotates a
  * chart that IS drawn; this replaces the chart. Do not fold them together.
@@ -198,20 +214,27 @@ export function seriesLabel(
  * that last-pair-wins was ever wrong.
  */
 export const SECOND_DIMENSION_UNSUPPORTED_NOTICE =
-  "This chart is grouped by two dimensions, which it cannot draw: it plots " +
-  "one value per point, so a second grouping would show one group's value " +
-  "as if it were the whole. The configuration has been left as-is; a bar or " +
-  "stacked bar chart can break down by a second dimension.";
+  "This chart is grouped by more than one dimension, which it cannot draw: " +
+  "it plots one value per point, so the extra grouping would show one " +
+  "group's value as if it were the whole. The configuration has been left " +
+  "as-is; a bar or stacked bar chart can break down by a second dimension.";
 
 /**
  * True when a ``mergeSeriesRows`` consumer's config carries a dimension
  * beyond the one it merges on.
  *
  * ⚠ ``> 1``, not ``=== 2``. The layout schema
- * (``_MultiSeriesConfig.dimensions``) constrains no length at all — the
- * ``max_length=MAX_DIMENSIONS`` ceiling lives on the QUERY AST
- * (``backend/app/schemas/reports_query.py``), so a persisted layout can
- * carry three and only 422 later, at query time.
+ * (``_MultiSeriesConfig.dimensions``, backend/app/schemas/report_layout.py:157)
+ * constrains no length at all — the ``max_length=MAX_DIMENSIONS`` ceiling
+ * lives on the QUERY AST (``backend/app/schemas/reports_query.py:274``), so a
+ * persisted layout carries three happily and only 422s later, at query time.
+ * An ``=== 2`` guard therefore draws that config through the same broken
+ * merge, and (because the 422 lands in the error branch) the user is told
+ * "Couldn't load" instead of the real reason.
+ *
+ * ⚠ The NOTICE above says "more than one dimension" for the same reason. It
+ * must not say "two": at three dimensions that sentence is factually false
+ * about the config it is describing.
  */
 export function hasSecondDimension(
   dimensions: readonly string[] | undefined,
