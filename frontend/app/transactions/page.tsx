@@ -130,12 +130,20 @@ function canPromoteToRecurring(tx: Transaction): boolean {
   );
 }
 
-// TBD-387. A manual balance adjustment is read-only through the WHOLE standard
-// CRUD surface, and three independently-written server guards say so:
+// TBD-387. A manual balance adjustment is refused by every mutating route the
+// transactions page can reach, across FIVE independently-written server guards:
 //
 //   update_transaction       transaction_service.py:513   "cannot be edited"
 //   delete_transaction       transaction_service.py:1348  "cannot be deleted"
 //   convert_and_create_leg   transaction_service.py:2050  "cannot ... transfer leg"
+//   _link_pair               transaction_service.py:1755  "cannot be paired"
+//   update_transaction       (again) via the status pill, which PUTs the row
+//
+// ⚠ NOT a universal claim: `tag_service.set_transaction_tags` carries NO
+// adjustment guard, so tags are writable server-side. It is unreachable today
+// only because the edit form PUTs the row first and 400s before the tags call.
+// Do not restate this as "read-only everywhere" -- that sentence was in an
+// earlier revision and it is false.
 //
 // Until this ticket the row rendered Edit, Delete and "Mark as transfer" like
 // any other, so the user filled in the form and the request 400s -- three live
@@ -148,8 +156,11 @@ function canPromoteToRecurring(tx: Transaction): boolean {
 // `delete_transaction` guard on `is_manual_adjustment` ONLY -- no
 // `reconciliation_state` term reaches either. Reusing it here would strip Edit
 // and Delete from every reverted row and every transfer leg, turning a
-// too-permissive UI into a too-restrictive one. Fenced as F4 in
-// `transactions-manual-adjustment-affordances.test.tsx`.
+// too-permissive UI into a too-restrictive one. F4 in
+// `transactions-manual-adjustment-affordances.test.tsx` is the only fence that
+// asserts this DIRECTLY (TBD-309's F1 also collapses under that mutant, but
+// incidentally -- its helper can no longer find an Edit button -- so do not
+// rely on it).
 //
 // One predicate, six call sites (three affordances x the desktop and mobile
 // twins), for the reason the badge copy above is declared once: the mobile slot
@@ -170,7 +181,7 @@ function isReadOnlyAdjustment(tx: Transaction): boolean {
 // explanation is invisible on touch and largely skipped by screen readers,
 // which is the same trap the TBD-309 note above documents.
 const ADJUSTMENT_READ_ONLY_NOTE =
-  "Balance adjustments are read-only. Add a new adjustment to correct this one.";
+  "Balance adjustments can't be edited or deleted.";
 
 // TBD-290. `deleted_count` counts DB ROWS removed, and deleting one half of a
 // transfer cascades to the other half server-side, so it can exceed
@@ -1080,6 +1091,24 @@ function TransactionsPageContent() {
       return { visible: false, enabled: false, reason: null, expense: null, income: null };
     }
     // 2 un-linked rows → button is visible from here on; enabled depends on rules.
+    // TBD-387: `_link_pair` (transaction_service.py:1755) refuses a manual
+    // adjustment on EITHER leg, and its own comment calls itself "the
+    // chokepoint that catches every other path" -- i.e. the server author
+    // expected the client to reach it. This is the bulk twin of the per-row
+    // "Mark as transfer" gate; withholding one and not the other leaves the
+    // page self-contradictory (the row says read-only, the toolbar offers to
+    // pair it). Refused as `visible + disabled + reason`, matching the sibling
+    // refusals below, rather than hidden -- the user selected these two rows
+    // deliberately and is owed the reason.
+    if (isReadOnlyAdjustment(a) || isReadOnlyAdjustment(b)) {
+      return {
+        visible: true,
+        enabled: false,
+        reason: "Balance adjustments cannot be transfer legs",
+        expense: null,
+        income: null,
+      };
+    }
     if (a.type === b.type) {
       const reason =
         a.type === "expense"
@@ -1929,7 +1958,7 @@ function TransactionsPageContent() {
                           </span>
                           <span className="col-span-1 text-sm text-text-secondary truncate">{tx.category_name}</span>
                           <span className="tx-status-cell col-span-1 text-center">
-                            {isPairedTransfer ? (
+                            {isPairedTransfer || isReadOnlyAdjustment(tx) ? (
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
                               </span>
@@ -1958,7 +1987,7 @@ function TransactionsPageContent() {
                           </span>
                           <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
                             {isReadOnlyAdjustment(tx) ? (
-                              <span className="whitespace-normal text-right text-xs text-text-muted">{ADJUSTMENT_READ_ONLY_NOTE}</span>
+                              <span className="text-right text-xs text-text-secondary">{ADJUSTMENT_READ_ONLY_NOTE}</span>
                             ) : (
                               <>
                                 <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
@@ -2395,7 +2424,7 @@ function TransactionsPageContent() {
                                 {tx.category_name}
                               </div>
                             )}
-                            {isPairedTransfer ? (
+                            {isPairedTransfer || isReadOnlyAdjustment(tx) ? (
                               <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
                               </span>
@@ -2425,7 +2454,7 @@ function TransactionsPageContent() {
                             }`}
                           >
                             {isReadOnlyAdjustment(tx) ? (
-                              <p className="text-xs text-text-muted">{ADJUSTMENT_READ_ONLY_NOTE}</p>
+                              <p className="text-xs text-text-secondary">{ADJUSTMENT_READ_ONLY_NOTE}</p>
                             ) : (
                               <>
                                 <button
