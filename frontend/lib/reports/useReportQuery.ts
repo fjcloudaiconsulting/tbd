@@ -20,6 +20,8 @@ import {
 import { useReportSources } from "./use-report-sources";
 import type {
   CanvasFilters,
+  Filter,
+  KPIWidget,
   Measure,
   QueryMeta,
   ReportsQuery,
@@ -68,6 +70,285 @@ export function useReportQuery(
   );
 
   return { data, error, isLoading, query };
+}
+
+/**
+ * Reads the scalar a one-row aggregate query returns.
+ *
+ * Shared by the KPI's value and its comparison value so the two can never
+ * coerce differently (a string `"0"` that reads as a number on one side and
+ * as `null` on the other would silently suppress or invent a delta).
+ */
+export function readMeasureValue(
+  row: Record<string, string | number | null> | undefined,
+): number | null {
+  if (!row) return null;
+  const v = row.value;
+  if (v === null || v === undefined) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Why a prior-period window could not be computed (TBD-383).
+ *
+ * ⚠ The reason is part of the contract, not debug colour. Every refusal looks
+ * identical from outside the widget — the value renders with no delta and no
+ * second query fires — so without a named reason a fence cannot tell a
+ * deliberate refusal from an implementation that read an absent `start`/`end`,
+ * got `undefined`, and was right by accident. `tests/lib/reports/prior-window.test.ts`
+ * asserts each one.
+ *
+ * ⚠⚠ NOTHING IN THE UI CONSUMES THIS YET, AND THAT IS DELIBERATE — DO NOT
+ * DELETE IT AS DEAD CODE. Surfacing "why there is no delta" to the user is a
+ * new user-facing surface and is tracked separately. This taxonomy exists so
+ * the resolver's tests can distinguish a deliberate refusal from an accidental
+ * one, and it is the ONLY fence that makes the `relative_token` refusal
+ * deliberate: delete it and every component-level fence stays green while the
+ * `next_cycle` guard silently becomes "right by accident". The same applies to
+ * `error` and `isLoading` on `UseComparisonQueryResult`.
+ */
+export type PriorWindowRefusal =
+  | "no_date_filter"
+  | "half_open"
+  | "relative_token"
+  | "malformed"
+  | "inverted"
+  | "future_window";
+
+export type PriorWindowResult =
+  | { prior: [string, string]; refusal: null }
+  | { prior: null; refusal: PriorWindowRefusal };
+
+const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+const MS_PER_DAY = 86_400_000;
+
+/** `YYYY-MM-DD` → whole days since the epoch, or null if it is not a real date. */
+function toEpochDay(iso: unknown): number | null {
+  if (typeof iso !== "string") return null;
+  const m = ISO_DAY.exec(iso);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const ms = Date.UTC(y, mo - 1, d);
+  if (!Number.isFinite(ms)) return null;
+  const back = new Date(ms);
+  // ⚠ `Date.UTC` rolls over silently: 2026-02-30 becomes 2026-03-02. Accepting
+  // that would shift the comparison window by two days with no symptom.
+  if (
+    back.getUTCFullYear() !== y ||
+    back.getUTCMonth() !== mo - 1 ||
+    back.getUTCDate() !== d
+  ) {
+    return null;
+  }
+  return Math.round(ms / MS_PER_DAY);
+}
+
+function fromEpochDay(day: number): string {
+  return new Date(day * MS_PER_DAY).toISOString().slice(0, 10);
+}
+
+/**
+ * The window immediately before the resolved one, of the same REACHED length:
+ *
+ *     effective.end = min(window.end, today)
+ *     prior.end     = window.start - 1 day
+ *     prior.start   = prior.end - (effective.length - 1 day)
+ *
+ * ⚠⚠ THE CLAMP TO `today` IS LOAD-BEARING, NOT A REFINEMENT (TBD-383 B1).
+ * `draft.ts` seeds every new report with the `this_month` preset, and
+ * `buildPresetRanges` freezes that as the WHOLE calendar month
+ * (`startOfMonth(now)..endOfMonth(now)`), not month-to-date. Unclamped, on
+ * 2026-09-02 that compared 2 days of September against 30 complete days of
+ * August and rendered roughly "-92% vs prior period" for a user whose
+ * spending had not changed — about -100% on the 1st of any month. That is the
+ * default authoring path, for most of every month, under a label asserting
+ * comparability: absent would have become actively FALSE.
+ *
+ * ⚠ Only `this_month` breaks THE CLAMP. `last_month` needs no clamping (it is
+ * fully past) and `ytd` / `last_12_months` end at `now`, so manual testing on
+ * any other preset looks perfect. Do not "simplify" the clamp away on the
+ * evidence of one preset. ⚠ "`last_month` is correct" is a statement about the
+ * clamp ONLY — it is still subject to the sliding-window question below, where
+ * a 28-day February maps to 2026-01-04..01-31 and drops January 1-3.
+ *
+ * ⚠ Refusing a future-ending window instead was rejected: it kills the delta
+ * on the default preset entirely, which is worse than a clamped one.
+ *
+ * ⚠ THIS IS NOT COMPLETE-TO-COMPLETE, AND THE COMMENT MUST NOT CLAIM IT IS.
+ * `today` counts as a whole day on both sides, so on day N you compare N-1
+ * complete days PLUS a partial today against N complete days. Unchanged
+ * spending still reads about -29% on day 2 at 10:00 and about -4% by day 15 —
+ * far better than the -92% this replaced, but not zero. `min(end, today - 1)`
+ * would be genuinely complete-to-complete; it is NOT used because it refuses
+ * on the 1st of the month, when there is no complete day yet.
+ *
+ * ⚠ `today` is a REQUIRED PARAMETER. This resolver must stay wall-clock-free
+ * so its tests are not date bombs; the caller supplies the day.
+ *
+ * ⚠ It reads the RESOLVED `date` filter, never the persisted `date_range`.
+ * The shift is an operation on the window the backend will actually see; the
+ * config may hold an inherited canvas value, a widget override, or a token.
+ *
+ * Refuses, deliberately, for:
+ *   - no `date` filter at all — the query is unbounded, so there is no
+ *     "prior" anything;
+ *   - `gte` / `lte` — half-open, no length to shift by;
+ *   - ⚠⚠ `op: "relative"` (today: `preset: "next_cycle"`) — the client holds
+ *     ONLY a token. The absolute window is resolved server-side, per request,
+ *     against the org's billing cycle. The client therefore cannot compute the
+ *     prior window and must not guess one. This arm is why the refusal is
+ *     matched on the resolved `op` rather than on the presence of
+ *     `start`/`end`: reading `start` would refuse here too, but only by
+ *     accident, and would start returning a wrong window the moment a relative
+ *     token gains client-visible bounds.
+ *
+ * A KPI with no delta is the ordinary state, not an error.
+ */
+export function resolvePriorWindow(
+  filters: Filter[],
+  today: string,
+): PriorWindowResult {
+  const date = filters.find((f) => f.field === "date");
+  if (!date) return { prior: null, refusal: "no_date_filter" };
+  if (date.op === "relative") return { prior: null, refusal: "relative_token" };
+  if (date.op === "gte" || date.op === "lte") {
+    return { prior: null, refusal: "half_open" };
+  }
+  if (date.op !== "between" || !Array.isArray(date.value) || date.value.length !== 2) {
+    return { prior: null, refusal: "malformed" };
+  }
+  const start = toEpochDay(date.value[0]);
+  const end = toEpochDay(date.value[1]);
+  const now = toEpochDay(today);
+  if (start === null || end === null || now === null) {
+    return { prior: null, refusal: "malformed" };
+  }
+  if (end < start) return { prior: null, refusal: "inverted" };
+  // Only the elapsed part of the window holds data, so only the elapsed part
+  // may set the comparison length.
+  const effectiveEnd = Math.min(end, now);
+  if (effectiveEnd < start) return { prior: null, refusal: "future_window" };
+  const lengthDays = effectiveEnd - start + 1;
+  return {
+    prior: [fromEpochDay(start - lengthDays), fromEpochDay(start - 1)],
+    refusal: null,
+  };
+}
+
+/**
+ * Today's calendar date as `YYYY-MM-DD`, from the LOCAL clock.
+ *
+ * ⚠ Local, not `toISOString()`. The windows this is compared against are built
+ * by `date-presets.ts` from local-clock components, so a UTC day index would
+ * be off by one either side of midnight in a non-zero offset and would clamp
+ * `this_month` to the wrong number of days.
+ *
+ * ⚠ FOR THE RECORD, NOT A BUG TO FIX HERE: a second skew exists on the server
+ * side. `backend/app/reports/templates.py` computes its `this_month` /
+ * `last_12_months` windows from Python's `date.today()` — the SERVER clock —
+ * and those windows persist into `canvas_filters_json` when a report is created
+ * from a template. A client an hour behind the server can therefore meet a
+ * window that starts "tomorrow". It fails SAFE: `effectiveEnd < start` yields
+ * the `future_window` refusal, so the KPI renders its value with no delta and
+ * self-heals within a day. Do not "fix" it by loosening the refusal.
+ */
+function todayIso(): string {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+interface UseComparisonQueryResult {
+  /** The prior window's value, or null when there is no comparison to show. */
+  prior: number | null;
+  isLoading: boolean;
+  error: Error | undefined;
+  /** Null when a comparison ran (or was never asked for); see `PriorWindowRefusal`. */
+  refusal: PriorWindowRefusal | null;
+  /** The AST that produced `prior`; null when no query was issued. */
+  query: ReportsQuery | null;
+}
+/**
+ * The KPI's prior-period companion query (TBD-383).
+ *
+ * ⚠⚠ THIS IS DELIBERATELY A HOOK THE WIDGET CALLS, NOT A PROP A CALLER PASSES.
+ * `compare_prior_period` shipped as a `priorValue` prop that no production
+ * caller ever supplied, so the checkbox wrote a flag nothing read and the
+ * delta never rendered — for the life of the widget, with a green test the
+ * whole time, because the tests injected the prop. A render branch fed from
+ * outside can be forgotten by a caller; one fed from the widget's own config
+ * cannot. Do not reintroduce an injected prior value.
+ *
+ * It reuses `buildQueryAst` verbatim and swaps only the resolved `date`
+ * filter, so the comparison is over the same dataset, measure, and population
+ * as the number it sits under.
+ *
+ * Fires NO request at all when the widget did not ask for a comparison, or
+ * when the window is not shiftable — SWR is handed a null key. The 95% path
+ * gains no network call.
+ */
+export function useComparisonQuery(
+  widget: KPIWidget,
+  canvasFilters: CanvasFilters | undefined,
+): UseComparisonQueryResult {
+  const { sources } = useReportSources();
+  const supportsDate = sourceSupportsDateFilter(sources, widget.config.dataset);
+  const supportsStatus = sourceSupportsStatusFilter(
+    sources,
+    widget.config.dataset,
+  );
+  const enabled = widget.config.compare_prior_period === true;
+  // Recomputed each render (a string, so it is stable by value and does not
+  // thrash the memo) and listed in the deps, so a session that crosses
+  // midnight re-derives the comparison window instead of holding yesterday's.
+  const today = todayIso();
+
+  const { query, refusal } = useMemo<{
+    query: ReportsQuery | null;
+    refusal: PriorWindowRefusal | null;
+  }>(() => {
+    if (!enabled) return { query: null, refusal: null };
+    const base = buildQueryAst(widget, canvasFilters, supportsDate, supportsStatus);
+    const resolved = resolvePriorWindow(base.filters, today);
+    if (resolved.prior === null) {
+      return { query: null, refusal: resolved.refusal };
+    }
+    const window: [string, string] = resolved.prior;
+    return {
+      query: {
+        ...base,
+        filters: base.filters.map((f) =>
+          f.field === "date"
+            ? { field: "date" as const, op: "between" as const, value: [...window] }
+            : f,
+        ),
+      },
+      refusal: null,
+    };
+  }, [enabled, widget, canvasFilters, supportsDate, supportsStatus, today]);
+
+  const swrKey = query
+    ? ["report-query-prior", widget.id, JSON.stringify(query)]
+    : null;
+  const { data, error, isLoading } = useSWR<ReportsQueryResponse>(
+    swrKey,
+    () => runQuery(query as ReportsQuery),
+    {
+      revalidateOnFocus: false,
+      revalidateIfStale: true,
+      shouldRetryOnError: false,
+    },
+  );
+
+  return {
+    prior: readMeasureValue(data?.rows[0]),
+    isLoading: !!isLoading,
+    error: (error as Error | undefined) ?? undefined,
+    refusal,
+    query,
+  };
 }
 
 /**
