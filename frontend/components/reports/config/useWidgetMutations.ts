@@ -9,7 +9,7 @@
  * non-hook. Each setter early-returns on the same type guards it enforced
  * inline (these guards are load-bearing — e.g. ``setSingleMeasure``
  * early-returns on ``isMultiSeries`` and ``setSecondaryDimension``
- * early-returns on ``kpi`` / ``isSingleAggLocked``).
+ * early-returns on ``kpi`` / ``line`` / ``area`` / ``isSingleAggLocked``).
  */
 import {
   isMultiSeries,
@@ -115,11 +115,32 @@ export function buildWidgetMutations(
   }
 
   function setSecondaryDimension(dim: Dimension | "") {
-    if (widget.type === "kpi" || isSingleAggLocked(widget)) return;
+    // ⚠ TBD-486: `line` and `area` refuse too. Both render through
+    // `mergeSeriesRows`, which merges on `dimensions[0]` and ASSIGNS, so a
+    // second dimension makes every bucket report its LAST pair's value:
+    // one arbitrary category's number, labelled as the whole month's. The
+    // renderers show an explicit unsupported state for a config already
+    // persisted in that shape (`SECOND_DIMENSION_UNSUPPORTED_NOTICE`); this
+    // stops the editor authoring a new one.
+    //
+    // `DataTab` also gates the control out for both types, so today this is
+    // the second lock on the same door. Keep it: `buildWidgetMutations` is
+    // called by the popover and by both tabs, and the cast below USED to name
+    // `LineConfig | AreaConfig`, which is how the write was persuaded to
+    // type-check in the first place. Those two members are now gone from it,
+    // so the cast can no longer claim a line or area config is writable here.
+    //
+    // ⚠ Drawing a two-dimension line / area is TBD-383, not this guard.
+    if (
+      widget.type === "kpi" ||
+      widget.type === "line" ||
+      widget.type === "area" ||
+      isSingleAggLocked(widget)
+    ) {
+      return;
+    }
     const cfg = widget.config as
       | BarConfig
-      | LineConfig
-      | AreaConfig
       | StackedBarConfig
       | TableConfig;
     const dims = [...(cfg.dimensions ?? [])];

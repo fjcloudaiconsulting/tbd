@@ -172,12 +172,64 @@ export function seriesLabel(
 }
 
 /**
+ * TBD-486 — the second dimension a line / area chart cannot draw.
+ *
+ * ``mergeSeriesRows`` below keys on ONE dimension and ASSIGNS
+ * (``existing[key] = …``), so with ``dimensions: ["month", "category"]``
+ * every ``(2026-01, *)`` row keys to ``"2026-01"`` and the last one wins.
+ * The chart then plots one arbitrary category's value, and the axis, the
+ * tooltip and the CSV all present it as the month's figure. Same shape
+ * TBD-382 fixed for ``stacked_bar``, which called this function instead of
+ * pivoting.
+ *
+ * ⚠ The renderers REFUSE such a config; they never repair it. Dropping
+ * ``dimensions[1]`` would re-point the query at a different question and
+ * change the number a saved report renders without telling anyone — the
+ * identical ruling ``UNSUPPORTED_MEASURE_KEY`` records in
+ * ``components/reports/config/controlConstants.ts``.
+ *
+ * ⚠ This is NOT a member of the Notice Register (``lib/reports/notices.ts``),
+ * whose docstring closes its tenant list at two. The register annotates a
+ * chart that IS drawn; this replaces the chart. Do not fold them together.
+ *
+ * ⚠ Actually DRAWING a two-dimension line / area is TBD-383 and needs four
+ * design rulings that have not been made. If you are making this render, you
+ * are on the wrong ticket — and this sentence is the last place that records
+ * that last-pair-wins was ever wrong.
+ */
+export const SECOND_DIMENSION_UNSUPPORTED_NOTICE =
+  "This chart is grouped by two dimensions, which it cannot draw: it plots " +
+  "one value per point, so a second grouping would show one group's value " +
+  "as if it were the whole. The configuration has been left as-is; a bar or " +
+  "stacked bar chart can break down by a second dimension.";
+
+/**
+ * True when a ``mergeSeriesRows`` consumer's config carries a dimension
+ * beyond the one it merges on.
+ *
+ * ⚠ ``> 1``, not ``=== 2``. The layout schema
+ * (``_MultiSeriesConfig.dimensions``) constrains no length at all — the
+ * ``max_length=MAX_DIMENSIONS`` ceiling lives on the QUERY AST
+ * (``backend/app/schemas/reports_query.py``), so a persisted layout can
+ * carry three and only 422 later, at query time.
+ */
+export function hasSecondDimension(
+  dimensions: readonly string[] | undefined,
+): boolean {
+  return (dimensions?.length ?? 0) > 1;
+}
+
+/**
  * Merge per-series query responses into a single row list, keyed by
  * the dimension value. Each series' rows are aligned by their
  * dimension key and the measure value lands under ``seriesKeys[i]``.
  *
  * Missing dimension values across series are filled with 0 so
  * Recharts doesn't drop the data point.
+ *
+ * ⚠ ONE dimension only. See ``hasSecondDimension`` above: callers must
+ * refuse a two-dimension config before reaching here, or this merge
+ * silently reports the last pair's value as the bucket's.
  */
 export function mergeSeriesRows(
   series: Array<ReportsQueryResponse | undefined>,
