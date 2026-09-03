@@ -51,10 +51,24 @@
  *      against. A fence file that talks itself out of a reachable path is
  *      worse than one that never mentions it.
  *
- *  F4  A manual balance adjustment is not offered it either.
- *      Kills: writing the predicate as the reverted test alone, leaving the
- *      second latent refusal armed. (The Edit affordance on such a row is a
- *      larger, separate defect — TBD-387 — deliberately not fixed here.)
+ *  F4  A manual balance adjustment cannot REACH the promote checkbox at all.
+ *      ⚠ REWRITTEN BY TBD-387, and the change of shape is the point. This
+ *      fence used to open the edit form on an adjustment row and assert the
+ *      checkbox was withheld inside it. TBD-387 closed the entry point — such
+ *      a row is now offered no Edit affordance — so that form is unreachable
+ *      and `openEditFor` has no button to click. The assertion below is
+ *      strictly stronger and is the only form it can now take.
+ *      Kills: re-opening the Edit affordance on an adjustment row (which is
+ *      what would make the old body runnable again).
+ *      ⚠ HONEST COVERAGE NOTE, so nobody cites this fence for more than it
+ *      holds: `canPromoteToRecurring`'s `!tx.is_manual_adjustment` term is now
+ *      UNREACHABLE through the UI — `is_manual_adjustment` is set at creation
+ *      and never flips, so unlike the reverted case (F3b) no row can turn into
+ *      an adjustment underneath an open form. That term survives as defence in
+ *      depth for a future call site, NOT because this fence still exercises
+ *      it. The server-side guard (transaction_service.py:921) is the real
+ *      backstop. The affordance half is fenced in
+ *      `transactions-manual-adjustment-affordances.test.tsx`.
  *
  *  F5  A COLLAPSED transfer pair renders NO excluded indicator, even when the
  *      surviving leg is reverted; an uncollapsed reverted row renders one.
@@ -318,13 +332,28 @@ describe("TBD-309 — reverted row affordances", () => {
     ).toBeNull();
   });
 
-  it("F4: a manual balance adjustment is not offered the promote checkbox", async () => {
-    setupApiFetch([ADJUSTMENT]);
+  it("F4: a manual balance adjustment cannot reach the promote checkbox at all", async () => {
+    setupApiFetch([ADJUSTMENT, ORDINARY]);
     render(<TransactionsPage />);
-    await openEditFor(ADJUSTMENT);
+    await screen.findAllByText(ADJUSTMENT.description);
+    await screen.findAllByText(ORDINARY.description);
 
-    expect(screen.queryByTestId(`edit-recurring-row-${ADJUSTMENT.id}`)).toBeNull();
-    expect(screen.queryByTestId(`edit-recurring-row-mobile-${ADJUSTMENT.id}`)).toBeNull();
+    // The entry point, not the checkbox: TBD-387 withholds Edit on this row in
+    // BOTH render trees, so the form the checkbox lives in never opens.
+    expect(
+      screen.queryAllByRole("button", {
+        name: new RegExp(`^Edit: ${ADJUSTMENT.description}$`),
+      }),
+    ).toHaveLength(0);
+
+    // The ordinary row in the SAME render still offers Edit, twice (desktop +
+    // mobile). Without this the assertion above passes against a page that
+    // rendered no rows, or against Edit being deleted outright.
+    expect(
+      screen.queryAllByRole("button", {
+        name: new RegExp(`^Edit: ${ORDINARY.description}$`),
+      }),
+    ).toHaveLength(2);
   });
 
   it("renders an 'Excluded' indicator on a reverted row, in BOTH slots", async () => {

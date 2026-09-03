@@ -130,6 +130,64 @@ function canPromoteToRecurring(tx: Transaction): boolean {
   );
 }
 
+// TBD-387. A manual balance adjustment is refused by every mutating route the
+// transactions page can reach, across FIVE independently-written server guards:
+//
+//   update_transaction       transaction_service.py:513   "cannot be edited"
+//   delete_transaction       transaction_service.py:1348  "cannot be deleted"
+//   convert_and_create_leg   transaction_service.py:2050  "cannot ... transfer leg"
+//   _link_pair               transaction_service.py:1755  "cannot be paired"
+//   update_transaction       (again) via the status pill, which PUTs the row
+//
+// ⚠ NOT a universal claim: `tag_service.set_transaction_tags` carries NO
+// adjustment guard, so tags are writable server-side. It is unreachable today
+// only because the edit form PUTs the row first and 400s before the tags call.
+// Do not restate this as "read-only everywhere" -- that sentence was in an
+// earlier revision and it is false.
+//
+// Until this ticket the row rendered Edit, Delete and "Mark as transfer" like
+// any other, so the user filled in the form and the request 400s -- three live
+// violations of the standing TBD-289 rule, "no affordance is offered that the
+// server will refuse".
+//
+// ⚠ THIS IS NOT `canPromoteToRecurring`, AND MUST NOT BE COLLAPSED INTO IT.
+// That predicate also tests `is_reverted` and `linked_transaction_id`, and the
+// server refuses NEITHER of those for edit or delete: `update_transaction` and
+// `delete_transaction` guard on `is_manual_adjustment` ONLY -- no
+// `reconciliation_state` term reaches either. Reusing it here would strip Edit
+// and Delete from every reverted row and every transfer leg, turning a
+// too-permissive UI into a too-restrictive one. F4 in
+// `transactions-manual-adjustment-affordances.test.tsx` is the only fence that
+// asserts this DIRECTLY (TBD-309's F1 also collapses under that mutant, but
+// incidentally -- its helper can no longer find an Edit button -- so do not
+// rely on it).
+//
+// One predicate, six call sites (three affordances x the desktop and mobile
+// twins), for the reason the badge copy above is declared once: the mobile slot
+// is the one this file has repeatedly missed.
+function isReadOnlyAdjustment(tx: Transaction): boolean {
+  return tx.is_manual_adjustment;
+}
+
+// ⚠ COPY DISCIPLINE, inherited from the badge twins above: say what the row IS
+// and one verifiable consequence. Here -- unlike the Matched/Excluded cases --
+// the UI genuinely knows the cause, because `is_manual_adjustment` is the very
+// field being gated on, so naming it states a fact rather than guessing at an
+// action the user may not have taken. The second sentence gives the remedy the
+// server's own guard comment prescribes ("we'd rather force the user to issue a
+// fresh adjustment"), so the row is not left a dead end.
+//
+// ⚠ Delivered through `Tooltip` on desktop and as PROSE on the mobile card.
+// The asymmetry is deliberate and operator-approved. `Tooltip` is NOT the
+// `title` trap the Matched twin documents -- it opens on hover, focus, click,
+// keyboard AND tap and wires `aria-describedby`, so the sentence is reachable
+// on every input. It buys back the row rhythm that a four-line wrap in a
+// ~160px grid cell destroys, and it reuses the Excluded badge's idiom instead
+// of inventing a third one for "this row is special". The card has full width,
+// so it pays no such cost and keeps the sentence visible with no interaction.
+const ADJUSTMENT_READ_ONLY_NOTE =
+  "Balance adjustments can't be edited or deleted.";
+
 // TBD-290. `deleted_count` counts DB ROWS removed, and deleting one half of a
 // transfer cascades to the other half server-side, so it can exceed
 // `requested_count` (what the user ticked). Reporting it as "Deleted 6 of 4"
@@ -1038,6 +1096,24 @@ function TransactionsPageContent() {
       return { visible: false, enabled: false, reason: null, expense: null, income: null };
     }
     // 2 un-linked rows → button is visible from here on; enabled depends on rules.
+    // TBD-387: `_link_pair` (transaction_service.py:1755) refuses a manual
+    // adjustment on EITHER leg, and its own comment calls itself "the
+    // chokepoint that catches every other path" -- i.e. the server author
+    // expected the client to reach it. This is the bulk twin of the per-row
+    // "Mark as transfer" gate; withholding one and not the other leaves the
+    // page self-contradictory (the row says read-only, the toolbar offers to
+    // pair it). Refused as `visible + disabled + reason`, matching the sibling
+    // refusals below, rather than hidden -- the user selected these two rows
+    // deliberately and is owed the reason.
+    if (isReadOnlyAdjustment(a) || isReadOnlyAdjustment(b)) {
+      return {
+        visible: true,
+        enabled: false,
+        reason: "Balance adjustments cannot be transfer legs",
+        expense: null,
+        income: null,
+      };
+    }
     if (a.type === b.type) {
       const reason =
         a.type === "expense"
@@ -1887,7 +1963,7 @@ function TransactionsPageContent() {
                           </span>
                           <span className="col-span-1 text-sm text-text-secondary truncate">{tx.category_name}</span>
                           <span className="tx-status-cell col-span-1 text-center">
-                            {isPairedTransfer ? (
+                            {isPairedTransfer || isReadOnlyAdjustment(tx) ? (
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
                               </span>
@@ -1915,14 +1991,36 @@ function TransactionsPageContent() {
                             {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                           </span>
                           <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
-                            <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
-                            {!isPairedTransfer && !isReconcileMatched && (
-                              <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark transfer</button>
+                            {isReadOnlyAdjustment(tx) ? (
+                              <Tooltip
+                                content={ADJUSTMENT_READ_ONLY_NOTE}
+                                trigger={
+                                  <span
+                                    className={`${badgeNeutral} cursor-help`}
+                                    data-testid={`readonly-badge-${tx.id}`}
+                                    // Focusable on purpose, exactly as the
+                                    // Excluded twin above: Tooltip wires
+                                    // `aria-describedby` onto the first
+                                    // FOCUSABLE descendant, so a plain span
+                                    // gets no wiring and no keyboard path.
+                                    tabIndex={0}
+                                  >
+                                    Read-only
+                                  </span>
+                                }
+                              />
+                            ) : (
+                              <>
+                                <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
+                                {!isPairedTransfer && !isReconcileMatched && (
+                                  <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark transfer</button>
+                                )}
+                                {isPairedTransfer && (
+                                  <button onClick={() => openUnpairModal(tx)} aria-label={`Unlink transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Unlink</button>
+                                )}
+                                <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
+                              </>
                             )}
-                            {isPairedTransfer && (
-                              <button onClick={() => openUnpairModal(tx)} aria-label={`Unlink transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Unlink</button>
-                            )}
-                            <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
                           </span>
                         </div>
                       );
@@ -2347,7 +2445,7 @@ function TransactionsPageContent() {
                                 {tx.category_name}
                               </div>
                             )}
-                            {isPairedTransfer ? (
+                            {isPairedTransfer || isReadOnlyAdjustment(tx) ? (
                               <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
                               </span>
@@ -2376,42 +2474,56 @@ function TransactionsPageContent() {
                               tx.status === "pending" ? "opacity-60" : ""
                             }`}
                           >
-                            <button
-                              onClick={() => startEdit(tx)}
-                              aria-label={`Edit: ${tx.description}`}
-                              disabled={bulkDeleting}
-                              className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                              Edit
-                            </button>
-                            {!isPairedTransfer && !isReconcileMatched && (
-                              <button
-                                onClick={() => setMarkModalSource(tx)}
-                                aria-label={`Mark as transfer: ${tx.description}`}
-                                disabled={bulkDeleting}
-                                className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                              >
-                                Mark as transfer…
-                              </button>
+                              {/* Prose here, badge on desktop -- deliberately
+                                  ASYMMETRIC, operator-approved 2026-09-02. The
+                                  card has full width so the sentence costs no
+                                  row rhythm, and this is the surface where the
+                                  explanation matters most. The desktop grid
+                                  cell is ~160px, where the same sentence wraps
+                                  to four ragged-left lines and doubles the
+                                  row's height. */}
+                            {isReadOnlyAdjustment(tx) ? (
+                              <p className="text-xs text-text-secondary">{ADJUSTMENT_READ_ONLY_NOTE}</p>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => startEdit(tx)}
+                                  aria-label={`Edit: ${tx.description}`}
+                                  disabled={bulkDeleting}
+                                  className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  Edit
+                                </button>
+                                {!isPairedTransfer && !isReconcileMatched && (
+                                  <button
+                                    onClick={() => setMarkModalSource(tx)}
+                                    aria-label={`Mark as transfer: ${tx.description}`}
+                                    disabled={bulkDeleting}
+                                    className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    Mark as transfer…
+                                  </button>
+                                )}
+                                {isPairedTransfer && (
+                                  <button
+                                    onClick={() => openUnpairModal(tx)}
+                                    aria-label={`Unlink transfer: ${tx.description}`}
+                                    disabled={bulkDeleting}
+                                    className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    Unlink
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => setConfirmDeleteId(tx.id)}
+                                  aria-label={`Delete: ${tx.description}`}
+                                  disabled={bulkDeleting}
+                                  className="min-h-[44px] px-3 rounded-md border border-border text-sm text-danger disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  Delete
+                                </button>
+                              </>
                             )}
-                            {isPairedTransfer && (
-                              <button
-                                onClick={() => openUnpairModal(tx)}
-                                aria-label={`Unlink transfer: ${tx.description}`}
-                                disabled={bulkDeleting}
-                                className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                              >
-                                Unlink
-                              </button>
-                            )}
-                            <button
-                              onClick={() => setConfirmDeleteId(tx.id)}
-                              aria-label={`Delete: ${tx.description}`}
-                              disabled={bulkDeleting}
-                              className="min-h-[44px] px-3 rounded-md border border-border text-sm text-danger disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                              Delete
-                            </button>
                           </div>
                         </article>
                       );
