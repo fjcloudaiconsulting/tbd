@@ -1,0 +1,431 @@
+/**
+ * TBD-387 — a manual balance adjustment must not be offered an action the
+ * server always refuses.
+ *
+ * `is_manual_adjustment` rows are read-only through the whole standard CRUD
+ * surface. Three separate server guards refuse them outright:
+ *
+ *   update_transaction        transaction_service.py:513  "cannot be edited"
+ *   delete_transaction        transaction_service.py:1348 "cannot be deleted"
+ *   convert_and_create_leg    transaction_service.py:2050 "cannot ... transfer leg"
+ *
+ * The transactions page consulted the field for exactly one thing (the
+ * promote-to-recurring checkbox, TBD-309) and rendered Edit, Delete and
+ * "Mark as transfer" unconditionally — three live violations of the standing
+ * TBD-289 rule, "no affordance is offered that the server will refuse". The
+ * user fills in the form and the request 400s.
+ *
+ * ⚠ SCOPE. The ticket names only Edit. Edit is not the only one — Delete and
+ * Mark-as-transfer carry identical, independently-written server refusals and
+ * identical unguarded render sites. Fixing Edit alone leaves two doors open,
+ * which is this repo's most-repeated defect shape.
+ *
+ * ⚠ THE FIXTURES ARE TYPED AS THE SHARED `Transaction`, NOT A LOCAL `type Tx`,
+ * for the reason the TBD-309 sibling file documents: a local row type compiles
+ * and passes even if `lib/types.ts` loses the field entirely.
+ *
+ * ⚠ EVERY FENCE RENDERS AN ADJUSTMENT ROW AND AN ORDINARY ROW IN THE SAME
+ * LIST. jsdom renders both the desktop grid and the mobile card layout (the
+ * `md:` breakpoint is CSS-only), so each affordance appears TWICE per row when
+ * offered. Asserting "0 for the adjustment" alone cannot distinguish "both
+ * slots suppressed" from "the query matched nothing for an unrelated reason";
+ * asserting "0 for the adjustment AND exactly 2 for the ordinary row in the
+ * same render" can. That pairing is what makes these fences rather than
+ * decorations, and it is why the mobile twin cannot be missed here — the slot
+ * this file's neighbours have repeatedly missed.
+ *
+ * Each fence names the wrong implementation it kills:
+ *
+ *  F1  No Edit on an adjustment row; Edit still offered twice on an ordinary
+ *      row in the same render.
+ *      Kills: gating the desktop tree and forgetting the mobile twin (which
+ *      leaves the count at 1 rather than 0), and a blanket "never render Edit".
+ *
+ *  F2  No Delete on an adjustment row; Delete still offered twice on an
+ *      ordinary row.
+ *      Kills: fixing only the affordance the ticket names. `delete_transaction`
+ *      raises its own ValidationError, so this door is open independently.
+ *
+ *  F3  No "Mark as transfer" on an adjustment row; still offered twice on an
+ *      ordinary row.
+ *      Kills: the same, for the third independent refusal
+ *      (`convert_and_create_leg`).
+ *
+ *  F4  A REVERTED row (skipped/rejected) IS still offered Edit and Delete.
+ *      The over-reach fence, and the most valuable one here.
+ *      Kills: reusing the existing `canPromoteToRecurring` predicate — the
+ *      obvious, tempting implementation. That predicate also tests
+ *      `is_reverted` and `linked_transaction_id`, but the server refuses
+ *      NEITHER for edit or delete: `update_transaction` and
+ *      `delete_transaction` guard on `is_manual_adjustment` ONLY (verified at
+ *      transaction_service.py:513 and :1348 — no reconciliation_state term
+ *      reaches either). Reusing it would silently strip Edit and Delete from
+ *      every reverted and every transfer-leg row, converting a
+ *      too-permissive UI into a too-restrictive one.
+ *
+ *  F5  The row says WHY, in both slots, and reaches the accessibility tree by
+ *      TEXT rather than only through `title`. An ordinary row says nothing.
+ *      Kills: hiding the buttons and leaving a bare gap, and attaching the
+ *      explanation to a `title` attribute only (the a11y half of TBD-289).
+ *
+ * Copy discipline, inherited verbatim from TBD-295/TBD-289: the copy must say
+ * what the row IS and what follows from it, never assert a cause the UI cannot
+ * know. Here the UI CAN know the cause — `is_manual_adjustment` is the field
+ * being gated on — so naming it is accurate rather than speculative.
+ */
+import React from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+import TransactionsPage from "@/app/transactions/page";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { apiFetch } from "@/lib/api";
+import type { Transaction } from "@/lib/types";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  usePathname: () => "/transactions",
+  useSearchParams: () => ({ get: () => null }),
+}));
+
+vi.mock("@/components/AppShell", () => ({
+  default: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="app-shell">{children}</div>
+  ),
+}));
+
+vi.mock("@/components/auth/AuthProvider", () => ({
+  useAuth: vi.fn(),
+}));
+
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return { ...actual, apiFetch: vi.fn() };
+});
+
+const USER = {
+  id: 7, username: "user", email: "user@example.com",
+  first_name: null, last_name: null, phone: null, avatar_url: null,
+  email_verified: true, role: "owner" as const, org_id: 3, org_name: "Org",
+  billing_cycle_day: 1, is_superadmin: false, is_active: true,
+  mfa_enabled: false, subscription_status: null, subscription_plan: null,
+  trial_end: null,
+};
+
+// Distinct ids everywhere: a fixture set where every id is 1 cannot tell a
+// correct lookup from a wrong one.
+const ACCT_CHECKING = {
+  id: 401, name: "Checking A", account_type_id: 4,
+  account_type_name: "Checking", account_type_slug: "checking",
+  balance: 0, currency: "EUR", is_active: true,
+  close_day: null, is_default: true,
+};
+
+// A SECOND account. `evaluateLinkSelection` refuses same-account pairs, so
+// without this the F7 fences would be refused for the wrong reason and would
+// pass against an ungated implementation.
+const ACCT_SAVINGS = {
+  id: 402, name: "Savings B", account_type_id: 4,
+  account_type_name: "Savings", account_type_slug: "savings",
+  balance: 0, currency: "EUR", is_active: true,
+  close_day: null, is_default: false,
+};
+
+const CATEGORY_GROCERIES = {
+  id: 311, name: "Groceries", type: "expense" as const,
+  parent_id: null, parent_name: null, description: null,
+  slug: "groceries", is_system: false, transaction_count: 0,
+};
+
+function makeTx(
+  over: Partial<Transaction> & { id: number; description: string },
+): Transaction {
+  return {
+    account_id: ACCT_CHECKING.id,
+    account_name: ACCT_CHECKING.name,
+    category_id: CATEGORY_GROCERIES.id,
+    category_name: CATEGORY_GROCERIES.name,
+    amount: 41.25,
+    type: "expense",
+    status: "settled",
+    linked_transaction_id: null,
+    linked_account_name: null,
+    recurring_id: null,
+    date: "2026-05-04",
+    settled_date: "2026-05-04",
+    is_imported: false,
+    is_manual_adjustment: false,
+    is_reverted: false,
+    tags: [],
+    ...over,
+  };
+}
+
+const ADJUSTMENT = makeTx({
+  id: 9201,
+  description: "Balance correction",
+  is_manual_adjustment: true,
+});
+
+const ORDINARY = makeTx({ id: 9202, description: "Ordinary bakery run" });
+
+// is_reverted WITHOUT is_manual_adjustment. This row is an F4 control: the
+// server edits and deletes it happily.
+const REVERTED = makeTx({
+  id: 9203,
+  description: "Reverted duplicate charge",
+  is_reverted: true,
+});
+
+// A reciprocally-linked transfer leg. The SECOND F4 control, and the file was
+// wrong without it: every other fixture here carries `linked_transaction_id:
+// null`, so nothing could distinguish the correct predicate from
+// `is_manual_adjustment || linked_transaction_id !== null`. That mutant was
+// measured GREEN against all 15 tests, and it strips Edit and Delete from
+// every transfer leg in the app -- the exact "too-restrictive" over-reach the
+// page comment claims to fence.
+// ⚠ BOTH fields are needed: `isPairedTransfer` is computed from
+// `linked_account_name`, not from `linked_transaction_id`.
+// F7's pair. An upward balance adjustment lands as `type: income`,
+// `status: settled`, unlinked (adjust_account_balance,
+// transaction_service.py:2512), so it satisfies every rule
+// `evaluateLinkSelection` applies -- opposite types, equal amounts, different
+// accounts, same currency -- and the button went ENABLED before this fix.
+const ADJUSTMENT_INCOME = makeTx({
+  id: 9301,
+  description: "Upward correction",
+  type: "income",
+  amount: 100,
+  account_id: ACCT_CHECKING.id,
+  account_name: ACCT_CHECKING.name,
+  is_manual_adjustment: true,
+});
+
+const PAIRABLE_EXPENSE = makeTx({
+  id: 9302,
+  description: "Ordinary outflow",
+  type: "expense",
+  amount: 100,
+  account_id: ACCT_SAVINGS.id,
+  account_name: ACCT_SAVINGS.name,
+});
+
+// The over-reach control's partner: an ordinary income, so a legitimate pair
+// still enables the button.
+const PAIRABLE_INCOME = makeTx({
+  id: 9303,
+  description: "Ordinary inflow",
+  type: "income",
+  amount: 100,
+  account_id: ACCT_CHECKING.id,
+  account_name: ACCT_CHECKING.name,
+});
+
+const TRANSFER_LEG = makeTx({
+  id: 9204,
+  description: "Transfer to savings",
+  linked_transaction_id: 9500,
+  linked_account_name: "Savings B",
+});
+
+function setupApiFetch(txs: Transaction[]) {
+  vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+    if (url.startsWith("/api/v1/accounts")) return [ACCT_CHECKING, ACCT_SAVINGS] as never;
+    if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
+    if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
+    if (url.startsWith("/api/v1/transactions"))
+      return { items: txs, total: txs.length, limit: 25, offset: 0 } as never;
+    return null as never;
+  });
+}
+
+beforeEach(() => {
+  vi.mocked(useAuth).mockReturnValue({
+    user: USER as never,
+    loading: false,
+    needsSetup: false,
+    login: vi.fn(),
+    register: vi.fn(),
+    logout: vi.fn(),
+    refreshMe: vi.fn(),
+  });
+});
+
+/** Renders the page with the given rows and waits for the list to paint.
+ *
+ * The `findAllByText` is a precondition, asserted rather than assumed: without
+ * it every "absence" assertion below could pass against a page that never
+ * rendered a single row, which is vacuous in exactly the direction these
+ * fences test.
+ */
+async function renderRows(txs: Transaction[]) {
+  setupApiFetch(txs);
+  render(<TransactionsPage />);
+  for (const tx of txs) {
+    await screen.findAllByText(tx.description);
+  }
+}
+
+/** Counts the affordance buttons for one row across BOTH render trees. */
+function affordanceCount(action: string, tx: Transaction): number {
+  return screen.queryAllByRole("button", {
+    name: new RegExp(`^${action}: ${tx.description}$`),
+  }).length;
+}
+
+describe("TBD-387 — manual balance adjustment affordances", () => {
+  it("F1: offers no Edit on an adjustment row, while an ordinary row keeps both", async () => {
+    await renderRows([ADJUSTMENT, ORDINARY]);
+
+    expect(affordanceCount("Edit", ADJUSTMENT)).toBe(0);
+    // Exactly 2 = desktop grid + mobile card. A gate applied to one tree only
+    // leaves this at 1 for the adjustment row, which `toBe(0)` catches.
+    expect(affordanceCount("Edit", ORDINARY)).toBe(2);
+  });
+
+  it("F2: offers no Delete on an adjustment row, while an ordinary row keeps both", async () => {
+    await renderRows([ADJUSTMENT, ORDINARY]);
+
+    expect(affordanceCount("Delete", ADJUSTMENT)).toBe(0);
+    expect(affordanceCount("Delete", ORDINARY)).toBe(2);
+  });
+
+  it("F3: offers no Mark-as-transfer on an adjustment row, while an ordinary row keeps both", async () => {
+    await renderRows([ADJUSTMENT, ORDINARY]);
+
+    expect(affordanceCount("Mark as transfer", ADJUSTMENT)).toBe(0);
+    expect(affordanceCount("Mark as transfer", ORDINARY)).toBe(2);
+  });
+
+  it("F4: a REVERTED row still keeps Edit and Delete in both slots", async () => {
+    await renderRows([REVERTED, TRANSFER_LEG, ADJUSTMENT]);
+
+    // The server refuses NEITHER for a reverted row. Reusing
+    // `canPromoteToRecurring` here — the obvious implementation — would drive
+    // both of these to 0 while leaving F1..F3 green.
+    expect(affordanceCount("Edit", REVERTED)).toBe(2);
+    expect(affordanceCount("Delete", REVERTED)).toBe(2);
+    // ...and neither for a transfer leg. This half kills the OTHER term of
+    // `canPromoteToRecurring` (`linked_transaction_id === null`), which
+    // nothing in this file could see until TRANSFER_LEG existed.
+    expect(affordanceCount("Edit", TRANSFER_LEG)).toBe(2);
+    expect(affordanceCount("Delete", TRANSFER_LEG)).toBe(2);
+    // ...and the adjustment row in the same render is still suppressed, so
+    // this cannot pass by the gate having been deleted outright.
+    expect(affordanceCount("Edit", ADJUSTMENT)).toBe(0);
+  });
+
+  it("F5: says why in BOTH slots — badge on desktop, prose on the card", async () => {
+    await renderRows([ADJUSTMENT, ORDINARY]);
+
+    // ⚠ The two trees carry DIFFERENT treatments on purpose (operator-approved
+    // 2026-09-02): a ~160px desktop grid cell wraps this sentence to four
+    // ragged-left lines and doubles the row's height, while the mobile card has
+    // full width and pays no such cost. So the desktop reuses the Excluded
+    // badge's chip+Tooltip idiom rather than inventing a third one, and the
+    // card keeps the sentence visible with no interaction.
+    //
+    // Asserting BOTH shapes is what stops the asymmetry becoming drift: this
+    // file's neighbours have repeatedly fixed one tree and missed the other.
+    const badge = screen.getByTestId(`readonly-badge-${ADJUSTMENT.id}`);
+    expect(badge.textContent).toContain("Read-only");
+    expect(screen.queryAllByText(ADJUSTMENT_READ_ONLY_NOTE)).toHaveLength(1);
+
+    // A11Y FENCE, inherited verbatim from the Excluded twin. `title` alone is
+    // not acceptable: it never appears on touch and is largely skipped by
+    // screen readers. Deliberately asserts the WIRING, not `tabIndex` — a
+    // correct implementation using a <button> trigger would be focusable and
+    // correctly wired yet RED on a tabIndex assertion.
+    fireEvent.focus(badge);
+    await waitFor(() => expect(badge.getAttribute("aria-describedby")).toBeTruthy());
+    const bubble = document.getElementById(badge.getAttribute("aria-describedby")!);
+    expect(bubble?.getAttribute("role")).toBe("tooltip");
+    expect(bubble?.textContent).toContain(ADJUSTMENT_READ_ONLY_NOTE);
+  });
+
+  it("F6: the status pill is not pressable on an adjustment row, but still shows", async () => {
+    await renderRows([ADJUSTMENT]);
+
+    // The pill PUTs the row (handleToggleStatus -> update_transaction:513),
+    // which is the same guard that refuses Edit. It must not be a button.
+    expect(
+      screen.queryAllByRole("button", { name: /^Mark as (pending|settled)$/ }),
+    ).toHaveLength(0);
+    // ...but the status is still DATA and must still render, in both trees.
+    // Kills: gating the pill by deleting it, which would hide the row's state.
+    expect(screen.queryAllByText("settled")).toHaveLength(2);
+  });
+
+  it("F6b: an ordinary row keeps a pressable status pill in both slots", async () => {
+    await renderRows([ORDINARY]);
+
+    // The over-reach control. Without it, gating the pill unconditionally
+    // passes F6.
+    expect(
+      screen.queryAllByRole("button", { name: /^Mark as (pending|settled)$/ }),
+    ).toHaveLength(2);
+  });
+
+  it("F7: bulk Link-as-transfer refuses an adjustment, with a reason", async () => {
+    await renderRows([ADJUSTMENT_INCOME, PAIRABLE_EXPENSE]);
+
+    fireEvent.click(
+      screen.getAllByRole("checkbox", { name: `Select transaction ${ADJUSTMENT_INCOME.id}` })[0],
+    );
+    fireEvent.click(
+      screen.getAllByRole("checkbox", { name: `Select transaction ${PAIRABLE_EXPENSE.id}` })[0],
+    );
+
+    const btn = await screen.findByRole("button", { name: /Link as transfer/i });
+    // VISIBLE but DISABLED, with the reason -- matching the sibling refusals
+    // ("Amounts differ", "Same account"). Hiding it would leave the user who
+    // deliberately selected two rows with no explanation.
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute("title", "Balance adjustments cannot be transfer legs");
+  });
+
+  it("F7b: bulk Link-as-transfer still enables for a legitimate pair", async () => {
+    await renderRows([PAIRABLE_INCOME, PAIRABLE_EXPENSE]);
+
+    fireEvent.click(
+      screen.getAllByRole("checkbox", { name: `Select transaction ${PAIRABLE_INCOME.id}` })[0],
+    );
+    fireEvent.click(
+      screen.getAllByRole("checkbox", { name: `Select transaction ${PAIRABLE_EXPENSE.id}` })[0],
+    );
+
+    // The over-reach control. Without it, returning the refusal
+    // unconditionally passes F7 while deleting the feature.
+    const btn = await screen.findByRole("button", { name: /Link as transfer/i });
+    expect(btn).toBeEnabled();
+  });
+
+  it("F5b: an ordinary row carries no such note", async () => {
+    // The over-reach control on F5. Without it the note could be rendered
+    // unconditionally on every row and F5 would still pass.
+    //
+    // ⚠ A SEPARATE `it` ON PURPOSE. Asserting both halves inside one test
+    // requires a second `render()` into the same document, and RTL's auto
+    // cleanup runs BETWEEN tests, not between renders -- so the adjustment row
+    // from the first render is still mounted and the count is 2, not 0. That
+    // is a test red against correct code, which is as expensive as the
+    // opposite kind.
+    await renderRows([ORDINARY]);
+    expect(screen.queryAllByText(ADJUSTMENT_READ_ONLY_NOTE)).toHaveLength(0);
+    expect(screen.queryByTestId(`readonly-badge-${ORDINARY.id}`)).toBeNull();
+  });
+});
+
+/** The exact user-facing sentence, duplicated BY HAND so a re-word has to be
+ * deliberate and has to touch two files. `page.tsx` keeps its copy constant
+ * module-private, so there is no import to keep these in sync automatically --
+ * this literal IS the sync mechanism, not a copy of one.
+ *
+ * ⚠ It deliberately does NOT tell the user to "add a new adjustment instead".
+ * That instruction was in the first revision and it sent most users nowhere:
+ * creating one needs `isAdmin(user) && user.allow_manual_balance_adjustment`
+ * (frontend/app/accounts/page.tsx:226), the org flag defaults false, and the
+ * control lives on a different page under a different name. Telling a member
+ * to perform an admin action is the same TBD-289 violation this ticket exists
+ * to close, in prose instead of a button. */
+const ADJUSTMENT_READ_ONLY_NOTE =
+  "Balance adjustments can't be edited or deleted.";
