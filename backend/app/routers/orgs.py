@@ -49,7 +49,11 @@ def _request_id() -> str | None:
     response_model=OrgResponse,
     dependencies=[Depends(require_interactive_session)],
 )
-@limiter.limit("10/hour")
+# TBD-441: `shared_limit`, not `limit`. Every rename writes an audit row, so
+# the bound exists to cap that growth -- an aggregate property. Bucketing per
+# `{org_id}` meant a caller with rights over several orgs got 10/hour EACH,
+# and the audit table saw the sum.
+@limiter.shared_limit("10/hour", scope="orgs.rename")
 async def rename_org_endpoint(
     org_id: int,
     body: OrgRenameRequest,

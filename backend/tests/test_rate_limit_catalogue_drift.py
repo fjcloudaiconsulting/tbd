@@ -233,18 +233,86 @@ def test_pre_auth_and_overridable_stay_disjoint():
     assert overlap == frozenset(), overlap
 
 
-# ── A path-parameter route must pin its bucket (TBD-362 follow-up) ──────────
+# ── A path-parameter route must pin its bucket (TBD-362, widened by TBD-441) ─
 
-# `(module_stem, function_name)` for every route whose bucket MUST be pinned
-# with `shared_limit`. Deliberately an explicit list rather than "every route
-# with a path parameter": three pre-existing routes
-# (`accounts.adjust_balance`, `org_members.remove_member`, `orgs.rename`)
-# carry the same split and are tracked separately, so a blanket rule would
-# fail on code this change does not touch.
-_MUST_PIN_SCOPE: tuple[tuple[str, str], ...] = (
+
+def _router_prefix(tree: ast.AST) -> str:
+    """The literal ``prefix=`` on this module's ``APIRouter(...)``, or "".
+
+    ``admin_roles.py`` declares ``APIRouter(tags=[...])`` with NO prefix and
+    hardcodes each full path in the route decorator, so an absent prefix is
+    normal and must not be read as a parse failure.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if name != "APIRouter":
+            continue
+        for kw in node.keywords:
+            if kw.arg == "prefix" and isinstance(kw.value, ast.Constant):
+                return kw.value.value
+    return ""
+
+
+def _limiter_routes_with_path_parameters() -> dict[tuple[str, str], dict]:
+    """Every rate-limited route whose PATH TEMPLATE carries a ``{parameter}``.
+
+    Returns ``(module_stem, function_name) -> {path, kind, scope}`` where
+    ``kind`` is ``"limit"`` or ``"shared_limit"``.
+
+    ⚠ The path is assembled from the router's ``prefix`` PLUS the route
+    decorator's first argument, because either half can carry the parameter:
+    ``accounts.py`` has ``prefix="/api/v1/accounts"`` with
+    ``"/{account_id}/adjust-balance"`` on the route, while ``admin_roles.py``
+    carries the whole path on the route and has no prefix at all. Reading only
+    one half misses routes -- and a missed route is a silent pass.
+    """
+    out: dict[tuple[str, str], dict] = {}
+    for path in sorted(ROUTERS_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        prefix = _router_prefix(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            kind = None
+            scope = None
+            route_path = None
+            for dec in node.decorator_list:
+                if not isinstance(dec, ast.Call) or not isinstance(dec.func, ast.Attribute):
+                    continue
+                owner = getattr(dec.func.value, "id", None)
+                if owner == "limiter" and dec.func.attr in ("limit", "shared_limit"):
+                    kind = dec.func.attr
+                    scope = next(
+                        (k.value.value for k in dec.keywords
+                         if k.arg == "scope" and isinstance(k.value, ast.Constant)),
+                        None,
+                    )
+                elif owner == "router" and dec.args and isinstance(dec.args[0], ast.Constant):
+                    route_path = dec.args[0].value
+            if kind is None:
+                continue
+            full = f"{prefix}{route_path or ''}"
+            if "{" in full:
+                out[(path.stem, node.name)] = {"path": full, "kind": kind, "scope": scope}
+    return out
+
+
+# Routes KNOWN to carry both a path parameter and a rate limit. This is NOT an
+# allowlist of exemptions -- the rule below is blanket and admits none. It is a
+# VACUITY GUARD: the whole fence passes trivially if the AST walk returns
+# nothing, which is what a renamed decorator, a changed ``APIRouter`` call
+# shape, or a refactor into a sub-router would cause. Subset check, so a
+# genuinely new path-parameter route is covered by the rule without tripping
+# this.
+_KNOWN_PATH_PARAM_LIMITED: frozenset = frozenset({
+    ("accounts", "adjust_balance"),
     ("admin_users", "trigger_email_change"),
     ("admin_users", "cancel_admin_pending_email"),
-)
+    ("org_members", "remove_member"),
+    ("orgs", "rename_org_endpoint"),
+})
 
 
 def test_path_parameter_routes_pin_their_rate_limit_scope():
@@ -253,53 +321,68 @@ def test_path_parameter_routes_pin_their_rate_limit_scope():
     ``limit_scope = lim.scope or endpoint`` in ``slowapi/extension.py``, and
     ``endpoint`` is ``request.url.path`` -- not the route template. So a route
     carrying ``{user_id}`` gets ONE PRIVATE BUDGET PER TARGET ID under a plain
-    ``@limiter.limit``. Measured on the running app before this fix: request
-    11 to ``/users/99999/email-change`` returned 429 while ``/users/99998``,
+    ``@limiter.limit``. Measured on the running app: request 11 to
+    ``/users/99999/email-change`` returned 429 while ``/users/99998``,
     ``/users/99997`` and ``/users/99996`` were admitted immediately.
 
     That is not a smaller bound, it is a different one. The abuse these limits
-    exist to stop -- a stolen interactive superadmin session mass-repointing
-    recovery channels -- varies ``user_id`` BY DEFINITION, so a plain ``limit``
-    bounds ten attempts per victim and nothing whatsoever in aggregate.
+    exist to stop -- a stolen session sweeping many targets -- varies the path
+    parameter BY DEFINITION, so a plain ``limit`` bounds N attempts per victim
+    and nothing whatsoever in aggregate.
 
-    Wrong implementation killed: converting either route back to
-    ``@limiter.limit(...)``, which reads as a tightening and silently removes
-    the aggregate bound the catalogue comment claims.
+    ⚠ TBD-441 replaced the explicit ``_MUST_PIN_SCOPE`` roster with this
+    BLANKET rule. That roster was explicit only because three pre-existing
+    routes would have failed it; those are now converted, so the exemption has
+    no remaining members -- and an exemption list with no members is a trap.
+    The next path-parameter route would have been added to the codebase and not
+    to the roster, and nothing would have failed.
+
+    Wrong implementations killed:
+      * converting any pinned route back to ``@limiter.limit(...)``, which
+        reads as a tightening and silently removes the aggregate bound;
+      * adding a NEW rate-limited route with a path parameter and a plain
+        ``limit`` -- the case the old explicit roster structurally could not
+        see.
     """
-    import ast as _ast
+    routes = _limiter_routes_with_path_parameters()
 
-    pinned: dict[tuple[str, str], str | None] = {}
-    for path in sorted(ROUTERS_DIR.rglob("*.py")):
-        tree = _ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in _ast.walk(tree):
-            if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
-                continue
-            key = (path.stem, node.name)
-            if key not in _MUST_PIN_SCOPE:
-                continue
-            for dec in node.decorator_list:
-                if (
-                    isinstance(dec, _ast.Call)
-                    and isinstance(dec.func, _ast.Attribute)
-                    and isinstance(dec.func.value, _ast.Name)
-                    and dec.func.value.id == "limiter"
-                ):
-                    scope = next(
-                        (k.value.value for k in dec.keywords if k.arg == "scope"
-                         and isinstance(k.value, _ast.Constant)),
-                        None,
-                    )
-                    pinned[key] = scope if dec.func.attr == "shared_limit" else None
-
-    missing = [k for k in _MUST_PIN_SCOPE if k not in pinned]
+    missing = sorted(_KNOWN_PATH_PARAM_LIMITED - set(routes))
     assert not missing, (
-        f"expected a limiter decorator on {missing}; if a route was renamed or "
-        "its limit removed, update _MUST_PIN_SCOPE deliberately"
+        f"the AST walk no longer finds {missing}. Either these routes were "
+        "renamed or lost their limit deliberately (update "
+        "_KNOWN_PATH_PARAM_LIMITED and say why), or this fence has stopped "
+        "parsing and is now vacuous."
     )
-    unpinned = [k for k, scope in pinned.items() if not scope]
+
+    unpinned = sorted(
+        (key, meta["path"], meta["kind"])
+        for key, meta in routes.items()
+        if meta["kind"] != "shared_limit" or not meta["scope"]
+    )
     assert not unpinned, (
         "these routes carry a path parameter and MUST use "
-        f"`limiter.shared_limit(..., scope=...)`, not `limiter.limit(...)`: {unpinned}. "
-        "A plain `limit` buckets on the concrete request path, giving every "
-        "path-parameter value its own private budget."
+        f"`limiter.shared_limit(..., scope=...)`, not `limiter.limit(...)`: "
+        f"{unpinned}. A plain `limit` buckets on the concrete request path, "
+        "giving every path-parameter value its own private budget -- which "
+        "bounds nothing in aggregate."
     )
+
+
+def test_pinned_scopes_are_unique_per_route():
+    """Two routes sharing a ``scope=`` string share ONE bucket.
+
+    Occasionally that is intended; never by accident. A copy-pasted scope makes
+    one route's traffic consume another's budget, and the symptom is a 429 on
+    an endpoint the caller never touched. Nothing else in the suite notices.
+    """
+    routes = _limiter_routes_with_path_parameters()
+    seen: dict = {}
+    clashes = []
+    for key, meta in sorted(routes.items()):
+        scope = meta["scope"]
+        if scope is None:
+            continue
+        if scope in seen:
+            clashes.append((scope, seen[scope], key))
+        seen[scope] = key
+    assert not clashes, f"duplicate rate-limit scopes: {clashes}"

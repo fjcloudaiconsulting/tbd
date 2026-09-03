@@ -775,7 +775,14 @@ async def delete_account(
 
 
 @router.post("/{account_id}/adjust-balance", response_model=BalanceAdjustmentResponse)
-@limiter.limit("20/hour")
+# TBD-441: `shared_limit`, not `limit`. slowapi buckets a plain `limit` on
+# the CONCRETE request path, so `{account_id}` gave every account its own
+# private 20/hour budget and bounded nothing across the org. This route writes
+# a real balance delta and every call is audited; the abuse it bounds -- a
+# session walking the org's accounts issuing adjustments -- varies
+# `account_id` by definition, which is exactly the case a per-path bucket
+# cannot see.
+@limiter.shared_limit("20/hour", scope="accounts.adjust_balance")
 async def adjust_balance(
     account_id: int,
     request: Request,

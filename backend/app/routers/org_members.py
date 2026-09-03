@@ -306,7 +306,15 @@ async def list_members(
 # is far beyond any real bulk removal through the UI, so it bounds a loop
 # without constraining legitimate use. The audited org-admin sibling
 # (orgs.py, org rename) carries 10/hour; removal is more routine, hence looser.
-@limiter.limit("30/minute")
+# TBD-441: `shared_limit`, not `limit`. The comment above states the bound's
+# purpose is to cap `audit_events` growth and "bound a loop" -- both AGGREGATE
+# properties -- while a plain `limit` bucketed per `{user_id}` and gave a loop
+# over N members N private budgets. The stated intent and the actual behaviour
+# disagreed; this makes the behaviour match the comment.
+#
+# NOTE the sibling `@limiter.limit("30/minute")` on `preview_invitation` above
+# is CORRECT as a plain `limit`: its path carries no parameter.
+@limiter.shared_limit("30/minute", scope="org_members.remove_member")
 async def remove_member(
     user_id: int,
     request: Request,
