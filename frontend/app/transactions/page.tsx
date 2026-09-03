@@ -177,9 +177,14 @@ function isReadOnlyAdjustment(tx: Transaction): boolean {
 // server's own guard comment prescribes ("we'd rather force the user to issue a
 // fresh adjustment"), so the row is not left a dead end.
 //
-// Rendered as TEXT in both trees, never as a `title`: a tooltip-only
-// explanation is invisible on touch and largely skipped by screen readers,
-// which is the same trap the TBD-309 note above documents.
+// ⚠ Delivered through `Tooltip` on desktop and as PROSE on the mobile card.
+// The asymmetry is deliberate and operator-approved. `Tooltip` is NOT the
+// `title` trap the Matched twin documents -- it opens on hover, focus, click,
+// keyboard AND tap and wires `aria-describedby`, so the sentence is reachable
+// on every input. It buys back the row rhythm that a four-line wrap in a
+// ~160px grid cell destroys, and it reuses the Excluded badge's idiom instead
+// of inventing a third one for "this row is special". The card has full width,
+// so it pays no such cost and keeps the sentence visible with no interaction.
 const ADJUSTMENT_READ_ONLY_NOTE =
   "Balance adjustments can't be edited or deleted.";
 
@@ -1987,7 +1992,23 @@ function TransactionsPageContent() {
                           </span>
                           <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
                             {isReadOnlyAdjustment(tx) ? (
-                              <span className="text-right text-xs text-text-secondary">{ADJUSTMENT_READ_ONLY_NOTE}</span>
+                              <Tooltip
+                                content={ADJUSTMENT_READ_ONLY_NOTE}
+                                trigger={
+                                  <span
+                                    className={`${badgeNeutral} cursor-help`}
+                                    data-testid={`readonly-badge-${tx.id}`}
+                                    // Focusable on purpose, exactly as the
+                                    // Excluded twin above: Tooltip wires
+                                    // `aria-describedby` onto the first
+                                    // FOCUSABLE descendant, so a plain span
+                                    // gets no wiring and no keyboard path.
+                                    tabIndex={0}
+                                  >
+                                    Read-only
+                                  </span>
+                                }
+                              />
                             ) : (
                               <>
                                 <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
@@ -2453,6 +2474,14 @@ function TransactionsPageContent() {
                               tx.status === "pending" ? "opacity-60" : ""
                             }`}
                           >
+                              {/* Prose here, badge on desktop -- deliberately
+                                  ASYMMETRIC, operator-approved 2026-09-02. The
+                                  card has full width so the sentence costs no
+                                  row rhythm, and this is the surface where the
+                                  explanation matters most. The desktop grid
+                                  cell is ~160px, where the same sentence wraps
+                                  to four ragged-left lines and doubles the
+                                  row's height. */}
                             {isReadOnlyAdjustment(tx) ? (
                               <p className="text-xs text-text-secondary">{ADJUSTMENT_READ_ONLY_NOTE}</p>
                             ) : (

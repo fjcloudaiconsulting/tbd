@@ -74,7 +74,7 @@
  * being gated on — so naming it is accurate rather than speculative.
  */
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -314,13 +314,32 @@ describe("TBD-387 — manual balance adjustment affordances", () => {
     expect(affordanceCount("Edit", ADJUSTMENT)).toBe(0);
   });
 
-  it("F5: says why, in both slots, in the accessibility tree by text", async () => {
+  it("F5: says why in BOTH slots — badge on desktop, prose on the card", async () => {
     await renderRows([ADJUSTMENT, ORDINARY]);
 
-    // By TEXT, not by `title`: a tooltip-only explanation is invisible to a
-    // screen reader and to keyboard-only users, which is the a11y half of the
-    // TBD-289 rule this ticket restores.
-    expect(screen.queryAllByText(ADJUSTMENT_READ_ONLY_NOTE)).toHaveLength(2);
+    // ⚠ The two trees carry DIFFERENT treatments on purpose (operator-approved
+    // 2026-09-02): a ~160px desktop grid cell wraps this sentence to four
+    // ragged-left lines and doubles the row's height, while the mobile card has
+    // full width and pays no such cost. So the desktop reuses the Excluded
+    // badge's chip+Tooltip idiom rather than inventing a third one, and the
+    // card keeps the sentence visible with no interaction.
+    //
+    // Asserting BOTH shapes is what stops the asymmetry becoming drift: this
+    // file's neighbours have repeatedly fixed one tree and missed the other.
+    const badge = screen.getByTestId(`readonly-badge-${ADJUSTMENT.id}`);
+    expect(badge.textContent).toContain("Read-only");
+    expect(screen.queryAllByText(ADJUSTMENT_READ_ONLY_NOTE)).toHaveLength(1);
+
+    // A11Y FENCE, inherited verbatim from the Excluded twin. `title` alone is
+    // not acceptable: it never appears on touch and is largely skipped by
+    // screen readers. Deliberately asserts the WIRING, not `tabIndex` — a
+    // correct implementation using a <button> trigger would be focusable and
+    // correctly wired yet RED on a tabIndex assertion.
+    fireEvent.focus(badge);
+    await waitFor(() => expect(badge.getAttribute("aria-describedby")).toBeTruthy());
+    const bubble = document.getElementById(badge.getAttribute("aria-describedby")!);
+    expect(bubble?.getAttribute("role")).toBe("tooltip");
+    expect(bubble?.textContent).toContain(ADJUSTMENT_READ_ONLY_NOTE);
   });
 
   it("F6: the status pill is not pressable on an adjustment row, but still shows", async () => {
@@ -392,6 +411,7 @@ describe("TBD-387 — manual balance adjustment affordances", () => {
     // opposite kind.
     await renderRows([ORDINARY]);
     expect(screen.queryAllByText(ADJUSTMENT_READ_ONLY_NOTE)).toHaveLength(0);
+    expect(screen.queryByTestId(`readonly-badge-${ORDINARY.id}`)).toBeNull();
   });
 });
 
