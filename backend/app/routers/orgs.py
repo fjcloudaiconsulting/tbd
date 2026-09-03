@@ -49,7 +49,23 @@ def _request_id() -> str | None:
     response_model=OrgResponse,
     dependencies=[Depends(require_interactive_session)],
 )
-@limiter.limit("10/hour")
+# TBD-441: `shared_limit`, not `limit`.
+#
+# ⚠ An earlier revision of this comment gave a reason that is FACTUALLY WRONG
+# and it is corrected here rather than deleted, because comments in this file
+# are load-bearing. It claimed "a caller with rights over several orgs got
+# 10/hour EACH". No caller has rights over several orgs: the handler's first
+# statement is `if org_id != current_user.org_id: 403`, and `current_user
+# .org_id` is a single value. It also claimed the bound caps audit-row growth,
+# but that 403 returns BEFORE any audit row or DB write, so it does not
+# describe the path an attacker actually walks.
+#
+# The real reason to pin: an attacker varying `{org_id}` got a FRESH 10/hour
+# bucket per value under a plain `limit`, and each attempt still resolves
+# `get_current_user`, `require_interactive_session` and `require_org_owner`
+# before reaching that 403. That is unbounded enumeration and an unbounded
+# CPU sink on the auth stack, bounded by nothing. One shared bucket bounds it.
+@limiter.shared_limit("10/hour", scope="orgs.rename")
 async def rename_org_endpoint(
     org_id: int,
     body: OrgRenameRequest,
