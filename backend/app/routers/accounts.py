@@ -782,6 +782,17 @@ async def delete_account(
 # session walking the org's accounts issuing adjustments -- varies
 # `account_id` by definition, which is exactly the case a per-path bucket
 # cannot see.
+#
+# ⚠ ACCEPTED COST, recorded so it can be reversed deliberately. This is a
+# genuine TIGHTENING for a legitimate workflow, unlike the other two TBD-441
+# conversions. It was effectively unlimited (20/hour PER ACCOUNT); it is now
+# 20/hour across every account for one client IP. An admin doing a first-time
+# reconciliation sweep across more than 20 accounts will hit it, and two admins
+# behind one office egress share the bucket -- `get_client_ip` is the key
+# function, so buckets are (ip, scope), not per user or per org. Judged the
+# right trade anyway, because a per-account bucket bounds nothing against the
+# abuse this limit exists to stop. If it bites in practice, raise the number;
+# do not go back to a plain `limit`.
 @limiter.shared_limit("20/hour", scope="accounts.adjust_balance")
 async def adjust_balance(
     account_id: int,
