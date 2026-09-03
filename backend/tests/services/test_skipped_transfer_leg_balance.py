@@ -590,3 +590,171 @@ async def test_stale_one_way_link_after_reopen_still_skips_and_moves_no_money(
     # Already reverted at match time; skipping must NOT revert a second time.
     assert (await _account(db_session, seed["acct_a_id"])).balance == a_before
     await assert_invariant(db_session, seed)
+
+
+# ── TBD-363: the ticket's literal public-endpoint route, driven end to end ──
+
+
+async def _create_in_batch_accepted(
+    db: AsyncSession,
+    seed: dict,
+    *,
+    account_id: int,
+    amount: str,
+    label: str,
+    tx_type: TransactionType,
+) -> Transaction:
+    """Enrol a row in the import batch WITHOUT touching ``reconciliation_state``.
+
+    Imported rows land at the model default ``accepted`` -- ``reconciliation_service``
+    states it in terms: "committed rows land ACCEPTED, so the batch opens fully
+    accepted with zero pending".
+
+    ⚠ This helper exists because ``_create(in_batch=True)`` FORCES
+    ``pending_review`` by direct assignment, so a test using it cannot cross
+    the ``ACCEPTED -> PENDING_REVIEW`` reopen edge at all.
+
+    ⚠ CORRECTED CLAIM. An earlier revision said "every fence in this file skips
+    the reopen edge". That is FALSE and was caught in review: F5
+    (``test_stale_one_way_link_after_reopen_still_skips_and_moves_no_money``)
+    drives MATCHED -> ACCEPTED -> PENDING_REVIEW -> SKIPPED through
+    ``_reconcile``, and repo-wide
+    ``test_reconciliation_service.py::test_reopen_from_skipped_reapplies_balance``
+    has crossed it since before TBD-308.
+
+    The true and narrower claim: no fence had crossed the reopen edge **with a
+    RECIPROCAL row**. F5 crosses it with a ONE-WAY link, whose source
+    membership is already False, so a mutant at that edge is a False -> False
+    no-op there; the other crosses it with an UNLINKED row. A reciprocal row is
+    the only shape with a contribution to lose at that edge, which is what
+    makes the cell below worth a test.
+    """
+    tx = await _create(
+        db, seed, account_id=account_id, amount=amount, label=label, tx_type=tx_type
+    )
+    tx.import_batch_id = seed["batch_id"]
+    batch = await db.scalar(
+        select(ImportBatch).where(ImportBatch.id == seed["batch_id"])
+    )
+    batch.row_count += 1
+    batch.accepted_count += 1
+    await db.commit()
+    return tx
+
+
+async def test_f7_import_pair_reopen_skip_moves_no_money(db_session):
+    """F7 -- TBD-363's repro, through the PUBLIC path, all three legs.
+
+    TBD-363 claimed a residual defect: a manually-paired transfer leg inside an
+    import batch, then skipped, would leave its amount in ``accounts.balance``
+    while dropping out of ``computed`` -- reporting drift the other way round.
+
+    It was filed 2026-08-10 inside TBD-303's commit body as a known residual
+    and closed in substance by TBD-308 two days later, which switched
+    ``_apply_balance_for_transition`` from ``is_reportable_transaction`` to
+    ``contributes_to_cached_balance``. The ticket's cited line numbers all
+    resolve against the pre-TBD-308 tree.
+
+    ⚠ WHY THIS FENCE EXISTS ANYWAY, stated at the width it actually holds.
+    F1 covers the reciprocal-leg revert but reaches ``pending_review`` by
+    DIRECT ASSIGNMENT, so "the reopen edge is membership-neutral, therefore F1
+    covers TBD-363's route" was an ARGUMENT rather than a measurement -- and
+    this repo's rule is that a fence drives the path the app takes, not the
+    shortest path in.
+
+    ⚠ It is NOT true that no fence crosses the reopen edge (F5 does, with a
+    one-way link; ``test_reopen_from_skipped_reapplies_balance`` does, with an
+    unlinked row). What no fence crossed is that edge with a RECIPROCAL row --
+    the only link shape whose contribution is inside the cached balance at that
+    point, and therefore the only one with anything to lose.
+
+    MEASURED, and this is the fence's justification: a mutant that makes the
+    reopen non-neutral for LINKED rows only --
+
+        if target_state == PENDING_REVIEW and tx.linked_transaction_id is not None:
+            target_in_cached_balance = False
+
+    -- is caught by this test and by NOTHING ELSE across the whole reconcile
+    surface (10 files, 175 tests, F1/F5/F6 and
+    test_reopen_from_skipped_reapplies_balance included). F5 cannot see it
+    because a one-way link is already False -> False there. This
+    test drives all three legs through their real entrypoints:
+
+      1. two settled rows enrolled in batch B at the model default ``accepted``
+      2. ``pair_existing_transactions`` -- the service behind
+         ``POST /api/v1/transactions/pair``
+      3. ``reconcile_request`` twice: ACCEPTED -> PENDING_REVIEW, then
+         PENDING_REVIEW -> SKIPPED
+
+    Kills: a future edit that makes the reopen edge NON-neutral for a
+    reciprocal row -- e.g. re-deriving the source snapshot after the state flip
+    instead of before it. No other fence anywhere sees that, for the reason
+    above: every other reopen-crossing test uses a one-way or unlinked row.
+
+    ⚠ TBD-363's DoD item 3 ("a control proving TBD-303's fences still hold: an
+    account with a settled matched row still reports is_consistent = True") is
+    NOT delivered here and does not need to be -- it is already satisfied by
+    F5, which drives a real MATCHED transition then asserts the invariant, and
+    by ``test_matched_row_actions.py``, which asserts the equation directly.
+    Recorded rather than left silent, per the standing rule to check every DoD
+    item before closing.
+    """
+    seed = await _seed(db_session)
+
+    exp = await _create_in_batch_accepted(
+        db_session, seed, account_id=seed["acct_a_id"], amount="300.00",
+        label="imported-out", tx_type=TransactionType.EXPENSE,
+    )
+    inc = await _create_in_batch_accepted(
+        db_session, seed, account_id=seed["acct_b_id"], amount="300.00",
+        label="imported-in", tx_type=TransactionType.INCOME,
+    )
+    await assert_invariant(db_session, seed)
+
+    # Preconditions, asserted rather than assumed. If the rows do not actually
+    # land ACCEPTED the reopen below is not the edge under test and the fence
+    # silently becomes a duplicate of F1.
+    assert exp.reconciliation_state == "accepted"
+    assert inc.reconciliation_state == "accepted"
+    assert exp.import_batch_id == seed["batch_id"]
+
+    a_before = (await _account(db_session, seed["acct_a_id"])).balance
+
+    # Leg 2: pair them. No `reconciliation_state` or `import_batch_id` guard
+    # exists here, deliberately (TBD-308 spec) -- so this succeeds and the pair
+    # becomes bidirectional while still inside the open batch.
+    await transaction_service.pair_existing_transactions(
+        db_session, seed["org_id"], expense_tx_id=exp.id, income_tx_id=inc.id
+    )
+    exp = await _reload(db_session, exp.id)
+    inc = await _reload(db_session, inc.id)
+    assert exp.linked_transaction_id == inc.id
+    assert inc.linked_transaction_id == exp.id
+    await assert_invariant(db_session, seed)
+
+    # Leg 3a: the REOPEN edge -- the one no other fence in this file crosses.
+    await _reconcile(
+        db_session, seed, _transition(exp.id, ReconciliationState.PENDING_REVIEW)
+    )
+    exp = await _reload(db_session, exp.id)
+    assert exp.reconciliation_state == "pending_review"
+    # Membership-neutral for a reciprocal row: nothing may have moved yet.
+    assert (await _account(db_session, seed["acct_a_id"])).balance == a_before
+    await assert_invariant(db_session, seed)
+
+    # Leg 3b: the skip. The expense leg's contribution must be reverted OUT of
+    # accounts.balance, exactly as it is dropped from the reconstruction.
+    await _reconcile(
+        db_session, seed, _transition(exp.id, ReconciliationState.SKIPPED)
+    )
+    exp = await _reload(db_session, exp.id)
+    assert exp.reconciliation_state == "skipped"
+
+    # An expense of 300 leaving the cached balance ADDS 300 back to the account.
+    assert (await _account(db_session, seed["acct_a_id"])).balance == (
+        a_before + Decimal("300.00")
+    )
+
+    # The claim TBD-363 said would fail. Asserted through the production
+    # primitive, for every account, not by hand-computing a number.
+    await assert_invariant(db_session, seed)
