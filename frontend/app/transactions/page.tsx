@@ -1931,10 +1931,34 @@ function TransactionsPageContent() {
                                 in for TWO transactions while the wire describes
                                 only the surviving leg. Badging it would assert
                                 something about a pair when we know the state of
-                                one half -- and the leg that survives collapse
-                                is chosen by id, not by state. Silence is not a
-                                gap here; the claim is simply not well-formed
-                                until the wire carries the partner's state. */}
+                                one half.
+
+                                ⚠ TBD-386 CHANGED THE GROUND OF THIS
+                                SUPPRESSION AND IT STILL HOLDS -- do not lift
+                                it on the strength of the old reason. The
+                                survivor is no longer "chosen by id, not by
+                                state": it is chosen by `(liveness, id)`, so a
+                                live leg always outranks a reverted one. On a
+                                genuinely COLLAPSED pair that now makes
+                                `is_reverted` well-formed, because a surviving
+                                reverted leg implies BOTH legs are reverted.
+
+                                The suppression survives on a DIFFERENT and
+                                narrower ground: `isPairedTransfer` is
+                                `linked_account_name != null`, which
+                                `to_response` sets from mutuality alone with no
+                                knowledge of filtering. So a BRANCH-5 survivor
+                                -- a leg kept because its partner was filtered
+                                OUT of the result -- also carries
+                                `isPairedTransfer`, and its partner's state is
+                                entirely unknown. The wire still cannot tell
+                                "collapsed pair, both legs reverted" from
+                                "branch-5 survivor, partner unknown", and the
+                                branch-5 shape is routine (see
+                                test_b3_partner_filtered_out_keeps_the_higher_id_leg).
+                                Lifting this needs the wire to carry that
+                                distinction -- a separate ticket, with its own
+                                fence and the visual gate. */}
                             {tx.is_reverted && !isReconcileMatched && !isPairedTransfer && (
                               <span className="mt-0.5 inline-flex">
                                 <Tooltip
