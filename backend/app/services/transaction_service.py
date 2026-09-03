@@ -2672,10 +2672,17 @@ def _parse_search_amount(raw: str) -> Decimal | None:
 # mutuality test for balance reconstruction.
 _collapse_partner = aliased(Transaction)
 
+# TBD-386: a SECOND self-join alias, for the liveness probe in branch 4.
+# Distinct from ``_collapse_partner`` on purpose -- two sibling EXISTS bodies
+# built from ONE alias render the same table alias name in two independent FROM
+# scopes. That is legal but indistinguishable in an EXPLAIN, and it breaks the
+# day either subquery is lifted into the outer FROM.
+_collapse_partner_state = aliased(Transaction)
+
 
 def _transfer_collapse_clause(filtered_ids_subq):
     """Keep exactly ONE row per reciprocally-linked transfer pair that is
-    fully inside the filtered set. See TBD-268.
+    fully inside the filtered set. See TBD-268, and TBD-386 for branch 4.
 
     A row is KEPT when any of:
       1. it is not linked at all;
@@ -2683,18 +2690,81 @@ def _transfer_collapse_clause(filtered_ids_subq):
       3. its partner does not link back (a reconciliation match per
          reconciliation_service._apply_match, a dangling link, or a
          cross-org link);
-      4. it is the lower-id leg;
+      4. it OUTRANKS its partner under the key ``(liveness, id)``:
+         4a. it is live and its partner is not; or
+         4b. both share a liveness class and it is the lower-id leg;
       5. its partner is not in the filtered set (the partner was excluded by
          account/type/date/tag filters, so this leg is the transfer's only
          representative and MUST render, else the row is reachable from
          nowhere).
 
-    Exactly-one proof: for a reciprocal, same-org, non-self pair (a, b) both
-    inside the filtered set, branches 1/2/3/5 are false for both legs and
-    branch 4 is true for exactly one of them, because ids are a strict total
-    order and a.id != b.id. Nothing here depends on the type/amount pair
-    invariants, so corrupt pair data over-renders (visible, fixable) rather
-    than vanishing.
+    ⚠ TBD-386: branch 4 used to be a bare ``id <`` tiebreak, and was therefore
+    STATE-BLIND. A pair with one leg in ``skipped`` / ``rejected`` -- reverted
+    out of ``accounts.balance`` and outside every reportable aggregate --
+    rendered the REVERTED leg whenever it held the lower id, and hid the live
+    one. That is not display-only: the surviving leg is the pair's ONLY
+    editable handle, because ``_link_pair`` mirrors only ``category_id`` while
+    ``description``, ``date``, ``settled_date``, ``status`` and ``tags`` stay
+    per-leg. So a rename landed on a row counting toward nothing while the leg
+    that IS in the ledger kept a stale description, with no way to reach it
+    (the ``?transaction_id=`` deep link only scrolls within the already
+    collapsed page, else DEEP_LINK_MISS).
+
+    Reachable by an ordinary action: skip an unlinked imported row, then pair
+    it via "Mark as transfer". ``find_match_candidates`` and ``_link_pair``
+    carry no ``reconciliation_state`` term, and pairing a reverted row is
+    permitted ON PURPOSE -- refusing it would strand a mis-skipped row, since
+    those states are terminal.
+
+    EXACTLY-ONE PROOF. Take a reciprocal, same-org, non-self pair (a, b) with
+    both legs inside the filtered set, and write ``S_x`` for "x is live".
+    Branches 1/2/3/5 are false for both legs, so survival is decided by branch
+    4 alone. ``reconciliation_state`` is NOT NULL, and EXISTS is total, so
+    ``S_a`` and ``S_b`` are each strictly TRUE or FALSE -- never NULL. Because
+    ``id`` is the primary key, the EXISTS body matches at most one row, so
+    "the partner" is well defined. Let ``T_x`` be ``x.id < partner.id``;
+    exactly one of ``T_a``, ``T_b`` holds, ids being a strict total order on
+    distinct values. Keep is
+    ``K(x) = (S_x and (not S_partner or T_x)) or (not S_x and not S_partner and T_x)``:
+
+      * both live (S_a = S_b = 1) -- the second disjunct dies on ``not S_x``;
+        the first reduces to ``T_x``. Exactly one, the lower id. Unchanged
+        from the pre-TBD-386 behaviour.
+      * exactly one reverted, say S_a = 1, S_b = 0 -- ``K(a)`` is TRUE via
+        ``not S_partner``; ``K(b)``'s first disjunct dies on ``S_b``, its
+        second on ``not S_partner(b) = not S_a = 0``. Exactly one, and it is
+        the LIVE leg, INDEPENDENT OF ID ORDER. The defect is gone by
+        construction, not by a special case.
+      * both reverted -- the first disjunct dies for both; the second reduces
+        to ``T_x``. Exactly one, the lower id.
+
+    The case analysis is exhaustive over the four values of ``(S_a, S_b)`` and
+    never enumerates the roster, so GROWING ``REVERTED_RECONCILIATION_STATES``
+    cannot create a fifth case -- it only relabels which case a pair falls in.
+    ⚠ Both sides of the comparison must read the SAME roster; a rank whose two
+    sides consult different rosters stops being a function. That is why the
+    roster is read here, inside the function, from the single
+    ``transaction_filters`` export, and never inlined as a second literal.
+    Fenced by test_b20.
+
+    Nothing here depends on the type/amount pair invariants, so corrupt pair
+    data over-renders (visible, fixable) rather than vanishing.
+
+    ⚠ NULL POLARITY -- an earlier revision of this docstring had it BACKWARDS.
+    It claimed "every NULL path yields 'not outranked', so the failure polarity
+    stays KEEP-on-uncertainty". MEASURED FALSE. The only NULL-capable input is
+    ``reconciliation_state``; with it NULL on BOTH legs of a reciprocal pair,
+    branch 4a is ``NULL AND (...)`` = NULL and 4b likewise, so the whole
+    ``or_`` is NULL and **both legs are DROPPED** -- from ``items`` and from
+    ``total``. Branch 4 was previously a bare ``id <`` comparison, NULL-free,
+    which always kept exactly one. So this change INTRODUCES a fail-CLOSED path
+    where none existed.
+
+    Unreachable today, and that is the only reason it is acceptable:
+    ``reconciliation_state`` is NOT NULL in both dialects (``VARCHAR(14) NOT
+    NULL`` on SQLite, ``ENUM(...) NOT NULL`` on MySQL). ⚠ If any key added to
+    this rank is ever nullable, branch 4 fails CLOSED -- do not cite the old
+    sentence.
 
     ``linked_transaction_id`` is NOT a transfer marker: it has two writers
     with different semantics. ``_link_pair`` sets it BIDIRECTIONALLY;
@@ -2702,6 +2772,9 @@ def _transfer_collapse_clause(filtered_ids_subq):
     direction is a load-bearing discriminator (see the
     ``Transaction.linked_transaction_id`` model docstring). Branch 3 is what
     keeps a reconcile-matched row from being suppressed as a transfer leg.
+    ⚠ Since TBD-386, branch 4a keeps a LIVE higher-id one-way row on its own,
+    so branch 3's mutant is only visible on a REVERTED one-way row -- see
+    test_b4b, which exists for exactly that reason.
 
     The org clause inside the EXISTS is redundant with branch 5 as called from
     ``list_transactions``: an org-scoped ``filtered_ids_subq`` means a
@@ -2709,7 +2782,47 @@ def _transfer_collapse_clause(filtered_ids_subq):
     open. It is kept so the EXISTS stands on its own if this builder is ever
     paired with a differently scoped subquery. Measured, not assumed -- see
     test_b7_cross_org_reciprocal_link_is_not_collapsed.
+
+    ⚠ Written as explicit ``and_``/``or_``/``~``, never as a boolean equality
+    between two SQL predicates (``self_live == partner_live``). That renders
+    ``(a NOT IN (...)) = (EXISTS (...))``, which both engines evaluate by
+    incidental 0/1 coercion, and whose NULL behaviour would silently invert
+    this clause's fail-open polarity. Do not "simplify" it back.
+
+    Cost, measured on MySQL 8.4 by hand -- no CI job runs this predicate
+    against MySQL, since the shards are all aiosqlite and ``Migration Checks``
+    runs migrations rather than list queries. Both correlated subqueries are
+    ``eq_ref`` PK point lookups, so no index helps and none could be added.
+    ``partner_live`` genuinely renders TWICE (SQLAlchemy does no CSE): three
+    EXISTS per statement against one before. ⚠ But branch 1
+    (``linked_transaction_id IS NULL``) is the FIRST ``or_`` term and both
+    engines short-circuit ``OR``, so the subqueries never execute for unlinked
+    rows -- cost scales with the number of LINKED rows, not with table size.
+
+    Fallback if profiling ever disagrees: branches 2, 3 and 4 can be folded
+    into a SINGLE ``~exists`` carrying a ``partner_beats_me`` conjunct, which
+    restores the pre-TBD-386 subquery count. It was measured cheaper and
+    rejected deliberately -- it collapses the one-fence-per-branch mapping the
+    B-series tests are built on, for a saving nobody has measured.
     """
+    # Read the roster INSIDE the function so it resolves per call. An
+    # import-time-captured expression would make test_b20's monkeypatch a
+    # silent no-op, i.e. a fence that cannot fail.
+    self_live = Transaction.reconciliation_state.notin_(
+        REVERTED_RECONCILIATION_STATES
+    )
+    partner_live = exists().where(
+        and_(
+            _collapse_partner_state.id == Transaction.linked_transaction_id,
+            _collapse_partner_state.org_id == Transaction.org_id,
+            _collapse_partner_state.linked_transaction_id == Transaction.id,
+            _collapse_partner_state.reconciliation_state.notin_(
+                REVERTED_RECONCILIATION_STATES
+            ),
+        )
+    )
+    tiebreak = Transaction.id < Transaction.linked_transaction_id
+
     return or_(
         Transaction.linked_transaction_id.is_(None),                       # 1
         Transaction.linked_transaction_id == Transaction.id,               # 2
@@ -2720,7 +2833,8 @@ def _transfer_collapse_clause(filtered_ids_subq):
                 _collapse_partner.linked_transaction_id == Transaction.id,
             )
         ),
-        Transaction.id < Transaction.linked_transaction_id,                # 4
+        and_(self_live, or_(~partner_live, tiebreak)),                     # 4a + 4b
+        and_(~self_live, ~partner_live, tiebreak),                         # 4b, reverted half
         # NOT IN over a PK column: `select(Transaction.id)` is NOT NULL, so
         # this can never evaluate to the SQL NULL that silently swallows rows.
         Transaction.linked_transaction_id.notin_(select(filtered_ids_subq.c.id)),  # 5
@@ -2921,13 +3035,18 @@ async def list_transactions(
     paginates and the client then hides a leg, which is how a filtered list
     could render zero rows against a non-zero ``total``.
 
-    Sort caveat (accepted, TBD-268 ruling 9): the surviving leg is chosen by
-    id, never by sort key -- a sort-dependent survivor cannot be expressed in
+    Sort caveat (accepted, TBD-268 ruling 9; survivor rule updated by TBD-386):
+    the surviving leg is chosen by ``(liveness, id)`` -- a live leg outranks a
+    reverted one and id is only the tiebreak WITHIN a liveness class -- and
+    never by sort key. A sort-dependent survivor cannot be expressed in
     the count query (which has no ordering) and would make LIMIT/OFFSET paging
     produce gaps and duplicates when a pair's survivor flips between windows.
     So under ``sort_by=account_name`` a pair spanning two accounts sorts under
     the SURVIVING leg's account, which may not be where an alphabetical scan
-    expects it. ``amount`` is order-neutral (both legs positive and equal by
+    expects it. ⚠ Since TBD-386 the survivor can FLIP on a mixed-liveness pair,
+    so the same caveat now reaches ``status`` and ``description`` too -- both
+    per-leg, and neither mirrored by ``_link_pair`` (which mirrors only
+    ``category_id``) nor by ``update_transaction``'s arm 4d (``amount``). ``amount`` is order-neutral (both legs positive and equal by
     pair invariant 4) and ``category_name`` is shared by ``_link_pair``.
 
     ``category_match`` and ``reportable`` (TBD-221 PR A, both opt-in) let a

@@ -66,10 +66,20 @@ class Transaction(Base):
     linked_transaction_id`` would suppress reconcile-matched rows as if they
     were transfer legs. Never collapse or hide a row on the client after a
     server LIMIT -- that reintroduces short pages, which is TBD-268 itself.
-    Accepted cost: the surviving leg is chosen by id, never by sort key, so
-    under ``sort_by=account_name`` a collapsed pair sorts under the surviving
-    leg's account. A sort-dependent survivor cannot be expressed in the count
-    query and would make paging produce gaps and duplicates.
+    Accepted cost: the surviving leg is chosen by ``(liveness, id)`` -- a live
+    leg outranks a reverted one, and id is only the tiebreak WITHIN a liveness
+    class (TBD-386) -- and never by sort key, so under ``sort_by=account_name``
+    a collapsed pair sorts under the surviving leg's account. A sort-dependent
+    survivor cannot be expressed in the count query and would make paging
+    produce gaps and duplicates.
+
+    ⚠ The preference order is extensible only UPWARD, and only by keys that
+    are total functions of a SINGLE row; id stays last. ``status`` and
+    ``is_imported`` are both tempting and both refused for now: each changes
+    the survivor for pairs that have nothing wrong with them, which moves rows
+    under ``sort_by=date``. A key added BELOW id is dead
+    everywhere, not merely in the both-reverted case: id is already a total
+    order on distinct rows, so nothing after it can ever be consulted.
 
     Reporting semantics: income/expense aggregates treat rows with
     ``linked_transaction_id IS NULL`` as reportable. Use
