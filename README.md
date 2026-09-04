@@ -64,6 +64,7 @@ Every part of the project has a single authoritative document. Start with the ro
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | First-time contributor. 30-minute Quickstart, Conventional Commits + deploy gate, CI on your PR vs after merge, parallel-agent compose-isolation rule, first-PR decision tree. |
 | [ENVIRONMENT.md](docs/operations/ENVIRONMENT.md) | Reference for every env var (backend, frontend, migrate job, CLI). Scope, default, sensitivity, deployment paths, failure modes. Source of truth for `.env`, `.do/app.yaml`, and GitHub Actions secrets. |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability. Private contact, scope, response time. |
 
 ### Shipping + operations
 
@@ -88,12 +89,6 @@ Every part of the project has a single authoritative document. Start with the ro
 | [PRODUCT.md](docs/product/PRODUCT.md) | Target users, primary jobs-to-be-done, the operative product narrative. Background for design and UX decisions. |
 | [BRAND.md](docs/product/BRAND.md) | Brand kit: product name conventions, voice, palette, logo and favicon usage. Used when writing copy, building landing surfaces, or producing assets. |
 | [DESIGN.md](docs/design/DESIGN.md) | Design language and component conventions. Used when building or critiquing UI. |
-
-### Working with AI in this repo
-
-| Doc | When you need it |
-|---|---|
-| [CLAUDE.md](CLAUDE.md) | Project-level guidance for Claude Code sessions. Stack, conventions, parallel-agent compose-isolation rule, migration branch guard, lifespan migration guard. |
 
 ## Architecture
 
