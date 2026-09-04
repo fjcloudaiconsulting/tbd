@@ -569,7 +569,7 @@ def test_founder_count_exclusion_is_never_a_plaintext_value():
 
     `.do/app.yaml` is source. It previously carried the production
     post-deploy smoke account username as a plaintext `value:` -- an account
-    `DEPLOYMENT.md` requires to have NO MFA -- so the repo named the weakest
+    `docs/operations/DEPLOYMENT.md` requires to have NO MFA -- so the repo named the weakest
     authenticated account in production (TBD-371).
 
     Two accepted shapes:

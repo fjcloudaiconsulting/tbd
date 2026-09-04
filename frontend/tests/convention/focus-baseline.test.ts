@@ -11,7 +11,7 @@ import { describe, it, expect } from "vitest";
  *
  * Before this ticket `app/globals.css` contained exactly ONE focus rule
  * (`input:-webkit-autofill:focus`), so **910 of the app's 973 focusable
- * elements** painted the user-agent default that DESIGN.md §5 forbids
+ * elements** painted the user-agent default that docs/design/DESIGN.md §5 forbids
  * outright — 427 buttons, 254 inputs, 147 links, 71 selects, 8 textareas.
  * The ticket was filed as "inline prose links have no focus state"; links
  * are 17% of it.
@@ -321,7 +321,7 @@ function walk(dir: string): string[] {
  *  to the migration that is coming. */
 const SUPPRESSOR = /(^|:)outline-(none|hidden|0)$/;
 
-/** A brass replacement. ⚠ Brass ONLY, deliberately. DESIGN.md §5 says the
+/** A brass replacement. ⚠ Brass ONLY, deliberately. docs/design/DESIGN.md §5 says the
  *  focus state uses Brass Tally. Accepting `focus:bg-surface-raised` would
  *  bless three call sites that believe a background shift is a focus
  *  indicator; measured, surface -> surface-raised is 1.15:1 on dark and

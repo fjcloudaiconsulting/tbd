@@ -5,7 +5,7 @@
 # "nothing about main's protection changed". NOT COVERED:
 #
 #   * `allow_merge_commit` / `allow_rebase_merge` / `allow_squash_merge` -- these
-#     live on `GET /repos/{o}/{r}`, NOT on /protection. CLAUDE.md asserts
+#     live on `GET /repos/{o}/{r}`, NOT on /protection. CONTRIBUTING.md asserts
 #     squash-merge-only and the release pipeline depends on it, because the
 #     squash subject IS the string semantic-release parses. Re-enabling merge
 #     commits leaves this probe green. The most important uncovered setting here.

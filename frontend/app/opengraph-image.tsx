@@ -15,7 +15,7 @@ export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
 // 1200x630 social-share image. Pinned to the brand ground regardless of
-// the visitor's theme — see BRAND.md "Brand surface" rules.
+// the visitor's theme — see docs/product/BRAND.md "Brand surface" rules.
 //
 // Layout:
 //   ┌────────────────────────────────────────────────────────────┐

@@ -407,7 +407,7 @@ async def compute_account_balance_forecast(
     # sources) and the card renders a sub-line for the CC and loan halves of
     # that sum but had none for this half: the user saw a month-end number
     # 350 below the balance with nothing on screen naming the 350. That is the
-    # exact thing PRODUCT.md's line-item-visibility principle forbids.
+    # exact thing docs/product/PRODUCT.md's line-item-visibility principle forbids.
     #
     # ⚠ The line carries the OCCURRENCE date ``d``, not the day the delta is
     # booked on. ``_add_day_delta`` floors an overdue occurrence onto

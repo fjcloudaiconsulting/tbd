@@ -475,8 +475,8 @@ async def test_f5_refuses_email_already_in_use(factory, sent_mail):
     binary and matches nothing.
 
     The id guard is therefore load-bearing on production and structurally
-    unfenceable on the shards, which is exactly the class CLAUDE.md warns
-    about ("everything else in CI runs on in-process aiosqlite, so a
+    unfenceable on the shards, which is exactly a known class
+    ("everything else in CI runs on in-process aiosqlite, so a
     MySQL-only defect is invisible to the shards"). Keep the guard; do not
     read a green run here as proof it is unnecessary.
     """

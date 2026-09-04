@@ -4,7 +4,7 @@
  * When the org has switched Budgets off, /budgets replaces its body with a
  * one-line notice instead of rendering a page whose every fetch now 404s.
  *
- * The notice carries NO btnPrimary: DESIGN.md's One Brass Rule reserves the
+ * The notice carries NO btnPrimary: docs/design/DESIGN.md's One Brass Rule reserves the
  * brass accent for the page's primary action, and a page whose message is
  * absence has no primary action. The admin affordance is a btnLink.
  */

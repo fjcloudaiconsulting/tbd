@@ -4,7 +4,7 @@
 // the product see exactly the first thirty minutes of using it.
 //
 // Voice: concrete, second-person sparingly, no "AI-powered", no fake
-// effortlessness (BRAND.md §Voice). No em-dashes in customer copy.
+// effortlessness (docs/product/BRAND.md §Voice). No em-dashes in customer copy.
 //
 // Layout: numbered three-up grid, mirrors FeatureTiles spacing so the
 // two sections read as a pair. Each step carries a plain "Step N" label

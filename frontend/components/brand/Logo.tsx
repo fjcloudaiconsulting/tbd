@@ -14,7 +14,7 @@
 // up the current text/accent color from the surrounding theme — no
 // separate light/dark asset is needed.
 //
-// Design rationale (BRAND.md §Logo): the mark is two stacked chevrons
+// Design rationale (docs/product/BRAND.md §Logo): the mark is two stacked chevrons
 // reading as a decision arrow. The lower chevron is a muted echo, the
 // upper chevron is brass — "no best, only better": a good choice ahead
 // of another good one.

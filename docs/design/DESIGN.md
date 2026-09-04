@@ -348,12 +348,12 @@ Removing that indicator (`outline-none`, `outline-hidden`) is allowed only where
 - **Do** include `min-h-[44px]` on any pressable affordance whose parent is touch-likely (forms, dialogs, primary CTAs in mobile views). `btnPrimary` already bakes this in.
 - **Do** keep the sidebar navy in both themes. The product chrome carries the brand; only the data canvas adapts.
 - **Do** route brand-surface literals (landing hero, OG image, email, app icon) through `lib/brand.ts`; those surfaces must not theme-switch.
-- **Do** pair color-coded status with a label, icon, or shape — never color alone. Required for the WCAG 2.2 AA commitment in PRODUCT.md.
+- **Do** pair color-coded status with a label, icon, or shape — never color alone. Required for the WCAG 2.2 AA commitment in docs/product/PRODUCT.md.
 
 ### Don't
 
-- **Don't** look like a bank app. No heavy navy-and-white corporate chrome on the data surfaces, no paternalistic "Dear Customer" copy, no big circular avatar greeting on the dashboard. The Better Decision is a planning tool that happens to handle money. (Carries forward from PRODUCT.md anti-references.)
-- **Don't** look like a spreadsheet skin. Hierarchy comes from typography, color, spacing, and grouping — not gridlines and uniform rows. If a screen reads like Google Sheets in a wrapper, redesign before shipping. (Carries forward from PRODUCT.md anti-references.)
+- **Don't** look like a bank app. No heavy navy-and-white corporate chrome on the data surfaces, no paternalistic "Dear Customer" copy, no big circular avatar greeting on the dashboard. The Better Decision is a planning tool that happens to handle money. (Carries forward from docs/product/PRODUCT.md anti-references.)
+- **Don't** look like a spreadsheet skin. Hierarchy comes from typography, color, spacing, and grouping — not gridlines and uniform rows. If a screen reads like Google Sheets in a wrapper, redesign before shipping. (Carries forward from docs/product/PRODUCT.md anti-references.)
 - **Don't** use `border-left` or `border-right` greater than 1px as a colored accent stripe on cards, alerts, or list items. Use full borders, background tints, or leading numbers/icons.
 - **Don't** wrap text in a gradient (`background-clip: text` with a gradient). Use a single solid color. Emphasis through weight or scale.
 - **Don't** put `box-shadow` on a card at rest. Shadows are state, not decoration.

@@ -30,7 +30,7 @@ export const label =
 export const focusInset =
   "focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus";
 
-// `min-h-[44px]` is baked in to enforce the WCAG / DESIGN.md touch-target
+// `min-h-[44px]` is baked in to enforce the WCAG / docs/design/DESIGN.md touch-target
 // floor across every primary button without per-call overrides. Callers
 // that intentionally collapse the floor on larger viewports may still
 // add `sm:min-h-0` (or `md:min-h-0`) after the token.
@@ -40,7 +40,7 @@ export const btnPrimary =
 // Secondary button. A transparent outline defined only by the hairline
 // `border` token disappears on the light theme (border ≈ page `bg`), so the
 // secondary button is a filled chip: a `surface` fill (tonal depth per
-// DESIGN.md "flat by default" — no resting shadow) + the stronger
+// docs/design/DESIGN.md "flat by default" — no resting shadow) + the stronger
 // `border-strong` so it reads as actionable on ANY substrate — on a card the
 // fill matches but the defined border still frames it. Matches the documented
 // `button-secondary` spec. The canvas/toolbar variant below is identical but
@@ -86,7 +86,7 @@ export const error =
 // Banner sibling of `error` / `success` for caution states that are not
 // failures: the roster page's verdict when nothing is serious but something
 // changes which period a transaction lands in. Same construction as `error`,
-// on the `warning` token family (DESIGN.md "Warning Amber").
+// on the `warning` token family (docs/design/DESIGN.md "Warning Amber").
 export const warning =
   "rounded-md bg-warning-dim px-4 py-3 text-sm text-warning";
 

@@ -432,7 +432,7 @@ describe("AccountMonthEndForecast — low balance warning (TBD-198)", () => {
     // NON-VACUOUS BY CONSTRUCTION: this asserts on the ACCESSIBLE NAME and on
     // `aria-hidden` on the icon, never on the class string. A class assertion
     // (`toContain("bg-danger-dim")`) passes for a colour-only badge, which is
-    // a hard WCAG 2.2 AA fail under DESIGN.md and PRODUCT.md.
+    // a hard WCAG 2.2 AA fail under docs/design/DESIGN.md and docs/product/PRODUCT.md.
     render(
       <AccountMonthEndForecast {...defaults({ forecast: POPULATED_WITH_RISK })} />,
     );
@@ -582,7 +582,7 @@ describe("AccountMonthEndForecast — low balance warning (TBD-198)", () => {
 // card / loan payments AND upcoming recurring occurrences. The card rendered a
 // sub-line for the first two and NOTHING for the third, under a caption that
 // still said "plus pending items" — three numbers on one row that do not add
-// up, with no line naming the difference. PRODUCT.md's line-item-visibility
+// up, with no line naming the difference. docs/product/PRODUCT.md's line-item-visibility
 // principle is the standard these two fences hold the row to.
 // ═══════════════════════════════════════════════════════════════════════════
 

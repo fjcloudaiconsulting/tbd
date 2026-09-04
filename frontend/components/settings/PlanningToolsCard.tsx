@@ -75,7 +75,7 @@ function Switch({
           disabled={saving}
           onClick={() => onToggle(!enabled)}
           // 44px hit area via padding on an h-11 box; the visible track stays
-          // small. `h-6 w-11` alone is 24px, under the DESIGN.md touch floor.
+          // small. `h-6 w-11` alone is 24px, under the docs/design/DESIGN.md touch floor.
           className="inline-flex h-11 w-11 items-center justify-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:opacity-50"
         >
           <span

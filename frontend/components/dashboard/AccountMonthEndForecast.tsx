@@ -215,7 +215,7 @@ export default function AccountMonthEndForecast({
                     {/* TBD-198. `badgeError` DIRECTLY, not via badgeForTone():
                         the BadgeTone union has no danger member and widening
                         it for one caller is scope this ticket does not need.
-                        Colour is never the only signal (DESIGN.md, PRODUCT.md,
+                        Colour is never the only signal (docs/design/DESIGN.md, docs/product/PRODUCT.md,
                         WCAG 2.2 AA) — the icon is aria-hidden and the visible
                         "Low balance" text carries the meaning, with an sr-only
                         prefix so the chip is not heard as another metadata

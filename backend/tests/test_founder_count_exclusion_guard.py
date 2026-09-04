@@ -78,7 +78,7 @@ def test_f1_field_carries_no_published_default():
     assert default.value == "", (
         f"{_FIELD} must default to the empty string, not {default.value!r}. "
         "This field names the production post-deploy smoke account, which "
-        "DEPLOYMENT.md requires to have NO MFA — publishing it as a source "
+        "docs/operations/DEPLOYMENT.md requires to have NO MFA — publishing it as a source "
         "default hands out a confirmed-valid, MFA-less target (TBD-371). "
         "Supply it from the environment instead."
     )

@@ -1091,7 +1091,7 @@ async def test_b23_the_two_aliases_correlate_and_do_not_leak_into_the_outer_from
     ⚠ Why this is a compiled-SQL assertion and not a behavioural one. B1 would
     catch the cartesian product (its ``total == 8`` would go to 80), but ONLY
     on aiosqlite and only for the shapes B1 seeds. Every backend shard runs on
-    in-process aiosqlite; per CLAUDE.md ``Migration Checks`` is the one CI job
+    in-process aiosqlite; ``Migration Checks`` is the one CI job
     with a MySQL service and it runs migrations, not list queries. So NO job
     anywhere executes this predicate against MySQL. A correlation difference
     between the two dialects is exactly the class the shards structurally

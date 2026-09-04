@@ -13,7 +13,7 @@ COPY . .
 # process.env.NEXT_PUBLIC_* into the static JS bundle at build, not runtime.
 # Adding a new NEXT_PUBLIC_* env requires (a) adding it to .do/app.yaml,
 # (b) adding an ARG + ENV line here, (c) doctl apps update to rebuild.
-# Canonical list lives in ENVIRONMENT.md (Frontend section).
+# Canonical list lives in docs/operations/ENVIRONMENT.md (Frontend section).
 ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 

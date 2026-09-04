@@ -5,10 +5,10 @@ This guide gets a new contributor productive in under 30 minutes: local stack up
 Sibling docs you will end up at:
 
 - `README.md` for product overview and stack.
-- `ENVIRONMENT.md` for every env var, with scopes, defaults, and failure modes.
-- `DEPLOYMENT.md` for the full CI/CD pipeline (what fires when, how production deploys, smoke tests, apex domain).
+- `docs/operations/ENVIRONMENT.md` for every env var, with scopes, defaults, and failure modes.
+- `docs/operations/DEPLOYMENT.md` for the full CI/CD pipeline (what fires when, how production deploys, smoke tests, apex domain).
 - `infra/README.md` and `infra/MIGRATION.md` for the production data plane and Terraform workflow.
-- `BRAND.md` and `DESIGN.md` for product copy and UI conventions.
+- `docs/product/BRAND.md` and `docs/design/DESIGN.md` for product copy and UI conventions.
 
 ## Prerequisites
 
@@ -44,7 +44,7 @@ Want a realistic dataset (5 accounts, 100+ transactions, recurring templates, bu
 
 For a custom user, set `SEED_*` env vars before the command. See [Seeding mock data](#seeding-mock-data) below.
 
-Full env var reference, including production-only and feature-flag variables, lives in `ENVIRONMENT.md`. Do not duplicate values here.
+Full env var reference, including production-only and feature-flag variables, lives in `docs/operations/ENVIRONMENT.md`. Do not duplicate values here.
 
 ## Your first PR
 
@@ -89,9 +89,9 @@ Rules in practice:
 
 - If your change should reach production on merge, use `feat:`, `fix:`, or `perf:`.
 - If your change is internal only (refactor, test fix, doc edit, CI tweak, dependency bump), use `chore:` / `docs:` / `refactor:` / `test:`. The merge will not redeploy. This is the right answer most of the time for non-product changes.
-- Infra-only changes (`chore(.do)`, `chore(infra)`, `chore(nginx)`) sometimes need to ship without a version bump. Use the manual escape hatch: `gh workflow run deploy.yml --ref main`. See `DEPLOYMENT.md` for when this is appropriate.
+- Infra-only changes (`chore(.do)`, `chore(infra)`, `chore(nginx)`) sometimes need to ship without a version bump. Use the manual escape hatch: `gh workflow run deploy.yml --ref main`. See `docs/operations/DEPLOYMENT.md` for when this is appropriate.
 
-Full pipeline detail (path filters, gating logic, smoke tests, apex deploy) lives in `DEPLOYMENT.md`. The short version is in [CI on your PR vs CI after merge](#ci-on-your-pr-vs-ci-after-merge) below.
+Full pipeline detail (path filters, gating logic, smoke tests, apex deploy) lives in `docs/operations/DEPLOYMENT.md`. The short version is in [CI on your PR vs CI after merge](#ci-on-your-pr-vs-ci-after-merge) below.
 
 ## CI on your PR vs CI after merge
 
@@ -112,7 +112,7 @@ If you need to force a redeploy of the current production spec without merging a
 gh workflow run deploy.yml --ref main
 ```
 
-`DEPLOYMENT.md` is the authoritative reference.
+`docs/operations/DEPLOYMENT.md` is the authoritative reference.
 
 ## Working in parallel agent sessions
 
@@ -123,7 +123,7 @@ docker compose -p team-<unique-name> up -d backend mysql redis
 docker compose -p team-<unique-name> exec backend pytest tests/...
 ```
 
-A single command that omits `-p team-<name>` falls back to the default `pfv` project and contaminates the user's stack. `./pfv migrate` has no `-p` flag and always targets the default project, so agents must not invoke it either. See `CLAUDE.md` for the full rule and the 2026-05-09 incident this guard prevents.
+A single command that omits `-p team-<name>` falls back to the default `pfv` project and contaminates the user's stack. `./pfv migrate` has no `-p` flag and always targets the default project, so agents must not invoke it either.
 
 ## Seeding mock data
 
@@ -230,7 +230,7 @@ For the full router-by-router and service-by-service map, see the live file tree
 
 ### Key design decisions
 
-- **All config via env vars.** `pydantic-settings` in backend, `NEXT_PUBLIC_` prefix in frontend. See `ENVIRONMENT.md`.
+- **All config via env vars.** `pydantic-settings` in backend, `NEXT_PUBLIC_` prefix in frontend. See `docs/operations/ENVIRONMENT.md`.
 - **Stateless backend.** No in-memory state. JWT for auth. Ready for horizontal scaling.
 - **Migrations auto-run on startup in dev.** In production they run as a `PRE_DEPLOY` job (App Platform) or initContainer (k8s) before the app starts. See [Database migrations](#database-migrations).
 - **First user is superadmin.** No bootstrap seed needed.
@@ -368,7 +368,7 @@ All other endpoints require a Bearer access token via the `get_current_user` dep
 
 ## Environment variables
 
-See `ENVIRONMENT.md`. It is the authoritative reference for every backend, frontend, migrate, and CLI variable, with scopes, defaults, deployment paths, and failure modes.
+See `docs/operations/ENVIRONMENT.md`. It is the authoritative reference for every backend, frontend, migrate, and CLI variable, with scopes, defaults, deployment paths, and failure modes.
 
 The minimum to boot locally is:
 
@@ -389,7 +389,7 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 Three execution paths, picked by environment:
 
-- **Local dev (`./pfv start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override). See `CLAUDE.md`.
+- **Local dev (`./pfv start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override).
 - **Local prod simulation (`./pfv prod`):** a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` (no lifespan migration).
 - **Production (DO App Platform):** a dedicated `PRE_DEPLOY` job runs the wrapper before any backend replica starts. Secrets (especially `DATABASE_URL`) must be configured against the `migrate` job in the DO console; App Platform does not auto-inherit secrets across components.
 
@@ -444,7 +444,7 @@ cd frontend && npx tsc --noEmit
 
 ### Manual smoke testing
 
-Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. Production smoke tests live in `scripts/smoke-test.sh` and run automatically after `release.yml` deploys (see `DEPLOYMENT.md`).
+Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. Production smoke tests live in `scripts/smoke-test.sh` and run automatically after `release.yml` deploys (see `docs/operations/DEPLOYMENT.md`).
 
 ## Branching and pull requests
 
@@ -456,7 +456,7 @@ Swagger UI at http://localhost/api/docs is the fastest way to poke a single endp
 
 ## Deployment
 
-The full deployment pipeline (release gating, App Platform spec, smoke tests, manual escape hatches, apex pipeline) is in `DEPLOYMENT.md`. The short version contributors need to know:
+The full deployment pipeline (release gating, App Platform spec, smoke tests, manual escape hatches, apex pipeline) is in `docs/operations/DEPLOYMENT.md`. The short version contributors need to know:
 
 - Merges to `main` trigger `release.yml`. Whether App Platform redeploys depends on the commit prefix (see [Conventional Commits and the deploy gate](#conventional-commits-and-the-deploy-gate)).
 - `.do/app.yaml` is the source of truth for App Platform config. Secrets are encrypted `EV[...]` blobs committed in-file; any secret missing from this file is removed from the live app on push.

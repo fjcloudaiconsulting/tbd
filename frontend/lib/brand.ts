@@ -7,7 +7,7 @@
 // app's theme tokens because the theme tokens swap on
 // `data-theme="light"` and brand surfaces must NOT swap.
 //
-// See BRAND.md for usage rules ("Brand surface" + "One Brass Rule").
+// See docs/product/BRAND.md for usage rules ("Brand surface" + "One Brass Rule").
 //
 // This file is allow-listed in `frontend/scripts/check-design-tokens.sh`
 // so the hex literals below do not trip the token-discipline check.
