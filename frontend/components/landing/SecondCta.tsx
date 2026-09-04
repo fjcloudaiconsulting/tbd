@@ -4,7 +4,7 @@ import SignupLink from "./SignupLink";
 
 // Spec §3.4 — centered block, single primary CTA. The heading is the
 // one-liner above the button per the spec; the subline is voice-grade
-// brand copy (BRAND.md voice section: honest, brief, no fake urgency).
+// brand copy (docs/product/BRAND.md voice section: honest, brief, no fake urgency).
 //
 // `location` is the GA4 `cta_location` this block reports. It DEFAULTS to
 // "second_cta" so the homepage's long-standing telemetry is byte-identical;

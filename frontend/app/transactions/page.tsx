@@ -1675,7 +1675,7 @@ function TransactionsPageContent() {
                                       hover), not btnLink's hover:text-accent --
                                       that one belongs to the standalone row
                                       actions beside it. Brass is spent on the
-                                      focus ring alone, per DESIGN.md's
+                                      focus ring alone, per docs/design/DESIGN.md's
                                       Pressable-Surfaces Rule; there is no global
                                       :focus-visible reset in globals.css, so
                                       without it this link falls through to the UA
@@ -1854,7 +1854,7 @@ function TransactionsPageContent() {
 
                                 `title` on a bare element is not an accessible
                                 name, so the sr-only text carries the sentence
-                                into the accessibility tree (PRODUCT.md WCAG 2.2
+                                into the accessibility tree (docs/product/PRODUCT.md WCAG 2.2
                                 AA). An <a> is focusable, so the title now has a
                                 keyboard path too — but the sr-only text stays:
                                 it is what a screen reader actually announces. */}

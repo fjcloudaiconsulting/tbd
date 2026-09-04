@@ -6,8 +6,8 @@
  * Spec: `specs/2026-07-29-billing-period-roster-design.md` §1.1, §2.1, §2.5.
  *
  * ⚠ **This page is a RAIL, not a grid.** §2.5's payload maps 1:1 onto a
- * nine-column table and that shape is explicitly forbidden: `DESIGN.md` names
- * it an anti-reference and `PRODUCT.md` asks for hierarchy-without-grids. One
+ * nine-column table and that shape is explicitly forbidden: `docs/design/DESIGN.md` names
+ * it an anti-reference and `docs/product/PRODUCT.md` asks for hierarchy-without-grids. One
  * vertical hairline, one alignment axis, deliberately non-uniform row heights
  * so roster health is legible from the silhouette. **No column headers, no
  * zebra striping, no cell borders, and no `overflow-x-auto` anywhere.** Adding
@@ -91,7 +91,7 @@ const TIER_BADGE: Record<Tier, string> = {
   neutral: badgeNeutral,
 };
 
-// A brass focus ring on every pressable surface (DESIGN.md, the
+// A brass focus ring on every pressable surface (docs/design/DESIGN.md, the
 // Pressable-Surfaces Rule). `btnLink` carries colour only.
 const FOCUSABLE =
   "rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";

@@ -4,7 +4,7 @@ Audience: a contributor who just cloned the repo and wants to understand what ha
 
 All five pipelines described here are live on `main` today (`test.yml`, `release.yml`, `deploy.yml`, `apex-deploy.yml`, `test-durations.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
 
-For "how do I get my code ready to push", read [`CONTRIBUTING.md`](./CONTRIBUTING.md). For the env var matrix, read [`ENVIRONMENT.md`](./ENVIRONMENT.md). For the managed-to-droplet data move, read [`infra/MIGRATION.md`](./infra/MIGRATION.md). This file does not duplicate any of them.
+For "how do I get my code ready to push", read [`CONTRIBUTING.md`](../../CONTRIBUTING.md). For the env var matrix, read [`ENVIRONMENT.md`](ENVIRONMENT.md). For the managed-to-droplet data move, read [`infra/MIGRATION.md`](../../infra/MIGRATION.md). This file does not duplicate any of them.
 
 ## 1. Overview
 
@@ -740,7 +740,7 @@ sequenceDiagram
 - **Forward-only in production.** `alembic downgrade` is forbidden in agent contexts per `feedback_agent_destructive_db_ops`. Rollback path is "write a new fix-up migration" (see Section 10).
 - Migrations land via the same PR that uses them. The PRE_DEPLOY job applies them on the next prod deploy, **before** any backend replica with the new code starts.
 
-For env var detail (`DATABASE_URL`, `APP_ENV`, etc.) on the migrate job, see [`ENVIRONMENT.md`](./ENVIRONMENT.md) "Migrate job (DO PRE_DEPLOY)". For the managed-to-droplet data move, see [`infra/MIGRATION.md`](./infra/MIGRATION.md).
+For env var detail (`DATABASE_URL`, `APP_ENV`, etc.) on the migrate job, see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Migrate job (DO PRE_DEPLOY)". For the managed-to-droplet data move, see [`infra/MIGRATION.md`](../../infra/MIGRATION.md).
 
 ## 9. What triggers what (decision tree)
 
@@ -795,7 +795,7 @@ Concrete cases:
 | `infra/terraform/apex/main.tf` | TFC `<apex-workspace>`; same `release.yml` no-op. |
 | `.do/app.yaml` (chore) | `release.yml` fires but semantic-release does not bump. Operator must run `gh workflow run deploy.yml --ref main`. |
 | `.github/workflows/test.yml` | `test.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and no-ops on the `ci` type. |
-| `README.md` or `CLAUDE.md` only | `release.yml` **runs** and no-ops on the `docs` type. Nothing is tagged and nothing deploys. |
+| `README.md` only | `release.yml` **runs** and no-ops on the `docs` type. Nothing is tagged and nothing deploys. |
 
 ⚠ The old "mutually exclusive apex / DO path-filter split" is **gone on the DO
 side**. A landing-only commit no longer skips `release.yml`; if its commit type
@@ -893,4 +893,4 @@ Triage shortcuts:
 | App can't reach MySQL or Redis | Confirm `.do/app.yaml`'s top-level `vpc.id` matches the TFC output, and `DATABASE_URL` / `REDIS_URL` point at the droplet's `<vpc-cidr>` private IP |
 | Secret env var "disappeared" after deploy | `.do/app.yaml` must declare every SECRET with its `EV[...]` blob. Missing -> stripped on push. Refresh via `doctl apps spec get <app-id>` |
 
-For the env var matrix and common per-variable failures (Google SSO button missing, `NEXT_PUBLIC_*` not in client bundle, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](./ENVIRONMENT.md) "Common failure modes".
+For the env var matrix and common per-variable failures (Google SSO button missing, `NEXT_PUBLIC_*` not in client bundle, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Common failure modes".

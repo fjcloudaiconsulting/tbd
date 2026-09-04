@@ -186,7 +186,7 @@ export default function MeasuresEditor({
             data-testid="measure-add"
             onClick={add}
             disabled={addDisabled}
-            // DESIGN.md's Pressable-Surfaces Rule requires a visible Brass
+            // docs/design/DESIGN.md's Pressable-Surfaces Rule requires a visible Brass
             // Tally focus state on anything pressable; this button shipped
             // with `hover:` only. Disabled treatment reuses the shipped
             // primitive from lib/styles.ts.

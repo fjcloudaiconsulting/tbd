@@ -89,7 +89,7 @@ export interface Breakdown {
   sliceColors: string[];
   /**
    * RAW, UNFOLDED column labels for the CSV export, over the same capped
-   * rows. PRODUCT.md's line-item visibility principle requires every total
+   * rows. docs/product/PRODUCT.md's line-item visibility principle requires every total
    * to have a path to its constituent rows, and the fold is a truncation the
    * user did not choose: 11 distinct secondary values means 12 CSV columns
    * (label + 11), not 9.

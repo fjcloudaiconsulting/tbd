@@ -8,7 +8,7 @@ import { btnLink, card, cardTitle } from "@/lib/styles";
 /**
  * The whole of what a page shows when its org switched the tool off (TBD-197).
  *
- * Small, centred, one line. No brass: DESIGN.md's One Brass Rule reserves the
+ * Small, centred, one line. No brass: docs/design/DESIGN.md's One Brass Rule reserves the
  * accent for a page's primary action, and a page whose entire message is
  * absence has no primary action to promote. The admin affordance is a
  * `btnLink`, not a `btnPrimary`.

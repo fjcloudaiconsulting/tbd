@@ -31,7 +31,7 @@ since a human last looked"** — a claim the probe can actually make — and nev
 **Not covered.** Each of these can change with this probe staying green:
 
 * `allow_merge_commit` / `allow_rebase_merge` / `allow_squash_merge` — these live
-  on `GET /repos/{owner}/{repo}`, **not** on `/protection`. `CLAUDE.md` asserts
+  on `GET /repos/{owner}/{repo}`, **not** on `/protection`. `CONTRIBUTING.md` asserts
   squash-merge-only and the release pipeline depends on it, because the squash
   subject *is* the string semantic-release parses. **This is the most important
   uncovered setting in the repo.**

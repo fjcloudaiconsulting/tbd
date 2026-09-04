@@ -30,7 +30,7 @@ import { BarChart, Bar, PieChart, Pie, Cell, Tooltip, XAxis } from "recharts";
  * So a chart that sets ``animationDuration`` and leaves ``isAnimationActive``
  * UNSET — the shape used by ``BudgetBarsWidget``, ``ForecastBarsWidget``,
  * ``BudgetOverviewChart``, ``ForecastPlanChart`` and the dashboard page — is
- * already correct under PRODUCT.md's reduced-motion commitment. TBD-428 was
+ * already correct under docs/product/PRODUCT.md's reduced-motion commitment. TBD-428 was
  * filed against a recharts 2.x mental model, where the default was ``true``;
  * this repo has been on ``^3.8.1`` since recharts was introduced.
  *

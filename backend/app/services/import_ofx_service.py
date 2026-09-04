@@ -100,7 +100,7 @@ logger = structlog.get_logger()
 # ── Spec-locked bounds (L3.2 §1.2) ──
 # Upload byte cap stays a module constant (not a knob) — it is a security
 # invariant, not an operational dial. Timeout / row cap / concurrency are
-# config-driven via ``settings`` (see app.config, ENVIRONMENT.md).
+# config-driven via ``settings`` (see app.config, docs/operations/ENVIRONMENT.md).
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 
 

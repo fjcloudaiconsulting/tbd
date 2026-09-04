@@ -393,7 +393,6 @@ Symptom: `./pfv start` boots the backend, but lifespan logs
 `migrate.skipped reason=non_main_branch`. Cause: branch guard. Fix:
 switch to `main` for migrations, or set `PFV_MIGRATE_OK_OFF_MAIN=1` in
 `.env` if you genuinely need to run lifespan migrations from the branch.
-See CLAUDE.md.
 
 ---
 
@@ -450,5 +449,3 @@ on the next push. Treat the file as the complete env contract.
 - `.github/workflows/release.yml`, `.github/workflows/deploy.yml` — GH
   Actions secrets and deploy invocation.
 - `CONTRIBUTING.md` — local-dev setup walkthrough.
-- `CLAUDE.md` — codebase-level conventions, including the lifespan
-  branch guard reasoning.

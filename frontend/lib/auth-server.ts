@@ -119,7 +119,7 @@ export const getServerSessionResult = cache(
   },
 );
 
-// Pre-launch state means no deprecation shims (see CLAUDE.md). All RSC
+// Pre-launch state means no deprecation shims. All RSC
 // callers were migrated to `getServerSessionResult` in PR #288. If you
 // need a "session-or-null" shape, switch on `result.kind` at the call
 // site so transient (timeout / 5xx) doesn't collapse into the same path

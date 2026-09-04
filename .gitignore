@@ -48,11 +48,15 @@ mysql_data/
 .playwright-mcp/
 .cursor/
 .mcp.json
-# Top-level docs/ is intentionally kept out of the repo: design decision
-# records and planning artifacts live in ~/.claude/projects/<slug>/specs/
-# (local). The user-facing /docs page lives at frontend/app/docs/ which
-# this rule explicitly does not ignore (leading slash anchors the match).
-/docs/
+# Superpowers planning artifacts are local-only. The rest of docs/ is tracked:
+# product, design and operations documentation live there. The leading slash
+# anchors both rules to the repo root, so frontend/app/docs/ is unaffected.
+/docs/superpowers/
+
+# Project-scoped agent instructions, deliberately out of version control
+# (the public repo carries no agent context). Content lives in
+# ~/.claude/projects/-Users-flamarion-src-tbd/CLAUDE.md
+CLAUDE.local.md
 
 # Local test fixtures and scratch
 mock/

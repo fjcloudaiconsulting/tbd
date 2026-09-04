@@ -60,7 +60,7 @@ class DailyBalancePoint(BaseModel):
     Emitted on the wire deliberately, not kept private to the service: it is
     what makes ``daily_balances[-1].balance == expected_month_end_balance``
     assertable at the API boundary rather than only inside a unit test, and it
-    is the line-item visibility PRODUCT.md asks for — the user can see WHICH
+    is the line-item visibility docs/product/PRODUCT.md asks for — the user can see WHICH
     day the money runs out, not merely that it does.
     """
 

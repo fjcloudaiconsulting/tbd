@@ -383,7 +383,7 @@ describe("TBD-309 — reverted row affordances", () => {
       // `title` alone is not acceptable here: it never appears on touch and is
       // largely skipped by screen readers, and this page has a full mobile
       // tree, so the explanation would be missing exactly where it is most
-      // needed (PRODUCT.md WCAG 2.2 AA).
+      // needed (docs/product/PRODUCT.md WCAG 2.2 AA).
       fireEvent.focus(badge);
       await waitFor(() => expect(badge.getAttribute("aria-describedby")).toBeTruthy());
       const bubbleId = badge.getAttribute("aria-describedby")!;

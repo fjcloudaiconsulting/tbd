@@ -41,7 +41,7 @@ USER = {
 
 # ── Determinism (TBD-345) ────────────────────────────────────────────────
 #
-# CLAUDE.md documented this script as "a repeatable local dataset". Two
+# This script was documented as "a repeatable local dataset". Two
 # things made that false: ``random`` was imported but never seeded, and
 # every date derived from ``date.today()``, so the geometry changed with the
 # day of the month. Both are now resolved ONCE at the top of ``main()`` and
@@ -322,8 +322,7 @@ def _raise_loudly(r: httpx.Response, item: dict) -> None:
 def billing_period_outcome(r: httpx.Response) -> str:
     """Interpret a ``POST /api/v1/settings/billing-period`` response.
 
-    ``./pfv seed`` is documented as a repeatable dataset (CLAUDE.md,
-    "Seeding"), and the period dates below are deterministic for a given
+    ``./pfv seed`` is documented as a repeatable dataset, and the period dates below are deterministic for a given
     ``anchor``, so a re-run at the same anchor posts start dates that
     already exist.
     TBD-232 gave that endpoint a duplicate-start pre-flight that answers

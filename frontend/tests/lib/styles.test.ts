@@ -3,7 +3,7 @@ import { btnPrimary, btnSecondary } from "@/lib/styles";
 
 describe("btnPrimary token", () => {
   it("bakes in the 44px touch-target floor so callers don't have to", () => {
-    // DESIGN.md requires a 44px minimum touch target on every primary
+    // docs/design/DESIGN.md requires a 44px minimum touch target on every primary
     // button. Baking this into the shared token removes the per-call
     // `min-h-[44px]` overrides that PR #64 had to scatter through the
     // app. If anyone removes the floor here, dozens of buttons quietly

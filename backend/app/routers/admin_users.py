@@ -870,8 +870,8 @@ async def trigger_email_change(
     # NOT on `users.py`'s request-time version, which has no id guard and is
     # the shape the `email_unchanged` guard above exists to refuse.
     #
-    # ⚠ Do NOT add a unique index on `pending_email` to "fix" this. CLAUDE.md
-    # forbids it: a unique constraint on a self-asserted address does not
+    # ⚠ Do NOT add a unique index on `pending_email` to "fix" this. A unique
+    # constraint on a self-asserted address does not
     # prevent the collision that matters (a claim equal to somebody's LIVE
     # `users.email`) and hands out an address-squatting primitive.
     #

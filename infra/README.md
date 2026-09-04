@@ -26,8 +26,8 @@ workspaces, one app.
 
 App Platform spec lives at `.do/app.yaml`. The migration runbook for the
 managed-DB to self-hosted-droplet cutover lives at `infra/MIGRATION.md`.
-Per-env-var documentation lives at `ENVIRONMENT.md` (repo root). The
-day-to-day deploy walkthrough lives at `DEPLOYMENT.md`.
+Per-env-var documentation lives at `docs/operations/ENVIRONMENT.md`. The
+day-to-day deploy walkthrough lives at `docs/operations/DEPLOYMENT.md`.
 
 ## Topology
 
@@ -275,14 +275,14 @@ live app on the next push (see the 2026-04-25 incident note in
 
 The currently bound secrets are `DATABASE_URL`, `REDIS_URL`,
 `JWT_SECRET_KEY`, `MFA_ENCRYPTION_KEY`, `MAILGUN_API_KEY`,
-`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`. `ENVIRONMENT.md` is the
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`. `docs/operations/ENVIRONMENT.md` is the
 authoritative per-var reference.
 
 ### Deployment
 
 Deploys go through GitHub Actions (`.github/workflows/deploy.yml`) on
 merge to `main`. `deploy_on_push` is set to `false` in DO so the spec
-push is exclusively driven by the workflow. See `DEPLOYMENT.md` for the
+push is exclusively driven by the workflow. See `docs/operations/DEPLOYMENT.md` for the
 full walkthrough.
 
 ## DO data droplet (`<data-droplet>`)
@@ -519,9 +519,9 @@ destroy.
   per-resource IAM scoping, security notes, behaviour matrix.
 - `infra/MIGRATION.md`: managed-MySQL+Redis to droplet cutover (already
   executed; kept as the reference writeup).
-- `ENVIRONMENT.md` (repo root): authoritative per-env-var reference for
+- `docs/operations/ENVIRONMENT.md`: authoritative per-env-var reference for
   every component.
-- `DEPLOYMENT.md` (repo root): GitHub Actions deploy walkthrough.
+- `docs/operations/DEPLOYMENT.md`: GitHub Actions deploy walkthrough.
 - `~/.claude/projects/-Users-flamarion-src-tbd/memory/reference_digitalocean.md`:
   DO IDs, gotchas, and operational lore.
 - `~/.claude/projects/-Users-flamarion-src-tbd/memory/project_apex_s3_cloudfront.md`:

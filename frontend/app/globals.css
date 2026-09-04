@@ -72,7 +72,7 @@
   --theme-scrim: rgba(7, 13, 24, 0.55);
   --theme-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
 
-  /* Categorical chart scale — Brass Harmony (W3). Chart-only; see DESIGN.md amendment. */
+  /* Categorical chart scale — Brass Harmony (W3). Chart-only; see docs/design/DESIGN.md amendment. */
   --theme-cat-1: #D4A64A;
   --theme-cat-2: #5FA8D3;
   --theme-cat-3: #4ade80;
@@ -198,7 +198,7 @@
   --shadow-card: var(--theme-card-shadow);
 
   /* Chart palette. Aliases of the Brass Harmony categorical scale.
-     Theme switches cascade automatically. See DESIGN.md amendment. */
+     Theme switches cascade automatically. See docs/design/DESIGN.md amendment. */
   --color-chart-1: var(--theme-cat-1);
   --color-chart-2: var(--theme-cat-2);
   --color-chart-3: var(--theme-cat-3);
@@ -244,7 +244,7 @@ input:-webkit-autofill:focus {
 }
 
 /* ─── The focus baseline (TBD-319) ───────────────────────────────────────
-   DESIGN.md §5 forbids the user-agent focus ring outright. Before this rule
+   docs/design/DESIGN.md §5 forbids the user-agent focus ring outright. Before this rule
    globals.css carried exactly ONE focus declaration
    (input:-webkit-autofill:focus), so 910 of the app's 973 focusable elements
    painted the browser default: 427 buttons, 254 inputs, 147 links, 71
@@ -445,7 +445,7 @@ a, button { transition: all 0.15s ease; }
   animation: tbd-fade-in-up 520ms ease-out both;
 }
 
-/* Honor user's reduced-motion preference. WCAG 2.2 AA + PRODUCT.md
+/* Honor user's reduced-motion preference. WCAG 2.2 AA + docs/product/PRODUCT.md
    commitment. Disables animations, transitions, and smooth-scroll for
    anyone with the OS-level preference set. Placed last so it wins
    over earlier transition rules (a, button) and library overrides. */

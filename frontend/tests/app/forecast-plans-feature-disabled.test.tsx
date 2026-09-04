@@ -11,7 +11,7 @@
  * `initialPlan={null}`, empty periods, empty categories — and asserts the
  * island still renders the notice rather than a spinner or a crash.
  *
- * The notice carries NO btnPrimary: DESIGN.md's One Brass Rule reserves brass
+ * The notice carries NO btnPrimary: docs/design/DESIGN.md's One Brass Rule reserves brass
  * for a page's primary action, and a page whose message is absence has none.
  */
 import React from "react";

@@ -103,7 +103,7 @@ def _scripts_dir() -> pathlib.Path:
     ever running the probe**.
 
     This matters beyond CI: the local command in ``.github/branch-protection/README.md``
-    and ``CLAUDE.md`` must work, so the container run is not optional.
+    must work, so the container run is not optional.
     """
     if REPO_ROOT is not None and (REPO_ROOT / "scripts" / "ci").is_dir():
         return REPO_ROOT / "scripts"
@@ -2127,7 +2127,7 @@ def test_w9_the_normalizer_cli_reproduces_the_committed_posture(tmp_path):
     """⚠⚠ `main()` had ZERO tests: every other fence imports the module under a
     different name, so `__main__` never fires. Yet this CLI IS the documented
     regeneration path -- named in `.github/branch-protection/README.md`, in the
-    checker's own drift message, and in CLAUDE.md. A regeneration path that
+    checker's own drift message. A regeneration path that
     emits a differently-formatted document hands the operator a diff of pure
     formatting noise, and the trained response to that is to stop reading it."""
     r = _run_normalizer(json.dumps(_raw_live()), tmp_path)

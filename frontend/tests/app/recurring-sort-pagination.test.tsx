@@ -398,7 +398,7 @@ describe("RecurringPage — instalment progress (TBD-275)", () => {
     // FENCE. "3 of 12" beside a description is an unlabelled fragment to a
     // screen reader: the visual context that makes it read as instalment
     // progress is not conveyed. WCAG 2.2 AA is a product commitment
-    // (PRODUCT.md), and this is the one string on the row with no label of
+    // (docs/product/PRODUCT.md), and this is the one string on the row with no label of
     // its own.
     //
     // ⚠ The accessible-name query is what discriminates. `getByText("3 of
