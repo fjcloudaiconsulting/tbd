@@ -1212,7 +1212,7 @@ function LegacyDashboard() {
                         "auto" column is the legend dot, which has no header.
                         Each header carries an aria-sort state and a lucide
                         chevron icon, with a brass focus ring matching the
-                        Pressable-Surfaces Rule in DESIGN.md. */}
+                        Pressable-Surfaces Rule in docs/design/DESIGN.md. */}
                     <div
                       role="row"
                       className="grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 px-1.5 pb-1 text-[10px] uppercase tracking-wider text-text-muted"

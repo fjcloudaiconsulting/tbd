@@ -1,6 +1,6 @@
 """Email service. Sends brand-aligned customer emails via Mailgun.
 
-Templates here are L5.6 brand polish (see ``BRAND.md`` at repo root):
+Templates here are L5.6 brand polish (see ``docs/product/BRAND.md``):
 
 * Inline chevron mark (no remote SVG load, many clients strip it).
 * "The Better Decision" wordmark as the visible product name.

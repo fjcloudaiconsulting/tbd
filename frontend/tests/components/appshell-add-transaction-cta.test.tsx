@@ -142,7 +142,7 @@ describe("AppShellAddTransactionCta component", () => {
     // detect drift if someone reaches for raw Tailwind utilities.
     expect(cta.className).toContain("bg-accent");
     expect(cta.className).toContain("text-accent-text");
-    // Touch-target floor per DESIGN.md.
+    // Touch-target floor per docs/design/DESIGN.md.
     expect(cta.className).toContain("min-h-[44px]");
   });
 
@@ -227,7 +227,7 @@ describe("AppShellAddTransactionCta quick-add menu", () => {
       render(<AppShellAddTransactionCta />);
     });
     const toggle = screen.getByTestId("appshell-quick-add-menu-toggle");
-    // Both axes must clear 44px per DESIGN.md touch-target rule. The
+    // Both axes must clear 44px per docs/design/DESIGN.md touch-target rule. The
     // primary CTA's test above already asserts min-h-[44px]; the
     // chevron has a smaller default footprint so we assert both.
     expect(toggle.className).toContain("min-h-[44px]");

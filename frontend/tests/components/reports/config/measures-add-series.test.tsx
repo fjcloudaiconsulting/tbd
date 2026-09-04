@@ -157,7 +157,7 @@ describe("R7 — '+ Add series' seeds the next unused catalog pair", () => {
     expect(screen.queryByTestId("measure-add-exhausted-help")).toBeNull();
   });
 
-  it("R7: the add button carries a visible focus state (DESIGN.md Pressable-Surfaces Rule)", async () => {
+  it("R7: the add button carries a visible focus state (docs/design/DESIGN.md Pressable-Surfaces Rule)", async () => {
     renderWithSWR(
       <DataTab
         widget={makeLine("transactions", [

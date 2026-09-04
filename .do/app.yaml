@@ -110,7 +110,7 @@ services:
       #
       # ⚠⚠ TBD-371, STILL OPEN HERE. This is a plaintext `value:`, so it
       # publishes the production smoke account username — an account
-      # DEPLOYMENT.md requires to be email-verified and to have NO MFA. The
+      # docs/operations/DEPLOYMENT.md requires to be email-verified and to have NO MFA. The
       # source default was removed from `backend/app/config.py`, but this
       # file is source too, so the exposure is not closed until this entry
       # becomes a SECRET.
@@ -118,7 +118,7 @@ services:
       # ⚠ TBD-371. This is a SECRET, and it must stay one. It previously
       # carried the production post-deploy smoke account username in
       # plaintext, and this file is source, so it published an account
-      # DEPLOYMENT.md requires to have NO MFA. The account has since been
+      # docs/operations/DEPLOYMENT.md requires to have NO MFA. The account has since been
       # renamed and its credential rotated; the old name is dead.
       #
       # ⚠ Do NOT replace this with a plaintext `value:`, and do NOT delete the
@@ -134,7 +134,7 @@ services:
       # `doctl apps spec get <APP_ID>`, commit that here, then deploy.
       # Never leave this file and the live spec disagreeing —
       # scripts/ci/assert-app-spec-secrets-synced.sh refuses the deploy.
-      # Rotation procedure for the account itself: DEPLOYMENT.md, "Smoke tests".
+      # Rotation procedure for the account itself: docs/operations/DEPLOYMENT.md, "Smoke tests".
       - key: FOUNDER_COUNT_EXCLUDE_USERNAMES
         scope: RUN_AND_BUILD_TIME
         type: SECRET

@@ -176,7 +176,7 @@ class Settings(BaseSettings):
     # CSV, mirrors the cors-origins parsing pattern.
     #
     # ⚠⚠ NO DEFAULT VALUE, DELIBERATELY (TBD-371). This list names the
-    # production post-deploy smoke account -- an account DEPLOYMENT.md
+    # production post-deploy smoke account -- an account docs/operations/DEPLOYMENT.md
     # requires to be email-verified and to have NO MFA. Publishing it as a
     # source default handed anyone reading the repo a confirmed-valid,
     # MFA-less target for password spraying against a public login form.

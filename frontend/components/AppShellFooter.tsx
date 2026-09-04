@@ -14,7 +14,7 @@ import { BRAND_CONTACT_EMAIL } from "@/lib/brand";
 //   Stacks vertically on mobile (<sm) so the link row stays readable.
 //
 // Separators between the inline links use the middle dot "·" per
-// BRAND.md voice rules (no em-dashes in customer copy).
+// docs/product/BRAND.md voice rules (no em-dashes in customer copy).
 export default function AppShellFooter() {
   return (
     <footer className="border-t border-border bg-surface px-4 sm:px-8 py-4">

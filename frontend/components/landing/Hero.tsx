@@ -6,7 +6,7 @@ import HeroDashboard from "./HeroDashboard";
 import SignupLink from "./SignupLink";
 
 // Hero — spec §3.2 split layout. Left column carries the locked tagline
-// (BRAND.md §Tagline), right column carries a stylized dashboard built
+// (docs/product/BRAND.md §Tagline), right column carries a stylized dashboard built
 // from the same tokens as the real product. No em-dashes (locked policy
 // `feedback_no_em_dashes`).
 export default function Hero() {
@@ -52,7 +52,7 @@ export default function Hero() {
           </p>
           {/* Trust line under the CTAs. Three honest, verifiable claims;
               the dot separators match the footer convention. No fake
-              urgency, no "limited time" framing (BRAND.md voice rules). */}
+              urgency, no "limited time" framing (docs/product/BRAND.md voice rules). */}
           <p className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
             <span>No card required</span>
             <span aria-hidden className="text-text-muted/60">&middot;</span>

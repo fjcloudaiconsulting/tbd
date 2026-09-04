@@ -251,14 +251,14 @@ function RecurringTable({
                   )}
                   {/* Outline, not a fill: the row uses hover:bg-surface-raised,
                       so a filled badge would vanish on hover. Quiet-by-default
-                      (PRODUCT.md) -- progress is data, not an alert. */}
+                      (docs/product/PRODUCT.md) -- progress is data, not an alert. */}
                   {instalmentLabel(r) && (
                     <span
                       // "3 of 12" next to a description reads as an unlabelled
                       // fragment: the visual context that makes it mean
                       // "instalment progress" is not conveyed to a screen
                       // reader. WCAG 2.2 AA is a product commitment
-                      // (PRODUCT.md).
+                      // (docs/product/PRODUCT.md).
                       aria-label={`instalment ${instalmentLabel(r)}`}
                       className={`ml-1.5 rounded border px-1.5 py-0.5 text-[10px] font-medium tabular-nums ${
                         instalmentDone(r)

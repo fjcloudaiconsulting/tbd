@@ -580,7 +580,7 @@ export default function TransactionForm({
                 one would hide instalment plans on the savings/cash accounts
                 people also put them on. Blank is the common case, so the
                 placeholder carries the meaning rather than a helper line
-                (quiet-by-default, PRODUCT.md). */}
+                (quiet-by-default, docs/product/PRODUCT.md). */}
             <div className="flex items-center gap-1">
               <label htmlFor="fab-tx-occurrences" className="sr-only">
                 Number of payments

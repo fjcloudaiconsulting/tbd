@@ -34,7 +34,7 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 | Auth | JWT (access + refresh), bcrypt, TOTP (pyotp), Google OAuth2 (with step-up for sensitive flows) |
 | Email | Mailgun (production), structlog (development) |
 | Proxy | nginx (development), DO App Platform ingress (production) |
-| Landing (apex) | AWS S3 + CloudFront + ACM + IAM OIDC, separate from the app, see [`DEPLOYMENT.md`](DEPLOYMENT.md) |
+| Landing (apex) | AWS S3 + CloudFront + ACM + IAM OIDC, separate from the app, see [`DEPLOYMENT.md`](docs/operations/DEPLOYMENT.md) |
 
 ## Quick Start
 
@@ -63,13 +63,13 @@ Every part of the project has a single authoritative document. Start with the ro
 | Doc | When you need it |
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | First-time contributor. 30-minute Quickstart, Conventional Commits + deploy gate, CI on your PR vs after merge, parallel-agent compose-isolation rule, first-PR decision tree. |
-| [ENVIRONMENT.md](ENVIRONMENT.md) | Reference for every env var (backend, frontend, migrate job, CLI). Scope, default, sensitivity, deployment paths, failure modes. Source of truth for `.env`, `.do/app.yaml`, and GitHub Actions secrets. |
+| [ENVIRONMENT.md](docs/operations/ENVIRONMENT.md) | Reference for every env var (backend, frontend, migrate job, CLI). Scope, default, sensitivity, deployment paths, failure modes. Source of truth for `.env`, `.do/app.yaml`, and GitHub Actions secrets. |
 
 ### Shipping + operations
 
 | Doc | When you need it |
 |---|---|
-| [DEPLOYMENT.md](DEPLOYMENT.md) | What happens between `git push` and a live change. All CI/CD flows (PR lifecycle, automatic prod deploy, manual escape hatch, apex landing deploy), Terraform workspaces, migrations, what-triggers-what decision tree, per-pipeline rollback playbook, where to look when things break. Diagrams included. |
+| [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) | What happens between `git push` and a live change. All CI/CD flows (PR lifecycle, automatic prod deploy, manual escape hatch, apex landing deploy), Terraform workspaces, migrations, what-triggers-what decision tree, per-pipeline rollback playbook, where to look when things break. Diagrams included. |
 
 ### Infrastructure
 
@@ -85,9 +85,9 @@ Every part of the project has a single authoritative document. Start with the ro
 
 | Doc | When you need it |
 |---|---|
-| [PRODUCT.md](PRODUCT.md) | Target users, primary jobs-to-be-done, the operative product narrative. Background for design and UX decisions. |
-| [BRAND.md](BRAND.md) | Brand kit: product name conventions, voice, palette, logo and favicon usage. Used when writing copy, building landing surfaces, or producing assets. |
-| [DESIGN.md](DESIGN.md) | Design language and component conventions. Used when building or critiquing UI. |
+| [PRODUCT.md](docs/product/PRODUCT.md) | Target users, primary jobs-to-be-done, the operative product narrative. Background for design and UX decisions. |
+| [BRAND.md](docs/product/BRAND.md) | Brand kit: product name conventions, voice, palette, logo and favicon usage. Used when writing copy, building landing surfaces, or producing assets. |
+| [DESIGN.md](docs/design/DESIGN.md) | Design language and component conventions. Used when building or critiquing UI. |
 
 ### Working with AI in this repo
 
@@ -112,7 +112,7 @@ Browser
 - **Apex landing** is a separate Next.js static export built by `npm run build:apex`, deployed to S3 via GitHub Actions with OIDC role assume.
 - **nginx** routes traffic in development. DO App Platform handles ingress for the app in production; CloudFront handles ingress for the apex.
 
-For the full pipeline mechanics, see [DEPLOYMENT.md](DEPLOYMENT.md). For the cross-cloud topology, see [infra/README.md](infra/README.md).
+For the full pipeline mechanics, see [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md). For the cross-cloud topology, see [infra/README.md](infra/README.md).
 
 ## CLI
 

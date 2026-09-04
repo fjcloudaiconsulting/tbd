@@ -43,7 +43,7 @@
  *    <span>'s `title` is not an accessible name: screen readers largely skip
  *    it, touch never shows it, and the span is not focusable. Kills shipping
  *    the explanation where the users who most need it cannot reach it
- *    (PRODUCT.md WCAG 2.2 AA).
+ *    (docs/product/PRODUCT.md WCAG 2.2 AA).
  */
 import React from "react";
 import { render, screen } from "@testing-library/react";
