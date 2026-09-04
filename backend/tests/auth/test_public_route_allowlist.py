@@ -1,6 +1,6 @@
 """Inventory guard: the anonymous API surface is a closed, reviewed set.
 
-CLAUDE.md and CONTRIBUTING.md both say the public endpoint set is
+CONTRIBUTING.md says the public endpoint set is
 "deliberately small and closed". Until this file existed that policy had
 **zero** automated enforcement: every router test builds its app through
 ``make_test_app(..., current_user=...)``, which writes

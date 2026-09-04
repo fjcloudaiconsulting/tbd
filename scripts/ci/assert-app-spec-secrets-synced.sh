@@ -37,8 +37,8 @@ APP_ID="${APP_ID:-}"
 APP_NAME="${APP_NAME:-}"
 
 # ⚠ Deliberate override for the break-glass path only. `deploy.yml` is
-# documented as ungated (CLAUDE.md: "its escape hatch is `gh workflow run
-# deploy.yml --ref main`, which stays deliberately ungated"), so this guard
+# documented as ungated (its escape hatch is `gh workflow run
+# deploy.yml --ref main`, which stays deliberately ungated), so this guard
 # must be refusable there -- but only on purpose, never by default.
 if [ "${ALLOW_SECRET_DRIFT:-false}" = "true" ]; then
   echo "assert-app-spec-secrets-synced: SKIPPED - ALLOW_SECRET_DRIFT=true."

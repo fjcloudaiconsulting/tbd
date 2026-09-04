@@ -795,7 +795,7 @@ Concrete cases:
 | `infra/terraform/apex/main.tf` | TFC `<apex-workspace>`; same `release.yml` no-op. |
 | `.do/app.yaml` (chore) | `release.yml` fires but semantic-release does not bump. Operator must run `gh workflow run deploy.yml --ref main`. |
 | `.github/workflows/test.yml` | `test.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and no-ops on the `ci` type. |
-| `README.md` or `CLAUDE.md` only | `release.yml` **runs** and no-ops on the `docs` type. Nothing is tagged and nothing deploys. |
+| `README.md` only | `release.yml` **runs** and no-ops on the `docs` type. Nothing is tagged and nothing deploys. |
 
 ⚠ The old "mutually exclusive apex / DO path-filter split" is **gone on the DO
 side**. A landing-only commit no longer skips `release.yml`; if its commit type

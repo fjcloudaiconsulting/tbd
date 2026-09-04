@@ -317,7 +317,7 @@ jobs:
   #
   # Every job above runs on in-process aiosqlite (see the shard note). That is
   # deliberate and fast, but it means a MySQL-only defect reaches `main` with
-  # every check green. Not hypothetical: CLAUDE.md records TBD-322, a live
+  # every check green. Not hypothetical: TBD-322 was a live
   # production auth bypass caused by MySQL's utf8mb4_0900_ai_ci collation
   # being case-insensitive where Python's `startswith` is not, and states
   # plainly that "SQLite-backed CI structurally cannot see it". The

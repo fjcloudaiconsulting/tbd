@@ -602,7 +602,7 @@ async def _seed_exclusions_org(factory) -> dict:
                 is_manual_adjustment=True),
             # Kind 2 — a REJECTED reconciliation row. "Reverted, excluded,
             # retained for audit" — and the state a delete-demoted match
-            # orphan lands in (CLAUDE.md's delete-demotion rule).
+            # orphan lands in (the delete-demotion rule).
             _tx(org.id, acct.id, rej.id, "rejected", "1100.00", day=7,
                 reconciliation_state="rejected"),
         ])

@@ -1,6 +1,6 @@
 """TBD-345: ``./pfv seed`` must produce the dataset it claims to produce.
 
-CLAUDE.md documented ``./pfv seed`` as "a repeatable local dataset". It was
+``./pfv seed`` was documented as "a repeatable local dataset". It was
 not: ``random`` was imported and never seeded, and every date derived from
 ``date.today()``, so the geometry changed with the day of the month.
 

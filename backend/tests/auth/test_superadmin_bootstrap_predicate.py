@@ -21,7 +21,7 @@ fences cannot:
     because it only bites in a state a new author would not think to build.
 
 ⚠ PARSE, NEVER GREP. The surviving comments in ``auth.py``,
-``invitation_service.py``, ``CLAUDE.md`` and this very docstring all contain
+``invitation_service.py`` and this very docstring all contain
 the string ``is_superadmin``; a whole-file text search is satisfied by the
 prose documenting the invariant. This repo has a recorded incident where a
 grep for a missing config key PASSED because the key appeared in the comment
