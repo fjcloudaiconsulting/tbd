@@ -19,7 +19,7 @@
 # the only place the Redis check was documented, and this script passed a
 # deploy on which no user could log in. /health/dependencies (TBD-413) is
 # the check that actually covers Redis; /ready stays database-only on
-# purpose, because it is what k8s pulls replicas out of rotation on.
+# purpose, because it is what the platform pulls replicas out of rotation on.
 #
 # Inputs (env vars):
 #   SMOKE_BASE_URL     — public URL, e.g. https://app.thebetterdecision.com

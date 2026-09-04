@@ -118,7 +118,7 @@ while IFS= read -r f; do
     backend/*)
       backend=true
       ;;
-    # ── Everything else -- repo root, .github/, scripts/, infra/, k8s/,
+    # ── Everything else -- repo root, .github/, scripts/, infra/,
     # nginx/, docker-compose*.yml, pfv -- is unclassified and therefore
     # EVERYTHING. Backend tests assert on several of these (.do/app.yaml,
     # .github/workflows/*, scripts/ci/*, pfv), and an unknown new top-level
