@@ -14,10 +14,9 @@ Plan window: pick a quiet hour. Total downtime: ~10–20 min for the size of the
 PFV dataset today. Mostly waiting on dump + import.
 
 > **MySQL 8.0 -> 8.4 upgrade (TBD-360) — DONE 2026-08-19. Production runs
-> 8.4.11.** The ordered checklist is in
-> [`MYSQL-84-CUTOVER.md`](MYSQL-84-CUTOVER.md) and the executed record, with the
-> deviations, is in `specs/2026-08-18-mysql-84-cutover-record.md`; the full
-> analysis is in `specs/2026-08-09-mysql-84-lts-upgrade.md`.
+> 8.4.11.** The executed record, with the deviations, is in
+> `specs/2026-08-18-mysql-84-cutover-record.md`; the full analysis is in
+> `specs/2026-08-09-mysql-84-lts-upgrade.md`.
 >
 > ⚠⚠ **The scale-to-0 procedure described further down this file does not
 > work, and its CLI form fails SILENTLY.** `doctl apps update --spec` with
@@ -829,16 +828,15 @@ config change.
 
 ⚠ **A MySQL MAJOR move is not this procedure.** 8.4 to 9.x removes
 `mysql_native_password` entirely, cannot be reversed in place, and the whole
-evidence base in this repo — `Migration Checks`, both rehearsal scripts, the
-driver verification — is 8.4-only. See `MYSQL-84-CUTOVER.md`, and expect a
-rehearsal on a scratch droplet before anything touches production.
+evidence base in this repo — `Migration Checks` and the driver verification —
+is 8.4-only. Expect a rehearsal on a scratch droplet before anything touches
+production.
 
 ⚠ **If the repo-track fence fails, do not clear it by unholding and
 upgrading.** It means `apt` is offering a different `major.minor` from the one
 this host runs, which is repo drift, not a pending patch. Check
 `debconf-show mysql-apt-config` (`select-server` must be `mysql-8.4-lts`) and
-`/etc/apt/sources.list.d/mysql.list` against the preseed in
-`MYSQL-84-EXECUTE.md`.
+`/etc/apt/sources.list.d/mysql.list` for the same drift.
 
 ## Credential rotation (TBD-414)
 
@@ -1288,12 +1286,12 @@ roughly seven minutes of the 24-minute outage on 2026-08-19.
 
 ⚠ **`--check --diff` no longer shows you the Redis config diff.** The task that
 installs `00-static.conf` now carries `no_log: true`, so its diff is censored.
-`MYSQL-84-EXECUTE.md` used to tell you to confirm that diff touches only the
-`requirepass` line, because the same file carries `bind`, and a wrong `bind`
-means Redis stops listening on the address App Platform uses. That check is no
-longer available from the dry run. Verify `bind` instead by reading the rendered
-template source against the inventory before the run, and rely on the role's own
-live `bind` fence — which runs after apply, and is what actually catches it.
+That diff should touch only the `requirepass` line — the same file carries
+`bind`, and a wrong `bind` means Redis stops listening on the address App
+Platform uses — but that check is no longer available from the dry run. Verify
+`bind` instead by reading the rendered template source against the inventory
+before the run, and rely on the role's own live `bind` fence — which runs
+after apply, and is what actually catches it.
 
 ⚠ Reading the *existing* `inventory.yml` is not sufficient for that check:
 `run-playbook.sh:96-105` **regenerates** the inventory at run time, so the

@@ -1140,8 +1140,9 @@ async def _validate_single_refresh_token(
     # JWT issued after PR 2 ships. Legacy tokens (no jti / no sid) are
     # rejected with the same 401 string the cutoff check uses so the
     # frontend's terminal-vs-transient classifier needs no change. The
-    # planned reauth break is operator-decision Q7 — see
-    # infra/PR2_REAUTH_BREAK.md.
+    # planned reauth break is operator-decision Q7 (spec §11): pre-launch,
+    # before any external user held a session, one forced reauth wave beat
+    # carrying a backcompat shim for the old non-jti validation path.
     if not jti or not sid:
         _log_refresh_rejected(
             "missing_jti_or_sid",

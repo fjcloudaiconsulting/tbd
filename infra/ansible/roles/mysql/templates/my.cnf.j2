@@ -92,7 +92,7 @@ innodb_io_capacity = {{ mysql_innodb_io_capacity }}
 
 # --- 8.4 default drift (TBD-360) ---
 # Booting the SAME datadir under 8.0.46 and 8.4.11 and diffing SHOW GLOBAL
-# VARIABLES (see infra/rehearse-84-upgrade.sh, which reproduces this):
+# VARIABLES:
 #
 #   25 value changes on names present in both
 #   15 variables REMOVED in 8.4 -- including `default_authentication_plugin`,

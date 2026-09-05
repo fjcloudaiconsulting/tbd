@@ -89,10 +89,9 @@ module "data_droplet" {
   # Do not start the cutover on the strength of this file alone.
   #
   # ⚠ This is the SECOND net. The load-bearing rollback artifact for the window
-  # is the manual cold snapshot in infra/MYSQL-84-CUTOVER.md step 3 -- taken
-  # deliberately, immediately pre-cutover, guaranteed to exist. Note the two
-  # restore with DIFFERENT verbs: a backup with `droplet-action restore`, a
-  # snapshot with `droplet-action rebuild`.
+  # is a manual cold snapshot -- taken deliberately, immediately pre-cutover,
+  # guaranteed to exist. Note the two restore with DIFFERENT verbs: a backup
+  # with `droplet-action restore`, a snapshot with `droplet-action rebuild`.
   # TBD-399: RE-ENABLE BEFORE ANY FUTURE ONE-WAY-DOOR WINDOW.
   # This was true only for the TBD-360 MySQL 8.4 cutover, where a restorable
   # image was the gate on proceeding at all. Reverted afterwards as the ticket
