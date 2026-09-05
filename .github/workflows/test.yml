@@ -186,11 +186,28 @@ jobs:
           # Dedicated var (NOT REDIS_URL) so only the opt-in real-Lua
           # reuse-detection tests use real Redis; app config stays unchanged.
           TEST_REAL_REDIS_URL: redis://localhost:6379/0
-        run: pytest --splits ${{ strategy.job-total }} --group ${{ matrix.group }} --durations-path .test_durations
+          # Per-shard coverage data file, combined by the `backend` aggregate
+          # below (TBD-498). Six shards writing the default `.coverage` would
+          # clobber each other; this keeps each shard's data file distinct.
+          COVERAGE_FILE: .coverage.${{ matrix.group }}
+        run: pytest --splits ${{ strategy.job-total }} --group ${{ matrix.group }} --durations-path .test_durations --cov=app --cov-report=
 
       - name: Run backend syntax smoke
         if: ${{ matrix.group == 1 }}
         run: python -m compileall backend/app
+
+      # Uploaded so the `backend` aggregate can combine all six shards into
+      # one number — a per-shard `--cov` figure is a slice, not a number
+      # (TBD-498). `include-hidden-files` is required: the data file is a
+      # dotfile and `upload-artifact@v4` skips those by default, silently.
+      - name: Upload shard coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.group }}
+          path: backend/.coverage.${{ matrix.group }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
 
   # Stable aggregate gate. Branch protection / required-check config can
   # point at this single "Backend Checks" context; it passes only when
@@ -311,6 +328,44 @@ jobs:
           "${{ needs.migrations.result }}"
           "${{ needs.changes.outputs.migrations }}"
           "Migration Checks"
+
+      # ── Coverage reporting (TBD-498) ─────────────────────────────────────
+      # Deliberately AFTER the gate assertions above: this is reporting, not
+      # gating, and `continue-on-error: true` below means it must never be
+      # able to influence whether this required context passes.
+      #
+      # Six shards ran with `--cov`; a single shard's figure is a slice, not
+      # a number, so the six `.coverage.<group>` data files are combined here
+      # into one report. No coverage threshold and no badge — measure first,
+      # look at the real numbers before advertising anything on a public
+      # README.
+      - name: Download shard coverage data
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: cov
+
+      - name: Set up Python for coverage combine
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Combine shard coverage and report
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        continue-on-error: true
+        run: |
+          pip install coverage==7.6.10
+          mkdir -p cov && cd cov
+          find . -name '.coverage.*' -exec mv {} . \; 2>/dev/null || true
+          coverage combine --rcfile=/dev/null . || true
+          {
+            echo "## Backend coverage"
+            echo '```'
+            coverage report --rcfile=/dev/null 2>&1 | tail -25 || echo "no data"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Migration Checks (TBD-212) ───────────────────────────────────────────
   # The ONLY place CI executes migrations against MySQL 8.
