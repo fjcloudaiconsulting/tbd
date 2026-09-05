@@ -1,5 +1,8 @@
 # The Better Decision
 
+[![Test](https://github.com/fjcloudaiconsulting/tbd/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/fjcloudaiconsulting/tbd/actions/workflows/test.yml)
+[![Release](https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml)
+
 Personal finance management for people who actually want to understand where their money goes.
 
 Track income and expenses across multiple accounts, set budgets per category, forecast future spending, import bank CSVs, and manage recurring transactions, all org-scoped so multiple users can share a household's finances.
