@@ -402,8 +402,7 @@ services:
 # Pre-deploy job: run Alembic migrations exactly once before any backend
 # replica starts. This is the canonical "init container" pattern for App
 # Platform — the new revision is held back until the job exits 0, so a
-# long migration never causes the backend's serving probe to fail. The
-# k8s/ Helm chart uses a matching initContainer in templates/backend.yaml.
+# long migration never causes the backend's serving probe to fail.
 #
 # DATABASE_URL is bound here directly (App Platform does not auto-inherit
 # secrets across components). Same encrypted reference the backend service

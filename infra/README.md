@@ -254,7 +254,7 @@ file alone.
 |---|---|---|---|---|---|
 | `backend` | service | `backend/` + `backend/Dockerfile` | 8000 | `basic-xxs` x 1 | FastAPI. Health probe `/health`. |
 | `frontend` | service | `frontend/` + `frontend/Dockerfile` | 3000 | `basic-xxs` x 1 | Next.js standalone build. Health probe `/health`. |
-| `migrate` | PRE_DEPLOY job | `backend/` + `backend/Dockerfile` | n/a | `basic-xxs` x 1 | `python /app/scripts/migrate.py`. Runs once per deploy before any backend replica starts (the canonical init-container pattern for App Platform). New revision is held back until the job exits 0, so a long migration never trips the backend's serving probe. Matching `initContainer` lives in the k8s/ Helm chart `templates/backend.yaml`. See `infra/MIGRATION.md` and the migrate wrapper at `backend/scripts/migrate.py`. |
+| `migrate` | PRE_DEPLOY job | `backend/` + `backend/Dockerfile` | n/a | `basic-xxs` x 1 | `python /app/scripts/migrate.py`. Runs once per deploy before any backend replica starts (the canonical init-container pattern for App Platform). New revision is held back until the job exits 0, so a long migration never trips the backend's serving probe. See `infra/MIGRATION.md` and the migrate wrapper at `backend/scripts/migrate.py`. |
 
 ### Ingress
 

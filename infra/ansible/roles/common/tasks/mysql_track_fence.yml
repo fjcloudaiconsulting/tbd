@@ -67,8 +67,8 @@
       The apt repository selection has drifted. Do NOT unhold and upgrade to
       clear this: a MySQL major jump is not reversible in place and 9.x is an
       Innovation release. Check `debconf-show mysql-apt-config` and
-      /etc/apt/sources.list.d/mysql.list against MYSQL-84-EXECUTE.md's
-      preseed (select-server = mysql-8.4-lts). An unreadable track means apt
+      /etc/apt/sources.list.d/mysql.list against the mysql-apt-config preseed
+      (select-server = mysql-8.4-lts). An unreadable track means apt
       returned no Candidate at all -- usually an expired repo signing key.
   vars:
     mysql_apt_installed_track: "{{ common_mysql_apt_policy.stdout | apt_policy_installed | apt_version_track }}"

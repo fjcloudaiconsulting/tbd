@@ -73,3 +73,6 @@ docker-compose.loan-test.yml
 # the committed artifact is tests/act-guard/act-baseline.json.
 frontend/.act-warnings.json
 frontend/tests/act-guard/.run*.json
+
+# Agent tooling state, consistent with .claude/ and .superpowers/ above
+.impeccable/

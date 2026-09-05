@@ -123,9 +123,8 @@
 # ⚠ no_log: because `lineinfile: state=absent` renders the lines it REMOVES
 # under --diff, and on any box still carrying the CONFIG REWRITE residue those
 # lines are `requirepass "<old password>"` and a `user default` ACL entry
-# carrying its sha256. The documented dry run tees --diff output to a file
-# (MYSQL-84-EXECUTE.md 0.3); TBD-414 exists because a password reached a
-# transcript once already.
+# carrying its sha256. The documented dry run tees --diff output to a file;
+# TBD-414 exists because a password reached a transcript once already.
 - name: Purge role-owned directives from redis.conf so they cannot shadow the drop-ins
   ansible.builtin.lineinfile:
     path: /etc/redis/redis.conf

@@ -271,6 +271,19 @@ def test_a_nested_markdown_file_is_still_prose(tmp_path):
 
 
 @needs_git
+def test_specs_path_is_gone_and_a_non_md_file_there_is_not_inert(tmp_path):
+    """`specs/` left the repo in TBD-495. Its inert pattern went with it.
+
+    A stray non-.md file under a resurrected specs/ must classify as
+    EVERYTHING, not as prose: an unknown path is never silently inert.
+    """
+    repo, base = _repo(tmp_path, {"specs/leftover.txt": "x\n"})
+    out = _detect(repo, tmp_path, base=base)
+    assert out["backend"] == "true"
+    assert out["frontend"] == "true"
+
+
+@needs_git
 def test_an_empty_diff_is_an_answer_not_an_error(tmp_path):
     repo, base = _repo(tmp_path, {})
     out = _detect(repo, tmp_path, base=base)

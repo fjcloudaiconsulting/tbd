@@ -719,7 +719,7 @@ sequenceDiagram
 
 1. **Local dev (backend lifespan)**: `./pfv start | restart | rebuild` boots the backend. Its FastAPI lifespan calls `_run_migrations()` against the shared MySQL volume in dev. The lifespan reads `/app/.git/HEAD` and **refuses to migrate when the host checkout is on a non-main branch** (or is detached / unreadable). Override with `PFV_MIGRATE_OK_OFF_MAIN=1` in `.env` or the shell.
 2. **`./pfv migrate` (local CLI)**: same branch guard. Runs inside the local backend container. Never invoke from an agent worktree (it always targets the default `pfv` compose project). See `reference_shared_mysql_volume_trap.md`.
-3. **Production (DO App Platform `PRE_DEPLOY` job)**: declared in `.do/app.yaml`, runs `python /app/scripts/migrate.py`. The new revision is held back until this job exits 0. The same wrapper is also used by the K8s init container in `k8s/templates/backend.yaml` and by the `migrate` service in `docker-compose.prod.yml`.
+3. **Production (DO App Platform `PRE_DEPLOY` job)**: declared in `.do/app.yaml`, runs `python /app/scripts/migrate.py`. The new revision is held back until this job exits 0. The same wrapper is also used by the `migrate` service in `docker-compose.prod.yml`.
 
 ### What the wrapper guarantees
 

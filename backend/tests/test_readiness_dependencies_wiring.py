@@ -18,6 +18,10 @@ that make all of them resolvable inside the container; a container built before
 those mounts existed shows this module red until it is force-recreated, and
 the error below says so.
 """
+# TBD-495: S4 and S5 fenced the Helm chart's ingress rule and readiness
+# probe. The chart was deleted as unused scaffolding -- it was named `pfv2`,
+# was never deployed, and production is DO App Platform. Restore both fences
+# alongside the chart if Kubernetes ever becomes a real target.
 from __future__ import annotations
 
 import os
@@ -154,74 +158,13 @@ def test_s3_nginx_routes_the_endpoint_exactly():
     )
 
 
-def test_s4_k8s_ingress_routes_the_endpoint_exactly():
-    """S4 — the k8s chart's ``/health`` rule is ``pathType: Exact``."""
-    doc = yaml.safe_load(
-        _strip_helm(_artifact("k8s/templates/ingress.yaml").read_text())
-    )
-
-    # Collect path entries by walking the tree rather than navigating a fixed
-    # shape. Stripping Helm lines removes `- host: {{ ... }}`, which collapses
-    # `spec.rules` from a list into a mapping — so `doc["spec"]["rules"][0]`
-    # is not a stable seam. The `service.name` is templated away entirely,
-    # which is why this asserts routing shape and not the backend name.
-    found: list[dict] = []
-
-    def walk(node):
-        if isinstance(node, dict):
-            if "path" in node and "pathType" in node:
-                found.append(node)
-            for v in node.values():
-                walk(v)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v)
-
-    walk(doc)
-    assert found, "parsed no ingress path entries at all"
-
-    match = [e for e in found if e["path"] == ENDPOINT]
-    assert match, (
-        f"no ingress rule for {ENDPOINT}; /health is pathType Exact so it "
-        f"does not cover it. Paths present: {[e['path'] for e in found]}"
-    )
-    assert match[0]["pathType"] == "Exact", match[0]
-
-
-def test_s5_k8s_readiness_probe_stays_on_ready_and_is_bounded():
-    """S5 — two things at once, both regressions someone would plausibly ship.
-
-    The probe must keep pointing at ``/ready`` (repointing it at the
-    dependency endpoint would evict every replica on a shared-Redis outage),
-    and it must carry an explicit ``timeoutSeconds`` because the k8s DEFAULT
-    IS 1s — under the app's own 3.0s database bound.
-    """
-    safe = _strip_helm(_artifact("k8s/templates/backend.yaml").read_text())
-    # The file holds several documents (Deployment, Service, ...).
-    docs = [d for d in yaml.safe_load_all(safe) if isinstance(d, dict)]
-    deployments = [d for d in docs if d.get("kind") == "Deployment"]
-    assert deployments, f"no Deployment in the chart; kinds: {[d.get('kind') for d in docs]}"
-    container = deployments[0]["spec"]["template"]["spec"]["containers"][0]
-    probe = container["readinessProbe"]
-
-    assert probe["httpGet"]["path"] == "/ready", (
-        "the readinessProbe must stay on /ready. Pointing it at "
-        f"{ENDPOINT} makes a Redis outage evict every replica at once."
-    )
-    assert probe.get("timeoutSeconds", 1) >= 3, (
-        "readinessProbe needs an explicit timeoutSeconds >= 3; the k8s "
-        "default is 1s, which is under the app's own database probe bound."
-    )
-
-
 def test_s7_do_app_spec_routes_the_endpoint_to_the_backend():
     """S7 — the ONLY environment that is actually in production.
 
-    S3 fences dev nginx, S4/S5 fence the k8s chart (deployed nowhere today),
-    S1/S2 fence CI and S6 the post-deploy smoke test. Production is DO App
-    Platform, driven by the committed ``.do/app.yaml``, and it had no fence at
-    all — the one place where losing this route means the alarm silently stops
-    existing.
+    S3 fences dev nginx, S1/S2 fence CI and S6 the post-deploy smoke test.
+    Production is DO App Platform, driven by the committed ``.do/app.yaml``,
+    and it had no fence at all — the one place where losing this route means
+    the alarm silently stops existing.
 
     ⚠ The route is INCIDENTAL, which is exactly why it needs a fence. Unlike
     nginx's ``location =`` and the chart's ``pathType: Exact``, App Platform's
