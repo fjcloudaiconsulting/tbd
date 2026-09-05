@@ -73,6 +73,6 @@ mysql_server_detect_order:
 
 # Fallback for a host with NO MySQL server installed yet (a fresh bootstrap).
 # Ubuntu's metapackage, because nothing in this repo configures Oracle's apt
-# repo -- see infra/MYSQL-84-EXECUTE.md. Override per host to bootstrap a
-# replacement data droplet onto the Oracle track deliberately.
+# repo. Override per host to bootstrap a replacement data droplet onto the
+# Oracle track deliberately.
 mysql_server_package: mysql-server

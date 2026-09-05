@@ -264,11 +264,10 @@ async def lifespan(app: FastAPI):
     # ``verify_ai_credential_kek_separation`` docstring.
     verify_ai_credential_kek_separation()
     # Production runs migrations as a true init step (App Platform
-    # PRE_DEPLOY job in .do/app.yaml; initContainer in k8s/templates/
-    # backend.yaml) so they don't gate uvicorn's port-bind. Dev runs them
-    # inline because the dev orchestrator (docker-compose) has no PRE_DEPLOY
-    # equivalent. The alternative is a manual `./pfv migrate` after every
-    # rebuild.
+    # PRE_DEPLOY job in .do/app.yaml) so they don't gate uvicorn's
+    # port-bind. Dev runs them inline because the dev orchestrator
+    # (docker-compose) has no PRE_DEPLOY equivalent. The alternative is a
+    # manual `./pfv migrate` after every rebuild.
     if app_settings.app_env != "production":
         await _run_migrations()
     # NOTE: subscription backfill used to run here on every boot. It now
@@ -556,8 +555,8 @@ async def health():
 #
 # ``/ready`` is the ROTATION gate: "should traffic be sent to this instance".
 # It checks the database and NOTHING else, and its response contract is
-# frozen. ``k8s/templates/backend.yaml`` points a readinessProbe at it, and
-# Redis is a single shared instance — so making a Redis failure non-200 here
+# frozen. The platform readiness probe points at it, and Redis is a
+# single shared instance — so making a Redis failure non-200 here
 # would fail every replica's readiness at once and evict the entire
 # deployment, including the data plane, which does not need Redis at all
 # (``app/deps.py`` has zero Redis references; access tokens live 15 minutes).

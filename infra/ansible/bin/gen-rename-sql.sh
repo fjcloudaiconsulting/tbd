@@ -43,7 +43,7 @@ done
 remote() { ssh -o BatchMode=yes -o ConnectTimeout=10 -i "$SSH_KEY" "root@$HOST" "$1"; }
 
 # --no-defaults: /root/.my.cnf forces user=pfv_backup, which cannot see
-# everything we need. See MYSQL-84-CUTOVER.md.
+# everything we need.
 OBJS=$(remote "mysql --no-defaults -N -B -e \"SELECT CONCAT(
   (SELECT COUNT(*) FROM information_schema.views    WHERE table_schema='$FROM'),'/',
   (SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema='$FROM'),'/',

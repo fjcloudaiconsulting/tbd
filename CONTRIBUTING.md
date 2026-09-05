@@ -232,7 +232,7 @@ For the full router-by-router and service-by-service map, see the live file tree
 
 - **All config via env vars.** `pydantic-settings` in backend, `NEXT_PUBLIC_` prefix in frontend. See `docs/operations/ENVIRONMENT.md`.
 - **Stateless backend.** No in-memory state. JWT for auth. Ready for horizontal scaling.
-- **Migrations auto-run on startup in dev.** In production they run as a `PRE_DEPLOY` job (App Platform) or initContainer (k8s) before the app starts. See [Database migrations](#database-migrations).
+- **Migrations auto-run on startup in dev.** In production they run as a `PRE_DEPLOY` job (App Platform) before the app starts. See [Database migrations](#database-migrations).
 - **First user is superadmin.** No bootstrap seed needed.
 - **Org-scoped data.** Every query filters by `org_id`.
 - **API versioned at `/api/v1/`.** Breaking changes ship as `/api/v2/` while v1 stays live.
@@ -327,7 +327,7 @@ Exactly **26** `(method, path)` pairs reach a handler without `get_current_user`
 | Route | Why it cannot carry auth |
 | --- | --- |
 | `GET /health` | Platform liveness probe. |
-| `GET /ready` | Platform readiness probe. **Database only**, deliberately — it is the rotation gate a k8s readinessProbe pulls replicas out on. |
+| `GET /ready` | Platform readiness probe. **Database only**, deliberately — it is the rotation gate a platform readiness probe pulls replicas out on. |
 | `GET /health/dependencies` | Per-dependency readiness (TBD-413): database **and** Redis, 503 when a required one is unusable. Anonymous because an uptime monitor holds no bearer token. Reports a closed vocabulary of coarse states and never exception text, hostnames or ports. |
 | `GET /api/v1/auth/status` | Serves feature flags to anonymous and authenticated callers alike. Uses `get_current_user_optional`, which returns `None` rather than raising. |
 | `GET /api/v1/auth/check-username` | Signup-time availability probe; runs before any account exists. |

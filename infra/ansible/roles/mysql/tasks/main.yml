@@ -14,7 +14,7 @@
 # connection dies at the next reconnect.
 #
 # There is no other guard: `changed: false` is no longer available as evidence
-# that inventory and server agree (see MYSQL-84-CUTOVER.md, step 1).
+# that inventory and server agree.
 - name: Assert MySQL secrets were supplied by the inventory, not defaulted
   ansible.builtin.assert:
     that:
@@ -276,20 +276,21 @@
 # nothing. Mechanically: `command` declares supports_check_mode, so under
 # --check the module does not run the query -- it self-reports skipped with
 # stdout left at '' -- and the asserts then fail on a perfectly healthy box.
-# Measured 2026-08-18 against production: the documented Phase 0.3 dry run
-# (MYSQL-84-EXECUTE.md) reported failed=1 for exactly this reason, on the one
-# step whose whole job is to say "nothing unexpected will happen". The fail
-# message named the user as "nothing" -- an empty read, not an identity.
+# Measured 2026-08-18 against production: a --check --diff dry run reported
+# failed=1 for exactly this reason, on the one step whose whole job is to say
+# "nothing unexpected will happen". The fail message named the user as
+# "nothing" -- an empty read, not an identity.
 #
 # What has to be gated is the ASSERTS: they are the half that cannot be
 # satisfied before convergence. The reads are gated with them only because
 # nothing else consumes them. `check_mode: false` on the reads plus gated
 # asserts is a defensible alternative -- it would let a dry run PRINT the
-# pre-play identity -- but that signal belongs where the operator can see it
-# without -v, so it lives in MYSQL-84-EXECUTE.md 0.1 as an explicit bare
-# `mysql` call instead. It is deliberately not a reason to leave the asserts
-# ungated: a red dry run on a box that has not been played yet stops the
-# operator at the top of the window for a state the play is about to fix.
+# pre-play identity -- but that signal belongs where the operator can already
+# get it without -v: a manual bare `mysql` identity check run by hand during
+# the dry run, not a duplicate print here. It is deliberately not a reason to
+# leave the asserts ungated: a red dry run on a box that has not been played
+# yet stops the operator at the top of the window for a state the play is
+# about to fix.
 # ---------------------------------------------------------------------------
 - name: Verify no default file downgrades the mysql client (real runs only)
   when: not ansible_check_mode
@@ -399,6 +400,6 @@
           expected: {{ mysql_expected_config | join('|') }}
           live:     {{ mysql_live_config_after.stdout | trim }}
           Most likely /etc/mysql/mysql.conf.d is no longer included by
-          /etc/mysql/my.cnf. See MYSQL-84-CUTOVER.md section 5: `mysqld
-          --validate-config` cannot detect this, because a file that is never
-          included is never read and validation still exits 0.
+          /etc/mysql/my.cnf: `mysqld --validate-config` cannot detect this,
+          because a file that is never included is never read and validation
+          still exits 0.

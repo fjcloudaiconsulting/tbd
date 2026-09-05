@@ -102,7 +102,7 @@ while IFS= read -r f; do
     # ── Inert: prose. Nothing in either test suite reads these files, and
     # they are matched FIRST so `backend/NOTES.md` counts as prose rather
     # than as a backend change.
-    *.md|specs/*|.gitignore)
+    *.md|.gitignore)
       ;;
     # ── Shared: `backend/tests/test_report_sources_frontend_contract.py` and
     # `test_period_status_frontend_contract.py` read these fixtures from the
@@ -118,7 +118,7 @@ while IFS= read -r f; do
     backend/*)
       backend=true
       ;;
-    # ── Everything else -- repo root, .github/, scripts/, infra/, k8s/,
+    # ── Everything else -- repo root, .github/, scripts/, infra/,
     # nginx/, docker-compose*.yml, pfv -- is unclassified and therefore
     # EVERYTHING. Backend tests assert on several of these (.do/app.yaml,
     # .github/workflows/*, scripts/ci/*, pfv), and an unknown new top-level

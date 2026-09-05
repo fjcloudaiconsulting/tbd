@@ -49,7 +49,7 @@ TBD-414 both secret-bearing template tasks carry `no_log: true`, so their diffs
 are censored. ⚠ But `-vvv` still prints `redis_password`: it rides an
 `environment:` prefix on the module command line, and `SSH: EXEC` is not
 censored by `no_log`. Do not tee it
-to a world-readable file; see `infra/MYSQL-84-EXECUTE.md` 0.3.
+to a world-readable file.
 
 ⚠⚠ **A target is mandatory; there is no default.** Since TBD-207 the credentials
 are Terraform-generated, so `--production` **rotates** them — and the app keeps

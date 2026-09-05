@@ -10,11 +10,11 @@
    That was not cosmetic. Read-only queries all succeeded, so diagnostics looked
    fine, and only MUTATING commands failed -- with
    `ERROR 1227 ... you need SUPER or SYSTEM_VARIABLES_ADMIN`. Measured
-   2026-08-18: it broke `SET GLOBAL innodb_fast_shutdown = 0`, the step
-   MYSQL-84-CUTOVER.md marks REQUIRED before an in-place upgrade. dpkg then
-   stops mysqld with the default FAST shutdown and the data-dictionary upgrade
-   begins from a non-clean state -- while the operator believes they followed
-   the runbook, because the failure is one error line in a wall of output.
+   2026-08-18: it broke `SET GLOBAL innodb_fast_shutdown = 0`, a step required
+   before an in-place upgrade. dpkg then stops mysqld with the default FAST
+   shutdown and the data-dictionary upgrade begins from a non-clean state --
+   while the operator believes they followed the runbook, because the failure
+   is one error line in a wall of output.
 
    Verified: with [mysqldump] alone, mysqldump still picks these credentials up
    and `mysql` falls through to root@localhost via auth_socket.

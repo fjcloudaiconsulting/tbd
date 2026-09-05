@@ -16,7 +16,7 @@ Reproduced live on 2026-08-22 before this change existed::
 
 ## Why a new endpoint instead of making ``/ready`` 503
 
-``/ready`` is the ROTATION gate. ``k8s/templates/backend.yaml:56`` points a
+``/ready`` is the ROTATION gate. The platform readiness probe points a
 readinessProbe at it, and Redis is a single shared instance, so a Redis outage
 would fail every replica's readiness simultaneously and evict the whole
 deployment — including the data plane, which does not need Redis at all
@@ -876,7 +876,7 @@ def test_f18_ready_reports_503_with_its_frozen_body_when_the_database_is_down(
     F10 pins the 200 body; this diff CHANGED ``/ready`` (the query now runs
     under ``asyncio.wait_for``) and its 503 half had no fence at all. The body
     is asserted by strict equality because a rotation gate's contract is what
-    ``k8s/templates/backend.yaml`` and ``scripts/smoke-test.sh`` read.
+    ``scripts/smoke-test.sh`` reads.
     """
     _break_db(monkeypatch)
     _set_redis(monkeypatch, _Pinger())
