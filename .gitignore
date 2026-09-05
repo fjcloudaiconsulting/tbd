@@ -76,3 +76,6 @@ frontend/tests/act-guard/.run*.json
 
 # Agent tooling state, consistent with .claude/ and .superpowers/ above
 .impeccable/
+
+# TBD-498: local vitest coverage output, regenerated on every run.
+frontend/coverage/

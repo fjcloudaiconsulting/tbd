@@ -15,5 +15,11 @@ export default defineConfig({
     globals: true,
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
     setupFiles: ["./vitest.setup.ts"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text-summary"],
+      reportsDirectory: "./coverage",
+      exclude: ["node_modules/**", "tests/**", ".next/**", "out-apex/**", "**/*.config.*", "**/*.d.ts"],
+    },
   },
 });
