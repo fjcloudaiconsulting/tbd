@@ -903,12 +903,15 @@ ADMISSION_SAMPLES: tuple[tuple[str, str, str, str, str], ...] = (
     ("superadmin:api_tokens", "GET", "/api/v1/system/api-tokens", EXPECT_200, ""),
     # No GET-shaped route exists for these three; every route carrying them
     # mutates or addresses a specific entity, so a placeholder id 404s.
+    # Measured: returns 200 {"deleted_count": 0} against an empty DB, so it can
+    # carry the strong assertion. NOT the {org_id}/members route, which turns a
+    # "target is superadmin" ConflictError into a 403 for a business reason.
     (
         "perm:orgs.manage",
         "POST",
         "/api/v1/admin/orgs/feature-overrides/sweep-expired",
-        NOT_REFUSED,
-        "sweep is a mutation; asserts only that the gate admitted the caller",
+        EXPECT_200,
+        "",
     ),
     (
         "perm:users.delete",
@@ -934,6 +937,26 @@ def test_admission_samples_cover_every_descriptor():
     assert covered == all_desc, (
         f"descriptors with no admission sample: {sorted(all_desc - covered)}; "
         f"samples for descriptors that no longer exist: {sorted(covered - all_desc)}"
+    )
+
+
+def test_admission_sample_paths_are_real_roster_routes():
+    """⚠ A mistyped NOT_REFUSED sample path is SILENTLY GREEN without this.
+
+    A typo yields a routing 404, and 404 satisfies ``not in (401, 403)``. The
+    EXPECT_200 rows are immune (404 != 200), so this closes the gap for exactly
+    the rows that carry the weaker assertion. The descriptor-coverage test above
+    compares descriptors only and never looks at the paths.
+    """
+    bad = [
+        (d, m, path)
+        for d, m, path, _, _ in ADMISSION_SAMPLES
+        if (m, path.split("?")[0]) not in ROSTER
+    ]
+    assert not bad, (
+        "admission sample(s) whose (method, path) is not in the roster — a "
+        "mistyped path here 404s, which passes the NOT_REFUSED assertion:\n  "
+        + "\n  ".join(f"{d}: {m} {p}" for d, m, p in bad)
     )
 
 
@@ -1006,6 +1029,12 @@ async def test_c1_the_non_platform_caller_really_holds_no_platform_power(org_own
 
     Iterating ALL_PERMISSIONS rather than a hand-list means this extends itself
     the day a new Permission literal is added.
+
+    ⚠ All three assertions below collapse to ONE fact today: ``_platform_roles``
+    derives solely from ``is_superadmin``, and ``has_permission`` short-circuits
+    on it (``permissions.py:106``), because ``ROLE_PERMISSIONS`` is empty. They
+    are forward-proofing, not independent evidence — when partial platform roles
+    ship, ``_platform_roles`` becomes the assertion that actually carries weight.
     """
     from app.auth.permissions import _platform_roles
 
