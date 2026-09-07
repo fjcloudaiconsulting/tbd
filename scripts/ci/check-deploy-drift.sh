@@ -76,7 +76,39 @@ elif printf '%s' "$COMMITS" | grep -q ','; then
 elif [ "$COMMITS" != "$TAG_SHA" ]; then
   DRIFTED=1
   add "Production is running \`${COMMITS:0:8}\` but the latest release **${TAG}** is \`${TAG_SHA:0:8}\`."
-  add "A release was published that production is not serving: a failed deploy, or an auto-rollback."
+
+  # ⚠ TBD-499: the three ways this can be true are NOT the same incident, and
+  # saying "a failed deploy, or an auto-rollback" for all of them sends the
+  # reader hunting for a rollback that never happened. Measured 2026-09-06:
+  # after the TBD-496 history rewrite, `deploy.yml --ref main` put production
+  # AHEAD of the tag and this reported it as a failed deploy.
+  #
+  # `git merge-base --is-ancestor A B` is true when A is an ancestor of B.
+  # Both commits may be missing locally (a history rewrite orphans the
+  # deployed SHA), so an unresolvable commit is its own case rather than
+  # silently falling through to "diverged".
+  # TBD-499: classify rather than guess. The three ways this can be true are
+  # not the same incident, and reporting them identically sends the reader
+  # hunting for a rollback that never happened. Measured 2026-09-06: after the
+  # TBD-496 history rewrite, `deploy.yml --ref main` put production AHEAD of
+  # the tag and this reported it as a failed deploy.
+  REL="$(bash "$(dirname "$0")/classify-deploy-drift.sh" "$COMMITS" "$TAG_SHA")"
+  case "$REL" in
+    behind)
+      N="$(git rev-list --count "${COMMITS}..${TAG_SHA}" 2>/dev/null || echo '?')"
+      add "Production is **${N} commit(s) BEHIND** the release. A release was published that production is not serving: a failed deploy, or an auto-rollback."
+      ;;
+    ahead)
+      N="$(git rev-list --count "${TAG_SHA}..${COMMITS}" 2>/dev/null || echo '?')"
+      add "Production is **${N} commit(s) AHEAD** of the release, serving code no release covers. The usual cause is a manual \`gh workflow run deploy.yml --ref main\`, which deploys \`main\` HEAD rather than the released commit. Not an incident, but the provenance invariant is broken until a release covers it."
+      ;;
+    unknown)
+      add "⚠ The deployed commit is **not in this repository**. Either history was rewritten after that deploy -- production is then serving fine code named by a SHA that no longer exists, and a redeploy re-records it -- or the deploy came from a fork."
+      ;;
+    *)
+      add "⚠ The deployed commit and the release tag have **DIVERGED**: neither is an ancestor of the other. The most serious of the three, and the least likely."
+      ;;
+  esac
 fi
 
 if [ "$PHASE" != "ACTIVE" ]; then
