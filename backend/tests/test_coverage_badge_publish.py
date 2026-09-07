@@ -94,12 +94,45 @@ def test_publish_step_cannot_fail_the_job(job: str, name: str) -> None:
 
 
 @pytest.mark.parametrize(("job", "name"), PUBLISH_STEPS)
-def test_publish_step_only_runs_on_main_pushes(job: str, name: str) -> None:
+def test_publish_step_only_runs_on_main(job: str, name: str) -> None:
     """The badge tracks `main`. Publishing from a PR would make it report
-    whatever branch last ran, which is worse than stale."""
+    whatever branch last ran, which is worse than stale.
+
+    `workflow_dispatch` is allowed alongside `push` so the pipeline can be
+    verified on demand rather than only by merging something. The branch gate
+    is what keeps the badge honest, and it must survive.
+    """
     condition = _step(job, name).get("if", "")
-    assert "github.event_name == 'push'" in condition, f"{job}/{name!r} is not push-gated"
-    assert "github.ref == 'refs/heads/main'" in condition, f"{job}/{name!r} is not main-gated"
+    assert "github.ref == 'refs/heads/main'" in condition, (
+        f"{job}/{name!r} lost its main-only gate; the badge would report "
+        f"whichever branch ran last"
+    )
+    assert "github.event_name" in condition, f"{job}/{name!r} has no event gate at all"
+    assert "pull_request" not in condition, (
+        f"{job}/{name!r} would publish from a pull request"
+    )
+
+
+def test_a_skipped_badge_update_is_visible() -> None:
+    """A soft failure that nobody can see is a frozen badge.
+
+    The script exits 0 on every error path so it can never redden a required
+    check. That is correct, and it is exactly why the skip must announce
+    itself: measured 2026-09-07, the first run after the secret was added had
+    started before it existed, both steps reported `success`, and nothing was
+    written. Without an annotation that state is indistinguishable from a
+    working badge.
+    """
+    script = BADGE_SCRIPT.read_text()
+    assert "::warning" in script, (
+        "the soft-fail path must emit a ::warning:: annotation, or a skipped "
+        "update is invisible in the Actions UI and the badge silently freezes"
+    )
+    # The annotation has to be inside the helper every guard routes through,
+    # not bolted onto one branch.
+    helper = script[script.index("warn()") : script.index("}", script.index("warn()"))]
+    assert "::warning" in helper, "the annotation must live in warn(), not one call site"
+    assert "exit 0" in helper, "warn() must still exit 0"
 
 
 def test_readme_badges_use_the_versionless_gist_url() -> None:

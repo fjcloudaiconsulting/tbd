@@ -371,7 +371,7 @@ jobs:
       # a PR -- the badge tracks `main`. Fails soft in the script as well as
       # here: a badge must never fail a required check.
       - name: Publish backend coverage badge
-        if: ${{ needs.changes.outputs.backend == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ needs.changes.outputs.backend == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
         continue-on-error: true
         env:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
@@ -680,7 +680,7 @@ jobs:
       # ⚠ `exit ${PIPESTATUS[0]}` on the step above is load-bearing: piping into
       # tee would otherwise report tee's exit code and turn a red suite green.
       - name: Publish frontend coverage badge
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
         continue-on-error: true
         env:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
