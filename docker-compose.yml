@@ -132,6 +132,12 @@ services:
       # than obeyed. Read-only because nothing in a container run should ever
       # write the deployment manifests.
       - ./nginx:/app/nginx:ro
+      # TBD-500: backend/tests/test_coverage_badge_publish.py asserts the
+      # README's coverage badges use the VERSIONLESS gist raw URL. Without
+      # this mount that fence raises FileNotFoundError in the container while
+      # staying green in CI, which is how a fence gets weakened rather than
+      # obeyed.
+      - ./README.md:/app/README.md:ro
       # TBD-345: read-only mount so test_seed_determinism.py can assert that
       # `pfv`'s cmd_seed still forwards SEED_* generically. Without it that
       # guard is green on a bare CI checkout (where the repo root is present)
