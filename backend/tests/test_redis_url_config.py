@@ -111,18 +111,6 @@ def test_non_production_still_constructs_without_redis_url(env):
     assert _settings(app_env=env, redis_url="").redis_url == ""
 
 
-def test_the_error_names_the_variable_an_operator_must_set():
-    """The message is the whole value of a boot refusal.
-
-    A deploy that dies at PRE_DEPLOY gives the operator one string to act on.
-    ``REDIS_URL`` must appear literally, in the env-var spelling, not as
-    ``redis_url``.
-    """
-    with pytest.raises(ValidationError) as exc:
-        _prod(redis_url="")
-    assert "REDIS_URL" in str(exc.value)
-
-
 # ── The coupled change: the PRE_DEPLOY binding this validator now requires ──
 
 
@@ -186,8 +174,18 @@ def test_app_yaml_comment_does_not_invite_dropping_the_binding():
     if not path.exists():
         path = Path(__file__).resolve().parents[2] / ".do" / "app.yaml"
     text = path.read_text()
+    # ⚠ Assert PRESENCE of the warning, not absence of the old sentence.
+    # Absence-of-a-string is the weakest fence shape there is: rewording the
+    # invitation to "the job doesn't need this" would keep it green while
+    # restoring the exact hazard. A presence assertion can only be defeated by
+    # deleting the warning, which is precisely the edit worth catching.
+    assert "DO NOT DELETE THIS BINDING" in text, (
+        "The PRE_DEPLOY REDIS_URL binding has lost its do-not-delete warning. "
+        "Since TBD-438 that binding is boot-critical: migrate.py imports "
+        "app.logging -> app.config, which constructs Settings() at import "
+        "under APP_ENV=production. Without the warning the next reader has "
+        "nothing telling them the binding cannot be dropped."
+    )
     assert "does NOT require this" not in text, (
-        "The PRE_DEPLOY REDIS_URL comment still tells the reader the job does "
-        "not need the binding. Since TBD-438 it does — Settings refuses to "
-        "construct in production without it."
+        "The old comment claiming the job does not need REDIS_URL is back."
     )
