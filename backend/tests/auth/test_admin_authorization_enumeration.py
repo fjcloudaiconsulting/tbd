@@ -340,6 +340,7 @@ EXPECTED_ROUTE_COUNT = 62
 # EMPTY, and it must stay that way without an explicit security review. An entry
 # here is a hole in the fence, not a convenience.
 UNGATED_ADMIN_EXEMPTIONS: frozenset[tuple[str, str]] = frozenset()
+EXPECTED_EXEMPTION_COUNT = 0
 
 # The six independently-defined require_superadmin modules (spec §3).
 SUPERADMIN_MODULES = (
@@ -608,12 +609,38 @@ def test_c5_roster_is_the_declared_size_and_has_no_duplicates():
     assert len(ROSTER) == EXPECTED_ROUTE_COUNT
 
 
-def test_c7_superadmin_vocabulary_is_exactly_the_six_known_gates():
-    """C7 — independent of the per-route map, so it is not a restatement of it.
+def test_ungated_exemption_list_has_not_grown():
+    """The exemption list is Leg 1a's fail-open surface.
 
-    This is the real backstop for a seventh ``require_superadmin`` (F9) and for
-    one of the six being deleted (F10): both change this set without necessarily
-    changing any single roster entry in a way review would notice.
+    Leg 1a's failure message tells the reader not to add to
+    UNGATED_ADMIN_EXEMPTIONS without a security review — but nothing enforced
+    that, so the cheapest way to make a red Leg 1a go green was to add an entry.
+    Same posture as ``test_no_roster_entry_is_ungated`` for the roster.
+    """
+    assert len(UNGATED_ADMIN_EXEMPTIONS) == EXPECTED_EXEMPTION_COUNT, (
+        "an admin route has been exempted from carrying an authorization gate. "
+        "That is a hole in the fence: it must come with a security review and a "
+        "deliberate bump of EXPECTED_EXEMPTION_COUNT, never a silent edit."
+    )
+
+
+def test_c7_superadmin_vocabulary_is_exactly_the_six_known_gates():
+    """C7 — the six gate objects are distinct, and all six are actually wired up.
+
+    ⚠ SCOPE, precisely. ``observed`` is built by :func:`descriptors_for`, which
+    can only emit ``superadmin:<m>`` for ``m`` already in
+    :data:`SUPERADMIN_MODULES`. So the ``⊆`` direction is true BY CONSTRUCTION
+    and cannot fail. What this test really asserts is the ``⊇`` direction: one
+    of the six exists but is wired to no route — a gate that was removed from
+    its last route, which review would otherwise not notice.
+
+    It is NOT the backstop for a seventh ``require_superadmin`` in a new module.
+    That is caught by Leg 1a, and only when the route sits under
+    ``/api/v1/admin/``; a seventh gate on a route mounted elsewhere is caught by
+    nothing here (module docstring, scope caveat 3).
+
+    Deleting one of the six IS caught, but by the ``getattr`` in
+    :func:`_superadmin_objects` raising at import, not by this assertion.
     """
     assert len(SUPERADMIN_GATES) == len(SUPERADMIN_MODULES), (
         "two of the six require_superadmin definitions are the same object — "
@@ -676,11 +703,6 @@ ROUTERS = [
     api_tokens_router,
     plans_router,
 ]
-
-
-@pytest.fixture(scope="module")
-def anyio_backend():
-    return "asyncio"
 
 
 @pytest.fixture
@@ -947,6 +969,18 @@ async def test_leg3_platform_admin_is_admitted(
             f"{descriptor}: {method} {path} refused a superadmin "
             f"({res.status_code}) — {why}: {res.text[:300]}"
         )
+        # ⚠ "not refused" alone cannot tell "the gate admitted the caller and
+        # the handler then 404'd on id 999999" from "the route never matched at
+        # all" — a routing 404 satisfies it just as well. That is this file's
+        # own critique of `!= 403`, one level down. Starlette's router emits a
+        # bare {"detail": "Not Found"}; a handler that ran emits its own body.
+        if res.status_code == 404:
+            body = res.json().get("detail")
+            assert body != "Not Found", (
+                f"{descriptor}: {method} {path} returned a ROUTING 404 — the "
+                "path did not match any route, so this sample proves nothing "
+                "about admission. Fix the sample path."
+            )
 
 
 async def test_c9_leg3_identity_is_real(app, platform_admin):
