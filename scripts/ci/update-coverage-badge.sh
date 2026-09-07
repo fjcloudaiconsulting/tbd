@@ -26,7 +26,18 @@ AREA="${1:-}"
 PCT="${2:-}"
 GIST_ID="${GIST_ID:-f195ef7d7c927448bc7ccfae53fb6d58}"
 
-warn() { echo "update-coverage-badge: $*" >&2; exit 0; }
+# ⚠ A SKIP MUST BE VISIBLE. This script fails soft so a badge can never redden
+# a required check -- but that means a skipped update is otherwise
+# indistinguishable from a successful one, and the badge sits frozen at a
+# plausible-looking number forever. Measured 2026-09-07: the first CI run after
+# the secret was added had actually started 5 minutes BEFORE it existed, both
+# steps reported `success`, and nothing was written. `::warning::` surfaces that
+# in the Actions run summary instead of only in the log body.
+warn() {
+  echo "::warning title=Coverage badge not updated::update-coverage-badge: $*"
+  echo "update-coverage-badge: $*" >&2
+  exit 0
+}
 
 case "$AREA" in
   backend|frontend) ;;
@@ -74,6 +85,7 @@ CODE=$(curl -sS -o /tmp/badge-resp.json -w '%{http_code}' \
 
 if [ "$CODE" = "200" ]; then
   echo "update-coverage-badge: ${AREA} = ${PCT}% (${COLOR})"
+  echo "coverage-badge-${AREA}: ${PCT}% (${COLOR})" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 else
-  warn "gist update returned HTTP ${CODE}"
+  warn "gist update returned HTTP ${CODE}; response: $(head -c 200 /tmp/badge-resp.json 2>/dev/null)"
 fi
