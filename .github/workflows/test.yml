@@ -367,6 +367,20 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # TBD-500: publish the NUMBER ONLY to a shields.io gist endpoint. Never on
+      # a PR -- the badge tracks `main`. Fails soft in the script as well as
+      # here: a badge must never fail a required check.
+      - name: Publish backend coverage badge
+        if: ${{ needs.changes.outputs.backend == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        continue-on-error: true
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          cd cov
+          PCT=$(coverage report --rcfile=/dev/null 2>/dev/null | tail -1 | awk '{print $NF}' | tr -d '%')
+          cd ..
+          ./scripts/ci/update-coverage-badge.sh backend "$PCT"
+
   # ── Migration Checks (TBD-212) ───────────────────────────────────────────
   # The ONLY place CI executes migrations against MySQL 8.
   #
@@ -660,7 +674,19 @@ jobs:
 
       - name: Run frontend tests
         working-directory: frontend
-        run: npm test
+        run: npm test | tee /tmp/fe-test.log; exit ${PIPESTATUS[0]}
+
+      # TBD-500: as above, number only, `main` pushes only, fails soft.
+      # ⚠ `exit ${PIPESTATUS[0]}` on the step above is load-bearing: piping into
+      # tee would otherwise report tee's exit code and turn a red suite green.
+      - name: Publish frontend coverage badge
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        continue-on-error: true
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          PCT=$(grep -m1 '^Statements' /tmp/fe-test.log | grep -oE '[0-9]+\.?[0-9]*%' | head -1 | tr -d '%')
+          ./scripts/ci/update-coverage-badge.sh frontend "$PCT"
 
       - name: Run frontend production build
         working-directory: frontend

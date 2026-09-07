@@ -2,6 +2,8 @@
 
 [![Test](https://github.com/fjcloudaiconsulting/tbd/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/fjcloudaiconsulting/tbd/actions/workflows/test.yml)
 [![Release](https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml)
+[![backend coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fflamarion%2Ff195ef7d7c927448bc7ccfae53fb6d58%2Fraw%2Ftbd-coverage-backend.json)](https://github.com/fjcloudaiconsulting/tbd/actions/workflows/test.yml)
+[![frontend coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fflamarion%2Ff195ef7d7c927448bc7ccfae53fb6d58%2Fraw%2Ftbd-coverage-frontend.json)](https://github.com/fjcloudaiconsulting/tbd/actions/workflows/test.yml)
 
 Personal finance management for people who actually want to understand where their money goes.
 
