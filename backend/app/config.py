@@ -528,6 +528,35 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_redis_url(self) -> "Settings":
+        # Redis is the auth SESSION STORE. Every token-issue path in
+        # ``routers/auth.py`` fails closed without it, so a production
+        # instance booted with this unset comes up looking healthy and then
+        # refuses every login (TBD-438).
+        #
+        # This earns a boot refusal under the criterion already stated above
+        # for ``founder_count_exclude_usernames``: a refusal is justified when
+        # losing the value breaks a SECURITY PRIMITIVE, not when the blast
+        # radius is cosmetic. Interactive session auth is the same class as
+        # the PAT hashing pepper, so it gets the same treatment rather than a
+        # new policy.
+        #
+        # ⚠ COUPLED TO ``.do/app.yaml``. ``scripts/migrate.py`` imports
+        # ``app.logging``, which imports this module, which constructs
+        # ``Settings()`` at import — and the App Platform PRE_DEPLOY migrate
+        # job runs with ``APP_ENV=production``. That job MUST keep its
+        # ``REDIS_URL`` binding or no production deploy completes. Fenced by
+        # ``tests/test_redis_url_config.py::test_migrate_job_binds_redis_url``.
+        #
+        # Normalize before the check so downstream truthiness ("is it set?")
+        # cannot be fooled by a whitespace-only value, which is truthy but
+        # unusable as a connection string.
+        self.redis_url = self.redis_url.strip()
+        if not self.redis_url and self.app_env == "production":
+            raise ValueError("REDIS_URL is required in production")
+        return self
+
+    @model_validator(mode="after")
     def _validate_captcha_timeouts(self) -> "Settings":
         # Enforce ``0 < per_phase <= total`` on the LIVE values, not on the
         # field defaults (TBD-328 review). Both are operator-tunable env

@@ -427,10 +427,16 @@ jobs:
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: EV[1:T+Ygh+qjAAPfBgXkthTDcFGwnmYGoVor:wRA9ROqu8UNLLUlkD5V+6z7t1luPk2VjjsEgQSkzO2qU7XhAGsHX7gE5+wkD0qtltG5orIL4jbSptMFLv7eJlEUxu6syoyrP3gkc1cUI77H+wYj1yKDVhdDzipFUIz0c74gv59U=]
-      # Present on the live app since 2026-08-20. migrate.py imports
-      # app.config, whose Settings declares `redis_url: str = ""`, so the
-      # job does NOT require this. Synced rather than dropped: deleting a
-      # value an operator just set is not this change's call.
+      # ⚠⚠ REQUIRED. DO NOT DELETE THIS BINDING (TBD-438).
+      # migrate.py imports app.logging, which imports app.config, which
+      # constructs Settings() at module import — and this job runs with
+      # APP_ENV=production above. Since TBD-438, Settings REFUSES to
+      # construct in production when REDIS_URL is empty, so removing this
+      # binding makes every production deploy fail at PRE_DEPLOY, before a
+      # single migration runs and before any backend replica starts.
+      # The job does not open a Redis connection; it needs the value only
+      # to satisfy config validation. Fenced by
+      # backend/tests/test_redis_url_config.py::test_migrate_job_binds_redis_url.
       - key: REDIS_URL
         scope: RUN_AND_BUILD_TIME
         type: SECRET
