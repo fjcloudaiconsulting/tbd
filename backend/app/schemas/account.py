@@ -2,9 +2,13 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.account import PaymentStrategy
+from app.services.currency_service import (
+    ISO_4217_CURRENCIES,
+    normalise_currency,
+)
 
 
 # Mirrors the Numeric(12, 2) DB constraint on accounts.opening_balance.
@@ -39,7 +43,26 @@ class AccountTypeResponse(BaseModel):
 class AccountCreate(BaseModel):
     name: str
     account_type_id: int
+    # ⚠ The ONLY writer of currency in the product. ``AccountUpdate`` has no
+    # currency field, so currency is immutable post-create and this validator
+    # is the whole door (TBD-325). Before it, the field was free-text: the
+    # frontend's maxLength=3 is a client convenience an API caller never sees,
+    # so "XYZ" or "EU" silently created a second currency in the org.
     currency: str = "EUR"
+
+    @field_validator("currency")
+    @classmethod
+    def _currency_must_be_iso_4217(cls, v: str) -> str:
+        # Normalise BEFORE validating: " eur " is a realistic paste and
+        # lowercase is the conventional form a direct API caller sends. The
+        # browser uppercases before submitting, which is what would make a
+        # validate-first bug invisible in the UI and visible only to clients.
+        code = normalise_currency(v)
+        if code not in ISO_4217_CURRENCIES:
+            raise ValueError(
+                f"{v!r} is not a supported ISO 4217 currency code"
+            )
+        return code
     close_day: Optional[int] = Field(default=None, ge=1, le=31)
     payment_day: Optional[int] = Field(default=None, ge=1, le=31)
     payment_day_relative_month: Optional[int] = Field(default=None, ge=0, le=12)

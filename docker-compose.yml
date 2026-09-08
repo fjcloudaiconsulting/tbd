@@ -151,6 +151,13 @@ services:
       # deliberately, on the host, by
       # `cd backend && python -m scripts.gen_period_status_vectors`.
       - ./frontend/tests/fixtures:/app/frontend/tests/fixtures:ro
+      # TBD-325: the currency picker's list lives on the frontend but the
+      # backend owns the authoritative set, so
+      # tests/test_currency_list_frontend_contract.py reads this file to fence
+      # the two against drift. Without the mount that test SKIPS in the
+      # container and only runs in CI — and a skip reads as a pass locally,
+      # which is how a drift fence quietly stops covering anything.
+      - ./frontend/lib:/app/frontend/lib:ro
       # Read-only .git so the lifespan branch guard in app.main can
       # detect the host checkout's branch and refuse to migrate from
       # a non-main feature branch (the same drift class PFV_MIGRATE_OK_OFF_MAIN

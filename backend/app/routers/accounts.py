@@ -29,6 +29,7 @@ from app.services.account_type_change_service import (
     validate_create_payment_day,
 )
 from app.services.credit_card_service import validate_credit_card_fields
+from app.services.currency_service import assert_org_currency_allows
 from app.services.loan_service import compute_loan_metrics, validate_loan_fields
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.payment_source_service import validate_payment_source_account
@@ -146,6 +147,26 @@ async def create_account(
     target_type = at_result.scalar_one_or_none()
     if target_type is None:
         raise HTTPException(status_code=400, detail="Invalid account type")
+
+    # TBD-325: an org may hold exactly one currency. The schema validator above
+    # has already confirmed the code is a real ISO 4217 currency, but EUR and
+    # USD are BOTH real — so a code-only check closes the typo door and leaves
+    # the deliberate one open, and both produce the same meaningless
+    # cross-currency totals in every period aggregate.
+    #
+    # ⚠ Runs BEFORE any insert. Validating after the write would still return
+    # 409 while leaving the org in exactly the state this prevents.
+    #
+    # Mapped locally rather than relying on main.py's global ConflictError
+    # handler, matching this router's existing pattern (see the balance-adjust
+    # endpoint below). The service raises the domain error; the router owns the
+    # HTTP status.
+    try:
+        await assert_org_currency_allows(
+            db, org_id=current_user.org_id, currency=body.currency
+        )
+    except ConflictError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
     # Spec § 3.1.1 — create-path close_day cascade. Mirrors the PUT
     # path's invariant (close_day IS NULL iff slug != 'credit_card').
