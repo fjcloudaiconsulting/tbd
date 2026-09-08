@@ -112,6 +112,23 @@ while IFS= read -r f; do
       backend=true
       frontend=true
       ;;
+    # ⚠ Frontend SOURCE files that a BACKEND contract fence reads. Same class as
+    # the fixtures above and the same reason: the backend suite reads these
+    # through the read-only docker-compose mounts, so an edit here is a backend
+    # change as much as a frontend one.
+    #
+    # ⚠⚠ WITHOUT THIS, THE FENCE NEVER RUNS ON THE CHANGE THAT BREAKS IT.
+    # A PR touching only one of these files sets backend=false, the six backend
+    # shards are skipped entirely (test.yml, TBD-404), and the drift guard that
+    # exists to catch exactly this edit does not execute. The drift merges green.
+    #
+    # Fenced by test_ci_change_detection.py, which derives this list from the
+    # backend tests themselves rather than restating it — so a fourth shared
+    # file goes red here instead of silently joining the gap.
+    frontend/lib/currencies.ts|frontend/lib/billingPeriodStatus.ts|frontend/lib/feature-catalog.ts)
+      backend=true
+      frontend=true
+      ;;
     frontend/*)
       frontend=true
       ;;

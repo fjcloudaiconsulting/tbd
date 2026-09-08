@@ -21,6 +21,7 @@ import {
 } from "@/lib/hooks/use-table-state";
 import { SORT_KEY_ACCOUNTS } from "@/lib/hooks/persisted-keys";
 import { input, label, btnPrimary, btnLink, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { COMMON_CURRENCIES, OTHER_CURRENCIES, currencyLabel } from "@/lib/currencies";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { useAccounts, ACCOUNTS_KEY } from "@/lib/hooks/use-accounts";
 import type { Account, AccountType, Transaction, UpcomingCyclePayment } from "@/lib/types";
@@ -172,6 +173,12 @@ export default function AccountsPage() {
   const [acctName, setAcctName] = useState("");
   const [acctTypeId, setAcctTypeId] = useState<number | "">("");
   const [acctCurrency, setAcctCurrency] = useState("EUR");
+  // TBD-325: an organization holds exactly ONE currency — every period
+  // aggregate sums without joining `accounts`, so a mixed-currency org would
+  // render EUR + USD as one unlabelled number. Once any account exists the
+  // currency is settled, and the create form shows it rather than offering a
+  // choice the server would refuse with a 409.
+  const orgCurrency = accounts.length > 0 ? accounts[0].currency : null;
   const [acctCloseDay, setAcctCloseDay] = useState("");
   // L3.2 Wave 2A — opening balance + date on the create form. The date
   // input defaults to today so most users skip the picker; the contract
@@ -398,7 +405,7 @@ export default function AccountsPage() {
         method: "POST",
         body: JSON.stringify({
           name: acctName, account_type_id: acctTypeId,
-          currency: acctCurrency,
+          currency: orgCurrency ?? acctCurrency,
           close_day: isCC && acctCloseDay ? Number(acctCloseDay) : null,
           opening_balance: acctOpeningBalance || "0.00",
           opening_balance_date: acctOpeningBalanceDate || null,
@@ -1128,9 +1135,52 @@ export default function AccountsPage() {
                         className={input}
                       />
                     </div>
-                    <div className="w-full sm:w-20">
+                    <div className={orgCurrency ? "w-full sm:w-28" : "w-full sm:w-64"}>
                       <label htmlFor="acct-currency" className={label}>Currency</label>
-                      <input id="acct-currency" type="text" maxLength={3} value={acctCurrency} onChange={(e) => setAcctCurrency(e.target.value.toUpperCase())} className={`sm:text-center ${input}`} />
+                      {orgCurrency ? (
+                        // The org already has a currency, so this is settled
+                        // rather than chosen. Rendered read-only instead of as
+                        // a one-option select: a select implies a choice that
+                        // does not exist, and the server would 409 anything
+                        // else (TBD-325).
+                        <>
+                          <input
+                            id="acct-currency"
+                            type="text"
+                            value={currencyLabel(orgCurrency)}
+                            readOnly
+                            aria-describedby="acct-currency-hint"
+                            className={`sm:text-center ${input} cursor-not-allowed opacity-70`}
+                          />
+                          <p id="acct-currency-hint" className="mt-1 text-[11px] text-text-muted">
+                            All accounts in an organization share one currency.
+                          </p>
+                        </>
+                      ) : (
+                        <select
+                          id="acct-currency"
+                          value={acctCurrency}
+                          onChange={(e) => setAcctCurrency(e.target.value)}
+                          aria-describedby="acct-currency-hint"
+                          className={input}
+                        >
+                          <optgroup label="Common">
+                            {COMMON_CURRENCIES.map(([code, name]) => (
+                              <option key={code} value={code}>{currencyLabel(code, name)}</option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="All currencies">
+                            {OTHER_CURRENCIES.map((code) => (
+                              <option key={code} value={code}>{currencyLabel(code)}</option>
+                            ))}
+                          </optgroup>
+                        </select>
+                      )}
+                      {!orgCurrency && (
+                        <p id="acct-currency-hint" className="mt-1 text-[11px] text-text-muted">
+                          This sets the currency for every account in this organization.
+                        </p>
+                      )}
                     </div>
                     <div className="w-full sm:w-44">
                       <label htmlFor="acct-opening-balance-date" className={label}>Starting from</label>

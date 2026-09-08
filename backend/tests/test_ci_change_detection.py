@@ -200,6 +200,59 @@ def test_a_shared_frontend_fixture_is_a_backend_change_too(tmp_path):
 @pytest.mark.parametrize(
     "path",
     [
+        "frontend/lib/currencies.ts",
+        "frontend/lib/billingPeriodStatus.ts",
+        "frontend/lib/feature-catalog.ts",
+    ],
+)
+def test_a_frontend_source_a_backend_fence_reads_is_a_backend_change_too(
+    tmp_path, path
+):
+    """⚠⚠ Without this, the drift fence never runs on the change that breaks it.
+
+    Three backend contract tests READ these frontend source files through the
+    read-only docker-compose mounts:
+
+    * `test_currency_list_frontend_contract.py`  -> `currencies.ts`
+    * `test_period_status_frontend_contract.py`  -> `billingPeriodStatus.ts`
+    * `test_feature_catalog_frontend_contract.py` -> `feature-catalog.ts`
+
+    Classified frontend-only, a PR editing just one of them sets
+    `backend=false`, the six backend shards are skipped entirely (TBD-404), and
+    the guard that exists to catch exactly that edit does not execute. The drift
+    merges with every required check green.
+
+    Same class as `frontend/tests/fixtures/` above — this was the gap that class
+    left open for SOURCE files rather than fixtures.
+
+    ⚠ THIS LIST IS HAND-MAINTAINED, and an attempt to derive it automatically
+    was written and REMOVED rather than shipped. Scanning the backend suite for
+    `frontend/...` strings does not work: the three real fences build their
+    paths from SEGMENTS (`/ "frontend" / "lib" / "currencies.ts"`), so the only
+    full paths in the source are in prose. The scan therefore matched
+    `frontend/app/recurring/page.tsx` — mentioned in a comment, never read —
+    and would have forced the 30-minute backend suite onto unrelated frontend
+    work. The docker-compose mount is no better a signal: `./frontend/lib` is
+    mounted whole, but only three files in it are actually read.
+
+    So: when a new backend fence starts reading a frontend file, add it BOTH to
+    `detect-changed-areas.sh` and to this parametrize list. There is no
+    automatic guard, deliberately.
+    """
+    repo, base = _repo(tmp_path, {path: "export const x = 1;\n"})
+    out = _detect(repo, tmp_path, base=base)
+    assert out["backend"] == "true", (
+        f"{path} is read by a backend contract fence, so editing it must run "
+        "the backend shards. As classified, that fence would be skipped on the "
+        "one change it exists to catch."
+    )
+    assert out["frontend"] == "true"
+
+
+@needs_git
+@pytest.mark.parametrize(
+    "path",
+    [
         ".github/workflows/test.yml",
         "scripts/ci/await-test-run.sh",
         "docker-compose.yml",
