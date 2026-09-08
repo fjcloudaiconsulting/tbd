@@ -14,7 +14,16 @@ _VALID_PAT_KEY_PREV = "previous-rotation-pat-hmac-key-distinct-32plus"
 
 
 def _settings(**overrides) -> Settings:
-    base = {"_env_file": None, "jwt_secret_key": _VALID_JWT}
+    # ``redis_url`` is required in production since TBD-438, and three tests
+    # below construct a production Settings expecting success. CI deliberately
+    # does NOT export REDIS_URL (test.yml exposes only TEST_REAL_REDIS_URL), so
+    # without this default those tests pass locally — where docker-compose
+    # injects REDIS_URL — and fail on the runner.
+    base = {
+        "_env_file": None,
+        "jwt_secret_key": _VALID_JWT,
+        "redis_url": "redis://localhost:6379/0",
+    }
     base.update(overrides)
     return Settings(**base)
 

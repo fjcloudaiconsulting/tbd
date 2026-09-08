@@ -86,7 +86,8 @@ class Settings(BaseSettings):
     # browser can retry on instead of a silent hang with no log.
     refresh_handler_timeout_s: float = 25.0
 
-    # Redis (optional — used for sessions/cache in production)
+    # Redis — the auth SESSION STORE. Optional outside production;
+    # REQUIRED in production (see _validate_redis_url below, TBD-438).
     redis_url: str = ""
 
     # Email (Mailgun)
@@ -528,6 +529,35 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_redis_url(self) -> "Settings":
+        # Redis is the auth SESSION STORE. Every token-issue path in
+        # ``routers/auth.py`` fails closed without it, so a production
+        # instance booted with this unset comes up looking healthy and then
+        # refuses every login (TBD-438).
+        #
+        # This earns a boot refusal under the criterion already stated above
+        # for ``founder_count_exclude_usernames``: a refusal is justified when
+        # losing the value breaks a SECURITY PRIMITIVE, not when the blast
+        # radius is cosmetic. Interactive session auth is the same class as
+        # the PAT hashing pepper, so it gets the same treatment rather than a
+        # new policy.
+        #
+        # ⚠ COUPLED TO ``.do/app.yaml``. ``scripts/migrate.py`` imports
+        # ``app.logging``, which imports this module, which constructs
+        # ``Settings()`` at import — and the App Platform PRE_DEPLOY migrate
+        # job runs with ``APP_ENV=production``. That job MUST keep its
+        # ``REDIS_URL`` binding or no production deploy completes. Fenced by
+        # ``tests/test_redis_url_config.py::test_migrate_job_binds_redis_url``.
+        #
+        # Normalize before the check so downstream truthiness ("is it set?")
+        # cannot be fooled by a whitespace-only value, which is truthy but
+        # unusable as a connection string.
+        self.redis_url = self.redis_url.strip()
+        if not self.redis_url and self.app_env == "production":
+            raise ValueError("REDIS_URL is required in production")
+        return self
+
+    @model_validator(mode="after")
     def _validate_captcha_timeouts(self) -> "Settings":
         # Enforce ``0 < per_phase <= total`` on the LIVE values, not on the
         # field defaults (TBD-328 review). Both are operator-tunable env
@@ -550,13 +580,15 @@ class Settings(BaseSettings):
         # unset var as the empty-ish "0", is enough.
         #
         # Boot-fatal is the right severity here and is safe for the DO
-        # PRE_DEPLOY migrate job: that job binds only APP_ENV,
-        # DATABASE_URL, JWT_SECRET_KEY and API_TOKEN_HMAC_KEY (see
+        # PRE_DEPLOY migrate job: that job binds APP_ENV, DATABASE_URL,
+        # JWT_SECRET_KEY, REDIS_URL and API_TOKEN_HMAC_KEY (see
         # .do/app.yaml — there is no app-level ``envs:`` block, so no
         # CAPTCHA_* value reaches it), and the defaults below satisfy
         # this check. Contrast the 2026-07-21 break, where #558 made
         # API_TOKEN_HMAC_KEY prod-required and the job HAD no binding for
-        # it. Keep it that way: giving the migrate job a CAPTCHA_* value
+        # it. TBD-438 made REDIS_URL prod-required under exactly that
+        # precedent, which is why the binding is now fenced by
+        # tests/test_redis_url_config.py rather than trusted. Keep it that way: giving the migrate job a CAPTCHA_* value
         # would put it back in this validator's blast radius for no gain.
         per_phase = self.captcha_verify_timeout_s
         total = self.captcha_verify_total_timeout_s
