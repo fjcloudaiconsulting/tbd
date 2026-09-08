@@ -366,6 +366,60 @@ The table documents **reachability**, not a claim that every listed route is ful
 
 All other endpoints require a Bearer access token via the `get_current_user` dependency.
 
+### Platform-gated endpoints (authorization, not just authentication)
+
+Authentication says *who you are*; the set above is where that stops being
+required. This section is the other axis: **62** `(method, path)` pairs are
+reachable only by a platform operator, and being signed in is not enough.
+
+Two gate mechanisms are in live use, and neither can be matched by name:
+
+- **`require_permission("<permission>")`** (`app/auth/permissions.py`) — a
+  dependency factory. It returns a fresh closure per call, so it has no stable
+  function identity; the fence matches the shared `__code__` object and reads
+  the permission out of the closure cell.
+- **`require_superadmin`** — defined **independently six times**, in
+  `admin_ai_usage.py`, `admin_announcements.py`, `admin_broadcasts.py`,
+  `admin_features.py`, `admin_rate_limit_overrides.py` and `api_tokens.py`. The
+  fence holds those six objects by identity, so a seventh definition reads as
+  *ungated* until it is deliberately registered.
+
+The 17-descriptor vocabulary in use: `admin.view`, `analytics.view`,
+`audit.view`, `orgs.manage`, `orgs.view`, `plans.manage`, `roles.manage`,
+`subscriptions.view`, `users.delete`, `users.reset_credentials`, `users.view`,
+plus superadmin gates from the six modules above.
+
+**10 of the 62 sit outside `/api/v1/admin/`** — six `plans.manage` routes under
+`/api/v1/plans` and four superadmin routes under `/api/v1/system/api-tokens`.
+`/api/v1/admin/` is a routing convention, not a security boundary, and the fence
+enumerates by *gate* rather than by path so those are covered.
+
+⚠ **`require_interactive_session` is not an authorization gate.** It sits on 18
+admin routes and checks only that the caller used a browser session rather than
+a PAT — it authorizes nobody. A route carrying only that dependency is reachable
+by every authenticated user.
+
+Enforced by `backend/tests/auth/test_admin_authorization_enumeration.py`, which
+has two independent legs:
+
+- **structural** — every route under `/api/v1/admin/` must carry a gate, and the
+  gated surface app-wide must match the reviewed roster exactly, in both
+  directions. This catches an ungated route, an unreviewed one, a stale entry,
+  and a *downgraded* gate.
+- **behavioural** — an authenticated org OWNER holding no platform role must get
+  **403** from all 62, with a refusal message from a closed allow-list. This is
+  the leg that survives a gate which is wired in but no longer denies.
+
+Adding a platform-gated route without adding it to that file's
+`PLATFORM_GATED_ROUTES` roster (or the reverse) is a red build.
+
+⚠ **Permission adequacy is not enforced, by design.** `ROLE_PERMISSIONS` is
+currently empty, so every gate above collapses to "is superadmin" and no
+identity that can exist today distinguishes `users.delete` from `users.view`.
+The roster pins *which* gate each route carries so a downgrade is visible in
+review, but it is latent rather than exploitable until partial platform roles
+ship.
+
 ## Environment variables
 
 See `docs/operations/ENVIRONMENT.md`. It is the authoritative reference for every backend, frontend, migrate, and CLI variable, with scopes, defaults, deployment paths, and failure modes.
