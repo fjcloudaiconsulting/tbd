@@ -20,7 +20,6 @@ entirely vacuous.
 """
 from __future__ import annotations
 
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -225,6 +224,20 @@ def test_a_frontend_source_a_backend_fence_reads_is_a_backend_change_too(
 
     Same class as `frontend/tests/fixtures/` above — this was the gap that class
     left open for SOURCE files rather than fixtures.
+
+    ⚠ THIS LIST IS HAND-MAINTAINED, and an attempt to derive it automatically
+    was written and REMOVED rather than shipped. Scanning the backend suite for
+    `frontend/...` strings does not work: the three real fences build their
+    paths from SEGMENTS (`/ "frontend" / "lib" / "currencies.ts"`), so the only
+    full paths in the source are in prose. The scan therefore matched
+    `frontend/app/recurring/page.tsx` — mentioned in a comment, never read —
+    and would have forced the 30-minute backend suite onto unrelated frontend
+    work. The docker-compose mount is no better a signal: `./frontend/lib` is
+    mounted whole, but only three files in it are actually read.
+
+    So: when a new backend fence starts reading a frontend file, add it BOTH to
+    `detect-changed-areas.sh` and to this parametrize list. There is no
+    automatic guard, deliberately.
     """
     repo, base = _repo(tmp_path, {path: "export const x = 1;\n"})
     out = _detect(repo, tmp_path, base=base)
@@ -234,51 +247,6 @@ def test_a_frontend_source_a_backend_fence_reads_is_a_backend_change_too(
         "one change it exists to catch."
     )
     assert out["frontend"] == "true"
-
-
-@needs_git
-def test_every_frontend_file_a_backend_test_reads_is_classified_backend(tmp_path):
-    """⚠ The class killer. Derives the roster from the backend tests themselves.
-
-    The parametrized test above pins three known files. This one finds them —
-    and any fourth — by scanning the backend suite for `frontend/...` paths that
-    actually exist on disk. A new contract fence reading a new frontend file
-    goes RED here until `detect-changed-areas.sh` is taught about it, instead of
-    silently joining the gap.
-
-    Restricted to paths that exist so a path mentioned only in prose, or a stale
-    reference to a deleted file, cannot fail the build.
-    """
-    tests_dir = Path(__file__).resolve().parent
-    # Where a repo-relative `frontend/...` path resolves. Two layouts: a plain
-    # checkout (repo root, walked up from here) and the backend container, where
-    # docker-compose mounts the shared frontend paths under /app. Mirrors
-    # `_find_script`'s shape rather than assuming a fixed depth.
-    roots = [c for c in [*Path(__file__).resolve().parents, Path("/app")] if c.is_dir()]
-
-    referenced: set[str] = set()
-    for py in tests_dir.rglob("*.py"):
-        for match in re.findall(r"frontend/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+", py.read_text()):
-            if any((root / match).exists() for root in roots):
-                referenced.add(match)
-
-    assert referenced, (
-        "found no frontend files referenced by backend tests, which means this "
-        "scan stopped working rather than that the coupling disappeared"
-    )
-
-    misclassified = []
-    for path in sorted(referenced):
-        repo, base = _repo(tmp_path / path.replace("/", "_"), {path: "x\n"})
-        if _detect(repo, tmp_path / path.replace("/", "_"), base=base)["backend"] != "true":
-            misclassified.append(path)
-
-    assert not misclassified, (
-        "backend tests read these frontend files, but editing them does NOT run "
-        "the backend shards — so those fences are skipped on the exact change "
-        f"they guard: {misclassified}. Add a case to "
-        "scripts/ci/detect-changed-areas.sh."
-    )
 
 
 @needs_git
