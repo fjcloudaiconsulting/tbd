@@ -51,13 +51,18 @@ describe("currencySymbol", () => {
     expect(currencySymbol("XPF")).toBeNull();
   });
 
-  it("never returns a symbol longer than three characters", () => {
-    // The rule, asserted over the whole supported set rather than the few
-    // examples above — that is what stops a future ICU change reintroducing a
-    // wordy label without anyone noticing.
-    for (const code of ALL_CURRENCIES) {
-      const symbol = currencySymbol(code);
-      if (symbol !== null) expect(symbol.length).toBeLessThanOrEqual(3);
+  it("returns a symbol for the currencies a user is actually likely to pick", () => {
+    // ⚠ Replaces an assertion that every returned symbol is <= 3 characters.
+    // That was a TAUTOLOGY: the implementation clips at 3, so the test restated
+    // the code and could never fail. Its comment also claimed it would catch a
+    // future ICU change reintroducing a wordy label — it could not, since such
+    // a label becomes `null` and silently loses its symbol.
+    //
+    // This asserts the property that actually matters and that a regression
+    // would break: the common currencies keep their symbols. If ICU changed
+    // "€" to something longer, THIS goes red where the length check would not.
+    for (const code of ["EUR", "USD", "GBP", "JPY", "INR", "BRL"]) {
+      expect(currencySymbol(code)).not.toBeNull();
     }
   });
 
@@ -75,6 +80,9 @@ describe("currencyLabel", () => {
     expect(currencyLabel("BRL", "Brazilian Real")).toBe("R$ BRL · Brazilian Real");
   });
 
+  // Note: `currencyLabel` case-handling is covered by the service-level tests
+  // in the backend door suite, not here — the schema validator normalises
+  // before this code is ever reached through the app.
   it("omits the symbol slot entirely when there is none", () => {
     // Not "  CHF · Swiss Franc" with a hanging gap, and not "CHF CHF".
     expect(currencyLabel("CHF", "Swiss Franc")).toBe("CHF · Swiss Franc");

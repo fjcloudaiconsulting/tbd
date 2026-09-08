@@ -20,6 +20,7 @@ entirely vacuous.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -194,6 +195,90 @@ def test_a_shared_frontend_fixture_is_a_backend_change_too(tmp_path):
     repo, base = _repo(tmp_path, {"frontend/tests/fixtures/report-sources.json": '{"a":1}\n'})
     out = _detect(repo, tmp_path, base=base)
     assert out == {"backend": "true", "frontend": "true", "migrations": "true"}
+
+
+@needs_git
+@pytest.mark.parametrize(
+    "path",
+    [
+        "frontend/lib/currencies.ts",
+        "frontend/lib/billingPeriodStatus.ts",
+        "frontend/lib/feature-catalog.ts",
+    ],
+)
+def test_a_frontend_source_a_backend_fence_reads_is_a_backend_change_too(
+    tmp_path, path
+):
+    """⚠⚠ Without this, the drift fence never runs on the change that breaks it.
+
+    Three backend contract tests READ these frontend source files through the
+    read-only docker-compose mounts:
+
+    * `test_currency_list_frontend_contract.py`  -> `currencies.ts`
+    * `test_period_status_frontend_contract.py`  -> `billingPeriodStatus.ts`
+    * `test_feature_catalog_frontend_contract.py` -> `feature-catalog.ts`
+
+    Classified frontend-only, a PR editing just one of them sets
+    `backend=false`, the six backend shards are skipped entirely (TBD-404), and
+    the guard that exists to catch exactly that edit does not execute. The drift
+    merges with every required check green.
+
+    Same class as `frontend/tests/fixtures/` above — this was the gap that class
+    left open for SOURCE files rather than fixtures.
+    """
+    repo, base = _repo(tmp_path, {path: "export const x = 1;\n"})
+    out = _detect(repo, tmp_path, base=base)
+    assert out["backend"] == "true", (
+        f"{path} is read by a backend contract fence, so editing it must run "
+        "the backend shards. As classified, that fence would be skipped on the "
+        "one change it exists to catch."
+    )
+    assert out["frontend"] == "true"
+
+
+@needs_git
+def test_every_frontend_file_a_backend_test_reads_is_classified_backend(tmp_path):
+    """⚠ The class killer. Derives the roster from the backend tests themselves.
+
+    The parametrized test above pins three known files. This one finds them —
+    and any fourth — by scanning the backend suite for `frontend/...` paths that
+    actually exist on disk. A new contract fence reading a new frontend file
+    goes RED here until `detect-changed-areas.sh` is taught about it, instead of
+    silently joining the gap.
+
+    Restricted to paths that exist so a path mentioned only in prose, or a stale
+    reference to a deleted file, cannot fail the build.
+    """
+    tests_dir = Path(__file__).resolve().parent
+    # Where a repo-relative `frontend/...` path resolves. Two layouts: a plain
+    # checkout (repo root, walked up from here) and the backend container, where
+    # docker-compose mounts the shared frontend paths under /app. Mirrors
+    # `_find_script`'s shape rather than assuming a fixed depth.
+    roots = [c for c in [*Path(__file__).resolve().parents, Path("/app")] if c.is_dir()]
+
+    referenced: set[str] = set()
+    for py in tests_dir.rglob("*.py"):
+        for match in re.findall(r"frontend/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+", py.read_text()):
+            if any((root / match).exists() for root in roots):
+                referenced.add(match)
+
+    assert referenced, (
+        "found no frontend files referenced by backend tests, which means this "
+        "scan stopped working rather than that the coupling disappeared"
+    )
+
+    misclassified = []
+    for path in sorted(referenced):
+        repo, base = _repo(tmp_path / path.replace("/", "_"), {path: "x\n"})
+        if _detect(repo, tmp_path / path.replace("/", "_"), base=base)["backend"] != "true":
+            misclassified.append(path)
+
+    assert not misclassified, (
+        "backend tests read these frontend files, but editing them does NOT run "
+        "the backend shards — so those fences are skipped on the exact change "
+        f"they guard: {misclassified}. Add a case to "
+        "scripts/ci/detect-changed-areas.sh."
+    )
 
 
 @needs_git

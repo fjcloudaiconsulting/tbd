@@ -34,37 +34,52 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.account import Account
 from app.services.exceptions import ConflictError
 
-# ISO 4217 active alphabetic codes. Excludes the historical/withdrawn set and
-# the X-series test/no-currency codes (XXX, XTS) — neither is a currency a user
-# should be able to denominate an account in.
+# ISO 4217 codes a consumer bank account can actually be denominated in.
+#
+# ⚠ THIS LIST IS DELIBERATELY NARROWER THAN "ISO 4217 ACTIVE". Three exclusions,
+# all on the same principle — a user must not be able to pick something that is
+# not money they can hold in an account:
+#
+#   1. Test / no-currency codes: XXX, XTS.
+#   2. Fund and unit-of-account codes: BOV, CHE, CHW, CLF, COU, MXV, USN, UYI,
+#      UYW, XSU, XUA, and XDR (the IMF basket). These are index units and
+#      settlement baskets — Mvdol, WIR, Chilean UF, Colombian UVR, Mexican UDI,
+#      next-day funds, Uruguayan indexed units, SUCRE, the ADB unit. None
+#      appears on a bank statement and none has a usable symbol.
+#   3. Withdrawn currencies: HRK (Croatian kuna, withdrawn 2023-01-01 when
+#      Croatia adopted the euro) and ANG (Netherlands Antillean guilder,
+#      withdrawn 2025-03-31, replaced by XCG which IS present).
+#
+# ⚠⚠ WHY A WRONG ENTRY HERE IS NOT SYMMETRIC WITH A MISSING ONE.
+# A MISSING currency fails closed: a user is refused something real, which is
+# visible and reportable. A currency that should NOT be here fails OPEN, and
+# because ``AccountUpdate`` has no currency field the choice is IMMUTABLE — an
+# org that picks a withdrawn or non-monetary code is permanently locked to it
+# with no edit path and no admin repair. Adding to this list is therefore the
+# dangerous direction, not removing from it.
+#
+# ⚠ Removing a code is a one-way door for any org already holding it: the
+# schema validator would reject that org's own currency with 422 BEFORE the
+# single-currency check runs, so it could never create another account. Before
+# dropping anything, query production for orgs holding it.
 ISO_4217_CURRENCIES: frozenset[str] = frozenset(
     """
-    AED AFN ALL AMD ANG AOA ARS AUD AWG AZN
-    BAM BBD BDT BGN BHD BIF BMD BND BOB BOV BRL BSD BTN BWP BYN BZD
-    CAD CDF CHE CHF CHW CLF CLP CNY COP COU CRC CUP CVE CZK
-    DJF DKK DOP DZD
-    EGP ERN ETB EUR
-    FJD FKP
-    GBP GEL GHS GIP GMD GNF GTQ GYD
-    HKD HNL HRK HTG HUF
-    IDR ILS INR IQD IRR ISK
-    JMD JOD JPY
-    KES KGS KHR KMF KPW KRW KWD KYD KZT
-    LAK LBP LKR LRD LSL LYD
-    MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MXV MYR MZN
-    NAD NGN NIO NOK NPR NZD
-    OMR
-    PAB PEN PGK PHP PKR PLN PYG
-    QAR
-    RON RSD RUB RWF
-    SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL
-    THB TJS TMT TND TOP TRY TTD TWD TZS
-    UAH UGX USD USN UYI UYU UYW UZS
-    VED VES VND VUV
-    WST
-    XAF XCD XCG XDR XOF XPF XSU XUA
-    YER
-    ZAR ZMW ZWG
+    AED AFN ALL AMD AOA ARS AUD AWG AZN BAM
+    BBD BDT BGN BHD BIF BMD BND BOB BRL BSD
+    BTN BWP BYN BZD CAD CDF CHF CLP CNY COP
+    CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN
+    ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF
+    GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD
+    IRR ISK JMD JOD JPY KES KGS KHR KMF KPW
+    KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD
+    MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR
+    MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD
+    OMR PAB PEN PGK PHP PKR PLN PYG QAR RON
+    RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP
+    SLE SOS SRD SSP STN SVC SYP SZL THB TJS
+    TMT TND TOP TRY TTD TWD TZS UAH UGX USD
+    UYU UZS VED VES VND VUV WST XAF XCD XCG
+    XOF XPF YER ZAR ZMW ZWG
     """.split()
 )
 
@@ -102,11 +117,32 @@ async def assert_org_currency_allows(
     inserted first and validated second would still return 409 while leaving
     the org in the multi-currency state this exists to prevent.
     """
+    # ⚠ LOCKING READ, not a plain SELECT. Under MySQL InnoDB's REPEATABLE READ a
+    # plain SELECT is a non-locking consistent read, so two simultaneous
+    # POST /accounts into a FRESH org (say EUR and USD) would both see zero rows
+    # and both insert — landing the org in exactly the multi-currency state this
+    # function exists to prevent, reachable on day one.
+    #
+    # ``with_for_update()`` on an empty result still takes an InnoDB gap lock on
+    # the org_id range, which serialises the second transaction behind the first.
+    # The second then sees the committed row and refuses.
+    #
+    # ⚠ THE TESTS CANNOT PROVE THIS. They run on aiosqlite, which ignores
+    # ``with_for_update()`` entirely (same caveat recorded in
+    # tests/routers/test_accounts_change_type.py). The lock is justified by the
+    # engine's documented semantics, not by a green fence — do not read the
+    # suite passing as evidence the race is closed, and do not remove this
+    # because "no test covers it".
+    #
+    # A UNIQUE constraint cannot express this rule: it is "at most one DISTINCT
+    # currency per org", not "one row per org". A generated column or a trigger
+    # could, and would be a stronger guarantee if this ever needs one.
     existing = (
         await db.execute(
             select(Account.currency)
             .where(Account.org_id == org_id)
             .limit(1)
+            .with_for_update()
         )
     ).scalar_one_or_none()
 

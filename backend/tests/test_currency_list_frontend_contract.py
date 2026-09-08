@@ -27,17 +27,61 @@ import pytest
 
 from app.services.currency_service import ISO_4217_CURRENCIES
 
+# Pinned so a currency cannot be added or removed without an explicit, reviewed
+# edit here. ⚠ Adding is the dangerous direction: currency is immutable
+# post-create, so a code that should not be offered locks an org to it forever.
+EXPECTED_CURRENCY_COUNT = 156
+
+
+def _find_repo_root(start: Path) -> Path:
+    """Walk up for the repo root instead of assuming a fixed depth.
+
+    ⚠ NOT ``parents[2]``. That happens to be correct today from
+    ``backend/tests/``, but it is silently wrong the moment this file moves one
+    directory deeper (``backend/tests/contracts/``, a plausible tidy-up) — and
+    the failure is a SKIP, not a red. Same walk as
+    ``test_period_status_frontend_contract.py``, which documents that a fixed
+    depth is developer-gated rather than CI-gated: on a plain checkout with
+    ``working-directory: backend`` the wrong depth still resolves, so a
+    regression reaches ``main`` with every check green.
+    """
+    for candidate in [start, *start.parents]:
+        if (candidate / ".github" / "workflows" / "deploy.yml").exists() and (
+            candidate / ".do" / "app.yaml"
+        ).exists():
+            return candidate
+    raise RuntimeError(
+        "Could not locate repo root containing .github/workflows/deploy.yml "
+        "and .do/app.yaml. Run these tests from a checked-out repo."
+    )
+
 
 def _currencies_ts() -> str:
-    """Locate the frontend list in the container and on a plain checkout."""
+    """Read the frontend list, in the container or on a plain checkout.
+
+    ⚠⚠ THIS FAILS; IT NEVER SKIPS. A guard that skips is absent exactly when it
+    matters and fails OPEN — rename ``currencies.ts`` and update only the
+    frontend import, and a skipping version of this file would go green while
+    the drift fence was permanently dead. That is the sibling of every
+    green-and-worthless test this repo has shipped, and
+    ``test_period_status_frontend_contract.py`` states the same rule in the
+    same words.
+    """
     candidates = [
         Path("/app/frontend/lib/currencies.ts"),
-        Path(__file__).resolve().parents[2] / "frontend" / "lib" / "currencies.ts",
+        _find_repo_root(Path(__file__).resolve()) / "frontend" / "lib" / "currencies.ts",
     ]
-    for p in candidates:
-        if p.exists():
-            return p.read_text()
-    pytest.skip(f"frontend/lib/currencies.ts not reachable from {candidates}")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.read_text()
+    pytest.fail(
+        "frontend/lib/currencies.ts is unreachable, so the drift fence between "
+        "the picker and ISO_4217_CURRENCIES did not run. Looked in: "
+        f"{[str(c) for c in candidates]}. Inside the backend container this "
+        "means the read-only ./frontend/lib mount in docker-compose.yml is "
+        "missing or severed — `docker compose up -d --force-recreate backend`. "
+        "If the file was renamed, update this path in the same commit."
+    )
 
 
 def _parse_array(source: str, name: str) -> list[str]:
@@ -93,11 +137,24 @@ def test_every_common_currency_is_also_in_the_full_list():
     there is not in ALL_CURRENCIES it is either a typo or a currency the
     backend rejects, and it renders as a broken option either way.
     """
+    # ⚠ Scoped to the COMMON_CURRENCIES array, not the whole file. A file-wide
+    # scan for the [code, name] shape would silently absorb any second such
+    # array added later, and would then be asserting about the wrong list.
     src = _currencies_ts()
-    common = re.findall(r'\["([A-Z]{3})",\s*"[^"]+"\]', src)
-    assert common, "COMMON_CURRENCIES not found, or its shape changed"
-    missing = sorted(set(common) - set(ISO_4217_CURRENCIES))
-    assert not missing, f"common currencies the backend rejects: {missing}"
+    block = re.search(
+        r"export const COMMON_CURRENCIES:[^=]*=\s*\[(.*?)\];", src, re.S
+    )
+    assert block, "COMMON_CURRENCIES not found, or its shape changed"
+    common = re.findall(r'\["([A-Z]{3})",\s*"[^"]+"\]', block.group(1))
+    assert common, "COMMON_CURRENCIES matched but yielded no [code, name] pairs"
+
+    # Compared against ALL_CURRENCIES, which is what the picker actually renders
+    # from. Comparing against the backend set would be equivalent only because
+    # the first test forces the two equal — an indirection that breaks the
+    # moment that test is weakened.
+    all_codes = set(_parse_array(src, "ALL_CURRENCIES"))
+    missing = sorted(set(common) - all_codes)
+    assert not missing, f"common currencies absent from ALL_CURRENCIES: {missing}"
 
 
 def test_the_parser_would_notice_an_empty_array():
@@ -109,7 +166,7 @@ def test_the_parser_would_notice_an_empty_array():
     plausible diff. Pin the size so the instrument itself is fenced.
     """
     ts = _parse_array(_currencies_ts(), "ALL_CURRENCIES")
-    assert len(ts) == len(ISO_4217_CURRENCIES) == 170, (
+    assert len(ts) == len(ISO_4217_CURRENCIES) == EXPECTED_CURRENCY_COUNT, (
         f"frontend={len(ts)}, backend={len(ISO_4217_CURRENCIES)}. If a currency "
         "was deliberately added or removed, update the expected count here in "
         "the same commit."

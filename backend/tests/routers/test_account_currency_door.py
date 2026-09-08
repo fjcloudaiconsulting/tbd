@@ -239,10 +239,17 @@ def test_the_refusal_names_the_currency_the_org_already_holds(client, seeded):
 
     A bare 409 tells the user nothing about which currency they must match, and
     there is no org-currency setting anywhere in the UI to look it up.
+
+    ⚠ The org is seeded in JPY, NOT EUR, on purpose. With EUR the assertion is
+    satisfied by a hardcoded `"...are in EUR..."` literal — and because the
+    service-level test also uses an EUR org, that mutant would survive the whole
+    file. JPY appears nowhere in the message template, so only the f-string
+    interpolation can produce it.
     """
-    _create(client, seeded, "EUR", name="First")
+    _create(client, seeded, "JPY", name="First")
     res = _create(client, seeded, "USD", name="Second")
-    assert "EUR" in res.text, res.text[:300]
+    assert res.status_code == 409
+    assert "JPY" in res.text, res.text[:300]
 
 
 def test_the_same_currency_again_is_accepted(client, seeded):
