@@ -16,6 +16,37 @@ vi.mock("@/components/auth/AuthProvider", async () => {
   return { ...actual, useAuth: vi.fn(), AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> };
 });
 
+// ⚠ TBD-503: the app shell mounts OrgCurrencyProvider, which fetches
+// /api/v1/accounts once auth resolves. A `mockResolvedValueOnce` QUEUE is
+// consumed in CALL ORDER regardless of arguments, so that extra call used to
+// eat this page's first queued response and desynchronise everything after it.
+// (The same class already cost three global stubs in vitest.setup.ts.)
+//
+// Path- and METHOD-aware instead. Two rules that matter:
+//   - it THROWS on an unmatched path rather than returning a default, so an
+//     unexpected call stays as loud as the queue made it. A catch-all
+//     `Promise.resolve([])` would make every un-mocked endpoint fail open.
+//   - it branches on `init?.method`, because the page issues GET and PUT/DELETE
+//     against the SAME url and a url-only handler would serve the read payload
+//     to the write and mask a body-shape bug.
+type Route = { path: string; method?: string; body: unknown };
+function serve(routes: Route[]) {
+  vi.mocked(apiFetch).mockImplementation(
+    (async (path: unknown, init?: { method?: string }) => {
+      const url = String(path);
+      const method = init?.method ?? "GET";
+      if (url.startsWith("/api/v1/accounts")) return [] as never;
+      for (const r of routes) {
+        if (url.startsWith(r.path) && (r.method ?? "GET") === method) {
+          if (r.body instanceof Error) throw r.body;
+          return r.body as never;
+        }
+      }
+      throw new Error(`unmocked ${method} ${url}`);
+    }) as never,
+  );
+}
+
 const replaceMock = vi.fn();
 const currentSearchParams = new URLSearchParams();
 vi.mock("next/navigation", () => ({
@@ -53,7 +84,7 @@ describe("AdminOrgsPage", () => {
   });
 
   it("renders the orgs table from the API", async () => {
-    apiFetchMock.mockResolvedValueOnce({
+    serve([{ path: "/api/v1/admin/orgs", body: {
       items: [
         {
           id: 10, name: "Acme", plan_slug: "free",
@@ -64,7 +95,7 @@ describe("AdminOrgsPage", () => {
         },
       ],
       total: 1, limit: 50, offset: 0,
-    } as never);
+    } }]);
 
     render(<AdminOrgsPage />);
 
@@ -89,7 +120,7 @@ describe("AdminOrgsPage", () => {
   });
 
   it("renders for a non-superadmin who carries orgs.view in permissions", async () => {
-    apiFetchMock.mockResolvedValueOnce({
+    serve([{ path: "/api/v1/admin/orgs", body: {
       items: [
         {
           id: 11, name: "Beta Co", plan_slug: "free",
@@ -100,7 +131,7 @@ describe("AdminOrgsPage", () => {
         },
       ],
       total: 1, limit: 50, offset: 0,
-    } as never);
+    } }]);
     useAuthMock.mockReturnValue({
       user: {
         ...SUPERADMIN,
@@ -118,10 +149,13 @@ describe("AdminOrgsPage", () => {
   });
 
   it("sweeps expired overrides and shows the deleted count", async () => {
-    apiFetchMock.mockResolvedValueOnce({
-      items: [], total: 0, limit: 50, offset: 0,
-    } as never);
-    apiFetchMock.mockResolvedValueOnce({ deleted_count: 3 } as never);
+    // ⚠ The sweep path STARTS WITH the list path, so a url-only handler would
+    // serve the list payload to the sweep. The method branch is what keeps
+    // them apart: GET list, POST sweep.
+    serve([
+      { path: "/api/v1/admin/orgs/feature-overrides/sweep-expired", method: "POST", body: { deleted_count: 3 } },
+      { path: "/api/v1/admin/orgs", body: { items: [], total: 0, limit: 50, offset: 0 } },
+    ]);
 
     render(<AdminOrgsPage />);
 

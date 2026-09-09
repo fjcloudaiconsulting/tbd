@@ -4,6 +4,7 @@ import Link from "next/link";
 import { AlertCircle, AlertTriangle, Check, RefreshCw } from "lucide-react";
 import { btnSecondary, card } from "@/lib/styles";
 import { formatAmount } from "@/lib/format";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface ForecastPlanLike {
   total_planned_expense: string | number;
@@ -111,6 +112,7 @@ export default function OnTrackTile({
   isPastPeriod,
   isFuturePeriod,
 }: OnTrackTileProps) {
+  const money = useMoney();
   const plannedExpense = forecastPlan ? Number(forecastPlan.total_planned_expense) : 0;
   const hasPlan = forecastPlan !== null && plannedExpense > 0;
 
@@ -148,7 +150,7 @@ export default function OnTrackTile({
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Stat
             label="Planned spending"
-            value={hasPlan ? formatAmount(plannedExpense) : "—"}
+            value={hasPlan ? money(plannedExpense) : "—"}
             sublabel={hasPlan ? "full month" : "not yet planned"}
             muted={!hasPlan}
           />
@@ -181,7 +183,7 @@ export default function OnTrackTile({
           <span className="text-xs text-text-secondary">This period</span>
         </header>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Stat label="Planned spending" value={formatAmount(0)} sublabel="not yet planned" muted />
+          <Stat label="Planned spending" value={money(0)} sublabel="not yet planned" muted />
           <Stat label="Spent so far" value="—" muted />
         </div>
         <div className="mt-6 text-sm">
@@ -211,7 +213,7 @@ export default function OnTrackTile({
           <span className="text-xs text-text-secondary">This period</span>
         </header>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Stat label="Planned spending" value={formatAmount(plannedExpense)} sublabel="full month" />
+          <Stat label="Planned spending" value={money(plannedExpense)} sublabel="full month" />
           <Stat label="Spent so far" value="—" muted />
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-3 text-sm text-text-muted">
@@ -248,7 +250,7 @@ export default function OnTrackTile({
           <span className="text-xs text-text-secondary">This period</span>
         </header>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Stat label="Planned spending" value={formatAmount(plannedExpense)} sublabel="full month" />
+          <Stat label="Planned spending" value={money(plannedExpense)} sublabel="full month" />
           <Stat label="Spent so far" value="…" muted />
         </div>
       </section>
@@ -277,11 +279,11 @@ export default function OnTrackTile({
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Stat
             label="Planned spending"
-            value={formatAmount(plannedExpense)}
+            value={money(plannedExpense)}
             sublabel="full month"
             muted
           />
-          <Stat label="Final spent" value={formatAmount(executedExpense)} sublabel="final" />
+          <Stat label="Final spent" value={money(executedExpense)} sublabel="final" />
         </div>
         <DetailsLink />
       </section>
@@ -311,18 +313,18 @@ export default function OnTrackTile({
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <Stat
           label="Planned spending"
-          value={formatAmount(plannedExpense)}
+          value={money(plannedExpense)}
           sublabel="full month"
           muted
         />
         <Stat
           label="Spent so far"
-          value={formatAmount(executedExpense)}
+          value={money(executedExpense)}
           sublabel="actual today"
         />
         <Stat
           label="Expected spending"
-          value={formatAmount(forecastExpense)}
+          value={money(forecastExpense)}
           sublabel="end of month"
           muted
         />

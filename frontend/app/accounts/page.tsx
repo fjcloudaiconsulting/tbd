@@ -12,7 +12,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage, ApiResponseError } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
-import { formatAmount } from "@/lib/format";
+import { formatAmount, formatMoney} from "@/lib/format";
 import {
   useTableState,
   paginate,
@@ -29,6 +29,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import OverflowMenu, { type OverflowMenuItem } from "@/components/ui/OverflowMenu";
 import AdjustBalanceModal from "@/components/accounts/AdjustBalanceModal";
 import LiabilityCards from "@/components/accounts/LiabilityCards";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 // Stable empty-array fallback so the SWR loading state (accountsData ===
 // undefined) doesn't hand a fresh [] to memos/effects on every render.
@@ -82,6 +83,7 @@ function sortAccounts(
 }
 
 export default function AccountsPage() {
+  const money = useMoney();
   const { user, loading } = useAuth();
   const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   // Accounts come from the shared SWR hook (SWR Phase 2, bare-path key) so
@@ -1556,12 +1558,12 @@ export default function AccountsPage() {
                         + text-right keep digits aligned across rows. */}
                     <div className="flex shrink-0 flex-col items-start gap-0.5 md:items-end">
                       <span className="text-sm tabular-nums text-text-primary">
-                        {formatAmount(a.balance)}{" "}
+                        {formatMoney(a.balance, a.currency)}{" "}
                         <span className="text-text-muted">{a.currency}</span>
                       </span>
                       {pendingByAccount[a.id] ? (
                         <span className="inline-flex items-center gap-1 text-xs tabular-nums text-text-muted">
-                          <span>Pending: {formatAmount(Math.abs(pendingByAccount[a.id]))}</span>
+                          <span>Pending: {formatMoney(Math.abs(pendingByAccount[a.id]), a.currency)}</span>
                           <Tooltip
                             content="Sum of transactions still marked Pending on this account. They do not move the balance yet, but they shape the end of month forecast."
                             learnMoreSection="accounts"
@@ -1576,7 +1578,7 @@ export default function AccountsPage() {
                           noise. */}
                       {Number(a.opening_balance) !== 0 ? (
                         <span className="text-xs tabular-nums text-text-muted">
-                          Opening: {formatAmount(Number(a.opening_balance))}
+                          Opening: {formatMoney(Number(a.opening_balance), a.currency)}
                           {a.opening_balance_date ? ` since ${a.opening_balance_date}` : ""}
                         </span>
                       ) : null}

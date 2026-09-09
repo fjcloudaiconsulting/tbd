@@ -1,0 +1,5 @@
+# Agent-local only, never committed. The operator's stack owns host port 80.
+services:
+  nginx:
+    ports: !override
+      - "8503:80"

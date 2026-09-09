@@ -26,8 +26,10 @@ import { card, cardTitle } from "@/lib/styles";
 import { chartColor } from "@/lib/chart-colors";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import { resolveForecastSeries } from "@/lib/reports/chart-series-tooltip";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export default function ForecastBarsWidget() {
+  const money = useMoney();
   const {
     forecast,
     forecastExpenseItems,
@@ -57,7 +59,7 @@ export default function ForecastBarsWidget() {
                   <YAxis type="category" dataKey="name" width={90} tick={{ fill: chartColor.axisTick, fontSize: 10 }} />
                   <Tooltip
                     content={
-                      <SeriesTooltip format={formatAmount} resolve={resolveForecastSeries} />
+                      <SeriesTooltip format={money} resolve={resolveForecastSeries} />
                     }
                   />
                   <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={220}

@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { card } from "@/lib/styles";
-import { formatAmount } from "@/lib/format";
+import { formatAmount, formatMoney} from "@/lib/format";
 import type { Account } from "@/lib/types";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface AccountTilesCardProps {
   accounts: Account[];
@@ -47,6 +48,7 @@ export interface AccountTileRowProps {
 }
 
 export function AccountTileRow({ account, pendingAmount }: AccountTileRowProps) {
+  const money = useMoney();
   const typeLabel = account.account_type_name ?? null;
   const hasPending = pendingAmount !== 0;
 
@@ -101,14 +103,14 @@ export function AccountTileRow({ account, pendingAmount }: AccountTileRowProps) 
           className="text-[11px] tabular-nums text-text-muted"
           aria-label="Current balance, secondary"
         >
-          {formatAmount(account.balance)}
+          {formatMoney(account.balance, account.currency)}
         </p>
         {hasPending && (
           <p
             className="text-[10px] tabular-nums text-warning"
             aria-label="Pending, not yet settled"
           >
-            Pending: {formatAmount(Math.abs(pendingAmount))}
+            Pending: {formatMoney(Math.abs(pendingAmount), account.currency)}
           </p>
         )}
       </div>

@@ -654,7 +654,10 @@ describe("TransactionsPage — transfer collapse (TBD-268)", () => {
 
     // 1. Signed amount, not the unsigned accent-coloured transfer amount.
     //    (Locale-tolerant: formatAmount goes through toLocaleString.)
-    const signed = /^-\d+[.,]\d{2}$/;
+    // TBD-503: the currency prefix now sits between the sign and the digits
+    // ("-€13.14"). The prefix is optional so this still matches an org with
+    // no resolved currency, which renders bare.
+    const signed = /^-[^\d]*\d+[.,]\d{2}$/;
     expect(within(screen.getByTestId("tx-row-desktop-42")).getByText(signed)).toBeInTheDocument();
     expect(within(screen.getByTestId("tx-row-mobile-42")).getByText(signed)).toBeInTheDocument();
 

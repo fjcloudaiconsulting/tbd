@@ -134,7 +134,7 @@ describe("BalancesByTypeTile", () => {
     });
     render(<BalancesByTypeTile />);
     // 1000.50 + 3210.00 = 4210.50, not "1000.503210.00"
-    expect(screen.getByText("4,210.50")).toBeInTheDocument();
+    expect(screen.getByText("€4,210.50")).toBeInTheDocument();
   });
 
   it("shows one amount line per currency and never sums across currencies", () => {
@@ -146,10 +146,12 @@ describe("BalancesByTypeTile", () => {
     });
     render(<BalancesByTypeTile />);
     const row = screen.getByTestId("balances-by-type-row");
-    expect(within(row).getByText("12,000.00")).toBeInTheDocument();
-    expect(within(row).getByText("EUR")).toBeInTheDocument();
-    expect(within(row).getByText("1,500.00")).toBeInTheDocument();
-    expect(within(row).getByText("USD")).toBeInTheDocument();
+    expect(within(row).getByText("€12,000.00")).toBeInTheDocument();
+    // ⚠ TBD-503: the trailing "EUR" span is gone (the figure carries the
+    // prefix). The property under test — one line per currency, never
+    // summed — is now proven by the prefixes themselves.
+    expect(within(row).getByText("€12,000.00")).toBeInTheDocument();
+    expect(within(row).getByText("$1,500.00")).toBeInTheDocument();
   });
 
   it("renders a liability subtotal with its stored negative sign and NO status color", () => {
@@ -159,7 +161,7 @@ describe("BalancesByTypeTile", () => {
       ],
     });
     const { container } = render(<BalancesByTypeTile />);
-    const amount = screen.getByText("-850.00");
+    const amount = screen.getByText("-€850.00");
     // positive: the amount uses the primary text token (the value, not a status)
     expect(amount.className).toContain("text-text-primary");
     // house rule: the sign carries the meaning; NO status color on the amount
@@ -176,7 +178,7 @@ describe("BalancesByTypeTile", () => {
     render(<BalancesByTypeTile />);
     const row = screen.getByTestId("balances-by-type-row");
     expect(within(row).getByText("Crypto")).toBeInTheDocument();
-    expect(within(row).getByText("4,200.00")).toBeInTheDocument();
+    expect(within(row).getByText("€4,200.00")).toBeInTheDocument();
   });
 
   it("orders types assets-first, liabilities-last, custom types after", () => {
@@ -204,8 +206,8 @@ describe("BalancesByTypeTile", () => {
     });
     render(<BalancesByTypeTile />);
     const row = screen.getByTestId("balances-by-type-row");
-    expect(within(row).getByText("5,000.00")).toBeInTheDocument(); // EUR (largest)
-    expect(within(row).getByText("900.00")).toBeInTheDocument(); // USD (2nd)
+    expect(within(row).getByText("€5,000.00")).toBeInTheDocument(); // EUR (largest)
+    expect(within(row).getByText("$900.00")).toBeInTheDocument(); // USD (2nd)
     expect(within(row).queryByText("50.00")).toBeNull(); // GBP hidden
     expect(within(row).getByText("+1 more")).toBeInTheDocument();
   });

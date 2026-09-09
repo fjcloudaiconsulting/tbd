@@ -181,7 +181,7 @@ describe("LoanPayoffTile", () => {
       accountMonthEndForecast: forecastWith([{ id: 7, currency: "EUR", payment: { amount: "250.00", date: "2026-07-20" } }]),
     });
     render(<LoanPayoffTile />);
-    expect(screen.getByText(/Next payment 250\.00 EUR on 2026-07-20/)).toBeInTheDocument();
+    expect(screen.getByText(/Next payment €250\.00 on 2026-07-20/)).toBeInTheDocument();
   });
 
   it("omits the next-payment line when the forecast has no loan_payment for the account", () => {
@@ -225,8 +225,11 @@ describe("LoanPayoffTile", () => {
       ]),
     });
     render(<LoanPayoffTile />);
-    expect(screen.getByText(/100\.00 EUR on 2026-07-10/)).toBeInTheDocument();
-    expect(screen.getByText(/200\.00 USD on 2026-07-11/)).toBeInTheDocument();
+    expect(screen.getByText(/€100\.00 on 2026-07-10/)).toBeInTheDocument();
+    // ⚠ Each loan carries its OWN currency, so the two rows must render with
+    // DIFFERENT prefixes. That is the property this test protects — a
+    // regression to the org currency renders both identically.
+    expect(screen.getByText(/\$200\.00 on 2026-07-11/)).toBeInTheDocument();
     // No aggregate/summed figure (e.g. 300) anywhere.
     expect(screen.queryByText(/300/)).toBeNull();
   });

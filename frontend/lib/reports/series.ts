@@ -12,7 +12,8 @@
  * Only the pivot needs the null-prototype guard against ``__proto__``.
  * Unifying them yields one function with a mode flag and a third bug.
  */
-import { formatAmount } from "@/lib/format";
+import { currencyPrefix, deriveOrgCurrency } from "@/lib/currencies";
+import { formatAmount, formatMoney } from "@/lib/format";
 import type {
   Dimension,
   Measure,
@@ -92,17 +93,15 @@ export function measureFieldLabel(field: MeasureField): string {
  * mixing is deliberately NOT done — so a report's charts share one symbol
  * derived from the org's accounts via ``reportCurrency``.
  */
-const CURRENCY_SYMBOLS: Record<string, string> = {
-  EUR: "€",
-  USD: "$",
-  GBP: "£",
-};
-
-/** Symbol (or padded ISO code) prefix for a currency code. */
-export function currencySymbol(code: string | undefined | null): string {
-  if (!code) return "";
-  return CURRENCY_SYMBOLS[code] ?? `${code} `;
-}
+/**
+ * ⚠ The hardcoded EUR/USD/GBP table that lived here is GONE (TBD-503).
+ * It covered three currencies and had a byte-identical twin in
+ * `AccountMonthEndForecast.tsx`, while the rest of the app rendered bare
+ * numbers. `currencyPrefix` in `lib/currencies.ts` is now the single source and
+ * keeps this file's exact output contract: symbol when one exists, code plus a
+ * space when not, empty string when the currency is unknown.
+ */
+export { currencyPrefix as currencySymbol } from "@/lib/currencies";
 
 /**
  * Derive the single currency a report renders in from the org's accounts.
@@ -124,12 +123,11 @@ export function currencySymbol(code: string | undefined | null): string {
 export function reportCurrency(
   accounts: Array<{ currency?: string | null }> | undefined | null,
 ): string | undefined {
-  const distinct = new Set<string>();
-  for (const a of accounts ?? []) {
-    if (a.currency) distinct.add(a.currency);
-  }
-  // Single-currency org keeps its symbol; zero or mixed currencies show none.
-  return distinct.size === 1 ? [...distinct][0] : undefined;
+  // Delegates to the shared derivation (TBD-503). The multi-currency gate this
+  // docstring describes now lives in `lib/currencies.ts` alongside the symbol
+  // source, so the two cannot drift apart. Kept as a named export because
+  // reports/[id]/page.tsx and CustomDashboard.tsx read in report terms.
+  return deriveOrgCurrency(accounts);
 }
 
 /** Format a measure value for display in widget tooltips, axes and cells.
@@ -149,7 +147,7 @@ export function formatMeasureValue(
   if (format === "percent") return `${value.toFixed(1)}%`;
   if (format === "currency") {
     // grouped, 2dp; symbol prefix when the org currency is known.
-    return `${currencySymbol(currency)}${formatAmount(value)}`;
+    return formatMoney(value, currency);
   }
   return value.toLocaleString();
 }

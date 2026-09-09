@@ -15,10 +15,12 @@ import Link from "next/link";
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import CreditUtilizationBar from "@/components/dashboard/widgets/CreditUtilizationBar";
 import { creditUtilization } from "@/lib/credit";
-import { formatAmount } from "@/lib/format";
+import { formatAmount, formatMoney} from "@/lib/format";
 import { badgeNeutral, card, cardHeader, cardTitle } from "@/lib/styles";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export default function CreditUtilizationWidget() {
+  const money = useMoney();
   const { activeAccounts, accountMonthEndForecast } = useDashboard();
 
   const creditCards = useMemo(
@@ -91,7 +93,7 @@ export default function CreditUtilizationWidget() {
                 />
                 {next && (
                   <span className={badgeNeutral}>
-                    Next payment {formatAmount(next.amount)} {a.currency} on {next.date}
+                    Next payment {formatMoney(next.amount, a.currency)} on {next.date}
                   </span>
                 )}
               </div>

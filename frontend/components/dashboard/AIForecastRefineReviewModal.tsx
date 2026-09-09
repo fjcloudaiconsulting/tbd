@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import type { RefinedForecastResponse } from "@/components/dashboard/AIForecastRefineToggle";
 import { formatAmount } from "@/lib/format";
 import { btnPrimary, btnSecondary, card } from "@/lib/styles";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 /**
  * Per-row review step for AI forecast refinement.
@@ -34,6 +35,7 @@ export default function AIForecastRefineReviewModal({
   onApply,
   onClose,
 }: AIForecastRefineReviewModalProps) {
+  const money = useMoney();
   // Only categories the AI actually adjusted (multiplier != 1) are
   // reviewable; unchanged categories carry the baseline regardless.
   const adjustments = useMemo(
@@ -180,10 +182,10 @@ export default function AIForecastRefineReviewModal({
                             </span>
                           </td>
                           <td className="py-2 pr-3 text-right tabular-nums text-text-secondary">
-                            {formatAmount(baseline)}
+                            {money(baseline)}
                           </td>
                           <td className="py-2 pr-3 text-right tabular-nums text-text-primary">
-                            {formatAmount(refinedAmt)}
+                            {money(refinedAmt)}
                           </td>
                           <td
                             className={`py-2 pr-3 text-right tabular-nums ${
@@ -195,7 +197,7 @@ export default function AIForecastRefineReviewModal({
                             }`}
                           >
                             {delta > 0 ? "+" : ""}
-                            {formatAmount(delta)}
+                            {money(delta)}
                           </td>
                         </tr>
                       );
@@ -206,7 +208,7 @@ export default function AIForecastRefineReviewModal({
               <p className="mt-3 text-xs text-text-muted">
                 {acceptedCount} of {adjustments.length} adjustments selected.
                 Net change: {acceptedDelta > 0 ? "+" : ""}
-                {formatAmount(acceptedDelta)}.
+                {money(acceptedDelta)}.
               </p>
             </>
           )}

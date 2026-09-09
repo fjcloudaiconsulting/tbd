@@ -58,9 +58,12 @@ describe("formatMeasureValue", () => {
   it("handles zero and negative values", () => {
     expect(formatMeasureValue(0, "currency")).toBe(formatAmount(0));
     expect(formatMeasureValue(-1234.5, "currency")).toBe(formatAmount(-1234.5));
-    expect(formatMeasureValue(-1234.5, "currency", "EUR")).toBe(
-      `€${formatAmount(-1234.5)}`,
-    );
+    // ⚠ CHANGED BY TBD-503, deliberately: "-€1,234.50", not "€-1,234.50".
+    // The sign now sits outside the symbol, unifying reports with the
+    // convention `AccountMonthEndForecast.signedMoney` already used and whose
+    // comment named "€-100.00" as the form to avoid. This is a visible change
+    // to report widgets and was approved with the prefix-everywhere ruling.
+    expect(formatMeasureValue(-1234.5, "currency", "EUR")).toBe("-€1,234.50");
     expect(formatMeasureValue(-50, "number")).toBe((-50).toLocaleString());
   });
 

@@ -15,6 +15,7 @@ import type { SpendingByCategoryResponse } from "@/components/dashboard/Dashboar
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount, formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 import { periodStatus, selectCurrentPeriodIndex } from "@/lib/billingPeriodStatus";
 import { btnSecondary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
@@ -155,6 +156,9 @@ function DashboardSkeleton() {
  * ``useAuth()``), so the UX during the loading window is unchanged.
  */
 export default function DashboardPage() {
+  // TBD-503: every money figure carries the org's currency. `money` is
+  // `formatAmount` bound to it; bare `formatAmount` stays for non-money numbers.
+  const money = useMoney();
   const { features } = useAuth();
   if (features?.customDashboard) {
     return <CustomDashboard />;
@@ -163,6 +167,9 @@ export default function DashboardPage() {
 }
 
 function LegacyDashboard() {
+  // TBD-503: bound here as well as in DashboardPage — the two render
+  // independently and neither is a parent of the other.
+  const money = useMoney();
   const { user, loading, features } = useAuth();
   // TBD-197. `=== false`, never truthiness: undefined means a booting client
   // (or a pre-existing test mock) and Budgets ships ON.
@@ -1195,7 +1202,7 @@ function LegacyDashboard() {
                             name itself, so a value `formatter` is enough.
                             SeriesTooltip is only needed for the multi-series
                             bar charts where the name node failed to render. */}
-                        <Tooltip formatter={(v) => formatAmount(Number(v))} contentStyle={{ fontSize: "12px" }} />
+                        <Tooltip formatter={(v) => money(Number(v))} contentStyle={{ fontSize: "12px" }} />
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
@@ -1328,7 +1335,7 @@ function LegacyDashboard() {
                         {/* %/amount carry data, so they ride text-secondary
                             rather than the dimmer text-muted. */}
                         <span className="text-right text-[10px] tabular-nums text-text-secondary">{d.pct.toFixed(0)}%</span>
-                        <span className="text-right text-xs tabular-nums text-text-secondary">{formatAmount(d.value)}</span>
+                        <span className="text-right text-xs tabular-nums text-text-secondary">{money(d.value)}</span>
                       </button>
                     ))}
                     {sortedSpending.length > 10 && (
@@ -1376,7 +1383,7 @@ function LegacyDashboard() {
                       <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
                       <Tooltip
                         content={
-                          <SeriesTooltip format={formatAmount} resolve={resolveBudgetSeries} />
+                          <SeriesTooltip format={money} resolve={resolveBudgetSeries} />
                         }
                       />
                       {/* D5 follow-up: shared BudgetSpentBarShape so
@@ -1445,7 +1452,7 @@ function LegacyDashboard() {
                           <YAxis type="category" dataKey="name" width={90} tick={{ fill: chartColor.axisTick, fontSize: 10 }} />
                           <Tooltip
                             content={
-                              <SeriesTooltip format={formatAmount} resolve={resolveForecastSeries} />
+                              <SeriesTooltip format={money} resolve={resolveForecastSeries} />
                             }
                           />
                           <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={220}
@@ -1548,7 +1555,7 @@ function LegacyDashboard() {
                   ? [tx.account_name, tx.linked_account_name]
                   : [tx.linked_account_name, tx.account_name];
                 const amountClass = `text-sm font-medium tabular-nums ${isPairedTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`;
-                const amountText = `${isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}${formatAmount(tx.amount)}`;
+                const amountText = `${isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}${money(tx.amount)}`;
                 const subline = isPairedTransfer ? (
                   <>{fromAcct} &rarr; {toAcct}</>
                 ) : (

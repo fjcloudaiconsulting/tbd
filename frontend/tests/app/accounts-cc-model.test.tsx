@@ -227,7 +227,7 @@ describe("CC Model — utilization card", () => {
     renderWithSWR(<AccountsPage />);
     const card = await screen.findByTestId("cc-card-11");
     expect(within(card).getByText(/^25%$/)).toBeTruthy();
-    expect(within(card).getByText(/2,000\.00 EUR/)).toBeTruthy();
+    expect(within(card).getByText(/€2,000\.00/)).toBeTruthy();
     // the old balance-cell subline copy is gone from the table row
     const row = screen.getByTestId("account-row-11");
     expect(within(row).queryByText(/of limit/)).toBeNull();
@@ -244,7 +244,7 @@ describe("CC Model — utilization card", () => {
     mockApi([CHECKING, SAVINGS, ccWith("-2500.00", "2000.00")]);
     renderWithSWR(<AccountsPage />);
     const card = await screen.findByTestId("cc-card-11");
-    expect(within(card).getByText(/Over limit · 500\.00 EUR over/)).toBeTruthy();
+    expect(within(card).getByText(/Over limit · €500\.00 over/)).toBeTruthy();
   });
 
   test("exactly maxed (100%, not over) reads 'High', never 'over'", async () => {

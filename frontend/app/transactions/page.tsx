@@ -46,6 +46,7 @@ import { usePersistedFilters } from "@/lib/hooks/use-persisted-filters";
 import { usePersistedSort } from "@/lib/hooks/use-persisted-sort";
 import Pagination from "@/components/ui/Pagination";
 import { pageCount } from "@/lib/hooks/use-table-state";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 // TBD-295 copy discipline. A one-way `linked_transaction_id` has producers
 // other than reconciliation (a self-link, a cross-org link, an A->B->C chain),
@@ -265,6 +266,7 @@ export default function TransactionsPage() {
 }
 
 function TransactionsPageContent() {
+  const money = useMoney();
   const { user, loading } = useAuth();
   const role = user?.role ?? null;
   const ai = useAiStatus();
@@ -2012,7 +2014,7 @@ function TransactionsPageContent() {
                             )}
                           </span>
                           <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isPairedTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
-                            {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                            {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{money(tx.amount)}
                           </span>
                           <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
                             {isReadOnlyAdjustment(tx) ? (
@@ -2456,7 +2458,7 @@ function TransactionsPageContent() {
                               )}
                             </div>
                             <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isPairedTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
-                              {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                              {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{money(tx.amount)}
                             </div>
                           </div>
                           <div className="flex items-center gap-2">

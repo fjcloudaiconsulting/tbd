@@ -19,10 +19,11 @@
  */
 import CreditUtilizationBar from "@/components/dashboard/widgets/CreditUtilizationBar";
 import { creditUtilization } from "@/lib/credit";
-import { formatAmount, formatMonthYear } from "@/lib/format";
+import { formatAmount, formatMonthYear, formatMoney} from "@/lib/format";
 import { loanPayoffStatus } from "@/lib/loan";
 import { badgeForTone, cardTitle } from "@/lib/styles";
 import type { Account } from "@/lib/types";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 interface PaymentSource {
   name: string;
@@ -103,6 +104,7 @@ function CardShell({
   expressive: React.ReactNode;
   children?: React.ReactNode;
 }) {
+  const money = useMoney();
   return (
     <div
       data-testid={testid}
@@ -117,7 +119,7 @@ function CardShell({
         ) : null}
       </div>
       <div className="text-2xl font-semibold tabular-nums text-text-primary">
-        {formatAmount(account.balance)}{" "}
+        {formatMoney(account.balance, account.currency)}{" "}
         <span className="text-base font-normal text-text-secondary">{account.currency}</span>
       </div>
       {expressive}
@@ -132,6 +134,7 @@ function CardShell({
 }
 
 function CreditCardCard({ account, accounts }: { account: Account; accounts: Account[] }) {
+  const money = useMoney();
   const hasLimit = Number(account.credit_limit) > 0;
   const source = resolvePaymentSource(accounts, account.payment_source_account_id);
   return (
@@ -158,7 +161,7 @@ function CreditCardCard({ account, accounts }: { account: Account; accounts: Acc
       />
       <Metric
         label="Credit limit"
-        value={hasLimit ? `${formatAmount(account.credit_limit as number)} ${account.currency}` : "Not set"}
+        value={hasLimit ? formatMoney(account.credit_limit as number, account.currency) : "Not set"}
         numeric={hasLimit}
       />
       <PaidFrom source={source} />
@@ -167,6 +170,7 @@ function CreditCardCard({ account, accounts }: { account: Account; accounts: Acc
 }
 
 function LoanCard({ account, accounts }: { account: Account; accounts: Account[] }) {
+  const money = useMoney();
   const source = resolvePaymentSource(accounts, account.payment_source_account_id);
   const m = account.loan;
   // Shared classifier resolves the tone; the card owns its verbose labels. Each
@@ -203,7 +207,7 @@ function LoanCard({ account, accounts }: { account: Account; accounts: Account[]
         <>
           <Metric
             label="Monthly payment"
-            value={`${formatAmount(m.expected_monthly_payment)} ${account.currency}`}
+            value={formatMoney(m.expected_monthly_payment, account.currency)}
             numeric
           />
           <Metric
@@ -219,7 +223,7 @@ function LoanCard({ account, accounts }: { account: Account; accounts: Account[]
           <Metric label="Matures" value={formatMonthYear(m.maturation_date)} />
           <Metric
             label="Interest over term"
-            value={`${formatAmount(m.total_interest)} ${account.currency}`}
+            value={formatMoney(m.total_interest, account.currency)}
             numeric
           />
           <PaidFrom source={source} />

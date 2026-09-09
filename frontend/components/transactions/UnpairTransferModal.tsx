@@ -14,6 +14,7 @@ import {
   label as labelCls,
 } from "@/lib/styles";
 import type { Category, Transaction, UnpairTransactionRequest } from "@/lib/types";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 interface Props {
   expenseLeg: Transaction;
@@ -30,6 +31,7 @@ export default function UnpairTransferModal({
   onUnpaired,
   onCancel,
 }: Props) {
+  const money = useMoney();
   const [expenseCategoryId, setExpenseCategoryId] = useState<number | "">("");
   const [incomeCategoryId, setIncomeCategoryId] = useState<number | "">("");
   const [submitting, setSubmitting] = useState(false);
@@ -125,7 +127,7 @@ export default function UnpairTransferModal({
         <div className="mb-4 space-y-1 text-sm text-text-primary">
           <div>
             <span className="font-medium">Expense leg:</span>{" "}
-            -{formatAmount(expenseLeg.amount)} &middot; {expenseLeg.date}{" "}
+            -{money(expenseLeg.amount)} &middot; {expenseLeg.date}{" "}
             &middot; {expenseLeg.account_name}
             <span className="ml-1 text-text-secondary">settled {expenseLeg.settled_date ?? "—"}</span>
           </div>
@@ -146,7 +148,7 @@ export default function UnpairTransferModal({
         <div className="mb-4 space-y-1 text-sm text-text-primary">
           <div>
             <span className="font-medium">Income leg:</span>{" "}
-            +{formatAmount(incomeLeg.amount)} &middot; {incomeLeg.date} &middot;{" "}
+            +{money(incomeLeg.amount)} &middot; {incomeLeg.date} &middot;{" "}
             {incomeLeg.account_name}
             <span className="ml-1 text-text-secondary">settled {incomeLeg.settled_date ?? "—"}</span>
           </div>

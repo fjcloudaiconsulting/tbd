@@ -7,6 +7,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount } from "@/lib/format";
 import { btnPrimary, btnSecondary, card, error as errorCls } from "@/lib/styles";
 import type { RebalanceSuggestion } from "@/components/budgets/BudgetRebalanceModal";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export type DraftStatus = "ok" | "empty_no_history";
 
@@ -36,6 +37,7 @@ export default function BudgetDraftModal({
   onApplied,
   onClose,
 }: Props) {
+  const money = useMoney();
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<DraftResponse | null>(null);
   const [acceptedIds, setAcceptedIds] = useState<Set<number>>(new Set());
@@ -256,7 +258,7 @@ export default function BudgetDraftModal({
                             )}
                           </td>
                           <td className="py-2 pr-3 text-right tabular-nums text-text-primary">
-                            {formatAmount(toNumber(s.suggested_amount))}
+                            {money(toNumber(s.suggested_amount))}
                           </td>
                           <td className="py-2 pr-3 text-xs text-text-muted">
                             {s.reasoning}
@@ -269,7 +271,7 @@ export default function BudgetDraftModal({
               </div>
               <p className="mt-3 text-xs text-text-muted">
                 {acceptedCount} of {response.suggestions.length} selected. Total
-                drafted: {formatAmount(totalDraft)}.
+                drafted: {money(totalDraft)}.
               </p>
             </>
           )}

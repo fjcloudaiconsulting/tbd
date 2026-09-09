@@ -20,6 +20,37 @@ vi.mock("@/components/auth/AuthProvider", async () => {
   };
 });
 
+// ⚠ TBD-503: the app shell mounts OrgCurrencyProvider, which fetches
+// /api/v1/accounts once auth resolves. A `mockResolvedValueOnce` QUEUE is
+// consumed in CALL ORDER regardless of arguments, so that extra call used to
+// eat this page's first queued response and desynchronise everything after it.
+// (The same class already cost three global stubs in vitest.setup.ts.)
+//
+// Path- and METHOD-aware instead. Two rules that matter:
+//   - it THROWS on an unmatched path rather than returning a default, so an
+//     unexpected call stays as loud as the queue made it. A catch-all
+//     `Promise.resolve([])` would make every un-mocked endpoint fail open.
+//   - it branches on `init?.method`, because the page issues GET and PUT/DELETE
+//     against the SAME url and a url-only handler would serve the read payload
+//     to the write and mask a body-shape bug.
+type Route = { path: string; method?: string; body: unknown };
+function serve(routes: Route[]) {
+  vi.mocked(apiFetch).mockImplementation(
+    (async (path: unknown, init?: { method?: string }) => {
+      const url = String(path);
+      const method = init?.method ?? "GET";
+      if (url.startsWith("/api/v1/accounts")) return [] as never;
+      for (const r of routes) {
+        if (url.startsWith(r.path) && (r.method ?? "GET") === method) {
+          if (r.body instanceof Error) throw r.body;
+          return r.body as never;
+        }
+      }
+      throw new Error(`unmocked ${method} ${url}`);
+    }) as never,
+  );
+}
+
 const replaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
@@ -104,7 +135,7 @@ describe("AdminAnalyticsPage", () => {
   });
 
   it("renders the analytics envelope for a superadmin", async () => {
-    apiFetchMock.mockResolvedValueOnce(POPULATED_RESPONSE as never);
+    serve([{ path: "/api/v1/admin/analytics", body: POPULATED_RESPONSE }]);
 
     render(<AdminAnalyticsPage />);
 
@@ -117,7 +148,7 @@ describe("AdminAnalyticsPage", () => {
   });
 
   it("renders empty-state copy when no activity is present", async () => {
-    apiFetchMock.mockResolvedValueOnce(EMPTY_RESPONSE as never);
+    serve([{ path: "/api/v1/admin/analytics", body: EMPTY_RESPONSE }]);
 
     render(<AdminAnalyticsPage />);
 
@@ -150,7 +181,7 @@ describe("AdminAnalyticsPage", () => {
   });
 
   it("renders for a non-superadmin who carries analytics.view in permissions", async () => {
-    apiFetchMock.mockResolvedValueOnce(POPULATED_RESPONSE as never);
+    serve([{ path: "/api/v1/admin/analytics", body: POPULATED_RESPONSE }]);
     useAuthMock.mockReturnValue({
       user: {
         ...SUPERADMIN,

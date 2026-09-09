@@ -20,9 +20,10 @@ import { useMemo } from "react";
 import Link from "next/link";
 
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
-import { formatAmount } from "@/lib/format";
+import { formatAmount, formatMoney} from "@/lib/format";
 import { loanPayoffStatus, type LoanPayoffState } from "@/lib/loan";
 import { badgeForTone, card, cardHeader, cardTitle } from "@/lib/styles";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 /** Terse glance labels (the accounts card carries the verbose copy). */
 const LABEL: Record<LoanPayoffState, string> = {
@@ -45,6 +46,7 @@ const FOCUS_RING =
   "focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent";
 
 export default function LoanPayoffTile() {
+  const money = useMoney();
   const { activeAccounts, accountMonthEndForecast } = useDashboard();
 
   const nextPaymentByAccount = useMemo(() => {
@@ -120,7 +122,7 @@ export default function LoanPayoffTile() {
                 </div>
                 {next && (
                   <span className="text-xs text-text-muted">
-                    Next payment {formatAmount(next.amount)} {account.currency} on {next.date}
+                    Next payment {formatMoney(next.amount, account.currency)} on {next.date}
                   </span>
                 )}
               </div>
