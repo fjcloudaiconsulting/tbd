@@ -20,11 +20,18 @@ vi.mock("@/components/auth/AuthProvider", async () => {
   };
 });
 
-// ⚠ TBD-503: the app shell mounts OrgCurrencyProvider, which fetches
-// /api/v1/accounts once auth resolves. A `mockResolvedValueOnce` QUEUE is
-// consumed in CALL ORDER regardless of arguments, so that extra call used to
-// eat this page's first queued response and desynchronise everything after it.
-// (The same class already cost three global stubs in vitest.setup.ts.)
+// ⚠ TBD-503: a `mockResolvedValueOnce` QUEUE is consumed in CALL ORDER
+// regardless of arguments, so ANY new fetch above the component under test
+// eats this page's first queued response and desynchronises everything after
+// it — failing with a symptom that points at the wrong file entirely. That is
+// exactly what happened here: an interim design mounted OrgCurrencyProvider
+// inside `AppShell`, and five unrelated suites broke at once.
+//
+// That provider now mounts in the ROOT LAYOUT (`OrgCurrencyBoundary`), which
+// no RTL test renders, so no accounts fetch reaches these pages today. The
+// helper stays regardless: the queue's order-dependence is the defect, and it
+// is one fetch away from biting again. Tracked for the rest of the suite in
+// TBD-504.
 //
 // Path- and METHOD-aware instead. Two rules that matter:
 //   - it THROWS on an unmatched path rather than returning a default, so an
@@ -39,7 +46,6 @@ function serve(routes: Route[]) {
     (async (path: unknown, init?: { method?: string }) => {
       const url = String(path);
       const method = init?.method ?? "GET";
-      if (url.startsWith("/api/v1/accounts")) return [] as never;
       for (const r of routes) {
         if (url.startsWith(r.path) && (r.method ?? "GET") === method) {
           if (r.body instanceof Error) throw r.body;

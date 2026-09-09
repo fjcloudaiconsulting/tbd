@@ -22,10 +22,11 @@
  *     guard exists because a `?? []` nullish check let an error envelope reach
  *     a `for...of` and take down every money figure on the page (58 failures).
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 
 import { apiFetch } from "@/lib/api";
+import { formatAmount } from "@/lib/format";
 import { OrgCurrencyProvider, useMoney, useOrgCurrency } from "@/lib/hooks/use-org-currency";
 
 vi.mock("@/lib/api", async () => {
@@ -64,8 +65,16 @@ describe("with no provider", () => {
     // both correct (no session, no currency) and identical to the
     // pre-TBD-503 output — never a wrong symbol.
     renderIsolated(<Probe />);
+    // ⚠ THIS ASSERTION IS THE POINT. Without it the test passes against the
+    // rejected design too: a `useOrgCurrency` that falls back to
+    // `useAccounts()` with no provider renders IDENTICALLY here (unmocked
+    // `apiFetch` resolves undefined -> `deriveOrgCurrency(undefined)` ->
+    // undefined -> bare). The output cannot tell the two apart; only the
+    // absence of the request can. That fallback is exactly what defeated
+    // `accounts-swr-auth-gate.test.tsx`, so it is the defect worth killing.
+    expect(apiFetch).not.toHaveBeenCalled();
     expect(screen.getByTestId("currency").textContent).toBe("<none>");
-    expect(screen.getByTestId("figure").textContent).toBe("1,234.56");
+    expect(screen.getByTestId("figure").textContent).toBe(formatAmount(1234.56));
   });
 });
 
@@ -85,7 +94,7 @@ describe("with a provider", () => {
     await waitFor(() =>
       expect(screen.getByTestId("currency").textContent).toBe("EUR"),
     );
-    expect(screen.getByTestId("figure").textContent).toBe("€1,234.56");
+    expect(screen.getByTestId("figure").textContent).toBe(`€${formatAmount(1234.56)}`);
   });
 
   it("renders bare for a MIXED-currency org rather than guessing", async () => {
@@ -105,7 +114,7 @@ describe("with a provider", () => {
 
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
     expect(screen.getByTestId("currency").textContent).toBe("<none>");
-    expect(screen.getByTestId("figure").textContent).toBe("1,234.56");
+    expect(screen.getByTestId("figure").textContent).toBe(formatAmount(1234.56));
   });
 
   it("falls back to the code when the currency has no symbol", async () => {
@@ -116,7 +125,7 @@ describe("with a provider", () => {
       </OrgCurrencyProvider>,
     );
     await waitFor(() =>
-      expect(screen.getByTestId("figure").textContent).toBe("CHF 1,234.56"),
+      expect(screen.getByTestId("figure").textContent).toBe(`CHF ${formatAmount(1234.56)}`),
     );
   });
 });
@@ -131,9 +140,18 @@ describe("⚠ the two properties a naive test omits", () => {
         <Probe />
       </OrgCurrencyProvider>,
     );
-    await Promise.resolve();
+    // ⚠ Two flushes inside `act`, matching `accounts-swr-auth-gate.test.tsx`.
+    // A single microtask happens to be enough only because SWR calls the
+    // fetcher synchronously from its mount layout effect when there is no
+    // cached entry; its OTHER branch schedules through rAF. Relying on which
+    // branch SWR takes would make this fence miss any provider that defers
+    // its fetch by a frame or a timer.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(apiFetch).not.toHaveBeenCalled();
-    expect(screen.getByTestId("figure").textContent).toBe("1,234.56");
+    expect(screen.getByTestId("figure").textContent).toBe(formatAmount(1234.56));
   });
 
   it("does not throw when the accounts payload is not an array", async () => {
@@ -149,6 +167,6 @@ describe("⚠ the two properties a naive test omits", () => {
     );
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
     expect(screen.getByTestId("currency").textContent).toBe("<none>");
-    expect(screen.getByTestId("figure").textContent).toBe("1,234.56");
+    expect(screen.getByTestId("figure").textContent).toBe(formatAmount(1234.56));
   });
 });

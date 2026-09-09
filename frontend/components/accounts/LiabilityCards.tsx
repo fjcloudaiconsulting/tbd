@@ -117,8 +117,7 @@ function CardShell({
         ) : null}
       </div>
       <div className="text-2xl font-semibold tabular-nums text-text-primary">
-        {formatMoney(account.balance, account.currency)}{" "}
-        <span className="text-base font-normal text-text-secondary">{account.currency}</span>
+        {formatMoney(account.balance, account.currency)}
       </div>
       {expressive}
       {children ? (

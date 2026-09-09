@@ -1556,8 +1556,7 @@ export default function AccountsPage() {
                         + text-right keep digits aligned across rows. */}
                     <div className="flex shrink-0 flex-col items-start gap-0.5 md:items-end">
                       <span className="text-sm tabular-nums text-text-primary">
-                        {formatMoney(a.balance, a.currency)}{" "}
-                        <span className="text-text-muted">{a.currency}</span>
+                        {formatMoney(a.balance, a.currency)}
                       </span>
                       {pendingByAccount[a.id] ? (
                         <span className="inline-flex items-center gap-1 text-xs tabular-nums text-text-muted">

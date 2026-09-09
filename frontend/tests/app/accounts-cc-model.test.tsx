@@ -227,10 +227,39 @@ describe("CC Model — utilization card", () => {
     renderWithSWR(<AccountsPage />);
     const card = await screen.findByTestId("cc-card-11");
     expect(within(card).getByText(/^25%$/)).toBeTruthy();
-    expect(within(card).getByText(/€2,000\.00/)).toBeTruthy();
+    expect(within(card).getByText(/^€2,000\.00$/)).toBeTruthy();
     // the old balance-cell subline copy is gone from the table row
     const row = screen.getByTestId("account-row-11");
     expect(within(row).queryByText(/of limit/)).toBeNull();
+
+    // The balance renders with a LEADING symbol and no trailing code.
+    expect(within(card).getByText(/^-€500\.00$/)).toBeTruthy();
+    expect(within(row).getByText(/^-€500\.00$/)).toBeTruthy();
+
+    // ⚠⚠ THE TWO ASSERTIONS ABOVE CANNOT SEE A TRAILING CODE, AND THAT IS WHY
+    // THIS CLASS KEPT SHIPPING. testing-library's `getNodeText` joins only the
+    // element's DIRECT text-node children — element children are skipped. So
+    // for `<div>{"-€500.00"}{" "}<span>EUR</span></div>` it yields "-€500.00",
+    // and even the `$`-anchored regex above matches happily. Verified by
+    // injection: re-adding the trailing span leaves both green.
+    //
+    // The banned pattern lives in the CONTAINER's textContent, so that is what
+    // has to be asserted. This is the fence; the anchored `getByText` calls
+    // above are the readable half.
+    // ⚠ A DIGIT FOLLOWED BY AN ISO-STYLE CODE. Two earlier attempts at this
+    // regex were VACUOUS, and only injection runs caught them:
+    //   `…[A-Z]{3}\b`          — `textContent` concatenates siblings, so the
+    //                            card reads "EUR25%": R->2 is \w\w, no
+    //                            boundary, never matched.
+    //   `…[A-Z]{3}(?![A-Za-z])` — the row reads "EUREdit", so the lookahead
+    //                            rejected the very defect it was hunting.
+    // Both stayed green with the bug live in the DOM. Anchored `getByText`
+    // cannot help either: testing-library's `getNodeText` joins only DIRECT
+    // text-node children, so a trailing <span>EUR</span> is invisible to it.
+    // This is why the trailing-code class kept shipping.
+    const trailingCode = /[\d.,]\s*[A-Z]{3}/;
+    expect(card.textContent).not.toMatch(trailingCode);
+    expect(row.textContent).not.toMatch(trailingCode);
   });
 
   test("zero outstanding card shows 0%", async () => {

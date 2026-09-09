@@ -80,7 +80,23 @@ export const OTHER_CURRENCIES: readonly string[] = ALL_CURRENCIES.filter(
  * family (JPY "¥", CNY "CN¥"). Measured across all 170: zero symbols are
  * shared by two currencies.
  */
+// ⚠ Memoised, and not as a micro-optimisation. `formatMoney` calls this for
+// EVERY money figure, and the reports TableWidget runs it once per cell — a
+// 1,000-cell table constructed 1,000 `Intl.NumberFormat` objects per render,
+// where the three hand-written implementations this replaces did a plain
+// object lookup. The result depends only on `code`, so one entry per currency
+// is the whole cache (156 max).
+const symbolCache = new Map<string, string | null>();
+
 export function currencySymbol(code: string): string | null {
+  const cached = symbolCache.get(code);
+  if (cached !== undefined) return cached;
+  const result = computeCurrencySymbol(code);
+  symbolCache.set(code, result);
+  return result;
+}
+
+function computeCurrencySymbol(code: string): string | null {
   try {
     const part = new Intl.NumberFormat("en", {
       style: "currency",

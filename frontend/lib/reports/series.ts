@@ -101,7 +101,7 @@ export function measureFieldLabel(field: MeasureField): string {
  * keeps this file's exact output contract: symbol when one exists, code plus a
  * space when not, empty string when the currency is unknown.
  */
-export { currencyPrefix as currencySymbol } from "@/lib/currencies";
+export { currencyPrefix } from "@/lib/currencies";
 
 /**
  * Derive the single currency a report renders in from the org's accounts.

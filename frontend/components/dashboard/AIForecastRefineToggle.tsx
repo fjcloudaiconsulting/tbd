@@ -312,7 +312,7 @@ export default function AIForecastRefineToggle({
                     {adj.category_name}
                   </span>
                   : {money(adj.baseline_forecast)} -&gt;{" "}
-                  {Number(adj.refined_forecast).toFixed(2)} (x
+                  {money(adj.refined_forecast)} (x
                   {adj.multiplier.toFixed(2)})
                 </li>
               ))}

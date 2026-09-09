@@ -379,6 +379,11 @@ describe("describeWidgetFilters", () => {
   });
 
   it("emits amount chips for range / one-sided bounds", () => {
+    // ⚠ TBD-503: these were "$100 to $500". The `$` was hardcoded and wrong for
+    // every org that does not hold dollars — the only figure on the reports
+    // canvas still asserting a currency the org may not use. With no currency
+    // passed the chip is BARE, matching how every other money figure degrades
+    // when the org's currency is unknown or mixed.
     expect(
       describeWidgetFilters(
         bar({ amount_range: { min: 100, max: 500 } }),
@@ -386,7 +391,7 @@ describe("describeWidgetFilters", () => {
         NO_LOOKUPS,
         NOW,
       ).find((c) => c.key === "amount")?.label,
-    ).toBe("$100 to $500");
+    ).toBe("100 to 500");
     expect(
       describeWidgetFilters(
         bar({ amount_range: { min: 100 } }),
@@ -394,7 +399,7 @@ describe("describeWidgetFilters", () => {
         NO_LOOKUPS,
         NOW,
       ).find((c) => c.key === "amount")?.label,
-    ).toBe("≥ $100");
+    ).toBe("≥ 100");
     expect(
       describeWidgetFilters(
         bar({ amount_range: { max: 500 } }),
@@ -402,7 +407,28 @@ describe("describeWidgetFilters", () => {
         NO_LOOKUPS,
         NOW,
       ).find((c) => c.key === "amount")?.label,
-    ).toBe("≤ $500");
+    ).toBe("≤ 500");
+  });
+
+  it("prefixes the amount chip with the org currency when there is one", () => {
+    // The point of the change: one org, one prefix, everywhere. Both branches
+    // matter — a symbol currency and a code-fallback one — because the chip
+    // builds the prefix itself rather than going through `formatMoney`.
+    const label = (currency?: string | null) =>
+      describeWidgetFilters(
+        bar({ amount_range: { min: 100, max: 500 } }),
+        {},
+        NO_LOOKUPS,
+        NOW,
+        true,
+        true,
+        currency,
+      ).find((c) => c.key === "amount")?.label;
+
+    expect(label("EUR")).toBe("€100 to €500");
+    expect(label("CHF")).toBe("CHF 100 to CHF 500");
+    // A mixed-currency org resolves to undefined: bare, never a wrong symbol.
+    expect(label(undefined)).toBe("100 to 500");
   });
 
   it("emits a tags chip and adds the (any) suffix only for tag_match=any", () => {

@@ -82,8 +82,8 @@ describe("formatMoney", () => {
     // between them: `AccountMonthEndForecast`'s `signedMoney` comment calls
     // `${symbol}${money(v)}` -> "€-100.00" out as the naive form to avoid.
     // This unifies on the one that comment endorses.
-    expect(formatMoney(-50, "EUR")).toBe("-€50.00");
-    expect(formatMoney(-50, "CHF")).toBe("-CHF 50.00");
+    expect(formatMoney(-50, "EUR")).toBe(`-€${formatAmount(50)}`);
+    expect(formatMoney(-50, "CHF")).toBe(`-CHF ${formatAmount(50)}`);
   });
 
   it("still shows a bare negative when no currency is known", () => {

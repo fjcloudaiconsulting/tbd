@@ -13,7 +13,7 @@ import {
 } from "@/lib/styles";
 
 import type { Account } from "@/lib/types";
-import { useMoney } from "@/lib/hooks/use-org-currency";
+import { formatMoney } from "@/lib/format";
 
 interface Props {
   account: Account;
@@ -42,7 +42,6 @@ interface AdjustResponse {
  * disabling the button, so the user sees why).
  */
 export default function AdjustBalanceModal({ account, onClose, onAdjusted }: Props) {
-  const money = useMoney();
   const dialogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -135,7 +134,7 @@ export default function AdjustBalanceModal({ account, onClose, onAdjusted }: Pro
           <div>
             <p className="text-sm text-text-muted">Current balance</p>
             <p className="text-base tabular-nums text-text-primary">
-              {money(account.balance)}
+              {formatMoney(account.balance, account.currency)}
             </p>
           </div>
 
@@ -174,7 +173,7 @@ export default function AdjustBalanceModal({ account, onClose, onAdjusted }: Pro
                   }
                 >
                   {delta > 0 ? "+" : ""}
-                  {money(delta)}
+                  {formatMoney(delta, account.currency)}
                 </span>
               </p>
             )}

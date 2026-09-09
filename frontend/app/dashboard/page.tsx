@@ -156,8 +156,6 @@ function DashboardSkeleton() {
  * ``useAuth()``), so the UX during the loading window is unchanged.
  */
 export default function DashboardPage() {
-  // TBD-503: every money figure carries the org's currency. `money` is
-  // `formatAmount` bound to it; bare `formatAmount` stays for non-money numbers.
   const { features } = useAuth();
   if (features?.customDashboard) {
     return <CustomDashboard />;
@@ -166,8 +164,9 @@ export default function DashboardPage() {
 }
 
 function LegacyDashboard() {
-  // TBD-503: bound here as well as in DashboardPage — the two render
-  // independently and neither is a parent of the other.
+  // TBD-503: `useMoney` is read here rather than passed down — this component
+  // and `CustomDashboard` render independently and neither is a parent of the
+  // other. The provider itself sits in the root layout, above both.
   const money = useMoney();
   const { user, loading, features } = useAuth();
   // TBD-197. `=== false`, never truthiness: undefined means a booting client

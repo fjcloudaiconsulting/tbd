@@ -201,9 +201,9 @@ describe("Loan Model — read-only card", () => {
     mockApi();
     renderWithSWR(<AccountsPage />);
     const card = await screen.findByTestId("loan-card-11");
-    expect(within(card).getByText(/€391\.32/)).toBeTruthy();
+    expect(within(card).getByText(/^€391\.32$/)).toBeTruthy();
     expect(within(card).getByText(/Jan 2031/)).toBeTruthy(); // Matures (from 2031-01-01)
-    expect(within(card).getByText(/€3,479\.20/)).toBeTruthy(); // interest over term
+    expect(within(card).getByText(/^€3,479\.20$/)).toBeTruthy(); // interest over term
     expect(within(card).getByText(/On track · paid off by Nov 2030/)).toBeTruthy();
     // the table row is now clean (detail moved to the card)
     const row = screen.getByTestId("account-row-11");

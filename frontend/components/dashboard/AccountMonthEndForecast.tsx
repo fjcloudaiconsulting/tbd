@@ -5,7 +5,7 @@ import { TriangleAlert } from "lucide-react";
 
 import { badgeError, btnLink, card, cardHeader, cardTitle } from "@/lib/styles";
 import { formatAmount, formatMoney } from "@/lib/format";
-import { currencyPrefix as currencySymbol } from "@/lib/currencies";
+import { currencyPrefix } from "@/lib/currencies";
 
 export interface AccountMonthEndForecastTotal {
   currency: string;
@@ -202,7 +202,7 @@ export default function AccountMonthEndForecast({
             // itself, so a formatted-with-currency value here renders
             // "-€€250.00". Caught by the existing pending-subtext test.
             const pendingMagnitude = formatAmount(Math.abs(pendingNum));
-            const pendingCurrencySymbol = currencySymbol(row.currency);
+            const pendingCurrencyPrefix = currencyPrefix(row.currency);
             const riskDays = row.risk_days ?? [];
             return (
               <div
@@ -253,7 +253,7 @@ export default function AccountMonthEndForecast({
                   {showPending && (
                     <p className="text-[10px] tabular-nums text-text-muted">
                       Includes {sign}
-                      {pendingCurrencySymbol}
+                      {pendingCurrencyPrefix}
                       {pendingMagnitude} pending
                     </p>
                   )}
@@ -269,8 +269,8 @@ export default function AccountMonthEndForecast({
                       className="text-[10px] tabular-nums text-danger"
                     >
                       {r.from === r.through
-                        ? `Below zero on ${r.from} (${signedMoney(r.lowest_balance, pendingCurrencySymbol)})`
-                        : `Below zero ${r.from} to ${r.through}, lowest ${signedMoney(r.lowest_balance, pendingCurrencySymbol)} on ${r.lowest_on}`}
+                        ? `Below zero on ${r.from} (${signedMoney(r.lowest_balance, pendingCurrencyPrefix)})`
+                        : `Below zero ${r.from} to ${r.through}, lowest ${signedMoney(r.lowest_balance, pendingCurrencyPrefix)} on ${r.lowest_on}`}
                     </p>
                   ))}
                   {(row.cc_payments ?? []).map((p, i) => (
@@ -278,8 +278,7 @@ export default function AccountMonthEndForecast({
                       key={`${p.date}-${i}`}
                       className="text-[10px] tabular-nums text-text-muted"
                     >
-                      Payment {pendingCurrencySymbol}
-                      {formatMoney(p.amount, row.currency)} on {p.date}
+                      Payment {formatMoney(p.amount, row.currency)} on {p.date}
                       {i === 0 && (
                         <>
                           {" "}
@@ -298,8 +297,7 @@ export default function AccountMonthEndForecast({
                       key={`loan-${p.date}-${i}`}
                       className="text-[10px] tabular-nums text-text-muted"
                     >
-                      Payment {pendingCurrencySymbol}
-                      {formatMoney(p.amount, row.currency)} on {p.date}
+                      Payment {formatMoney(p.amount, row.currency)} on {p.date}
                       {i === 0 && (
                         <>
                           {" "}
@@ -326,7 +324,7 @@ export default function AccountMonthEndForecast({
                       data-testid={`recurring-line-${row.account_id}`}
                       className="text-[10px] tabular-nums text-text-muted"
                     >
-                      Recurring {signedMoney(p.amount, pendingCurrencySymbol)}{" "}
+                      Recurring {signedMoney(p.amount, pendingCurrencyPrefix)}{" "}
                       on {p.date}
                     </p>
                   ))}

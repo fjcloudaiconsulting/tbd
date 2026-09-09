@@ -728,23 +728,13 @@ describe("Billing period roster page", () => {
 
     await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/settings"));
     expect(screen.queryByText("Roster health")).toBeNull();
-    // ⚠ NARROWED, NOT RELAXED (TBD-503). This asserted that NO request was
-    // made at all. It now names the page's OWN endpoint.
-    //
-    // Why: `SettingsLayout.tsx:23` renders `AppShell` even in the guard
-    // branch, and the shell now mounts `OrgCurrencyProvider`, which fetches
-    // /api/v1/accounts so every money figure carries its currency. A member
-    // being bounced off this page therefore issues that one request — and an
-    // org member is entitled to GET their own accounts, so it is not a leak.
-    //
-    // The property this test was written to protect is unchanged and is
-    // asserted directly below: a non-admin must not load the ROSTER. A blanket
-    // "no calls" was only ever a proxy for that.
-    const rosterCalls = vi
-      .mocked(apiFetch)
-      .mock.calls.filter(([path]) =>
-        String(path).includes("/billing-periods"),
-      );
-    expect(rosterCalls).toHaveLength(0);
+    // ⚠ RESTORED (TBD-503 review). This was briefly narrowed to a
+    // "/billing-periods" filter, justified by `AppShell` mounting
+    // `OrgCurrencyProvider` and so issuing an accounts fetch. `AppShell` does
+    // NOT mount it — the provider lives in the root layout, which no test
+    // renders — so the narrowing bought nothing and cost real power: it let a
+    // non-admin issue ANY request other than /billing-periods and stay green.
+    // A bounced member must make no call at all.
+    expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
   });
 });

@@ -18,7 +18,7 @@
  * before the test runs (Finding 3). Without the stub the test still passes
  * but the stderr noise pollutes CI.
  */
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import SecurityPage from "@/app/settings/security/page";
 import { apiFetch } from "@/lib/api";
@@ -162,8 +162,6 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
         new URLSearchParams(`sso_stepup_error=${code}`) as never,
       );
       render(<SecurityPage />);
-      // ⚠ TBD-503: settle OrgCurrencyProvider's SWR resolution inside act().
-      await act(async () => {});
       const banner = screen.getByTestId("sso-stepup-error-banner");
       expect(banner.textContent).toMatch(needle);
       expect(
@@ -178,11 +176,6 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
       new URLSearchParams("sso_stepup_error=brand_new_code") as never,
     );
     render(<SecurityPage />);
-    // ⚠ TBD-503: `SettingsLayout` renders `AppShell`, which now mounts
-    // `OrgCurrencyProvider`. Its SWR resolution lands after a synchronous
-    // render, i.e. outside act(). Await the settle rather than regenerating
-    // the act baseline — a moving count is the bug, not the baseline.
-    await act(async () => {});
     const banner = screen.getByTestId("sso-stepup-error-banner");
     expect(banner.textContent).toMatch(/didn't complete\. Try again/i);
   });
@@ -190,11 +183,6 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
   it("does not render the banner when the URL has no sso_stepup_error param", async () => {
     mockUser(false);
     render(<SecurityPage />);
-    // ⚠ TBD-503: `SettingsLayout` renders `AppShell`, which now mounts
-    // `OrgCurrencyProvider`. Its SWR resolution lands after a synchronous
-    // render, i.e. outside act(). Await the settle rather than regenerating
-    // the act baseline — a moving count is the bug, not the baseline.
-    await act(async () => {});
     expect(screen.queryByTestId("sso-stepup-error-banner")).toBeNull();
   });
 
@@ -217,11 +205,6 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
     });
 
     render(<SecurityPage />);
-    // ⚠ TBD-503: `SettingsLayout` renders `AppShell`, which now mounts
-    // `OrgCurrencyProvider`. Its SWR resolution lands after a synchronous
-    // render, i.e. outside act(). Await the settle rather than regenerating
-    // the act baseline — a moving count is the bug, not the baseline.
-    await act(async () => {});
     fireEvent.click(
       screen.getByRole("button", { name: /Try again with Google/i }),
     );
@@ -247,11 +230,6 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
       new URLSearchParams("sso_stepup_error=state") as never,
     );
     render(<SecurityPage />);
-    // ⚠ TBD-503: `SettingsLayout` renders `AppShell`, which now mounts
-    // `OrgCurrencyProvider`. Its SWR resolution lands after a synchronous
-    // render, i.e. outside act(). Await the settle rather than regenerating
-    // the act baseline — a moving count is the bug, not the baseline.
-    await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: /Dismiss/i }));
     expect(routerReplaceMock).toHaveBeenCalled();
     // After dismiss the banner is gone.

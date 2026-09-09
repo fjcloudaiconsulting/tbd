@@ -203,7 +203,7 @@ export function ProjectionChart({
             tickFormatter={(v) =>
               formatMoney(typeof v === "number" ? v : Number(v), projection.currency)
             }
-            width={80}
+            width={104}
           />
           <Tooltip
             contentStyle={{

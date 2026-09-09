@@ -274,7 +274,7 @@ const CC_WITH_PAYMENT: AccountMonthEndForecastResponse = {
 describe("AccountMonthEndForecast — credit-card projected payment", () => {
   it("renders a muted Payment line from cc_payments", () => {
     render(<AccountMonthEndForecast {...defaults({ forecast: CC_WITH_PAYMENT })} />);
-    const line = screen.getByText(/Payment.*€500\.00 on 2026-05-01/);
+    const line = screen.getByText(/^Payment €500\.00 on 2026-05-01/);
     expect(line).toBeInTheDocument();
     expect(line.className).toContain("text-text-muted");
     expect(line.className).toContain("text-[10px]");
@@ -329,7 +329,7 @@ const LOAN_WITH_PAYMENT: AccountMonthEndForecastResponse = {
 describe("AccountMonthEndForecast — loan projected payment", () => {
   it("renders a muted Payment line from loan_payments", () => {
     render(<AccountMonthEndForecast {...defaults({ forecast: LOAN_WITH_PAYMENT })} />);
-    const line = screen.getByText(/Payment.*€232\.00 on 2026-05-15/);
+    const line = screen.getByText(/^Payment €232\.00 on 2026-05-15/);
     expect(line).toBeInTheDocument();
     expect(line.className).toContain("text-text-muted");
     expect(line.className).toContain("text-[10px]");
@@ -559,7 +559,7 @@ describe("AccountMonthEndForecast — low balance warning (TBD-198)", () => {
     render(<AccountMonthEndForecast {...defaults({ forecast: withoutRisk() })} />);
 
     // Proof the card really did render its content.
-    expect(screen.getByText(/Payment.*€500\.00 on 2026-05-01/)).toBeInTheDocument();
+    expect(screen.getByText(/^Payment €500\.00 on 2026-05-01/)).toBeInTheDocument();
     expect(screen.getByText(/Includes -€600\.00 pending/)).toBeInTheDocument();
 
     expect(screen.queryByTestId("low-balance-badge-1")).toBeNull();
@@ -717,7 +717,7 @@ describe("AccountMonthEndForecast — the row reconciles (TBD-198 review)", () =
     render(
       <AccountMonthEndForecast {...defaults({ forecast: POPULATED_WITH_RISK })} />,
     );
-    expect(screen.getByText(/Payment.*€500\.00 on 2026-05-01/)).toBeInTheDocument();
+    expect(screen.getByText(/^Payment €500\.00 on 2026-05-01/)).toBeInTheDocument();
     expect(screen.queryByTestId("recurring-line-1")).toBeNull();
     expect(screen.queryByText(/Recurring /)).toBeNull();
   });

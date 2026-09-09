@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { formatAmount } from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
@@ -121,13 +121,13 @@ function KpiStrip({ kpis }: { kpis: AdminSubscriptionKPIs }) {
     },
     {
       label: "MRR",
-      value: `€${formatAmount(kpis.mock_mrr)}`,
+      value: formatMoney(kpis.mock_mrr, "EUR"),
       isMock: true,
       hint: "Mock, real payments not integrated yet (L2.2 parked)",
     },
     {
       label: "ARR",
-      value: `€${formatAmount(kpis.mock_arr)}`,
+      value: formatMoney(kpis.mock_arr, "EUR"),
       isMock: true,
       hint: "Mock, real payments not integrated yet (L2.2 parked)",
     },
