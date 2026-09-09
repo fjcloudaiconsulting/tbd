@@ -42,7 +42,8 @@ import SettingsLayout from "@/components/SettingsLayout";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
-import { formatAmount } from "@/lib/format";
+
+import { useMoney } from "@/lib/hooks/use-org-currency";
 import {
   badgeError,
   badgeInfo,
@@ -560,6 +561,7 @@ function RailRow({
   refs: Record<string, ReferencedPeriod>;
   isAnchoredOpen: boolean;
 }) {
+  const money = useMoney();
   const inline = inlineAnomaliesFor(anomalies, period.id);
   // §2.1: divergence can only ever happen on an OPEN row, because
   // `period_spend_window_end` returns a closed row's end verbatim.
@@ -672,12 +674,12 @@ function RailRow({
         {/* Not colour-coded: on this page colour means severity, nothing else. */}
         <span className="tabular-nums">
           {/* ⚠ `> 0`, never `>= 0`. `Number("-0.00")` is `-0`, which satisfies
-              `>= 0` while `formatAmount` still emits "-0.00" — printing
+              `>= 0` while `money` still emits "-0.00" — printing
               "+-0.00". MySQL's DECIMAL normalises the sign away so this is
               unreachable in production today, but nothing guarantees that of
               the next store, and a sign prefix on a zero buys nothing. */}
           Net {Number(period.settled_net) > 0 ? "+" : ""}
-          {formatAmount(period.settled_net)}
+          {money(period.settled_net)}
         </span>
         {period.counting_through && (
           <>

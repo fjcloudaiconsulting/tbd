@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount } from "@/lib/format";
+
 import { btnPrimary, btnSecondary, card, error as errorCls } from "@/lib/styles";
 import type { Transaction, TransactionPairRequest } from "@/lib/types";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 interface Props {
   expenseLeg: Transaction;
@@ -20,6 +21,7 @@ export default function LinkAsTransferModal({
   onLinked,
   onCancel,
 }: Props) {
+  const money = useMoney();
   const [recategorize, setRecategorize] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -101,12 +103,12 @@ export default function LinkAsTransferModal({
         <div className="mb-4 space-y-2 text-sm text-text-primary">
           <div>
             <span className="font-medium">Expense leg:</span>{" "}
-            -{formatAmount(expenseLeg.amount)} on {expenseLeg.account_name} ({expenseLeg.date})
+            -{money(expenseLeg.amount)} on {expenseLeg.account_name} ({expenseLeg.date})
             <span className="ml-1 text-text-secondary">settled {expenseLeg.settled_date ?? "—"}</span>
           </div>
           <div>
             <span className="font-medium">Income leg:</span>{" "}
-            +{formatAmount(incomeLeg.amount)} on {incomeLeg.account_name} ({incomeLeg.date})
+            +{money(incomeLeg.amount)} on {incomeLeg.account_name} ({incomeLeg.date})
             <span className="ml-1 text-text-secondary">settled {incomeLeg.settled_date ?? "—"}</span>
           </div>
         </div>

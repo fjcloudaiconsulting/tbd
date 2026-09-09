@@ -45,4 +45,4 @@ WCAG 2.2 AA across the app. Specifically:
 - Focus states are visible on every interactive element (the gold accent doubles as the focus ring color).
 - `prefers-reduced-motion` is respected for any non-essential motion (page transitions, chart animations).
 - Data visualizations never rely on color alone to convey state; budget bars, forecast tiles, and status badges always pair color with a label, icon, or shape.
-- Currency, dates, and decimals are formatted per the user's locale (multi-currency and i18n are post-launch goals, but the design assumptions must not block them).
+- Dates and decimals are formatted per the user's locale, and so is the grouping of money. The currency itself always LEADS the figure (symbol where one exists, ISO code otherwise) rather than following the locale's own placement — an operator ruling (TBD-503), so that one org reads the same way on every screen. Multi-currency and i18n are post-launch goals, but the design assumptions must not block them.

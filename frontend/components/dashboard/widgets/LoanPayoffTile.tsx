@@ -20,7 +20,7 @@ import { useMemo } from "react";
 import Link from "next/link";
 
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
-import { formatAmount } from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import { loanPayoffStatus, type LoanPayoffState } from "@/lib/loan";
 import { badgeForTone, card, cardHeader, cardTitle } from "@/lib/styles";
 
@@ -120,7 +120,7 @@ export default function LoanPayoffTile() {
                 </div>
                 {next && (
                   <span className="text-xs text-text-muted">
-                    Next payment {formatAmount(next.amount)} {account.currency} on {next.date}
+                    Next payment {formatMoney(next.amount, account.currency)} on {next.date}
                   </span>
                 )}
               </div>

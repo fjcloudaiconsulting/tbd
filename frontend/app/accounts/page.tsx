@@ -12,7 +12,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage, ApiResponseError } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
-import { formatAmount } from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import {
   useTableState,
   paginate,
@@ -1556,12 +1556,11 @@ export default function AccountsPage() {
                         + text-right keep digits aligned across rows. */}
                     <div className="flex shrink-0 flex-col items-start gap-0.5 md:items-end">
                       <span className="text-sm tabular-nums text-text-primary">
-                        {formatAmount(a.balance)}{" "}
-                        <span className="text-text-muted">{a.currency}</span>
+                        {formatMoney(a.balance, a.currency)}
                       </span>
                       {pendingByAccount[a.id] ? (
                         <span className="inline-flex items-center gap-1 text-xs tabular-nums text-text-muted">
-                          <span>Pending: {formatAmount(Math.abs(pendingByAccount[a.id]))}</span>
+                          <span>Pending: {formatMoney(Math.abs(pendingByAccount[a.id]), a.currency)}</span>
                           <Tooltip
                             content="Sum of transactions still marked Pending on this account. They do not move the balance yet, but they shape the end of month forecast."
                             learnMoreSection="accounts"
@@ -1576,7 +1575,7 @@ export default function AccountsPage() {
                           noise. */}
                       {Number(a.opening_balance) !== 0 ? (
                         <span className="text-xs tabular-nums text-text-muted">
-                          Opening: {formatAmount(Number(a.opening_balance))}
+                          Opening: {formatMoney(Number(a.opening_balance), a.currency)}
                           {a.opening_balance_date ? ` since ${a.opening_balance_date}` : ""}
                         </span>
                       ) : null}

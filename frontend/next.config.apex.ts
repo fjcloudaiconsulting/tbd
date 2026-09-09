@@ -43,6 +43,13 @@ const TURBOPACK_APEX_ALIASES: Record<string, string> = {
   // the apex render never invokes them.
   "@/components/auth/AuthProvider":
     "./components/auth/AuthProviderApex.tsx",
+  // TBD-503 mounts OrgCurrencyBoundary in the ROOT layout, which the apex
+  // pages share. The real one reaches lib/api through use-accounts, and
+  // lib/api carries `/api/v1/...` literals that build-apex.sh's post-build
+  // guard aborts on. Apex has no session and no money figures, so a
+  // passthrough is exact, not a degradation.
+  "@/components/OrgCurrencyBoundary":
+    "./components/OrgCurrencyBoundaryApex.tsx",
 };
 
 // Webpack expects absolute paths; mirror the same logical aliases.
@@ -54,6 +61,10 @@ const WEBPACK_APEX_ALIASES: Record<string, string> = {
   "@/components/auth/AuthProvider": path.resolve(
     __dirname,
     "components/auth/AuthProviderApex.tsx",
+  ),
+  "@/components/OrgCurrencyBoundary": path.resolve(
+    __dirname,
+    "components/OrgCurrencyBoundaryApex.tsx",
   ),
 };
 

@@ -25,9 +25,10 @@ import Link from "next/link";
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import Pagination from "@/components/ui/Pagination";
 import { extractErrorMessage } from "@/lib/api";
-import { formatAmount } from "@/lib/format";
+
 import { card, cardHeader, cardTitle } from "@/lib/styles";
 import type { Transaction } from "@/lib/types";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 function transactionHighlightHref(tx: Transaction) {
   // The transactions list filters by `effective_period_date_expr =
@@ -48,6 +49,7 @@ function transactionHighlightHref(tx: Transaction) {
 }
 
 export default function RecentTransactionsWidget() {
+  const money = useMoney();
   const {
     sortedVisibleTxs,
     txTotal,
@@ -142,7 +144,7 @@ export default function RecentTransactionsWidget() {
             ? [tx.account_name, tx.linked_account_name]
             : [tx.linked_account_name, tx.account_name];
           const amountClass = `text-sm font-medium tabular-nums ${isPairedTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`;
-          const amountText = `${isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}${formatAmount(tx.amount)}`;
+          const amountText = `${isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}${money(tx.amount)}`;
           const subline = isPairedTransfer ? (
             <>{fromAcct} &rarr; {toAcct}</>
           ) : (

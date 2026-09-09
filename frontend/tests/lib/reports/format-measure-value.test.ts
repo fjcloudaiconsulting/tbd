@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
-  currencySymbol,
+  currencyPrefix,
   formatMeasureValue,
   reportCurrency,
 } from "@/lib/reports/series";
@@ -58,9 +58,12 @@ describe("formatMeasureValue", () => {
   it("handles zero and negative values", () => {
     expect(formatMeasureValue(0, "currency")).toBe(formatAmount(0));
     expect(formatMeasureValue(-1234.5, "currency")).toBe(formatAmount(-1234.5));
-    expect(formatMeasureValue(-1234.5, "currency", "EUR")).toBe(
-      `€${formatAmount(-1234.5)}`,
-    );
+    // ⚠ CHANGED BY TBD-503, deliberately: "-€1,234.50", not "€-1,234.50".
+    // The sign now sits outside the symbol, unifying reports with the
+    // convention `AccountMonthEndForecast.signedMoney` already used and whose
+    // comment named "€-100.00" as the form to avoid. This is a visible change
+    // to report widgets and was approved with the prefix-everywhere ruling.
+    expect(formatMeasureValue(-1234.5, "currency", "EUR")).toBe(`-€${formatAmount(1234.5)}`);
     expect(formatMeasureValue(-50, "number")).toBe((-50).toLocaleString());
   });
 
@@ -72,21 +75,21 @@ describe("formatMeasureValue", () => {
   });
 });
 
-describe("currencySymbol", () => {
+describe("currencyPrefix", () => {
   it("maps known ISO codes to symbols", () => {
-    expect(currencySymbol("EUR")).toBe("€");
-    expect(currencySymbol("USD")).toBe("$");
-    expect(currencySymbol("GBP")).toBe("£");
+    expect(currencyPrefix("EUR")).toBe("€");
+    expect(currencyPrefix("USD")).toBe("$");
+    expect(currencyPrefix("GBP")).toBe("£");
   });
 
   it("falls back to a padded ISO code for unknown currencies", () => {
-    expect(currencySymbol("CHF")).toBe("CHF ");
+    expect(currencyPrefix("CHF")).toBe("CHF ");
   });
 
   it("returns an empty string for missing codes", () => {
-    expect(currencySymbol(undefined)).toBe("");
-    expect(currencySymbol(null)).toBe("");
-    expect(currencySymbol("")).toBe("");
+    expect(currencyPrefix(undefined)).toBe("");
+    expect(currencyPrefix(null)).toBe("");
+    expect(currencyPrefix("")).toBe("");
   });
 });
 

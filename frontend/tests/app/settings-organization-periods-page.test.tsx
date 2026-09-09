@@ -728,6 +728,13 @@ describe("Billing period roster page", () => {
 
     await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/settings"));
     expect(screen.queryByText("Roster health")).toBeNull();
+    // ⚠ RESTORED (TBD-503 review). This was briefly narrowed to a
+    // "/billing-periods" filter, justified by `AppShell` mounting
+    // `OrgCurrencyProvider` and so issuing an accounts fetch. `AppShell` does
+    // NOT mount it — the provider lives in the root layout, which no test
+    // renders — so the narrowing bought nothing and cost real power: it let a
+    // non-admin issue ANY request other than /billing-periods and stay green.
+    // A bounced member must make no call at all.
     expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
   });
 });

@@ -730,6 +730,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <AnnouncementBar />
+        {/* ⚠ TBD-503: the currency provider is NOT here. Most pages render
+            AppShell themselves, so a provider mounted at this depth sits BELOW
+            the component that formats their money — the page body would render
+            bare while its children rendered prefixed. It lives in the root
+            layout, the only node above every page component. */}
         <main id="main-content" tabIndex={-1} className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-[1760px]">{children}</div></main>
         <AppShellFooter />
       </div>

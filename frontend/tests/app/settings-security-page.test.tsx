@@ -156,7 +156,7 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
     },
   ])(
     "renders the banner with security-context copy for ?sso_stepup_error=$code",
-    ({ code, needle }) => {
+    async ({ code, needle }) => {
       mockUser(false);
       vi.spyOn(nextNavigation, "useSearchParams").mockReturnValue(
         new URLSearchParams(`sso_stepup_error=${code}`) as never,
@@ -170,7 +170,7 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
     },
   );
 
-  it("falls back to a generic message for an unknown sso_stepup_error code", () => {
+  it("falls back to a generic message for an unknown sso_stepup_error code", async () => {
     mockUser(false);
     vi.spyOn(nextNavigation, "useSearchParams").mockReturnValue(
       new URLSearchParams("sso_stepup_error=brand_new_code") as never,
@@ -180,7 +180,7 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
     expect(banner.textContent).toMatch(/didn't complete\. Try again/i);
   });
 
-  it("does not render the banner when the URL has no sso_stepup_error param", () => {
+  it("does not render the banner when the URL has no sso_stepup_error param", async () => {
     mockUser(false);
     render(<SecurityPage />);
     expect(screen.queryByTestId("sso-stepup-error-banner")).toBeNull();
@@ -224,7 +224,7 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
     expect(routerReplaceMock).toHaveBeenCalled();
   });
 
-  it("dismiss strips ?sso_stepup_error= from the URL", () => {
+  it("dismiss strips ?sso_stepup_error= from the URL", async () => {
     mockUser(false);
     vi.spyOn(nextNavigation, "useSearchParams").mockReturnValue(
       new URLSearchParams("sso_stepup_error=state") as never,

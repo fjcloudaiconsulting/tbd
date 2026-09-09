@@ -165,15 +165,20 @@ describe("AccountMonthEndForecast — current period", () => {
     render(
       <AccountMonthEndForecast {...defaults({ forecast: TWO_CURRENCIES })} />,
     );
-    // EUR + USD totals listed separately. The 1,000.00 value appears
-    // both as the total summary AND as the per-account row, so look up
-    // by currency code and assert both currencies are present.
-    // Each currency code appears in BOTH the total headline and the
-    // per-account row, so use getAllByText for multi-match safety.
-    expect(screen.getAllByText(/^EUR$/).length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText(/^USD$/).length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText(/1,000\.00/).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/150\.00/).length).toBeGreaterThanOrEqual(1);
+    // ⚠ REWRITTEN BY TBD-503, same intent, new mechanism. This used to count
+    // trailing `EUR`/`USD` code spans; those are gone because every figure now
+    // carries its own prefix (keeping both rendered "€1,000.00 EUR").
+    //
+    // The property under test is unchanged and is the important one: unlike
+    // currencies are listed SEPARATELY and never summed into one figure. The
+    // prefixes are what prove it now — a combined total could only carry one
+    // of them.
+    expect(screen.getAllByText(/^€1,000\.00$/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/^\$150\.00$/).length).toBeGreaterThanOrEqual(1);
+    // And no figure carries the other currency's prefix, i.e. nothing was
+    // combined and then mislabelled.
+    expect(screen.queryByText(/^€1,150\.00$/)).toBeNull();
+    expect(screen.queryByText(/^\$1,150\.00$/)).toBeNull();
   });
 });
 
@@ -269,7 +274,7 @@ const CC_WITH_PAYMENT: AccountMonthEndForecastResponse = {
 describe("AccountMonthEndForecast — credit-card projected payment", () => {
   it("renders a muted Payment line from cc_payments", () => {
     render(<AccountMonthEndForecast {...defaults({ forecast: CC_WITH_PAYMENT })} />);
-    const line = screen.getByText(/Payment.*€500\.00 on 2026-05-01/);
+    const line = screen.getByText(/^Payment €500\.00 on 2026-05-01/);
     expect(line).toBeInTheDocument();
     expect(line.className).toContain("text-text-muted");
     expect(line.className).toContain("text-[10px]");
@@ -324,7 +329,7 @@ const LOAN_WITH_PAYMENT: AccountMonthEndForecastResponse = {
 describe("AccountMonthEndForecast — loan projected payment", () => {
   it("renders a muted Payment line from loan_payments", () => {
     render(<AccountMonthEndForecast {...defaults({ forecast: LOAN_WITH_PAYMENT })} />);
-    const line = screen.getByText(/Payment.*€232\.00 on 2026-05-15/);
+    const line = screen.getByText(/^Payment €232\.00 on 2026-05-15/);
     expect(line).toBeInTheDocument();
     expect(line.className).toContain("text-text-muted");
     expect(line.className).toContain("text-[10px]");
@@ -554,7 +559,7 @@ describe("AccountMonthEndForecast — low balance warning (TBD-198)", () => {
     render(<AccountMonthEndForecast {...defaults({ forecast: withoutRisk() })} />);
 
     // Proof the card really did render its content.
-    expect(screen.getByText(/Payment.*€500\.00 on 2026-05-01/)).toBeInTheDocument();
+    expect(screen.getByText(/^Payment €500\.00 on 2026-05-01/)).toBeInTheDocument();
     expect(screen.getByText(/Includes -€600\.00 pending/)).toBeInTheDocument();
 
     expect(screen.queryByTestId("low-balance-badge-1")).toBeNull();
@@ -654,12 +659,12 @@ describe("AccountMonthEndForecast — the row reconciles (TBD-198 review)", () =
     );
 
     // The three numbers the user is asked to reconcile are all present...
-    expect(screen.getByText(/^1,000\.00$/)).toBeInTheDocument();
+    expect(screen.getByText(/^€1,000\.00$/)).toBeInTheDocument();
     expect(screen.getByText(/Includes -€200\.00 pending/)).toBeInTheDocument();
     // Twice: the hero (Σ of one row) and the row itself. A single-account
     // fixture makes the two literally the same number, which is the whole
     // claim — the caption sits over the hero and the sub-lines under the row.
-    expect(screen.getAllByText(/^450\.00$/)).toHaveLength(2);
+    expect(screen.getAllByText(/^€450\.00$/)).toHaveLength(2);
     // ...and so is the line that closes the gap between them.
     expect(
       screen.getByText(/Recurring -€350\.00 on 2026-05-10/),
@@ -712,7 +717,7 @@ describe("AccountMonthEndForecast — the row reconciles (TBD-198 review)", () =
     render(
       <AccountMonthEndForecast {...defaults({ forecast: POPULATED_WITH_RISK })} />,
     );
-    expect(screen.getByText(/Payment.*€500\.00 on 2026-05-01/)).toBeInTheDocument();
+    expect(screen.getByText(/^Payment €500\.00 on 2026-05-01/)).toBeInTheDocument();
     expect(screen.queryByTestId("recurring-line-1")).toBeNull();
     expect(screen.queryByText(/Recurring /)).toBeNull();
   });

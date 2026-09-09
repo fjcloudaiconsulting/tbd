@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AuthProvider } from "@/components/auth/AuthProvider";
+import OrgCurrencyBoundary from "@/components/OrgCurrencyBoundary";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { TourProvider } from "@/components/tour/TourProvider";
 import { siteDescription, siteName, siteTagline, siteUrl } from "@/lib/site";
@@ -80,7 +81,9 @@ export default async function RootLayout({
       <body className="min-h-screen">
         <ThemeProvider>
           <AuthProvider>
-            <TourProvider>{children}</TourProvider>
+            <OrgCurrencyBoundary>
+              <TourProvider>{children}</TourProvider>
+            </OrgCurrencyBoundary>
           </AuthProvider>
         </ThemeProvider>
         {/* Cookie-consent banner — apex marketing host only, matching where

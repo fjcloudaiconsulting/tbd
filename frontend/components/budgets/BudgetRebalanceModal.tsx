@@ -4,8 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 
 import Spinner from "@/components/ui/Spinner";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount } from "@/lib/format";
+
 import { btnPrimary, btnSecondary, card, error as errorCls } from "@/lib/styles";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export type RebalanceStatus =
   | "ok"
@@ -61,6 +62,7 @@ export default function BudgetRebalanceModal({
   onApplied,
   onClose,
 }: Props) {
+  const money = useMoney();
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<RebalanceResponse | null>(null);
   const [acceptedIds, setAcceptedIds] = useState<Set<number>>(new Set());
@@ -303,7 +305,7 @@ export default function BudgetRebalanceModal({
                   className="mb-4 rounded-md bg-warning-dim px-3 py-2 text-xs text-warning"
                   role="status"
                 >
-                  You&apos;re {formatAmount(Number(response.uncovered_overspend))}{" "}
+                  You&apos;re {money(Number(response.uncovered_overspend))}{" "}
                   over plan this period. Spending exceeds your total budget, so
                   not every category could be fully covered.
                 </div>
@@ -381,10 +383,10 @@ export default function BudgetRebalanceModal({
                             )}
                           </td>
                           <td className="py-2 pr-3 text-right tabular-nums text-text-secondary">
-                            {formatAmount(toNumber(s.current_amount))}
+                            {money(toNumber(s.current_amount))}
                           </td>
                           <td className="py-2 pr-3 text-right tabular-nums text-text-primary">
-                            {formatAmount(toNumber(s.suggested_amount))}
+                            {money(toNumber(s.suggested_amount))}
                           </td>
                           <td
                             className={`py-2 pr-3 text-right tabular-nums ${
@@ -396,7 +398,7 @@ export default function BudgetRebalanceModal({
                             }`}
                           >
                             {delta > 0 ? "+" : ""}
-                            {formatAmount(delta)}
+                            {money(delta)}
                           </td>
                           <td className="py-2 pr-3 text-xs text-text-muted">
                             {s.reasoning}
@@ -418,12 +420,12 @@ export default function BudgetRebalanceModal({
                 {acceptedCount} of {response.suggestions.length} changes
                 selected.{" "}
                 {Math.abs(acceptedSum) < 0.005 ? (
-                  <>Net change: {formatAmount(0)}. Balanced.</>
+                  <>Net change: {money(0)}. Balanced.</>
                 ) : (
                   <>
                     This changes your total budget by{" "}
                     {acceptedSum > 0 ? "+" : ""}
-                    {formatAmount(acceptedSum)}.
+                    {money(acceptedSum)}.
                   </>
                 )}
               </div>

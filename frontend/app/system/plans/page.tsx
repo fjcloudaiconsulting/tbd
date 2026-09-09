@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { formatMoney } from "@/lib/format";
 import { useRouter } from "next/navigation";
 import SystemLayout from "@/components/SystemLayout";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -397,8 +398,8 @@ export default function SystemPlansPage() {
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-text-secondary">€{Number(plan.price_monthly).toFixed(2)}</td>
-                  <td className="px-4 py-3 text-text-secondary">€{Number(plan.price_yearly).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-text-secondary">{formatMoney(Number(plan.price_monthly), "EUR")}</td>
+                  <td className="px-4 py-3 text-text-secondary">{formatMoney(Number(plan.price_yearly), "EUR")}</td>
                   <td className="px-4 py-3 text-text-secondary">{plan.max_users ?? "∞"}</td>
                   <td className="px-4 py-3 text-text-secondary">{plan.retention_days ? `${plan.retention_days}d` : "∞"}</td>
                   <td className="px-4 py-3">

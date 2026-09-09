@@ -4,7 +4,8 @@ import Link from "next/link";
 import { TriangleAlert } from "lucide-react";
 
 import { badgeError, btnLink, card, cardHeader, cardTitle } from "@/lib/styles";
-import { formatAmount } from "@/lib/format";
+import { formatAmount, formatMoney } from "@/lib/format";
+import { currencyPrefix } from "@/lib/currencies";
 
 export interface AccountMonthEndForecastTotal {
   currency: string;
@@ -161,8 +162,9 @@ export default function AccountMonthEndForecast({
                 key={t.currency}
                 className="text-2xl font-semibold tabular-nums text-text-primary"
               >
-                {formatAmount(t.expected_month_end_balance)}{" "}
-                <span className="text-xs font-normal text-text-muted">{t.currency}</span>
+                {/* TBD-503: the trailing currency span is gone — `money()`
+                    now carries the prefix, so keeping it read "€52,822.68 EUR". */}
+                {formatMoney(t.expected_month_end_balance, t.currency)}
               </p>
             ))}
           </div>
@@ -196,8 +198,11 @@ export default function AccountMonthEndForecast({
             const pendingNum = Number(row.pending_delta);
             const showPending = pendingNum !== 0;
             const sign = pendingNum > 0 ? "+" : "-";
+            // ⚠ BARE magnitude. The JSX below composes `{sign}{symbol}{magnitude}`
+            // itself, so a formatted-with-currency value here renders
+            // "-€€250.00". Caught by the existing pending-subtext test.
             const pendingMagnitude = formatAmount(Math.abs(pendingNum));
-            const pendingCurrencySymbol = currencySymbol(row.currency);
+            const pendingCurrencyPrefix = currencyPrefix(row.currency);
             const riskDays = row.risk_days ?? [];
             return (
               <div
@@ -239,17 +244,16 @@ export default function AccountMonthEndForecast({
                   </p>
                 </div>
                 <p className="text-right text-sm tabular-nums text-text-secondary">
-                  {formatAmount(row.balance)}{" "}
-                  <span className="text-[10px] text-text-muted">{row.currency}</span>
+                  {formatMoney(row.balance, row.currency)}
                 </p>
                 <div className="text-right">
                   <p className="text-sm font-medium tabular-nums text-text-primary">
-                    {formatAmount(row.expected_month_end_balance)}
+                    {formatMoney(row.expected_month_end_balance, row.currency)}
                   </p>
                   {showPending && (
                     <p className="text-[10px] tabular-nums text-text-muted">
                       Includes {sign}
-                      {pendingCurrencySymbol}
+                      {pendingCurrencyPrefix}
                       {pendingMagnitude} pending
                     </p>
                   )}
@@ -265,8 +269,8 @@ export default function AccountMonthEndForecast({
                       className="text-[10px] tabular-nums text-danger"
                     >
                       {r.from === r.through
-                        ? `Below zero on ${r.from} (${signedMoney(r.lowest_balance, pendingCurrencySymbol)})`
-                        : `Below zero ${r.from} to ${r.through}, lowest ${signedMoney(r.lowest_balance, pendingCurrencySymbol)} on ${r.lowest_on}`}
+                        ? `Below zero on ${r.from} (${signedMoney(r.lowest_balance, pendingCurrencyPrefix)})`
+                        : `Below zero ${r.from} to ${r.through}, lowest ${signedMoney(r.lowest_balance, pendingCurrencyPrefix)} on ${r.lowest_on}`}
                     </p>
                   ))}
                   {(row.cc_payments ?? []).map((p, i) => (
@@ -274,8 +278,7 @@ export default function AccountMonthEndForecast({
                       key={`${p.date}-${i}`}
                       className="text-[10px] tabular-nums text-text-muted"
                     >
-                      Payment {pendingCurrencySymbol}
-                      {formatAmount(p.amount)} on {p.date}
+                      Payment {formatMoney(p.amount, row.currency)} on {p.date}
                       {i === 0 && (
                         <>
                           {" "}
@@ -294,8 +297,7 @@ export default function AccountMonthEndForecast({
                       key={`loan-${p.date}-${i}`}
                       className="text-[10px] tabular-nums text-text-muted"
                     >
-                      Payment {pendingCurrencySymbol}
-                      {formatAmount(p.amount)} on {p.date}
+                      Payment {formatMoney(p.amount, row.currency)} on {p.date}
                       {i === 0 && (
                         <>
                           {" "}
@@ -322,7 +324,7 @@ export default function AccountMonthEndForecast({
                       data-testid={`recurring-line-${row.account_id}`}
                       className="text-[10px] tabular-nums text-text-muted"
                     >
-                      Recurring {signedMoney(p.amount, pendingCurrencySymbol)}{" "}
+                      Recurring {signedMoney(p.amount, pendingCurrencyPrefix)}{" "}
                       on {p.date}
                     </p>
                   ))}
@@ -337,24 +339,10 @@ export default function AccountMonthEndForecast({
 }
 
 // `{sign}{symbol}{magnitude}` — the convention the pending sub-line already
-// uses ("Includes -€600.00 pending"). The naive `${symbol}${formatAmount(v)}`
+// uses ("Includes -€600.00 pending"). The naive `${symbol}${money(v)}`
 // renders "€-100.00" four lines away from it (TBD-198 review, N8).
 function signedMoney(value: number | string, symbol: string): string {
   const n = Number(value);
   return `${n < 0 ? "-" : "+"}${symbol}${formatAmount(Math.abs(n))}`;
 }
 
-// Best-effort symbol mapping. Falls back to the ISO code so unknown
-// currencies still round-trip readable copy.
-function currencySymbol(code: string): string {
-  switch (code) {
-    case "EUR":
-      return "€";
-    case "USD":
-      return "$";
-    case "GBP":
-      return "£";
-    default:
-      return `${code} `;
-  }
-}

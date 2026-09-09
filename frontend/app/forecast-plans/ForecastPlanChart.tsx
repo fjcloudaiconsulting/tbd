@@ -17,10 +17,11 @@ import {
   YAxis,
 } from "recharts";
 
-import { formatAmount } from "@/lib/format";
+
 import { chartColor } from "@/lib/chart-colors";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import { resolveForecastSeries } from "@/lib/reports/chart-series-tooltip";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface ForecastPlanChartDatum {
   categoryId: number;
@@ -36,6 +37,7 @@ export default function ForecastPlanChart({
   chartData: ForecastPlanChartDatum[];
   onBarClick: (name: string | undefined) => void;
 }) {
+  const money = useMoney();
   return (
     <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
       <BarChart
@@ -52,7 +54,7 @@ export default function ForecastPlanChart({
         />
         <Tooltip
           content={
-            <SeriesTooltip format={formatAmount} resolve={resolveForecastSeries} />
+            <SeriesTooltip format={money} resolve={resolveForecastSeries} />
           }
         />
         <Bar

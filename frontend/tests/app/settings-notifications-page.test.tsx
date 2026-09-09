@@ -27,6 +27,43 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+// ⚠ TBD-503: a `mockResolvedValueOnce` QUEUE is consumed in CALL ORDER
+// regardless of arguments, so ANY new fetch above the component under test
+// eats this page's first queued response and desynchronises everything after
+// it — failing with a symptom that points at the wrong file entirely. That is
+// exactly what happened here: an interim design mounted OrgCurrencyProvider
+// inside `AppShell`, and five unrelated suites broke at once.
+//
+// That provider now mounts in the ROOT LAYOUT (`OrgCurrencyBoundary`), which
+// no RTL test renders, so no accounts fetch reaches these pages today. The
+// helper stays regardless: the queue's order-dependence is the defect, and it
+// is one fetch away from biting again. Tracked for the rest of the suite in
+// TBD-504.
+//
+// Path- and METHOD-aware instead. Two rules that matter:
+//   - it THROWS on an unmatched path rather than returning a default, so an
+//     unexpected call stays as loud as the queue made it. A catch-all
+//     `Promise.resolve([])` would make every un-mocked endpoint fail open.
+//   - it branches on `init?.method`, because the page issues GET and PUT/DELETE
+//     against the SAME url and a url-only handler would serve the read payload
+//     to the write and mask a body-shape bug.
+type Route = { path: string; method?: string; body: unknown };
+function serve(routes: Route[]) {
+  vi.mocked(apiFetch).mockImplementation(
+    (async (path: unknown, init?: { method?: string }) => {
+      const url = String(path);
+      const method = init?.method ?? "GET";
+      for (const r of routes) {
+        if (url.startsWith(r.path) && (r.method ?? "GET") === method) {
+          if (r.body instanceof Error) throw r.body;
+          return r.body as never;
+        }
+      }
+      throw new Error(`unmocked ${method} ${url}`);
+    }) as never,
+  );
+}
+
 function makePrefs(
   overrides: Partial<NotificationPreferences> = {},
 ): NotificationPreferences {
@@ -68,7 +105,7 @@ beforeEach(() => {
 
 describe("Notification preferences settings page", () => {
   it("renders the email toggles from the loaded preferences", async () => {
-    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs());
+    serve([{ path: "/api/v1/notifications/preferences", body: makePrefs() }]);
     render(<NotificationsPage />);
 
     expect(
@@ -83,7 +120,7 @@ describe("Notification preferences settings page", () => {
   });
 
   it("keeps the security toggle on and disabled", async () => {
-    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs());
+    serve([{ path: "/api/v1/notifications/preferences", body: makePrefs() }]);
     render(<NotificationsPage />);
 
     const security = await screen.findByRole("switch", {
@@ -94,7 +131,7 @@ describe("Notification preferences settings page", () => {
   });
 
   it("clicking the locked security toggle is a no-op and never PUTs email_security: false", async () => {
-    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs());
+    serve([{ path: "/api/v1/notifications/preferences", body: makePrefs() }]);
     render(<NotificationsPage />);
 
     const security = await screen.findByRole("switch", {
@@ -107,7 +144,7 @@ describe("Notification preferences settings page", () => {
     expect(security).toHaveAttribute("aria-checked", "true");
 
     // Saving afterwards keeps email_security on; no PUT ever carries false.
-    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs());
+    serve([{ path: "/api/v1/notifications/preferences", body: makePrefs() }]);
     fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 
     await waitFor(() =>
@@ -128,9 +165,10 @@ describe("Notification preferences settings page", () => {
   });
 
   it("toggles a category and PUTs the full preference shape", async () => {
-    vi.mocked(apiFetch)
-      .mockResolvedValueOnce(makePrefs())
-      .mockResolvedValueOnce(makePrefs({ email_org_activity: true }));
+    serve([
+      { path: "/api/v1/notifications/preferences", body: makePrefs() },
+      { path: "/api/v1/notifications/preferences", method: "PUT", body: makePrefs({ email_org_activity: true }) },
+    ]);
 
     render(<NotificationsPage />);
 
@@ -162,7 +200,7 @@ describe("Notification preferences settings page", () => {
   });
 
   it("renders the in-app toggles from the loaded preferences", async () => {
-    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs());
+    serve([{ path: "/api/v1/notifications/preferences", body: makePrefs() }]);
     render(<NotificationsPage />);
 
     expect(
@@ -182,7 +220,7 @@ describe("Notification preferences settings page", () => {
   it("shows the in-app security switch on and disabled even if the loaded value is false", async () => {
     // A stale persisted in_app_security=false must not render as a lying OFF —
     // the switch is hardcoded on (backend force-coerces the column).
-    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs({ in_app_security: false }));
+    serve([{ path: "/api/v1/notifications/preferences", body: makePrefs({ in_app_security: false }) }]);
     render(<NotificationsPage />);
 
     const security = await screen.findByRole("switch", {
@@ -193,9 +231,10 @@ describe("Notification preferences settings page", () => {
   });
 
   it("toggles an in-app category and PUTs the full preference shape", async () => {
-    vi.mocked(apiFetch)
-      .mockResolvedValueOnce(makePrefs())
-      .mockResolvedValueOnce(makePrefs({ in_app_org_admin: false }));
+    serve([
+      { path: "/api/v1/notifications/preferences", body: makePrefs() },
+      { path: "/api/v1/notifications/preferences", method: "PUT", body: makePrefs({ in_app_org_admin: false }) },
+    ]);
 
     render(<NotificationsPage />);
 
@@ -225,7 +264,7 @@ describe("Notification preferences settings page", () => {
   });
 
   it("renders the Credit card statements category with both toggles", async () => {
-    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs());
+    serve([{ path: "/api/v1/notifications/preferences", body: makePrefs() }]);
     render(<NotificationsPage />);
 
     expect(

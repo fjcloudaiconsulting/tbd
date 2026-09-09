@@ -11,8 +11,9 @@ import {
   input,
   label,
 } from "@/lib/styles";
-import { formatAmount } from "@/lib/format";
+
 import type { Account } from "@/lib/types";
+import { formatMoney } from "@/lib/format";
 
 interface Props {
   account: Account;
@@ -133,7 +134,7 @@ export default function AdjustBalanceModal({ account, onClose, onAdjusted }: Pro
           <div>
             <p className="text-sm text-text-muted">Current balance</p>
             <p className="text-base tabular-nums text-text-primary">
-              {formatAmount(account.balance)} {account.currency}
+              {formatMoney(account.balance, account.currency)}
             </p>
           </div>
 
@@ -172,7 +173,7 @@ export default function AdjustBalanceModal({ account, onClose, onAdjusted }: Pro
                   }
                 >
                   {delta > 0 ? "+" : ""}
-                  {formatAmount(delta)} {account.currency}
+                  {formatMoney(delta, account.currency)}
                 </span>
               </p>
             )}

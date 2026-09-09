@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatMoney } from "@/lib/format";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
@@ -232,7 +233,7 @@ export default function AdminSubscriptionDetailPage() {
                     <MockBadge />
                   </span>
                 }
-                value={`$${detail.mock_revenue_amount}`}
+                value={formatMoney(detail.mock_revenue_amount, "EUR")}
               />
             </dl>
           </section>
@@ -276,11 +277,11 @@ export default function AdminSubscriptionDetailPage() {
                 <FieldRow label="Slug" value={detail.plan.slug} />
                 <FieldRow
                   label="Price (monthly)"
-                  value={`$${detail.plan.price_monthly}`}
+                  value={formatMoney(detail.plan.price_monthly, "EUR")}
                 />
                 <FieldRow
                   label="Price (yearly)"
-                  value={`$${detail.plan.price_yearly}`}
+                  value={formatMoney(detail.plan.price_yearly, "EUR")}
                 />
                 <FieldRow
                   label="Max users"

@@ -6,6 +6,7 @@ import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 import {
   badgeError,
   badgeInfo,
@@ -111,9 +112,19 @@ function formatDate(iso: string): string {
   }
 }
 
-function formatAmount(amount: string, type: "income" | "expense"): string {
+/**
+ * A reconcile row's signed amount. The API returns a POSITIVE amount with a
+ * `type` discriminator, so the sign is derived rather than present in the
+ * value — which is why this cannot just call `money()` on a negative.
+ *
+ * Takes the already-formatted money string so the currency prefix comes from
+ * the one shared source (TBD-503). Renamed from `formatAmount` because that
+ * shadowed the shared formatter and made the two impossible to tell apart at
+ * a call site.
+ */
+function signedMoney(formattedAmount: string, type: "income" | "expense"): string {
   const sign = type === "income" ? "+" : "-";
-  return `${sign}${amount}`;
+  return `${sign}${formattedAmount}`;
 }
 
 type RowActionState = {
@@ -623,6 +634,7 @@ function ReconcileRow({
   busy: boolean;
   onAction: (target: ReconciliationState) => void;
 }) {
+  const money = useMoney();
   const nextStates = ALLOWED_NEXT[row.reconciliation_state] ?? [];
 
   return (
@@ -651,7 +663,7 @@ function ReconcileRow({
                 : "mt-0.5 text-xs font-medium text-text-secondary"
             }
           >
-            {formatAmount(row.amount, row.type)}
+            {signedMoney(money(row.amount), row.type)}
           </p>
           {row.duplicate_warning ? (
             <div

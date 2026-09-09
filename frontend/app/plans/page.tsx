@@ -30,6 +30,8 @@ import { CustomParamsEditor } from "@/components/scenarios/CustomParamsEditor";
 import { ProjectionChart } from "@/components/scenarios/ProjectionChart";
 import { RetirementParamsEditor } from "@/components/scenarios/RetirementParamsEditor";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { formatMoney } from "@/lib/format";
+import { useOrgCurrency } from "@/lib/hooks/use-org-currency";
 import {
   btnPrimary,
   btnSecondary,
@@ -940,7 +942,7 @@ function ProjectionView({ projection }: { projection: ProjectionResult }) {
           <ul className="space-y-1">
             {projection.alerts.map((a, idx) => (
               <li key={`${a.account_id}-${a.month}-${idx}`} className={`text-xs ${errorCls}`}>
-                {a.month}: dip to {a.projected_balance} ({a.trigger})
+                {a.month}: dip to {formatMoney(a.projected_balance, projection.currency)} ({a.trigger})
               </li>
             ))}
           </ul>
@@ -1224,6 +1226,13 @@ function NewPlanModal({
   onClose: () => void;
   onCreated: (plan: Scenario) => void;
 }) {
+  // TBD-503 DoD. Was `accounts[0]?.currency ?? "EUR"` repeated at three
+  // payload sites — an arbitrary account plus a guessed default, reinventing
+  // "an org has one currency" in a page that has nothing to do with currency
+  // policy. The shared context is the source of truth. It resolves to
+  // undefined only for a legacy MIXED-currency org, where the first account is
+  // as good an answer as any and better than a hardcoded EUR.
+  const orgCurrency = useOrgCurrency();
   const [name, setName] = useState("New plan");
   const [destination, setDestination] = useState("Lisbon, Portugal");
   const [busy, setBusy] = useState(false);
@@ -1248,7 +1257,7 @@ function NewPlanModal({
           destination,
           start_date: new Date().toISOString().slice(0, 10),
           duration_days: 7,
-          currency: accounts[0]?.currency ?? "EUR",
+          currency: orgCurrency ?? accounts[0]?.currency ?? "EUR",
           transport_cost: "0",
           accommodation_per_night: "0",
           daily_budget: "0",
@@ -1260,7 +1269,7 @@ function NewPlanModal({
           subtype: "car",
           label: name,
           target_date: new Date().toISOString().slice(0, 10),
-          currency: accounts[0]?.currency ?? "EUR",
+          currency: orgCurrency ?? accounts[0]?.currency ?? "EUR",
           total_price: "0",
           down_payment: "0",
           down_payment_account_id: firstAccount,
@@ -1269,7 +1278,7 @@ function NewPlanModal({
       } else if (type === "retirement") {
         Object.assign(baseParams, {
           target_retirement_date: new Date().toISOString().slice(0, 10),
-          currency: accounts[0]?.currency ?? "EUR",
+          currency: orgCurrency ?? accounts[0]?.currency ?? "EUR",
           monthly_contribution: "500.00",
           contribution_account_id: firstAccount,
           target_balance: "100000.00",

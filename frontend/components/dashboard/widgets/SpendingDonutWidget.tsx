@@ -13,11 +13,13 @@ import { ChevronDown, ChevronUp, ChevronsUpDown, RefreshCw } from "lucide-react"
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
-import { formatAmount } from "@/lib/format";
+
 import { btnSecondary, card, cardTitle } from "@/lib/styles";
 import { CHART_SERIES } from "@/lib/chart-colors";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export default function SpendingDonutWidget() {
+  const money = useMoney();
   const {
     donutData,
     sortedSpending,
@@ -101,7 +103,7 @@ export default function SpendingDonutWidget() {
                     name itself, so a value `formatter` is enough.
                     SeriesTooltip is only needed for the multi-series
                     bar charts where the name node failed to render. */}
-                <Tooltip formatter={(v) => formatAmount(Number(v))} contentStyle={{ fontSize: "12px" }} />
+                <Tooltip formatter={(v) => money(Number(v))} contentStyle={{ fontSize: "12px" }} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -234,7 +236,7 @@ export default function SpendingDonutWidget() {
                 {/* %/amount carry data, so they ride text-secondary
                     rather than the dimmer text-muted. */}
                 <span className="text-right text-[10px] tabular-nums text-text-secondary">{d.pct.toFixed(0)}%</span>
-                <span className="text-right text-xs tabular-nums text-text-secondary">{formatAmount(d.value)}</span>
+                <span className="text-right text-xs tabular-nums text-text-secondary">{money(d.value)}</span>
               </button>
             ))}
             {sortedSpending.length > 10 && (

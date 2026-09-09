@@ -25,7 +25,7 @@
 import { BarChart, Bar, XAxis, YAxis, Cell, ResponsiveContainer } from "recharts";
 import { chartColor } from "@/lib/chart-colors";
 import { creditUtilization } from "@/lib/credit";
-import { formatAmount } from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 
 export interface CreditUtilizationBarProps {
@@ -52,7 +52,7 @@ export default function CreditUtilizationBar({ name, balance, creditLimit, curre
   const fill = isOver ? chartColor.over : isHigh ? "var(--color-warning)" : chartColor.watch;
   const data = [{ name, spent, remaining }];
   const label = isOver
-    ? `Over limit · ${formatAmount(over)} ${currency} over`
+    ? `Over limit · ${formatMoney(over, currency)} over`
     : isHigh
       ? `${util}% · High`
       : `${util}%`;

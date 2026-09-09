@@ -10,7 +10,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import FeatureDisabledNotice from "@/components/features/FeatureDisabledNotice";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount, todayISO } from "@/lib/format";
+import { todayISO } from "@/lib/format";
 import {
   periodStatus,
   selectCurrentPeriod,
@@ -40,8 +40,10 @@ import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
 import BudgetRebalanceModal from "@/components/budgets/BudgetRebalanceModal";
 import BudgetDraftModal from "@/components/budgets/BudgetDraftModal";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export default function BudgetsPage() {
+  const money = useMoney();
   const { user, loading, features } = useAuth();
   // `=== false`, never truthiness: `features` is undefined on a booting client
   // and on every pre-existing test mock, and Budgets ships ON. Only an
@@ -471,17 +473,17 @@ export default function BudgetsPage() {
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <StatCard
                 label="Total Budget"
-                value={formatAmount(totalBudget)}
+                value={money(totalBudget)}
               />
               <StatCard
                 label="Total Spent"
-                value={formatAmount(totalSpent)}
+                value={money(totalSpent)}
                 valueClassName={totalSpent > totalBudget ? "text-danger" : "text-text-primary"}
                 badge={totalSpent > totalBudget ? <span className={badgeError}>Over budget</span> : undefined}
               />
               <StatCard
                 label="Remaining"
-                value={formatAmount(totalBudget - totalSpent)}
+                value={money(totalBudget - totalSpent)}
                 valueClassName={totalBudget - totalSpent < 0 ? "text-danger" : "text-success"}
                 badge={totalBudget - totalSpent < 0 ? <span className={badgeError}>Overspent</span> : undefined}
               />
@@ -545,12 +547,12 @@ export default function BudgetsPage() {
                           <div className="flex items-center">
                             <span className="text-sm text-text-primary">{b.category_name}</span>
                             <span className={`ml-auto text-sm tabular-nums md:hidden ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
-                              {formatAmount(b.spent)} / {formatAmount(b.amount)}
+                              {money(b.spent)} / {money(b.amount)}
                             </span>
                           </div>
                           <div className="flex flex-wrap items-center gap-2 md:gap-4">
                             <span className={`hidden text-sm tabular-nums md:inline ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
-                              {formatAmount(b.spent)} / {formatAmount(b.amount)}
+                              {money(b.spent)} / {money(b.amount)}
                             </span>
                             <span className={`text-xs tabular-nums ${overBudget ? "text-danger" : "text-text-muted"}`}>
                               {b.percent_used}%

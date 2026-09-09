@@ -11,6 +11,7 @@ import Spinner from "@/components/ui/Spinner";
 import ImportMarkAsTransferModal from "@/components/transactions/ImportMarkAsTransferModal";
 import CsvFormatHelp from "@/components/import/CsvFormatHelp";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle, badgeWarning, badgeError, badgeInfo } from "@/lib/styles";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 import type {
   Account,
   Category,
@@ -134,6 +135,7 @@ export default function ImportPage() {
 }
 
 function ImportPageContent() {
+  const money = useMoney();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -691,7 +693,7 @@ function ImportPageContent() {
                         </td>
                         <td className="px-4 py-2 tabular-nums font-medium">
                           <span className={previewRow.type === "income" ? "text-success" : "text-danger"}>
-                            {previewRow.type === "income" ? "+" : "-"}{Number(previewRow.amount).toFixed(2)}
+                            {previewRow.type === "income" ? "+" : "-"}{money(previewRow.amount)}
                           </span>
                         </td>
                         <td className="px-4 py-2 capitalize text-text-secondary">{previewRow.type}</td>
@@ -805,7 +807,7 @@ function ImportPageContent() {
                                 <div className="text-text-secondary">
                                   {previewRow.duplicate_candidate.date} · {previewRow.duplicate_candidate.account_name} ·{" "}
                                   <span className="tabular-nums">
-                                    {Number(previewRow.duplicate_candidate.amount).toFixed(2)}
+                                    {money(previewRow.duplicate_candidate.amount)}
                                   </span>{" "}
                                   · {previewRow.duplicate_candidate.description}
                                 </div>
@@ -843,7 +845,7 @@ function ImportPageContent() {
                                     {previewRow.transfer_candidates[0].date} ·{" "}
                                     {previewRow.transfer_candidates[0].account_name} ·{" "}
                                     <span className="tabular-nums">
-                                      {Number(previewRow.transfer_candidates[0].amount).toFixed(2)}
+                                      {money(previewRow.transfer_candidates[0].amount)}
                                     </span>{" "}
                                     · {previewRow.transfer_candidates[0].description}
                                   </div>
@@ -903,7 +905,7 @@ function ImportPageContent() {
                                             <span className="text-text-secondary">
                                               {cand.date} · {cand.account_name} ·{" "}
                                               <span className="tabular-nums">
-                                                {Number(cand.amount).toFixed(2)}
+                                                {money(cand.amount)}
                                               </span>{" "}
                                               · {cand.description}
                                               {isClosest && (

@@ -20,6 +20,43 @@ vi.mock("@/components/auth/AuthProvider", async () => {
   };
 });
 
+// ⚠ TBD-503: a `mockResolvedValueOnce` QUEUE is consumed in CALL ORDER
+// regardless of arguments, so ANY new fetch above the component under test
+// eats this page's first queued response and desynchronises everything after
+// it — failing with a symptom that points at the wrong file entirely. That is
+// exactly what happened here: an interim design mounted OrgCurrencyProvider
+// inside `AppShell`, and five unrelated suites broke at once.
+//
+// That provider now mounts in the ROOT LAYOUT (`OrgCurrencyBoundary`), which
+// no RTL test renders, so no accounts fetch reaches these pages today. The
+// helper stays regardless: the queue's order-dependence is the defect, and it
+// is one fetch away from biting again. Tracked for the rest of the suite in
+// TBD-504.
+//
+// Path- and METHOD-aware instead. Two rules that matter:
+//   - it THROWS on an unmatched path rather than returning a default, so an
+//     unexpected call stays as loud as the queue made it. A catch-all
+//     `Promise.resolve([])` would make every un-mocked endpoint fail open.
+//   - it branches on `init?.method`, because the page issues GET and PUT/DELETE
+//     against the SAME url and a url-only handler would serve the read payload
+//     to the write and mask a body-shape bug.
+type Route = { path: string; method?: string; body: unknown };
+function serve(routes: Route[]) {
+  vi.mocked(apiFetch).mockImplementation(
+    (async (path: unknown, init?: { method?: string }) => {
+      const url = String(path);
+      const method = init?.method ?? "GET";
+      for (const r of routes) {
+        if (url.startsWith(r.path) && (r.method ?? "GET") === method) {
+          if (r.body instanceof Error) throw r.body;
+          return r.body as never;
+        }
+      }
+      throw new Error(`unmocked ${method} ${url}`);
+    }) as never,
+  );
+}
+
 const replaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
@@ -93,7 +130,7 @@ describe("AdminUserDetailPage", () => {
   });
 
   it("renders the user identity card and org membership", async () => {
-    apiFetchMock.mockResolvedValueOnce(SAMPLE_DETAIL as never);
+    serve([{ path: "/api/v1/admin/users/42", body: SAMPLE_DETAIL }]);
 
     render(<AdminUserDetailPage />);
 
@@ -131,7 +168,7 @@ describe("AdminUserDetailPage", () => {
   });
 
   it("shows an error banner on failed fetch", async () => {
-    apiFetchMock.mockRejectedValueOnce(new Error("boom"));
+    serve([{ path: "/api/v1/admin/users/42", body: new Error("boom") }]);
 
     render(<AdminUserDetailPage />);
 
@@ -141,7 +178,7 @@ describe("AdminUserDetailPage", () => {
   // ── Delete user (system-level) ─────────────────────────────────
 
   it("disables the Delete user button when the target is still active", async () => {
-    apiFetchMock.mockResolvedValueOnce(SAMPLE_DETAIL as never);
+    serve([{ path: "/api/v1/admin/users/42", body: SAMPLE_DETAIL }]);
 
     render(<AdminUserDetailPage />);
 
@@ -159,11 +196,11 @@ describe("AdminUserDetailPage", () => {
   });
 
   it("disables the Delete user button when the target is a superadmin", async () => {
-    apiFetchMock.mockResolvedValueOnce({
+    serve([{ path: "/api/v1/admin/users/42", body: {
       ...SAMPLE_DETAIL,
       is_active: false,
       is_superadmin: true,
-    } as never);
+    } }]);
 
     render(<AdminUserDetailPage />);
 
@@ -178,11 +215,11 @@ describe("AdminUserDetailPage", () => {
   });
 
   it("disables the Delete user button when target is the current user", async () => {
-    apiFetchMock.mockResolvedValueOnce({
+    serve([{ path: "/api/v1/admin/users/42", body: {
       ...SAMPLE_DETAIL,
       id: SUPERADMIN.id,
       is_active: false,
-    } as never);
+    } }]);
 
     render(<AdminUserDetailPage />);
 
@@ -210,10 +247,10 @@ describe("AdminUserDetailPage", () => {
       logout: vi.fn(),
       refreshMe: vi.fn(),
     });
-    apiFetchMock.mockResolvedValueOnce({
+    serve([{ path: "/api/v1/admin/users/42", body: {
       ...SAMPLE_DETAIL,
       is_active: false,
-    } as never);
+    } }]);
 
     render(<AdminUserDetailPage />);
 
@@ -223,12 +260,13 @@ describe("AdminUserDetailPage", () => {
 
   it("DELETEs the user and navigates back to the list on confirm", async () => {
     // First call: detail fetch. Second call: DELETE.
-    apiFetchMock
-      .mockResolvedValueOnce({
+    serve([
+      { path: "/api/v1/admin/users/42", body: {
         ...SAMPLE_DETAIL,
         is_active: false,
-      } as never)
-      .mockResolvedValueOnce({ deleted_user_id: 42 } as never);
+      } },
+      { path: "/api/v1/admin/users/42", method: "DELETE", body: { deleted_user_id: 42 } },
+    ]);
 
     render(<AdminUserDetailPage />);
 
@@ -264,17 +302,16 @@ describe("AdminUserDetailPage", () => {
     // failure, the operator may not see the message. Pin that on a
     // 409 (e.g. someone reactivated the user between page load and
     // confirm), the modal closes and the error banner is visible.
-    apiFetchMock
-      .mockResolvedValueOnce({
+    serve([
+      { path: "/api/v1/admin/users/42", body: {
         ...SAMPLE_DETAIL,
         is_active: false,
-      } as never)
-      .mockRejectedValueOnce(
-        Object.assign(new Error("user_still_active"), {
+      } },
+      { path: "/api/v1/admin/users/42", method: "DELETE", body: Object.assign(new Error("user_still_active"), {
           status: 409,
           payload: { code: "user_still_active", message: "Deactivate first." },
-        }) as never,
-      );
+        }) },
+    ]);
 
     render(<AdminUserDetailPage />);
 

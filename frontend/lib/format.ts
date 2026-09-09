@@ -1,3 +1,5 @@
+import { currencyPrefix } from "@/lib/currencies";
+
 export function formatAmount(value: number | string): string {
   return Number(value).toLocaleString(undefined, {
     minimumFractionDigits: 2,
@@ -109,4 +111,40 @@ function normalizeAmount(s: string): string {
   const wholeN = whole.replace(/^0+(?=\d)/, "") || "0";
   const fracN = frac.replace(/0+$/, "");
   return sign + (fracN ? `${wholeN}.${fracN}` : wholeN);
+}
+
+/**
+ * A money figure with its currency: `"€1,234.56"`, `"CHF 1,234.56"` (TBD-503).
+ *
+ * ⚠ PLACEMENT IS AN OPERATOR RULING (2026-09-08): the symbol always LEADS,
+ * while grouping and decimals keep following the viewer's locale. So a German
+ * viewer sees `€ 1.234,56` rather than the `1.234,56 €` they would write. That
+ * is deliberate — predictability and screenshot stability were judged to
+ * matter more for a product whose copy is English throughout.
+ *
+ * ⚠⚠ DO NOT REWRITE THIS AS `Intl.NumberFormat(style: "currency")`. Placing
+ * the symbol per locale is precisely the option that was rejected, and
+ * reaching for it and then "fixing" the order is how this ends up with two
+ * formatting paths that disagree — the drift TBD-503 exists to remove.
+ *
+ * With no currency the output is byte-identical to `formatAmount`, which is
+ * what preserves the multi-currency gate: those orgs keep seeing bare numbers.
+ */
+export function formatMoney(
+  value: number | string,
+  currency?: string | null,
+): string {
+  const prefix = currencyPrefix(currency);
+  const formatted = formatAmount(value);
+  // ⚠ The SIGN goes outside the symbol: "-€13.14", not "€-13.14". Discovered
+  // while converting the reconcile rows, which build a signed string from a
+  // positive amount plus a type discriminator ("+€45.06"). Without this the
+  // two paths would render negatives differently on the same screen.
+  //
+  // Handles both the ASCII hyphen-minus and U+2212, which some locales use.
+  const minus = formatted.match(/^[-\u2212]/);
+  if (minus && prefix) {
+    return `${minus[0]}${prefix}${formatted.slice(1)}`;
+  }
+  return `${prefix}${formatted}`;
 }

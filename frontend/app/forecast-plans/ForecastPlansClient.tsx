@@ -14,7 +14,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 import FeatureDisabledNotice from "@/components/features/FeatureDisabledNotice";
 import { isAdmin } from "@/lib/auth";
-import { formatAmount, todayISO } from "@/lib/format";
+import { todayISO } from "@/lib/format";
 import {
   isOpenPeriod,
   periodStatus,
@@ -38,6 +38,7 @@ import type { BillingPeriod, Category, ForecastPlan, ForecastPlanItem } from "@/
 // below the chart; the recharts subtree is code-split (see below).
 import { chartColor } from "@/lib/chart-colors";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 // The recharts subtree (Planned vs Actual) is code-split into
 // ForecastPlanChart and loaded via next/dynamic (ssr:false) so recharts
@@ -116,6 +117,7 @@ export default function ForecastPlansClient({
   initialCategories,
   initialPlan,
 }: Props) {
+  const money = useMoney();
   const router = useRouter();
   const { user, features } = useAuth();
   const admin = user ? isAdmin(user) : false;
@@ -1191,29 +1193,29 @@ export default function ForecastPlansClient({
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <StatCard
                 label="Planned Income"
-                value={formatAmount(plan.total_planned_income)}
+                value={money(plan.total_planned_income)}
                 valueSize="text-xl"
                 valueClassName="text-success"
-                sub={<>Actual: {formatAmount(plan.total_actual_income)}</>}
+                sub={<>Actual: {money(plan.total_actual_income)}</>}
                 subClassName="mt-0.5 text-xs text-text-muted"
               />
               <StatCard
                 label="Planned Expenses"
-                value={formatAmount(plan.total_planned_expense)}
+                value={money(plan.total_planned_expense)}
                 valueSize="text-xl"
                 valueClassName="text-danger"
-                sub={<>Actual: {formatAmount(plan.total_actual_expense)}</>}
+                sub={<>Actual: {money(plan.total_actual_expense)}</>}
                 subClassName="mt-0.5 text-xs text-text-muted"
               />
               <StatCard
                 label="Planned Net"
-                value={formatAmount(plannedNet)}
+                value={money(plannedNet)}
                 valueSize="text-xl"
                 valueClassName={plannedNet >= 0 ? "text-success" : "text-danger"}
               />
               <StatCard
                 label="Actual Net"
-                value={formatAmount(actualNet)}
+                value={money(actualNet)}
                 valueSize="text-xl"
                 valueClassName={actualNet >= 0 ? "text-success" : "text-danger"}
               />
@@ -1370,6 +1372,7 @@ function ItemSection({
   onDelete: (id: number) => void;
   setEditAmount: (v: string) => void;
 }) {
+  const money = useMoney();
   // The grid template tracks the visible column count so cells don't
   // wrap around an invisible slot.
   const colTemplate = readOnly
@@ -1393,7 +1396,7 @@ function ItemSection({
                       <div className="text-sm text-text-primary">
                         {item.category_name}
                         <div className="md:hidden mt-1 text-xs text-text-muted">
-                          Actual {formatAmount(item.actual_amount)}
+                          Actual {money(item.actual_amount)}
                         </div>
                       </div>
                       <input
@@ -1410,7 +1413,7 @@ function ItemSection({
                         }}
                       />
                       <span className="hidden text-right text-sm tabular-nums text-text-secondary md:block">
-                        {formatAmount(item.actual_amount)}
+                        {money(item.actual_amount)}
                       </span>
                       <span className="hidden md:block" />
                       <span className="hidden md:block" />
@@ -1448,7 +1451,7 @@ function ItemSection({
                       <div className="text-sm text-text-primary">
                         {item.category_name}
                         <div className="md:hidden mt-1 text-xs text-text-muted">
-                          Actual {formatAmount(item.actual_amount)}
+                          Actual {money(item.actual_amount)}
                           {" · "}Variance{" "}
                           <span
                             className={`font-medium ${
@@ -1456,17 +1459,17 @@ function ItemSection({
                             }`}
                           >
                             {variance > 0 ? "+" : ""}
-                            {formatAmount(variance)}
+                            {money(variance)}
                           </span>
                           {" · "}
                           {SOURCE_LABELS[item.source] ?? item.source}
                         </div>
                       </div>
                       <span className="text-right text-sm tabular-nums text-text-primary">
-                        {formatAmount(item.planned_amount)}
+                        {money(item.planned_amount)}
                       </span>
                       <span className="hidden text-right text-sm tabular-nums text-text-secondary md:block">
-                        {formatAmount(item.actual_amount)}
+                        {money(item.actual_amount)}
                       </span>
                       <span
                         className={`hidden text-right text-sm tabular-nums font-medium md:block ${
@@ -1474,7 +1477,7 @@ function ItemSection({
                         }`}
                       >
                         {variance > 0 ? "+" : ""}
-                        {formatAmount(variance)}
+                        {money(variance)}
                       </span>
                       <span className="hidden text-center text-[11px] text-text-muted md:block">
                         {SOURCE_LABELS[item.source] ?? item.source}
@@ -1516,14 +1519,14 @@ function ItemSection({
         <div className="text-sm font-semibold text-text-primary">
           {group.masterName}
           <div className="md:hidden mt-1 text-xs font-normal text-text-muted">
-            Actual {formatAmount(group.actual)}
+            Actual {money(group.actual)}
           </div>
         </div>
         <span className="text-right text-sm font-semibold tabular-nums text-text-primary">
-          {formatAmount(group.planned)}
+          {money(group.planned)}
         </span>
         <span className="hidden text-right text-sm font-semibold tabular-nums text-text-secondary md:block">
-          {formatAmount(group.actual)}
+          {money(group.actual)}
         </span>
         <span
           className={`hidden text-right text-sm font-semibold tabular-nums md:block ${
@@ -1531,7 +1534,7 @@ function ItemSection({
           }`}
         >
           {group.variance > 0 ? "+" : ""}
-          {formatAmount(group.variance)}
+          {money(group.variance)}
         </span>
         <span className="hidden md:block" />
         {!readOnly && <span />}

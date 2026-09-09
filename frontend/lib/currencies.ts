@@ -80,7 +80,23 @@ export const OTHER_CURRENCIES: readonly string[] = ALL_CURRENCIES.filter(
  * family (JPY "¥", CNY "CN¥"). Measured across all 170: zero symbols are
  * shared by two currencies.
  */
+// ⚠ Memoised, and not as a micro-optimisation. `formatMoney` calls this for
+// EVERY money figure, and the reports TableWidget runs it once per cell — a
+// 1,000-cell table constructed 1,000 `Intl.NumberFormat` objects per render,
+// where the three hand-written implementations this replaces did a plain
+// object lookup. The result depends only on `code`, so one entry per currency
+// is the whole cache (156 max).
+const symbolCache = new Map<string, string | null>();
+
 export function currencySymbol(code: string): string | null {
+  const cached = symbolCache.get(code);
+  if (cached !== undefined) return cached;
+  const result = computeCurrencySymbol(code);
+  symbolCache.set(code, result);
+  return result;
+}
+
+function computeCurrencySymbol(code: string): string | null {
   try {
     const part = new Intl.NumberFormat("en", {
       style: "currency",
@@ -118,4 +134,62 @@ export function currencyLabel(code: string, name?: string): string {
   const sym = currencySymbol(code);
   const head = sym ? `${sym} ${code}` : code;
   return name ? `${head} · ${name}` : head;
+}
+
+/**
+ * The prefix a money figure leads with: `"€"`, or `"CHF "` when the currency
+ * has no symbol, or `""` when no currency is known (TBD-503).
+ *
+ * ⚠ THE SINGLE SOURCE. This replaces three implementations that had drifted
+ * apart — `lib/reports/series.ts` and `AccountMonthEndForecast.tsx` each
+ * carried a hardcoded EUR/USD/GBP table (literal copies of one another), while
+ * everything else rendered bare numbers. Do not add a fourth; import this.
+ *
+ * The code-plus-space fallback is inherited from those two deliberately: it is
+ * what makes "at least the currency is present" true for all 156 supported
+ * codes rather than only the 19 with symbols.
+ *
+ * ⚠ AN EMPTY RETURN IS LOAD-BEARING. `deriveOrgCurrency` yields `undefined`
+ * for a MULTI-currency org, where no single symbol is correct — labelling
+ * every figure with one would mislabel measures that aggregate
+ * differently-denominated accounts. Returning a symbol for an absent currency
+ * would defeat that gate at every render site.
+ */
+export function currencyPrefix(code: string | null | undefined): string {
+  if (!code) return "";
+  const symbol = currencySymbol(code);
+  return symbol ? symbol : `${code} `;
+}
+
+/**
+ * The one currency an org's accounts are denominated in, or `undefined`.
+ *
+ * ⚠ THE MULTI-CURRENCY GATE. A mixed-currency org returns `undefined` so every
+ * figure degrades to a bare number rather than being mislabelled with one
+ * currency's symbol. TBD-325 closed the door on new orgs reaching that state,
+ * but the gate stays correct for any legacy row and must not be simplified
+ * away on the grounds that it is now unreachable.
+ *
+ * Moved here from `lib/reports/series.ts` (as `reportCurrency`): the
+ * derivation was never report-specific, and leaving it there is what let the
+ * rest of the app grow its own answer.
+ *
+ * ⚠ When `Organization.primary_currency` lands (TBD-325 PR 2) this is the ONE
+ * place that changes — every consumer reads the provider, not this function.
+ */
+export function deriveOrgCurrency(
+  accounts: Array<{ currency?: string | null }> | undefined | null,
+): string | undefined {
+  // ⚠ `Array.isArray`, not `?? []`. The nullish guard only covers null and
+  // undefined — any other non-array value (an error envelope, a paginated
+  // object, a mocked `{}`) reaches the `for...of` and throws
+  // "is not iterable", taking down every money figure on the page with it.
+  // This is read on EVERY render of the whole authenticated tree, so it has to
+  // tolerate whatever the accounts endpoint hands back.
+  if (!Array.isArray(accounts)) return undefined;
+  const distinct = new Set<string>();
+  for (const a of accounts) {
+    if (a && a.currency) distinct.add(a.currency);
+  }
+  return distinct.size === 1 ? [...distinct][0] : undefined;
 }

@@ -31,7 +31,7 @@ import {
   YAxis,
 } from "recharts";
 
-import { formatAmount } from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 
 export interface ProjectionPoint {
@@ -248,9 +248,9 @@ export function ComparisonView({
               domain={yDomain}
               tick={{ fill: chartColor.axisTick, fontSize: 11 }}
               tickFormatter={(v) =>
-                formatAmount(typeof v === "number" ? v : Number(v))
+                formatMoney(typeof v === "number" ? v : Number(v), currency)
               }
-              width={80}
+              width={104}
             />
             <Tooltip
               contentStyle={{
@@ -261,7 +261,7 @@ export function ComparisonView({
               formatter={(value, name) => {
                 const num =
                   typeof value === "number" ? value : Number(value);
-                return [`${formatAmount(num)} ${currency}`, String(name)];
+                return [formatMoney(num, currency), String(name)];
               }}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
@@ -325,7 +325,7 @@ export function ComparisonView({
                     </span>
                   </td>
                   <td className="py-2 pr-3 tabular-nums text-text-primary">
-                    {formatAmount(ending)} {cp.projection.currency}
+                    {formatMoney(ending, cp.projection.currency)}
                   </td>
                   <td className="py-2 pr-3 text-text-primary">
                     {dipCount > 0 ? (

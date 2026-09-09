@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
-import { formatAmount } from "@/lib/format";
+import { formatAmount, formatMoney } from "@/lib/format";
 import { card, cardHeader, cardTitle } from "@/lib/styles";
 
 /** Assets first, liabilities last, custom/unknown types after. */
@@ -189,10 +189,12 @@ export default function BalancesByTypeTile() {
                 >
                   {visible.map((c) => (
                     <p key={c.currency} className="text-sm tabular-nums text-text-primary">
-                      {formatAmount(c.total)}{" "}
-                      <span className="text-[11px] uppercase tracking-wider text-text-muted">
-                        {c.currency}
-                      </span>
+                      {/* TBD-503: the trailing code span is gone — `money()`
+                          prefixes the currency, so it read "€850.00 EUR".
+                          `aria-hidden` on the wrapper means the spoken text
+                          below is what a screen reader gets, and that still
+                          says the code. */}
+                      {formatMoney(c.total, c.currency)}
                     </p>
                   ))}
                   {hiddenCount > 0 && (

@@ -37,7 +37,7 @@ import {
   Legend,
 } from "recharts";
 
-import { formatAmount } from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 
 export interface ProjectionPoint {
@@ -201,9 +201,9 @@ export function ProjectionChart({
           <YAxis
             tick={{ fill: chartColor.axisTick, fontSize: 11 }}
             tickFormatter={(v) =>
-              formatAmount(typeof v === "number" ? v : Number(v))
+              formatMoney(typeof v === "number" ? v : Number(v), projection.currency)
             }
-            width={80}
+            width={104}
           />
           <Tooltip
             contentStyle={{
@@ -214,7 +214,9 @@ export function ProjectionChart({
             formatter={(value, name) => {
               const num = typeof value === "number" ? value : Number(value);
               return [
-                `${formatAmount(num)} ${projection.currency}`,
+                // TBD-503: `money()` prefixes the currency, so the trailing code is gone
+                // (it rendered "€1,234.56 EUR").
+                formatMoney(num, projection.currency),
                 String(name),
               ];
             }}

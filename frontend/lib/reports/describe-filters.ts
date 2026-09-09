@@ -14,6 +14,7 @@
  * pickers warm). When no name resolves (deleted/inactive id), the chip
  * falls back to a plain count label so it never blocks on load.
  */
+import { currencyPrefix } from "@/lib/currencies";
 import { buildPresetRanges } from "@/lib/reports/date-presets";
 import {
   asTxnTypeArray,
@@ -69,6 +70,12 @@ export function describeWidgetFilters(
   // cascaded canvas status at query time, so a chip would lie. Defaults
   // to true (transactions and the pre-catalog-load window).
   sourceSupportsStatus = true,
+  // TBD-503. The org currency, so the amount chip carries the same prefix as
+  // every other money figure. Optional and undefined-tolerant: `currencyPrefix`
+  // returns "" for an absent or mixed-currency org, which degrades the chip to
+  // a bare number rather than labelling it with a currency that is wrong for
+  // some of the rows behind it.
+  currency?: string | null,
 ): FilterChip[] {
   const chips: FilterChip[] = [];
 
@@ -118,7 +125,7 @@ export function describeWidgetFilters(
   // ── amount ────────────────────────────────────────────────────
   const amount = widgetFilters.amount_range;
   if (amount && (amount.min !== undefined || amount.max !== undefined)) {
-    chips.push({ key: "amount", label: amountLabel(amount.min, amount.max) });
+    chips.push({ key: "amount", label: amountLabel(amount.min, amount.max, currency) });
   }
 
   // ── tags ──────────────────────────────────────────────────────
@@ -174,12 +181,15 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-// Currency symbol is a bare ``$`` prefix (not per-account currency),
-// consistent with the deferred chart currency-symbol work (roadmap §1b).
-function amountLabel(min?: number, max?: number): string {
-  if (min !== undefined && max !== undefined) return `$${min} to $${max}`;
-  if (min !== undefined) return `≥ $${min}`;
-  return `≤ $${max}`;
+// TBD-503. Was a hardcoded ``$`` — the deferral this comment used to cite
+// ("the deferred chart currency-symbol work") is the work that shipped here,
+// so the chip now carries the org's own prefix. Bare numbers when the org has
+// no single currency, matching every other money figure.
+function amountLabel(min?: number, max?: number, currency?: string | null): string {
+  const p = currencyPrefix(currency);
+  if (min !== undefined && max !== undefined) return `${p}${min} to ${p}${max}`;
+  if (min !== undefined) return `≥ ${p}${min}`;
+  return `≤ ${p}${max}`;
 }
 
 // "Groceries +2" — first name plus a count of the rest. A bare list of

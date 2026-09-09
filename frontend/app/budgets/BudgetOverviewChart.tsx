@@ -16,11 +16,12 @@ import {
   YAxis,
 } from "recharts";
 
-import { formatAmount } from "@/lib/format";
+
 import { chartColor } from "@/lib/chart-colors";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import { resolveBudgetSeries } from "@/lib/reports/chart-series-tooltip";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface BudgetOverviewDatum {
   name: string;
@@ -39,6 +40,7 @@ export default function BudgetOverviewChart({
   cellMeta: Array<{ category_id: number; percent_used: number }>;
   onBarClick: (name: string | undefined) => void;
 }) {
+  const money = useMoney();
   return (
     <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
       <BarChart data={budgetChartData} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
@@ -46,7 +48,7 @@ export default function BudgetOverviewChart({
         <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
         <Tooltip
           content={
-            <SeriesTooltip format={formatAmount} resolve={resolveBudgetSeries} />
+            <SeriesTooltip format={money} resolve={resolveBudgetSeries} />
           }
         />
         {/* D5 fix: shared BudgetSpentBarShape recomputes corner radii

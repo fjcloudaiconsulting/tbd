@@ -19,7 +19,7 @@
  */
 import CreditUtilizationBar from "@/components/dashboard/widgets/CreditUtilizationBar";
 import { creditUtilization } from "@/lib/credit";
-import { formatAmount, formatMonthYear } from "@/lib/format";
+import { formatMonthYear, formatMoney } from "@/lib/format";
 import { loanPayoffStatus } from "@/lib/loan";
 import { badgeForTone, cardTitle } from "@/lib/styles";
 import type { Account } from "@/lib/types";
@@ -117,8 +117,7 @@ function CardShell({
         ) : null}
       </div>
       <div className="text-2xl font-semibold tabular-nums text-text-primary">
-        {formatAmount(account.balance)}{" "}
-        <span className="text-base font-normal text-text-secondary">{account.currency}</span>
+        {formatMoney(account.balance, account.currency)}
       </div>
       {expressive}
       {children ? (
@@ -158,7 +157,7 @@ function CreditCardCard({ account, accounts }: { account: Account; accounts: Acc
       />
       <Metric
         label="Credit limit"
-        value={hasLimit ? `${formatAmount(account.credit_limit as number)} ${account.currency}` : "Not set"}
+        value={hasLimit ? formatMoney(account.credit_limit as number, account.currency) : "Not set"}
         numeric={hasLimit}
       />
       <PaidFrom source={source} />
@@ -203,7 +202,7 @@ function LoanCard({ account, accounts }: { account: Account; accounts: Account[]
         <>
           <Metric
             label="Monthly payment"
-            value={`${formatAmount(m.expected_monthly_payment)} ${account.currency}`}
+            value={formatMoney(m.expected_monthly_payment, account.currency)}
             numeric
           />
           <Metric
@@ -219,7 +218,7 @@ function LoanCard({ account, accounts }: { account: Account; accounts: Account[]
           <Metric label="Matures" value={formatMonthYear(m.maturation_date)} />
           <Metric
             label="Interest over term"
-            value={`${formatAmount(m.total_interest)} ${account.currency}`}
+            value={formatMoney(m.total_interest, account.currency)}
             numeric
           />
           <PaidFrom source={source} />

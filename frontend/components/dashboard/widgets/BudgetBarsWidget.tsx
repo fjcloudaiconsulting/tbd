@@ -21,17 +21,19 @@ import {
 } from "recharts";
 
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
-import { formatAmount } from "@/lib/format";
+
 import { card, cardHeader, cardTitle } from "@/lib/styles";
 import { chartColor } from "@/lib/chart-colors";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import { resolveBudgetSeries } from "@/lib/reports/chart-series-tooltip";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 import {
   BudgetSpentBarShape,
   type BudgetSpentBarShapeProps,
 } from "@/lib/chart-shapes";
 
 export default function BudgetBarsWidget() {
+  const money = useMoney();
   const {
     budgets,
     dashBudgets,
@@ -59,7 +61,7 @@ export default function BudgetBarsWidget() {
               <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
               <Tooltip
                 content={
-                  <SeriesTooltip format={formatAmount} resolve={resolveBudgetSeries} />
+                  <SeriesTooltip format={money} resolve={resolveBudgetSeries} />
                 }
               />
               {/* D5 follow-up: shared BudgetSpentBarShape so

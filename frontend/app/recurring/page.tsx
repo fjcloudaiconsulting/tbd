@@ -10,7 +10,7 @@ import Pagination from "@/components/ui/Pagination";
 import SortableHeader from "@/components/ui/SortableHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount } from "@/lib/format";
+
 import { demotionNotice } from "@/lib/demotion";
 import {
   useTableState,
@@ -21,6 +21,7 @@ import {
 import { SORT_KEY_RECURRING } from "@/lib/hooks/persisted-keys";
 import { btnSecondary, card, cardHeader, cardTitle, error as errorCls, success as successCls, pageTitle } from "@/lib/styles";
 import type { RecurringTransaction } from "@/lib/types";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 const FREQ_LABELS: Record<string, string> = {
   weekly: "Weekly",
@@ -141,6 +142,7 @@ function RecurringTable({
   onDelete,
   testId,
 }: RecurringTableProps) {
+  const money = useMoney();
   const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } =
     useTableState<SortField>({
       key: storageKey,
@@ -282,7 +284,7 @@ function RecurringTable({
                   className={`px-3 py-3 text-right text-sm font-medium tabular-nums ${r.type === "income" ? "text-success" : "text-danger"}`}
                 >
                   {r.type === "income" ? "+" : "-"}
-                  {formatAmount(r.amount)}
+                  {money(r.amount)}
                 </td>
                 <td className="px-3 py-3">
                   <span className="flex justify-end gap-2">
@@ -356,7 +358,7 @@ function RecurringTable({
                 className={`shrink-0 text-right text-sm font-semibold tabular-nums ${r.type === "income" ? "text-success" : "text-danger"}`}
               >
                 {r.type === "income" ? "+" : "-"}
-                {formatAmount(r.amount)}
+                {money(r.amount)}
               </div>
             </div>
             {r.category_name && (

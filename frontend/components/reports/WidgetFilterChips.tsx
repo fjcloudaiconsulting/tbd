@@ -23,6 +23,7 @@ import {
 import { useReportSources } from "@/lib/reports/use-report-sources";
 import type { CanvasFilters, Widget } from "@/lib/reports/types";
 import type { Account, Category } from "@/lib/types";
+import { useOrgCurrency } from "@/lib/hooks/use-org-currency";
 
 interface Props {
   widget: Widget;
@@ -72,6 +73,7 @@ export default function WidgetFilterChips({
     widget.config.dataset,
   );
 
+  const orgCurrency = useOrgCurrency();
   const chips = describeWidgetFilters(
     widget,
     canvasFilters,
@@ -79,6 +81,7 @@ export default function WidgetFilterChips({
     undefined,
     supportsDate,
     supportsStatus,
+    orgCurrency,
   );
 
   if (chips.length === 0) return null;
