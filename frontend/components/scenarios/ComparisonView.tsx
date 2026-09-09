@@ -31,9 +31,8 @@ import {
   YAxis,
 } from "recharts";
 
-import { formatAmount, formatMoney} from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
-import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface ProjectionPoint {
   month: string;
@@ -189,7 +188,6 @@ export function ComparisonView({
   onOpen?: (scenarioId: number) => void;
   testId?: string;
 }) {
-  const money = useMoney();
   const months = useMemo(() => unionMonths(projections), [projections]);
   const rows = useMemo<ChartRow[]>(() => {
     return months.map((month) => {

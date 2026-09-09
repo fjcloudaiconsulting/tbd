@@ -728,6 +728,23 @@ describe("Billing period roster page", () => {
 
     await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/settings"));
     expect(screen.queryByText("Roster health")).toBeNull();
-    expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
+    // ⚠ NARROWED, NOT RELAXED (TBD-503). This asserted that NO request was
+    // made at all. It now names the page's OWN endpoint.
+    //
+    // Why: `SettingsLayout.tsx:23` renders `AppShell` even in the guard
+    // branch, and the shell now mounts `OrgCurrencyProvider`, which fetches
+    // /api/v1/accounts so every money figure carries its currency. A member
+    // being bounced off this page therefore issues that one request — and an
+    // org member is entitled to GET their own accounts, so it is not a leak.
+    //
+    // The property this test was written to protect is unchanged and is
+    // asserted directly below: a non-admin must not load the ROSTER. A blanket
+    // "no calls" was only ever a proxy for that.
+    const rosterCalls = vi
+      .mocked(apiFetch)
+      .mock.calls.filter(([path]) =>
+        String(path).includes("/billing-periods"),
+      );
+    expect(rosterCalls).toHaveLength(0);
   });
 });

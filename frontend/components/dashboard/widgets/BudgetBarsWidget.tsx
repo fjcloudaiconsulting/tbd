@@ -21,7 +21,7 @@ import {
 } from "recharts";
 
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
-import { formatAmount } from "@/lib/format";
+
 import { card, cardHeader, cardTitle } from "@/lib/styles";
 import { chartColor } from "@/lib/chart-colors";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";

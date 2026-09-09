@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import Spinner from "@/components/ui/Spinner";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount } from "@/lib/format";
+
 import { btnPrimary, btnSecondary, card, error as errorCls } from "@/lib/styles";
 import type { RebalanceSuggestion } from "@/components/budgets/BudgetRebalanceModal";
 import { useMoney } from "@/lib/hooks/use-org-currency";

@@ -84,8 +84,8 @@ describe("AccountTileRow — identity/status/navigation surface", () => {
     // Balance is still rendered (0.00), AND the pending magnitude is
     // visible. Sign of pendingAmount drops out (Math.abs); the copy is
     // unsigned, matching the accounts-page "Pending: 150.00" idiom.
-    expect(screen.getByText(/^0\.00$/)).toBeInTheDocument();
-    expect(screen.getByText(/Pending: 150\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/^€0\.00$/)).toBeInTheDocument();
+    expect(screen.getByText(/Pending: €150\.00/)).toBeInTheDocument();
   });
 
   it("does NOT render the pending magnitude when pending is zero", () => {
@@ -96,7 +96,7 @@ describe("AccountTileRow — identity/status/navigation surface", () => {
   it("renders pending magnitude alongside non-zero balance (positive case)", () => {
     render(<AccountTileRow account={PRIMARY_CHECKING} pendingAmount={-200} />);
     expect(screen.getByText(/1,000\.00/)).toBeInTheDocument();
-    expect(screen.getByText(/Pending: 200\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/Pending: €200\.00/)).toBeInTheDocument();
   });
 
   it("renders as a link to transactions filtered by account", () => {

@@ -10,7 +10,7 @@ import HelpTooltip from "@/components/help/HelpTooltip";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { equalsAmount, formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
+import { equalsAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
 import { isOpenPeriod } from "@/lib/billingPeriodStatus";
 import { demotionNotice } from "@/lib/demotion";
 import { input, label, badgeNeutral, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";

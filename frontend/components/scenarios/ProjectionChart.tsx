@@ -37,9 +37,8 @@ import {
   Legend,
 } from "recharts";
 
-import { formatAmount, formatMoney} from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
-import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface ProjectionPoint {
   month: string;
@@ -113,7 +112,6 @@ export function ProjectionChart({
   projection: ProjectionInput;
   testId?: string;
 }) {
-  const money = useMoney();
   // ResponsiveContainer measures its parent on mount. When the chart
   // lives in a freshly painted flex/grid pane (the right column of the
   // Plans editor), the parent's width can come back as -1 on the first

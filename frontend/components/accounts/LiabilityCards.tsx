@@ -19,11 +19,10 @@
  */
 import CreditUtilizationBar from "@/components/dashboard/widgets/CreditUtilizationBar";
 import { creditUtilization } from "@/lib/credit";
-import { formatAmount, formatMonthYear, formatMoney} from "@/lib/format";
+import { formatMonthYear, formatMoney } from "@/lib/format";
 import { loanPayoffStatus } from "@/lib/loan";
 import { badgeForTone, cardTitle } from "@/lib/styles";
 import type { Account } from "@/lib/types";
-import { useMoney } from "@/lib/hooks/use-org-currency";
 
 interface PaymentSource {
   name: string;
@@ -104,7 +103,6 @@ function CardShell({
   expressive: React.ReactNode;
   children?: React.ReactNode;
 }) {
-  const money = useMoney();
   return (
     <div
       data-testid={testid}
@@ -134,7 +132,6 @@ function CardShell({
 }
 
 function CreditCardCard({ account, accounts }: { account: Account; accounts: Account[] }) {
-  const money = useMoney();
   const hasLimit = Number(account.credit_limit) > 0;
   const source = resolvePaymentSource(accounts, account.payment_source_account_id);
   return (
@@ -170,7 +167,6 @@ function CreditCardCard({ account, accounts }: { account: Account; accounts: Acc
 }
 
 function LoanCard({ account, accounts }: { account: Account; accounts: Account[] }) {
-  const money = useMoney();
   const source = resolvePaymentSource(accounts, account.payment_source_account_id);
   const m = account.loan;
   // Shared classifier resolves the tone; the card owns its verbose labels. Each

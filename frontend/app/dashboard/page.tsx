@@ -14,7 +14,7 @@ import CustomDashboard from "@/components/dashboard/CustomDashboard";
 import type { SpendingByCategoryResponse } from "@/components/dashboard/DashboardDataProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
-import { formatAmount, formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
+import { formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 import { periodStatus, selectCurrentPeriodIndex } from "@/lib/billingPeriodStatus";
 import { btnSecondary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
@@ -158,7 +158,6 @@ function DashboardSkeleton() {
 export default function DashboardPage() {
   // TBD-503: every money figure carries the org's currency. `money` is
   // `formatAmount` bound to it; bare `formatAmount` stays for non-money numbers.
-  const money = useMoney();
   const { features } = useAuth();
   if (features?.customDashboard) {
     return <CustomDashboard />;

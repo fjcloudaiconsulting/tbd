@@ -12,8 +12,8 @@
  * Only the pivot needs the null-prototype guard against ``__proto__``.
  * Unifying them yields one function with a mode flag and a third bug.
  */
-import { currencyPrefix, deriveOrgCurrency } from "@/lib/currencies";
-import { formatAmount, formatMoney } from "@/lib/format";
+import { deriveOrgCurrency } from "@/lib/currencies";
+import { formatMoney } from "@/lib/format";
 import type {
   Dimension,
   Measure,

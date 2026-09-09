@@ -147,7 +147,13 @@ describe("/admin/subscriptions/[id] detail page", () => {
     // Plan column rendered.
     expect(screen.getByText("Pro")).toBeInTheDocument();
     // Revenue tile labelled mock.
-    expect(screen.getByText("$0.00")).toBeInTheDocument();
+    // ⚠ CHANGED BY TBD-503: "€0.00", not "$0.00". This page rendered plan
+    // prices and revenue with a hardcoded `$` while `settings/billing` and
+    // `system/plans` render the SAME `plan.price_monthly` field with `€` — one
+    // figure, two currencies, depending on which page you opened. `Plan` has no
+    // currency column, so nothing backed either symbol; the product prices in
+    // euros, so the admin surface was the wrong one.
+    expect(screen.getByText("€0.00")).toBeInTheDocument();
     expect(screen.getAllByText("mock").length).toBeGreaterThanOrEqual(1);
   });
 

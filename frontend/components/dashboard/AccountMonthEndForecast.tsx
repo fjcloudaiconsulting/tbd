@@ -6,7 +6,6 @@ import { TriangleAlert } from "lucide-react";
 import { badgeError, btnLink, card, cardHeader, cardTitle } from "@/lib/styles";
 import { formatAmount, formatMoney } from "@/lib/format";
 import { currencyPrefix as currencySymbol } from "@/lib/currencies";
-import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface AccountMonthEndForecastTotal {
   currency: string;
@@ -81,7 +80,6 @@ export default function AccountMonthEndForecast({
   hasAnyAccounts,
   hasError = false,
 }: AccountMonthEndForecastProps) {
-  const money = useMoney();
   // No accounts: page-level empty state owns this surface; render nothing
   // regardless of period. Runs BEFORE the period check so an empty org
   // viewing a past/future period doesn't see a neutral month-end card it

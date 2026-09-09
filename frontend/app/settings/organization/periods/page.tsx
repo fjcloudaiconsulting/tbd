@@ -42,7 +42,7 @@ import SettingsLayout from "@/components/SettingsLayout";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
-import { formatAmount } from "@/lib/format";
+
 import { useMoney } from "@/lib/hooks/use-org-currency";
 import {
   badgeError,

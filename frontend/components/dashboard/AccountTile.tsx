@@ -2,9 +2,8 @@
 
 import Link from "next/link";
 import { card } from "@/lib/styles";
-import { formatAmount, formatMoney} from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import type { Account } from "@/lib/types";
-import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface AccountTilesCardProps {
   accounts: Account[];
@@ -48,7 +47,6 @@ export interface AccountTileRowProps {
 }
 
 export function AccountTileRow({ account, pendingAmount }: AccountTileRowProps) {
-  const money = useMoney();
   const typeLabel = account.account_type_name ?? null;
   const hasPending = pendingAmount !== 0;
 

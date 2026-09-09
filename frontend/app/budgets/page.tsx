@@ -10,7 +10,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import FeatureDisabledNotice from "@/components/features/FeatureDisabledNotice";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount, todayISO } from "@/lib/format";
+import { todayISO } from "@/lib/format";
 import {
   periodStatus,
   selectCurrentPeriod,

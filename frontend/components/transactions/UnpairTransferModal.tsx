@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import CategorySelect from "@/components/ui/CategorySelect";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount } from "@/lib/format";
+
 import {
   btnPrimary,
   btnSecondary,

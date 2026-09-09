@@ -17,7 +17,7 @@ import {
   YAxis,
 } from "recharts";
 
-import { formatAmount } from "@/lib/format";
+
 import { chartColor } from "@/lib/chart-colors";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import { resolveForecastSeries } from "@/lib/reports/chart-series-tooltip";

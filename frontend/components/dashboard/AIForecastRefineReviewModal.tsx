@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 
 import type { RefinedForecastResponse } from "@/components/dashboard/AIForecastRefineToggle";
-import { formatAmount } from "@/lib/format";
+
 import { btnPrimary, btnSecondary, card } from "@/lib/styles";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 

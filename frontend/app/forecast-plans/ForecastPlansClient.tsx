@@ -14,7 +14,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 import FeatureDisabledNotice from "@/components/features/FeatureDisabledNotice";
 import { isAdmin } from "@/lib/auth";
-import { formatAmount, todayISO } from "@/lib/format";
+import { todayISO } from "@/lib/format";
 import {
   isOpenPeriod,
   periodStatus,

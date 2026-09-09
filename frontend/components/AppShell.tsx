@@ -31,7 +31,6 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { OrgCurrencyProvider } from "@/lib/hooks/use-org-currency";
 import { DEFAULT_FEATURES } from "@/lib/features";
 import {
   EXTENDED_TOUR_STEPS,
@@ -731,16 +730,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <AnnouncementBar />
-        {/* TBD-503: the org currency for every money figure below. Mounted
-            here because a leaf must not fetch to render a symbol, and a
-            component cannot consume a provider it renders itself — so this has
-            to sit above the page tree. Gated on resolved auth, which is what
-            `accounts-swr-auth-gate.test.tsx` fences. */}
-        <main id="main-content" tabIndex={-1} className="flex-1 overflow-auto p-4 sm:p-8">
-          <div className="mx-auto max-w-[1760px]">
-            <OrgCurrencyProvider enabled={!loading && !!user}>{children}</OrgCurrencyProvider>
-          </div>
-        </main>
+        {/* ⚠ TBD-503: the currency provider is NOT here. Most pages render
+            AppShell themselves, so a provider mounted at this depth sits BELOW
+            the component that formats their money — the page body would render
+            bare while its children rendered prefixed. It lives in the root
+            layout, the only node above every page component. */}
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-[1760px]">{children}</div></main>
         <AppShellFooter />
       </div>
     </div>

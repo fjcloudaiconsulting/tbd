@@ -16,7 +16,7 @@ import {
   YAxis,
 } from "recharts";
 
-import { formatAmount } from "@/lib/format";
+
 import { chartColor } from "@/lib/chart-colors";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";

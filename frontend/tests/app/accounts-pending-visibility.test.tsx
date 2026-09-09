@@ -133,7 +133,7 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
       },
     ]);
     renderWithSWR(<AccountsPage />);
-    await waitFor(() => expect(screen.getByText(/Pending: 150\.00/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Pending: €150\.00/)).toBeInTheDocument());
     // The CC tile keeps its 0.00 balance display.
     expect(screen.getAllByText(/0\.00/).length).toBeGreaterThan(0);
     // The Checking account, with no pending transactions, must NOT render a Pending line.
@@ -199,7 +199,7 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
 
     // Both tiles show their leg. ING Joint holds the HIGHER-id leg, so it is
     // the one a collapse would silently zero.
-    await waitFor(() => expect(screen.getAllByText(/^Pending: 50\.00$/)).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByText(/^Pending: €50\.00$/)).toHaveLength(2));
 
     expect(urls.length).toBeGreaterThan(0);
     urls.forEach((u) => expect(u).not.toContain("collapse_transfers"));
@@ -211,6 +211,6 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
       { id: 2, account_id: 10, amount: "30.00", type: "expense", status: "pending", date: "2026-04-16", description: "b", category_id: null, category_name: null, account_name: "Amex Primary", currency: "EUR", linked_transaction_id: null, is_imported: false, settled_date: null },
     ]);
     renderWithSWR(<AccountsPage />);
-    await waitFor(() => expect(screen.getByText(/Pending: 150\.00/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Pending: €150\.00/)).toBeInTheDocument());
   });
 });

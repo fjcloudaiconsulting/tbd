@@ -15,12 +15,10 @@ import Link from "next/link";
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import CreditUtilizationBar from "@/components/dashboard/widgets/CreditUtilizationBar";
 import { creditUtilization } from "@/lib/credit";
-import { formatAmount, formatMoney} from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import { badgeNeutral, card, cardHeader, cardTitle } from "@/lib/styles";
-import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export default function CreditUtilizationWidget() {
-  const money = useMoney();
   const { activeAccounts, accountMonthEndForecast } = useDashboard();
 
   const creditCards = useMemo(

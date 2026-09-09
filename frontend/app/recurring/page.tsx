@@ -10,7 +10,7 @@ import Pagination from "@/components/ui/Pagination";
 import SortableHeader from "@/components/ui/SortableHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount } from "@/lib/format";
+
 import { demotionNotice } from "@/lib/demotion";
 import {
   useTableState,

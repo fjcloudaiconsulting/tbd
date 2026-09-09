@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatMoney } from "@/lib/format";
 
 import { btnPrimary, btnSecondary, card, error as errorCls, input, label } from "@/lib/styles";
 import type { Account } from "@/lib/types";
@@ -141,7 +142,7 @@ export default function ImportMarkAsTransferModal({
             <span className="font-medium">Amount:</span>{" "}
             <span className={rowType === "income" ? "text-success" : "text-danger"}>
               {rowType === "income" ? "+" : "-"}
-              {Number(rowAmount).toFixed(2)} {importAccountCurrency}
+              {formatMoney(rowAmount, importAccountCurrency)}
             </span>
           </div>
           <div className="truncate">

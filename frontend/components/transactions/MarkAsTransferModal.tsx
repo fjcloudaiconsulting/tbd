@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount } from "@/lib/format";
+
 import { useMoney } from "@/lib/hooks/use-org-currency";
 import {
   btnPrimary,

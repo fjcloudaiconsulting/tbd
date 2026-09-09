@@ -12,7 +12,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage, ApiResponseError } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
-import { formatAmount, formatMoney} from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import {
   useTableState,
   paginate,
@@ -29,7 +29,6 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import OverflowMenu, { type OverflowMenuItem } from "@/components/ui/OverflowMenu";
 import AdjustBalanceModal from "@/components/accounts/AdjustBalanceModal";
 import LiabilityCards from "@/components/accounts/LiabilityCards";
-import { useMoney } from "@/lib/hooks/use-org-currency";
 
 // Stable empty-array fallback so the SWR loading state (accountsData ===
 // undefined) doesn't hand a fresh [] to memos/effects on every render.
@@ -83,7 +82,6 @@ function sortAccounts(
 }
 
 export default function AccountsPage() {
-  const money = useMoney();
   const { user, loading } = useAuth();
   const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   // Accounts come from the shared SWR hook (SWR Phase 2, bare-path key) so

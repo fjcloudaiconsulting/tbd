@@ -30,6 +30,7 @@ import { CustomParamsEditor } from "@/components/scenarios/CustomParamsEditor";
 import { ProjectionChart } from "@/components/scenarios/ProjectionChart";
 import { RetirementParamsEditor } from "@/components/scenarios/RetirementParamsEditor";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 import {
   btnPrimary,
   btnSecondary,
@@ -913,6 +914,7 @@ function PlanEditor({
 
 
 function ProjectionView({ projection }: { projection: ProjectionResult }) {
+  const money = useMoney();
   return (
     <div data-testid="projection-view">
       <div className="mb-3 flex items-center gap-2">
@@ -940,7 +942,7 @@ function ProjectionView({ projection }: { projection: ProjectionResult }) {
           <ul className="space-y-1">
             {projection.alerts.map((a, idx) => (
               <li key={`${a.account_id}-${a.month}-${idx}`} className={`text-xs ${errorCls}`}>
-                {a.month}: dip to {a.projected_balance} ({a.trigger})
+                {a.month}: dip to {money(a.projected_balance)} ({a.trigger})
               </li>
             ))}
           </ul>

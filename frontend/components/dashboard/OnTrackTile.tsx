@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { AlertCircle, AlertTriangle, Check, RefreshCw } from "lucide-react";
 import { btnSecondary, card } from "@/lib/styles";
-import { formatAmount } from "@/lib/format";
+
 import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface ForecastPlanLike {

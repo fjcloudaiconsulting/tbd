@@ -35,7 +35,6 @@ import {
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import { formatAmount, formatMoney } from "@/lib/format";
 import { card, cardHeader, cardTitle } from "@/lib/styles";
-import { useMoney } from "@/lib/hooks/use-org-currency";
 
 /** Assets first, liabilities last, custom/unknown types after. */
 const SLUG_ORDER: Record<string, number> = {
@@ -88,7 +87,6 @@ function spokenAmount({ currency, total }: CurrencySubtotal): string {
 }
 
 export default function BalancesByTypeTile() {
-  const money = useMoney();
   const { activeAccounts } = useDashboard();
 
   const groups = useMemo<TypeGroup[]>(() => {

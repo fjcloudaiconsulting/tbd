@@ -13,7 +13,7 @@ import { ChevronDown, ChevronUp, ChevronsUpDown, RefreshCw } from "lucide-react"
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
-import { formatAmount } from "@/lib/format";
+
 import { btnSecondary, card, cardTitle } from "@/lib/styles";
 import { CHART_SERIES } from "@/lib/chart-colors";
 import { useMoney } from "@/lib/hooks/use-org-currency";

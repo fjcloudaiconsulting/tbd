@@ -25,7 +25,7 @@ import Link from "next/link";
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import Pagination from "@/components/ui/Pagination";
 import { extractErrorMessage } from "@/lib/api";
-import { formatAmount } from "@/lib/format";
+
 import { card, cardHeader, cardTitle } from "@/lib/styles";
 import type { Transaction } from "@/lib/types";
 import { useMoney } from "@/lib/hooks/use-org-currency";

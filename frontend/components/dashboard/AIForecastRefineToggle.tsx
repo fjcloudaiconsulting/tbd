@@ -10,6 +10,7 @@ import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
 import HelpTooltip from "@/components/help/HelpTooltip";
+import { useMoney } from "@/lib/hooks/use-org-currency";
 
 // Friendly copy for the typed backend fallback_reason codes, so the badge
 // never shows a raw code like "ai_response_invalid_schema" to the user.
@@ -131,6 +132,7 @@ export default function AIForecastRefineToggle({
   periodStart,
   visible = true,
 }: AIForecastRefineToggleProps) {
+  const money = useMoney();
   const [refined, setRefined] = useState<RefinedForecastResponse | null>(null);
   // Raw AI result awaiting per-row review. While this is set the review
   // modal is open and nothing is reflected on the forecast yet.
@@ -268,7 +270,7 @@ export default function AIForecastRefineToggle({
           {aiApplied ? (
             <>
               {delta >= 0 ? "+" : ""}
-              {delta.toFixed(2)} vs. baseline
+              {money(delta)} vs. baseline
               {adjustments.length > 0 && (
                 <span className="ml-2 text-xs text-text-muted">
                   ({adjustments.length} categor
@@ -309,7 +311,7 @@ export default function AIForecastRefineToggle({
                   <span className="font-medium text-text-primary">
                     {adj.category_name}
                   </span>
-                  : {Number(adj.baseline_forecast).toFixed(2)} -&gt;{" "}
+                  : {money(adj.baseline_forecast)} -&gt;{" "}
                   {Number(adj.refined_forecast).toFixed(2)} (x
                   {adj.multiplier.toFixed(2)})
                 </li>
