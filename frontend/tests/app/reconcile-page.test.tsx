@@ -68,6 +68,7 @@ function makeBatch(overrides: Partial<ImportBatchDetail> = {}): ImportBatchDetai
         linked_transaction_id: null,
         duplicate_warning: false,
         duplicate_warning_target: null,
+        is_reciprocal_transfer_leg: false,
       },
       {
         transaction_id: 101,
@@ -80,6 +81,7 @@ function makeBatch(overrides: Partial<ImportBatchDetail> = {}): ImportBatchDetai
         linked_transaction_id: null,
         duplicate_warning: false,
         duplicate_warning_target: null,
+        is_reciprocal_transfer_leg: false,
       },
       {
         transaction_id: 102,
@@ -92,6 +94,7 @@ function makeBatch(overrides: Partial<ImportBatchDetail> = {}): ImportBatchDetai
         linked_transaction_id: null,
         duplicate_warning: true,
         duplicate_warning_target: 999,
+        is_reciprocal_transfer_leg: false,
       },
     ],
     ...overrides,
@@ -145,6 +148,113 @@ describe("ReconcileClient", () => {
     expect(
       pendingRow.querySelector('[data-testid="action-rejected"]'),
     ).toBeTruthy();
+  });
+
+  // ── TBD-385 ────────────────────────────────────────────────────────────
+  //
+  // The server refuses matched / edited / skipped / rejected on a row that is
+  // one leg of a real transfer, so the inbox must not offer them. Two of those
+  // four (matched, edited) were ALREADY refused by the server before TBD-385
+  // while this UI still rendered the buttons -- the standing rule is that the
+  // client never offers an action the server rejects.
+  it("hides every money-moving action on a transfer leg, but keeps Accept", async () => {
+    const batch = makeBatch();
+    batch.rows[0] = {
+      ...batch.rows[0],
+      linked_transaction_id: 555,
+      is_reciprocal_transfer_leg: true,
+    };
+    // ⚠ The SWR revalidation must return the SAME batch. `beforeEach` points
+    // `apiFetch` at a pristine `makeBatch()`, so without this the fetch
+    // overwrites `initialBatch` and the row under assertion silently reverts to
+    // a non-transfer row -- which would make the sibling test below pass
+    // VACUOUSLY, since an ungated row also renders all five buttons.
+    (apiFetch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_path: string) => batch,
+    );
+    renderClient({ batchId: 7, initialBatch: batch });
+    const rows = await screen.findAllByTestId("reconcile-row");
+    const legRow = rows[0];
+
+    for (const target of ["edited", "matched", "skipped", "rejected"]) {
+      expect(
+        legRow.querySelector(`[data-testid="action-${target}"]`),
+      ).toBeNull();
+    }
+
+    // ⚠ Accept MUST survive. It is the only legal exit from pending_review for
+    // a transfer leg, and without it the row can never leave the inbox, so
+    // `pending_count` never decrements and the batch never closes. A fence
+    // that only asserted absence would pass against that dead end.
+    expect(
+      legRow.querySelector('[data-testid="action-accepted"]'),
+    ).toBeTruthy();
+
+    // The user is told WHY the actions are missing, not left guessing.
+    expect(
+      legRow.querySelector('[data-testid="transfer-leg-badge"]'),
+    ).toBeTruthy();
+
+    // ⚠ And the REMEDY must be visible text, not a `title=` tooltip. A tooltip
+    // is unreachable by keyboard and unreliably announced, and this sentence is
+    // the only place the user learns how to proceed. Asserting `textContent`
+    // rather than getByText because the explainer sits beside sibling nodes.
+    const explainer = legRow.querySelector(
+      '[data-testid="transfer-leg-explainer"]',
+    );
+    expect(explainer).toBeTruthy();
+    // ⚠ Two loose assertions, not one exact phrase. An earlier version matched
+    // /unlink it on the transactions page/i verbatim, which goes RED on a
+    // correct implementation for a pure copy edit ("Unlink THIS on the
+    // transactions page"). Assert the two load-bearing facts -- the verb and
+    // the destination -- and let the wording move.
+    const explainerText = explainer?.textContent ?? "";
+    expect(explainerText).toMatch(/unlink/i);
+    expect(explainerText).toMatch(/transactions page/i);
+  });
+
+  // ⚠ THE DISCRIMINATOR. Without this test the one above is satisfied by a
+  // client that reads `linked_transaction_id !== null` -- which would also
+  // strip the actions from a STALE ONE-WAY link (a reconcile match that was
+  // later reopened), a row the server happily skips. That mutant leaves such a
+  // row with Accept as its only action while the server offers five, and no
+  // other frontend test can see it.
+  it("keeps every action on a linked row that is NOT a reciprocal pair", async () => {
+    const batch = makeBatch();
+    batch.rows[0] = {
+      ...batch.rows[0],
+      linked_transaction_id: 555,
+      is_reciprocal_transfer_leg: false,
+    };
+    // ⚠ The SWR revalidation must return the SAME batch. `beforeEach` points
+    // `apiFetch` at a pristine `makeBatch()`, so without this the fetch
+    // overwrites `initialBatch` and this row silently reverts to a non-transfer
+    // row -- at which point this test asserts five buttons on a row that was
+    // never the shape it claims to test, and passes for the wrong reason.
+    //
+    // ⚠⚠ UNLIKE ITS SIBLING, THIS PIN IS NOT SELF-VERIFYING. Measured: remove
+    // the pin from the test above and it goes RED against correct code, so the
+    // vacuity announces itself. Remove it HERE and this test stays GREEN --
+    // it just stops testing anything. If `beforeEach` or this mock ever drifts,
+    // nothing will tell you. Do not "simplify" it away.
+    (apiFetch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_path: string) => batch,
+    );
+    renderClient({ batchId: 7, initialBatch: batch });
+    const rows = await screen.findAllByTestId("reconcile-row");
+    const oneWayRow = rows[0];
+
+    for (const target of ["accepted", "edited", "matched", "skipped", "rejected"]) {
+      expect(
+        oneWayRow.querySelector(`[data-testid="action-${target}"]`),
+      ).toBeTruthy();
+    }
+    expect(
+      oneWayRow.querySelector('[data-testid="transfer-leg-badge"]'),
+    ).toBeNull();
+    expect(
+      oneWayRow.querySelector('[data-testid="transfer-leg-explainer"]'),
+    ).toBeNull();
   });
 
   it("opens the Edit modal and posts an edits payload", async () => {

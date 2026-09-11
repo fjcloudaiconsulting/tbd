@@ -155,7 +155,7 @@ class ReconciliationTransition(BaseModel):
     Fields:
         transaction_id: The transaction to transition. Must belong to the
             batch referenced in the URL path (``import_id``); server
-            returns 422 otherwise.
+            returns 400 otherwise (``ValidationError``).
         to_state: Target state. Server validates the (from, to) transition
             against the allowed-transitions table.
         edits: Required iff ``to_state == EDITED``. Forbidden otherwise.
@@ -176,9 +176,15 @@ class ReconcileBatchRequest(BaseModel):
     """Request body for ``POST /api/v1/import/{import_id}/reconcile``.
 
     All transitions in a single request commit atomically (one savepoint).
-    If any transition is invalid (bad ``to_state``, missing required
-    edits / match target, transaction belongs to a different batch, etc.)
-    the entire request is rejected with 422 and no state changes.
+    If any transition is invalid the entire request is rejected and no
+    state changes.
+
+    ⚠ The status depends on WHICH check refuses, and these are not the same
+    number: a bad ``to_state`` fails Pydantic parsing and is a genuine 422,
+    while a missing required ``edits`` / match target, a transaction in a
+    different batch, a disallowed (from, to) pair, and the transfer-leg
+    refusal (TBD-385) all raise ``ValidationError``, which ``main.py`` maps
+    to **400**.
 
     Fields:
         transitions: Ordered list of state transitions. Server applies
@@ -235,6 +241,31 @@ class ReconciliationRow(BaseModel):
     linked_transaction_id: int | None = None
     duplicate_warning: bool = False
     duplicate_warning_target: int | None = None
+    is_reciprocal_transfer_leg: bool = False
+    """True iff this row is one leg of a REAL transfer -- the partner links
+    back. The inbox refuses every money-moving transition on such a row
+    (TBD-385), so the client uses this to not offer them.
+
+    ⚠ NAMED AFTER ``is_reciprocal_pair``, DELIBERATELY, and NOT
+    ``is_transfer_leg``: ``transaction_filters.is_transfer_leg()`` already
+    exists and returns bare ``linked_transaction_id is not None``, which is the
+    known-wrong predicate this whole area is fenced against. A wire field with
+    that name invites the next reader to "simplify" the client to
+    ``linked_transaction_id !== null``, which would ALSO hide the actions on a
+    stale ONE-WAY link left by a reopened reconcile match -- a row that is
+    legitimately skippable.
+
+    ⚠ ``linked_transaction_id`` is on this DTO too and is NOT a substitute. It
+    has three writers and only one of them makes a transfer; non-nullness
+    cannot tell them apart.
+
+    The server computes mutuality because the client generally cannot: the
+    partner is usually outside the batch and therefore absent from the payload.
+    ⚠ "usually", not "always" -- a batch row's ``account_id`` is not constrained
+    to the batch header's, so an in-batch pair is constructible (F7 in
+    ``test_skipped_transfer_leg_balance.py`` builds one). Either way the client
+    must not try: reciprocity is a server fact.
+    """
 
     model_config = ConfigDict(extra="forbid")
 

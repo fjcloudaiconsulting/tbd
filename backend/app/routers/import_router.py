@@ -269,7 +269,7 @@ async def reconcile_import_batch(
     Disallowed transitions return 409 with the source + target state in
     the detail (``ConflictError`` -> global handler). Bad payload
     (missing edits / match target, transaction belongs to a different
-    batch) returns 422. Missing batch returns 404.
+    batch) returns 400. Missing batch returns 404.
     """
     response = await reconciliation_service.reconcile_request(
         db,

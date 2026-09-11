@@ -128,8 +128,9 @@ export default function TransferForm({
    * pick source=A, destination=B, then switch source to B, leaving the
    * controlled state at toAccountId=B. The form would then POST
    * `from_account_id === to_account_id`, which the server rejects with a
-   * 422 ("Source and destination accounts must be different",
-   * backend/app/services/transaction_service.py:1389). Clearing client-
+   * 400 ("Source and destination accounts must be different",
+   * backend/app/services/transaction_service.py:2338 -- a ValidationError,
+   * which main.py maps to 400, NOT 422). Clearing client-
    * side keeps the failure surface at HTML5 required-field validation
    * (a clean re-pick) instead of a network round-trip.
    *

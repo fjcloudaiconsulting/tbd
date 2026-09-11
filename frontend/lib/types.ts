@@ -749,6 +749,20 @@ export interface ReconciliationRow {
   linked_transaction_id: number | null;
   duplicate_warning: boolean;
   duplicate_warning_target: number | null;
+  /**
+   * True iff this row is one leg of a REAL transfer -- the partner links back.
+   * The inbox refuses every money-moving transition on such a row (TBD-385).
+   *
+   * ⚠ Do NOT substitute `linked_transaction_id !== null`. That column has three
+   * writers and only one of them makes a transfer, so non-nullness ALSO catches
+   * a stale one-way link left by a reopened reconcile match -- a row the server
+   * legitimately still skips. Same rule as `linked_account_name` above.
+   *
+   * ⚠ The client cannot compute this. The partner is usually outside the batch
+   * and therefore absent from the payload -- and even when it is not, mutuality
+   * is a server fact, not something to re-derive here.
+   */
+  is_reciprocal_transfer_leg: boolean;
 }
 
 export interface ImportBatchDetail {

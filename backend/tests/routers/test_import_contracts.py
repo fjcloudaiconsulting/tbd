@@ -967,3 +967,103 @@ async def test_batch_isolates_per_org_account_id(session_factory):
     assert body["imported_count"] == 0
     assert body["error_count"] == 1
     assert body["errors"][0]["row_number"] == 1
+
+
+# ── TBD-385: the transfer-leg refusal's WIRE contract ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reconcile_refusing_a_transfer_leg_is_400_with_the_remedy(
+    session_factory,
+):
+    """FENCE. Skipping a reciprocal transfer leg must reach the client as 400
+    with the remedy sentence in ``detail``.
+
+    ⚠ WHY THIS EXISTS AT ALL, given the inbox hides the button. The frontend
+    gate is best-effort: a user holding a STALE page (opened before the row was
+    paired on another tab) still has a live Skip button and will hit this. What
+    they see is this response, so it is a contract, not an internal error.
+
+    ⚠ THE STATUS IS NOT OBVIOUS AND THAT IS THE POINT. ``_validate_transition``
+    answers **409** for a transition the table disallows, while this refusal --
+    a transition the table ALLOWS, refused on a property of the row -- raises
+    ``ValidationError`` and answers **400**. Both are defensible and they are
+    different; nothing else pins which one this is, so a future "tidy-up" that
+    re-raises it as ``ConflictError`` would silently change the wire for every
+    client. Fenced here rather than argued in a comment.
+
+    KILLS: the refusal re-raised as ``ConflictError``/409; the refusal escaping
+    as an unhandled 500; a message that says "no" without naming the remedy.
+    """
+    from app.models.account import Account, AccountType
+    from app.models.category import Category, CategoryType
+    from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
+    from app.models.transaction import Transaction, TransactionStatus, TransactionType
+    from app.services import transaction_service
+
+    org_id, user_id = await _seed_user(session_factory)
+
+    async with session_factory() as db:
+        at = AccountType(org_id=org_id, name="Checking", slug="checking", is_system=True)
+        cat = Category(org_id=org_id, name="Transfer", slug="transfer",
+                       type=CategoryType.EXPENSE)
+        db.add_all([at, cat])
+        await db.flush()
+        a = Account(org_id=org_id, account_type_id=at.id, name="A",
+                    balance=0, currency="EUR", is_active=True)
+        b = Account(org_id=org_id, account_type_id=at.id, name="B",
+                    balance=0, currency="EUR", is_active=True)
+        db.add_all([a, b])
+        await db.flush()
+        batch = ImportBatch(
+            org_id=org_id, account_id=a.id,
+            source_format=ImportSourceFormat.CSV, file_name="t.csv",
+            created_by_user_id=user_id,
+            status=ImportBatchStatus.OPEN, row_count=1, pending_count=1,
+            accepted_count=0,
+        )
+        db.add(batch)
+        await db.flush()
+
+        import datetime as _dt
+        from decimal import Decimal as _D
+        # SETTLED implies settled_date -- the model enforces it with a typed
+        # ValueError before the row reaches the database.
+        common = dict(org_id=org_id, category_id=cat.id, date=_dt.date(2026, 5, 10),
+                      settled_date=_dt.date(2026, 5, 10),
+                      status=TransactionStatus.SETTLED, amount=_D("100.00"))
+        exp = Transaction(account_id=a.id, type=TransactionType.EXPENSE,
+                          description="leg-out", import_batch_id=batch.id,
+                          reconciliation_state="pending_review", **common)
+        inc = Transaction(account_id=b.id, type=TransactionType.INCOME,
+                          description="leg-in", **common)
+        db.add_all([exp, inc])
+        await db.commit()
+
+        # Pair through the production service so the link is genuinely mutual --
+        # hand-writing both columns would fence a shape the app cannot build.
+        await transaction_service.pair_existing_transactions(
+            db, org_id, expense_tx_id=exp.id, income_tx_id=inc.id
+        )
+        await db.commit()
+        exp_id, batch_id = exp.id, batch.id
+
+        # Precondition: mutual in BOTH directions, or this is not the shape
+        # under test and the fence silently becomes a 200-path test.
+        rows = (await db.execute(select(Transaction).where(
+            Transaction.id.in_([exp.id, inc.id])))).scalars().all()
+        by_id = {r.id: r for r in rows}
+        assert by_id[exp.id].linked_transaction_id == inc.id
+        assert by_id[inc.id].linked_transaction_id == exp.id
+
+    app = _make_app(session_factory)
+    payload = {"transitions": [{"transaction_id": exp_id, "to_state": "skipped"}]}
+    with TestClient(app) as client:
+        resp = client.post(f"/api/v1/import/{batch_id}/reconcile", json=payload)
+
+    assert resp.status_code == 400, (
+        f"expected 400 (ValidationError), got {resp.status_code}: {resp.text}"
+    )
+    detail = str(resp.json().get("detail", "")).lower()
+    assert "unlink" in detail
+    assert "transactions page" in detail
