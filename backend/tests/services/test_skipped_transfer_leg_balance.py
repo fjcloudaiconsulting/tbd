@@ -29,8 +29,25 @@ path.
 
 Fence roster (see specs/tbd-308-skip-transfer-leg-balance-revert.md):
 
-* **F1** kills ``main``'s ``is_reportable_transaction`` derivation, and any
-  ``not is_reciprocal_pair(...)`` lookalike substituted for the predicate.
+* **F1** was INVERTED by TBD-385 and no longer kills what this line used to
+  advertise. It now kills a missing, narrowed or mis-keyed REFUSAL.
+
+  ⚠⚠ MEASURED COVERAGE LOSS, recorded rather than left to be discovered.
+  F1 used to kill ``main``'s ``is_reportable_transaction`` derivation in
+  ``_apply_balance_for_transition``. Re-injecting that derivation at BOTH sites
+  now passes this file (9 passed) AND the whole of ``backend/tests/services/``
+  (1908 passed). It is no longer exercised by any test in the services suite.
+
+  SAFE, because unreachable rather than merely untested: post-guard a reciprocal
+  leg can only move ACCEPTED<->PENDING_REVIEW, where the old and new predicates
+  are both no-ops (False->False vs True->True), and
+  ``_settle_batch_counters_and_demote_orphans`` excludes reciprocal referrers,
+  so no path puts a reciprocal row into a reverted state.
+
+  NOT fully re-pinned. ``test_link_reciprocity_predicates.py`` still pins the
+  predicate FUNCTIONS' parity, but ``reconciliation_service``'s USE of
+  ``contributes_to_cached_balance`` is unfenced for reciprocal rows: a refactor
+  swapping it back goes green. Do not cite F1 as covering that any more.
 * **F2** kills ungated 4b/4f, and pins the skip-then-pair ROUTE by building it
   through the real service functions rather than hand-writing state.
 * **F3** is the over-reach pin: without it, hard-coding either gate to False
@@ -75,6 +92,7 @@ from app.schemas.import_reconciliation import (
 )
 from app.schemas.transaction import TransactionCreate, TransactionUpdate
 from app.services import reconciliation_service, transaction_service
+from app.services.exceptions import ValidationError
 
 ACCT_A_OPENING = Decimal("1000.00")
 ACCT_B_OPENING = Decimal("400.00")
@@ -276,7 +294,7 @@ async def _make_reciprocal_pair(
     return await _reload(db, expense.id), await _reload(db, income.id)
 
 
-# ══ F1 -- the root fix ══════════════════════════════════════════════════════
+# ══ F1 -- the inbox refuses to revert a reciprocal leg ══════════════════
 
 
 @pytest.mark.parametrize(
@@ -285,53 +303,87 @@ async def _make_reciprocal_pair(
     ids=["skipped", "rejected"],
 )
 @pytest.mark.asyncio
-async def test_reverting_a_reciprocal_transfer_leg_reverts_its_contribution(
+async def test_reverting_a_reciprocal_transfer_leg_is_refused(
     db_session, reverted_state
 ):
     """F1 (fence). Moving a genuine, bidirectionally-linked transfer leg into a
-    REVERTED state through the inbox must revert that leg's amount out of
-    ``accounts.balance``, because ``balance_contribution_filter`` drops it from
-    the reconstruction the moment its state enters
-    ``_RECON_EXCLUDED_STATES``.
+    REVERTED state through the inbox must be REFUSED, and must move no money.
 
-    KILLS: ``main``'s ``is_reportable_transaction`` derivation in
-    ``_apply_balance_for_transition``. That predicate ANDs
-    ``linked_transaction_id is None``, so it is False for a linked row BOTH
-    before and after the flip -- a ``False -> False`` no-op that reverts nothing
-    while the row leaves the reconstruction. Also kills any ``not
-    is_reciprocal_pair(...)`` lookalike, which answers about link shape rather
-    than about cached-balance membership.
+    ⚠ THIS FENCE WAS INVERTED BY TBD-385, deliberately. The assertion it now
+    makes is strictly STRONGER than the one it replaces, on the same path.
 
-    ⚠ PARAMETRIZED OVER BOTH MEMBERS of ``_RECON_EXCLUDED_STATES``, deliberately
-    and not for symmetry's sake: an implementation that special-cases the
-    literal ``"skipped"`` INSIDE this code path -- rather than deferring to the
-    shared tuple -- passes every SKIPPED-only fence in this module. The parity
-    fences on the shared predicate cannot see that mutant either, because it
-    never touches the shared predicate. REJECTED is not a hypothetical state:
-    it is a first-class inbox transition AND what ``_settle_batch_counters_and_demote_orphans``
-    writes in production.
+    Until TBD-385 this test asserted the revert HAPPENED correctly -- the leg's
+    amount left ``accounts.balance``. That was the right assertion while the
+    transition was permitted: TBD-308 had just fixed a ``False -> False`` no-op
+    that left permanent drift. TBD-385 ruled the transition itself
+    illegitimate, so the behaviour this fence guarded is no longer REACHABLE,
+    and a fence asserting an unreachable behaviour is decoration.
+
+    ⚠ "Reachability removed, not coverage lost" is only HALF true, and the other
+    half is measured: the old derivation is now unfenced across all 1908 tests
+    in ``tests/services/``. The module docstring's F1 entry states exactly what
+    that does and does not leave pinned.
+
+    WHY THE RULING: a half-skipped pair moves ``accounts.balance`` by the full
+    leg amount while BOTH legs sit outside ``reportable_transaction_filter``
+    (it requires ``linked_transaction_id IS NULL``). Net worth steps with no
+    reportable row anywhere to explain it. The ticket's claim that
+    ``unpair``-then-skip reaches the same state is FALSE:
+    ``unpair_transactions`` NULLs both links, so the survivor becomes
+    reportable and the movement is visible.
+
+    KILLS:
+
+    * A guard keyed on the literal ``"skipped"``. REJECTED is parametrized here
+      for exactly that reason -- it is a first-class inbox transition, and a
+      SKIPPED-only guard passes every other fence in this module.
+    * A guard keyed on ``linked_transaction_id is not None`` instead of on
+      mutuality. That shape ALSO refuses the stale one-way link F5 pins as
+      legitimately skippable, so F1 and F5 together are the discriminator and
+      NEITHER ALONE IS. Deleting or weakening F5 silently un-fences this.
+
+    ⚠ NOT in the kill list, deliberately: "re-resolves the partner rather than
+    reusing the resolved instance". That WAS claimed here and is FALSE --
+    measured, the re-query runs pre-mutation with identical org scoping and so
+    returns the same row; the mutant passes all 9 tests in this file. Reusing
+    ``source_partner`` is a COST argument (one query) plus a
+    guard-vs-bookkeeping consistency argument, not a behaviour any test can
+    see. It is kept as defence in depth and is NOT test-killable -- the same
+    footing on which ``transaction_service`` documents its own unkillable
+    clause.
+    * A refusal that fires but leaks a partial write. Both balances AND both
+      states are asserted unchanged, so a guard placed after the state flip or
+      after the balance bookkeeping goes red here.
+
+    ⚠ NOT an over-reach control: it FAILS against ``main``, where the
+    transition is permitted and the balance moves.
     """
     seed = await _seed(db_session)
     expense, income = await _make_reciprocal_pair(
         db_session, seed, amount="100.00", leg_in_batch=True
     )
-    # Precondition: a real transfer pair, mutual in both directions.
+    # Precondition: a real transfer pair, mutual in BOTH directions.
     assert expense.linked_transaction_id == income.id
     assert income.linked_transaction_id == expense.id
     await assert_invariant(db_session, seed)
 
     a_before = (await _account(db_session, seed["acct_a_id"])).balance
+    b_before = (await _account(db_session, seed["acct_b_id"])).balance
+    state_before = (await _reload(db_session, expense.id)).reconciliation_state
 
-    await _reconcile(db_session, seed, _transition(expense.id, reverted_state))
+    with pytest.raises(ValidationError) as exc:
+        await _reconcile(db_session, seed, _transition(expense.id, reverted_state))
 
+    # The refusal must name the REMEDY, not merely say no. A bare "not allowed"
+    # strands the user on a screen that offers no way forward.
+    assert "unlink" in str(exc.value).lower()
+
+    # Nothing moved: not the state, not either side's balance.
     assert (
         await _reload(db_session, expense.id)
-    ).reconciliation_state == reverted_state.value
-    # The leg's amount must leave the cached balance: it is an EXPENSE, so
-    # reverting it raises the account.
-    assert (await _account(db_session, seed["acct_a_id"])).balance == (
-        a_before + Decimal("100.00")
-    )
+    ).reconciliation_state == state_before
+    assert (await _account(db_session, seed["acct_a_id"])).balance == a_before
+    assert (await _account(db_session, seed["acct_b_id"])).balance == b_before
     await assert_invariant(db_session, seed)
 
 
@@ -549,6 +601,13 @@ async def test_stale_one_way_link_after_reopen_still_skips_and_moves_no_money(
     amount is already out of the balance. It equally kills any blanket
     ``linked_transaction_id is not None`` treatment, which would refuse or
     re-revert this legitimately reopened row.
+
+    ⚠⚠ SINCE TBD-385 THIS FENCE IS HALF OF A PAIR -- do not weaken or delete it
+    without reading F1. F1 proves the inbox REFUSES a reciprocal leg; this one
+    proves it still PERMITS a one-way link. A guard written as
+    ``linked_transaction_id is not None`` satisfies F1 and is caught ONLY here.
+    Measured: injecting that mutant turns this test, and no other in the
+    module, red. F1 alone cannot see it; neither can F8.
     """
     seed = await _seed(db_session)
     duplicate = await _create(
@@ -742,19 +801,134 @@ async def test_f7_import_pair_reopen_skip_moves_no_money(db_session):
     assert (await _account(db_session, seed["acct_a_id"])).balance == a_before
     await assert_invariant(db_session, seed)
 
-    # Leg 3b: the skip. The expense leg's contribution must be reverted OUT of
-    # accounts.balance, exactly as it is dropped from the reconstruction.
-    await _reconcile(
-        db_session, seed, _transition(exp.id, ReconciliationState.SKIPPED)
-    )
-    exp = await _reload(db_session, exp.id)
-    assert exp.reconciliation_state == "skipped"
+    # Leg 3b: the skip -- REFUSED since TBD-385, because ``exp`` is now one leg
+    # of a reciprocal pair. Before TBD-385 this reverted the expense out of
+    # ``accounts.balance``; that transition is no longer legitimate, because it
+    # would move the balance while BOTH legs stay outside
+    # ``reportable_transaction_filter``, stepping net worth with nothing to
+    # explain it.
+    #
+    # ⚠ THE FENCE'S ORIGINAL PURPOSE IS UNCHANGED AND STILL LIVE. What makes
+    # F7 unique is leg 3a -- the REOPEN edge crossed with a RECIPROCAL row,
+    # the only link shape with a contribution to lose there. That assertion is
+    # untouched above and still kills the mutant nothing else sees:
+    #
+    #     if target_state == PENDING_REVIEW and tx.linked_transaction_id is not None:
+    #         target_in_cached_balance = False
+    #
+    # Only leg 3b was inverted; leg 3a is untouched and still runs.
+    #
+    # ⚠ An earlier draft of this comment claimed the guard's POSITION inside
+    # ``_reconcile_one`` was what kept leg 3a executing. That was wrong and is
+    # recorded here so it is not re-derived: the guard's first conjunct is
+    # ``target_state in REVERTED_RECONCILIATION_STATES``, and leg 3a targets
+    # PENDING_REVIEW, so leg 3a runs wherever the guard sits. The actual
+    # constraint on the guard's position is different and narrower --
+    # ``source_partner`` is not resolved until just above it, so the guard
+    # cannot move to the top of the function without re-resolving the partner,
+    # which is the documented fail-open trap.
+    a_after_reopen = (await _account(db_session, seed["acct_a_id"])).balance
 
-    # An expense of 300 leaving the cached balance ADDS 300 back to the account.
-    assert (await _account(db_session, seed["acct_a_id"])).balance == (
-        a_before + Decimal("300.00")
-    )
+    with pytest.raises(ValidationError) as exc:
+        await _reconcile(
+            db_session, seed, _transition(exp.id, ReconciliationState.SKIPPED)
+        )
+    assert "unlink" in str(exc.value).lower()
+
+    exp = await _reload(db_session, exp.id)
+    assert exp.reconciliation_state == "pending_review"
+    assert (await _account(db_session, seed["acct_a_id"])).balance == a_after_reopen
 
     # The claim TBD-363 said would fail. Asserted through the production
     # primitive, for every account, not by hand-computing a number.
     await assert_invariant(db_session, seed)
+
+
+# ══ F8 -- the wire signal discriminates mutuality, not linkedness ═══════════
+
+
+@pytest.mark.asyncio
+async def test_batch_detail_flags_only_reciprocal_legs(db_session):
+    """F8 (fence). ``ReconciliationRow.is_reciprocal_transfer_leg`` must be True
+    for a REAL transfer leg and False for a STALE ONE-WAY link, in the same
+    batch, in the same response.
+
+    WHY THE CLIENT CANNOT COMPUTE THIS: the partner is usually outside the
+    batch and therefore absent from the payload, and the row's own
+    ``linked_transaction_id`` -- which IS on the DTO -- is not an answer, since
+    it has three writers and only one of them makes a transfer.
+
+    ⚠ "usually", not "always". A batch row's ``account_id`` is not constrained
+    to the batch header's, so an in-batch reciprocal pair is constructible --
+    F7 in this very module builds one. Mutuality is a server fact regardless.
+
+    KILLS, and this is the whole point of building shapes 1 and 2 into ONE batch
+    (shape 3, the plain unlinked row, is a redundant CONTROL -- shape 2 already
+    kills everything it kills): an implementation that sets the flag from
+    ``linked_transaction_id is not None``. That mutant returns True for BOTH
+    the transfer leg and the reopened match, so the client would hide Skip on a
+    row the server happily skips -- offering the user no legal action at all on
+    a row that has one. A fence containing only the transfer leg cannot see it,
+    because the mutant agrees with the truth on that row.
+
+    ⚠ This is the client-side half of the F1/F5 discriminator. F1 proves the
+    server refuses the reciprocal leg; F5 proves it permits the one-way row;
+    F8 proves the WIRE tells them apart, which is what keeps the button set
+    honest. Deleting any one of the three un-fences the other two.
+    """
+    seed = await _seed(db_session)
+
+    # Shape 1: a genuine transfer pair, expense leg enrolled in the batch.
+    expense, income = await _make_reciprocal_pair(
+        db_session, seed, amount="100.00", leg_in_batch=True
+    )
+
+    # Shape 2: a STALE ONE-WAY link -- matched, then reopened. The link
+    # survives the reopen; that is documented and deliberate.
+    duplicate = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="45.00",
+        label="dup-f8", tx_type=TransactionType.EXPENSE, in_batch=True,
+    )
+    canonical = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="45.00",
+        label="canonical-f8", tx_type=TransactionType.EXPENSE,
+    )
+    await _reconcile(
+        db_session, seed,
+        _transition(duplicate.id, ReconciliationState.MATCHED, match=canonical.id),
+    )
+    await _reconcile(
+        db_session, seed, _transition(duplicate.id, ReconciliationState.ACCEPTED)
+    )
+    # ⚠ Drive the REOPEN too. The docstring above calls this shape "matched,
+    # then reopened", and until this line it was only "matched, then accepted".
+    # The flag happens to be state-independent, so the assertion held either
+    # way -- but a fence whose fixture does not match its own description is
+    # how the next reader ends up trusting coverage that was never built.
+    await _reconcile(
+        db_session, seed,
+        _transition(duplicate.id, ReconciliationState.PENDING_REVIEW),
+    )
+
+    # Shape 3: an ordinary unlinked row.
+    plain = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="12.00",
+        label="plain-f8", tx_type=TransactionType.EXPENSE, in_batch=True,
+    )
+    await db_session.commit()
+
+    detail = await reconciliation_service.get_batch_detail(
+        db_session, org_id=seed["org_id"], batch_id=seed["batch_id"]
+    )
+    by_id = {r.transaction_id: r for r in detail.rows}
+
+    # Preconditions, asserted rather than assumed: if shape 2 lost its link the
+    # discriminator collapses and this fence silently becomes a duplicate of a
+    # single-shape test.
+    assert by_id[duplicate.id].linked_transaction_id == canonical.id
+    assert by_id[expense.id].linked_transaction_id == income.id
+    assert by_id[plain.id].linked_transaction_id is None
+
+    assert by_id[expense.id].is_reciprocal_transfer_leg is True
+    assert by_id[duplicate.id].is_reciprocal_transfer_leg is False
+    assert by_id[plain.id].is_reciprocal_transfer_leg is False

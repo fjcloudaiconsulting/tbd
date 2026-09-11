@@ -5,7 +5,7 @@ Covers:
 * The state-machine guard rejects every disallowed transition with
   ``ConflictError`` (-> 409).
 * Cross-batch membership: a transition on a transaction that doesn't
-  belong to the batch returns ``ValidationError`` (-> 422).
+  belong to the batch returns ``ValidationError`` (-> 400).
 * Atomicity: a failing transition rolls back the whole request.
 * Auto-close: the last pending row flips the batch to ``CLOSED``.
 * Counter bookkeeping stays in sync as rows transition.
@@ -272,9 +272,14 @@ async def test_last_pending_row_auto_closes_batch(db_session):
 
 
 @pytest.mark.asyncio
-async def test_transition_on_foreign_transaction_is_422(db_session):
+async def test_transition_on_foreign_transaction_is_refused(db_session):
     """A transaction that belongs to a different batch returns
-    ``ValidationError`` (-> 422). Spec §3.4 invariant 4."""
+    ``ValidationError`` (-> 400 at the wire). Spec §3.4 invariant 4.
+
+    ⚠ Renamed from ``..._is_422``. ``ValidationError`` is mapped to 400 by
+    ``main.py``, not 422, and this test asserts the EXCEPTION rather than any
+    status code -- so the old name asserted a number nothing here checks and
+    that the wire does not return."""
     seed = await _seed(db_session)
 
     # Create a SECOND batch with one transaction.
@@ -570,7 +575,7 @@ async def test_edit_amount_recomputes_account_balance(db_session):
 @pytest.mark.asyncio
 async def test_edit_with_cross_org_category_is_rejected(db_session):
     """A category ID from another org is refused with ``ValidationError``
-    (-> 422). The transaction must not mutate."""
+    (-> 400). The transaction must not mutate."""
     seed = await _seed(db_session)
 
     # Spin up another org with its own category.

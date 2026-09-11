@@ -122,10 +122,21 @@ while IFS= read -r f; do
     # shards are skipped entirely (test.yml, TBD-404), and the drift guard that
     # exists to catch exactly this edit does not execute. The drift merges green.
     #
-    # Fenced by test_ci_change_detection.py, which derives this list from the
-    # backend tests themselves rather than restating it — so a fourth shared
-    # file goes red here instead of silently joining the gap.
-    frontend/lib/currencies.ts|frontend/lib/billingPeriodStatus.ts|frontend/lib/feature-catalog.ts)
+    # ⚠⚠ THIS LIST IS HAND-MAINTAINED AND NOTHING DERIVES IT. An earlier
+    # version of this comment claimed test_ci_change_detection.py derived it
+    # from the backend suite "so a fourth shared file goes red here instead of
+    # silently joining the gap". That was FALSE and actively harmful: that
+    # test RESTATES the list in a parametrize block, and its own docstring
+    # records that an automatic derivation was written and REMOVED rather than
+    # shipped (scanning for `frontend/...` strings matches prose, because the
+    # real fences build paths from segments; and `./frontend/lib` is mounted
+    # whole while only some files in it are read).
+    #
+    # So, concretely: when a new backend fence starts reading a frontend file,
+    # add it in BOTH places -- here AND in
+    # test_ci_change_detection.py::test_a_frontend_source_a_backend_fence_reads_is_a_backend_change_too.
+    # Adding it in only one is silent in both directions.
+    frontend/lib/currencies.ts|frontend/lib/billingPeriodStatus.ts|frontend/lib/feature-catalog.ts|frontend/lib/reconcile-transfer-lock.ts)
       backend=true
       frontend=true
       ;;

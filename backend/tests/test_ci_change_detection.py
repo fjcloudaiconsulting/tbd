@@ -203,6 +203,7 @@ def test_a_shared_frontend_fixture_is_a_backend_change_too(tmp_path):
         "frontend/lib/currencies.ts",
         "frontend/lib/billingPeriodStatus.ts",
         "frontend/lib/feature-catalog.ts",
+        "frontend/lib/reconcile-transfer-lock.ts",
     ],
 )
 def test_a_frontend_source_a_backend_fence_reads_is_a_backend_change_too(
@@ -210,12 +211,14 @@ def test_a_frontend_source_a_backend_fence_reads_is_a_backend_change_too(
 ):
     """⚠⚠ Without this, the drift fence never runs on the change that breaks it.
 
-    Three backend contract tests READ these frontend source files through the
+    Four backend contract tests READ these frontend source files through the
     read-only docker-compose mounts:
 
     * `test_currency_list_frontend_contract.py`  -> `currencies.ts`
     * `test_period_status_frontend_contract.py`  -> `billingPeriodStatus.ts`
     * `test_feature_catalog_frontend_contract.py` -> `feature-catalog.ts`
+    * `test_reconcile_transfer_lock_frontend_contract.py`
+      -> `reconcile-transfer-lock.ts` (TBD-385)
 
     Classified frontend-only, a PR editing just one of them sets
     `backend=false`, the six backend shards are skipped entirely (TBD-404), and

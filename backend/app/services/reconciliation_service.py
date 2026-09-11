@@ -57,7 +57,10 @@ from app.services.exceptions import (
 )
 # transaction_filters lives in its own module precisely so it can be imported
 # at module scope from anywhere: it depends on models only, never on services.
-from app.services.transaction_filters import is_reciprocal_pair
+from app.services.transaction_filters import (
+    REVERTED_RECONCILIATION_STATES,
+    is_reciprocal_pair,
+)
 
 logger = structlog.get_logger()
 
@@ -359,6 +362,45 @@ async def get_batch_detail(
             if row.fitid and row.fitid not in dup_warning_map:
                 dup_warning_map[row.fitid] = row.id
 
+    # TBD-385: which rows are one leg of a REAL transfer.
+    #
+    # ⚠ The partner is USUALLY outside this batch, so it is fetched rather than
+    # looked up among ``transactions``.
+    #
+    # ⚠⚠ It is NOT always outside. An earlier version of this comment argued
+    # "``_link_pair`` requires two different accounts and an ``ImportBatch`` has
+    # a single ``account_id``, so two rows of one batch can never be a
+    # reciprocal pair". That is FALSE and is recorded here so it is not
+    # re-derived: ``ImportBatch.account_id`` is a HEADER column and nothing
+    # constrains a row's own ``account_id`` to it. F7 in
+    # ``test_skipped_transfer_leg_balance.py`` builds the counterexample --
+    # two rows on different accounts, both enrolled in one batch, then paired --
+    # and in production ``TransactionUpdate.account_id`` is settable, so a batch
+    # row can be moved and then paired with a sibling.
+    #
+    # The query is correct either way: ``Transaction.id.in_(linked_ids)`` does
+    # not exclude batch members, so an in-batch partner resolves normally (and
+    # to the same identity-mapped instance). Do not "optimise" this into a
+    # lookup over ``transactions`` on the strength of the false claim.
+    #
+    # ⚠ Mutuality via ``is_reciprocal_pair``, never ``linked_transaction_id is
+    # not None``. One bulk query over the linked subset only, skipped entirely
+    # when no row is linked -- mirroring the ``fitids_in_batch`` guard above.
+    linked_ids = {
+        t.linked_transaction_id
+        for t in transactions
+        if t.linked_transaction_id is not None
+    }
+    partner_map: dict[int, Transaction] = {}
+    if linked_ids:
+        partner_result = await db.execute(
+            select(Transaction).where(
+                Transaction.id.in_(linked_ids),
+                Transaction.org_id == org_id,
+            )
+        )
+        partner_map = {p.id: p for p in partner_result.scalars().all()}
+
     rows: list[ReconciliationRow] = []
     for tx in transactions:
         warning_target = (
@@ -378,6 +420,9 @@ async def get_batch_detail(
                 linked_transaction_id=tx.linked_transaction_id,
                 duplicate_warning=warning_target is not None,
                 duplicate_warning_target=warning_target,
+                is_reciprocal_transfer_leg=is_reciprocal_pair(
+                    tx, partner_map.get(tx.linked_transaction_id)
+                ),
             )
         )
 
@@ -487,7 +532,7 @@ async def _apply_edits(
     * **Category ownership + type compatibility** -- a ``category_id``
       edit routes through ``transaction_service.validate_category_for_type``
       which rejects cross-org and incompatible-type categories with
-      ``ValidationError`` (-> 422 at the wire). We do NOT trust the
+      ``ValidationError`` (-> 400 at the wire). We do NOT trust the
       payload to carry a legitimate ID.
 
     * **TRANSFER guardrail** -- a genuine transfer leg needs the
@@ -929,7 +974,7 @@ async def _reconcile_one(
         raise NotFoundError("Transaction")
     if tx.import_batch_id != batch.id:
         # Spec §3.4 invariant 4: transitions on a transaction that
-        # doesn't belong to ``import_id`` -> 422 (ValidationError).
+        # doesn't belong to ``import_id`` -> 400 (ValidationError).
         raise ValidationError(
             f"transaction {tx.id} does not belong to batch {batch.id}"
         )
@@ -968,6 +1013,81 @@ async def _reconcile_one(
             )
         )
     source_in_cached_balance = contributes_to_cached_balance(tx, source_partner)
+
+    # ── TBD-385: the inbox does not act on a transfer leg ──────────────────
+    #
+    # THE RULE: a reciprocal transfer leg may move only between states that do
+    # NOT change its cached-balance membership. ``MATCHED`` and ``EDITED`` were
+    # already refused (``_apply_match`` guard 2, ``_apply_edits``); this closes
+    # the two that actually move money, leaving exactly {ACCEPTED,
+    # PENDING_REVIEW} -- both membership-neutral. "The inbox never moves the
+    # cached balance of a transfer leg" is therefore true BY CONSTRUCTION here
+    # rather than by audit.
+    #
+    # WHY, and it is not symmetry: a transfer is ONE money movement recorded as
+    # two rows. Skipping one leg reverts its amount out of ``accounts.balance``
+    # while BOTH rows stay outside ``reportable_transaction_filter`` (which
+    # requires ``linked_transaction_id IS NULL``). Net worth steps by the full
+    # leg amount with NO reportable row anywhere to explain it -- and SKIPPED is
+    # terminal, so the user cannot undo it from this screen.
+    #
+    # ⚠ The ticket's premise that ``unpair``-then-skip already reaches this
+    # state is FALSE. ``unpair_transactions`` NULLs BOTH link columns, so the
+    # survivor becomes reportable and the movement is visible. Same balances,
+    # different books. That false equivalence was the entire case for
+    # permitting this.
+    #
+    # ⚠⚠ THIS DOES NOT CLOSE THE STATE, ONLY THIS ROUTE. The same book-shape is
+    # still reachable by SKIP-THEN-PAIR: skip an unlinked imported row (the
+    # revert fires correctly), then pair it on the transactions page --
+    # ``find_match_candidates`` and ``_link_pair`` carry no
+    # ``reconciliation_state`` term, and F4 pins that ABSENCE deliberately,
+    # because refusing to pair a reverted row would strand a mis-skipped row
+    # with delete as its only exit (the TBD-295 closed loop). That route was
+    # examined and left open on purpose; TBD-386 already taught
+    # ``_transfer_collapse_clause`` to render the resulting pair correctly.
+    #
+    # The invariant this guard establishes is therefore exactly as narrow as it
+    # is written: THE INBOX never moves the cached balance of a transfer leg.
+    # Do not read it as "a half-reverted pair cannot exist".
+    #
+    # ⚠ ``is_reciprocal_pair``, never ``linked_transaction_id is not None``.
+    # Mutuality is the discriminator: a STALE ONE-WAY link left by a reconcile
+    # match that was later reopened must stay skippable, and it does, for free,
+    # because this predicate fails CLOSED on a partner that does not link back.
+    # A blanket non-nullness guard refuses that row too (fenced: F1 + F5
+    # together, neither alone).
+    #
+    # ⚠ ``source_partner`` is the instance resolved ABOVE, org-scoped. Do NOT
+    # re-resolve it here: that reopens the documented fail-open trap, and it
+    # would let the guard and the balance bookkeeping disagree about what the
+    # partner is. Costs zero additional queries.
+    #
+    # ⚠ The roster comes from ``REVERTED_RECONCILIATION_STATES``, not a fresh
+    # ``("skipped", "rejected")`` literal -- that module says "one roster, two
+    # names; do NOT fork it into a second literal", and a future reverting
+    # state is then refused automatically.
+    #
+    # Placed BEFORE the payload dispatch and the state flip, so a refusal
+    # leaves no partial write behind.
+    if target_state in REVERTED_RECONCILIATION_STATES and is_reciprocal_pair(
+        tx, source_partner
+    ):
+        await logger.ainfo(
+            "reconcile.transition_refused_transfer_leg",
+            org_id=org_id,
+            transaction_id=tx.id,
+            partner_id=source_partner.id if source_partner else None,
+            target_state=target_state,
+        )
+        # Voice matches its sibling refusal in ``_apply_edits`` deliberately:
+        # no raw id, remedy named. This string is customer-facing -- the inbox
+        # surfaces it through ``extractErrorMessage`` into the global error.
+        raise ValidationError(
+            "Cannot skip or reject a transfer leg from the reconciliation "
+            "inbox; unlink the transfer on the transactions page so both legs "
+            "stay in sync."
+        )
 
     # Optional payload application (edits / match) BEFORE the state flip
     # so a payload validation error doesn't leave the row in a half-
@@ -1128,7 +1248,7 @@ async def reconcile_request(
 
     The endpoint shape is "apply many, return summary". Errors propagate
     as exceptions and are mapped by the global handlers (ConflictError
-    -> 409, ValidationError -> 422, NotFoundError -> 404). The
+    -> 409, ValidationError -> 400, NotFoundError -> 404). The
     ``errors`` field on the response stays empty in the success path --
     its presence in the schema is for forward-compat with a future
     best-effort variant.

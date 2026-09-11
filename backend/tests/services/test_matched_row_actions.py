@@ -2033,7 +2033,7 @@ async def test_settled_row_date_edit_mirrors_instead_of_being_refused(db_session
     On a SETTLED row ``_apply_edits`` mirrors ``settled_date = date`` BEFORE
     the ordering check runs, so the two are EQUAL by construction at that
     point. Widening the guard to ``<=`` therefore turns EVERY settled-row date
-    edit from the inbox into a 422 -- and that is the commonest edit shape
+    edit from the inbox into a 400 -- and that is the commonest edit shape
     there; ``ReconcileClient`` sends ``edits.date`` on it.
 
     Kills: ``tx.settled_date <= tx.date``. Both F43 and F43b survive that

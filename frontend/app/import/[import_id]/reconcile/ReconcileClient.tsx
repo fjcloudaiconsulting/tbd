@@ -7,6 +7,7 @@ import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { useMoney } from "@/lib/hooks/use-org-currency";
+import { TRANSFER_LOCKED_TARGETS } from "@/lib/reconcile-transfer-lock";
 import {
   badgeError,
   badgeInfo,
@@ -83,6 +84,26 @@ const ALLOWED_NEXT: Record<ReconciliationState, ReconciliationState[]> = {
   rejected: [],
   skipped: [],
 };
+
+/**
+ * Allowed targets for a row, given its state AND whether it is a transfer leg.
+ *
+ * ⚠ `ALLOWED_NEXT` stays keyed on state alone, deliberately: it is a correct
+ * state machine and it mirrors the server's table. Transfer-leg-ness is not a
+ * state, it is a property of the row, so it is subtracted here rather than
+ * folded into the table -- which would otherwise need doubling.
+ *
+ * A reciprocal leg keeps exactly {accepted} from a pending row and
+ * {pending_review} from an accepted one. Both are membership-neutral, so the
+ * inbox can never move a transfer leg's cached balance. It is never left with
+ * NO action: `accepted` is always reachable from a pending row, which is what
+ * keeps the batch closable.
+ */
+function allowedNext(row: ReconciliationRow): ReconciliationState[] {
+  const base = ALLOWED_NEXT[row.reconciliation_state] ?? [];
+  if (!row.is_reciprocal_transfer_leg) return base;
+  return base.filter((t) => !TRANSFER_LOCKED_TARGETS.includes(t));
+}
 
 // Human-friendly button labels keyed by the TARGET state.
 const ACTION_LABEL: Record<ReconciliationState, string> = {
@@ -635,7 +656,7 @@ function ReconcileRow({
   onAction: (target: ReconciliationState) => void;
 }) {
   const money = useMoney();
-  const nextStates = ALLOWED_NEXT[row.reconciliation_state] ?? [];
+  const nextStates = allowedNext(row);
 
   return (
     <li
@@ -649,6 +670,22 @@ function ReconcileRow({
             <span className={STATE_BADGE[row.reconciliation_state]}>
               {STATE_LABEL[row.reconciliation_state]}
             </span>
+            {row.is_reciprocal_transfer_leg && (
+              /* Non-interactive on purpose: it explains why actions are
+                 missing, it is not an action itself. Unlinking lives on the
+                 transactions page, where the modal that asks for both
+                 replacement categories lives.
+
+                 ⚠ badgeNeutral, not badgeInfo: `matched` and `edited` both map
+                 to badgeInfo in STATE_BADGE and this renders immediately
+                 beside the state badge, so badgeInfo would put two identical
+                 pills side by side. DESIGN.md scopes badges to row-level
+                 STATUS; this is a property of the row, which is what
+                 badgeNeutral is for. */
+              <span className={badgeNeutral} data-testid="transfer-leg-badge">
+                Transfer leg
+              </span>
+            )}
             <span className="text-xs text-text-muted">
               {formatDate(row.date)}
             </span>
@@ -676,6 +713,23 @@ function ReconcileRow({
                 ? ` #${row.duplicate_warning_target}`
                 : ""}
               . Review before accepting.
+            </div>
+          ) : null}
+
+          {/* ⚠ VISIBLE TEXT, not a `title=` tooltip. This sentence is the only
+              place the user is told how to proceed, and a `title` on a
+              non-interactive span is unreachable by keyboard and unreliably
+              announced -- against the WCAG 2.2 AA commitment in PRODUCT.md.
+              Same shape as the duplicate callout directly above: a
+              `role="status"` region whose text is always on screen. */}
+          {row.is_reciprocal_transfer_leg ? (
+            <div
+              className="mt-2 text-xs text-text-secondary"
+              data-testid="transfer-leg-explainer"
+              role="status"
+            >
+              One leg of a transfer. Unlink it on the transactions page to skip
+              or reject it, so both legs stay in sync.
             </div>
           ) : null}
         </div>
