@@ -47,9 +47,11 @@ from app.schemas.reports_query import (
     ReportsQuery,
     TagMatch,
 )
+from app.services import currency_service
 from app.services.transaction_filters import (
     effective_period_date_expr,
     non_reverted_transaction_filter,
+    org_currency_filter,
     reportable_transaction_filter,
 )
 
@@ -270,6 +272,7 @@ def compile_ast_to_query(
     org_id: int,
     dialect_name: str = "mysql",
     overfetch: bool = False,
+    currency_scope: dict | None = None,
 ) -> Select:
     """Compile a validated ``ReportsQuery`` AST into a SQLAlchemy Core
     ``Select`` bound to a single org.
@@ -324,6 +327,26 @@ def compile_ast_to_query(
         stmt = stmt.where(non_reverted_transaction_filter())
     else:
         stmt = stmt.where(reportable_transaction_filter())
+
+    # TBD-325 PR 2. Currency lives only on ``accounts.currency``, and this
+    # compiler builds the transactions source -- whose catalog, alone among the
+    # four sources, exposes NO currency dimension and NO currency filter
+    # (``accounts.py``, ``recurring.py`` and ``networth.py`` all do). So an
+    # unscoped ``SUM(amount)`` here adds EUR to USD unless the user happens to
+    # group by account.
+    #
+    # ⚠ The clause goes on the WHERE, never inside ``_measure_expr``: currency
+    # enters at the GROUP BY / filter level, not at the aggregate. Scoping the
+    # measure would also silently apply to COUNT and AVG, which is a different
+    # question.
+    #
+    # ⚠ This is the SCOPE mechanism, deliberately the weaker one. Partitioning
+    # (the ``credit_utilization.py`` always-group-then-pop pattern) loses no
+    # money and is the right long-term answer for the reports surface; it is
+    # TBD-507, and it is sequenced after this PR because it is a different
+    # shape of change. Scoping ships now so that a report and the dashboard
+    # donut beside it cannot disagree in the meantime.
+    stmt = stmt.where(org_currency_filter(org_id, currency_scope))
 
     for f in ast.filters:
         if f.field is FilterField.TAG_NAME:
@@ -431,8 +454,13 @@ async def execute_query(
         dialect = db.get_bind().dialect.name
     except Exception:
         dialect = "mysql"
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
     stmt = compile_ast_to_query(
-        ast, org_id=org_id, dialect_name=dialect, overfetch=True
+        ast,
+        org_id=org_id,
+        dialect_name=dialect,
+        overfetch=True,
+        currency_scope=currency_scope,
     )
     stmt = _apply_query_timeout(stmt, dialect)
     started = time.perf_counter()
@@ -481,5 +509,17 @@ async def execute_query(
             resolve_truncated_end(ast.sort, ast.dimensions) if truncated else None
         ),
         "query_ms": elapsed_ms,
+        # TBD-325 PR 2. ⚠ SCOPE AND SAY SO. The clause above silently drops a
+        # multi-currency org's non-primary rows, and silent is the one thing
+        # this ticket exists to stop: the numbers become right while the
+        # explanation goes missing. Sankey carries the same declaration through
+        # the same ``QueryMeta.warning`` field, and a reports widget can sit
+        # beside a Sankey widget on one dashboard canvas, so the two must not
+        # differ in whether they admit what was excluded.
+        #
+        # ``None`` when nothing was excluded -- read off the SAME key
+        # ``org_currency_filter`` short-circuits on, so the clause and the
+        # notice can never disagree about whether money went missing.
+        "warning": currency_service.currency_warning(currency_scope),
     }
     return out_rows, meta

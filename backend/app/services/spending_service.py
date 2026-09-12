@@ -49,8 +49,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.billing import BillingPeriod
 from app.models.category import Category
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
+from app.services import currency_service
 from app.services.billing_service import get_current_period, period_spend_window_end
-from app.services.transaction_filters import reportable_transaction_filter
+from app.services.transaction_filters import (
+    org_currency_filter,
+    reportable_transaction_filter,
+)
 
 
 async def resolve_spend_window(
@@ -117,6 +121,7 @@ async def executed_expense_by_category(
     org_id: int,
     p_start: datetime.date,
     window_end: datetime.date,
+    currency_scope: dict | None = None,
 ) -> dict[int, Decimal]:
     """SETTLED reportable EXPENSE in ``[p_start, window_end]``, grouped by the
     row's **own** ``category_id``.
@@ -138,6 +143,18 @@ async def executed_expense_by_category(
     label. Name-grouping merges them into one slice a drilldown cannot open.
     The window is an argument; this function reads no clock — see the module
     docstring, rule 2.
+
+    ``currency_scope`` (TBD-325 PR 2) is a PARAMETER, and that is structural.
+    This function has exactly two callers — ``forecast_service.compute_forecast``
+    and ``compute_spending_by_category`` (the dashboard donut) — and
+    ``forecast_service`` says in terms: *"Do not inline it back: a copy here
+    would drift from the donut with both surfaces' tests still green."*
+    Applying the scope post-hoc in the two callers instead of here re-creates
+    exactly that drift, because nothing would force the two to agree. One
+    derivation, one query, two callers, ONE scope.
+
+    ``None`` means unscoped, which is what every non-period caller and every
+    existing test gets by default.
     """
     result = await db.execute(
         select(
@@ -150,6 +167,7 @@ async def executed_expense_by_category(
             Transaction.settled_date >= p_start,
             Transaction.settled_date <= window_end,
             reportable_transaction_filter(),
+            org_currency_filter(org_id, currency_scope),
         ).group_by(Transaction.category_id)
     )
     return {row[0]: Decimal(str(row[1])) for row in result.all()}
@@ -200,7 +218,14 @@ async def compute_spending_by_category(
         db, org_id, period_start, today=today
     )
 
-    by_category = await executed_expense_by_category(db, org_id, p_start, window_end)
+    # TBD-325 PR 2. Resolved here and passed DOWN into the shared rollup, so
+    # the donut and ``compute_forecast`` scope through the one function rather
+    # than each applying their own filter afterwards.
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+
+    by_category = await executed_expense_by_category(
+        db, org_id, p_start, window_end, currency_scope=currency_scope
+    )
     meta = await load_category_meta(db, org_id, set(by_category))
 
     categories = []
@@ -219,5 +244,6 @@ async def compute_spending_by_category(
         "period_start": p_start.isoformat(),
         "period_end": window_end.isoformat(),
         "executed_expense": str(executed_expense),
+        "currency_scope": currency_scope,
         "categories": categories,
     }

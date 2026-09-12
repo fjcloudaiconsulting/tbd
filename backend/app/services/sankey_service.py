@@ -42,12 +42,16 @@ from app.schemas.reports_query import (
     SankeyQuery,
     SankeyResponse,
 )
+from app.services import currency_service
 from app.services.reports_query_service import (
     _apply_query_timeout,
     _apply_scalar_filter,
     _apply_tag_filter,
 )
-from app.services.transaction_filters import reportable_transaction_filter
+from app.services.transaction_filters import (
+    org_currency_filter,
+    reportable_transaction_filter,
+)
 
 # ── Hub / sentinel node ids ─────────────────────────────────────────────
 # These are the WIRE values emitted in SankeyLink.source / .target.
@@ -78,13 +82,23 @@ async def build_sankey(
         Categories with net amount <= 0 are excluded; an org where all
         income nets to zero also returns empty.
     """
-    # elapsed_ms covers both DB round-trips but excludes Python post-processing
+    # elapsed_ms covers all three DB round-trips but excludes Python post-processing
     # (matches reports_query_service query_ms semantics — clock is not moved).
     started = time.perf_counter()
     try:
         dialect_name = db.get_bind().dialect.name
     except Exception:
         dialect_name = "mysql"
+
+    # TBD-325 PR 2: resolved ONCE for the whole build and threaded into both
+    # aggregations below. ``transactions`` has no currency column -- currency
+    # lives only on ``accounts.currency`` -- so an unscoped Sankey draws a
+    # ribbon whose width is EUR plus USD. There is no FX in the system, so the
+    # only honest answer is to scope to the org's primary currency and SAY SO
+    # in ``meta.warning`` when money was left out.
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+    currency_clause = org_currency_filter(org_id, currency_scope)
+    currency_warning = currency_service.currency_warning(currency_scope)
 
     # ── Income aggregation ──────────────────────────────────────────
     # SUM(amount) grouped by category name for all reportable income rows.
@@ -97,6 +111,7 @@ async def build_sankey(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.INCOME,
             reportable_transaction_filter(),
+            currency_clause,
         )
     )
     income_stmt = _apply_user_filters(income_stmt, query.filters, org_id)
@@ -121,6 +136,7 @@ async def build_sankey(
                 Transaction.org_id == org_id,
                 Transaction.type == TransactionType.EXPENSE,
                 reportable_transaction_filter(),
+                currency_clause,
             )
         )
         expense_stmt = _apply_user_filters(expense_stmt, query.filters, org_id)
@@ -135,6 +151,7 @@ async def build_sankey(
                 Transaction.org_id == org_id,
                 Transaction.type == TransactionType.EXPENSE,
                 reportable_transaction_filter(),
+                currency_clause,
             )
         )
         expense_stmt = _apply_user_filters(expense_stmt, query.filters, org_id)
@@ -155,6 +172,10 @@ async def build_sankey(
             row_count=0,
             truncated=False,
             query_ms=elapsed_ms,
+            # Carried on the EMPTY result too: "no income" may itself be a
+            # consequence of the scope, and that is exactly when the user most
+            # needs to be told money was excluded.
+            warning=currency_warning,
         )
         return SankeyResponse(links=[], meta=meta)
 
@@ -200,11 +221,14 @@ async def build_sankey(
         row_count=pre_fold_income_count + pre_fold_expense_count,
         truncated=False,
         query_ms=elapsed_ms,
+        warning=currency_warning,
     )
     return SankeyResponse(links=links, meta=meta)
 
 
 # ── Internal helpers ─────────────────────────────────────────────────
+
+
 
 
 def _to_float(value) -> float:

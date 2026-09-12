@@ -4,15 +4,29 @@ import Link from "next/link";
 import { AlertCircle, AlertTriangle, Check, RefreshCw } from "lucide-react";
 import { btnSecondary, card } from "@/lib/styles";
 
+import { formatMoney } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface ForecastPlanLike {
   total_planned_expense: string | number;
 }
 
+export interface CurrencyScopeLike {
+  currency: string | null;
+  excluded_currencies: string[];
+  excluded_account_count: number;
+}
+
 export interface ForecastProjectionLike {
   executed_expense: string | number;
   forecast_expense: string | number;
+  /**
+   * TBD-325 PR 2. Which currency the figures above are denominated in, and
+   * what was left out to get them. Arrives IN-BAND on the projection, so both
+   * dashboards receive it for free: each spreads the whole projection object
+   * through to this tile.
+   */
+  currency_scope?: CurrencyScopeLike;
 }
 
 export interface OnTrackTileProps {
@@ -259,6 +273,96 @@ export default function OnTrackTile({
 
   const executedExpense = Number(projection.executed_expense);
   const forecastExpense = Number(projection.forecast_expense);
+
+  // ── TBD-325 PR 2: money was excluded, so there is no verdict to give ──
+  //
+  // ⚠ ONE branch, placed ABOVE the past/current fork deliberately. Both ratio
+  // sites (`isPastPeriod` below, and the current-period one after it) are
+  // downstream of here, so both are covered by this single guard. Duplicating
+  // it into each branch is how the two drift apart.
+  //
+  // ⚠ KEYED ON THE SCOPE, NEVER ON AN AMOUNT. `executedExpense === 0` is a
+  // LEGITIMATE value -- a fully-pending month -- and rendering it as ON TRACK
+  // is a previously reported bug that `on-track-tile.test.tsx` fences. Guarding
+  // on zero re-opens it. Only `excluded_account_count` distinguishes "the scope
+  // deleted your spending" from "nothing has settled yet"; no arithmetic on the
+  // numerator can.
+  //
+  // ⚠ SAFE BY MEASUREMENT, NOT BY CONSTRUCTION. As of 2026-09-12 no API path
+  // produces `excluded_account_count > 0`: account rows are built at exactly
+  // two sites, both guarded, currency is immutable post-create, and legacy
+  // multi-currency orgs backfill to `primary_currency = NULL` (which scopes
+  // nothing). Measured over 13 scenarios and 24 race trials. This branch is
+  // the backstop for the next unguarded insert site -- PR 1 shipped with one
+  // of two doors open and nothing noticed for a month.
+  //
+  // The FIGURES are kept: they are correct for the scoped currency, merely
+  // incomplete. It is the VERDICT that would be a lie, so only the verdict
+  // goes.
+  const scope = projection.currency_scope;
+  if (scope && scope.excluded_account_count > 0) {
+    const excluded = scope.excluded_currencies.join(", ");
+    const n = scope.excluded_account_count;
+    // ⚠ `scoped`, not `money`. `useMoney` resolves through
+    // `deriveOrgCurrency(accounts)`, which returns undefined for a
+    // multi-currency org -- correctly, because at org level there is no single
+    // honest answer. But INSIDE THIS BRANCH there is: every figure here was
+    // computed under `scope.currency`, the server said so in band, and the
+    // sentence below names it. Rendering them bare would leave the tile saying
+    // "Covers your EUR accounts only" directly beneath three unlabelled
+    // numbers, which is the one place the symbol is both knowable and load
+    // bearing. The org-level degradation is untouched everywhere else.
+    const scoped = (v: number) =>
+      scope.currency ? formatMoney(v, scope.currency) : money(v);
+    return (
+      <section
+        className={`${card} p-4 md:p-6`}
+        data-testid="on-track-tile"
+        aria-label="Forecast, partial currency scope"
+      >
+        <header className="mb-4 flex items-center justify-between gap-2">
+          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+            Forecast
+          </span>
+          <span className="text-xs text-text-secondary">
+            {isPastPeriod ? "Past period" : "This period"}
+          </span>
+        </header>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <Stat
+            label="Planned spending"
+            value={scoped(plannedExpense)}
+            sublabel="full month"
+            muted
+          />
+          <Stat
+            label={isPastPeriod ? "Final spent" : "Spent so far"}
+            value={scoped(executedExpense)}
+            sublabel={isPastPeriod ? "final" : "actual today"}
+          />
+          {!isPastPeriod && (
+            <Stat
+              label="Expected spending"
+              value={scoped(forecastExpense)}
+              sublabel="end of month"
+              muted
+            />
+          )}
+        </div>
+        <div
+          className="mt-3 text-xs text-text-secondary"
+          data-testid="on-track-currency-scope"
+          role="status"
+        >
+          Covers your {scope.currency} accounts only. {n}{" "}
+          {n === 1 ? "account" : "accounts"} in {excluded}{" "}
+          {n === 1 ? "is" : "are"} not included, because totals across
+          currencies would be meaningless.
+        </div>
+        <DetailsLink />
+      </section>
+    );
+  }
 
   // Past period: verdict uses actuals (executed_expense), not the projection.
   if (isPastPeriod) {

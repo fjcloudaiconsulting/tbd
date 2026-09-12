@@ -23,9 +23,10 @@ Excluded from reportable aggregates:
 Future-proofed to grow additional reasons (voided, refunded) without
 renaming call sites.
 """
-from sqlalchemy import and_, exists, func, or_
+from sqlalchemy import and_, exists, func, or_, select, true
 from sqlalchemy.orm import aliased
 
+from app.models.account import Account
 from app.models.transaction import Transaction
 
 
@@ -265,3 +266,61 @@ def contributes_to_cached_balance(
     if partner is None or partner.id != tx.linked_transaction_id:
         return True                       # see DIVERGENCE
     return partner.linked_transaction_id == tx.id
+
+
+def org_currency_filter(
+    org_id: int,
+    currency_scope: dict | None,
+    account_id_col=Transaction.account_id,
+):
+    """SQL clause: rows on accounts denominated in the org's primary currency.
+
+    TBD-325 PR 2. ``transactions`` has no currency column -- currency lives
+    only on ``accounts.currency`` -- so every period aggregate currently sums
+    EUR and USD into one unlabelled number.
+
+    Takes the WHOLE ``currency_scope`` dict from
+    ``currency_service.resolve_currency_scope``, not a currency string, because
+    the short-circuit decision must be made in ONE place. Fourteen call sites
+    each picking which key to pass is how half of them end up scoping the 99%
+    path that has nothing to exclude.
+
+    ⚠ The short-circuit is on ``excluded_account_count == 0``, NOT on
+    ``currency is None``. Keying it on NULL-ness only short-circuits the
+    zero-account and legacy-multi-currency orgs; an ORDINARY single-currency
+    org has a non-NULL ``primary_currency``, so the correlated subquery would
+    be emitted on every aggregate in the product to select rows that are all
+    selected anyway. Measured on MySQL 8.4: keying on NULL-ness gave
+    ``compute_forecast`` 13 statements and 2 ``accounts`` references against a
+    baseline of 11 and 0; keying on the count gives 12 and 1, and the one
+    remaining reference is the scope resolution itself, not an aggregate.
+
+    Shape, not just semantics: a CORRELATED SUBQUERY, so the clause is
+    join-free and splats into an existing ``.where()`` exactly like every other
+    helper in this module. The precedent is ``balance_contribution_filter()``
+    above. A ``.join(Account, ...)`` would force all 14 call sites to be
+    restructured and would change the row multiplicity of any statement that
+    already joins.
+
+    ``Transaction.account_id`` is NOT NULL (``models/transaction.py:97-99``),
+    so there is no NULL-safety trap in the ``IN``.
+
+    ⚠ ``currency_scope=None`` returns ``true()`` rather than raising, and that
+    is the whole point: call sites write ``org_currency_filter(org_id, scope)``
+    and nothing else. An earlier cut made the parameter non-optional, which
+    forced ``... if scope else true()`` at every call site -- handing the
+    short-circuit decision back to the fourteen places this function exists to
+    take it away from.
+
+    ``account_id_col`` covers ``RecurringTransaction.account_id`` (also NOT
+    NULL, ``models/recurring.py:36``), so the recurring projection scopes
+    through this same function instead of a second copy of the subquery.
+    """
+    if not currency_scope or not currency_scope["excluded_account_count"]:
+        return true()
+    return account_id_col.in_(
+        select(Account.id).where(
+            Account.org_id == org_id,
+            Account.currency == currency_scope["currency"],
+        )
+    )

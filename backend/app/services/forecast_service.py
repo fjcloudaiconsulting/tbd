@@ -21,11 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.recurring import RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
-from app.services import spending_service
+from app.services import currency_service, spending_service
 from app.services.date_utils import occurrences_in_window
 from app.services.recurring_filters import active_series_filter, remaining_occurrences
 from app.services.transaction_filters import (
     effective_period_date_expr,
+    org_currency_filter,
     reportable_transaction_filter,
 )
 
@@ -95,6 +96,16 @@ async def compute_forecast(
         db, org_id, period_start, today=today
     )
 
+    # TBD-325 PR 2: resolved ONCE per call, threaded into every scoped clause
+    # below, and echoed in-band on the response. ``currency`` is NULL for a
+    # zero-account org and for a legacy multi-currency org (backfilled to
+    # NULL), and ``org_currency_filter`` then returns ``true()`` -- no
+    # ``accounts`` reference is emitted and the plan is unchanged.
+    currency_scope = await currency_service.resolve_currency_scope(
+        db, org_id=org_id
+    )
+    currency_clause = org_currency_filter(org_id, currency_scope)
+
     # ── Executed (settled) — uses settled_date for period assignment ─────
     # Transactions count against the period in which they settled,
     # not when the purchase happened (important for CC late settlements).
@@ -111,6 +122,7 @@ async def compute_forecast(
             Transaction.settled_date >= p_start,
             Transaction.settled_date <= window_end,
             reportable_transaction_filter(),
+            currency_clause,
         )
     ) or Decimal("0")
 
@@ -122,6 +134,7 @@ async def compute_forecast(
             Transaction.settled_date >= p_start,
             Transaction.settled_date <= window_end,
             reportable_transaction_filter(),
+            currency_clause,
         )
     ) or Decimal("0")
 
@@ -136,6 +149,7 @@ async def compute_forecast(
             effective_period_date_expr() >= p_start,
             effective_period_date_expr() <= window_end,
             reportable_transaction_filter(),
+            currency_clause,
         )
     ) or Decimal("0")
 
@@ -147,6 +161,7 @@ async def compute_forecast(
             effective_period_date_expr() >= p_start,
             effective_period_date_expr() <= window_end,
             reportable_transaction_filter(),
+            currency_clause,
         )
     ) or Decimal("0")
 
@@ -181,6 +196,18 @@ async def compute_forecast(
             RecurringTransaction.org_id == org_id,
             active_series_filter(),
             RecurringTransaction.next_due_date <= window_end,
+            # TBD-325 PR 2. ⚠ SCOPED ON THE SELECT, NEVER IN THE LOOP BELOW.
+            # ``RecurringTransaction.account`` (models/recurring.py:89) is a
+            # bare ``relationship()`` and these templates are loaded with no
+            # eager option, so touching ``r.account.currency`` inside the
+            # occurrence walk raises ``MissingGreenlet`` on an AsyncSession --
+            # it CRASHES, it does not degrade to an N+1. Measured 2026-09-12.
+            # ``RecurringTransaction.account_id`` is NOT NULL, so the
+            # correlated subquery is safe here exactly as it is for
+            # ``Transaction``.
+            org_currency_filter(
+                org_id, currency_scope, RecurringTransaction.account_id
+            ),
         )
     )
     recurring_items = list(result.scalars().all())
@@ -245,7 +272,7 @@ async def compute_forecast(
     # rather than two that agree. Do not inline it back: a copy here would
     # drift from the donut with both surfaces' tests still green.
     cat_executed = await spending_service.executed_expense_by_category(
-        db, org_id, p_start, window_end
+        db, org_id, p_start, window_end, currency_scope=currency_scope
     )
 
     # Pending by category
@@ -260,6 +287,7 @@ async def compute_forecast(
             effective_period_date_expr() >= p_start,
             effective_period_date_expr() <= window_end,
             reportable_transaction_filter(),
+            currency_clause,
         ).group_by(Transaction.category_id)
     )
     cat_pending = {row[0]: Decimal(str(row[1])) for row in cat_pend_result.all()}
@@ -308,5 +336,6 @@ async def compute_forecast(
         "forecast_income": str(forecast_income),
         "forecast_expense": str(forecast_expense),
         "forecast_net": str(forecast_income - forecast_expense),
+        "currency_scope": currency_scope,
         "categories": categories,
     }

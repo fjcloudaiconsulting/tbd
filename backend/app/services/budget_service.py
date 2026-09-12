@@ -16,7 +16,7 @@ from app.models.category import Category
 from app.models.forecast_plan import ForecastItemType, ForecastPlan
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.budget import BudgetCreate, BudgetResponse, BudgetUpdate
-from app.services import billing_service
+from app.services import billing_service, currency_service
 from app.services.billing_service import (
     ensure_future_periods,
     period_spend_window_end,
@@ -25,6 +25,7 @@ from app.services.billing_service import (
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.transaction_filters import (
     effective_period_date_expr,
+    org_currency_filter,
     reportable_transaction_filter,
 )
 
@@ -32,6 +33,7 @@ from app.services.transaction_filters import (
 async def _compute_spent(
     db: AsyncSession, org_id: int, master_category_id: int,
     period_start: datetime.date, period_end: datetime.date | None,
+    currency_scope: dict | None = None,
 ) -> Decimal:
     """Sum settled expense transactions for a master category and all its subcategories.
 
@@ -41,6 +43,12 @@ async def _compute_spent(
     this helper runs once per budget row, so deriving the window here would be
     an N+1. Its signature is deliberately unchanged so the derivation stays at
     exactly one altitude per request.
+
+    ``currency_scope`` (TBD-325 PR 2) is a PARAMETER for the same reason
+    ``period_end`` is: this helper runs once per budget row, so resolving the
+    scope here would be an N+1 on a list of budgets. Every entry point below
+    resolves it once and threads it in. ``None`` means unscoped, which is what
+    the existing tests that call this directly get by default.
     """
     sub_ids_result = await db.execute(
         select(Category.id).where(
@@ -66,6 +74,12 @@ async def _compute_spent(
         Transaction.status == TransactionStatus.SETTLED,
         effective_period_date_expr() >= period_start,
         reportable_transaction_filter(),
+        # TBD-325 PR 2. Currency lives only on ``accounts.currency`` --
+        # ``transactions`` has no currency column -- so without this the bar
+        # sums EUR and USD into one unlabelled number. There is no FX in the
+        # system, so the only honest answer is to scope to the org's primary
+        # currency rather than convert.
+        org_currency_filter(org_id, currency_scope),
     )
     # `None` means UNBOUNDED, and after TBD-240 it no longer means "the period
     # is open": an open period with a later period on the roster is bounded at
@@ -146,9 +160,16 @@ async def list_budgets(
     # one `MIN(start_date)` seek per budget.
     window_end = await period_spend_window_end(db, org_id, period, today=today)
 
+    # Hoisted above the loop for the same reason as ``window_end`` (TBD-325
+    # PR 2): the scope is a property of the ORG, not of the budget row, so
+    # resolving it per row would be one extra query per budget.
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+
     responses = []
     for b in budgets:
-        spent = await _compute_spent(db, org_id, b.category_id, period.start_date, window_end)
+        spent = await _compute_spent(
+            db, org_id, b.category_id, period.start_date, window_end, currency_scope
+        )
         responses.append(_to_response(b, spent))
 
     return responses
@@ -201,7 +222,10 @@ async def create_budget(
     await db.refresh(budget, ["category"])
 
     window_end = await period_spend_window_end(db, org_id, period, today=today)
-    spent = await _compute_spent(db, org_id, budget.category_id, period.start_date, window_end)
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+    spent = await _compute_spent(
+        db, org_id, budget.category_id, period.start_date, window_end, currency_scope
+    )
     return _to_response(budget, spent)
 
 
@@ -252,7 +276,10 @@ async def update_budget(
         if period is not None
         else budget.period_end
     )
-    spent = await _compute_spent(db, org_id, budget.category_id, budget.period_start, end)
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+    spent = await _compute_spent(
+        db, org_id, budget.category_id, budget.period_start, end, currency_scope
+    )
     return _to_response(budget, spent)
 
 
@@ -366,8 +393,15 @@ async def transfer_budget(
         else source.period_end
     )
 
-    source_spent = await _compute_spent(db, org_id, source.category_id, source.period_start, end)
-    target_spent = await _compute_spent(db, org_id, target.category_id, target.period_start, end)
+    # ONE resolution serves both rows, exactly like the ``end`` lookup above.
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+
+    source_spent = await _compute_spent(
+        db, org_id, source.category_id, source.period_start, end, currency_scope
+    )
+    target_spent = await _compute_spent(
+        db, org_id, target.category_id, target.period_start, end, currency_scope
+    )
 
     return [_to_response(source, source_spent), _to_response(target, target_spent)]
 

@@ -134,6 +134,19 @@ class ForecastCategoryRow(BaseModel):
     forecast: str
 
 
+class CurrencyScope(BaseModel):
+    """In-band declaration of WHICH currency the money figures are in.
+
+    ``currency`` is None when the org is not single-currency (zero accounts,
+    or a legacy multi-currency org backfilled to NULL); the aggregates are
+    then unscoped, exactly as before TBD-325 PR 2.
+    """
+
+    currency: Optional[str] = None
+    excluded_currencies: list[str] = []
+    excluded_account_count: int = 0
+
+
 class ForecastResponse(BaseModel):
     """Full period forecast: settled + pending + upcoming recurring.
 
@@ -154,4 +167,5 @@ class ForecastResponse(BaseModel):
     forecast_income: str
     forecast_expense: str
     forecast_net: str
+    currency_scope: CurrencyScope
     categories: list[ForecastCategoryRow]

@@ -35,7 +35,7 @@ from app.schemas.settings import (
     PlanningToolResponse,
     PlanningToolToggle,
 )
-from app.services import audit_service, billing_service
+from app.services import audit_service, billing_service, currency_service
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.feature_gate import (
     Feature,
@@ -48,7 +48,10 @@ from app.services.settings_service import (
     FORECAST_GRANULARITY_VALUES,
     FORECAST_INPUT_GRANULARITY_KEY,
 )
-from app.services.transaction_filters import reportable_transaction_filter
+from app.services.transaction_filters import (
+    org_currency_filter,
+    reportable_transaction_filter,
+)
 
 logger = structlog.stdlib.get_logger()
 
@@ -641,6 +644,7 @@ async def _roster_settled_net(
     org_id: int,
     start: datetime.date,
     counting_through: datetime.date | None,
+    currency_scope: dict | None = None,
 ) -> Decimal:
     """D7's reportable settled net: income minus expense.
 
@@ -670,6 +674,20 @@ async def _roster_settled_net(
         reportable_transaction_filter(),
         Transaction.status == TransactionStatus.SETTLED,
         Transaction.settled_date >= start,
+        # TBD-325 PR 2. ⚠ This lives in a ROUTER, which is why the original
+        # sweep -- scoped to ``app/services/`` -- did not see it. It is the
+        # only org-wide ``Transaction.amount`` aggregate in ``app/`` that is
+        # neither per-account nor already currency-partitioned.
+        #
+        # Unscoped it renders "Net +1,234.00" per period on
+        # ``/settings/organization``, summing EUR and USD, labelled with the
+        # org currency, beside a dashboard that IS scoped. That is precisely
+        # the "two surfaces a user can compare must not disagree" rule the
+        # rest of this PR is built on.
+        #
+        # ``currency_scope`` is a parameter because this helper runs once per
+        # roster ROW; resolving inside would be one extra query per period.
+        org_currency_filter(org_id, currency_scope),
     )
     if counting_through is not None:
         stmt = stmt.where(Transaction.settled_date <= counting_through)
@@ -761,6 +779,11 @@ async def get_billing_period_roster(
     # LAST ones and the slice needs no re-sorting at all.
     displayed = in_window[-ROSTER_DISPLAY_CAP:] if truncated else in_window
 
+    # TBD-325 PR 2: hoisted ABOVE the loop. ``_roster_settled_net`` runs once
+    # per displayed period, so resolving inside it would be one extra query per
+    # row for a value that is a property of the ORG.
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+
     periods: list[RosterPeriod] = []
     for i in displayed:
         row = roster.rows[i]
@@ -784,7 +807,11 @@ async def get_billing_period_roster(
                 settled_net=str(
                     (
                         await _roster_settled_net(
-                            db, org_id, row.start_date, counting_through
+                            db,
+                            org_id,
+                            row.start_date,
+                            counting_through,
+                            currency_scope,
                         )
                     ).quantize(Decimal("0.01"))
                 ),

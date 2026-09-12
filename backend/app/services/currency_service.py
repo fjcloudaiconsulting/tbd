@@ -28,10 +28,11 @@ accepting a code that is not a currency, is the failure this table prevents.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
+from app.models.user import Organization
 from app.services.exceptions import ConflictError
 
 # ISO 4217 codes a consumer bank account can actually be denominated in.
@@ -137,6 +138,34 @@ async def assert_org_currency_allows(
     # A UNIQUE constraint cannot express this rule: it is "at most one DISTINCT
     # currency per org", not "one row per org". A generated column or a trigger
     # could, and would be a stronger guarantee if this ever needs one.
+    # ⚠ TBD-508 MITIGATION: LOCK THE ORG ROW FIRST. This is a lock-ORDER fix,
+    # not decoration.
+    #
+    # The ``FOR UPDATE`` below takes a GAP lock when the org has no accounts
+    # (an empty range), and a gap lock conflicts with the other transaction's
+    # insert-intention lock. Two concurrent ``POST /accounts`` on a fresh org
+    # therefore deadlock: MySQL error 1213, and the loser gets a 500. Measured
+    # 2026-09-12 on MySQL 8.4.11 -- 3 of 12 concurrent trials before this PR,
+    # and 6 of 12 with PR 2's ``UPDATE organizations`` added to the same
+    # transaction, because that second exclusive lock widens the window.
+    #
+    # Taking the ``organizations`` row lock FIRST gives every writer on this
+    # path the same order (organizations -> accounts), which is what removes
+    # the inversion. It also happens to be the row this function goes on to
+    # UPDATE, so it is a lock we need regardless.
+    #
+    # ⚠ AIOSQLITE CANNOT SEE ANY OF THIS. It ignores ``with_for_update()``,
+    # has no gap locks and no error 1213, and every backend shard runs on it --
+    # which is exactly why the deadlock shipped in PR 1 unnoticed. The suite
+    # passing is not evidence this is fixed; the measurement is. Full fix
+    # (retry vs. re-ordering, and where a fence for it can even live) is
+    # TBD-508.
+    await db.execute(
+        select(Organization.id)
+        .where(Organization.id == org_id)
+        .with_for_update()
+    )
+
     existing = (
         await db.execute(
             select(Account.currency)
@@ -149,6 +178,18 @@ async def assert_org_currency_allows(
     if existing is None:
         # First account in the org: nothing to disagree with. Every supported
         # currency must remain reachable here, or this ships a EUR-only product.
+        #
+        # TBD-325 PR 2: THE ONLY WRITER of ``organizations.primary_currency``.
+        # It lands here, inside the gap lock taken above, because that lock is
+        # what makes "this is the first account" true for the duration of the
+        # write. A second writer (a settings endpoint, an admin field) would
+        # be a second source of truth for a fact ``accounts.currency`` already
+        # holds -- the exact defect this ticket removes.
+        await db.execute(
+            update(Organization)
+            .where(Organization.id == org_id)
+            .values(primary_currency=normalise_currency(currency))
+        )
         return
 
     if normalise_currency(existing) != normalise_currency(currency):
@@ -158,3 +199,96 @@ async def assert_org_currency_allows(
             f"because totals across currencies would be meaningless. "
             f"Create the account in {normalise_currency(existing)}."
         )
+
+
+async def resolve_currency_scope(db: AsyncSession, *, org_id: int) -> dict:
+    """The in-band scope declaration for every scoped aggregate response.
+
+    ``{currency, excluded_currencies, excluded_account_count}`` -- THREE keys.
+
+    ONE query (a LEFT JOIN of the org row onto its accounts, grouped), resolved
+    ONCE per call and threaded through, so a response can never carry two
+    different answers and the cost is one statement, not two.
+
+    IN-BAND rather than client-derived because the deciding consumer is
+    ``ai_forecast_refine_service``, which consumes ``compute_forecast``
+    service-to-service with the live session: no HTTP response, no React tree,
+    so a client-derived banner cannot reach it by construction.
+
+    ⚠ These three keys ARE the wire contract (``schemas/forecast.CurrencyScope``)
+    and nothing else may join them. A fourth, internal-only key was tried and
+    ``test_response_model_validates_and_preserves_wire_shape`` caught it on the
+    response-model round-trip -- correctly. The predicate takes the whole dict
+    and decides for itself; see ``transaction_filters.org_currency_filter``.
+    """
+    rows = (
+        await db.execute(
+            select(Organization.primary_currency, Account.currency,
+                   func.count(Account.id))
+            .select_from(Organization)
+            .outerjoin(Account, Account.org_id == Organization.id)
+            .where(Organization.id == org_id)
+            .group_by(Organization.primary_currency, Account.currency)
+        )
+    ).all()
+    # ⚠ NORMALISE BOTH SIDES. An earlier cut normalised only ``code`` and
+    # compared against a RAW ``primary_currency``, which is a live defect the
+    # moment a legacy row is lowercase: migration 081 backfills
+    # ``MIN(a.currency)`` off a column that was FREE TEXT before PR 1, so an
+    # org holding a single ``'eur'`` account gets ``primary_currency = 'eur'``,
+    # and ``normalise_currency('eur') != 'eur'`` is TRUE. That org then reports
+    # ITSELF as excluded: the tile drops its verdict and prints "Covers your
+    # eur accounts only. 1 account in eur is not included", the Sankey emits a
+    # multi-currency warning for one currency, and every aggregate grows the
+    # subquery the short-circuit exists to avoid. Measured: 6 of 7 statements.
+    #
+    # ⚠ It is UNRECOVERABLE through the product: ``accounts.currency`` is
+    # immutable post-create and ``primary_currency``'s single writer only fires
+    # on a zero-account org. Only direct SQL repairs it.
+    #
+    # The migration now uppercases too, so this is defence in depth rather than
+    # the sole guard -- deliberately, because "production is all EUR today" is
+    # a DATA property being used to excuse a CODE property, which is the exact
+    # shape this repo has been burned by before.
+    org_currency = (
+        normalise_currency(rows[0][0]) if rows and rows[0][0] else None
+    )
+    excluded = [
+        (code, n)
+        for _, code, n in rows
+        if code is not None
+        and org_currency is not None
+        and normalise_currency(code) != org_currency
+    ]
+    count = sum(n for _, n in excluded)
+    return {
+        "currency": org_currency,
+        "excluded_currencies": sorted(code for code, _ in excluded),
+        "excluded_account_count": count,
+    }
+
+
+def currency_warning(currency_scope: dict) -> str | None:
+    """Non-blocking notice that money was left out of an aggregate (TBD-325 PR 2).
+
+    ⚠ ONE string, THREE consumers (sankey, reports, and any future scoped
+    surface). It lives here rather than beside any one of them because
+    ``sankey_service`` already imports from ``reports_query_service``, so a
+    copy in either would be a circular import -- and two copies of a
+    user-facing sentence drift.
+
+    ``None`` when nothing was excluded, which is the 99% path -- the same
+    short-circuit ``org_currency_filter`` makes, read off the same key so the
+    two can never disagree. Voice matches ``reports/sources/networth.py``'s
+    multi-currency warning: state what is shown, then why, in one sentence.
+    """
+    count = currency_scope["excluded_account_count"]
+    if not count:
+        return None
+    accounts = "account" if count == 1 else "accounts"
+    others = ", ".join(currency_scope["excluded_currencies"])
+    return (
+        f"Multiple currencies held; showing {currency_scope['currency']} only "
+        f"({count} {accounts} in {others} excluded, because currencies are "
+        "never summed)."
+    )
