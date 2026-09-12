@@ -121,6 +121,63 @@ describe("RecurringPage — ?recurring_id deep link (TBD-316)", () => {
     await waitFor(() => expect(highlighted()).toEqual(["recurring-row:Row 28", "recurring-card:Row 28"]));
   });
 
+  // FENCE: the jump honours the PERSISTED sort and page size. Rows arrive in
+  // reverse, sort by name at 10 per page puts Row 28 on page 3. Kills a
+  // hard-coded page size of 25 (page 2) and an index taken from the unsorted
+  // list (page 1). Also the only scroll assertion for a target off page 1, so
+  // it kills a scroll effect that runs on mount only.
+  it("uses the persisted sort and page size, and scrolls once the page is open", async () => {
+    window.localStorage.setItem(
+      "pfv:sort:recurring:active",
+      JSON.stringify({ sortField: "description", sortDir: "asc", pageSize: 10 }),
+    );
+    const rows = Array.from({ length: 30 }, (_, i) =>
+      rec({
+        id: i + 1,
+        description: `Row ${String(i + 1).padStart(2, "0")}`,
+        next_due_date: `2026-01-${String(30 - i).padStart(2, "0")}`,
+      }),
+    ).reverse();
+    searchParamsState.value = new URLSearchParams("recurring_id=28");
+    mockApiWith(rows);
+    render(<RecurringPage />);
+    await waitFor(() => expect(highlighted()).toEqual(["recurring-row:Row 28", "recurring-card:Row 28"]));
+    await waitFor(() =>
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "auto" }),
+    );
+  });
+
+  // FENCE: kills dropping the once-guard. At 10 per page, re-sorting resets to
+  // page 1; without the guard the target's new position (16th by amount, page
+  // 2) re-jumps.
+  it("re-sorting after the jump does not jump again", async () => {
+    window.localStorage.setItem(
+      "pfv:sort:recurring:active",
+      JSON.stringify({ sortField: "next_due_date", sortDir: "asc", pageSize: 10 }),
+    );
+    const rows = Array.from({ length: 30 }, (_, i) => {
+      const n = i + 1;
+      const amount = n === 28 ? 16 : n === 16 ? 28 : n;
+      return rec({
+        id: n,
+        amount,
+        description: `Row ${String(n).padStart(2, "0")}`,
+        next_due_date: `2026-01-${String(n).padStart(2, "0")}`,
+      });
+    });
+    searchParamsState.value = new URLSearchParams("recurring_id=28");
+    mockApiWith(rows);
+    render(<RecurringPage />);
+    await waitFor(() => expect(highlighted()).toContain("recurring-row:Row 28"));
+
+    const table = screen.getByTestId("recurring-active-table");
+    fireEvent.click(within(table).getByRole("button", { name: /^Amount/ }));
+    await waitFor(() =>
+      expect(within(table).getAllByTestId("recurring-row")[0]).toHaveAttribute("data-description", "Row 01"),
+    );
+    expect(highlighted()).toEqual([]);
+  });
+
   // FENCE: kills deriving the page from the target on every render, which
   // would trap the user on the target's page.
   it("the jump happens once: the user can page away afterwards", async () => {
@@ -157,7 +214,9 @@ describe("RecurringPage — ?recurring_id deep link (TBD-316)", () => {
     ).toContain("ring-accent");
   });
 
-  // GUARD: an unknown or malformed id is the plain list, with no error.
+  // GUARD: an unknown or malformed id is the plain list, with no error. Most of
+  // these match no row whatever the parse; only "2.5" discriminates (a
+  // `parseInt` would highlight Beta).
   it.each(["999", "abc", "0", "-2", "2.5"])("recurring_id=%s: plain list, nothing highlighted", async (raw) => {
     searchParamsState.value = new URLSearchParams(`recurring_id=${raw}`);
     mockApiWith(THREE);
