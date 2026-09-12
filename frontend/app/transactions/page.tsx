@@ -19,7 +19,9 @@ import { useAccounts } from "@/lib/hooks/use-accounts";
 import { useCategories } from "@/lib/hooks/use-categories";
 import { useBillingPeriods } from "@/lib/hooks/use-billing-periods";
 import CategorySelect from "@/components/ui/CategorySelect";
-import type { Account, BillingPeriod, Category, Transaction } from "@/lib/types";
+import type { Account, BillingPeriod, Category, RecurringTransaction, Transaction } from "@/lib/types";
+import { seriesRunning } from "@/lib/recurring";
+import useSWR from "swr";
 
 // Stable empty-array fallbacks so a still-loading SWR ref (data === undefined)
 // yields the same reference across renders, keeping memo/callback deps stable.
@@ -322,6 +324,18 @@ function TransactionsPageContent() {
 
   // Edit
   const [editingId, setEditingId] = useState<number | null>(null);
+  // TBD-318: the series pointer says the series is still running, and the row
+  // carries only `recurring_id`. The state lives on the template, fetched only
+  // while a recurring row is being edited. Unknown (loading, failed, missing)
+  // reads as not running: the pointer is help text, never a false instruction.
+  const editingRecurringId =
+    transactions.find((t) => t.id === editingId)?.recurring_id ?? null;
+  const { data: recurringData } = useSWR<RecurringTransaction[]>(
+    refsEnabled && editingRecurringId !== null ? "/api/v1/recurring" : null,
+    () => apiFetch<RecurringTransaction[]>("/api/v1/recurring"),
+  );
+  const editingSeries = recurringData?.find((r) => r.id === editingRecurringId);
+  const editingSeriesRunning = !!editingSeries && seriesRunning(editingSeries);
   const [editDesc, setEditDesc] = useState("");
   const [editAmount, setEditAmount] = useState("");
   const [editType, setEditType] = useState<"income" | "expense">("expense");
@@ -1685,6 +1699,7 @@ function TransactionsPageContent() {
                                       (`/recurring` reads no search params), so
                                       the pointer is to the page. Mirrored in the
                                       mobile card below. */}
+                                  {editingSeriesRunning && (
                                   <p
                                     className="text-[11px] text-text-muted"
                                     data-testid={`edit-recurring-series-hint-${tx.id}`}
@@ -1699,6 +1714,7 @@ function TransactionsPageContent() {
                                     </Link>
                                     .
                                   </p>
+                                  )}
                                 </div>
                               ) : (
                                 <div className="flex flex-wrap items-center gap-3">
@@ -2227,6 +2243,7 @@ function TransactionsPageContent() {
                                     {/* TBD-277 -- MOBILE twin of the series
                                         pointer in the desktop row above. Same
                                         copy, same tokens, same gate. */}
+                                    {editingSeriesRunning && (
                                     <p
                                       className="text-[11px] text-text-muted"
                                       data-testid={`edit-recurring-series-hint-mobile-${tx.id}`}
@@ -2241,6 +2258,7 @@ function TransactionsPageContent() {
                                       </Link>
                                       .
                                     </p>
+                                    )}
                                   </div>
                                 ) : (
                                   <div className="flex flex-col gap-2">

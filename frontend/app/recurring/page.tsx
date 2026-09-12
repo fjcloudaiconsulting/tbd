@@ -21,6 +21,7 @@ import {
 import { SORT_KEY_RECURRING } from "@/lib/hooks/persisted-keys";
 import { btnSecondary, card, cardHeader, cardTitle, error as errorCls, success as successCls, pageTitle } from "@/lib/styles";
 import type { RecurringTransaction } from "@/lib/types";
+import { instalmentDone } from "@/lib/recurring";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 
 const FREQ_LABELS: Record<string, string> = {
@@ -42,10 +43,6 @@ const FREQ_LABELS: Record<string, string> = {
 function instalmentLabel(r: RecurringTransaction): string | null {
   if (r.occurrence_count == null) return null;
   return `${r.occurrences_elapsed} of ${r.occurrence_count}`;
-}
-
-function instalmentDone(r: RecurringTransaction): boolean {
-  return r.occurrence_count != null && r.occurrences_elapsed >= r.occurrence_count;
 }
 
 // Sort field identifiers for the recurring tables.
