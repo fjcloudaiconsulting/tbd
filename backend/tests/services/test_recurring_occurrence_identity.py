@@ -13,9 +13,9 @@ Every assertion here is over SETS OF KEYS wherever a public surface exposes
 per-occurrence dates. Two surfaces were checked, not assumed:
 
   * ``compute_account_balance_forecast`` emits ``recurring_lines`` per ACCOUNT,
-    each ``{"amount", "date"}`` -- a date but NO ``recurring_id``. Every fixture
-    therefore puts at most ONE template on each account, and ``_projected``
-    maps account -> template to rebuild the key;
+    each ``{"amount", "date"}`` -- a date but NO ``recurring_id``. Fixtures
+    therefore put one template on each account, or give templates sharing an
+    account distinct amounts, and ``_projected`` rebuilds the key from that;
   * ``compute_forecast`` emits totals and a per-CATEGORY breakdown only. No
     dates at all, so it is used for ``forecast_net`` and nothing else.
 
@@ -168,7 +168,10 @@ async def _seed_on_grid(db: AsyncSession, today: datetime.date) -> dict:
     """
     p_start = _safe_month_anchor(today - datetime.timedelta(days=10))
     seed = await _seed(db, open_start=p_start)
-    assert current_cycle_window(p_start.day, today) == seed["p1"]
+    # ``pytest.fail``, not ``assert``: X1 is ``xfail(raises=AssertionError)``,
+    # and a broken fixture must FAIL it, never satisfy it.
+    if current_cycle_window(p_start.day, today) != seed["p1"]:
+        pytest.fail(f"cycle window drifted from P1 {seed['p1']}")
     return seed
 
 
@@ -206,9 +209,13 @@ async def _reload(db: AsyncSession, template_id: int) -> RecurringTransaction:
 
 def _no_dupes(keys: list[Key]) -> set[Key]:
     """A set would silently collapse a DOUBLE count onto one key, which is the
-    very defect several fences exist to see. Refuse duplicates first."""
+    very defect several fences exist to see. Refuse duplicates first.
+
+    ``pytest.fail`` rather than ``assert`` for the reason in ``_seed_on_grid``.
+    """
     dupes = [k for k, n in Counter(keys).items() if n > 1]
-    assert not dupes, f"duplicated occurrence keys: {dupes}"
+    if dupes:
+        pytest.fail(f"duplicated occurrence keys: {dupes}")
     return set(keys)
 
 
@@ -222,13 +229,15 @@ async def _row_keys(db: AsyncSession, org_id: int) -> set[Key]:
 
 
 async def _projected(
-    db: AsyncSession, seed: dict, today: datetime.date, owners: dict[int, int],
+    db: AsyncSession, seed: dict, today: datetime.date,
+    owners: dict[int, int | dict[Decimal, int]],
     periods: tuple[str, ...] = ("p1", "p2"),
 ) -> set[Key]:
     """Unmaterialised keys, read off ``recurring_lines`` over the given periods.
 
-    ``owners`` maps account_id -> the ONE template on it. A line on an account
-    with no owner is a KeyError, not a silent skip.
+    ``owners`` maps account_id -> the ONE template on it, or, where two
+    templates share an account (F5), -> ``{amount: template_id}`` with distinct
+    amounts. A line nobody owns is a KeyError, not a silent skip.
     """
     keys: list[Key] = []
     for name in periods:
@@ -237,9 +246,10 @@ async def _projected(
         )
         for acct in fc["accounts"]:
             for line in acct["recurring_lines"]:
-                keys.append(
-                    (owners[acct["account_id"]], datetime.date.fromisoformat(line["date"]))
-                )
+                owner = owners[acct["account_id"]]
+                if isinstance(owner, dict):
+                    owner = owner[abs(Decimal(line["amount"]))]
+                keys.append((owner, datetime.date.fromisoformat(line["date"])))
     return _no_dupes(keys)
 
 
@@ -333,36 +343,66 @@ async def test_f1_generation_partitions_keys_for_overdue_monthly_and_weekly(db_s
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_f2a_amount_edit_leaves_every_key_unchanged(db_session):
-    """FENCE. Materialised and projected keys are identical across an amount edit.
+    """FENCE. Amount is not part of the key: a row AT the frontier still owns it.
 
-    Wrong implementation killed: an edit path that re-anchors the frontier on a
-    non-schedule edit (``next_due_date = today``). ``today`` is provably OFF
-    the weekly grid here, so the projected keys move.
+    The source row sits ON the frontier (promote with ``next_due_date ==
+    tx.date == p_start``) and carries the OLD amount. The amount is edited
+    BEFORE anything is projected or generated after it, so both probes are
+    genuinely consulted with a row whose amount no longer matches the template.
+
+    Wrong implementations killed:
+      * an amount-in-the-key probe in generation (``Transaction.amount ==
+        r.amount``) -- the source row no longer matches, and ``p_start`` is
+        created a second time (``_row_keys`` refuses duplicates);
+      * the same probe in the balance forecast -- the source row's key is
+        projected on top of the row;
+      * an edit path that re-anchors the frontier on a non-schedule edit
+        (``next_due_date = today``) -- ``today`` is provably OFF the weekly
+        grid, so the projected keys move.
     """
     today = datetime.date.today()
     seed = await _seed_on_grid(db_session, today)
     p_start, _ = seed["p1"]
     assert (today - p_start).days % 7 != 0   # today is off-grid: discriminating
-    t = await _add(db_session, _template(seed, next_due_date=p_start))
-    owners = {seed["account_a"]: t.id}
-
-    await recurring_service.generate_due_transactions(
-        db_session, seed["org_id"], today=today
+    src = Transaction(
+        org_id=seed["org_id"], account_id=seed["account_a"],
+        category_id=seed["cat_id"], description="rent",
+        amount=Decimal("10.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=p_start, settled_date=p_start,
     )
+    db_session.add(src)
+    await db_session.commit()
+    promoted = await transaction_service.promote_to_recurring(
+        db_session, seed["org_id"], src.id,
+        PromoteToRecurringRequest(frequency="weekly", next_due_date=p_start),
+        today=today,
+    )
+    tid = promoted.recurring_id
+    assert (await _reload(db_session, tid)).next_due_date == p_start   # AT the frontier
+    owners = {seed["account_a"]: tid}
+    src_key = (tid, p_start)
+
     rows_before = await _row_keys(db_session, seed["org_id"])
+    assert rows_before == {src_key}
     proj_before = await _projected(db_session, seed, today, owners)
-    assert rows_before and proj_before
+    assert src_key not in proj_before and proj_before
 
     await recurring_service.update_recurring(
-        db_session, seed["org_id"], t.id,
+        db_session, seed["org_id"], tid,
         RecurringUpdate(amount=Decimal("25.00")), today=today,
     )
+    assert (await _reload(db_session, tid)).next_due_date == p_start
+    proj_edited = await _projected(db_session, seed, today, owners)
+    assert proj_edited == proj_before
+
     await recurring_service.generate_due_transactions(
         db_session, seed["org_id"], today=today
     )
-
-    assert await _row_keys(db_session, seed["org_id"]) == rows_before
-    assert await _projected(db_session, seed, today, owners) == proj_before
+    rows = await _row_keys(db_session, seed["org_id"])
+    after = await _projected(db_session, seed, today, owners)
+    assert rows_before <= rows
+    assert proj_before == (rows - rows_before) | after
+    assert not rows & after
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -376,9 +416,13 @@ async def test_f2b_frontier_moved_forward_skips_keys_for_good(db_session):
     generated. The two skipped occurrences are gone: the frontier consumed them
     without a row, and the key only identifies what the walk still reaches.
 
+    ⚠ This does NOT distinguish key designs. The ruling says a frontier edit
+    invalidates unmaterialised keys under ANY key choice, so an ordinal or a
+    stored key would behave identically here. It fences the edit's
+    propagation, nothing more.
+
     Wrong implementation killed: the ``next_due_date`` write not reaching the
-    frontier (standing in for any stored or cached key set that outlives the
-    frontier edit) -- the skipped keys are still projected and then created.
+    frontier -- the skipped keys are still projected and then created.
     """
     today = datetime.date.today()
     seed = await _seed_on_grid(db_session, today)
@@ -415,12 +459,14 @@ async def test_f2d_frequency_change_drops_old_unmaterialised_keys(db_session):
 
     Weekly, generated through P1, then switched to monthly. P2 held four or
     five weekly keys; afterwards it holds exactly the monthly walk from the
-    unchanged frontier, and none of the discarded weekly dates survive under
-    another guise.
+    unchanged frontier.
 
-    Wrong implementation killed: the frequency write not reaching the walk
-    (standing in for a stored key set that is not invalidated) -- the weekly
-    keys are still projected.
+    ⚠ This does NOT distinguish key designs: the ruling says a frequency edit
+    invalidates unmaterialised keys under ANY key choice. It fences that the
+    edit propagates to the walk and leaves materialised rows alone.
+
+    Wrong implementation killed: the frequency write not reaching the walk --
+    the weekly keys are still projected.
     """
     today = datetime.date.today()
     seed = await _seed_on_grid(db_session, today)
@@ -448,10 +494,8 @@ async def test_f2d_frequency_change_drops_old_unmaterialised_keys(db_session):
         (t.id, d)
         for d in occurrences_in_window(frontier, Frequency.MONTHLY, p2_start, p2_end)
     }
-    discarded = proj_before - proj_after
-    assert len(discarded) >= 3            # anti-vacuity: the weekly tail was real
-    assert not discarded & proj_after
-    assert len(proj_after) < len(proj_before)
+    # Anti-vacuity: the weekly tail in P2 was real and is gone.
+    assert len(proj_before - proj_after) >= 3
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -468,7 +512,10 @@ async def test_f3_deleted_row_is_not_resurrected(db_session):
       * ``delete_transaction`` decrementing ``occurrences_elapsed`` -- the
         counter moves;
       * ``_advance_frontier`` not spending on the CREATE branch -- the counter
-        after the first run is not the number of occurrences walked.
+        after the first run is not the number of occurrences walked;
+      * ``forecast_service`` walking from the period start instead of the
+        frontier (so "not a row" reads as "still owed") -- the deleted expense
+        is re-projected and ``forecast_net`` does not rise by its amount.
     """
     today = datetime.date.today()
     seed = await _seed_on_grid(db_session, today)
@@ -485,11 +532,14 @@ async def test_f3_deleted_row_is_not_resurrected(db_session):
 
     victim_key = (t.id, p_start + WEEK)
     assert victim_key in rows_before
-    victim_id = await db_session.scalar(
-        select(Transaction.id).where(
+    victim = (await db_session.execute(
+        select(Transaction).where(
             Transaction.recurring_id == t.id, Transaction.date == victim_key[1]
         )
-    )
+    )).scalar_one()
+    assert victim.type == TransactionType.EXPENSE
+    victim_id, victim_amount = victim.id, victim.amount
+    net_pre_delete = await _net(db_session, seed["org_id"], today)
     await transaction_service.delete_transaction(db_session, seed["org_id"], victim_id)
 
     elapsed = (await _reload(db_session, t.id)).occurrences_elapsed
@@ -497,6 +547,9 @@ async def test_f3_deleted_row_is_not_resurrected(db_session):
     proj_1 = await _projected(db_session, seed, today, owners)
     assert victim_key not in proj_1
     net_1 = await _net(db_session, seed["org_id"], today)
+    # The deleted expense LEAVES the forecast. A walk that re-projects it keeps
+    # the net where it was before the delete.
+    assert net_1 == net_pre_delete + victim_amount
 
     res = await recurring_service.generate_due_transactions(
         db_session, seed["org_id"], today=today
@@ -560,17 +613,25 @@ async def test_f4_month_end_keys_follow_the_iterated_walk(db_session):
 async def test_f5_linked_row_at_the_frontier_is_neither_duplicated_nor_projected(
     db_session,
 ):
-    """FENCE. A row already dated ON the frontier owns that key.
+    """FENCE. A row already dated ON the frontier owns that key -- and ONLY that key.
 
     The promote path produces it: ``next_due_date == tx.date``, the source row
-    SETTLED and linked. Weekly so the grid stays inside P1 ∪ P2. Promote floors
-    at the WALL-CLOCK today, so ``today`` here is the real date, injected.
+    SETTLED and linked. A SECOND template ("gym", distinct amount) sits on the
+    SAME account with its frontier on the SAME date and no row, which is what
+    separates ``(recurring_id, date)`` from a coarser key (the sibling of
+    ``test_forecast_overdue_recurring.py::test_f21_...`` for the other two
+    probe copies). Weekly so both grids stay inside P1 ∪ P2. ``today`` is
+    injected into promote like everything else.
 
     Wrong implementations killed:
       * generation's probe removed, or status-filtered to PENDING -- the source
         row's key is created a second time (``_row_keys`` refuses duplicates);
+      * generation's probe keyed on date (or account + date) alone -- gym's
+        occurrence on that date is never created;
       * the balance forecast's probe removed, or status-filtered to PENDING --
-        the source row's key is projected on top of the row.
+        the source row's key is projected on top of the row;
+      * the balance forecast's probe keyed on date alone -- gym's owed
+        occurrence is suppressed from the projection.
 
     No AST fence: it is dodged by ``and_``/``tuple_`` and was rejected.
     """
@@ -592,14 +653,20 @@ async def test_f5_linked_row_at_the_frontier_is_neither_duplicated_nor_projected
     )
     tid = promoted.recurring_id
     assert (await _reload(db_session, tid)).next_due_date == today   # AT the frontier
-    owners = {seed["account_a"]: tid}
+    gym = await _add(db_session, _template(
+        seed, description="gym", amount=Decimal("7.00"), next_due_date=today,
+    ))
+    owners = {seed["account_a"]: {Decimal("10"): tid, Decimal("7"): gym.id}}
     src_key = (tid, today)
+    gym_key = (gym.id, today)
 
     rows_before = await _row_keys(db_session, seed["org_id"])
     assert rows_before == {src_key}
     before = await _projected(db_session, seed, today, owners)
     assert src_key not in before
+    assert gym_key in before                  # same account, same date, still owed
     assert (tid, today + WEEK) in before      # the rest of the grid IS projected
+    net_before = await _net(db_session, seed["org_id"], today)
 
     await recurring_service.generate_due_transactions(
         db_session, seed["org_id"], today=today
@@ -609,8 +676,10 @@ async def test_f5_linked_row_at_the_frontier_is_neither_duplicated_nor_projected
     created = rows - rows_before
 
     assert src_key in rows
+    assert gym_key in created
     assert before == created | after
     assert not rows & after
+    assert await _net(db_session, seed["org_id"], today) == net_before
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -642,17 +711,24 @@ async def test_x1_rewind_onto_generated_date_double_spends_elapsed(db_session):
         seed, frequency="monthly", next_due_date=p_start, occurrence_count=12,
     ))
 
+    # Every precondition is ``pytest.fail``, never ``assert``: under
+    # ``raises=AssertionError`` a broken precondition would otherwise XFAIL
+    # for the wrong reason. The LAST line is the only ``assert`` in this test.
     await recurring_service.generate_due_transactions(
         db_session, seed["org_id"], today=today
     )
-    assert (await _reload(db_session, t.id)).occurrences_elapsed == 1
+    if (await _reload(db_session, t.id)).occurrences_elapsed != 1:
+        pytest.fail("precondition: first run must spend exactly one instalment")
 
     await recurring_service.update_recurring(
         db_session, seed["org_id"], t.id,
         RecurringUpdate(next_due_date=p_start), today=today,
     )
+    if (await _reload(db_session, t.id)).next_due_date != p_start:
+        pytest.fail("precondition: the rewind must land on p_start")
     await recurring_service.generate_due_transactions(
         db_session, seed["org_id"], today=today
     )
-    assert await _row_keys(db_session, seed["org_id"]) == {(t.id, p_start)}
+    if await _row_keys(db_session, seed["org_id"]) != {(t.id, p_start)}:
+        pytest.fail("precondition: still exactly one row for the one key")
     assert (await _reload(db_session, t.id)).occurrences_elapsed == 1
