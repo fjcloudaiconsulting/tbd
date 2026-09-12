@@ -1696,10 +1696,9 @@ function TransactionsPageContent() {
                                       Pressable-Surfaces Rule; there is no global
                                       :focus-visible reset in globals.css, so
                                       without it this link falls through to the UA
-                                      default ring. There is no per-template route
-                                      (`/recurring` reads no search params), so
-                                      the pointer is to the page. Mirrored in the
-                                      mobile card below. */}
+                                      default ring. TBD-316: `?recurring_id=` lands
+                                      on this series' row. Mirrored in the mobile
+                                      card below. */}
                                   {editingSeriesRunning && (
                                     <p
                                       className="text-[11px] text-text-muted"
@@ -1708,7 +1707,7 @@ function TransactionsPageContent() {
                                       Editing or deleting this occurrence leaves the
                                       series running. Stop the whole series on the{" "}
                                       <Link
-                                        href="/recurring"
+                                        href={`/recurring?recurring_id=${tx.recurring_id}`}
                                         className="rounded-sm text-text-primary underline underline-offset-2 hover:text-text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
                                       >
                                         Recurring page
@@ -2252,7 +2251,7 @@ function TransactionsPageContent() {
                                         Editing or deleting this occurrence leaves the
                                         series running. Stop the whole series on the{" "}
                                         <Link
-                                          href="/recurring"
+                                          href={`/recurring?recurring_id=${tx.recurring_id}`}
                                           className="rounded-sm text-text-primary underline underline-offset-2 hover:text-text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
                                         >
                                           Recurring page
