@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
@@ -102,8 +102,9 @@ function makeSeries(id: number, over: Partial<Series> = {}): Series {
 }
 
 // `series` defaults to one running series per recurring row, so the TBD-277
-// tests keep describing a series that genuinely is running.
-function setupApiFetch(txs: Tx[], series?: Series[]) {
+// tests keep describing a series that genuinely is running. "reject" makes the
+// series list request fail.
+function setupApiFetch(txs: Tx[], series?: Series[] | "reject") {
   const templates =
     series ??
     txs.flatMap((t) => (t.recurring_id === null ? [] : [makeSeries(t.recurring_id)]));
@@ -111,7 +112,10 @@ function setupApiFetch(txs: Tx[], series?: Series[]) {
   apiFetchMock.mockReset();
   apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
-    if (url === "/api/v1/recurring" && method === "GET") return templates as never;
+    if (url === "/api/v1/recurring" && method === "GET") {
+      if (templates === "reject") throw new Error("recurring list failed");
+      return templates as never;
+    }
     if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
     if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
@@ -154,7 +158,7 @@ function tree(id: number, mobile: boolean) {
 const HINT_COPY =
   "Editing or deleting this occurrence leaves the series running. Stop the whole series on the Recurring page.";
 
-async function openEdit(tx: Tx, series?: Series[]) {
+async function openEdit(tx: Tx, series?: Series[] | "reject") {
   setupApiFetch([tx], series);
   renderWithSWR(<TransactionsPage />);
   await waitForStableTxList();
@@ -260,12 +264,16 @@ describe("TransactionsPage — recurring series pointer (TBD-277)", () => {
  */
 describe("TransactionsPage — series pointer only for a running series (TBD-318)", () => {
   // Absence is only meaningful once the series has been fetched and applied;
-  // before that the pointer is absent for every row, running or not.
+  // before that the pointer is absent for every row, running or not. So wait on
+  // the request's own promise, inside act() so SWR's update is flushed, rather
+  // than on a tick count that a slower scheduler would outrun.
   async function seriesSettled() {
-    await waitFor(() =>
-      expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/api/v1/recurring"),
-    );
-    await new Promise((r) => setTimeout(r, 0));
+    const mock = vi.mocked(apiFetch);
+    await waitFor(() => expect(mock).toHaveBeenCalledWith("/api/v1/recurring"));
+    const i = mock.mock.calls.findIndex(([url]) => url === "/api/v1/recurring");
+    await act(async () => {
+      await Promise.resolve(mock.mock.results[i].value).catch(() => undefined);
+    });
   }
 
   function expectNoPointer(id: number) {
@@ -316,12 +324,23 @@ describe("TransactionsPage — series pointer only for a running series (TBD-318
     }
   });
 
-  // FENCE: a series the client cannot see (the list failed, or the template is
-  // not in it) must not be claimed as running. Kills `!series || running`.
-  it("series not found: no pointer, in BOTH render trees", async () => {
+  // FENCE: a series the client cannot find must not be claimed as running.
+  // Kills `!series || running`, and (because the list holds a RUNNING series
+  // under another id) a lookup that ignores the id -- which also proves this
+  // test waited for the data, since that mutant only shows the pointer once
+  // the list has been applied.
+  it("series not in the list: no pointer, in BOTH render trees", async () => {
     const tx = makeTx({ id: 304, description: "Unknown", recurring_id: 24 });
     await openEdit(tx, [makeSeries(99)]);
     await seriesSettled();
     expectNoPointer(304);
+  });
+
+  // FENCE: kills `!series || running` on the failure path.
+  it("series list request fails: no pointer, in BOTH render trees", async () => {
+    const tx = makeTx({ id: 305, description: "Offline", recurring_id: 25 });
+    await openEdit(tx, "reject");
+    await seriesSettled();
+    expectNoPointer(305);
   });
 });

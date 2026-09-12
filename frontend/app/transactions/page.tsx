@@ -333,6 +333,7 @@ function TransactionsPageContent() {
   const { data: recurringData } = useSWR<RecurringTransaction[]>(
     refsEnabled && editingRecurringId !== null ? "/api/v1/recurring" : null,
     () => apiFetch<RecurringTransaction[]>("/api/v1/recurring"),
+    { revalidateOnFocus: false },
   );
   const editingSeries = recurringData?.find((r) => r.id === editingRecurringId);
   const editingSeriesRunning = !!editingSeries && seriesRunning(editingSeries);
@@ -1700,20 +1701,20 @@ function TransactionsPageContent() {
                                       the pointer is to the page. Mirrored in the
                                       mobile card below. */}
                                   {editingSeriesRunning && (
-                                  <p
-                                    className="text-[11px] text-text-muted"
-                                    data-testid={`edit-recurring-series-hint-${tx.id}`}
-                                  >
-                                    Editing or deleting this occurrence leaves the
-                                    series running. Stop the whole series on the{" "}
-                                    <Link
-                                      href="/recurring"
-                                      className="rounded-sm text-text-primary underline underline-offset-2 hover:text-text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                                    <p
+                                      className="text-[11px] text-text-muted"
+                                      data-testid={`edit-recurring-series-hint-${tx.id}`}
                                     >
-                                      Recurring page
-                                    </Link>
-                                    .
-                                  </p>
+                                      Editing or deleting this occurrence leaves the
+                                      series running. Stop the whole series on the{" "}
+                                      <Link
+                                        href="/recurring"
+                                        className="rounded-sm text-text-primary underline underline-offset-2 hover:text-text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                                      >
+                                        Recurring page
+                                      </Link>
+                                      .
+                                    </p>
                                   )}
                                 </div>
                               ) : (
@@ -2244,20 +2245,20 @@ function TransactionsPageContent() {
                                         pointer in the desktop row above. Same
                                         copy, same tokens, same gate. */}
                                     {editingSeriesRunning && (
-                                    <p
-                                      className="text-[11px] text-text-muted"
-                                      data-testid={`edit-recurring-series-hint-mobile-${tx.id}`}
-                                    >
-                                      Editing or deleting this occurrence leaves the
-                                      series running. Stop the whole series on the{" "}
-                                      <Link
-                                        href="/recurring"
-                                        className="rounded-sm text-text-primary underline underline-offset-2 hover:text-text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                                      <p
+                                        className="text-[11px] text-text-muted"
+                                        data-testid={`edit-recurring-series-hint-mobile-${tx.id}`}
                                       >
-                                        Recurring page
-                                      </Link>
-                                      .
-                                    </p>
+                                        Editing or deleting this occurrence leaves the
+                                        series running. Stop the whole series on the{" "}
+                                        <Link
+                                          href="/recurring"
+                                          className="rounded-sm text-text-primary underline underline-offset-2 hover:text-text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                                        >
+                                          Recurring page
+                                        </Link>
+                                        .
+                                      </p>
                                     )}
                                   </div>
                                 ) : (
