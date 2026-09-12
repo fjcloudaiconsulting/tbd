@@ -303,8 +303,7 @@ a rate-limited logout leaves the refresh cookie and the Redis session family
 alive while the client clears its own state, and a 429 on an OAuth callback
 renders bare JSON in the middle of a browser navigation. The anonymous
 `audit_events` writes those routes used to permit are bounded by suppressing
-the rows, not by the limits — see
-`specs/2026-08-22-tbd-353-anonymous-audit-write-bounds.md`.
+the rows, not by the limits (TBD-353).
 
 ⚠ That bounds **those three routes**, not the anonymous `audit_events` write
 surface as a whole. `POST /api/v1/security/csp-report` is still an open,
