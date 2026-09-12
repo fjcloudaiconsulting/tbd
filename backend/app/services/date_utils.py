@@ -104,6 +104,38 @@ def occurrences_in_window(
     Clamping it (``max(next_due, start)``) would shift the grid off the
     template's day-of-month and project dates generation never creates.
 
+    **Occurrence identity (TBD-271).** An occurrence IS the pair
+    ``(recurring_id, scheduled date)`` -- DERIVED, never stored. The scheduled
+    date is where this walk lands, iterated from the template's CURRENT
+    ``next_due_date``; for a materialised occurrence it is the row's
+    ``Transaction.date``. **The frontier consumes; the key identifies.** An
+    occurrence is spent once ``recurring_service._advance_frontier`` passes it
+    (on the create branch AND the ``exists`` branch), whether or not a row
+    still exists afterwards, so deleting a generated row does not resurrect
+    its occurrence. The ``(recurring_id, date)`` probe -- generation's catch-up
+    loop, ``forecast_service`` and ``account_balance_forecast_service``, all
+    three with NO status term -- only matters for rows dated at or after the
+    frontier. Known exceptions:
+
+    * ``stop_recurring`` / ``delete_recurring`` NULL ``recurring_id`` on
+      surviving rows, so those keys stop resolving;
+    * moving the frontier BACK onto an already-generated date spends
+      ``occurrences_elapsed`` a second time through the ``exists`` branch
+      (TBD-509);
+    * editing a row's date onto a LATER grid date of its own template aliases
+      two occurrences into one key;
+    * a ``frequency`` or frontier edit invalidates every UNMATERIALISED key,
+      deliberately and under any key choice; materialised rows keep theirs.
+
+    Rejected: an ordinal key (``occurrences_elapsed`` does not move on the
+    resume re-anchor, so ordinals shift under a resume) and a stored occurrence
+    table (unbounded, and a second source of truth for what the frontier
+    already says). Fenced by
+    ``tests/services/test_recurring_occurrence_identity.py``.
+
+    ⚠ ``scenario_engine`` does NOT call this function; it walks
+    ``advance_date`` by hand. Same grid today, but it is outside the fence.
+
     **The fast-forward loop carries NO iteration budget, deliberately.** It
     used to share one budget with the collect loop below, on the claim that
     "the two walks cannot truncate differently". That claim is true of a single
