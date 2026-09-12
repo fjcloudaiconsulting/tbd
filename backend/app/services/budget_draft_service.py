@@ -22,6 +22,7 @@ from app.models.category import Category, CategoryType
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.budget_draft import BudgetDraftResponse
 from app.schemas.budget_rebalance import BudgetDeltaSuggestion
+from app.services import currency_service
 from app.services.billing_service import ensure_future_periods, resolve_period
 from app.services.budget_rebalance_service import (
     CENT,
@@ -30,6 +31,7 @@ from app.services.budget_rebalance_service import (
 )
 from app.services.transaction_filters import (
     effective_period_date_expr,
+    org_currency_filter,
     reportable_transaction_filter,
 )
 
@@ -37,7 +39,8 @@ logger = structlog.stdlib.get_logger()
 
 
 async def _gather_draft_facts(
-    db: AsyncSession, org_id: int, period_start: datetime.date
+    db: AsyncSession, org_id: int, period_start: datetime.date,
+    currency_scope: dict | None = None,
 ) -> list[_CategoryFact]:
     """Per-master-expense-category trailing 3-month spend facts.
 
@@ -48,6 +51,10 @@ async def _gather_draft_facts(
     ``_gather_facts`` window), and ``current_mo_actual`` is 0 because the
     drafted period has not started. Aggregates only — no transaction-level
     data leaves this function.
+
+    ``currency_scope`` (TBD-325 PR 2) arrives from the entry point rather than
+    being resolved here, so the draft costs one scope query per request and not
+    one per aggregate. ``None`` means unscoped.
     """
     masters = (
         await db.execute(
@@ -93,6 +100,10 @@ async def _gather_draft_facts(
                 Transaction.type == TransactionType.EXPENSE,
                 Transaction.status == TransactionStatus.SETTLED,
                 reportable_transaction_filter(),
+                # TBD-325 PR 2. Currency lives only on ``accounts.currency``,
+                # so an unscoped average is EUR and USD added together. No FX
+                # in the system, so scope rather than convert.
+                org_currency_filter(org_id, currency_scope),
                 effective_period_date_expr() >= three_mo_lower,
                 effective_period_date_expr() < three_mo_upper,
             )
@@ -134,7 +145,12 @@ async def suggest_next_period_budget(
     await ensure_future_periods(db, org_id=org_id)
     period = await resolve_period(db, org_id, period_start)
 
-    facts = await _gather_draft_facts(db, org_id, period.start_date)
+    # Resolved ONCE here, at the entry point, and threaded down (TBD-325 PR 2).
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+
+    facts = await _gather_draft_facts(
+        db, org_id, period.start_date, currency_scope
+    )
 
     existing_rows = (
         await db.execute(

@@ -34,6 +34,17 @@ class Organization(Base):
     allow_manual_balance_adjustment: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="0", default=False
     )
+    # TBD-325 PR 2: a CACHE of ``accounts.currency``, never a second source of
+    # truth. Written in exactly ONE place --
+    # ``currency_service.assert_org_currency_allows``, in the
+    # ``existing is None`` branch, inside the gap lock it already holds.
+    #
+    # NULLABLE WITH NO server_default, deliberately. A default would
+    # manufacture the "org says EUR, accounts say GBP" divergence for every
+    # existing row on migration day. NULL means "unknown / not single-currency",
+    # and the scoping predicate returns ``true()`` for it -- byte-identical to
+    # pre-PR behaviour.
+    primary_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

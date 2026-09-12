@@ -4,6 +4,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.forecast import CurrencyScope
+
 from app.schemas.tag import MAX_TAGS_PER_TRANSACTION, TagResponse
 
 
@@ -357,6 +359,13 @@ class SpendingByCategoryResponse(BaseModel):
     period_start: datetime.date
     period_end: datetime.date
     executed_expense: str
+    # TBD-325 PR 2. The donut is scoped by the SAME shared rollup the forecast
+    # uses (``spending_service.executed_expense_by_category``), so it must
+    # declare the scope too. ⚠ Without this field FastAPI's response-model
+    # validation SILENTLY DROPS the key the service computes -- the numbers
+    # would be scoped while the client is never told what was left out, which
+    # is the "wrong number with no warning" this ticket exists to remove.
+    currency_scope: CurrencyScope
     categories: list[SpendingCategoryRow]
 
 

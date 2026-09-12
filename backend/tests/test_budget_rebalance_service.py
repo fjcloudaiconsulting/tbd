@@ -24,6 +24,16 @@ class _Period:
     end_date = None
 
 
+# What `currency_service.resolve_currency_scope` returns for an org with
+# nothing to exclude -- `org_currency_filter` short-circuits to `true()` on
+# `excluded_account_count == 0`, so this is the no-op scope.
+_UNSCOPED = {
+    "currency": None,
+    "excluded_currencies": [],
+    "excluded_account_count": 0,
+}
+
+
 def test_parse_ai_guidance_filters_unknown_ids():
     priority, reasons, summary = svc._parse_ai_guidance(
         {
@@ -63,6 +73,17 @@ async def test_suggest_rebalance_is_zero_sum(monkeypatch):
     # which is the roster-tail case the helper leaves unbounded.
     monkeypatch.setattr(
         svc, "period_spend_window_end", AsyncMock(return_value=None)
+    )
+    # TBD-325 PR 2: `suggest_rebalance` resolves the currency scope once and
+    # threads it into `_gather_facts`. Stubbed for the same reason as the two
+    # above -- the db here is an AsyncMock, so the real resolver's single
+    # grouped SELECT has nothing to read. The unscoped value is the honest one:
+    # these fixtures are `_CategoryFact`s, not rows, so no account currency is
+    # in play at all.
+    monkeypatch.setattr(
+        svc.currency_service,
+        "resolve_currency_scope",
+        AsyncMock(return_value=_UNSCOPED),
     )
     monkeypatch.setattr(svc, "_gather_facts", AsyncMock(return_value=facts))
 
@@ -104,6 +125,17 @@ async def test_suggest_rebalance_refuses_when_no_surplus(monkeypatch):
     monkeypatch.setattr(
         svc, "period_spend_window_end", AsyncMock(return_value=None)
     )
+    # TBD-325 PR 2: `suggest_rebalance` resolves the currency scope once and
+    # threads it into `_gather_facts`. Stubbed for the same reason as the two
+    # above -- the db here is an AsyncMock, so the real resolver's single
+    # grouped SELECT has nothing to read. The unscoped value is the honest one:
+    # these fixtures are `_CategoryFact`s, not rows, so no account currency is
+    # in play at all.
+    monkeypatch.setattr(
+        svc.currency_service,
+        "resolve_currency_scope",
+        AsyncMock(return_value=_UNSCOPED),
+    )
     monkeypatch.setattr(svc, "_gather_facts", AsyncMock(return_value=facts))
     monkeypatch.setattr(svc, "call_llm_structured", AsyncMock())
 
@@ -132,6 +164,17 @@ async def test_suggest_rebalance_stays_balanced_when_llm_unavailable(monkeypatch
     # which is the roster-tail case the helper leaves unbounded.
     monkeypatch.setattr(
         svc, "period_spend_window_end", AsyncMock(return_value=None)
+    )
+    # TBD-325 PR 2: `suggest_rebalance` resolves the currency scope once and
+    # threads it into `_gather_facts`. Stubbed for the same reason as the two
+    # above -- the db here is an AsyncMock, so the real resolver's single
+    # grouped SELECT has nothing to read. The unscoped value is the honest one:
+    # these fixtures are `_CategoryFact`s, not rows, so no account currency is
+    # in play at all.
+    monkeypatch.setattr(
+        svc.currency_service,
+        "resolve_currency_scope",
+        AsyncMock(return_value=_UNSCOPED),
     )
     monkeypatch.setattr(svc, "_gather_facts", AsyncMock(return_value=facts))
     monkeypatch.setattr(

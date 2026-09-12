@@ -49,6 +49,7 @@ from app.schemas.budget_rebalance import (
     BudgetDeltaSuggestion,
     BudgetRebalanceResponse,
 )
+from app.services import currency_service
 from app.services.ai_dispatch import (
     AICapabilityNotSupported,
     AICapExceeded,
@@ -66,6 +67,7 @@ from app.services.billing_service import (
 )
 from app.services.transaction_filters import (
     effective_period_date_expr,
+    org_currency_filter,
     reportable_transaction_filter,
 )
 
@@ -251,6 +253,7 @@ async def _gather_facts(
     period_start: datetime.date,
     period_end: Optional[datetime.date],
     today: Optional[datetime.date] = None,
+    currency_scope: Optional[dict] = None,
 ) -> list[_CategoryFact]:
     """Aggregate per-master-category facts for the prompt.
 
@@ -271,6 +274,10 @@ async def _gather_facts(
     caller, resolves the clock once and always passes a concrete date; the
     ``None`` default below is a safety net for a future caller, not a second
     clock on the live path.
+
+    ``currency_scope`` (TBD-325 PR 2) is threaded in for the same reason as
+    ``today``: resolved once by :func:`suggest_rebalance`, so both sums below
+    scope identically and the request pays for one scope query, not two.
     """
     # Eager-load the master category so we don't fire N+1 refreshes
     # row-by-row below. selectinload issues one extra IN-query for all
@@ -336,6 +343,14 @@ async def _gather_facts(
         Transaction.type == TransactionType.EXPENSE,
         Transaction.status == TransactionStatus.SETTLED,
         reportable_transaction_filter(),
+        # TBD-325 PR 2, added ONCE here rather than twice below: currency
+        # lives only on ``accounts.currency``, and the 3-month rollup and the
+        # current-period rollup feed the SAME per-category fact. Scoping one
+        # and not the other would make ``last_3mo_avg`` and
+        # ``current_mo_actual`` answer in different money, which is worse than
+        # either being wrong on its own. No FX in the system, so scope rather
+        # than convert.
+        org_currency_filter(org_id, currency_scope),
     ]
 
     # One query for the 3-month rollup, GROUP BY category_id.
@@ -542,12 +557,19 @@ async def suggest_rebalance(
     # `total_headroom <= 0` can leave the `empty_no_surplus` refusal entirely.
     # `uncovered_overspend` does move down and `total_suggested` is conserved.
     window_end = await period_spend_window_end(db, org_id, period, today=today)
+
+    # Resolved ONCE here, like the clock above, and threaded down (TBD-325
+    # PR 2). ``_gather_facts`` builds both sums from one ``base_filter``, so
+    # one resolution covers the whole surface.
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+
     facts = await _gather_facts(
         db,
         org_id=org_id,
         period_start=period.start_date,
         period_end=window_end,
         today=today,
+        currency_scope=currency_scope,
     )
     if not facts:
         return BudgetRebalanceResponse(

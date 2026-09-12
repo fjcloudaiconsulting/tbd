@@ -39,6 +39,10 @@ from app.models.transaction import (
     TransactionStatus,
     TransactionType,
 )
+from app.services.currency_service import (
+    assert_org_currency_allows,
+    normalise_currency,
+)
 
 
 logger = structlog.stdlib.get_logger()
@@ -164,6 +168,29 @@ async def seed_org(db: AsyncSession, org_id: int) -> SeedResult:
     # 2. Accounts. Small set so the dashboard has signal without
     # drowning the user. Names are brand-neutral; the user can rename.
     checking_type = await _checking_account_type(db, org_id)
+
+    # TBD-325 PR 2 -- THE SECOND ACCOUNT-INSERT SITE, previously unguarded.
+    # This file hardcoded ``currency="EUR"`` and ``seed_org``'s refusal guards
+    # do not look at accounts at all: ``_has_real_data`` counts TRANSACTIONS
+    # and ``_has_sentinel`` checks a CATEGORY slug. So an org owner who created
+    # a USD account and then ran the onboarding seed got a USD+EUR org in two
+    # ordinary API calls -- PR 1 closed one of two doors.
+    #
+    # The seed ADOPTS whatever currency the org already holds (EUR only when
+    # the org holds nothing), and still routes through
+    # ``assert_org_currency_allows`` so that the zero-account case goes through
+    # the ONE writer of ``organizations.primary_currency`` rather than a second
+    # copy of that write.
+    existing_currency = (
+        await db.execute(
+            select(Account.currency).where(Account.org_id == org_id).limit(1)
+        )
+    ).scalar_one_or_none()
+    seed_currency = (
+        normalise_currency(existing_currency) if existing_currency else "EUR"
+    )
+    await assert_org_currency_allows(db, org_id=org_id, currency=seed_currency)
+
     accounts = []
     account_specs = [
         ("Sample Checking", Decimal("3200.00")),
@@ -175,7 +202,7 @@ async def seed_org(db: AsyncSession, org_id: int) -> SeedResult:
             account_type_id=checking_type.id,
             name=name,
             balance=balance,
-            currency="EUR",
+            currency=seed_currency,
             is_active=True,
             is_default=(name == "Sample Checking"),
         )

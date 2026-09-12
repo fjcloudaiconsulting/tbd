@@ -29,7 +29,9 @@ import {
   resolveForecastSeries,
 } from "@/lib/reports/chart-series-tooltip";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
-import OnTrackTile from "@/components/dashboard/OnTrackTile";
+import OnTrackTile, {
+  type CurrencyScopeLike,
+} from "@/components/dashboard/OnTrackTile";
 import AIForecastRefineToggle from "@/components/dashboard/AIForecastRefineToggle";
 import AccountMonthEndForecast, {
   type AccountMonthEndForecastResponse,
@@ -88,6 +90,11 @@ interface ForecastProjection {
   forecast_income: string;
   forecast_expense: string;
   forecast_net: string;
+  // TBD-325 PR 2. Declared here as well as on the canvas dashboard's
+  // `ForecastProjection` (which inherits it by extending
+  // `ForecastProjectionLike`): this interface is standalone, so without the
+  // field the type would silently under-describe a payload the tile reads.
+  currency_scope?: CurrencyScopeLike;
   categories: unknown[];
 }
 

@@ -65,7 +65,10 @@ from app.services.ai_forecast_refine_token_estimate import (
 )
 from app.services.ai_pricing import estimate_cost_cents
 from app.services.ai_providers.base import NativeNotAvailable, StructuredOutputError
-from app.services.transaction_filters import reportable_transaction_filter
+from app.services.transaction_filters import (
+    org_currency_filter,
+    reportable_transaction_filter,
+)
 
 logger = structlog.stdlib.get_logger()
 
@@ -121,6 +124,7 @@ async def _build_category_history(
     org_id: int,
     period_start: datetime.date,
     months: int = HISTORY_MONTHS,
+    currency_scope: dict | None = None,
 ) -> list[dict]:
     """Build a per-category expense history up to ``months`` months back.
 
@@ -156,6 +160,17 @@ async def _build_category_history(
             Transaction.settled_date >= history_start,
             Transaction.settled_date < period_start,
             reportable_transaction_filter(),
+            # TBD-325 PR 2. ⚠ THE HISTORY MUST BE SCOPED WITH THE BASELINE,
+            # not merely alongside it. This is a PYTHON bucket-sum over raw
+            # rows, so it is invisible to a ``grep func.sum`` inventory of
+            # aggregate sites -- and it is the more dangerous of the two,
+            # because ``select_categories_by_scope(_spend_by_category(history),
+            # scope)`` below uses it to decide WHICH CATEGORIES ARE REFINED AT
+            # ALL. A scoped baseline against an unscoped history hands the
+            # model a numerator and a denominator in different money, inside
+            # one billed prompt, with no HTTP response or React tree anywhere
+            # that a warning banner could reach.
+            org_currency_filter(org_id, currency_scope),
         )
     )
 
@@ -506,7 +521,14 @@ async def refine_forecast(
     p_start = datetime.date.fromisoformat(baseline["period_start"])
     try:
         history = await _build_category_history(
-            db, org_id=org_id, period_start=p_start, months=timeframe_months
+            db,
+            org_id=org_id,
+            period_start=p_start,
+            months=timeframe_months,
+            # Read OFF THE BASELINE, never resolved a second time: that is what
+            # makes "history and baseline are in the same money" true by
+            # construction rather than by two resolutions happening to agree.
+            currency_scope=baseline["currency_scope"],
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
@@ -714,7 +736,11 @@ async def estimate_refine(
     )
     p_start = datetime.date.fromisoformat(baseline["period_start"])
     history = await _build_category_history(
-        db, org_id=org_id, period_start=p_start, months=timeframe_months
+        db,
+        org_id=org_id,
+        period_start=p_start,
+        months=timeframe_months,
+        currency_scope=baseline["currency_scope"],
     )
 
     if not history:

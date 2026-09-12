@@ -476,6 +476,15 @@ def test_fb_spending_carries_executed_only(bulk):
     body = client.get(f"{SPEND_URL}?period_start={B_START}").json()
     assert set(body) == {
         "period_start", "period_end", "executed_expense", "categories",
+        # TBD-325 PR 2. ⚠ ADDED DELIBERATELY, and it does not weaken this
+        # assertion's job. The docstring above says this half exists to catch a
+        # ``response_model`` that GREW A PROJECTED FIELD. ``currency_scope`` is
+        # not a projection: it declares WHICH CURRENCY the executed figures are
+        # in and what was excluded to get them. The probe that pins the service
+        # -- ``"Travel" not in ...``, the PENDING flight's category -- is
+        # untouched, and every projected name (``pending``, ``recurring``,
+        # ``forecast``) is still absent from this set.
+        "currency_scope",
     }
     for row in body["categories"]:
         assert set(row) == {
@@ -1356,6 +1365,27 @@ async def _seed_forecast_snapshot_org(factory, *, closed: bool) -> int:
 # change in the tree), then REPLAYED against it with the implementation stashed
 # — see the module footnote. A snapshot recorded from this branch would be
 # vacuously green.
+#
+# ⚠ AMENDED BY TBD-325 PR 2, and the AMENDMENT ITSELF IS THE EVIDENCE.
+# PR 2 adds an in-band ``currency_scope`` object to the forecast payload, so
+# these literals could not stay byte-identical. They were NOT re-recorded from
+# this branch — that would discard everything the footnote below establishes.
+# Instead the real failure was read: pytest reported **359 and 361 identical
+# leading characters** respectively, followed by a PURE INSERTION of the
+# ``currency_scope`` block and nothing else. Not one existing byte moved.
+#
+# That is precisely the property PR 2 claims and G1 controls for: scoping a
+# single-currency org changes no figure. So the diff was applied by hand, as an
+# insertion, and these literals remain ``main``'s bytes plus one key.
+#
+# ⚠ ``"currency": null`` is CORRECT here and is not a bug in the fixture.
+# ``organizations.primary_currency`` has exactly one writer —
+# ``currency_service.assert_org_currency_allows``, on the account-create path —
+# and this file seeds ``Account`` rows directly, so the writer never runs. NULL
+# makes ``org_currency_filter`` return ``true()``, which is why every figure
+# above it is unchanged. A fixture that went through the API would read "EUR"
+# here and the figures would STILL be unchanged, because that org has nothing
+# to exclude; ``test_currency_scope_aggregates.py`` covers that arm.
 SNAPSHOT_CLOSED = """\
 {
   "period_start": "2026-01-01",
@@ -1370,6 +1400,11 @@ SNAPSHOT_CLOSED = """\
   "forecast_income": "3000.00",
   "forecast_expense": "898.75",
   "forecast_net": "2101.25",
+  "currency_scope": {
+    "currency": null,
+    "excluded_currencies": [],
+    "excluded_account_count": 0
+  },
   "categories": [
     {
       "category_id": 1,
@@ -1415,6 +1450,11 @@ SNAPSHOT_OPEN = """\
   "forecast_income": "3000.00",
   "forecast_expense": "1565.75",
   "forecast_net": "1434.25",
+  "currency_scope": {
+    "currency": null,
+    "excluded_currencies": [],
+    "excluded_account_count": 0
+  },
   "categories": [
     {
       "category_id": 1,

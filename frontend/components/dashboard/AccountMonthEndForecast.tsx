@@ -156,7 +156,24 @@ export default function AccountMonthEndForecast({
           <h2 className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
             Expected month-end balance
           </h2>
-          <div className="space-y-0.5">
+          {/* TBD-325 PR 2: SIDE BY SIDE, wrapping only when the row runs out of
+              width. Stacked, two currencies read as a running total with the
+              second line continuing the first -- exactly the "these were
+              added together" impression this tile must never give, since the
+              whole product rule is that currencies are never summed. On one
+              row they read as what they are: two independent answers to the
+              same question, one per currency.
+
+              `flex-wrap` rather than a breakpoint: the trigger is the combined
+              WIDTH of the figures, which depends on how many currencies the
+              org holds and how long the amounts are, not on the viewport. A
+              `md:` rule would wrap a three-currency org's figures on a wide
+              screen and keep a one-currency org's on a narrow one.
+
+              `gap-x-6` gives the eye a clear break between figures so two
+              adjacent amounts are never misread as one; `gap-y-0.5` preserves
+              the original vertical rhythm for the wrapped case. */}
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-0.5">
             {totals.map((t) => (
               <p
                 key={t.currency}

@@ -135,6 +135,16 @@ _FAKE_BASELINE = {
     "period_end": "2026-06-30",
     "forecast_income": "5000",
     "forecast_expense": "3000",
+    # TBD-325 PR 2. ⚠ REQUIRED, not decoration. ``compute_forecast`` always
+    # returns this key and ``_build_category_history`` reads it off the
+    # baseline, so a fake without it exercises an arm the real producer cannot
+    # produce -- which is how the fail-open ``.get()`` this replaced stayed
+    # invisible in a green suite.
+    "currency_scope": {
+        "currency": None,
+        "excluded_currencies": [],
+        "excluded_account_count": 0,
+    },
     "categories": [
         {"category_id": 1, "category_name": "Rent", "forecast": "1500"},
         {"category_id": 2, "category_name": "Food", "forecast": "600"},
@@ -162,7 +172,9 @@ async def test_refine_passes_sized_max_tokens(
     async def fake_compute_forecast(db, org_id, period_start=None):
         return _FAKE_BASELINE
 
-    async def fake_build_history(db, *, org_id, period_start, months=12):
+    async def fake_build_history(
+        db, *, org_id, period_start, months=12, currency_scope=None
+    ):
         return _FAKE_HISTORY
 
     async def fake_category_index(db, *, org_id):
@@ -202,7 +214,9 @@ async def test_estimate_refine_returns_tokens_without_dispatch(
     async def fake_compute_forecast(db, org_id, period_start=None):
         return _FAKE_BASELINE
 
-    async def fake_build_history(db, *, org_id, period_start, months=12):
+    async def fake_build_history(
+        db, *, org_id, period_start, months=12, currency_scope=None
+    ):
         return _FAKE_HISTORY
 
     async def fake_category_index(db, *, org_id):
@@ -271,7 +285,9 @@ def _patch_estimate_internals(monkeypatch, *, est_cost_cents: int):
     async def fake_compute_forecast(db, org_id, period_start=None):
         return _FAKE_BASELINE
 
-    async def fake_build_history(db, *, org_id, period_start, months=12):
+    async def fake_build_history(
+        db, *, org_id, period_start, months=12, currency_scope=None
+    ):
         return _FAKE_HISTORY
 
     async def fake_category_index(db, *, org_id):

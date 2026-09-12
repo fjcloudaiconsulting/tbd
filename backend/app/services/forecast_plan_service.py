@@ -31,6 +31,7 @@ from app.schemas.forecast_plan import (
     ForecastPlanItemUpdate,
     ForecastPlanResponse,
 )
+from app.services import currency_service
 from app.services.billing_service import period_spend_window_end, resolve_period
 from app.services.date_utils import occurrences_in_window
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
@@ -41,6 +42,7 @@ from app.services.settings_service import (
 )
 from app.services.transaction_filters import (
     effective_period_date_expr,
+    org_currency_filter,
     reportable_transaction_filter,
 )
 
@@ -224,11 +226,16 @@ async def _compute_actuals_batch(
     db: AsyncSession, org_id: int,
     items: list[ForecastPlanItem],
     period_start: datetime.date, period_end: datetime.date | None,
+    currency_scope: dict | None = None,
 ) -> dict[tuple[int, str], Decimal]:
     """Compute actual amounts for all plan items in two queries (income + expense).
 
     Returns a dict keyed by (category_id, type_value) → actual amount.
     Each category includes its subcategories in the sum.
+
+    ``currency_scope`` (TBD-325 PR 2) is a PARAMETER, resolved once by the
+    caller, for the same reason ``period_end`` is: this is the batched form and
+    must not re-derive per-request facts. ``None`` means unscoped.
     """
     if not items:
         return {}
@@ -269,6 +276,12 @@ async def _compute_actuals_batch(
         Transaction.settled_date >= period_start,
         Transaction.type.in_(["income", "expense"]),
         reportable_transaction_filter(),
+        # TBD-325 PR 2. Currency lives only on ``accounts.currency`` --
+        # ``transactions`` has no currency column -- so an unscoped actual is
+        # EUR and USD added together and the variance against a
+        # single-currency plan is meaningless. There is no FX in the system,
+        # so scope rather than convert.
+        org_currency_filter(org_id, currency_scope),
     )
     if period_end is not None:
         q = q.where(Transaction.settled_date <= period_end)
@@ -290,7 +303,17 @@ async def _compute_actuals_batch(
 async def _build_response(
     db: AsyncSession, org_id: int, plan: ForecastPlan,
     *, today: datetime.date | None = None,
+    currency_scope: dict | None = None,
 ) -> ForecastPlanResponse:
+    """Render a plan, resolving the currency scope for the whole response.
+
+    TBD-325 PR 2: the scope is resolved HERE, not in each of the eleven entry
+    points, because this function is the single funnel every one of them ends
+    in and (per the ``today`` note below) fires exactly once per request. The
+    ``currency_scope`` argument exists for the one caller that already needed
+    the scope for its own aggregates -- ``populate_from_sources`` -- so that
+    path pays for one resolution rather than two.
+    """
     granularity = await get_forecast_input_granularity(db, org_id)
     period = plan.billing_period
     p_start = period.start_date
@@ -336,8 +359,15 @@ async def _build_response(
     # entry point; none of them is a loop, so this fires once per request.
     window_end = await period_spend_window_end(db, org_id, period, today=today)
 
+    if currency_scope is None:
+        currency_scope = await currency_service.resolve_currency_scope(
+            db, org_id=org_id
+        )
+
     # Batch compute actuals for all items (2 queries instead of 2*N)
-    actuals = await _compute_actuals_batch(db, org_id, plan.items, p_start, window_end)
+    actuals = await _compute_actuals_batch(
+        db, org_id, plan.items, p_start, window_end, currency_scope
+    )
 
     # Batch fetch category names (avoids lazy-load MissingGreenlet in async)
     cat_ids = {item.category_id for item in plan.items}
@@ -465,6 +495,17 @@ async def populate_from_sources(
     p_start = period.start_date
     p_end = period.end_date or (p_start + relativedelta(months=1) - datetime.timedelta(days=1))
 
+    # TBD-325 PR 2: resolved ONCE for this entry point and threaded into ALL
+    # THREE aggregates below (history, recurring templates, current period)
+    # AND into ``_build_response`` at the bottom, so the suggestion and the
+    # actuals it is rendered against are in the same money.
+    #
+    # ⚠ "three", not "two". An earlier cut said two and scoped two; the
+    # recurring source was the one it missed, and a persisted cross-currency
+    # ``planned_amount`` is the result. If you add a fourth source, scope it.
+    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+    currency_clause = org_currency_filter(org_id, currency_scope)
+
     # ── Pre-fetch category → master mapping ──
     cat_result = await db.execute(
         select(Category.id, Category.parent_id).where(Category.org_id == org_id)
@@ -524,6 +565,30 @@ async def populate_from_sources(
             RecurringTransaction.org_id == org_id,
             active_series_filter(),
             RecurringTransaction.next_due_date <= p_end,
+            # TBD-325 PR 2. ⚠ THE THIRD SOURCE, and the one that made this a
+            # HALF-FIX until it was caught in review.
+            #
+            # The history (above) and current-period (below) aggregates were
+            # scoped while this one was not, so ``planned_amount`` was written
+            # as a CROSS-CURRENCY total and PERSISTED to
+            # ``forecast_plan_items``. It then became
+            # ``total_planned_expense`` -- the DENOMINATOR of OnTrackTile's
+            # verdict and of the budget bars -- against a numerator that IS
+            # scoped. Measured: an EUR org with a USD 3000 recurring planned
+            # 3025.00 against 100.00 of scoped actuals, a 2925 phantom
+            # underspend that survives the scope because it is stored.
+            #
+            # Scoping a numerator and not its denominator is worse than
+            # scoping neither.
+            #
+            # ⚠ Like ``forecast_service``'s recurring select, this is scoped
+            # ON THE SELECT, not in the Python accumulation below:
+            # ``RecurringTransaction.account`` is a bare ``relationship()`` and
+            # touching ``r.account.currency`` in that loop raises
+            # ``MissingGreenlet`` on an AsyncSession.
+            org_currency_filter(
+                org_id, currency_scope, RecurringTransaction.account_id
+            ),
         )
     )
     recurring_totals: dict[tuple[int, str], Decimal] = {}
@@ -603,6 +668,10 @@ async def populate_from_sources(
             eff_date < p_start,
             Transaction.type.in_(["income", "expense"]),
             reportable_transaction_filter(),
+            # TBD-325 PR 2. Currency is on ``accounts.currency`` only, so an
+            # unscoped history mixes currencies into one monthly average and
+            # every ``planned_amount`` derived from it. No FX, so scope.
+            currency_clause,
         )
     )
     hist_result = await db.execute(hist_q)
@@ -639,6 +708,10 @@ async def populate_from_sources(
             eff_date <= p_end,
             Transaction.type.in_(["income", "expense"]),
             reportable_transaction_filter(),
+            # Same clause as the history query above: the current period is one
+            # more slot in the SAME average, so scoping one and not the other
+            # would average across currencies through the back door.
+            currency_clause,
         )
         .group_by(Transaction.category_id, Transaction.type)
     )
@@ -687,7 +760,9 @@ async def populate_from_sources(
 
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
-    return await _build_response(db, org_id, plan, today=today)
+    return await _build_response(
+        db, org_id, plan, today=today, currency_scope=currency_scope
+    )
 
 
 async def refresh_from_sources(
