@@ -140,7 +140,9 @@ async def test_frontier_routes_return_the_created_row(session_factory, path, rev
         await db.commit()
         rid, due = r.id, r.next_due_date
 
-    resp = TestClient(make_app(session_factory)).post(f"/api/v1/recurring/{rid}/{path}")
+    resp = TestClient(make_app(session_factory)).post(
+        f"/api/v1/recurring/{rid}/{path}", json={"occurrence_date": due.isoformat()}
+    )
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert (body["recurring_id"], body["date"], body["status"]) == (rid, due.isoformat(), "pending")
@@ -169,9 +171,11 @@ async def test_frontier_route_guards_are_409(session_factory, case):
                 status=TransactionStatus.PENDING, date=r.next_due_date, recurring_id=r.id,
             ))
         await db.commit()
-        rid = r.id
+        rid, due = r.id, r.next_due_date
 
-    resp = TestClient(make_app(session_factory)).post(f"/api/v1/recurring/{rid}/skip-next")
+    resp = TestClient(make_app(session_factory)).post(
+        f"/api/v1/recurring/{rid}/skip-next", json={"occurrence_date": due.isoformat()}
+    )
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"]
     async with session_factory() as db:
@@ -196,10 +200,11 @@ async def test_routes_are_org_scoped(session_factory):
         rid, tid, own_id = r.id, tx.id, own.id
 
     client = TestClient(make_app(session_factory))
+    body = {"occurrence_date": (date.today() + timedelta(days=3)).isoformat()}
     # Anti-vacuity: the route exists, so the 404s below are the org scope.
-    assert client.post(f"/api/v1/recurring/{own_id}/materialise-next").status_code == 201
-    assert client.post(f"/api/v1/recurring/{rid}/skip-next").status_code == 404
-    assert client.post(f"/api/v1/recurring/{rid}/materialise-next").status_code == 404
+    assert client.post(f"/api/v1/recurring/{own_id}/materialise-next", json=body).status_code == 201
+    assert client.post(f"/api/v1/recurring/{rid}/skip-next", json=body).status_code == 404
+    assert client.post(f"/api/v1/recurring/{rid}/materialise-next", json=body).status_code == 404
     assert client.post(f"/api/v1/transactions/{tid}/skip").status_code == 404
 
 
@@ -223,3 +228,26 @@ async def test_skip_occurrence_route(session_factory):
     assert (resp.json()["id"], resp.json()["is_reverted"]) == (tid, True)
     again = client.post(f"/api/v1/transactions/{tid}/skip")
     assert again.status_code == 409
+
+
+@pytest.mark.parametrize("path", ["skip-next", "materialise-next"])
+async def test_frontier_routes_double_submit_is_409(session_factory, path):
+    """FENCE (F1). The retry of the same request is refused, and the body is
+    required (422 without it)."""
+    async with session_factory() as db:
+        seed = await _org(db, "Mine", "root")
+        r = await _template(db, seed)
+        await db.commit()
+        rid, due = r.id, r.next_due_date
+
+    client = TestClient(make_app(session_factory))
+    url, body = f"/api/v1/recurring/{rid}/{path}", {"occurrence_date": due.isoformat()}
+    assert client.post(url).status_code == 422
+    assert client.post(url, json=body).status_code == 201
+    assert client.post(url, json=body).status_code == 409
+    async with session_factory() as db:
+        assert len((await db.execute(select(Transaction.id))).all()) == 1
+        elapsed = (await db.execute(
+            select(RecurringTransaction.occurrences_elapsed).where(RecurringTransaction.id == rid)
+        )).scalar_one()
+    assert elapsed == 1

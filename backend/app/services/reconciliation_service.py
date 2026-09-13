@@ -741,11 +741,17 @@ async def _apply_match(
         raise ValidationError(
             "MATCHED target must differ from the transaction itself"
         )
+    # Locked (TBD-272) so a match serialises with
+    # ``recurring_service.skip_occurrence``, which locks the same row before
+    # flipping it to skipped. sqlite cannot prove this.
     target = await db.scalar(
-        select(Transaction).where(
+        select(Transaction)
+        .where(
             Transaction.id == match_id,
             Transaction.org_id == org_id,
         )
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if target is None:
         raise NotFoundError("Match target transaction")

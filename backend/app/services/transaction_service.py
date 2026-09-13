@@ -586,12 +586,15 @@ async def update_transaction(
     if tx.is_manual_adjustment:
         raise ValidationError("Manual balance adjustments cannot be edited")
 
-    # TBD-272: moving a skipped row onto another date would make that date's
-    # REAL occurrence look materialised (the (recurring_id, date) probe has no
-    # state term), silently suppressing it (TBD-271 exception 3).
+    # TBD-272: moving a skipped RECURRING row onto another date would make that
+    # date's real occurrence look materialised (the (recurring_id, date) probe
+    # has no state term), silently suppressing it (TBD-271 exception 3).
+    # Scoped to ``recurring_id``: an import-inbox SKIPPED row has none, is
+    # deliberately pairable (TBD-295), and may have its date corrected.
     if (
         body.date is not None
         and body.date != tx.date
+        and tx.recurring_id is not None
         and tx.reconciliation_state in REVERTED_RECONCILIATION_STATES
     ):
         raise ValidationError(

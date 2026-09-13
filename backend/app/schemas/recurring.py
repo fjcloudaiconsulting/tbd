@@ -2,7 +2,7 @@ import datetime
 from decimal import Decimal
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RecurringCreate(BaseModel):
@@ -88,6 +88,19 @@ class StopRecurringResponse(BaseModel):
     stopped: bool = True
     pending_removed: int = 0
     demoted_ids: list[int] = Field(default_factory=list)
+
+
+class OccurrenceRequest(BaseModel):
+    """Body for skip-next / materialise-next (TBD-272/273).
+
+    ``occurrence_date`` is the frontier the client saw. It makes a repeated
+    request idempotent: the first call moves the frontier, so a retry no longer
+    matches and 409s instead of consuming the NEXT occurrence too.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    occurrence_date: datetime.date
 
 
 class DeleteRecurringResponse(BaseModel):

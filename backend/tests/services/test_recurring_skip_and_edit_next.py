@@ -203,7 +203,7 @@ async def test_s1_skip_next_drops_the_occurrence_from_both_forecasts(db_session)
     assert {"amount": "-37.00", "date": frontier.isoformat()} in acct_before["recurring_lines"]
 
     tx = await recurring_service.materialise_next(
-        db_session, seed["org_id"], r.id, skipped=True, today=today
+        db_session, seed["org_id"], r.id, occurrence_date=r.next_due_date, skipped=True, today=today
     )
     assert tx.date == frontier
     assert tx.reconciliation_state == "skipped"
@@ -266,7 +266,7 @@ async def test_s2_skip_spends_an_instalment(db_session):
     )
 
     await recurring_service.materialise_next(
-        db_session, seed["org_id"], r.id, skipped=True, today=today
+        db_session, seed["org_id"], r.id, occurrence_date=r.next_due_date, skipped=True, today=today
     )
     r = await _reload_template(db_session, r.id)
     assert r.occurrences_elapsed == 1
@@ -302,7 +302,7 @@ async def test_s3_auto_settle_skip_stays_pending_and_balance_untouched(db_sessio
     )
 
     tx = await recurring_service.materialise_next(
-        db_session, seed["org_id"], r.id, skipped=True, today=today
+        db_session, seed["org_id"], r.id, occurrence_date=r.next_due_date, skipped=True, today=today
     )
     assert tx.status == TransactionStatus.PENDING
     assert tx.settled_date is None
@@ -337,7 +337,7 @@ async def test_s4_row_already_at_frontier_is_refused_without_change(db_session):
     for skipped in (True, False):
         with pytest.raises(ConflictError):
             await recurring_service.materialise_next(
-                db_session, seed["org_id"], rid, skipped=skipped, today=today
+                db_session, seed["org_id"], rid, occurrence_date=frontier, skipped=skipped, today=today
             )
         await db_session.rollback()
     r = await _reload_template(db_session, rid)
@@ -360,7 +360,8 @@ async def test_s4_state_guards_refuse_without_change(db_session, case):
     rid = (await _template(db_session, seed, **kwargs)).id
     with pytest.raises(ConflictError):
         await recurring_service.materialise_next(
-            db_session, seed["org_id"], rid, skipped=True, today=today
+            db_session, seed["org_id"], rid,
+            occurrence_date=kwargs["next_due_date"], skipped=True, today=today,
         )
     await db_session.rollback()
     r = await _reload_template(db_session, rid)
@@ -471,7 +472,7 @@ async def test_s6_apply_match_refuses_a_skipped_target(db_session):
     seed = await _seed(db_session, today)
     r = await _template(db_session, seed, next_due_date=today + 2 * DAY)
     skipped = await recurring_service.materialise_next(
-        db_session, seed["org_id"], r.id, skipped=True, today=today
+        db_session, seed["org_id"], r.id, occurrence_date=r.next_due_date, skipped=True, today=today
     )
     user = User(username="u", email="u@x.io", password_hash="x", org_id=seed["org_id"])
     db_session.add(user)
@@ -513,7 +514,7 @@ async def test_s7_date_edit_on_a_skipped_row_is_refused(db_session):
     seed = await _seed(db_session, today)
     r = await _template(db_session, seed, next_due_date=today + 2 * DAY)
     skipped = await recurring_service.materialise_next(
-        db_session, seed["org_id"], r.id, skipped=True, today=today
+        db_session, seed["org_id"], r.id, occurrence_date=r.next_due_date, skipped=True, today=today
     )
     with pytest.raises(ValidationError):
         await transaction_service.update_transaction(
@@ -549,7 +550,7 @@ async def test_e1_edit_next_amount_moves_forecast_by_the_delta_only(db_session):
 
     net0 = await _net(db_session, seed, "p2", today)
     row = await recurring_service.materialise_next(
-        db_session, seed["org_id"], r.id, skipped=False, today=today
+        db_session, seed["org_id"], r.id, occurrence_date=r.next_due_date, skipped=False, today=today
     )
     assert (row.status, row.reconciliation_state) == (TransactionStatus.PENDING, "accepted")
     assert await _net(db_session, seed, "p2", today) == net0
@@ -596,7 +597,7 @@ async def test_stop_after_skip_next_then_resume_does_not_recreate_it(db_session)
     frontier = today + 3 * DAY
     r = await _template(db_session, seed, next_due_date=frontier, amount=Decimal("29.00"))
     await recurring_service.materialise_next(
-        db_session, seed["org_id"], r.id, skipped=True, today=today
+        db_session, seed["org_id"], r.id, occurrence_date=r.next_due_date, skipped=True, today=today
     )
 
     outcome = await recurring_service.stop_recurring(db_session, seed["org_id"], r.id)
@@ -610,3 +611,126 @@ async def test_stop_after_skip_next_then_resume_does_not_recreate_it(db_session)
     rows = await _rows(db_session, seed["org_id"])
     assert frontier not in {t.date for t in rows}
     assert rows, "anti-vacuity: generation ran and wrote the later occurrences"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Review fold (F1, F5, F6, F7).
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("skipped", [True, False])
+async def test_f1_double_submit_consumes_exactly_one_occurrence(db_session, skipped):
+    """FENCE. Kills ``materialise_next`` without the ``occurrence_date`` check:
+    the retry finds no row at the NEW frontier and consumes that one too."""
+    today = datetime.date.today()
+    seed = await _seed(db_session, today)
+    frontier = today + 3 * DAY
+    r = await _template(db_session, seed, next_due_date=frontier, amount=Decimal("31.00"))
+    rid = r.id
+
+    await recurring_service.materialise_next(
+        db_session, seed["org_id"], rid, occurrence_date=frontier, skipped=skipped, today=today
+    )
+    with pytest.raises(ConflictError):
+        await recurring_service.materialise_next(
+            db_session, seed["org_id"], rid, occurrence_date=frontier, skipped=skipped, today=today
+        )
+    await db_session.rollback()
+
+    r = await _reload_template(db_session, rid)
+    rows = await _rows(db_session, seed["org_id"])
+    state = "skipped" if skipped else "accepted"
+    assert [(t.date, t.reconciliation_state) for t in rows] == [(frontier, state)]
+    assert (r.occurrences_elapsed, r.next_due_date) == (1, frontier + 7 * DAY)
+
+
+async def test_f5_date_edit_allowed_on_a_non_recurring_skipped_row(db_session):
+    """FENCE. Kills fix (e) widened to every reverted row: an import-inbox
+    SKIPPED row (no ``recurring_id``, pairable per TBD-295) must still take a
+    date correction. The recurring half is ``test_s7``."""
+    today = datetime.date.today()
+    seed = await _seed(db_session, today)
+    inbox = Transaction(
+        org_id=seed["org_id"], account_id=seed["account_id"], category_id=seed["cat_id"],
+        description="BANK FEE", amount=Decimal("13.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.PENDING, date=today, is_imported=True,
+        reconciliation_state="skipped",
+    )
+    db_session.add(inbox)
+    await db_session.commit()
+    tid = inbox.id
+
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], tid, TransactionUpdate(date=today - 2 * DAY)
+    )
+    (after,) = [t for t in await _rows(db_session, seed["org_id"]) if t.id == tid]
+    assert after.date == today - 2 * DAY
+
+
+async def test_f6_edit_next_never_settles_and_settles_later_at_the_edited_amount(db_session):
+    """FENCE. Kills edit-next reusing generation's settle branch: with
+    auto_settle on and a past-due frontier the row would be written SETTLED at
+    the TEMPLATE amount (balance -41) before the user could edit it."""
+    today = datetime.date.today()
+    seed = await _seed(db_session, today)
+    frontier = today - 2 * DAY
+    r = await _template(
+        db_session, seed, next_due_date=frontier, auto_settle=True, amount=Decimal("41.00"),
+    )
+
+    row = await recurring_service.materialise_next(
+        db_session, seed["org_id"], r.id, occurrence_date=frontier, skipped=False, today=today
+    )
+    assert (row.status, row.settled_date) == (TransactionStatus.PENDING, None)
+    assert await _balance(db_session, seed["account_id"]) == Decimal("1000.00")
+
+    edited = await transaction_service.update_transaction(
+        db_session, seed["org_id"], row.id, TransactionUpdate(amount=Decimal("58.00"))
+    )
+    assert transaction_service.to_response(edited).differs_from_series is True
+    assert await _balance(db_session, seed["account_id"]) == Decimal("1000.00")
+
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=today)
+    (settled,) = [t for t in await _rows(db_session, seed["org_id"]) if t.id == row.id]
+    assert (settled.status, settled.amount) == (TransactionStatus.SETTLED, Decimal("58.00"))
+    assert await _balance(db_session, seed["account_id"]) == Decimal("942.00")
+
+
+async def test_f7_differs_from_series_false_for_a_settled_row(db_session):
+    """FENCE. Kills dropping the PENDING term: a settled occurrence at a
+    different amount is history, not an override of the series."""
+    today = datetime.date.today()
+    seed = await _seed(db_session, today)
+    r = await _template(db_session, seed, next_due_date=today + 5 * DAY)
+    db_session.add(Transaction(
+        org_id=seed["org_id"], account_id=seed["account_id"], category_id=seed["cat_id"],
+        description="rent", amount=Decimal("60.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED, date=today - DAY, settled_date=today - DAY,
+        recurring_id=r.id,
+    ))
+    await db_session.commit()
+    (tx,), _ = await transaction_service.list_transactions(db_session, seed["org_id"])
+    assert tx.recurring_id == r.id
+    assert transaction_service.to_response(tx).differs_from_series is False
+
+
+async def test_f7_differs_from_series_false_after_stop(db_session):
+    """FENCE. Kills dropping the ``recurring_id is not None`` term: stop NULLs
+    ``recurring_id`` in bulk, but the template stays loaded on the row in the
+    session's identity map, so the stale template would still be compared."""
+    today = datetime.date.today()
+    seed = await _seed(db_session, today)
+    r = await _template(db_session, seed, next_due_date=today + 5 * DAY)
+    db_session.add(Transaction(
+        org_id=seed["org_id"], account_id=seed["account_id"], category_id=seed["cat_id"],
+        description="rent", amount=Decimal("60.00"), type=TransactionType.EXPENSE,
+        status=TransactionStatus.PENDING, date=today - DAY, recurring_id=r.id,
+    ))
+    await db_session.commit()
+
+    (tx,), _ = await transaction_service.list_transactions(db_session, seed["org_id"])
+    assert transaction_service.to_response(tx).differs_from_series is True  # anti-vacuity
+
+    await recurring_service.stop_recurring(db_session, seed["org_id"], r.id)
+    (tx,), _ = await transaction_service.list_transactions(db_session, seed["org_id"])
+    assert tx.recurring_id is None
+    assert transaction_service.to_response(tx).differs_from_series is False

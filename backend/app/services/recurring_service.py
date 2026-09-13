@@ -710,7 +710,8 @@ def _advance_frontier(r: RecurringTransaction, due: datetime.date) -> None:
 
 async def _create_occurrence(
     db: AsyncSession, org_id: int, r: RecurringTransaction,
-    due: datetime.date, today: datetime.date, *, skipped: bool = False,
+    due: datetime.date, today: datetime.date, *,
+    settle: bool = True, skipped: bool = False,
 ) -> Transaction:
     """Write the occurrence of ``r`` at ``due``. Generation's create step.
 
@@ -718,14 +719,15 @@ async def _create_occurrence(
     occurrence written ahead of generation is the row generation would have
     written. It does NOT advance the frontier; both callers do that.
 
-    ⚠ ``skipped`` (TBD-272) forces PENDING and never touches the balance, even
-    for an auto-settle template whose date has passed. A skipped occurrence was
-    never paid, so its amount must never enter ``accounts.balance``; letting it
-    through the settle branch would move money for a charge the user cancelled.
+    ⚠ ``settle=False`` (``materialise_next``, both flavours) forces PENDING and
+    never touches the balance, even for an auto-settle template whose date has
+    passed. A skipped occurrence was never paid; an edit-next row exists so its
+    amount can be changed BEFORE it settles, and ``_settle_due_auto`` settles it
+    at the edited amount on the next run. ``skipped`` only sets the state.
     """
     tx_status = (
         TransactionStatus.SETTLED
-        if (not skipped and r.auto_settle and due <= today)
+        if (settle and r.auto_settle and due <= today)
         else TransactionStatus.PENDING
     )
     async with db.begin_nested():
@@ -758,7 +760,8 @@ async def _load_transaction(db: AsyncSession, tx_id: int) -> Transaction:
 
 async def materialise_next(
     db: AsyncSession, org_id: int, recurring_id: int, *,
-    skipped: bool, today: datetime.date | None = None,
+    occurrence_date: datetime.date, skipped: bool,
+    today: datetime.date | None = None,
 ) -> Transaction:
     """Write the template's NEXT occurrence now, and spend it (TBD-272/273).
 
@@ -768,7 +771,11 @@ async def materialise_next(
     next": an ordinary PENDING row whose amount the normal transaction edit
     then changes. Either way nothing is written ahead of ``next_due_date``, and
     generation's ``exists`` branch plus the forecasts' materialised probe treat
-    the row exactly like one generation wrote.
+    the row exactly like one generation wrote. The row is ALWAYS PENDING and
+    never moves the balance, for both flavours.
+
+    ``occurrence_date`` must equal the frontier, checked under the lock: a
+    double-submitted request otherwise consumes two occurrences.
 
     Concurrency: the template is locked FOR UPDATE, as generation locks it, and
     the existence check runs only AFTER the lock. A generation run that got the
@@ -786,6 +793,11 @@ async def materialise_next(
     )).scalar_one_or_none()
     if r is None:
         raise NotFoundError("Recurring transaction")
+    if r.next_due_date != occurrence_date:
+        raise ConflictError(
+            f"The next occurrence is {r.next_due_date.isoformat()}, not "
+            f"{occurrence_date.isoformat()}. Refresh and try again."
+        )
     if not r.is_active:
         raise ConflictError("This recurring transaction is stopped.")
     if not has_remaining_occurrences(r):
@@ -812,7 +824,7 @@ async def materialise_next(
             f"The occurrence on {due.isoformat()} already exists; edit or skip that transaction instead."
         )
 
-    tx = await _create_occurrence(db, org_id, r, due, today, skipped=skipped)
+    tx = await _create_occurrence(db, org_id, r, due, today, settle=False, skipped=skipped)
     _advance_frontier(r, due)
     await db.commit()
     return await _load_transaction(db, tx.id)
@@ -831,9 +843,13 @@ async def skip_occurrence(db: AsyncSession, org_id: int, transaction_id: int) ->
     is the only maintainer of ``ImportBatch.accepted_count``; flipping an
     imported row here would strand that counter.
 
-    ponytail: the "nothing links at it" probe is unlocked, as
-    ``_apply_match`` reads its target unlocked; a match racing this skip can
-    still land. Lock the referrers if that ever shows up.
+    Race with ``reconciliation_service._apply_match``: this row is locked
+    first, then the referrer probe is a LOCKING read (on MySQL it also
+    gap-locks the ``linked_transaction_id`` index, so a concurrent match cannot
+    insert a link to this row until we commit), and ``_apply_match`` locks its
+    target. Either the match lands first and this refuses, or the skip lands
+    first and the match refuses the reverted target. sqlite has no row locks;
+    nothing here can be proven by a test.
     """
     tx = (await db.execute(
         select(Transaction)
@@ -857,6 +873,7 @@ async def skip_occurrence(db: AsyncSession, org_id: int, transaction_id: int) ->
         select(Transaction.id)
         .where(Transaction.org_id == org_id, Transaction.linked_transaction_id == tx.id)
         .limit(1)
+        .with_for_update()
     )
     if referrer is not None:
         raise ConflictError(

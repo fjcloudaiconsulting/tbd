@@ -6,6 +6,7 @@ from app.deps import get_current_user
 from app.models.user import User
 from app.schemas.recurring import (
     DeleteRecurringResponse,
+    OccurrenceRequest,
     RecurringCreate,
     RecurringResponse,
     RecurringUpdate,
@@ -77,12 +78,16 @@ async def delete_recurring(
 )
 async def skip_next(
     recurring_id: int,
+    body: OccurrenceRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Skip the next occurrence (TBD-272): writes it as a skipped PENDING row
     at the frontier and spends it. Terminal."""
-    tx = await svc.materialise_next(db, current_user.org_id, recurring_id, skipped=True)
+    tx = await svc.materialise_next(
+        db, current_user.org_id, recurring_id,
+        occurrence_date=body.occurrence_date, skipped=True,
+    )
     return tx_to_response(tx)
 
 
@@ -91,12 +96,16 @@ async def skip_next(
 )
 async def materialise_next(
     recurring_id: int,
+    body: OccurrenceRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Write the next occurrence now (TBD-273, "edit next"). Its amount is then
     edited with ``PUT /transactions/{id}``; the template is untouched."""
-    tx = await svc.materialise_next(db, current_user.org_id, recurring_id, skipped=False)
+    tx = await svc.materialise_next(
+        db, current_user.org_id, recurring_id,
+        occurrence_date=body.occurrence_date, skipped=False,
+    )
     return tx_to_response(tx)
 
 
