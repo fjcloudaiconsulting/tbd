@@ -228,7 +228,13 @@ function bulkDeleteNotice(res: {
   const selection = selected === 1 ? "1 transaction" : `the ${selected} transactions`;
   const cascaded = res.deleted_count > removed;
   if (skipped === 0 && !cascaded) return "";
-  const parts = [`Deleted ${removed} of ${selection} you selected.`];
+  // Nothing skipped means every selected row went: "4 of the 4" would frame a
+  // complete delete as a partial one.
+  const lead =
+    skipped === 0
+      ? `Deleted ${selected === 1 ? "the transaction" : `the ${selected} transactions`} you selected.`
+      : `Deleted ${removed} of ${selection} you selected.`;
+  const parts = [lead];
   if (skipped > 0) {
     parts.push(`${skipped} ${skipped === 1 ? "was" : "were"} already gone.`);
   }
@@ -319,6 +325,11 @@ function TransactionsPageContent() {
   // it renders in the warning family, and it is its own state so it never
   // overwrites the demotion sentence in `notice` set by the same delete.
   const [bulkDeleteResult, setBulkDeleteResult] = useState("");
+  // Armed ONLY by the page clamp below. A delete that empties the last page
+  // shrinks `total`, the clamp moves `page` back, and that page change reloads
+  // the list: without this, that reload clears the banners the delete just
+  // set. Consumed by the very next loadTransactions call.
+  const keepBannersOnNextLoadRef = useRef(false);
   // Non-blocking refresh-error state for the AppShell post-write event
   // listener. The page keeps the previous list; banner offers a Retry.
   const [refreshError, setRefreshError] = useState(false);
@@ -487,8 +498,12 @@ function TransactionsPageContent() {
     // Safe against its own writers: handleDelete / handleBulkDelete await
     // this call and set the notice AFTERWARDS, so the clear can never race
     // ahead of the message it is meant to precede.
-    setNotice("");
-    setBulkDeleteResult("");
+    if (keepBannersOnNextLoadRef.current) {
+      keepBannersOnNextLoadRef.current = false;
+    } else {
+      setNotice("");
+      setBulkDeleteResult("");
+    }
     // collapse_transfers=true (TBD-268): the server folds each MUTUALLY-linked
     // transfer pair to one row BEFORE applying the limit, so a page of
     // `pageSize` rows is `pageSize` transfers. This replaces a client-side
@@ -609,8 +624,14 @@ function TransactionsPageContent() {
   // page beyond the new total.
   useEffect(() => {
     const last = pageCount(total, pageSize) - 1;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- clamp the current page down after a refetch shrinks the result set past it
-    if (page > last) setPage(Math.max(0, last));
+    if (page > last) {
+      // pageCount() is at least 1, so `last` >= 0 and this always CHANGES
+      // `page`: the load effect re-runs and consumes the ref straight away,
+      // so it can never stay armed and swallow a later clear.
+      keepBannersOnNextLoadRef.current = true;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clamp the current page down after a refetch shrinks the result set past it
+      setPage(Math.max(0, last));
+    }
   }, [total, pageSize, page]);
 
   // After a write from the AppShell-level "+ New Transaction" CTA the
@@ -713,6 +734,7 @@ function TransactionsPageContent() {
     setConfirmDeleteId(null);
     setError("");
     setNotice("");
+    setBulkDeleteResult("");
     try {
       // TBD-294: the endpoint returns a body now. Deleting a row that another
       // row was matched against marks that other row rejected, irreversibly

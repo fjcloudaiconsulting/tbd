@@ -345,7 +345,11 @@ describe("TransactionsPage — bulk-delete banner tone, announcement and gate (T
     confirmBulkDelete(await openBulkDeleteDialog());
 
     const banner = await screen.findByText(/^Deleted /);
-    expect(screen.getByTestId("transactions-live-region").contains(banner)).toBe(true);
+    const region = screen.getByTestId("transactions-live-region");
+    expect(region.contains(banner)).toBe(true);
+    // Kills stripping the announcer attributes off the region itself.
+    expect(region.getAttribute("role")).toBe("status");
+    expect(region.getAttribute("aria-live")).toBe("polite");
   });
 
   it("the demotion warning survives next to a partial success, in the same interaction", async () => {
@@ -369,16 +373,32 @@ describe("TransactionsPage — bulk-delete banner tone, announcement and gate (T
     // skipped == 0, deleted_count > requested_count: 4 selected, 2 of them
     // transfer legs, 6 rows gone. Kills keeping the `skipped_ids.length > 0`
     // gate, under which the user is never told rows they did not pick went.
+    // The lead-in is not "4 of the 4": nothing the user picked was missed, and
+    // "N of N" frames a complete delete as a partial one.
     setupApiFetch({ requested_count: 4, deleted_count: 6, skipped_ids: [], demoted_ids: [] });
     confirmBulkDelete(await openBulkDeleteDialog());
 
     const region = screen.getByTestId("transactions-live-region");
     await waitFor(() =>
       expect(region.textContent).toContain(
-        "Deleted 4 of the 4 transactions you selected. Transfers come in pairs, so the matching halves went too.",
+        "Deleted the 4 transactions you selected. Transfers come in pairs, so the matching halves went too.",
       ),
     );
     expect(region.textContent).not.toMatch(/already gone/);
+    expect(region.textContent).not.toMatch(/\d+ of/);
+  });
+
+  it("a pure cascade from a single selected row reads in the singular", async () => {
+    // Kills a dropped singular branch in the complete-delete lead-in.
+    setupApiFetch({ requested_count: 1, deleted_count: 2, skipped_ids: [], demoted_ids: [] });
+    confirmBulkDelete(await openBulkDeleteDialog([1]));
+
+    const region = screen.getByTestId("transactions-live-region");
+    await waitFor(() =>
+      expect(region.textContent).toBe(
+        "Deleted the transaction you selected. Transfers come in pairs, so the matching halves went too.",
+      ),
+    );
   });
 
   it("an ordinary delete (N selected, N deleted, nothing skipped, no cascade) shows no banner", async () => {
@@ -390,7 +410,8 @@ describe("TransactionsPage — bulk-delete banner tone, announcement and gate (T
 
     const region = screen.getByTestId("transactions-live-region");
     await waitFor(() => expect(region.textContent).toMatch(/matched duplicate was marked rejected/));
-    expect(document.body.textContent).not.toMatch(/Deleted \d+ of/);
+    expect(screen.queryByTestId("transactions-bulk-delete-result")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/Deleted /);
   });
 
   it("a failed bulk delete stays a danger-styled error and is not presented as a caution", async () => {
@@ -417,5 +438,111 @@ describe("TransactionsPage — bulk-delete banner tone, announcement and gate (T
     });
 
     await waitFor(() => expect(screen.queryByText(/^Deleted /)).toBeNull());
+  });
+
+  it("a failed follow-up bulk delete does not leave the previous caution on screen", async () => {
+    // Kills dropping the clear at the top of handleBulkDelete: a failure does
+    // not reload the list, so nothing else would remove the stale caution.
+    setupApiFetch(PARTIAL);
+    confirmBulkDelete(await openBulkDeleteDialog());
+    await screen.findByText(/^Deleted /);
+    setupApiFetch(new Error("Bulk delete exploded"));
+    fireEvent.click(screen.getAllByLabelText("Select transaction 1")[0]);
+    fireEvent.click(await screen.findByRole("button", { name: /^Delete selected$/ }));
+    confirmBulkDelete(await screen.findByRole("dialog"));
+    await screen.findByText("Bulk delete exploded");
+    expect(screen.queryByTestId("transactions-bulk-delete-result")).toBeNull();
+  });
+
+  it("a failed single-row delete does not leave a previous bulk caution on screen", async () => {
+    // Kills handleDelete clearing `error` and `notice` but not the bulk
+    // caution: the failed delete does not reload, so the old caution would sit
+    // next to the new error.
+    setupApiFetch(PARTIAL);
+    confirmBulkDelete(await openBulkDeleteDialog());
+    await screen.findByText(/^Deleted /);
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    const base = apiFetchMock.getMockImplementation()!;
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (opts?.method === "DELETE") throw new Error("Single delete exploded");
+      return base(url, opts);
+    });
+    fireEvent.click(screen.getAllByLabelText("Delete: Row one")[0]);
+    confirmBulkDelete(await screen.findByRole("dialog"));
+
+    await screen.findByText("Single delete exploded");
+    expect(screen.queryByTestId("transactions-bulk-delete-result")).toBeNull();
+  });
+
+  it("both banners survive the page clamp when a bulk delete empties the last page", async () => {
+    // 30 rows at 25 per page, user on page 2, deletes its 5 rows. The reload
+    // shrinks total to 25, the clamp moves the page back to 1, and that page
+    // change reloads the list again. Kills a loadTransactions that clears the
+    // banners on the clamp's reload: the caution and the demotion sentence
+    // would be on screen for one frame.
+    const page1 = Array.from({ length: 25 }, (_, i) =>
+      makeTx({ id: i + 1, description: `Row ${i + 1}` }),
+    );
+    const page2 = Array.from({ length: 5 }, (_, i) =>
+      makeTx({ id: i + 26, description: `Row ${i + 26}` }),
+    );
+    let deleted = false;
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (url === "/api/v1/transactions/bulk-delete") {
+        deleted = true;
+        return {
+          requested_count: 5,
+          deleted_count: 4,
+          skipped_ids: [30],
+          demoted_ids: [9001],
+        } as never;
+      }
+      if (url.startsWith("/api/v1/accounts")) return [ACCT_A, ACCT_B] as never;
+      if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
+      if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
+      if (url.startsWith("/api/v1/transactions?")) {
+        const onPage2 = url.includes("offset=25");
+        if (deleted) {
+          return { items: onPage2 ? [] : page1, total: 25, limit: 25, offset: onPage2 ? 25 : 0 } as never;
+        }
+        return { items: onPage2 ? page2 : page1, total: 30, limit: 25, offset: onPage2 ? 25 : 0 } as never;
+      }
+      return null as never;
+    });
+
+    renderWithSWR(<TransactionsPage />);
+    await waitForStableTxList();
+    fireEvent.click(await screen.findByLabelText("Next page", undefined, { timeout: 8000 }));
+    await screen.findAllByLabelText("Select transaction 26");
+    fireEvent.click(screen.getAllByLabelText("Select all on page")[0]);
+    fireEvent.click(await screen.findByRole("button", { name: /^Delete selected$/ }));
+    confirmBulkDelete(await screen.findByRole("dialog"));
+
+    // Wait for the clamp's own reload of page 1 to land.
+    await waitFor(() => {
+      const calls = apiFetchMock.mock.calls.map(([u]) => u as string);
+      const del = calls.indexOf("/api/v1/transactions/bulk-delete");
+      expect(del).toBeGreaterThanOrEqual(0);
+      expect(
+        calls.slice(del + 1).some((u) => u.startsWith("/api/v1/transactions?") && u.includes("offset=0")),
+      ).toBe(true);
+    });
+    await screen.findAllByLabelText("Select transaction 1");
+
+    const region = screen.getByTestId("transactions-live-region");
+    await waitFor(() => {
+      expect(region.textContent).toContain("Deleted 4 of the 5 transactions you selected. 1 was already gone.");
+      expect(region.textContent).toContain("1 matched duplicate was marked rejected.");
+    });
+
+    // The clamp's keep-once must be spent by that reload: a later filter
+    // change still clears both. Kills a keep flag that stays armed.
+    fireEvent.change(screen.getByLabelText("Search transactions"), {
+      target: { value: "bakery" },
+    });
+    await waitFor(() => expect(region.textContent).toBe(""));
   });
 });
