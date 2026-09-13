@@ -412,8 +412,9 @@ async def _propagate_fields_to_series(
     description: str | None,
     category_id: int | None,
     tx_type: TransactionType,
+    account_id: int | None = None,
 ) -> None:
-    """Sync name/category from an edited recurring-linked transaction to its
+    """Sync name/category/account from an edited recurring-linked transaction to its
     template and PENDING sibling instances. Pass only the fields that actually
     changed; None means leave that field untouched.
 
@@ -423,6 +424,13 @@ async def _propagate_fields_to_series(
     rows whose type matches the edited row's `tx_type` (the type its new
     category was validated against). This prevents corrupting a template or a
     sibling whose type has diverged via a per-occurrence edit.
+
+    `account_id` (TBD-315) is type-independent like `description`: template and
+    ALL PENDING siblings, with deliberately NO "still on the old account" guard
+    (it would strand a pending row whenever the template was moved from the
+    recurring page). The caller passes the already-VALIDATED ``tx.account_id``.
+    No balance logic: PENDING amounts are never inside ``accounts.balance``,
+    and SETTLED rows are excluded by the status filter.
 
     SETTLED instances are never modified (historical fact). Concurrency: two
     edits to different siblings race last-writer-wins on the template, which is
@@ -468,6 +476,35 @@ async def _propagate_fields_to_series(
                 Transaction.type == tx_type,
             )
             .values(category_id=category_id)
+        )
+    if account_id is not None:
+        # ORDER MATTERS: template first, pending rows second.
+        # ``generate_due_transactions`` holds FOR UPDATE on the template while
+        # it inserts rows copied from ``template.account_id``. Writing the
+        # template first makes this edit wait for generation's commit, so the
+        # pending UPDATE below then sees (and moves) the rows generation just
+        # inserted; the reverse order could miss them and leave them on the old
+        # account. SQLite has no row locks, so no test here can prove this.
+        # ⚠ Not a full serialization: ``_settle_due_auto`` locks due PENDING
+        # transaction rows BEFORE the template, so an edit that already holds
+        # the template can meet one of those rows below and InnoDB aborts one
+        # side as a deadlock. Same order, same edge, as description/category.
+        await db.execute(
+            update(RecurringTransaction)
+            .where(
+                RecurringTransaction.id == recurring_id,
+                RecurringTransaction.org_id == org_id,
+            )
+            .values(account_id=account_id)
+        )
+        await db.execute(
+            update(Transaction)
+            .where(
+                Transaction.recurring_id == recurring_id,
+                Transaction.org_id == org_id,
+                Transaction.status == TransactionStatus.PENDING,
+            )
+            .values(account_id=account_id)
         )
 
 
@@ -776,14 +813,16 @@ async def update_transaction(
                 new_amount=str(tx.amount),
             )
 
-    # Sync name/category forward to the recurring series (template + pending
-    # siblings) when this row belongs to one and the field actually changed.
+    # Sync name/category/account forward to the recurring series (template +
+    # pending siblings) when this row belongs to one and the field actually
+    # changed (a re-save with the same value must not propagate).
     # Settled siblings keep their snapshot values. See spec
     # specs/recurring-transaction-field-sync.md.
     if tx.recurring_id is not None:
         desc_changed = body.description is not None and tx.description != old_description
         cat_changed = body.category_id is not None and tx.category_id != old_category_id
-        if desc_changed or cat_changed:
+        acct_changed = body.account_id is not None and tx.account_id != old_account_id
+        if desc_changed or cat_changed or acct_changed:
             await _propagate_fields_to_series(
                 db,
                 org_id,
@@ -791,6 +830,7 @@ async def update_transaction(
                 description=tx.description if desc_changed else None,
                 category_id=tx.category_id if cat_changed else None,
                 tx_type=tx.type,
+                account_id=tx.account_id if acct_changed else None,
             )
 
     await db.commit()

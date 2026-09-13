@@ -247,7 +247,7 @@ export default async function DocsPage() {
             </p>
             <p>
               Transactions generated from a recurring template are
-              independent copies. Editing the name or category of any
+              independent copies. Editing the name, category, or account of any
               one of them updates the template and every upcoming (not
               yet settled) occurrence, so the series stays consistent
               going forward. Amounts and dates stay per occurrence, so
