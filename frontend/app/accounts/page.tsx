@@ -783,10 +783,13 @@ export default function AccountsPage() {
   useEffect(() => {
     const id = pendingScrollId.current;
     if (id == null) return;
-    // Editor closed or switched before we scrolled: stop tracking so this
-    // effect self-terminates instead of polling getElementById every render.
+    // Editor not open for this card. A null editAcctId is NOT a close: the
+    // deep-link effect above arms the marker in the same commit it calls
+    // startEditAcct, so this effect first runs before that state lands and
+    // used to disarm itself every time (the scroll never fired, TBD-436).
+    // Only a switch to another card's editor stops tracking.
     if (editAcctId !== id) {
-      pendingScrollId.current = null;
+      if (editAcctId != null) pendingScrollId.current = null;
       return;
     }
     const el = document.getElementById(`edit-acct-upcoming-payments-${id}`);
