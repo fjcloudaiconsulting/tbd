@@ -1677,7 +1677,7 @@ function TransactionsPageContent() {
                                     className="text-[11px] text-text-muted"
                                     data-testid={`edit-recurring-sync-hint-${tx.id}`}
                                   >
-                                    Editing the name or category also updates this
+                                    Editing the name, category, or account also updates this
                                     recurring series and its upcoming occurrences.
                                   </p>
                                   {/* TBD-277. The control for the SERIES lives on
@@ -2238,7 +2238,7 @@ function TransactionsPageContent() {
                                       className="text-[11px] text-text-muted"
                                       data-testid={`edit-recurring-sync-hint-mobile-${tx.id}`}
                                     >
-                                      Editing the name or category also updates this
+                                      Editing the name, category, or account also updates this
                                       recurring series and its upcoming occurrences.
                                     </p>
                                     {/* TBD-277 -- MOBILE twin of the series

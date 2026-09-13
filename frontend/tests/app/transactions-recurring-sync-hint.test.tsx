@@ -124,14 +124,14 @@ describe("TransactionsPage — recurring edit sync hint", () => {
     expect(
       await screen.findByTestId("edit-recurring-sync-hint-101"),
     ).toHaveTextContent(
-      "Editing the name or category also updates this recurring series and its upcoming occurrences.",
+      "Editing the name, category, or account also updates this recurring series and its upcoming occurrences.",
     );
     expect(screen.getByTestId("edit-recurring-chip-101")).toBeInTheDocument();
 
     expect(
       await screen.findByTestId("edit-recurring-sync-hint-mobile-101"),
     ).toHaveTextContent(
-      "Editing the name or category also updates this recurring series and its upcoming occurrences.",
+      "Editing the name, category, or account also updates this recurring series and its upcoming occurrences.",
     );
     expect(
       screen.getByTestId("edit-recurring-chip-mobile-101"),

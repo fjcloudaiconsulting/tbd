@@ -5,6 +5,8 @@
 - SETTLED instances are never touched
 - amount-only edits do not propagate
 - editing a non-origin (settled) instance still propagates to the series
+- TBD-315: account propagates too (template + ALL pending siblings), with no
+  balance move on the propagated rows; amount and date still do not
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -25,6 +27,7 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.transaction import TransactionUpdate
 from app.services import recurring_service, transaction_service
+from app.services.exceptions import ValidationError
 
 pytestmark = pytest.mark.asyncio
 
@@ -74,12 +77,16 @@ async def _seed(db: AsyncSession) -> dict:
     }
 
 
-async def _add_template(db: AsyncSession, seed: dict) -> int:
+async def _add_template(
+    db: AsyncSession, seed: dict, *, account_id: int | None = None,
+    next_due: date | None = None, auto_settle: bool = False,
+) -> int:
     r = RecurringTransaction(
-        org_id=seed["org_id"], account_id=seed["account_id"],
+        org_id=seed["org_id"], account_id=account_id or seed["account_id"],
         category_id=seed["exp_cat"], description="Gym", amount=Decimal("30.00"),
-        type="expense", frequency=Frequency.MONTHLY, next_due_date=date.today(),
-        auto_settle=False, is_active=True,
+        type="expense", frequency=Frequency.MONTHLY,
+        next_due_date=next_due or date.today(),
+        auto_settle=auto_settle, is_active=True,
     )
     db.add(r)
     await db.commit()
@@ -89,12 +96,13 @@ async def _add_template(db: AsyncSession, seed: dict) -> int:
 async def _add_instance(
     db: AsyncSession, seed: dict, recurring_id: int, *, status: TransactionStatus,
     description: str = "Gym", category_id: int | None = None, dt: date | None = None,
+    account_id: int | None = None, amount: Decimal = Decimal("30.00"),
 ) -> int:
     when = dt or date.today()
     tx = Transaction(
-        org_id=seed["org_id"], account_id=seed["account_id"],
+        org_id=seed["org_id"], account_id=account_id or seed["account_id"],
         category_id=category_id or seed["exp_cat"], description=description,
-        amount=Decimal("30.00"), type=TransactionType.EXPENSE, status=status,
+        amount=amount, type=TransactionType.EXPENSE, status=status,
         date=when,
         settled_date=when if status == TransactionStatus.SETTLED else None,
         recurring_id=recurring_id,
@@ -337,3 +345,310 @@ async def test_delete_clears_recurring_link_on_survivors(db_session):
     survivor = await db_session.get(Transaction, settled)
     assert survivor is not None
     assert survivor.recurring_id is None
+
+
+# ── TBD-315: account propagation ─────────────────────────────────────────────
+#
+# Fixed clock so generation windows are deterministic (billing_cycle_day=1, so
+# the cycle containing TODAY is 2026-03-01..2026-03-31).
+TODAY = date(2026, 3, 15)
+
+
+async def _add_account(
+    db: AsyncSession, org_id: int, name: str, balance: str, *, at_id: int | None = None,
+) -> int:
+    if at_id is None:
+        at = AccountType(org_id=org_id, name=f"T-{name}", slug=f"t-{name.lower()}")
+        db.add(at)
+        await db.flush()
+        at_id = at.id
+    acct = Account(
+        org_id=org_id, name=name, account_type_id=at_id,
+        balance=Decimal(balance), currency="EUR",
+    )
+    db.add(acct)
+    await db.commit()
+    return acct.id
+
+
+async def _balance(db: AsyncSession, account_id: int) -> Decimal:
+    return (await db.get(Account, account_id)).balance
+
+
+async def test_account_edit_reaches_next_generated_occurrence(db_session):
+    """fence F1 (DoD). Kills: moving pending rows but not the template, and
+    moving only the edited row -- either way generation copies A again."""
+    seed = await _seed(db_session)
+    acct_a = seed["account_id"]
+    acct_b = await _add_account(db_session, seed["org_id"], "B", "0")
+    rid = await _add_template(db_session, seed, next_due=date(2026, 3, 20))
+
+    await recurring_service.generate_due_transactions(db_session, seed["org_id"], today=TODAY)
+    first = (await db_session.execute(
+        select(Transaction).where(Transaction.recurring_id == rid)
+    )).scalar_one()
+    assert first.status == TransactionStatus.PENDING and first.account_id == acct_a
+
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], first.id, TransactionUpdate(account_id=acct_b),
+    )
+    await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=date(2026, 4, 5),
+    )
+
+    db_session.expire_all()
+    new_row = (await db_session.execute(
+        select(Transaction).where(
+            Transaction.recurring_id == rid, Transaction.date == date(2026, 4, 20),
+        )
+    )).scalar_one()
+    assert new_row.account_id == acct_b
+    assert (await db_session.get(RecurringTransaction, rid)).account_id == acct_b
+
+
+async def test_account_edit_on_settled_row_moves_only_its_own_balance(db_session):
+    """fence F2. Kills exactly two things: a balance move applied to the
+    propagated PENDING row (B would read 927, not 950), and a sibling UPDATE
+    missing the PENDING filter (no balance moves, so only the settled
+    sibling's ``account_id`` assertion sees it).
+
+    The helper inserts rows WITHOUT touching balances. ``update_transaction``
+    reverts and re-applies the EDITED row's delta and never rebuilds a balance
+    from rows, so the 939 / 1000 starting balances are arbitrary and the
+    settled 11.00 sibling plays no part in the balance assertions: A and B
+    only prove the 50.00 move happened once, and the 23.00 row moved none."""
+    seed = await _seed(db_session)
+    org_id = seed["org_id"]
+    acct_a = seed["account_id"]
+    a = await db_session.get(Account, acct_a)
+    a.balance = Decimal("939.00")
+    await db_session.commit()
+    acct_b = await _add_account(db_session, org_id, "B", "1000.00")
+    rid = await _add_template(db_session, seed)
+    settled_sib = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.SETTLED,
+        dt=TODAY - timedelta(days=40), amount=Decimal("11.00"),
+    )
+    pending_sib = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=10), amount=Decimal("23.00"),
+    )
+    edited = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.SETTLED,
+        dt=TODAY - timedelta(days=5), amount=Decimal("50.00"),
+    )
+
+    await transaction_service.update_transaction(
+        db_session, org_id, edited, TransactionUpdate(account_id=acct_b),
+    )
+
+    db_session.expire_all()
+    assert await _balance(db_session, acct_a) == Decimal("989.00")
+    assert await _balance(db_session, acct_b) == Decimal("950.00")
+    assert (await db_session.get(Transaction, edited)).account_id == acct_b
+    assert (await db_session.get(Transaction, settled_sib)).account_id == acct_a
+    assert (await db_session.get(Transaction, pending_sib)).account_id == acct_b
+    assert (await db_session.get(RecurringTransaction, rid)).account_id == acct_b
+
+
+async def test_propagated_pending_row_auto_settles_on_new_account(db_session):
+    """fence F3. Kills: writing only the template -- the due pending sibling
+    would settle on its own (old) account A. Balances seeded at 1000 each;
+    the helper inserts pending rows without balance effect (correctly: pending
+    amounts are never in accounts.balance)."""
+    seed = await _seed(db_session)
+    org_id = seed["org_id"]
+    acct_a = seed["account_id"]
+    a = await db_session.get(Account, acct_a)
+    a.balance = Decimal("1000.00")
+    await db_session.commit()
+    acct_b = await _add_account(db_session, org_id, "B", "1000.00")
+    # next_due beyond the cycle end, so the run generates nothing new and the
+    # only balance move is the auto-settle of the due sibling.
+    rid = await _add_template(
+        db_session, seed, next_due=date(2026, 4, 20), auto_settle=True,
+    )
+    due_sib = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY - timedelta(days=5), amount=Decimal("40.00"),
+    )
+    edited = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=10), amount=Decimal("40.00"),
+    )
+
+    await transaction_service.update_transaction(
+        db_session, org_id, edited, TransactionUpdate(account_id=acct_b),
+    )
+    await recurring_service.generate_due_transactions(db_session, org_id, today=TODAY)
+
+    db_session.expire_all()
+    sib = await db_session.get(Transaction, due_sib)
+    assert sib.status == TransactionStatus.SETTLED
+    assert sib.account_id == acct_b
+    assert await _balance(db_session, acct_a) == Decimal("1000.00")
+    assert await _balance(db_session, acct_b) == Decimal("960.00")
+
+
+async def test_resave_with_same_account_does_not_propagate(db_session):
+    """fence F4. Kills: a `body.account_id is not None` trigger without the
+    `!= old_account_id` comparison -- it would drag the individually-moved
+    sibling (C) and the drifted template (C) back to A."""
+    seed = await _seed(db_session)
+    org_id = seed["org_id"]
+    acct_a = seed["account_id"]
+    acct_c = await _add_account(db_session, org_id, "C", "0")
+    rid = await _add_template(db_session, seed, account_id=acct_c)
+    sib = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING, account_id=acct_c,
+    )
+    x = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING)
+
+    await transaction_service.update_transaction(
+        db_session, org_id, x, TransactionUpdate(account_id=acct_a, amount=Decimal("99.00")),
+    )
+
+    db_session.expire_all()
+    assert (await db_session.get(Transaction, sib)).account_id == acct_c
+    assert (await db_session.get(RecurringTransaction, rid)).account_id == acct_c
+
+
+async def test_cross_org_account_is_rejected_before_any_propagation(db_session):
+    """guard F5. Pins validation ORDER: kills propagation running BEFORE
+    ``validate_account`` (injected as a propagation call above the validation
+    block, which by construction can only use the raw ``body.account_id``).
+    A mutant that swaps in the raw body value at the CURRENT call site is
+    EQUIVALENT and cannot be killed by any test: by then
+    ``body.account_id == tx.account_id``. Reads happen in the SAME, uncommitted
+    session transaction on purpose: a rollback would also discard a premature
+    propagation write and hide exactly the ordering this guard pins."""
+    seed = await _seed(db_session)
+    acct_a = seed["account_id"]
+    other = Organization(name="Other", billing_cycle_day=1)
+    db_session.add(other)
+    await db_session.commit()
+    foreign = await _add_account(db_session, other.id, "Foreign", "0")
+    rid = await _add_template(db_session, seed)
+    sib = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING)
+    x = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING)
+
+    with pytest.raises(ValidationError):
+        await transaction_service.update_transaction(
+            db_session, seed["org_id"], x, TransactionUpdate(account_id=foreign),
+        )
+
+    db_session.expire_all()
+    assert (await db_session.get(RecurringTransaction, rid)).account_id == acct_a
+    assert (await db_session.get(Transaction, sib)).account_id == acct_a
+    assert (await db_session.get(Transaction, x)).account_id == acct_a
+
+
+async def test_account_and_amount_edit_propagates_only_the_account(db_session):
+    """guard F6. Kills: adding amount (or date) to the propagation. TBD-273
+    owns per-occurrence overrides."""
+    seed = await _seed(db_session)
+    acct_b = await _add_account(db_session, seed["org_id"], "B", "0")
+    rid = await _add_template(db_session, seed)
+    sib = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING, dt=TODAY + timedelta(days=30),
+    )
+    x = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING, dt=TODAY)
+
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], x,
+        TransactionUpdate(account_id=acct_b, amount=Decimal("77.00"), date=TODAY + timedelta(days=1)),
+    )
+
+    db_session.expire_all()
+    tmpl = await db_session.get(RecurringTransaction, rid)
+    assert tmpl.account_id == acct_b
+    assert tmpl.amount == Decimal("30.00")
+    s = await db_session.get(Transaction, sib)
+    assert s.account_id == acct_b
+    assert s.amount == Decimal("30.00")
+    assert s.date == TODAY + timedelta(days=30)
+
+
+async def _add_income_leg(db: AsyncSession, seed: dict, account_id: int, amount: str) -> int:
+    inc = Category(org_id=seed["org_id"], name="Refund", slug="refund", type=CategoryType.INCOME)
+    db.add(inc)
+    await db.flush()
+    tx = Transaction(
+        org_id=seed["org_id"], account_id=account_id, category_id=inc.id,
+        description="Incoming", amount=Decimal(amount), type=TransactionType.INCOME,
+        status=TransactionStatus.PENDING, date=TODAY + timedelta(days=3),
+    )
+    db.add(tx)
+    await db.commit()
+    return tx.id
+
+
+async def test_account_propagation_skips_pending_transfer_leg_sibling(db_session):
+    """fence T1. Kills: the sibling account UPDATE without
+    ``linked_transaction_id IS NULL``. It would move pending leg P2 onto its
+    partner I's account B -- a pair ``_link_pair`` forbids -- after which every
+    edit of P2 or I raises "Pair on same account after edit"."""
+    seed = await _seed(db_session)
+    org_id = seed["org_id"]
+    acct_a = seed["account_id"]
+    acct_b = await _add_account(db_session, org_id, "B", "0")
+    rid = await _add_template(db_session, seed)
+    p1 = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=5), amount=Decimal("30.00"),
+    )
+    p2 = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=35), amount=Decimal("23.00"),
+    )
+    inc = await _add_income_leg(db_session, seed, acct_b, "23.00")
+    await transaction_service.pair_existing_transactions(db_session, org_id, p2, inc)
+
+    await transaction_service.update_transaction(
+        db_session, org_id, p1, TransactionUpdate(account_id=acct_b),
+    )
+
+    db_session.expire_all()
+    assert (await db_session.get(Transaction, p1)).account_id == acct_b
+    assert (await db_session.get(RecurringTransaction, rid)).account_id == acct_b
+    assert (await db_session.get(Transaction, p2)).account_id == acct_a
+    assert (await db_session.get(Transaction, inc)).account_id == acct_b
+    # The pair stays editable.
+    await transaction_service.update_transaction(
+        db_session, org_id, p2, TransactionUpdate(description="Still a transfer"),
+    )
+
+
+async def test_category_propagation_skips_pending_transfer_leg_sibling(db_session):
+    """fence T2. Kills: the sibling category UPDATE without
+    ``linked_transaction_id IS NULL``. It would overwrite the leg's BOTH-type
+    Transfer category with an expense-only one."""
+    seed = await _seed(db_session)
+    org_id = seed["org_id"]
+    acct_b = await _add_account(db_session, org_id, "B", "0")
+    rid = await _add_template(db_session, seed)
+    p1 = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=5), amount=Decimal("30.00"),
+    )
+    plain = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=65), amount=Decimal("41.00"),
+    )
+    leg = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=35), amount=Decimal("23.00"),
+    )
+    inc = await _add_income_leg(db_session, seed, acct_b, "23.00")
+    await transaction_service.pair_existing_transactions(db_session, org_id, leg, inc)
+    db_session.expire_all()
+    transfer_cat = (await db_session.get(Transaction, leg)).category_id
+    assert transfer_cat not in (seed["exp_cat"], seed["exp_cat2"])
+
+    await transaction_service.update_transaction(
+        db_session, org_id, p1, TransactionUpdate(category_id=seed["exp_cat2"]),
+    )
+
+    db_session.expire_all()
+    assert (await db_session.get(Transaction, plain)).category_id == seed["exp_cat2"]
+    assert (await db_session.get(Transaction, leg)).category_id == transfer_cat
