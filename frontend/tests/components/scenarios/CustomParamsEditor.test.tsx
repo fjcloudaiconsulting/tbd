@@ -167,3 +167,57 @@ describe("CustomParamsEditor", () => {
     expect(lastCall.label).toBe("Updated label");
   });
 });
+
+// TBD-436: globals.css forces `scroll-behavior: auto` under reduced motion,
+// but an explicit `behavior: "smooth"` argument to scrollIntoView overrides
+// the computed property (CSSOM-View), so the call site must choose.
+// Both legs are required: a reduce-only fence passes a hard-coded "auto".
+describe("CustomParamsEditor — reduced-motion scroll (TBD-436)", () => {
+  let scrollSpy: ReturnType<typeof vi.fn>;
+
+  function stubReducedMotion(reduce: boolean) {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: reduce && query === "(prefers-reduced-motion: reduce)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  }
+
+  beforeEach(() => {
+    scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView =
+      scrollSpy as unknown as typeof Element.prototype.scrollIntoView;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    // jsdom has no scrollIntoView; remove the spy so it does not leak.
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  });
+
+  function addEventCard() {
+    render(<Wrapper />);
+    fireEvent.click(screen.getByTestId("custom-add-event"));
+    fireEvent.click(screen.getByTestId("custom-event-picker-one_off_income"));
+    expect(screen.getByTestId("custom-event-card-0")).toBeInTheDocument();
+  }
+
+  it("scrolls the new card with behavior 'auto' when the viewer prefers reduced motion", () => {
+    stubReducedMotion(true);
+    addEventCard();
+    expect(scrollSpy).toHaveBeenCalled();
+    expect(scrollSpy.mock.calls.at(-1)![0]).toMatchObject({ behavior: "auto" });
+  });
+
+  it("scrolls the new card with behavior 'smooth' when there is no preference", () => {
+    stubReducedMotion(false);
+    addEventCard();
+    expect(scrollSpy).toHaveBeenCalled();
+    expect(scrollSpy.mock.calls.at(-1)![0]).toMatchObject({ behavior: "smooth" });
+  });
+});

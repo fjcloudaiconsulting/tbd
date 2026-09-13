@@ -12,6 +12,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage, ApiResponseError } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
+import { scrollBehavior } from "@/lib/reduced-motion";
 import { formatMoney } from "@/lib/format";
 import {
   useTableState,
@@ -796,7 +797,7 @@ export default function AccountsPage() {
     if (el) {
       // Optional-chain: scrollIntoView is absent in jsdom (tests) and can be
       // missing in older engines; the deep-link open still succeeds without it.
-      el.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      el.scrollIntoView?.({ behavior: scrollBehavior(), block: "center" });
       pendingScrollId.current = null;
     }
   });

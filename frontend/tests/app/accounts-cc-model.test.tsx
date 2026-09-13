@@ -309,6 +309,61 @@ describe("CC Model — forecast deep link", () => {
     }
   });
 
+  // TBD-436: an explicit `behavior: "smooth"` argument overrides the
+  // reduced-motion `scroll-behavior: auto` in globals.css (CSSOM-View), so
+  // the deep-link scroll must choose. Both legs are required: a reduce-only
+  // fence passes a hard-coded "auto".
+  describe("reduced-motion scroll (TBD-436)", () => {
+    let scrollSpy: ReturnType<typeof vi.fn>;
+
+    function stubReducedMotion(reduce: boolean) {
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches: reduce && query === "(prefers-reduced-motion: reduce)",
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }));
+    }
+
+    beforeEach(() => {
+      scrollSpy = vi.fn();
+      Element.prototype.scrollIntoView =
+        scrollSpy as unknown as typeof Element.prototype.scrollIntoView;
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      // jsdom has no scrollIntoView; remove the spy so it does not leak.
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      window.history.replaceState({}, "", "/accounts");
+    });
+
+    async function deepLinkToCard() {
+      window.history.replaceState({}, "", "/accounts?edit=11");
+      mockApi();
+      renderWithSWR(<AccountsPage />);
+      expect(await screen.findByText("Upcoming payments")).toBeInTheDocument();
+      await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+      const target = scrollSpy.mock.contexts.at(-1) as HTMLElement;
+      expect(target.id).toBe("edit-acct-upcoming-payments-11");
+      return scrollSpy.mock.calls.at(-1)![0];
+    }
+
+    test("scrolls with behavior 'auto' when the viewer prefers reduced motion", async () => {
+      stubReducedMotion(true);
+      expect(await deepLinkToCard()).toMatchObject({ behavior: "auto" });
+    });
+
+    test("scrolls with behavior 'smooth' when there is no preference", async () => {
+      stubReducedMotion(false);
+      expect(await deepLinkToCard()).toMatchObject({ behavior: "smooth" });
+    });
+  });
+
   test("no editor opens when the edit param is absent", async () => {
     mockApi();
     renderWithSWR(<AccountsPage />);
