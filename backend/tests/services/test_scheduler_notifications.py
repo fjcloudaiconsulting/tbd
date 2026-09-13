@@ -117,6 +117,8 @@ async def org_with_members(session_factory):
 def test_templates_have_no_em_dashes():
     for title, body, _ in (
         nt.scheduler_recurring_generated(generated=2, settled=1),
+        nt.scheduler_recurring_generated(generated=2, settled=1, backfilled=2),
+        nt.scheduler_recurring_generated(generated=2, settled=1, backfilled=1),
         nt.scheduler_billing_close_reminder(close_date=datetime.date(2026, 8, 1), days_until=3),
         nt.scheduler_billing_closed(new_period_start=datetime.date(2026, 8, 1)),
     ):
