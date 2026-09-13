@@ -120,12 +120,12 @@ export default function PieWidget({
             metas={[data?.meta]}
             derivesCrossRowAggregate
             withholdsCrossRowAggregate
-            widgetTitle={widget.title || "Pie chart"}
+            widgetTitle={title}
             state={widgetDataState(isLoading, error, rows.length > 0)}
           />
         </div>
         <WidgetCsvButton
-          title={widget.title || "Pie chart"}
+          title={title}
           dataset={csvDataset}
           editMode={editMode}
         />

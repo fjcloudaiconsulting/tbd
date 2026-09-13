@@ -20,6 +20,8 @@ import {
   within,
 } from "../../../utils/render-with-swr";
 import { mockReportSources } from "../../../utils/mock-report-sources";
+import BarWidget from "@/components/reports/widgets/BarWidget";
+import KPIWidget from "@/components/reports/widgets/KPIWidget";
 import LineWidget from "@/components/reports/widgets/LineWidget";
 import AreaWidget from "@/components/reports/widgets/AreaWidget";
 import PieWidget from "@/components/reports/widgets/PieWidget";
@@ -30,6 +32,8 @@ import { runQuery } from "@/lib/reports/api";
 import { useSankeyQuery } from "@/lib/reports/useSankeyQuery";
 import type {
   AreaWidget as AreaWidgetType,
+  BarWidget as BarWidgetType,
+  KPIWidget as KPIWidgetType,
   LineWidget as LineWidgetType,
   PieWidget as PieWidgetType,
   SankeyWidget as SankeyWidgetType,
@@ -66,6 +70,9 @@ function chartStub(testid: string) {
   };
 }
 
+vi.mock("@/components/reports/widgets/BarWidgetChart", () => ({
+  default: chartStub("bar-chart-stub"),
+}));
 vi.mock("@/components/reports/widgets/LineWidgetChart", () => ({
   default: chartStub("line-chart-stub"),
 }));
@@ -173,7 +180,12 @@ const swatchColors = (list: HTMLElement) =>
 const attr = (el: HTMLElement, name: string): unknown =>
   JSON.parse(el.getAttribute(name) ?? "null");
 
-beforeEach(() => runQueryMock.mockReset());
+// Block body, deliberately: a function RETURNED from `beforeEach` is run by
+// vitest as a teardown, and `mockReset()` returns the mock itself, so the
+// arrow form calls `runQuery()` after every test.
+beforeEach(() => {
+  runQueryMock.mockReset();
+});
 
 /**
  * Revalidates every key in the test's own SWR cache. Rendered beside a widget
@@ -220,8 +232,23 @@ describe.each(SERIES)("%s legend", (type, Widget) => {
     expect(itemTexts(list)).toEqual(["Zeta", "Alpha"]);
     expect(itemTexts(list)).toEqual(attr(stub, "data-labels"));
     expect(swatchColors(list)).toEqual(attr(stub, "data-series-colors"));
-    expect(swatchColors(list)).toHaveLength(2);
+    // Pins the palette START as well as the pairing: a shift by one on both
+    // sides would keep the equality above green.
+    expect(swatchColors(list)).toEqual([
+      "var(--color-chart-1)",
+      "var(--color-chart-2)",
+    ]);
     expect(within(screen.getByTestId(`${type}-widget`)).getByTestId(`${type}-widget-legend`)).toBe(list);
+  });
+
+  // L6 fallback. KILLS: naming the legend from `widget.title` instead of the
+  // resolved title, which reads "Series in " on an untitled widget.
+  it("names an untitled legend from the fallback title", async () => {
+    runQueryMock.mockResolvedValue(MONTH_ROWS);
+    renderWithSWR(<Widget widget={seriesWidget(type, { title: "" })} />);
+    await screen.findByRole("list", {
+      name: `Series in ${type === "line" ? "Line" : "Area"} chart`,
+    });
   });
 
   // L8. KILLS: dropping `!twoDimensional` from the gate. TWO measures, because
@@ -281,9 +308,6 @@ describe.each(SERIES)("%s legend", (type, Widget) => {
     await failNextRevalidation();
     await screen.findByTestId(`${type}-widget-error`);
     expect(screen.queryByRole("list")).toBeNull();
-    // A further `runQuery` call follows the error (observed while writing
-    // this); left rejecting, vitest reports it unhandled against this test.
-    runQueryMock.mockResolvedValue(MONTH_ROWS);
   });
 });
 
@@ -301,8 +325,19 @@ describe("pie legend", () => {
     expect(itemTexts(list)).toEqual(["Rent", "Food", "Other"]);
     expect(itemTexts(list)).toEqual(attr(stub, "data-row-labels"));
     expect(swatchColors(list)).toEqual(attr(stub, "data-slice-colors"));
-    expect(swatchColors(list)[2]).toBe("var(--color-border-strong)");
+    expect(swatchColors(list)).toEqual([
+      "var(--color-chart-1)",
+      "var(--color-chart-2)",
+      "var(--color-border-strong)",
+    ]);
     expect(list.getAttribute("data-testid")).toBe("pie-widget-legend");
+  });
+
+  // L6 fallback, as for line/area.
+  it("names an untitled legend from the fallback title", async () => {
+    runQueryMock.mockResolvedValue(PIE_FOLD_ROWS);
+    renderWithSWR(<PieWidget widget={{ ...pieWidget(2), title: "" }} />);
+    await screen.findByRole("list", { name: "Category slices in Pie chart" });
   });
 
   // L13. KILLS: label-keyed list items. A REAL "Other" category ranks inside
@@ -365,28 +400,33 @@ describe("pie legend", () => {
     await failNextRevalidation();
     await screen.findByTestId("pie-widget-error");
     expect(screen.queryByRole("list")).toBeNull();
-    // A further `runQuery` call follows the error (observed while writing
-    // this); left rejecting, vitest reports it unhandled against this test.
-    runQueryMock.mockResolvedValue(PIE_FOLD_ROWS);
   });
 });
 
 /**
  * L10. ARIA prohibits naming the generic role, so an `aria-label` on a
- * role-less `<div>`/`<span>` is ignored by assistive tech. Sweeps the whole
- * population of report widgets that carried one, on the rendered DOM.
+ * role-less `<div>`/`<span>` is ignored by assistive tech. Sweeps every
+ * report widget rendered with a card, on the rendered DOM.
+ *
+ * `presentation` / `none` / `generic` count as role-less (an explicit role
+ * that still cannot be named), and `<a>` is nameable only with an `href`.
  */
 const NAMEABLE_TAGS = new Set([
-  "A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "UL", "OL", "TABLE",
+  "BUTTON", "INPUT", "SELECT", "TEXTAREA", "UL", "OL", "TABLE",
   "SECTION", "NAV", "FORM", "IMG", "SVG",
 ]);
+const UNNAMEABLE_ROLES = new Set(["", "presentation", "none", "generic"]);
+function nameableTag(el: HTMLElement): boolean {
+  const tag = el.tagName.toUpperCase();
+  return NAMEABLE_TAGS.has(tag) || (tag === "A" && el.hasAttribute("href"));
+}
 function roleLessNamed(root: HTMLElement): string[] {
   return [root, ...root.querySelectorAll<HTMLElement>("[aria-label]")]
     .filter(
       (el) =>
         el.hasAttribute("aria-label") &&
-        !el.hasAttribute("role") &&
-        !NAMEABLE_TAGS.has(el.tagName.toUpperCase()),
+        UNNAMEABLE_ROLES.has((el.getAttribute("role") ?? "").trim()) &&
+        !nameableTag(el),
     )
     .map((el) => `<${el.tagName.toLowerCase()} aria-label="${el.getAttribute("aria-label")}">`);
 }
@@ -397,6 +437,49 @@ describe("L10: no role-less aria-label in any report widget", () => {
     renderWithSWR(<Widget widget={seriesWidget(type)} />);
     await screen.findByTestId(`${type}-chart-stub`);
     expect(roleLessNamed(screen.getByTestId(`${type}-widget`))).toEqual([]);
+  });
+
+  it("bar, broken down (legend and chart region present)", async () => {
+    runQueryMock.mockResolvedValue({
+      rows: [
+        { month: "2026-01", category: "Rent", value: 9 },
+        { month: "2026-01", category: "Food", value: 4 },
+      ],
+      meta: META,
+    });
+    const widget: BarWidgetType = {
+      id: "w_bar",
+      type: "bar",
+      title: "Spend",
+      grid: { x: 0, y: 0, w: 6, h: 4 },
+      config: {
+        dataset: "transactions",
+        measure: { agg: "sum", field: "amount" },
+        dimensions: ["month", "category"],
+        sort: { by: "value", dir: "desc" },
+        limit: 10,
+      },
+    };
+    renderWithSWR(<BarWidget widget={widget} />);
+    await screen.findByTestId("bar-widget-legend");
+    expect(roleLessNamed(screen.getByTestId("bar-widget"))).toEqual([]);
+  });
+
+  it("kpi", async () => {
+    runQueryMock.mockResolvedValue({ rows: [{ value: 5 }], meta: META });
+    const widget: KPIWidgetType = {
+      id: "w_kpi",
+      type: "kpi",
+      title: "Total spend",
+      grid: { x: 0, y: 0, w: 3, h: 2 },
+      config: {
+        dataset: "transactions",
+        measure: { agg: "sum", field: "amount" },
+      },
+    };
+    renderWithSWR(<KPIWidget widget={widget} />);
+    await screen.findByTestId("kpi-widget-value");
+    expect(roleLessNamed(screen.getByTestId("kpi-widget"))).toEqual([]);
   });
 
   it("pie", async () => {

@@ -130,7 +130,7 @@ export default function AreaWidget({
             metas={metas}
             derivesCrossRowAggregate={false}
             withholdsCrossRowAggregate={false}
-            widgetTitle={widget.title || "Area chart"}
+            widgetTitle={title}
             state={widgetDataState(isLoading, error, rows.length > 0)}
           />
         </div>
@@ -140,7 +140,7 @@ export default function AreaWidget({
             the refusal exists to stop. */}
         {!twoDimensional && (
           <WidgetCsvButton
-            title={widget.title || "Area chart"}
+            title={title}
             dataset={csvDataset}
             editMode={editMode}
           />

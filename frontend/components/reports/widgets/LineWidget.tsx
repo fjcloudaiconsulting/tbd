@@ -127,7 +127,7 @@ export default function LineWidget({
             metas={metas}
             derivesCrossRowAggregate={false}
             withholdsCrossRowAggregate={false}
-            widgetTitle={widget.title || "Line chart"}
+            widgetTitle={title}
             state={widgetDataState(isLoading, error, rows.length > 0)}
           />
         </div>
@@ -137,7 +137,7 @@ export default function LineWidget({
             the refusal exists to stop. */}
         {!twoDimensional && (
           <WidgetCsvButton
-            title={widget.title || "Line chart"}
+            title={title}
             dataset={csvDataset}
             editMode={editMode}
           />
