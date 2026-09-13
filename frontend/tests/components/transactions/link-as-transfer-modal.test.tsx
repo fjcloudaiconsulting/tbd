@@ -27,6 +27,7 @@ const expenseLeg: Transaction = {
   is_imported: false,
   is_manual_adjustment: false,
   is_reverted: false,
+  differs_from_series: false,
   tags: [],
 };
 
@@ -48,6 +49,7 @@ const incomeLeg: Transaction = {
   is_imported: false,
   is_manual_adjustment: false,
   is_reverted: false,
+  differs_from_series: false,
   tags: [],
 };
 

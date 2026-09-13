@@ -19,9 +19,9 @@ import {
   type SortDir,
 } from "@/lib/hooks/use-table-state";
 import { SORT_KEY_RECURRING } from "@/lib/hooks/persisted-keys";
-import { btnSecondary, card, cardHeader, cardTitle, error as errorCls, success as successCls, pageTitle } from "@/lib/styles";
+import { btnSecondary, card, cardHeader, cardTitle, error as errorCls, input as inputCls, label as labelCls, success as successCls, pageTitle } from "@/lib/styles";
 import type { RecurringTransaction } from "@/lib/types";
-import { instalmentDone } from "@/lib/recurring";
+import { instalmentDone, seriesRunning } from "@/lib/recurring";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 
 const FREQ_LABELS: Record<string, string> = {
@@ -124,6 +124,9 @@ interface RecurringTableProps {
   emptyLabel: string;
   onStop?: (item: RecurringTransaction) => void;
   onResume?: (item: RecurringTransaction) => void;
+  // TBD-272/273. Passed to the Active table only.
+  onSkipNext?: (item: RecurringTransaction) => void;
+  onEditNext?: (item: RecurringTransaction) => void;
   onDelete: (id: number) => void;
   testId: string;
 }
@@ -136,6 +139,8 @@ function RecurringTable({
   emptyLabel,
   onStop,
   onResume,
+  onSkipNext,
+  onEditNext,
   onDelete,
   testId,
 }: RecurringTableProps) {
@@ -285,6 +290,26 @@ function RecurringTable({
                 </td>
                 <td className="px-3 py-3">
                   <span className="flex justify-end gap-2">
+                    {/* TBD-272/273. Only for a series that can still deliver an
+                        occurrence; the server's 409 decides everything else. */}
+                    {onEditNext && onSkipNext && seriesRunning(r) && (
+                      <>
+                        <button
+                          onClick={() => onEditNext(r)}
+                          aria-label={`Edit next amount: ${r.description}`}
+                          className="min-h-[44px] md:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent"
+                        >
+                          Edit next
+                        </button>
+                        <button
+                          onClick={() => onSkipNext(r)}
+                          aria-label={`Skip next: ${r.description}`}
+                          className="min-h-[44px] md:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent"
+                        >
+                          Skip next
+                        </button>
+                      </>
+                    )}
                     {paused ? (
                       <button
                         onClick={() => onResume?.(r)}
@@ -363,6 +388,24 @@ function RecurringTable({
             )}
             <div className="text-xs text-text-muted">{FREQ_LABELS[r.frequency] ?? r.frequency}</div>
             <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
+              {onEditNext && onSkipNext && seriesRunning(r) && (
+                <>
+                  <button
+                    onClick={() => onEditNext(r)}
+                    aria-label={`Edit next amount: ${r.description}`}
+                    className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary"
+                  >
+                    Edit next
+                  </button>
+                  <button
+                    onClick={() => onSkipNext(r)}
+                    aria-label={`Skip next: ${r.description}`}
+                    className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary"
+                  >
+                    Skip next
+                  </button>
+                </>
+              )}
               {paused ? (
                 <button
                   onClick={() => onResume?.(r)}
@@ -418,6 +461,13 @@ export default function RecurringPage() {
   const [successMsg, setSuccessMsg] = useState("");
   const [confirmStop, setConfirmStop] = useState<{ id: number; description: string } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  // TBD-272/273.
+  const [confirmSkip, setConfirmSkip] = useState<RecurringTransaction | null>(null);
+  const [editNext, setEditNext] = useState<{ item: RecurringTransaction; amount: string } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const money = useMoney();
+  const signed = (r: RecurringTransaction, value: number | string) =>
+    `${r.type === "income" ? "+" : "-"}${money(value)}`;
 
   const reload = useCallback(async () => {
     const data = await apiFetch<RecurringTransaction[]>("/api/v1/recurring");
@@ -477,6 +527,53 @@ export default function RecurringPage() {
       ].filter(Boolean).join(" "));
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
+  }
+
+  // TBD-272. The date is the row's frontier, never today: the server 409s when
+  // it no longer matches, so a stale screen cannot skip the wrong occurrence.
+  async function doSkipNext(item: RecurringTransaction) {
+    setError(""); setSuccessMsg("");
+    setSubmitting(true);
+    try {
+      await apiFetch(`/api/v1/recurring/${item.id}/skip-next`, {
+        method: "POST",
+        body: JSON.stringify({ occurrence_date: item.next_due_date }),
+      });
+      setSuccessMsg(`Skipped "${item.description}" on ${item.next_due_date}.`);
+    } catch (err) { setError(extractErrorMessage(err)); }
+    await reload().catch(() => {});
+    setSubmitting(false);
+    setConfirmSkip(null);
+  }
+
+  // Up to 2 decimals and above 0; the input's own min/step are not enforced
+  // on a typed value.
+  const editNextValid = editNext !== null && /^\d+(\.\d{1,2})?$/.test(editNext.amount) && Number(editNext.amount) > 0;
+
+  // TBD-273. Write the occurrence, then edit its amount. Never retry the
+  // materialise: it moved the frontier, so a retry would 409 or take the NEXT one.
+  async function doEditNext(item: RecurringTransaction, amount: string) {
+    setError(""); setSuccessMsg("");
+    setSubmitting(true);
+    let created: { id: number } | null = null;
+    try {
+      created = await apiFetch<{ id: number }>(`/api/v1/recurring/${item.id}/materialise-next`, {
+        method: "POST",
+        body: JSON.stringify({ occurrence_date: item.next_due_date }),
+      });
+      await apiFetch(`/api/v1/transactions/${created.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ amount }),
+      });
+      setSuccessMsg(`"${item.description}" on ${item.next_due_date} is now ${signed(item, amount)}. Later occurrences stay at ${signed(item, item.amount)}.`);
+    } catch (err) {
+      setError(created
+        ? `The ${item.next_due_date} occurrence was created at ${signed(item, item.amount)}, but the new amount didn't save: ${extractErrorMessage(err)} Edit it on the Transactions page.`
+        : extractErrorMessage(err));
+    }
+    await reload().catch(() => {});
+    setSubmitting(false);
+    setEditNext(null);
   }
 
   async function handleGenerate() {
@@ -563,6 +660,8 @@ export default function RecurringPage() {
             items={activeItems}
             emptyLabel="No active recurring transactions."
             onStop={handleStop}
+            onSkipNext={setConfirmSkip}
+            onEditNext={(item) => setEditNext({ item, amount: String(item.amount) })}
             onDelete={handleDelete}
             testId="recurring-active-table"
           />
@@ -590,6 +689,62 @@ export default function RecurringPage() {
         onConfirm={() => { if (confirmStop) { doStop(confirmStop.id, confirmStop.description); } setConfirmStop(null); }}
         onCancel={() => setConfirmStop(null)}
       />
+      <ConfirmModal
+        open={confirmSkip !== null}
+        title="Skip Next Occurrence"
+        message={confirmSkip
+          ? `Skip "${confirmSkip.description}" on ${confirmSkip.next_due_date} (${signed(confirmSkip, confirmSkip.amount)})?\n\nIt will stay in your transactions marked Excluded and count toward nothing. Later occurrences are unchanged.` +
+            (confirmSkip.occurrence_count != null ? `\n\nIt still counts as 1 of the ${confirmSkip.occurrence_count} payments.` : "") +
+            "\n\nThis can't be undone."
+          : ""}
+        confirmLabel="Skip"
+        variant="warning"
+        submitting={submitting}
+        onConfirm={() => { if (confirmSkip) doSkipNext(confirmSkip); }}
+        onCancel={() => setConfirmSkip(null)}
+      />
+      <ConfirmModal
+        open={editNext !== null}
+        title="Edit Next Amount"
+        message={editNext
+          ? `Change the amount of "${editNext.item.description}" on ${editNext.item.next_due_date} only. The series stays at ${signed(editNext.item, editNext.item.amount)}.`
+          : ""}
+        confirmLabel="Save amount"
+        submitting={submitting}
+        confirmDisabled={!editNextValid || Number(editNext?.amount) === editNext?.item.amount}
+        onConfirm={() => {
+          if (editNext && editNextValid && Number(editNext.amount) !== editNext.item.amount) {
+            doEditNext(editNext.item, editNext.amount);
+          }
+        }}
+        onCancel={() => setEditNext(null)}
+      >
+        {editNext && (
+          <div className="mt-4">
+            <label htmlFor="edit-next-amount" className={labelCls}>
+              Amount for {editNext.item.next_due_date}
+            </label>
+            <input
+              id="edit-next-amount"
+              type="number"
+              step="0.01"
+              min="0.01"
+              inputMode="decimal"
+              autoFocus
+              value={editNext.amount}
+              onChange={(e) => setEditNext({ ...editNext, amount: e.target.value })}
+              aria-invalid={!editNextValid}
+              aria-describedby={editNextValid ? undefined : "edit-next-amount-error"}
+              className={inputCls}
+            />
+            {!editNextValid && (
+              <p id="edit-next-amount-error" className="mt-1 text-xs text-danger">
+                Enter an amount above 0.
+              </p>
+            )}
+          </div>
+        )}
+      </ConfirmModal>
       <ConfirmModal
         open={confirmDeleteId !== null}
         title="Delete Recurring Template"

@@ -87,6 +87,10 @@ const MATCHED_BADGE_SR =
 // `title` + sr-only and is therefore unreachable by tap. Filed as TBD-389
 // rather than widening this ticket; do not "fix" the inconsistency by
 // reverting THIS badge to `title`, which is the wrong direction.
+// TBD-273. Set by the server when an occurrence's amount was edited away from
+// its series.
+const AMOUNT_DIFFERS_BADGE_TITLE =
+  "This occurrence's amount is different from its recurring series. Later occurrences use the series amount.";
 const EXCLUDED_BADGE_TITLE =
   "This transaction is not counted in balances or reports. Its amount is not in your account balance.";
 // Shown when a `?transaction_id=` deep link points at a row the current page
@@ -337,6 +341,9 @@ function TransactionsPageContent() {
   );
   const editingSeries = recurringData?.find((r) => r.id === editingRecurringId);
   const editingSeriesRunning = !!editingSeries && seriesRunning(editingSeries);
+  // TBD-272. The occurrence being skipped from the edit form.
+  const [confirmSkipTx, setConfirmSkipTx] = useState<Transaction | null>(null);
+  const [skipping, setSkipping] = useState(false);
   const [editDesc, setEditDesc] = useState("");
   const [editAmount, setEditAmount] = useState("");
   const [editType, setEditType] = useState<"income" | "expense">("expense");
@@ -851,6 +858,24 @@ function TransactionsPageContent() {
       }
     } else {
       setEditPartner(null);
+    }
+  }
+
+  async function handleSkipOccurrence(tx: Transaction) {
+    setError("");
+    setSkipping(true);
+    try {
+      await apiFetch(`/api/v1/transactions/${tx.id}/skip`, { method: "POST" });
+      closeEdit();
+      setConfirmSkipTx(null);
+      // loadTransactions clears `notice`, so it is set afterwards.
+      await loadTransactions(page);
+      setNotice(`Skipped "${tx.description}" on ${tx.date}.`);
+    } catch (err) {
+      setConfirmSkipTx(null);
+      setError(extractErrorMessage(err));
+    } finally {
+      setSkipping(false);
     }
   }
 
@@ -1716,6 +1741,19 @@ function TransactionsPageContent() {
                                       .
                                     </p>
                                   )}
+                                  {/* TBD-272. Gated on the ROW's status, not the
+                                      form's: only a stored pending occurrence
+                                      can be skipped. Mirrored in the mobile card. */}
+                                  {tx.status === "pending" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmSkipTx(tx)}
+                                      aria-label={`Skip this occurrence: ${tx.description}`}
+                                      className="mt-1 min-h-[44px] w-fit rounded-md border border-border px-4 text-sm text-text-secondary hover:bg-surface-raised"
+                                    >
+                                      Skip this occurrence
+                                    </button>
+                                  )}
                                 </div>
                               ) : (
                                 <div className="flex flex-wrap items-center gap-3">
@@ -1998,6 +2036,22 @@ function TransactionsPageContent() {
                                 />
                               </span>
                             )}
+                            {tx.differs_from_series && (
+                              <span className="mt-0.5 inline-flex">
+                                <Tooltip
+                                  content={AMOUNT_DIFFERS_BADGE_TITLE}
+                                  trigger={
+                                    <span
+                                      className={`${badgeNeutral} cursor-help`}
+                                      data-testid={`amount-differs-badge-${tx.id}`}
+                                      tabIndex={0}
+                                    >
+                                      Amount differs
+                                    </span>
+                                  }
+                                />
+                              </span>
+                            )}
                           </span>
                           <span className="col-span-2 text-sm text-text-secondary truncate">
                             {isPairedTransfer
@@ -2260,6 +2314,16 @@ function TransactionsPageContent() {
                                         .
                                       </p>
                                     )}
+                                    {tx.status === "pending" && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmSkipTx(tx)}
+                                        aria-label={`Skip this occurrence: ${tx.description}`}
+                                        className="mt-1 min-h-[44px] w-fit px-4 rounded-md border border-border text-sm text-text-secondary"
+                                      >
+                                        Skip this occurrence
+                                      </button>
+                                    )}
                                   </div>
                                 ) : (
                                   <div className="flex flex-col gap-2">
@@ -2475,6 +2539,22 @@ function TransactionsPageContent() {
                                   />
                                 </div>
                               )}
+                              {tx.differs_from_series && (
+                                <div className="mt-1">
+                                  <Tooltip
+                                    content={AMOUNT_DIFFERS_BADGE_TITLE}
+                                    trigger={
+                                      <span
+                                        className={`${badgeNeutral} cursor-help`}
+                                        data-testid={`amount-differs-badge-mobile-${tx.id}`}
+                                        tabIndex={0}
+                                      >
+                                        Amount differs
+                                      </span>
+                                    }
+                                  />
+                                </div>
+                              )}
                             </div>
                             <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isPairedTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
                               {isPairedTransfer ? "" : tx.type === "income" ? "+" : "-"}{money(tx.amount)}
@@ -2601,6 +2681,20 @@ function TransactionsPageContent() {
           )}
         </>
       )}
+      <ConfirmModal
+        open={confirmSkipTx !== null}
+        title="Skip This Occurrence"
+        message={confirmSkipTx
+          ? `Skip "${confirmSkipTx.description}" on ${confirmSkipTx.date} (${confirmSkipTx.type === "income" ? "+" : "-"}${money(confirmSkipTx.amount)})?\n\nIt will stay in your list marked Excluded and count toward nothing. The rest of the series is unchanged.` +
+            (editingSeries?.occurrence_count != null ? `\n\nIt still counts as 1 of the ${editingSeries.occurrence_count} payments.` : "") +
+            "\n\nThis can't be undone."
+          : ""}
+        confirmLabel="Skip"
+        variant="warning"
+        submitting={skipping}
+        onConfirm={() => { if (confirmSkipTx) handleSkipOccurrence(confirmSkipTx); }}
+        onCancel={() => setConfirmSkipTx(null)}
+      />
       <ConfirmModal
         open={confirmDeleteId !== null}
         title="Delete Transaction"
