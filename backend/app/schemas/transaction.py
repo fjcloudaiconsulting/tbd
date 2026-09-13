@@ -121,6 +121,9 @@ class TransactionResponse(BaseModel):
     # Its amount IS inside ``accounts.balance``, so a flag with that name
     # would be a falsehood on every adjustment row.
     is_reverted: bool = False
+    # TBD-273: True iff this is a PENDING, non-reverted recurring occurrence
+    # whose amount differs from its template's. Derived, never stored.
+    differs_from_series: bool = False
     # PR-Tags-A contract: list/detail responses include the tags
     # attached to a transaction. Empty list when none. Populated via a
     # selectinload in transaction_service.list_transactions /

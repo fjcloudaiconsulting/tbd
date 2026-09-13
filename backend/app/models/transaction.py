@@ -166,6 +166,10 @@ class Transaction(Base):
 
     account: Mapped["Account"] = relationship()
     category: Mapped["Category"] = relationship(back_populates="transactions")
+    # TBD-273: read only to derive ``differs_from_series`` on the response.
+    # Eager-loaded by ``transaction_service._load_opts``; never lazy-load it
+    # on an AsyncSession.
+    recurring: Mapped[Optional["RecurringTransaction"]] = relationship()
     # post_update=True breaks the topological-sort cycle when both halves of a
     # transfer pair (A.linked_transaction_id -> B, B.linked_transaction_id -> A)
     # are queued for delete in the same flush. SQLAlchemy emits an extra UPDATE

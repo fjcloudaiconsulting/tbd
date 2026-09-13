@@ -715,6 +715,8 @@ export default function AccountsPage() {
   // The display below renders Math.abs() and the "Pending:" label, so
   // sign is just used to compute the magnitude correctly.
   const pendingByAccount = pendingTransactions.reduce<Record<number, number>>((acc, tx) => {
+    // TBD-272: a skipped/rejected pending row will never land.
+    if (tx.is_reverted) return acc;
     const sign = tx.type === "income" ? 1 : -1;
     acc[tx.account_id] = (acc[tx.account_id] || 0) + Number(tx.amount) * sign;
     return acc;
