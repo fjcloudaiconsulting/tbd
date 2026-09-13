@@ -143,10 +143,11 @@ describe("SchedulerSettingsCard", () => {
   });
 
   it("X1 fence: a sibling save finishing leaves a field still in flight pending, and it still refuses a second save", async () => {
-    // Kills BOTH halves of the old single-value `savingField`: when B finished
-    // it cleared A's pending state while A still saved (A's aria-disabled
-    // assertion), and only the ref guard then stopped A's second save (the
-    // call-count assertion).
+    // Kills a single-value saving state: when B finished it cleared A's
+    // pending state while A still saved (A's aria-disabled assertion), which
+    // re-opened A to a second save (the call count). It does NOT fence the
+    // ref guard: with pending rendered correctly the switch refuses the click
+    // before the handler runs. X1b is the ref-guard fence.
     vi.mocked(api.updateSchedulerSettings).mockImplementation(((patch: Record<string, unknown>) =>
       "automate_billing_close" in patch
         ? new Promise(() => {})

@@ -17,6 +17,8 @@
  *   page (the HTML focus-fixup rule). A caller tracking several independent
  *   saves keeps its in-flight set in state and also guards re-entry with a
  *   synchronous ref in its handler (SchedulerSettingsCard, PlanningToolsCard).
+ *   A card with a single save needs neither unless it applies an optimistic
+ *   value and rolls back to a captured `prev`.
  * - No focus class. The global `:focus-visible` outline in globals.css
  *   (TBD-319) is the indicator; a 30%-alpha ring measures about 1.78:1.
  * - Colours measured against `surface` ONLY (WCAG 1.4.11, >= 3.30:1 in both

@@ -344,9 +344,10 @@ describe("OrganizationSettingsPage — Planning tools card (TBD-197 F14)", () =>
   });
 
   it("X3 fence: Forecast's save finishing leaves Budgets pending, and Budgets still refuses a second PUT", async () => {
-    // Kills the single-value `saving` state (finishing Forecast cleared the
-    // Budgets pending state: the aria-disabled assertion) and a missing ref
-    // guard (the PUT count).
+    // Kills a single-value `saving` state: finishing Forecast cleared the
+    // Budgets pending state (the aria-disabled assertion) and re-opened Budgets
+    // to a second PUT (the count). It does NOT fence the ref guard: with pending
+    // rendered correctly the switch refuses the click first. X3b does.
     setAuth(true, true);
     vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
       if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
