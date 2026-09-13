@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
@@ -89,11 +89,33 @@ function makeTx(over: Partial<Tx> = {}): Tx {
   };
 }
 
-function setupApiFetch(txs: Tx[]) {
+type Series = {
+  id: number;
+  is_active: boolean;
+  occurrence_count: number | null;
+  occurrences_elapsed: number;
+};
+
+// An open-ended, active series: the only shape that existed before TBD-275.
+function makeSeries(id: number, over: Partial<Series> = {}): Series {
+  return { id, is_active: true, occurrence_count: null, occurrences_elapsed: 0, ...over };
+}
+
+// `series` defaults to one running series per recurring row, so the TBD-277
+// tests keep describing a series that genuinely is running. "reject" makes the
+// series list request fail.
+function setupApiFetch(txs: Tx[], series?: Series[] | "reject") {
+  const templates =
+    series ??
+    txs.flatMap((t) => (t.recurring_id === null ? [] : [makeSeries(t.recurring_id)]));
   const apiFetchMock = vi.mocked(apiFetch);
   apiFetchMock.mockReset();
   apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
+    if (url === "/api/v1/recurring" && method === "GET") {
+      if (templates === "reject") throw new Error("recurring list failed");
+      return templates as never;
+    }
     if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
     if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
@@ -136,8 +158,8 @@ function tree(id: number, mobile: boolean) {
 const HINT_COPY =
   "Editing or deleting this occurrence leaves the series running. Stop the whole series on the Recurring page.";
 
-async function openEdit(tx: Tx) {
-  setupApiFetch([tx]);
+async function openEdit(tx: Tx, series?: Series[] | "reject") {
+  setupApiFetch([tx], series);
   renderWithSWR(<TransactionsPage />);
   await waitForStableTxList();
   fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -151,7 +173,7 @@ describe("TransactionsPage — recurring series pointer (TBD-277)", () => {
 
     for (const mobile of [false, true]) {
       const suffix = mobile ? "mobile-201" : "201";
-      const hint = tree(201, mobile).getByTestId(
+      const hint = await tree(201, mobile).findByTestId(
         `edit-recurring-series-hint-${suffix}`,
       );
       expect(hint, mobile ? "mobile" : "desktop").toHaveTextContent(HINT_COPY);
@@ -163,7 +185,7 @@ describe("TransactionsPage — recurring series pointer (TBD-277)", () => {
     await openEdit(tx);
 
     for (const mobile of [false, true]) {
-      const link = tree(202, mobile).getByRole("link", {
+      const link = await tree(202, mobile).findByRole("link", {
         name: "Recurring page",
       });
       expect(link, mobile ? "mobile" : "desktop").toHaveAttribute(
@@ -222,8 +244,103 @@ describe("TransactionsPage — recurring series pointer (TBD-277)", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
     await screen.findByTestId("edit-recurring-row-204");
     expect(
-      screen.getAllByText(/Stop the whole series/i).length,
+      (await screen.findAllByText(/Stop the whole series/i)).length,
       "one per render tree",
     ).toBe(2);
+  });
+});
+
+/**
+ * TBD-318. The pointer says the series is still RUNNING, so it must not render
+ * for a series that is not. The transaction row carries only `recurring_id`;
+ * the state lives on the template.
+ *
+ * Only two non-running states are reachable with the row still linked:
+ * - an instalment series whose count is spent (TBD-275 keeps `is_active` true
+ *   and keeps `recurring_id` on every row, deliberately), and
+ * - `is_active: false` written through `PUT /recurring/{id}`. The UI's own Stop
+ *   cannot produce it: `stop_recurring` NULLs `recurring_id` on every surviving
+ *   row in the same commit, so the pointer never renders there at all.
+ */
+describe("TransactionsPage — series pointer only for a running series (TBD-318)", () => {
+  // Absence is only meaningful once the series has been fetched and applied;
+  // before that the pointer is absent for every row, running or not. So wait on
+  // the request's own promise, inside act() so SWR's update is flushed, rather
+  // than on a tick count that a slower scheduler would outrun.
+  async function seriesSettled() {
+    const mock = vi.mocked(apiFetch);
+    await waitFor(() => expect(mock).toHaveBeenCalledWith("/api/v1/recurring"));
+    const i = mock.mock.calls.findIndex(([url]) => url === "/api/v1/recurring");
+    await act(async () => {
+      await Promise.resolve(mock.mock.results[i].value).catch(() => undefined);
+    });
+  }
+
+  function expectNoPointer(id: number) {
+    for (const mobile of [false, true]) {
+      const suffix = mobile ? `mobile-${id}` : `${id}`;
+      const scope = tree(id, mobile);
+      const where = mobile ? "mobile" : "desktop";
+      expect(scope.queryByTestId(`edit-recurring-series-hint-${suffix}`), where).toBeNull();
+      expect(scope.queryByText(/Stop the whole series/i), where).toBeNull();
+      // CONTROL: the recurring branch itself rendered, so the absence is the
+      // new condition and not the whole block being missing.
+      expect(scope.getByTestId(`edit-recurring-chip-${suffix}`), where).toBeInTheDocument();
+    }
+  }
+
+  // FENCE, two rows: spent exactly (3 of 3) and over-delivered (4 of 3, a plan
+  // shortened below what it already delivered). The second kills an
+  // `elapsed === count` spelling, which is green on the first.
+  it.each([
+    [3, 3],
+    [4, 3],
+  ])("instalment series %i of %i: no pointer, in BOTH render trees", async (elapsed, count) => {
+    const tx = makeTx({ id: 301, description: "Sofa", recurring_id: 21 });
+    await openEdit(tx, [makeSeries(21, { occurrence_count: count, occurrences_elapsed: elapsed })]);
+    await seriesSettled();
+    expectNoPointer(301);
+  });
+
+  // FENCE: kills a condition that reads only instalment exhaustion.
+  it("inactive series: no pointer, in BOTH render trees", async () => {
+    const tx = makeTx({ id: 302, description: "Paused gym", recurring_id: 22 });
+    await openEdit(tx, [makeSeries(22, { is_active: false })]);
+    await seriesSettled();
+    expectNoPointer(302);
+  });
+
+  // FENCE: kills "hide every instalment series" (`occurrence_count != null`),
+  // which passes both fences above.
+  it("instalment series with occurrences left (2 of 3): pointer shown, in BOTH render trees", async () => {
+    const tx = makeTx({ id: 303, description: "Laptop", recurring_id: 23 });
+    await openEdit(tx, [makeSeries(23, { occurrence_count: 3, occurrences_elapsed: 2 })]);
+    for (const mobile of [false, true]) {
+      const suffix = mobile ? "mobile-303" : "303";
+      expect(
+        await tree(303, mobile).findByTestId(`edit-recurring-series-hint-${suffix}`),
+        mobile ? "mobile" : "desktop",
+      ).toHaveTextContent(HINT_COPY);
+    }
+  });
+
+  // FENCE: a series the client cannot find must not be claimed as running.
+  // Kills `!series || running`, and (because the list holds a RUNNING series
+  // under another id) a lookup that ignores the id -- which also proves this
+  // test waited for the data, since that mutant only shows the pointer once
+  // the list has been applied.
+  it("series not in the list: no pointer, in BOTH render trees", async () => {
+    const tx = makeTx({ id: 304, description: "Unknown", recurring_id: 24 });
+    await openEdit(tx, [makeSeries(99)]);
+    await seriesSettled();
+    expectNoPointer(304);
+  });
+
+  // FENCE: kills `!series || running` on the failure path.
+  it("series list request fails: no pointer, in BOTH render trees", async () => {
+    const tx = makeTx({ id: 305, description: "Offline", recurring_id: 25 });
+    await openEdit(tx, "reject");
+    await seriesSettled();
+    expectNoPointer(305);
   });
 });
