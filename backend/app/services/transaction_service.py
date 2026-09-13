@@ -55,6 +55,8 @@ def _load_opts():
         selectinload(Transaction.account),
         selectinload(Transaction.category),
         selectinload(Transaction.tags),
+        # TBD-273: one batched query for ``differs_from_series``.
+        selectinload(Transaction.recurring),
     ]
 
 
@@ -124,7 +126,26 @@ def to_response(tx: Transaction) -> TransactionResponse:
         # field's own note in schemas/transaction.py for why the roster's
         # RESULT ships instead of the ``reconciliation_state`` enum.
         is_reverted=tx.reconciliation_state in REVERTED_RECONCILIATION_STATES,
+        differs_from_series=_differs_from_series(tx),
         tags=_tag_responses(tx),
+    )
+
+
+def _differs_from_series(tx: Transaction) -> bool:
+    """TBD-273: a PENDING, non-reverted occurrence whose amount is not its
+    template's. Derived, never stored.
+
+    The ``__dict__`` probe reads the template only when ``_load_opts`` loaded
+    it; resolving the relationship here would lazy-load and raise
+    MissingGreenlet. Unloaded reads as False.
+    """
+    template = tx.__dict__.get("recurring")
+    return (
+        template is not None
+        and tx.recurring_id is not None
+        and tx.status == TransactionStatus.PENDING
+        and tx.reconciliation_state not in REVERTED_RECONCILIATION_STATES
+        and tx.amount != template.amount
     )
 
 
@@ -564,6 +585,18 @@ async def update_transaction(
     # and we'd rather force the user to issue a fresh adjustment.
     if tx.is_manual_adjustment:
         raise ValidationError("Manual balance adjustments cannot be edited")
+
+    # TBD-272: moving a skipped row onto another date would make that date's
+    # REAL occurrence look materialised (the (recurring_id, date) probe has no
+    # state term), silently suppressing it (TBD-271 exception 3).
+    if (
+        body.date is not None
+        and body.date != tx.date
+        and tx.reconciliation_state in REVERTED_RECONCILIATION_STATES
+    ):
+        raise ValidationError(
+            f"The date of a {tx.reconciliation_state} transaction cannot be changed"
+        )
 
     # Race detection: the unlocked preview saw an unlinked row, but a concurrent
     # pair_existing_transactions may have linked it. If the locked tx now has a

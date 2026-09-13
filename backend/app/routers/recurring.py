@@ -11,7 +11,9 @@ from app.schemas.recurring import (
     RecurringUpdate,
     StopRecurringResponse,
 )
+from app.schemas.transaction import TransactionResponse
 from app.services import recurring_service as svc
+from app.services.transaction_service import to_response as tx_to_response
 
 router = APIRouter(prefix="/api/v1/recurring", tags=["recurring"])
 
@@ -68,6 +70,34 @@ async def delete_recurring(
     return DeleteRecurringResponse(
         pending_removed=outcome.removed, demoted_ids=outcome.demoted_ids
     )
+
+
+@router.post(
+    "/{recurring_id}/skip-next", response_model=TransactionResponse, status_code=201
+)
+async def skip_next(
+    recurring_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Skip the next occurrence (TBD-272): writes it as a skipped PENDING row
+    at the frontier and spends it. Terminal."""
+    tx = await svc.materialise_next(db, current_user.org_id, recurring_id, skipped=True)
+    return tx_to_response(tx)
+
+
+@router.post(
+    "/{recurring_id}/materialise-next", response_model=TransactionResponse, status_code=201
+)
+async def materialise_next(
+    recurring_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Write the next occurrence now (TBD-273, "edit next"). Its amount is then
+    edited with ``PUT /transactions/{id}``; the template is untouched."""
+    tx = await svc.materialise_next(db, current_user.org_id, recurring_id, skipped=False)
+    return tx_to_response(tx)
 
 
 @router.post("/generate", response_model=dict)
