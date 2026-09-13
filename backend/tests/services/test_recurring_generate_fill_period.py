@@ -179,15 +179,107 @@ async def test_sweep_leaves_non_auto_settle_pending_alone(db_session):
 
 
 async def test_overdue_catchup_across_period_boundary(db_session):
+    """TBD-285 ruling fence: catch-up keeps back-dated rows on their real dates."""
     seed = await _seed(db_session, cycle_day=1)
     await _add_template(db_session, seed, type_="expense", cat=seed["exp_cat"],
                         amount="500", freq="monthly", next_due=date(2026, 4, 5),
                         auto_settle=False)
-    await recurring_service.generate_due_transactions(
+    result = await recurring_service.generate_due_transactions(
         db_session, seed["org_id"], today=TODAY)
     txns = await _txns(db_session, seed["org_id"])
     assert [t.date for t in txns] == [date(2026, 4, 5), date(2026, 5, 5), date(2026, 6, 5)]
     assert all(t.status == TransactionStatus.PENDING for t in txns)
+    assert result.get("backfilled") == 2
+
+
+# ── TBD-285: catch-up is kept, and no longer silent ───────────────────────────
+
+
+class _LogSink:
+    def __init__(self):
+        self.events: list[tuple[str, dict]] = []
+
+    async def ainfo(self, event, **kw):
+        self.events.append((event, kw))
+
+    async def awarning(self, event, **kw):
+        self.events.append((event, kw))
+
+
+async def test_backfilled_counts_only_created_rows_before_cycle_start(db_session, monkeypatch):
+    """fence — ``backfilled`` counts created rows dated before ``p_start``.
+
+    Kills: counting every created row (4); counting ``due < today`` (3, the
+    in-cycle 7.00 row is before TODAY); dropping back-filled rows (dates and
+    balance); stamping rows with today (dates).
+    """
+    sink = _LogSink()
+    monkeypatch.setattr(recurring_service, "logger", sink)
+    seed = await _seed(db_session, cycle_day=1)
+    r = await _add_template(db_session, seed, type_="expense", cat=seed["exp_cat"],
+                            amount="130.00", freq="monthly", next_due=date(2026, 4, 5),
+                            auto_settle=True)
+    await _add_template(db_session, seed, type_="expense", cat=seed["exp_cat"],
+                        amount="7.00", freq="monthly", next_due=date(2026, 6, 10),
+                        auto_settle=True)
+    result = await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=TODAY)
+
+    txns = await _txns(db_session, seed["org_id"])
+    assert [(t.date, t.amount) for t in txns] == [
+        (date(2026, 4, 5), Decimal("130.00")), (date(2026, 5, 5), Decimal("130.00")),
+        (date(2026, 6, 5), Decimal("130.00")), (date(2026, 6, 10), Decimal("7.00")),
+    ]
+    assert result.get("backfilled") == 2
+    assert result["generated"] == 4
+    acct = await db_session.get(Account, seed["account_id"])
+    assert acct.balance == Decimal("-397.00")
+    await db_session.refresh(r)
+    assert r.occurrences_elapsed == 3
+    assert sink.events == [(
+        "recurring.generate.backfill",
+        {"org_id": seed["org_id"], "count": 2, "earliest_date": "2026-04-05"},
+    )]
+
+
+async def test_backfilled_skips_rows_that_already_exist(db_session):
+    """fence — a pre-seeded row at a back-filled date is not counted.
+
+    Kills: counting loop iterations before ``p_start`` or exists-branch hits
+    (both give 2).
+    """
+    seed = await _seed(db_session, cycle_day=1)
+    r = await _add_template(db_session, seed, type_="expense", cat=seed["exp_cat"],
+                            amount="500", freq="monthly", next_due=date(2026, 4, 5),
+                            auto_settle=False)
+    db_session.add(Transaction(
+        org_id=seed["org_id"], account_id=seed["account_id"], category_id=seed["exp_cat"],
+        description="t", amount=Decimal("500"), type="expense",
+        status=TransactionStatus.PENDING, date=date(2026, 5, 5), recurring_id=r.id,
+    ))
+    await db_session.commit()
+    result = await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=TODAY)
+    assert result["generated"] == 2
+    assert result.get("backfilled") == 1
+
+
+async def test_backfilled_zero_when_frontier_is_cycle_start(db_session, monkeypatch):
+    """guard — a frontier exactly on ``p_start`` is not back-filled.
+
+    Kills: ``due <= p_start``; emitting the log event at count 0.
+    """
+    sink = _LogSink()
+    monkeypatch.setattr(recurring_service, "logger", sink)
+    seed = await _seed(db_session, cycle_day=1)
+    await _add_template(db_session, seed, type_="expense", cat=seed["exp_cat"],
+                        amount="500", freq="monthly", next_due=date(2026, 6, 1),
+                        auto_settle=False)
+    result = await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=TODAY)
+    assert result["generated"] == 1
+    assert result.get("backfilled") == 0
+    assert sink.events == []
 
 
 async def test_idempotent_second_run_creates_nothing(db_session):

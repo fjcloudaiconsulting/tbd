@@ -122,7 +122,43 @@ async def test_run_threads_the_ticks_clock_into_generation(session_factory, monk
     )
 
 
-def _fake_generate(*, generated, settled, sink=None):
+async def test_notification_reports_backfilled_rows(session_factory, monkeypatch):
+    """fence (TBD-285) — the scheduler notification names back-dated rows.
+
+    On the scheduler path nobody clicks Generate, so this body is the signal.
+    Kills: a sentence that is always on (red at 0), never on (red at 2), or a
+    job that does not carry the count to the template (red at 2).
+    """
+    bodies: list[str] = []
+
+    async def _dispatch(*a, **k):
+        bodies.append(k["body"])
+
+    monkeypatch.setattr(
+        "app.services.scheduler.jobs.recurring_generation.record_run",
+        _counter({"a": 0}, "a", returns=1),
+    )
+    monkeypatch.setattr(
+        "app.services.scheduler.jobs.recurring_generation.dispatch_notification_to_org_members",
+        _dispatch,
+    )
+    job = RecurringGenerationJob()
+    async with session_factory() as db:
+        org = Organization(name="Acme", billing_cycle_day=1)
+        db.add(org); await db.commit(); await db.refresh(org)
+        for backfilled in (2, 0):
+            monkeypatch.setattr(
+                "app.services.scheduler.jobs.recurring_generation.generate_due_transactions",
+                _fake_generate(generated=3, settled=0, backfilled=backfilled),
+            )
+            await job.run(db, org, datetime.date(2026, 7, 4))
+
+    assert len(bodies) == 2
+    assert "2 of them are dated before the current billing cycle." in bodies[0]
+    assert "dated before the current billing cycle" not in bodies[1]
+
+
+def _fake_generate(*, generated, settled, sink=None, backfilled=0):
     # ``today`` defaults to None ON PURPOSE (TBD-284). If the job stops passing
     # the tick's clock, this fake still accepts the call and records None, so
     # the fence fails on the VALUE. A fake with a REQUIRED ``today`` would go
@@ -132,7 +168,7 @@ def _fake_generate(*, generated, settled, sink=None):
         if sink is not None:
             sink.append(today)
         return {"generated": generated, "settled": settled, "pending": 0,
-                "period_end": "2026-07-31"}
+                "backfilled": backfilled, "period_end": "2026-07-31"}
     return _f
 
 

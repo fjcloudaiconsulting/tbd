@@ -483,7 +483,7 @@ export default function RecurringPage() {
     setError(""); setSuccessMsg("");
     try {
       const res = await apiFetch<{
-        generated: number; settled: number; pending: number; period_end: string;
+        generated: number; settled: number; pending: number; backfilled?: number; period_end: string;
       }>("/api/v1/recurring/generate", { method: "POST" });
       const through = res?.period_end
         ? new Date(`${res.period_end}T00:00:00`).toLocaleDateString(undefined, {
@@ -491,10 +491,15 @@ export default function RecurringPage() {
             day: "numeric",
           })
         : "";
+      // TBD-285: catch-up keeps back-dated rows on their real dates; say so.
+      const backfilled = res?.backfilled ?? 0;
       setSuccessMsg(
         `Generated ${res?.generated ?? 0} transaction(s) ` +
           `(${res?.settled ?? 0} settled, ${res?.pending ?? 0} pending)` +
-          (through ? ` through ${through}.` : ".")
+          (through ? ` through ${through}.` : ".") +
+          (backfilled > 0
+            ? ` ${backfilled} of them are dated before the current billing cycle.`
+            : "")
       );
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }

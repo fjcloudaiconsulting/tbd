@@ -450,13 +450,17 @@ def org_data_reset(
 # ── scheduler notification templates ────────────────────────────────
 
 
-def scheduler_recurring_generated(*, generated: int, settled: int) -> tuple[str, str, Optional[str]]:
+def scheduler_recurring_generated(
+    *, generated: int, settled: int, backfilled: int = 0
+) -> tuple[str, str, Optional[str]]:
     """Copy for scheduler.recurring_generation.success (org_activity)."""
     title = "Recurring transactions generated"
     body = (
         f"We added {generated} scheduled transaction(s) to your ledger "
         f"({settled} already settled). Review them on your transactions page."
     )
+    if backfilled > 0:
+        body += f" {backfilled} of them are dated before the current billing cycle."
     return (title, body, "/transactions")
 
 
