@@ -741,14 +741,28 @@ async def _apply_match(
         raise ValidationError(
             "MATCHED target must differ from the transaction itself"
         )
+    # Locked (TBD-272) so a match serialises with
+    # ``recurring_service.skip_occurrence``, which locks the same row before
+    # flipping it to skipped. sqlite cannot prove this.
     target = await db.scalar(
-        select(Transaction).where(
+        select(Transaction)
+        .where(
             Transaction.id == match_id,
             Transaction.org_id == org_id,
         )
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if target is None:
         raise NotFoundError("Match target transaction")
+    # TBD-272: a skipped/rejected target is out of every aggregate and its
+    # amount is not in the balance; matching onto it would make the bank row
+    # vanish from reports too, for money that really moved.
+    if target.reconciliation_state in REVERTED_RECONCILIATION_STATES:
+        raise ValidationError(
+            f"Transaction {target.id} is {target.reconciliation_state}; "
+            "match against a live transaction instead."
+        )
 
     # Guard 1 (target side). NARROW ON PURPOSE: ``== tx.id``, never
     # ``is not None``. Matching an imported row against a leg of a REAL

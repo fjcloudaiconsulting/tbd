@@ -717,6 +717,8 @@ function LegacyDashboard() {
   const pendingByAccount = useMemo(
     () =>
       pendingTransactions.reduce<Record<number, number>>((acc, tx) => {
+        // TBD-272: a skipped/rejected pending row will never land.
+        if (tx.is_reverted) return acc;
         const sign = tx.type === "income" ? 1 : -1;
         acc[tx.account_id] = (acc[tx.account_id] || 0) + Number(tx.amount) * sign;
         return acc;

@@ -18,12 +18,14 @@ from app.models.user import Organization
 from app.schemas.recurring import RecurringCreate, RecurringResponse, RecurringUpdate
 from app.services.billing_service import current_cycle_window
 from app.services.date_utils import MAX_OCCURRENCE_ITERATIONS, advance_date
-from app.services.exceptions import NotFoundError, ValidationError
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.recurring_filters import (
     active_series_filter,
     has_remaining_occurrences,
 )
+from app.services.transaction_filters import non_reverted_transaction_filter
 from app.services.transaction_service import (
+    _load_opts as _tx_load_opts,
     _settle_batch_counters_and_demote_orphans,
     apply_balance,
     get_account_for_update,
@@ -706,6 +708,182 @@ def _advance_frontier(r: RecurringTransaction, due: datetime.date) -> None:
     r.occurrences_elapsed = (r.occurrences_elapsed or 0) + 1
 
 
+async def _create_occurrence(
+    db: AsyncSession, org_id: int, r: RecurringTransaction,
+    due: datetime.date, today: datetime.date, *,
+    settle: bool = True, skipped: bool = False,
+) -> Transaction:
+    """Write the occurrence of ``r`` at ``due``. Generation's create step.
+
+    Shared by ``generate_due_transactions`` and ``materialise_next`` so an
+    occurrence written ahead of generation is the row generation would have
+    written. It does NOT advance the frontier; both callers do that.
+
+    ⚠ ``settle=False`` (``materialise_next``, both flavours) forces PENDING and
+    never touches the balance, even for an auto-settle template whose date has
+    passed. A skipped occurrence was never paid; an edit-next row exists so its
+    amount can be changed BEFORE it settles, and ``_settle_due_auto`` settles it
+    at the edited amount on the next run. ``skipped`` only sets the state.
+    """
+    tx_status = (
+        TransactionStatus.SETTLED
+        if (settle and r.auto_settle and due <= today)
+        else TransactionStatus.PENDING
+    )
+    async with db.begin_nested():
+        tx = Transaction(
+            org_id=org_id,
+            account_id=r.account_id,
+            category_id=r.category_id,
+            description=r.description,
+            amount=r.amount,
+            type=TransactionType(r.type),
+            status=tx_status,
+            date=due,
+            settled_date=due if tx_status == TransactionStatus.SETTLED else None,
+            recurring_id=r.id,
+        )
+        if skipped:
+            tx.reconciliation_state = "skipped"
+        db.add(tx)
+        if tx_status == TransactionStatus.SETTLED:
+            acct = await get_account_for_update(db, r.account_id, org_id)
+            apply_balance(acct, r.amount, TransactionType(r.type))
+    return tx
+
+
+async def _load_transaction(db: AsyncSession, tx_id: int) -> Transaction:
+    return (await db.execute(
+        select(Transaction).options(*_tx_load_opts()).where(Transaction.id == tx_id)
+    )).scalar_one()
+
+
+async def materialise_next(
+    db: AsyncSession, org_id: int, recurring_id: int, *,
+    occurrence_date: datetime.date, skipped: bool,
+    today: datetime.date | None = None,
+) -> Transaction:
+    """Write the template's NEXT occurrence now, and spend it (TBD-272/273).
+
+    ``skipped=True`` is "skip next": the row is written PENDING in
+    ``reconciliation_state='skipped'``, so it stays visible, leaves every
+    aggregate, and the occurrence is consumed. ``skipped=False`` is "edit
+    next": an ordinary PENDING row whose amount the normal transaction edit
+    then changes. Either way nothing is written ahead of ``next_due_date``, and
+    generation's ``exists`` branch plus the forecasts' materialised probe treat
+    the row exactly like one generation wrote. The row is ALWAYS PENDING and
+    never moves the balance, for both flavours.
+
+    ``occurrence_date`` must equal the frontier, checked under the lock: a
+    double-submitted request otherwise consumes two occurrences.
+
+    Concurrency: the template is locked FOR UPDATE, as generation locks it, and
+    the existence check runs only AFTER the lock. A generation run that got the
+    lock first has either written the row (409 here) or moved the frontier past
+    it (this call then acts on the new frontier). sqlite cannot prove this; no
+    test claims to.
+    """
+    if today is None:
+        today = datetime.date.today()
+    r = (await db.execute(
+        select(RecurringTransaction)
+        .where(RecurringTransaction.id == recurring_id, RecurringTransaction.org_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if r is None:
+        raise NotFoundError("Recurring transaction")
+    if r.next_due_date != occurrence_date:
+        raise ConflictError(
+            f"The next occurrence is {r.next_due_date.isoformat()}, not "
+            f"{occurrence_date.isoformat()}. Refresh and try again."
+        )
+    if not r.is_active:
+        raise ConflictError("This recurring transaction is stopped.")
+    if not has_remaining_occurrences(r):
+        raise ConflictError("This recurring transaction has no occurrences left.")
+    # TBD-285: never write into a closed period from a user action.
+    p_start = await frontier_lower_bound(db, org_id, today=today)
+    if r.next_due_date < p_start:
+        raise ConflictError(
+            f"The next occurrence ({r.next_due_date.isoformat()}) is before the "
+            f"current billing cycle ({p_start.isoformat()}). Generate transactions first."
+        )
+    due = r.next_due_date
+    exists = await db.scalar(
+        select(Transaction.id)
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.recurring_id == r.id,
+            Transaction.date == due,
+        )
+        .limit(1)
+    )
+    if exists:
+        raise ConflictError(
+            f"The occurrence on {due.isoformat()} already exists; edit or skip that transaction instead."
+        )
+
+    tx = await _create_occurrence(db, org_id, r, due, today, settle=False, skipped=skipped)
+    _advance_frontier(r, due)
+    await db.commit()
+    return await _load_transaction(db, tx.id)
+
+
+async def skip_occurrence(db: AsyncSession, org_id: int, transaction_id: int) -> Transaction:
+    """Skip an already-generated occurrence ("skip this month", TBD-272).
+
+    Only a PENDING recurring row in the default ``accepted`` state, not linked
+    in either direction and not from an import batch. It becomes ``skipped``:
+    no frontier change (the occurrence was already spent when it was written)
+    and no balance change (a PENDING row's amount was never in the balance).
+    Terminal: there is no restore.
+
+    ⚠ The import-batch refusal is not in the ruling's list. ``_reconcile_one``
+    is the only maintainer of ``ImportBatch.accepted_count``; flipping an
+    imported row here would strand that counter.
+
+    Race with ``reconciliation_service._apply_match``: this row is locked
+    first, then the referrer probe is a LOCKING read (on MySQL it also
+    gap-locks the ``linked_transaction_id`` index, so a concurrent match cannot
+    insert a link to this row until we commit), and ``_apply_match`` locks its
+    target. Either the match lands first and this refuses, or the skip lands
+    first and the match refuses the reverted target. sqlite has no row locks;
+    nothing here can be proven by a test.
+    """
+    tx = (await db.execute(
+        select(Transaction)
+        .where(Transaction.id == transaction_id, Transaction.org_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if tx is None:
+        raise NotFoundError("Transaction")
+    if tx.recurring_id is None:
+        raise ConflictError("Only a recurring occurrence can be skipped.")
+    if tx.status != TransactionStatus.PENDING:
+        raise ConflictError("Only a pending occurrence can be skipped.")
+    if tx.reconciliation_state != "accepted":
+        raise ConflictError(f"This transaction is already {tx.reconciliation_state}.")
+    if tx.import_batch_id is not None:
+        raise ConflictError("An imported transaction cannot be skipped.")
+    if tx.linked_transaction_id is not None:
+        raise ConflictError("A linked transaction cannot be skipped; unlink it first.")
+    referrer = await db.scalar(
+        select(Transaction.id)
+        .where(Transaction.org_id == org_id, Transaction.linked_transaction_id == tx.id)
+        .limit(1)
+        .with_for_update()
+    )
+    if referrer is not None:
+        raise ConflictError(
+            f"Transaction {referrer} is linked to this one; unlink it before skipping."
+        )
+    tx.reconciliation_state = "skipped"
+    await db.commit()
+    return await _load_transaction(db, tx.id)
+
+
 async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) -> int:
     """Promote PENDING transactions that originated from an auto_settle template
     and whose date has now passed (date <= today) to SETTLED, adjusting balance.
@@ -719,6 +897,9 @@ async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) 
             Transaction.recurring_id.is_not(None),
             Transaction.date <= today,
             RecurringTransaction.auto_settle == True,  # noqa: E712
+            # TBD-272: a skipped occurrence is PENDING forever and was never
+            # paid. Settling it would put a cancelled charge into the balance.
+            non_reverted_transaction_filter(),
         )
         .with_for_update(of=Transaction)
     )
@@ -823,28 +1004,8 @@ async def generate_due_transactions(
                 _advance_frontier(r, due)
                 continue
 
-            tx_status = (
-                TransactionStatus.SETTLED
-                if (r.auto_settle and due <= today)
-                else TransactionStatus.PENDING
-            )
-            async with db.begin_nested():
-                tx = Transaction(
-                    org_id=org_id,
-                    account_id=r.account_id,
-                    category_id=r.category_id,
-                    description=r.description,
-                    amount=r.amount,
-                    type=TransactionType(r.type),
-                    status=tx_status,
-                    date=due,
-                    settled_date=due if tx_status == TransactionStatus.SETTLED else None,
-                    recurring_id=r.id,
-                )
-                db.add(tx)
-                if tx_status == TransactionStatus.SETTLED:
-                    acct = await get_account_for_update(db, r.account_id, org_id)
-                    apply_balance(acct, r.amount, TransactionType(r.type))
+            tx = await _create_occurrence(db, org_id, r, due, today)
+            tx_status = tx.status
 
             _advance_frontier(r, due)
             created += 1

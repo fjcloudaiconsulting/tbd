@@ -44,6 +44,7 @@ from app.schemas.transaction_suggestions import (
 )
 from app.services import (
     audit_service,
+    recurring_service,
     spending_service,
     transaction_batch_service,
     transaction_service as svc,
@@ -565,6 +566,17 @@ async def update_transaction(
     db: AsyncSession = Depends(get_db),
 ):
     tx = await svc.update_transaction(db, current_user.org_id, transaction_id, body)
+    return svc.to_response(tx)
+
+
+@router.post("/{transaction_id}/skip", response_model=TransactionResponse)
+async def skip_transaction_occurrence(
+    transaction_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Skip one already-generated recurring occurrence (TBD-272). Terminal."""
+    tx = await recurring_service.skip_occurrence(db, current_user.org_id, transaction_id)
     return svc.to_response(tx)
 
 

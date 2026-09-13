@@ -60,6 +60,7 @@ from app.services.recurring_filters import active_series_filter, remaining_occur
 from app.services.transaction_filters import (
     balance_contribution_filter,
     effective_period_date_expr,
+    non_reverted_transaction_filter,
 )
 
 # ── Low-balance warning: the deny-list (TBD-198) ─────────────────────────────
@@ -193,6 +194,8 @@ async def compute_account_balance_forecast(
             Transaction.org_id == org_id,
             Transaction.status == TransactionStatus.PENDING,
             Transaction.is_manual_adjustment.is_(False),
+            # TBD-272: a skipped (or rejected) PENDING row will never land.
+            non_reverted_transaction_filter(),
             and_(eff_date >= p_start, eff_date <= window_end),
         )
         .group_by(Transaction.account_id, Transaction.type, eff_date)
