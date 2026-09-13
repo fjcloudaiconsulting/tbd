@@ -748,11 +748,14 @@ async def generate_due_transactions(
     caught up. Idempotent: re-running advances next_due_date past the window end.
 
     Catch-up writes back-dated rows on their REAL nominal dates, even into a
-    closed billing period (TBD-285 ruling). Every user-entry path is floored at
-    the cycle start, so what reaches here is a missed generation run, and those
-    occurrences are real obligations; a closed period is a reporting boundary,
-    not a write lock. It is reported, not silent: ``backfilled`` counts created
-    rows dated before the cycle start, logged as ``recurring.generate.backfill``.
+    closed billing period (TBD-285 ruling). Every user-entry path floors the
+    frontier at the cycle start AT WRITE TIME only; a frontier still falls
+    behind as cycles pass with no successful generation run (automation off,
+    scheduler down). Those occurrences are real obligations, and a closed
+    period is a reporting boundary, not a write lock. It is reported, not
+    silent: ``backfilled`` counts created rows dated before the cycle start
+    (``frontier_lower_bound``, the same derivation the write paths use),
+    logged as ``recurring.generate.backfill``.
 
     `today` is the caller's resolved clock. The scheduler passes the value the
     runner resolved once for the whole tick (``RecurringGenerationJob.run``), so
@@ -767,7 +770,8 @@ async def generate_due_transactions(
 
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
     cycle_day = org.billing_cycle_day if org else 1
-    p_start, period_end = current_cycle_window(cycle_day, today)
+    _, period_end = current_cycle_window(cycle_day, today)
+    p_start = await frontier_lower_bound(db, org_id, today=today)
 
     settled_now = await _settle_due_auto(db, org_id, today)
 

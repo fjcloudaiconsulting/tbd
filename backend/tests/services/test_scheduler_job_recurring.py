@@ -75,7 +75,7 @@ async def test_run_success_records_and_notifies(session_factory, monkeypatch):
         db.add(org); await db.commit(); await db.refresh(org)
         res = await job.run(db, org, datetime.date(2026, 7, 4))
     assert res.outcome == OUTCOME_SUCCESS
-    assert res.counts == {"generated": 2, "settled": 1, "pending": 0}
+    assert res.counts == {"generated": 2, "settled": 1, "pending": 0, "backfilled": 0}
     assert calls == {"audit": 1, "notify": 1}
 
 
@@ -126,17 +126,23 @@ async def test_notification_reports_backfilled_rows(session_factory, monkeypatch
     """fence (TBD-285) — the scheduler notification names back-dated rows.
 
     On the scheduler path nobody clicks Generate, so this body is the signal.
-    Kills: a sentence that is always on (red at 0), never on (red at 2), or a
-    job that does not carry the count to the template (red at 2).
+    Kills: a sentence that is always on (red at 0), never on (red at 2), a
+    job that does not carry the count to the template (red at 2), "1 of them
+    are" (red at 1), and a count missing from the audit detail / JobResult.
     """
     bodies: list[str] = []
+    details: list[dict] = []
+    results = []
 
     async def _dispatch(*a, **k):
         bodies.append(k["body"])
 
+    async def _record(**k):
+        details.append(k["detail"])
+        return 1
+
     monkeypatch.setattr(
-        "app.services.scheduler.jobs.recurring_generation.record_run",
-        _counter({"a": 0}, "a", returns=1),
+        "app.services.scheduler.jobs.recurring_generation.record_run", _record,
     )
     monkeypatch.setattr(
         "app.services.scheduler.jobs.recurring_generation.dispatch_notification_to_org_members",
@@ -146,16 +152,19 @@ async def test_notification_reports_backfilled_rows(session_factory, monkeypatch
     async with session_factory() as db:
         org = Organization(name="Acme", billing_cycle_day=1)
         db.add(org); await db.commit(); await db.refresh(org)
-        for backfilled in (2, 0):
+        for backfilled in (2, 1, 0):
             monkeypatch.setattr(
                 "app.services.scheduler.jobs.recurring_generation.generate_due_transactions",
                 _fake_generate(generated=3, settled=0, backfilled=backfilled),
             )
-            await job.run(db, org, datetime.date(2026, 7, 4))
+            results.append(await job.run(db, org, datetime.date(2026, 7, 4)))
 
-    assert len(bodies) == 2
+    assert len(bodies) == 3
     assert "2 of them are dated before the current billing cycle." in bodies[0]
-    assert "dated before the current billing cycle" not in bodies[1]
+    assert "1 of them is dated before the current billing cycle." in bodies[1]
+    assert "dated before the current billing cycle" not in bodies[2]
+    assert [d["backfilled"] for d in details] == [2, 1, 0]
+    assert [r.counts["backfilled"] for r in results] == [2, 1, 0]
 
 
 def _fake_generate(*, generated, settled, sink=None, backfilled=0):

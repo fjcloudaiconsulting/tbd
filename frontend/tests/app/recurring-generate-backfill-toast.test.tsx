@@ -78,6 +78,16 @@ describe("recurring page — Generate toast reports back-filled rows (TBD-285)",
     ).toBeInTheDocument();
   });
 
+  it("fence: uses the singular at 1", async () => {
+    mockGenerate(1);
+    render(<RecurringPage />);
+    await generateAndSettle();
+    // Kills: "1 of them are dated".
+    expect(
+      screen.getByText(/1 of them is dated before the current billing cycle\./),
+    ).toBeInTheDocument();
+  });
+
   it("fence: says nothing about back-filling at 0", async () => {
     mockGenerate(0);
     render(<RecurringPage />);

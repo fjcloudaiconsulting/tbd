@@ -209,8 +209,8 @@ class _LogSink:
 async def test_backfilled_counts_only_created_rows_before_cycle_start(db_session, monkeypatch):
     """fence — ``backfilled`` counts created rows dated before ``p_start``.
 
-    Kills: counting every created row (4); counting ``due < today`` (3, the
-    in-cycle 7.00 row is before TODAY); dropping back-filled rows (dates and
+    Kills: counting every created row (3); counting ``due < today`` (3, the
+    in-cycle 6/5 row is before TODAY); dropping back-filled rows (dates and
     balance); stamping rows with today (dates).
     """
     sink = _LogSink()
@@ -219,21 +219,19 @@ async def test_backfilled_counts_only_created_rows_before_cycle_start(db_session
     r = await _add_template(db_session, seed, type_="expense", cat=seed["exp_cat"],
                             amount="130.00", freq="monthly", next_due=date(2026, 4, 5),
                             auto_settle=True)
-    await _add_template(db_session, seed, type_="expense", cat=seed["exp_cat"],
-                        amount="7.00", freq="monthly", next_due=date(2026, 6, 10),
-                        auto_settle=True)
     result = await recurring_service.generate_due_transactions(
         db_session, seed["org_id"], today=TODAY)
 
     txns = await _txns(db_session, seed["org_id"])
-    assert [(t.date, t.amount) for t in txns] == [
-        (date(2026, 4, 5), Decimal("130.00")), (date(2026, 5, 5), Decimal("130.00")),
-        (date(2026, 6, 5), Decimal("130.00")), (date(2026, 6, 10), Decimal("7.00")),
+    assert [(t.date, t.status) for t in txns] == [
+        (date(2026, 4, 5), TransactionStatus.SETTLED),
+        (date(2026, 5, 5), TransactionStatus.SETTLED),
+        (date(2026, 6, 5), TransactionStatus.SETTLED),
     ]
     assert result.get("backfilled") == 2
-    assert result["generated"] == 4
+    assert result["generated"] == 3
     acct = await db_session.get(Account, seed["account_id"])
-    assert acct.balance == Decimal("-397.00")
+    assert acct.balance == Decimal("-390.00")
     await db_session.refresh(r)
     assert r.occurrences_elapsed == 3
     assert sink.events == [(
@@ -261,6 +259,24 @@ async def test_backfilled_skips_rows_that_already_exist(db_session):
     result = await recurring_service.generate_due_transactions(
         db_session, seed["org_id"], today=TODAY)
     assert result["generated"] == 2
+    assert result.get("backfilled") == 1
+
+
+async def test_backfilled_uses_the_billing_cycle_not_the_calendar_month(db_session):
+    """fence — the boundary is the cycle start (5/20), not the month start (6/1).
+
+    cycle_day=20, today 6/15: 4/25 is before the cycle and counts; 5/25 is
+    inside the cycle but before the calendar month and must not.
+    Kills: ``p_start = today.replace(day=1)`` (gives 2).
+    """
+    seed = await _seed(db_session, cycle_day=20)
+    await _add_template(db_session, seed, type_="expense", cat=seed["exp_cat"],
+                        amount="500", freq="monthly", next_due=date(2026, 4, 25),
+                        auto_settle=False)
+    result = await recurring_service.generate_due_transactions(
+        db_session, seed["org_id"], today=TODAY)
+    txns = await _txns(db_session, seed["org_id"])
+    assert [t.date for t in txns] == [date(2026, 4, 25), date(2026, 5, 25)]
     assert result.get("backfilled") == 1
 
 

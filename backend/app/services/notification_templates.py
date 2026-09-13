@@ -460,7 +460,8 @@ def scheduler_recurring_generated(
         f"({settled} already settled). Review them on your transactions page."
     )
     if backfilled > 0:
-        body += f" {backfilled} of them are dated before the current billing cycle."
+        verb = "is" if backfilled == 1 else "are"
+        body += f" {backfilled} of them {verb} dated before the current billing cycle."
     return (title, body, "/transactions")
 
 

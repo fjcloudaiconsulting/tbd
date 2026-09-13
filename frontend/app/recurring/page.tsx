@@ -498,7 +498,7 @@ export default function RecurringPage() {
           `(${res?.settled ?? 0} settled, ${res?.pending ?? 0} pending)` +
           (through ? ` through ${through}.` : ".") +
           (backfilled > 0
-            ? ` ${backfilled} of them are dated before the current billing cycle.`
+            ? ` ${backfilled} of them ${backfilled === 1 ? "is" : "are"} dated before the current billing cycle.`
             : "")
       );
       await reload();

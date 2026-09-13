@@ -53,12 +53,16 @@ class RecurringGenerationJob:
         await db.commit()
         generated = int(result.get("generated", 0))
         settled = int(result.get("settled", 0))
-        counts = {"generated": generated, "settled": settled, "pending": int(result.get("pending", 0))}
+        backfilled = int(result.get("backfilled", 0))
+        counts = {
+            "generated": generated, "settled": settled,
+            "pending": int(result.get("pending", 0)), "backfilled": backfilled,
+        }
         if generated == 0 and settled == 0:
             return JobResult.noop()
         audit_id = await record_run(job_type=self.job_type, outcome="success", org=org, detail=counts)
         title, body, link = scheduler_recurring_generated(
-            generated=generated, settled=settled, backfilled=int(result.get("backfilled", 0)),
+            generated=generated, settled=settled, backfilled=backfilled,
         )
         await dispatch_notification_to_org_members(
             db, org_id=org.id, category=NotificationCategory.ORG_ACTIVITY,
