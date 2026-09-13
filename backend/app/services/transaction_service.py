@@ -430,7 +430,17 @@ async def _propagate_fields_to_series(
     (it would strand a pending row whenever the template was moved from the
     recurring page). The caller passes the already-VALIDATED ``tx.account_id``.
     No balance logic: PENDING amounts are never inside ``accounts.balance``,
-    and SETTLED rows are excluded by the status filter.
+    and SETTLED rows are excluded by the status filter. The target account may
+    differ in currency from the old one: ``validate_account`` checks the org
+    only, and legacy multi-currency orgs exist (no guard here, by ruling).
+
+    Transfer legs are SKIPPED by the category and account sibling UPDATEs
+    (``linked_transaction_id IS NULL``). Moving a pending leg's account can
+    land it on its partner's account, which ``_link_pair`` forbids and which
+    makes every later edit of either leg raise; a non-BOTH category on a leg
+    breaks the transfer-category rule. A pending recurring row never carries a
+    one-way reconcile link (those live on the imported row), so the clause
+    skips only transfer legs. Description still reaches legs: harmless.
 
     SETTLED instances are never modified (historical fact). Concurrency: two
     edits to different siblings race last-writer-wins on the template, which is
@@ -474,6 +484,7 @@ async def _propagate_fields_to_series(
                 Transaction.org_id == org_id,
                 Transaction.status == TransactionStatus.PENDING,
                 Transaction.type == tx_type,
+                Transaction.linked_transaction_id.is_(None),
             )
             .values(category_id=category_id)
         )
@@ -488,7 +499,10 @@ async def _propagate_fields_to_series(
         # ⚠ Not a full serialization: ``_settle_due_auto`` locks due PENDING
         # transaction rows BEFORE the template, so an edit that already holds
         # the template can meet one of those rows below and InnoDB aborts one
-        # side as a deadlock. Same order, same edge, as description/category.
+        # side as a deadlock. Same order, same edge, as description/category;
+        # tracked as TBD-512. When the description changed too, the template
+        # row is already locked earlier in this function, by the description
+        # UPDATE above, so the edit holds it for longer than this block.
         await db.execute(
             update(RecurringTransaction)
             .where(
@@ -503,6 +517,7 @@ async def _propagate_fields_to_series(
                 Transaction.recurring_id == recurring_id,
                 Transaction.org_id == org_id,
                 Transaction.status == TransactionStatus.PENDING,
+                Transaction.linked_transaction_id.is_(None),
             )
             .values(account_id=account_id)
         )

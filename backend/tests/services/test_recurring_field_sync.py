@@ -407,12 +407,16 @@ async def test_account_edit_reaches_next_generated_occurrence(db_session):
 
 
 async def test_account_edit_on_settled_row_moves_only_its_own_balance(db_session):
-    """fence F2. Rows are inserted by the helper WITHOUT touching balances, so
-    stored balances are SEEDED to what the service would have produced:
-    A = 1000 - 11 (settled sibling) - 50 (edited settled row) = 939, B = 1000.
-    Kills: applying a balance move to the propagated pending row (B -> 927),
-    and a bulk UPDATE missing the PENDING filter (no balance moves, so only the
-    settled sibling's account_id check sees it)."""
+    """fence F2. Kills exactly two things: a balance move applied to the
+    propagated PENDING row (B would read 927, not 950), and a sibling UPDATE
+    missing the PENDING filter (no balance moves, so only the settled
+    sibling's ``account_id`` assertion sees it).
+
+    The helper inserts rows WITHOUT touching balances. ``update_transaction``
+    reverts and re-applies the EDITED row's delta and never rebuilds a balance
+    from rows, so the 939 / 1000 starting balances are arbitrary and the
+    settled 11.00 sibling plays no part in the balance assertions: A and B
+    only prove the 50.00 move happened once, and the 23.00 row moved none."""
     seed = await _seed(db_session)
     org_id = seed["org_id"]
     acct_a = seed["account_id"]
@@ -510,10 +514,14 @@ async def test_resave_with_same_account_does_not_propagate(db_session):
 
 
 async def test_cross_org_account_is_rejected_before_any_propagation(db_session):
-    """fence F5. Kills: propagating before validation / writing the raw body
-    value. Reads happen in the SAME, uncommitted session transaction on
-    purpose: a rollback would also discard a premature propagation write and
-    hide exactly the ordering this fence exists to pin."""
+    """guard F5. Pins validation ORDER: kills propagation running BEFORE
+    ``validate_account`` (injected as a propagation call above the validation
+    block, which by construction can only use the raw ``body.account_id``).
+    A mutant that swaps in the raw body value at the CURRENT call site is
+    EQUIVALENT and cannot be killed by any test: by then
+    ``body.account_id == tx.account_id``. Reads happen in the SAME, uncommitted
+    session transaction on purpose: a rollback would also discard a premature
+    propagation write and hide exactly the ordering this guard pins."""
     seed = await _seed(db_session)
     acct_a = seed["account_id"]
     other = Organization(name="Other", billing_cycle_day=1)
@@ -559,3 +567,88 @@ async def test_account_and_amount_edit_propagates_only_the_account(db_session):
     assert s.account_id == acct_b
     assert s.amount == Decimal("30.00")
     assert s.date == TODAY + timedelta(days=30)
+
+
+async def _add_income_leg(db: AsyncSession, seed: dict, account_id: int, amount: str) -> int:
+    inc = Category(org_id=seed["org_id"], name="Refund", slug="refund", type=CategoryType.INCOME)
+    db.add(inc)
+    await db.flush()
+    tx = Transaction(
+        org_id=seed["org_id"], account_id=account_id, category_id=inc.id,
+        description="Incoming", amount=Decimal(amount), type=TransactionType.INCOME,
+        status=TransactionStatus.PENDING, date=TODAY + timedelta(days=3),
+    )
+    db.add(tx)
+    await db.commit()
+    return tx.id
+
+
+async def test_account_propagation_skips_pending_transfer_leg_sibling(db_session):
+    """fence T1. Kills: the sibling account UPDATE without
+    ``linked_transaction_id IS NULL``. It would move pending leg P2 onto its
+    partner I's account B -- a pair ``_link_pair`` forbids -- after which every
+    edit of P2 or I raises "Pair on same account after edit"."""
+    seed = await _seed(db_session)
+    org_id = seed["org_id"]
+    acct_a = seed["account_id"]
+    acct_b = await _add_account(db_session, org_id, "B", "0")
+    rid = await _add_template(db_session, seed)
+    p1 = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=5), amount=Decimal("30.00"),
+    )
+    p2 = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=35), amount=Decimal("23.00"),
+    )
+    inc = await _add_income_leg(db_session, seed, acct_b, "23.00")
+    await transaction_service.pair_existing_transactions(db_session, org_id, p2, inc)
+
+    await transaction_service.update_transaction(
+        db_session, org_id, p1, TransactionUpdate(account_id=acct_b),
+    )
+
+    db_session.expire_all()
+    assert (await db_session.get(Transaction, p1)).account_id == acct_b
+    assert (await db_session.get(RecurringTransaction, rid)).account_id == acct_b
+    assert (await db_session.get(Transaction, p2)).account_id == acct_a
+    assert (await db_session.get(Transaction, inc)).account_id == acct_b
+    # The pair stays editable.
+    await transaction_service.update_transaction(
+        db_session, org_id, p2, TransactionUpdate(description="Still a transfer"),
+    )
+
+
+async def test_category_propagation_skips_pending_transfer_leg_sibling(db_session):
+    """fence T2. Kills: the sibling category UPDATE without
+    ``linked_transaction_id IS NULL``. It would overwrite the leg's BOTH-type
+    Transfer category with an expense-only one."""
+    seed = await _seed(db_session)
+    org_id = seed["org_id"]
+    acct_b = await _add_account(db_session, org_id, "B", "0")
+    rid = await _add_template(db_session, seed)
+    p1 = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=5), amount=Decimal("30.00"),
+    )
+    plain = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=65), amount=Decimal("41.00"),
+    )
+    leg = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=TODAY + timedelta(days=35), amount=Decimal("23.00"),
+    )
+    inc = await _add_income_leg(db_session, seed, acct_b, "23.00")
+    await transaction_service.pair_existing_transactions(db_session, org_id, leg, inc)
+    db_session.expire_all()
+    transfer_cat = (await db_session.get(Transaction, leg)).category_id
+    assert transfer_cat not in (seed["exp_cat"], seed["exp_cat2"])
+
+    await transaction_service.update_transaction(
+        db_session, org_id, p1, TransactionUpdate(category_id=seed["exp_cat2"]),
+    )
+
+    db_session.expire_all()
+    assert (await db_session.get(Transaction, plain)).category_id == seed["exp_cat2"]
+    assert (await db_session.get(Transaction, leg)).category_id == transfer_cat
