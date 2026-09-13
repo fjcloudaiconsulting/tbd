@@ -189,11 +189,14 @@ describe("OrganizationSettingsPage — Planning tools card (TBD-197 F14)", () =>
     });
 
     // Non-destructive change: immediate mutation, no ConfirmModal in the way.
+    // T11 (TBD-323): EXACT name on the SAME node. `/budgets/i` would pass
+    // "Disable Budgets", a name that flips with state.
     await waitFor(() => {
       expect(
-        row.getByRole("switch", { name: /budgets/i }).getAttribute("aria-checked"),
+        row.getByRole("switch", { name: "Budgets" }).getAttribute("aria-checked"),
       ).toBe("false");
     });
+    expect(row.getByRole("switch", { name: "Budgets" })).toBe(sw);
     expect(row.getByText("Disabled")).toBeTruthy();
   });
 
@@ -287,5 +290,56 @@ describe("OrganizationSettingsPage — Planning tools card (TBD-197 F14)", () =>
     expect(
       budgets.getByRole("switch", { name: /budgets/i }).getAttribute("aria-checked"),
     ).toBe("true");
+  });
+
+  // ── TBD-323 ────────────────────────────────────────────────────────────
+  it("T13 fence: a second click while the save is in flight issues exactly one PUT", async () => {
+    // Real `disabled` was the only re-entry guard. The switch now stays
+    // focusable while saving, so the double save must be refused elsewhere.
+    setAuth(true);
+    let resolvePut!: (v: unknown) => void;
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
+        return new Promise((r) => { resolvePut = r; });
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const row = await toolRow("budgets");
+    const sw = row.getByRole("switch", { name: "Budgets" });
+    fireEvent.click(sw);
+    fireEvent.click(sw);
+    fireEvent.click(sw);
+    const puts = () =>
+      vi.mocked(apiFetch).mock.calls.filter(
+        ([url, init]) =>
+          url === "/api/v1/settings/features/budgets" && (init as RequestInit | undefined)?.method === "PUT",
+      );
+    expect(puts()).toHaveLength(1);
+    expect(sw).toHaveAttribute("aria-disabled", "true");
+    expect(sw).not.toBeDisabled();
+    resolvePut({ feature: "budgets", enabled: false });
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "false"));
+    expect(puts()).toHaveLength(1);
+  });
+
+  it("T14 fence: a failed save is announced in role=alert", async () => {
+    // The switch keeps focus through the save now, so the failure has to
+    // reach a screen reader without the user hunting for it.
+    setAuth(true);
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
+        return Promise.reject(new Error("Could not save the Budgets setting"));
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const row = await toolRow("budgets");
+    fireEvent.click(row.getByRole("switch", { name: "Budgets" }));
+    const card = await planningToolsCard();
+    await waitFor(() => expect(card.getByRole("alert")).toHaveTextContent(/could not save the budgets setting/i));
+    expect(row.getByRole("switch", { name: "Budgets" })).toHaveAttribute("aria-checked", "true");
   });
 });

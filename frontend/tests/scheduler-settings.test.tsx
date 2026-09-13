@@ -100,4 +100,45 @@ describe("SchedulerSettingsCard", () => {
       expect.objectContaining({ billing_close_reminder_lead_days: expect.anything() }),
     );
   });
+
+  // ── TBD-323 ────────────────────────────────────────────────────────────
+  it("T8 fence: the switch name is the exact setting name and survives a real toggle on the same node", async () => {
+    // Kills: an action- or state-phrased label passed at this site. The
+    // regex queries above would pass "Disable automatically close billing period".
+    render(<SchedulerSettingsCard />);
+    const sw = await screen.findByRole("switch", { name: "Automatically close billing period" });
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(sw);
+    await waitFor(() => expect(api.updateSchedulerSettings).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Automatically close billing period" })).toHaveAttribute(
+        "aria-checked",
+        "false",
+      ),
+    );
+    expect(screen.getByRole("switch", { name: "Automatically close billing period" })).toBe(sw);
+  });
+
+  it("T12 fence: a second click while the save is in flight issues no second save and rollback restores the ORIGINAL value", async () => {
+    // Real `disabled` was the only thing stopping a double save here. With the
+    // switch kept focusable while saving, a second click would capture the
+    // optimistic value as `prev` and a failure would "roll back" to it.
+    let reject!: (e: unknown) => void;
+    vi.mocked(api.updateSchedulerSettings).mockImplementation(
+      () => new Promise((_, rej) => { reject = rej; }) as never,
+    );
+    render(<SchedulerSettingsCard />);
+    const sw = await screen.findByRole("switch", { name: "Automatically close billing period" });
+    fireEvent.click(sw);
+    fireEvent.click(sw);
+    fireEvent.click(sw);
+    expect(api.updateSchedulerSettings).toHaveBeenCalledTimes(1);
+    expect(sw).toHaveAttribute("aria-disabled", "true");
+    expect(sw).not.toBeDisabled();
+
+    reject(new Error("boom"));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    expect(api.updateSchedulerSettings).toHaveBeenCalledTimes(1);
+  });
 });

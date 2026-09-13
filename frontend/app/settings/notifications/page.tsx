@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import SettingsLayout from "@/components/SettingsLayout";
+import Switch from "@/components/ui/Switch";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import {
   card,
@@ -75,41 +76,6 @@ const CATEGORIES: ReadonlyArray<{
     inAppKey: "in_app_cc_statement",
   },
 ];
-
-function ChannelSwitch({
-  enabled,
-  disabled,
-  ariaLabel,
-  describedById,
-  onClick,
-}: {
-  enabled: boolean;
-  disabled: boolean;
-  ariaLabel: string;
-  describedById?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={enabled}
-      aria-label={ariaLabel}
-      aria-describedby={describedById}
-      disabled={disabled}
-      onClick={onClick}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60 ${
-        enabled ? "bg-success" : "bg-border"
-      }`}
-    >
-      <span
-        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-          enabled ? "translate-x-5" : "translate-x-0.5"
-        }`}
-      />
-    </button>
-  );
-}
 
 export default function NotificationsPage() {
   const [prefs, setPrefs] = useState<NotificationPreferences | null>(null);
@@ -233,26 +199,30 @@ export default function NotificationsPage() {
                             {cat.description}
                           </p>
                         </div>
-                        <div className="flex w-14 justify-center pt-0.5">
-                          <ChannelSwitch
-                            enabled={emailEnabled}
-                            disabled={cat.locked || saving}
-                            ariaLabel={`${cat.title} email notifications`}
-                            describedById={
+                        <div className="flex w-14 justify-center">
+                          <Switch
+                            layout="stacked"
+                            checked={emailEnabled}
+                            disabled={cat.locked}
+                            pending={saving}
+                            label={`${cat.title} email notifications`}
+                            describedBy={
                               cat.locked ? `${cat.id}-always-on` : undefined
                             }
-                            onClick={() => !cat.locked && toggle(cat.emailKey)}
+                            onChange={() => !cat.locked && toggle(cat.emailKey)}
                           />
                         </div>
-                        <div className="flex w-14 justify-center pt-0.5">
-                          <ChannelSwitch
-                            enabled={inAppEnabled}
-                            disabled={cat.locked || saving}
-                            ariaLabel={`${cat.title} in-app notifications`}
-                            describedById={
+                        <div className="flex w-14 justify-center">
+                          <Switch
+                            layout="stacked"
+                            checked={inAppEnabled}
+                            disabled={cat.locked}
+                            pending={saving}
+                            label={`${cat.title} in-app notifications`}
+                            describedBy={
                               cat.locked ? `${cat.id}-always-on` : undefined
                             }
-                            onClick={() => !cat.locked && toggle(cat.inAppKey)}
+                            onChange={() => !cat.locked && toggle(cat.inAppKey)}
                           />
                         </div>
                       </li>

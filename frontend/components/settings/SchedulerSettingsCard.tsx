@@ -41,8 +41,9 @@
  * Each control updates optimistically then rolls back on a rejected
  * PUT, surfacing an inline error banner (mirrors DemoDataCard).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import Switch from "@/components/ui/Switch";
 import { getSchedulerSettings, updateSchedulerSettings, extractErrorMessage } from "@/lib/api";
 import { card, cardHeader, cardTitle, label, input } from "@/lib/styles";
 import type { SchedulerSettings } from "@/lib/types";
@@ -91,8 +92,15 @@ export default function SchedulerSettingsCard() {
     };
   }, []);
 
+  // Re-entry guard (TBD-323). The switch stays focusable while saving, so a
+  // second click must be refused HERE too: it would capture the optimistic
+  // value as `prev` and a failed save would "roll back" to it. A ref, because
+  // two clicks in one tick both read the pre-render state.
+  const togglesInFlight = useRef(new Set<BooleanField>());
+
   async function handleToggle(field: BooleanField, next: boolean) {
-    if (!settings) return;
+    if (!settings || togglesInFlight.current.has(field)) return;
+    togglesInFlight.current.add(field);
     setError(null);
     const prev = settings[field];
     setSettings({ ...settings, [field]: next });
@@ -103,6 +111,7 @@ export default function SchedulerSettingsCard() {
       setSettings((current) => (current ? { ...current, [field]: prev } : current));
       setError(extractErrorMessage(err, "Could not update setting."));
     } finally {
+      togglesInFlight.current.delete(field);
       setSavingField(null);
     }
   }
@@ -204,30 +213,12 @@ export default function SchedulerSettingsCard() {
                     Create each recurring transaction on its due date without manual entry.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={settings.automate_recurring_generation}
-                  aria-label="Automatically generate recurring transactions"
-                  disabled={savingField === "automate_recurring_generation"}
-                  onClick={() =>
-                    handleToggle(
-                      "automate_recurring_generation",
-                      !settings.automate_recurring_generation,
-                    )
-                  }
-                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50 ${
-                    settings.automate_recurring_generation ? "bg-success" : "bg-border"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                      settings.automate_recurring_generation
-                        ? "translate-x-5"
-                        : "translate-x-0.5"
-                    }`}
-                  />
-                </button>
+                <Switch
+                  checked={settings.automate_recurring_generation}
+                  onChange={(next) => handleToggle("automate_recurring_generation", next)}
+                  label="Automatically generate recurring transactions"
+                  pending={savingField === "automate_recurring_generation"}
+                />
               </div>
 
               <div className="flex items-center justify-between gap-4">
@@ -240,25 +231,12 @@ export default function SchedulerSettingsCard() {
                     Turning this off also silences the pre-close reminder below.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={settings.automate_billing_close}
-                  aria-label="Automatically close billing period"
-                  disabled={savingField === "automate_billing_close"}
-                  onClick={() =>
-                    handleToggle("automate_billing_close", !settings.automate_billing_close)
-                  }
-                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50 ${
-                    settings.automate_billing_close ? "bg-success" : "bg-border"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                      settings.automate_billing_close ? "translate-x-5" : "translate-x-0.5"
-                    }`}
-                  />
-                </button>
+                <Switch
+                  checked={settings.automate_billing_close}
+                  onChange={(next) => handleToggle("automate_billing_close", next)}
+                  label="Automatically close billing period"
+                  pending={savingField === "automate_billing_close"}
+                />
               </div>
 
               <div>
@@ -297,30 +275,12 @@ export default function SchedulerSettingsCard() {
                     what&apos;s due when it does.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={settings.automate_cc_statement_alerts}
-                  aria-label="Credit-card statement alerts"
-                  disabled={savingField === "automate_cc_statement_alerts"}
-                  onClick={() =>
-                    handleToggle(
-                      "automate_cc_statement_alerts",
-                      !settings.automate_cc_statement_alerts,
-                    )
-                  }
-                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50 ${
-                    settings.automate_cc_statement_alerts ? "bg-success" : "bg-border"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                      settings.automate_cc_statement_alerts
-                        ? "translate-x-5"
-                        : "translate-x-0.5"
-                    }`}
-                  />
-                </button>
+                <Switch
+                  checked={settings.automate_cc_statement_alerts}
+                  onChange={(next) => handleToggle("automate_cc_statement_alerts", next)}
+                  label="Credit-card statement alerts"
+                  pending={savingField === "automate_cc_statement_alerts"}
+                />
               </div>
 
               <div>

@@ -94,4 +94,67 @@ describe("SmartRulesSection", () => {
       }),
     );
   });
+
+  // ── TBD-323 ────────────────────────────────────────────────────────────
+  it("T9 fence: the name is exactly the visible label (WCAG 2.5.3) and survives a toggle", async () => {
+    // Kills: the pre-TBD-323 name "Share merchant data", which did not contain
+    // the visible label, and any state-phrased name.
+    apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {
+      if (opts?.method === "PUT") return Promise.resolve({ key: "share_merchant_data", value: "true" });
+      if (url === "/api/v1/settings") return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<SmartRulesSection />);
+    const sw = await screen.findByRole("switch", { name: "Share anonymized merchant data" });
+    expect(screen.getByText("Share anonymized merchant data")).toBeInTheDocument();
+    fireEvent.click(sw);
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    expect(screen.getByRole("switch", { name: "Share anonymized merchant data" })).toBe(sw);
+  });
+
+  it("T15 fence: no switch and no state claim until the value has been read", async () => {
+    // Kills: rendering the default `false` as "Disabled" before the GET resolves.
+    let resolve!: (v: unknown) => void;
+    apiFetchMock.mockImplementation((() => new Promise((r) => { resolve = r; })) as never);
+    render(<SmartRulesSection />);
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByText("Disabled")).toBeNull();
+    resolve([{ key: "share_merchant_data", value: "true" }]);
+    expect(await screen.findByRole("switch", { name: "Share anonymized merchant data" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.queryByText("Loading...")).toBeNull();
+  });
+
+  it("T16 fence: a failed load shows an alert and no switch", async () => {
+    // Kills: the swallowed catch that left a "Disabled" switch asserting a
+    // value that was never read.
+    apiFetchMock.mockImplementation((() => Promise.reject(new Error("network down"))) as never);
+    render(<SmartRulesSection />);
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByText("Disabled")).toBeNull();
+    expect(screen.queryByText("Loading...")).toBeNull();
+  });
+
+  it("T17 fence: a second click while the save is in flight issues one PUT", async () => {
+    let resolvePut!: (v: unknown) => void;
+    apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {
+      if (opts?.method === "PUT") return new Promise((r) => { resolvePut = r; });
+      if (url === "/api/v1/settings") return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<SmartRulesSection />);
+    const sw = await screen.findByRole("switch", { name: "Share anonymized merchant data" });
+    fireEvent.click(sw);
+    fireEvent.click(sw);
+    const puts = () => apiFetchMock.mock.calls.filter(([, o]) => (o as RequestInit | undefined)?.method === "PUT");
+    expect(puts()).toHaveLength(1);
+    expect(sw).not.toBeDisabled();
+    resolvePut({ key: "share_merchant_data", value: "true" });
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    expect(puts()).toHaveLength(1);
+  });
 });

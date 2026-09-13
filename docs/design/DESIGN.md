@@ -319,13 +319,23 @@ Badges are the inline status chips; banners are the full-width block messages. B
 - **Divider / frame:** Sidebar Border (`sidebar-border`, Brass Tally 8%-alpha) for the few hairlines inside the navy chrome.
 - **Icon style:** Heroicons outline, 18×18, stroke-width 1.5. Inherits `currentColor` from the active state, so the active item's icon goes brass alongside its label.
 
+### Switch
+
+- **Component:** `components/ui/Switch.tsx`, the only `role="switch"` in the app (`tests/convention/switch-primitive.test.ts` fails on a hand-rolled copy). For a binary setting that applies as soon as it changes, or a draft toggle saved by a page-level button.
+- **Shape:** a 24px track (`h-6 w-11`) inside a 44px button (`h-11 w-11`), so the touch target meets the floor without a larger visual.
+- **Colour:** track `success` on, `border-strong` off; knob `surface`; no shadow at rest. Every pair is at least 3.30:1 in both themes (WCAG 1.4.11). ⚠ Measured on `surface` **only**: `border-strong` is 2.89:1 on `surface-raised` (dark) and 2.96:1 on `bg` (light). Do not place a Switch on either.
+- **State in text:** "Enabled" / "Disabled" beside the control (below it in a narrow column), hidden from assistive technology because `aria-checked` already announces it.
+- **Name:** the object ("Budgets", "Automatically close billing period"), never the action and never state-dependent. A name that flips ("Disable Budgets") reads as a different control and states the value twice.
+- **Locked vs saving:** a locked setting is `disabled`. A save in flight is `pending` (`aria-disabled`): the switch keeps keyboard focus and ignores clicks, and the caller still guards re-entry in its own handler.
+- **Focus:** none of its own; it inherits the global baseline.
+
 ### Page Title
 
 - `pageTitle` — `font-display text-2xl text-text-primary mb-8`. The single editorial moment per page. One per route; never two.
 
 ### Named Rules
 
-**The Composed-Utility Rule.** Component primitives are exported strings in `lib/styles.ts`, not React components. New primitives go there; ad-hoc Tailwind classes that duplicate an existing primitive are wrong. If you find yourself writing `rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-text`, you are reinventing `btnPrimary`.
+**The Composed-Utility Rule.** Component primitives are exported strings in `lib/styles.ts`, not React components. New primitives go there; ad-hoc Tailwind classes that duplicate an existing primitive are wrong. If you find yourself writing `rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-text`, you are reinventing `btnPrimary`. The line between the two: a primitive whose invariants are ARIA role/state/name is a component (`components/ui/Switch.tsx`); a primitive that is only visual stays a `styles.ts` string.
 
 **The Pressable-Surfaces Rule.** The visible focus state is supplied **globally**: the `:focus-visible` baseline in `app/globals.css` (`@layer base`) paints a 2px Brass Tally outline at a 2px offset on every focusable element. A bare `<button>`, `<a>`, `<input>` or `<select>` is compliant **as written** — do not add a focus class to a new call site. Default browser focus rings are forbidden and are now structurally impossible.
 

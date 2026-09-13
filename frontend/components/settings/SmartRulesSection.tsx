@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import Switch from "@/components/ui/Switch";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import {
   card,
@@ -18,6 +19,9 @@ export default function SmartRulesSection() {
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
+  // TBD-323: a switch states its value in text, so it must never render a
+  // value that was not read. No switch while loading, none after a failed load.
+  const [loadError, setLoadError] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -27,8 +31,10 @@ export default function SmartRulesSection() {
         if (cancelled) return;
         const row = settings.find((s) => s.key === SETTING_KEY);
         setEnabled(row?.value === "true");
-      } catch {
-        // Network/permission error, leave default-off; server is the source of truth.
+      } catch (err) {
+        if (!cancelled) {
+          setLoadError(extractErrorMessage(err, "Could not load this preference."));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -77,23 +83,20 @@ export default function SmartRulesSection() {
               merchant tokens, never your transaction details).
             </p>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={enabled}
-            aria-label="Share merchant data"
-            disabled={loading || saving}
-            onClick={toggle}
-            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50 ${
-              enabled ? "bg-success" : "bg-border"
-            }`}
-          >
-            <span
-              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                enabled ? "translate-x-5" : "translate-x-0.5"
-              }`}
+          {loading ? (
+            <p className="text-sm text-text-muted">Loading...</p>
+          ) : loadError ? (
+            <p role="alert" className="text-sm text-danger">
+              {loadError}
+            </p>
+          ) : (
+            <Switch
+              checked={enabled}
+              onChange={() => void toggle()}
+              label="Share anonymized merchant data"
+              pending={saving}
             />
-          </button>
+          )}
         </div>
       </div>
     </section>
