@@ -56,7 +56,7 @@ const USER = {
 function rec(over: Partial<RecurringTransaction> = {}): RecurringTransaction {
   return {
     id: 1, account_id: 1, account_name: "Checking", category_id: 1,
-    category_name: "Bills", description: "Rent", amount: 1200,
+    category_name: "Bills", description: "Rent", amount: "1200.00",
     type: "expense", frequency: "monthly", next_due_date: "2026-09-01",
     auto_settle: false, is_active: true, occurrence_count: null,
     occurrences_elapsed: 0, ...over,

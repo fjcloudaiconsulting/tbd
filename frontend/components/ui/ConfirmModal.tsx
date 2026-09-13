@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { btnPrimary, btnSecondary, btnWarning, btnDangerSolid } from "@/lib/styles";
 
 interface Props {
@@ -14,6 +14,10 @@ interface Props {
   // buttons and swaps the confirm label for a busy label. Additive-only —
   // omitting it preserves every existing caller's behavior exactly.
   submitting?: boolean;
+  // Disables confirm alone, e.g. while an inline field is invalid (TBD-273).
+  confirmDisabled?: boolean;
+  // Rendered between the message and the buttons (TBD-273).
+  children?: ReactNode;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -32,6 +36,8 @@ export default function ConfirmModal({
   cancelLabel = "Cancel",
   variant = "default",
   submitting = false,
+  confirmDisabled = false,
+  children,
   onConfirm,
   onCancel,
 }: Props) {
@@ -42,6 +48,9 @@ export default function ConfirmModal({
 
   useEffect(() => {
     if (open) {
+      // An autoFocus child (TBD-273) has already taken focus during commit;
+      // leave it there. Its focus event recorded the trigger to restore.
+      if (dialogRef.current?.contains(document.activeElement)) return;
       previousFocusRef.current = document.activeElement as HTMLElement;
       confirmRef.current?.focus();
     } else if (previousFocusRef.current) {
@@ -56,7 +65,7 @@ export default function ConfirmModal({
       if (e.key === "Escape") { e.stopPropagation(); onCancel(); return; }
       if (e.key === "Tab") {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
         );
         if (!focusable || focusable.length === 0) return;
         const first = focusable[0];
@@ -92,9 +101,16 @@ export default function ConfirmModal({
         aria-labelledby="confirm-modal-title"
         className="w-full max-w-[min(28rem,calc(100vw-2rem))] max-h-[90vh] overflow-y-auto rounded-lg border border-border bg-surface p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
+        onFocusCapture={(e) => {
+          const from = e.relatedTarget;
+          if (!previousFocusRef.current && from instanceof HTMLElement && !dialogRef.current?.contains(from)) {
+            previousFocusRef.current = from;
+          }
+        }}
       >
         <h3 id="confirm-modal-title" className="text-lg font-semibold text-text-primary">{title}</h3>
         <p className="mt-2 whitespace-pre-line text-sm text-text-secondary">{message}</p>
+        {children}
         <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button
             ref={cancelRef}
@@ -107,7 +123,7 @@ export default function ConfirmModal({
           <button
             ref={confirmRef}
             onClick={onConfirm}
-            disabled={submitting}
+            disabled={submitting || confirmDisabled}
             className={`${variantClasses[variant]} w-full sm:w-auto min-h-[44px]`}
           >
             {submitting ? "Working…" : confirmLabel}

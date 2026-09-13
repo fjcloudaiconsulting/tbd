@@ -227,6 +227,8 @@ export interface Transaction {
   // is `is_reverted: false`. The two are separate booleans on purpose; compose
   // them, do not merge them.
   is_reverted: boolean;
+  // TBD-273: this occurrence's amount differs from its recurring series.
+  differs_from_series: boolean;
   // PR-Tags-A: tags attached to this transaction. Always present on
   // list/detail responses, empty array when none. The backend
   // populates this via a selectinload in the transactions service
@@ -247,7 +249,7 @@ export interface RecurringTransaction {
   category_id: number;
   category_name: string;
   description: string;
-  amount: number;
+  amount: string;
   type: "income" | "expense";
   frequency: "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly";
   next_due_date: string;

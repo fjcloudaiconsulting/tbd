@@ -59,7 +59,7 @@ function rec(over: Partial<RecurringTransaction>): RecurringTransaction {
     category_id: 1,
     category_name: "Bills",
     description: "Item",
-    amount: 10,
+    amount: "10.00",
     type: "expense",
     frequency: "monthly",
     next_due_date: "2026-01-01",
@@ -139,9 +139,9 @@ describe("RecurringPage — sorting by header click", () => {
 
   it("sorts amount numerically (not lexicographically)", async () => {
     mockApiWith([
-      rec({ id: 1, description: "Two", amount: 2, next_due_date: "2026-01-01" }),
-      rec({ id: 2, description: "Ten", amount: 10, next_due_date: "2026-01-02" }),
-      rec({ id: 3, description: "Nine", amount: 9, next_due_date: "2026-01-03" }),
+      rec({ id: 1, description: "Two", amount: "2.00", next_due_date: "2026-01-01" }),
+      rec({ id: 2, description: "Ten", amount: "10.00", next_due_date: "2026-01-02" }),
+      rec({ id: 3, description: "Nine", amount: "9.00", next_due_date: "2026-01-03" }),
     ]);
     render(<RecurringPage />);
     await waitFor(() => expect(activeRowOrder().length).toBe(3));
