@@ -3,7 +3,7 @@
 /**
  * Pie widget — share-of-total over a single dimension. The spec caps
  * the visible slice count: anything beyond ``top_n`` (default 8) is
- * rolled into a single "Other" slice. Legend renders below the pie.
+ * rolled into a single "Other" slice. The DOM legend renders below the pie.
  *
  * Single dimension, single aggregation — the config rail locks both
  * to length 1 when the widget type is ``pie``.
@@ -16,13 +16,16 @@ import dynamic from "next/dynamic";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
 import { widgetDataState } from "@/lib/reports/notices";
+import { OTHER_COLOR, OTHER_LABEL } from "@/lib/reports/breakdown";
 import { dimensionHeader, topNWithOther } from "@/lib/reports/series";
+import { CHART_SERIES } from "@/lib/chart-colors";
 import { useWidgetFormat } from "@/lib/reports/widget-format";
 import type {
   CanvasFilters,
   PieWidget as PieWidgetType,
 } from "@/lib/reports/types";
 import WidgetCsvButton from "./WidgetCsvButton";
+import WidgetLegend from "./WidgetLegend";
 import WidgetNotices from "@/components/reports/WidgetNotices";
 import type { CsvCell } from "@/lib/reports/csv";
 
@@ -59,6 +62,16 @@ export default function PieWidget({
     value: typeof r.value === "number" ? r.value : Number(r.value ?? 0),
   }));
   const rows = topNWithOther(rawRows, topN);
+  // TBD-427: one colour array, handed to BOTH the chart and the DOM legend.
+  // The folded "Other" takes the neutral `OTHER_COLOR` (border-strong,
+  // 3.31 / 3.32:1), the token TBD-382 ruled for bar. Still keyed on the
+  // label, so a real "Other" category is painted neutral too (TBD-519).
+  const sliceColors = rows.map((row, i) =>
+    row.label === OTHER_LABEL
+      ? OTHER_COLOR
+      : CHART_SERIES[i % CHART_SERIES.length],
+  );
+  const title = widget.title || "Pie chart";
   // TBD-381: derived from the source catalog at render, never read from
   // config. `format` is no longer persisted -- see lib/reports/widget-format.ts.
   const { format: derivedFormat, isLoading: catalogLoading } = useWidgetFormat(widget.config.dataset, [widget.config.measure]);
@@ -95,11 +108,8 @@ export default function PieWidget({
         }`}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1">
-          <span
-            className="min-w-0 truncate text-sm font-semibold text-text-primary"
-            aria-label={widget.title || "Pie chart"}
-          >
-            {widget.title || "Pie chart"}
+          <span className="min-w-0 truncate text-sm font-semibold text-text-primary">
+            {title}
           </span>
           {/* LOUD on truncation: the donut total and `topNWithOther`'s
               "Other" slice are both composed from ACROSS the returned
@@ -144,12 +154,25 @@ export default function PieWidget({
         ) : (
           <PieWidgetChart
             rows={rows}
+            sliceColors={sliceColors}
             format={format}
             currency={currency}
             suppressTotal={!!data?.meta?.truncated}
           />
         )}
       </div>
+      {/* TBD-427: the DOM colour key, in slice order so the folded "Other"
+          is last. Shown for a single slice too: every slice needs its key. */}
+      {!isLoading && !error && rows.length > 0 && (
+        <WidgetLegend
+          testidPrefix="pie-widget"
+          label={`${dimensionHeader(dimensionKey)} slices in ${title}`}
+          items={rows.map((row, i) => ({
+            label: row.label,
+            color: sliceColors[i],
+          }))}
+        />
+      )}
     </div>
   );
 }

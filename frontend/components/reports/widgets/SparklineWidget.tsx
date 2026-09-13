@@ -84,7 +84,6 @@ export default function SparklineWidget({
       data-testid="sparkline-widget"
       data-widget-id={widget.id}
       className="flex h-full flex-col justify-center gap-1 rounded-lg border border-border bg-surface p-3"
-      aria-label={widget.title || "Sparkline"}
     >
       <div
         data-testid="widget-header"

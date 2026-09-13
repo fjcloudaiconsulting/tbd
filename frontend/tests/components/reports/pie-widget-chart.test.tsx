@@ -10,6 +10,8 @@ global.ResizeObserver = vi.fn().mockImplementation(() => ({
 
 import PieWidgetChart from "@/components/reports/widgets/PieWidgetChart";
 
+const COLORS = ["var(--color-chart-1)", "var(--color-chart-2)"];
+
 describe("PieWidgetChart", () => {
   it("renders a center total label summing all slice values (currency format)", () => {
     const rows = [
@@ -17,7 +19,7 @@ describe("PieWidgetChart", () => {
       { label: "Transport", value: 200 },
     ];
     render(
-      <PieWidgetChart rows={rows} format="currency" currency="EUR" />,
+      <PieWidgetChart rows={rows} sliceColors={COLORS} format="currency" currency="EUR" />,
     );
     // Total = 500, formatted as currency EUR → "€500.00"
     expect(screen.getByTestId("pie-center-total")).toBeInTheDocument();
@@ -29,7 +31,7 @@ describe("PieWidgetChart", () => {
       { label: "A", value: 1000 },
       { label: "B", value: 2000 },
     ];
-    render(<PieWidgetChart rows={rows} format="number" />);
+    render(<PieWidgetChart rows={rows} sliceColors={COLORS} format="number" />);
     // Total = 3000
     expect(screen.getByTestId("pie-center-total").textContent).toMatch(/3,000|3000/);
   });
@@ -44,13 +46,13 @@ describe("PieWidgetChart", () => {
       { label: "A", value: 1000 },
       { label: "B", value: 2000 },
     ];
-    const shown = render(<PieWidgetChart rows={rows} format="number" />);
+    const shown = render(<PieWidgetChart rows={rows} sliceColors={COLORS} format="number" />);
     expect(screen.getByTestId("pie-center-total")).toBeInTheDocument();
     expect(shown.container.textContent).toContain("Total:");
     shown.unmount();
 
     const hidden = render(
-      <PieWidgetChart rows={rows} format="number" suppressTotal />,
+      <PieWidgetChart rows={rows} sliceColors={COLORS} format="number" suppressTotal />,
     );
     expect(screen.queryByTestId("pie-center-total")).toBeNull();
     expect(hidden.container.textContent).not.toContain("Total:");

@@ -9,20 +9,26 @@ import {
   CartesianGrid,
   Line,
   LineChart,
-  Legend,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
 
-import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
+import { chartColor } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
 
 export interface LineWidgetChartProps {
   rows: Array<{ label: string } & Record<string, number | string>>;
   seriesKeys: string[];
   labels: string[];
+  /**
+   * Stroke colour per series, parallel to ``seriesKeys``. Supplied by the
+   * widget, which hands the SAME array to its DOM legend (TBD-427), so the
+   * key and the plot cannot disagree. Recomputing ``CHART_SERIES[i % 8]``
+   * here would re-open that drift.
+   */
+  seriesColors: string[];
   smooth?: boolean;
   /** Display format for the measure value (tooltip + value axis). */
   format: "currency" | "number" | "percent";
@@ -34,6 +40,7 @@ export default function LineWidgetChart({
   rows,
   seriesKeys,
   labels,
+  seriesColors,
   smooth,
   format,
   currency,
@@ -63,14 +70,13 @@ export default function LineWidgetChart({
           cursor={{ stroke: "var(--color-border)" }}
           formatter={(v) => formatMeasureValue(Number(v), format, currency)}
         />
-        {seriesKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
         {seriesKeys.map((key, i) => (
           <Line
             key={key}
             type={smooth === false ? "linear" : "monotone"}
             dataKey={key}
             name={labels[i]}
-            stroke={CHART_SERIES[i % CHART_SERIES.length]}
+            stroke={seriesColors[i]}
             strokeWidth={2}
             dot={false}
             isAnimationActive={false}

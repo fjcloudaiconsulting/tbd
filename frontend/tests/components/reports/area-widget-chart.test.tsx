@@ -55,6 +55,7 @@ describe("AreaWidgetChart", () => {
         rows={rows}
         seriesKeys={["s0", "s1"]}
         labels={["Series A", "Series B"]}
+        seriesColors={["var(--color-chart-1)", "var(--color-chart-2)"]}
         format="number"
       />,
     );
@@ -71,6 +72,7 @@ describe("AreaWidgetChart", () => {
         rows={rows}
         seriesKeys={["s0"]}
         labels={["Series A"]}
+        seriesColors={["var(--color-chart-1)"]}
         format="number"
       />,
     );
@@ -80,6 +82,7 @@ describe("AreaWidgetChart", () => {
         rows={rows}
         seriesKeys={["s0"]}
         labels={["Series A"]}
+        seriesColors={["var(--color-chart-1)"]}
         format="number"
       />,
     );
@@ -96,6 +99,7 @@ describe("AreaWidgetChart", () => {
         rows={rows}
         seriesKeys={["s0", "s1"]}
         labels={["Series A", "Series B"]}
+        seriesColors={["var(--color-chart-1)", "var(--color-chart-2)"]}
         format="number"
       />,
     );
@@ -113,6 +117,7 @@ describe("AreaWidgetChart", () => {
           rows={[{ label: "Jan", s0: 100 }]}
           seriesKeys={["s0"]}
           labels={["Series A"]}
+          seriesColors={["var(--color-chart-1)"]}
           format="number"
         />,
       );
@@ -127,6 +132,7 @@ describe("AreaWidgetChart", () => {
           rows={rows}
           seriesKeys={["s0", "s1"]}
           labels={["Series A", "Series B"]}
+          seriesColors={["var(--color-chart-1)", "var(--color-chart-2)"]}
           format="number"
         />,
       );
@@ -143,6 +149,7 @@ describe("AreaWidgetChart", () => {
           rows={rows}
           seriesKeys={["s0", "s1"]}
           labels={["Series A", "Series B"]}
+          seriesColors={["var(--color-chart-1)", "var(--color-chart-2)"]}
           stackId="s"
           format="number"
         />,
@@ -160,6 +167,7 @@ describe("AreaWidgetChart", () => {
           rows={rows}
           seriesKeys={["s0", "s1"]}
           labels={["Series A", "Series B"]}
+          seriesColors={["var(--color-chart-1)", "var(--color-chart-2)"]}
           format="number"
         />,
       );

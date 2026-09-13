@@ -28,7 +28,9 @@ import type {
   AreaWidget as AreaWidgetType,
   CanvasFilters,
 } from "@/lib/reports/types";
+import { CHART_SERIES } from "@/lib/chart-colors";
 import WidgetCsvButton from "./WidgetCsvButton";
+import WidgetLegend from "./WidgetLegend";
 import WidgetNotices from "@/components/reports/WidgetNotices";
 import { buildSeriesCsvDataset } from "./seriesCsv";
 
@@ -86,6 +88,11 @@ export default function AreaWidget({
   const labels = widget.config.measures.map((m, i) =>
     seriesLabel(m, i, widget.config.measures.length),
   );
+  // TBD-427: one colour array, handed to BOTH the chart and the DOM legend.
+  const seriesColors = seriesKeys.map(
+    (_, i) => CHART_SERIES[i % CHART_SERIES.length],
+  );
+  const title = widget.title || "Area chart";
   const stackId = widget.config.stacked && seriesKeys.length > 1 ? "stack" : undefined;
   const csvDataset = buildSeriesCsvDataset(
     dimensionKey,
@@ -113,11 +120,8 @@ export default function AreaWidget({
         }`}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1">
-          <span
-            className="min-w-0 truncate text-sm font-semibold text-text-primary"
-            aria-label={widget.title || "Area chart"}
-          >
-            {widget.title || "Area chart"}
+          <span className="min-w-0 truncate text-sm font-semibold text-text-primary">
+            {title}
           </span>
           {/* Quiet: each point is its own group's own value. Even when
               `stacked`, the stack is drawn from those per-group values, not
@@ -198,6 +202,7 @@ export default function AreaWidget({
             rows={rows}
             seriesKeys={seriesKeys}
             labels={labels}
+            seriesColors={seriesColors}
             stackId={stackId}
             format={format}
             currency={currency}
@@ -205,6 +210,24 @@ export default function AreaWidget({
           />
         )}
       </div>
+      {/* TBD-427: the DOM colour key, same gate as the chart branch plus the
+          multi-series condition the recharts legend used. Never beside the
+          two-dimension refusal: it would key series the widget refuses to
+          draw. */}
+      {!twoDimensional &&
+        !isLoading &&
+        !error &&
+        rows.length > 0 &&
+        seriesKeys.length > 1 && (
+          <WidgetLegend
+            testidPrefix="area-widget"
+            label={`Series in ${title}`}
+            items={labels.map((label, i) => ({
+              label,
+              color: seriesColors[i],
+            }))}
+          />
+        )}
     </div>
   );
 }
