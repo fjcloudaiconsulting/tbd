@@ -342,10 +342,17 @@ describe("CC Model — forecast deep link", () => {
       window.history.replaceState({}, "", "/accounts");
     });
 
-    async function deepLinkToCard() {
+    // Mounts under the OPPOSITE preference and flips it right after render.
+    // Accounts load asynchronously, so the flip lands before the scroll; a
+    // preference captured at mount instead of read when the scroll fires
+    // goes red.
+    async function deepLinkToCard(reduce: boolean) {
       window.history.replaceState({}, "", "/accounts?edit=11");
       mockApi();
+      stubReducedMotion(!reduce);
       renderWithSWR(<AccountsPage />);
+      stubReducedMotion(reduce);
+      expect(scrollSpy).not.toHaveBeenCalled();
       expect(await screen.findByText("Upcoming payments")).toBeInTheDocument();
       await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
       const target = scrollSpy.mock.contexts.at(-1) as HTMLElement;
@@ -354,13 +361,11 @@ describe("CC Model — forecast deep link", () => {
     }
 
     test("scrolls with behavior 'auto' when the viewer prefers reduced motion", async () => {
-      stubReducedMotion(true);
-      expect(await deepLinkToCard()).toMatchObject({ behavior: "auto" });
+      expect(await deepLinkToCard(true)).toMatchObject({ behavior: "auto" });
     });
 
     test("scrolls with behavior 'smooth' when there is no preference", async () => {
-      stubReducedMotion(false);
-      expect(await deepLinkToCard()).toMatchObject({ behavior: "smooth" });
+      expect(await deepLinkToCard(false)).toMatchObject({ behavior: "smooth" });
     });
   });
 

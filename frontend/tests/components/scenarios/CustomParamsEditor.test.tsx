@@ -200,24 +200,29 @@ describe("CustomParamsEditor — reduced-motion scroll (TBD-436)", () => {
     delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
   });
 
-  function addEventCard() {
+  // Mounts under the OPPOSITE preference and flips it before adding, so a
+  // preference captured at mount (useState/useMemo) instead of read when the
+  // scroll fires goes red. Returns the options of the last scroll.
+  function addEventCard(reduce: boolean) {
+    stubReducedMotion(!reduce);
     render(<Wrapper />);
+    stubReducedMotion(reduce);
     fireEvent.click(screen.getByTestId("custom-add-event"));
     fireEvent.click(screen.getByTestId("custom-event-picker-one_off_income"));
-    expect(screen.getByTestId("custom-event-card-0")).toBeInTheDocument();
+    expect(scrollSpy).toHaveBeenCalled();
+    // The fixture starts empty and new events are prepended, so card 0 is
+    // the one just added. Pin the element, not just the options.
+    expect(scrollSpy.mock.contexts.at(-1)).toBe(
+      screen.getByTestId("custom-event-card-0"),
+    );
+    return scrollSpy.mock.calls.at(-1)![0];
   }
 
   it("scrolls the new card with behavior 'auto' when the viewer prefers reduced motion", () => {
-    stubReducedMotion(true);
-    addEventCard();
-    expect(scrollSpy).toHaveBeenCalled();
-    expect(scrollSpy.mock.calls.at(-1)![0]).toMatchObject({ behavior: "auto" });
+    expect(addEventCard(true)).toMatchObject({ behavior: "auto" });
   });
 
   it("scrolls the new card with behavior 'smooth' when there is no preference", () => {
-    stubReducedMotion(false);
-    addEventCard();
-    expect(scrollSpy).toHaveBeenCalled();
-    expect(scrollSpy.mock.calls.at(-1)![0]).toMatchObject({ behavior: "smooth" });
+    expect(addEventCard(false)).toMatchObject({ behavior: "smooth" });
   });
 });
