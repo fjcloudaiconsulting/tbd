@@ -8,7 +8,7 @@
  *   - Toggling a switch calls updateSchedulerSettings with ONLY the
  *     changed field.
  */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import SchedulerSettingsCard from "@/components/settings/SchedulerSettingsCard";
 import * as api from "@/lib/api";
@@ -139,6 +139,71 @@ describe("SchedulerSettingsCard", () => {
     reject(new Error("boom"));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    expect(api.updateSchedulerSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("X1 fence: a sibling save finishing leaves a field still in flight pending, and it still refuses a second save", async () => {
+    // Kills BOTH halves of the old single-value `savingField`: when B finished
+    // it cleared A's pending state while A still saved (A's aria-disabled
+    // assertion), and only the ref guard then stopped A's second save (the
+    // call-count assertion).
+    vi.mocked(api.updateSchedulerSettings).mockImplementation(((patch: Record<string, unknown>) =>
+      "automate_billing_close" in patch
+        ? new Promise(() => {})
+        : Promise.resolve({})) as never);
+    render(<SchedulerSettingsCard />);
+    const a = await screen.findByRole("switch", { name: "Automatically close billing period" });
+    const b = screen.getByRole("switch", { name: "Automatically generate recurring transactions" });
+
+    fireEvent.click(a);
+    fireEvent.click(b);
+    expect(a).toHaveAttribute("aria-disabled", "true");
+    await waitFor(() => expect(b).not.toHaveAttribute("aria-disabled"));
+    expect(a).toHaveAttribute("aria-disabled", "true");
+
+    fireEvent.click(a);
+    const aCalls = vi
+      .mocked(api.updateSchedulerSettings)
+      .mock.calls.filter(([patch]) => "automate_billing_close" in (patch as object));
+    expect(aCalls).toHaveLength(1);
+  });
+
+  it("X2 fence: a failed save rolls back ONLY its own field, not a sibling that saved meanwhile", async () => {
+    // Kills a rollback (or optimistic write) from a stale `settings` snapshot,
+    // which would put B back to the value it had when A was clicked.
+    let rejectA!: (e: unknown) => void;
+    vi.mocked(api.updateSchedulerSettings).mockImplementation(((patch: Record<string, unknown>) =>
+      "automate_billing_close" in patch
+        ? new Promise((_, rej) => { rejectA = rej; })
+        : Promise.resolve({})) as never);
+    render(<SchedulerSettingsCard />);
+    const a = await screen.findByRole("switch", { name: "Automatically close billing period" });
+    const b = screen.getByRole("switch", { name: "Automatically generate recurring transactions" });
+
+    fireEvent.click(a);
+    fireEvent.click(b);
+    await waitFor(() => expect(b).not.toHaveAttribute("aria-disabled"));
+    expect(b).toHaveAttribute("aria-checked", "false");
+
+    rejectA(new Error("boom"));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await waitFor(() => expect(a).toHaveAttribute("aria-checked", "true"));
+    expect(b).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("X1b fence: two clicks delivered before React re-renders issue one save (the ref guard)", async () => {
+    // Both clicks land inside one act() batch, so the second handler runs
+    // against the PRE-render props: the switch's `pending` no-op cannot see
+    // the first save yet. Only the synchronous ref guard in handleToggle can
+    // refuse it. Kills: the ref guard removed (X1 alone cannot see that,
+    // because between two separate fireEvent clicks React has re-rendered).
+    vi.mocked(api.updateSchedulerSettings).mockImplementation((() => new Promise(() => {})) as never);
+    render(<SchedulerSettingsCard />);
+    const a = await screen.findByRole("switch", { name: "Automatically close billing period" });
+    act(() => {
+      a.click();
+      a.click();
+    });
     expect(api.updateSchedulerSettings).toHaveBeenCalledTimes(1);
   });
 });

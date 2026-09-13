@@ -16,7 +16,7 @@
  */
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import OrganizationSettingsPage from "@/app/settings/organization/page";
 import { apiFetch } from "@/lib/api";
@@ -341,5 +341,87 @@ describe("OrganizationSettingsPage — Planning tools card (TBD-197 F14)", () =>
     const card = await planningToolsCard();
     await waitFor(() => expect(card.getByRole("alert")).toHaveTextContent(/could not save the budgets setting/i));
     expect(row.getByRole("switch", { name: "Budgets" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("X3 fence: Forecast's save finishing leaves Budgets pending, and Budgets still refuses a second PUT", async () => {
+    // Kills the single-value `saving` state (finishing Forecast cleared the
+    // Budgets pending state: the aria-disabled assertion) and a missing ref
+    // guard (the PUT count).
+    setAuth(true, true);
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
+        return new Promise(() => {});
+      }
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/forecast") {
+        return Promise.resolve({ feature: "forecast", enabled: false });
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const budgets = (await toolRow("budgets")).getByRole("switch", { name: "Budgets" });
+    const forecast = (await toolRow("forecast")).getByRole("switch", { name: "Forecast" });
+
+    fireEvent.click(budgets);
+    fireEvent.click(forecast);
+    await waitFor(() => expect(forecast).toHaveAttribute("aria-checked", "false"));
+    await waitFor(() => expect(forecast).not.toHaveAttribute("aria-disabled"));
+    expect(budgets).toHaveAttribute("aria-disabled", "true");
+
+    fireEvent.click(budgets);
+    const budgetPuts = vi
+      .mocked(apiFetch)
+      .mock.calls.filter(
+        ([url, init]) =>
+          url === "/api/v1/settings/features/budgets" && (init as RequestInit | undefined)?.method === "PUT",
+      );
+    expect(budgetPuts).toHaveLength(1);
+  });
+
+  it("T18 fence: the administrator lock note is the switch's accessible description", async () => {
+    // Kills an unlinked note: a screen reader on the switch hears "off" with no
+    // reason, while a sighted user reads why.
+    setAuth(false);
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
+        return Promise.resolve({ feature: "budgets", enabled: false });
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const row = await toolRow("budgets");
+    const sw = row.getByRole("switch", { name: "Budgets" });
+    expect(sw).not.toHaveAttribute("aria-describedby");
+
+    fireEvent.click(sw);
+    await waitFor(() => expect(row.getByText(/set by your administrator/i)).toBeTruthy());
+    expect(sw).toHaveAccessibleDescription(/set by your administrator/i);
+  });
+
+  it("X3b fence: two clicks delivered before React re-renders issue one PUT (the ref guard)", async () => {
+    // Same shape as the Scheduler X1b: inside one act() batch the second click
+    // sees pre-render props, so only the handler's ref guard can refuse it.
+    setAuth(true);
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
+        return new Promise(() => {});
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const budgets = (await toolRow("budgets")).getByRole("switch", { name: "Budgets" });
+    act(() => {
+      budgets.click();
+      budgets.click();
+    });
+    const budgetPuts = vi
+      .mocked(apiFetch)
+      .mock.calls.filter(
+        ([url, init]) =>
+          url === "/api/v1/settings/features/budgets" && (init as RequestInit | undefined)?.method === "PUT",
+      );
+    expect(budgetPuts).toHaveLength(1);
   });
 });

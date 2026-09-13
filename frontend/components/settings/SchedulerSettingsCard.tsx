@@ -56,18 +56,30 @@ type BooleanField =
   | "automate_billing_close"
   | "automate_cc_statement_alerts";
 
+type SavingField =
+  | BooleanField
+  | "billing_close_reminder_lead_days"
+  | "cc_statement_reminder_lead_days";
+
 export default function SchedulerSettingsCard() {
   const [settings, setSettings] = useState<SchedulerSettings | null>(null);
   const [leadDaysDraft, setLeadDaysDraft] = useState("");
   const [ccLeadDaysDraft, setCcLeadDaysDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [savingField, setSavingField] = useState<
-    | BooleanField
-    | "billing_close_reminder_lead_days"
-    | "cc_statement_reminder_lead_days"
-    | null
-  >(null);
+  // Every field with a save in flight (TBD-323). A SET, not one value: saves
+  // on sibling fields overlap, and a single saving-field value let the first
+  // save to finish clear the pending state of a field still saving.
+  const [savingFields, setSavingFields] = useState<ReadonlySet<SavingField>>(
+    () => new Set(),
+  );
+  const markSaving = (field: SavingField, saving: boolean) =>
+    setSavingFields((current) => {
+      const next = new Set(current);
+      if (saving) next.add(field);
+      else next.delete(field);
+      return next;
+    });
 
   // Seed once on mount. Deliberately NOT re-run on `settings` changes —
   // this is the load, not a resync.
@@ -92,10 +104,11 @@ export default function SchedulerSettingsCard() {
     };
   }, []);
 
-  // Re-entry guard (TBD-323). The switch stays focusable while saving, so a
-  // second click must be refused HERE too: it would capture the optimistic
-  // value as `prev` and a failed save would "roll back" to it. A ref, because
-  // two clicks in one tick both read the pre-render state.
+  // Synchronous re-entry guard (TBD-323), the second line behind the switch's
+  // `pending` no-op. A second save of a field still in flight would capture
+  // the optimistic value as `prev`, so a failure would "roll back" to it.
+  // This card tracks several independent saves at once, which is exactly when
+  // rendered state is the wrong thing to lean on alone.
   const togglesInFlight = useRef(new Set<BooleanField>());
 
   async function handleToggle(field: BooleanField, next: boolean) {
@@ -103,8 +116,10 @@ export default function SchedulerSettingsCard() {
     togglesInFlight.current.add(field);
     setError(null);
     const prev = settings[field];
-    setSettings({ ...settings, [field]: next });
-    setSavingField(field);
+    // Functional updates only: a sibling field may save between this click and
+    // this save's resolution, and a stale snapshot would overwrite it.
+    setSettings((current) => (current ? { ...current, [field]: next } : current));
+    markSaving(field, true);
     try {
       await updateSchedulerSettings({ [field]: next });
     } catch (err) {
@@ -112,7 +127,7 @@ export default function SchedulerSettingsCard() {
       setError(extractErrorMessage(err, "Could not update setting."));
     } finally {
       togglesInFlight.current.delete(field);
-      setSavingField(null);
+      markSaving(field, false);
     }
   }
 
@@ -133,8 +148,8 @@ export default function SchedulerSettingsCard() {
 
     setError(null);
     const prev = settings.billing_close_reminder_lead_days;
-    setSettings({ ...settings, billing_close_reminder_lead_days: parsed });
-    setSavingField("billing_close_reminder_lead_days");
+    setSettings((current) => (current ? { ...current, billing_close_reminder_lead_days: parsed } : current));
+    markSaving("billing_close_reminder_lead_days", true);
     try {
       await updateSchedulerSettings({ billing_close_reminder_lead_days: parsed });
     } catch (err) {
@@ -144,7 +159,7 @@ export default function SchedulerSettingsCard() {
       setLeadDaysDraft(String(prev));
       setError(extractErrorMessage(err, "Could not update setting."));
     } finally {
-      setSavingField(null);
+      markSaving("billing_close_reminder_lead_days", false);
     }
   }
 
@@ -165,8 +180,8 @@ export default function SchedulerSettingsCard() {
 
     setError(null);
     const prev = settings.cc_statement_reminder_lead_days;
-    setSettings({ ...settings, cc_statement_reminder_lead_days: parsed });
-    setSavingField("cc_statement_reminder_lead_days");
+    setSettings((current) => (current ? { ...current, cc_statement_reminder_lead_days: parsed } : current));
+    markSaving("cc_statement_reminder_lead_days", true);
     try {
       await updateSchedulerSettings({ cc_statement_reminder_lead_days: parsed });
     } catch (err) {
@@ -176,7 +191,7 @@ export default function SchedulerSettingsCard() {
       setCcLeadDaysDraft(String(prev));
       setError(extractErrorMessage(err, "Could not update setting."));
     } finally {
-      setSavingField(null);
+      markSaving("cc_statement_reminder_lead_days", false);
     }
   }
 
@@ -217,7 +232,7 @@ export default function SchedulerSettingsCard() {
                   checked={settings.automate_recurring_generation}
                   onChange={(next) => handleToggle("automate_recurring_generation", next)}
                   label="Automatically generate recurring transactions"
-                  pending={savingField === "automate_recurring_generation"}
+                  pending={savingFields.has("automate_recurring_generation")}
                 />
               </div>
 
@@ -235,7 +250,7 @@ export default function SchedulerSettingsCard() {
                   checked={settings.automate_billing_close}
                   onChange={(next) => handleToggle("automate_billing_close", next)}
                   label="Automatically close billing period"
-                  pending={savingField === "automate_billing_close"}
+                  pending={savingFields.has("automate_billing_close")}
                 />
               </div>
 
@@ -250,7 +265,7 @@ export default function SchedulerSettingsCard() {
                   max={MAX_LEAD_DAYS}
                   inputMode="numeric"
                   value={leadDaysDraft}
-                  disabled={savingField === "billing_close_reminder_lead_days"}
+                  disabled={savingFields.has("billing_close_reminder_lead_days")}
                   onChange={(e) => setLeadDaysDraft(e.target.value)}
                   onBlur={commitLeadDays}
                   className={`${input} w-24`}
@@ -279,7 +294,7 @@ export default function SchedulerSettingsCard() {
                   checked={settings.automate_cc_statement_alerts}
                   onChange={(next) => handleToggle("automate_cc_statement_alerts", next)}
                   label="Credit-card statement alerts"
-                  pending={savingField === "automate_cc_statement_alerts"}
+                  pending={savingFields.has("automate_cc_statement_alerts")}
                 />
               </div>
 
@@ -294,7 +309,7 @@ export default function SchedulerSettingsCard() {
                   max={MAX_LEAD_DAYS}
                   inputMode="numeric"
                   value={ccLeadDaysDraft}
-                  disabled={savingField === "cc_statement_reminder_lead_days"}
+                  disabled={savingFields.has("cc_statement_reminder_lead_days")}
                   onChange={(e) => setCcLeadDaysDraft(e.target.value)}
                   onBlur={commitCcLeadDays}
                   className={`${input} w-24`}

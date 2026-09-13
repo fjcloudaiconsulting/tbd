@@ -326,7 +326,7 @@ Badges are the inline status chips; banners are the full-width block messages. B
 - **Colour:** track `success` on, `border-strong` off; knob `surface`; no shadow at rest. Every pair is at least 3.30:1 in both themes (WCAG 1.4.11). ⚠ Measured on `surface` **only**: `border-strong` is 2.89:1 on `surface-raised` (dark) and 2.96:1 on `bg` (light). Do not place a Switch on either.
 - **State in text:** "Enabled" / "Disabled" beside the control (below it in a narrow column), hidden from assistive technology because `aria-checked` already announces it.
 - **Name:** the object ("Budgets", "Automatically close billing period"), never the action and never state-dependent. A name that flips ("Disable Budgets") reads as a different control and states the value twice.
-- **Locked vs saving:** a locked setting is `disabled`. A save in flight is `pending` (`aria-disabled`): the switch keeps keyboard focus and ignores clicks, and the caller still guards re-entry in its own handler.
+- **Locked vs saving:** a locked setting is `disabled`. A save in flight is `pending` (`aria-disabled`): the switch keeps keyboard focus and ignores clicks. A card that tracks several independent saves at once (one per field or per tool) keeps its in-flight set in state, so one save finishing never clears another's pending state, and adds a synchronous ref guard in its handler; a card with a single save needs neither.
 - **Focus:** none of its own; it inherits the global baseline.
 
 ### Page Title

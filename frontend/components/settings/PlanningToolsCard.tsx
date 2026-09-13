@@ -52,12 +52,18 @@ function ToolRow({
       <div>
         <p className="text-sm font-medium text-text-primary">{label}</p>
         {lockedByAdmin && (
-          <p className="text-xs text-text-muted">
+          <p id={`planning-tool-${tool}-locked`} className="text-xs text-text-muted">
             Off &mdash; set by your administrator
           </p>
         )}
       </div>
-      <Switch checked={enabled} onChange={onToggle} label={label} pending={saving} />
+      <Switch
+        checked={enabled}
+        onChange={onToggle}
+        label={label}
+        pending={saving}
+        describedBy={lockedByAdmin ? `planning-tool-${tool}-locked` : undefined}
+      />
     </div>
   );
 }
@@ -74,7 +80,10 @@ export default function PlanningToolsCard({
   const [written, setWritten] = useState<Partial<Record<PlanningTool, boolean>>>(
     {},
   );
-  const [saving, setSaving] = useState<PlanningTool | null>(null);
+  // Every tool with a save in flight (TBD-323). A SET, not one value: with a
+  // single value, finishing Forecast cleared the pending state of a Budgets
+  // save still in flight.
+  const [saving, setSaving] = useState<ReadonlySet<PlanningTool>>(() => new Set());
   // "Off — set by your administrator" is WRITE-RESPONSE-ONLY. /auth/status
   // returns a single resolved boolean, so a global "off" and an org opt-out
   // are indistinguishable at page load; the only moment the difference becomes
@@ -87,17 +96,17 @@ export default function PlanningToolsCard({
   const isEnabled = (tool: PlanningTool) =>
     written[tool] ?? features?.[tool] !== false;
 
-  // Re-entry guard (TBD-323). The switch stays focusable while saving, so the
-  // component's `pending` no-op is not the only thing refusing a second save.
-  // A ref, not the `saving` state: two clicks in one tick both read the
-  // pre-render state. Per tool, so saving Budgets never blocks Forecast.
+  // Synchronous re-entry guard (TBD-323), the second line behind the switch's
+  // `pending` no-op: this card tracks independent saves per tool, and a second
+  // PUT for a tool still in flight must be refused even if rendered state were
+  // ever wrong about it. Per tool, so saving Budgets never blocks Forecast.
   const inFlight = useRef(new Set<PlanningTool>());
 
   async function handleToggle(tool: PlanningTool, next: boolean) {
     if (inFlight.current.has(tool)) return;
     inFlight.current.add(tool);
     setError("");
-    setSaving(tool);
+    setSaving((current) => new Set(current).add(tool));
     try {
       const res = await apiFetch<{ feature: PlanningTool; enabled: boolean }>(
         `/api/v1/settings/features/${tool}`,
@@ -130,7 +139,11 @@ export default function PlanningToolsCard({
       setError(extractErrorMessage(err));
     } finally {
       inFlight.current.delete(tool);
-      setSaving(null);
+      setSaving((current) => {
+        const next = new Set(current);
+        next.delete(tool);
+        return next;
+      });
     }
   }
 
@@ -154,7 +167,7 @@ export default function PlanningToolsCard({
             key={tool}
             tool={tool}
             enabled={isEnabled(tool)}
-            saving={saving === tool}
+            saving={saving.has(tool)}
             lockedByAdmin={Boolean(lockedByAdmin[tool])}
             onToggle={(next) => void handleToggle(tool, next)}
           />

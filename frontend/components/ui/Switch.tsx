@@ -14,8 +14,9 @@
  * - `disabled` is LOCKED (real `disabled`, not focusable).
  * - `pending` is a save in flight: `aria-disabled`, still focusable, clicks
  *   ignored. Real `disabled` on a focused button drops keyboard focus to the
- *   page (the HTML focus-fixup rule). Callers must ALSO guard re-entry in
- *   their handler; this is the first line, not the only one.
+ *   page (the HTML focus-fixup rule). A caller tracking several independent
+ *   saves keeps its in-flight set in state and also guards re-entry with a
+ *   synchronous ref in its handler (SchedulerSettingsCard, PlanningToolsCard).
  * - No focus class. The global `:focus-visible` outline in globals.css
  *   (TBD-319) is the indicator; a 30%-alpha ring measures about 1.78:1.
  * - Colours measured against `surface` ONLY (WCAG 1.4.11, >= 3.30:1 in both

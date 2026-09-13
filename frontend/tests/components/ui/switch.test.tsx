@@ -86,6 +86,12 @@ describe("TBD-323 Switch: state", () => {
       expect(root.contains(on)).toBe(true);
       // Ruling Q3: state, not label. aria-checked already announces it.
       expect(on.closest("[aria-hidden='true']")).not.toBeNull();
+      // ...but hidden from AT ONLY. Kills an `sr-only`/`hidden` state text that
+      // satisfies the aria-hidden assertion while no sighted user sees it.
+      expect(on).toBeVisible();
+      for (let el: HTMLElement | null = on; el && el !== root; el = el.parentElement) {
+        expect(el.getAttribute("class") ?? "").not.toMatch(/(^|\s)(sr-only|hidden|invisible|opacity-0)(\s|$)/);
+      }
       expect(screen.queryByText("Disabled")).toBeNull();
 
       fireEvent.click(screen.getByRole("switch", { name: "Budgets" }));
@@ -143,6 +149,30 @@ function parts(sw: HTMLElement) {
 }
 
 describe("TBD-323 Switch: visual invariants", () => {
+  it("T5a fence: the track tokens are pinned, success on and border-strong off", () => {
+    // Kills: an ON `bg-accent` (a lit brass track on every load breaks The One
+    // Brass Rule, and T6 cannot see it: brass clears 3:1) and an OFF track
+    // swapped to another >= 3:1 token such as `bg-text-muted`.
+    for (const [checked, token] of [
+      [true, "bg-success"],
+      [false, "bg-border-strong"],
+    ] as const) {
+      const { unmount } = render(<Switch checked={checked} onChange={vi.fn()} label="Budgets" />);
+      const { track } = parts(screen.getByRole("switch", { name: "Budgets" }));
+      expect(tokens(track).filter((t) => t.startsWith("bg-"))).toEqual([token]);
+      unmount();
+    }
+  });
+
+  it("T5b guard: the switch is type=button, so it never submits a surrounding form", () => {
+    render(
+      <form>
+        <Switch checked onChange={vi.fn()} label="Budgets" />
+      </form>,
+    );
+    expect(screen.getByRole("switch", { name: "Budgets" })).toHaveAttribute("type", "button");
+  });
+
   it("T5 guard: 44px box, no knob shadow, no raw white or black knob", () => {
     // ⚠ GUARD, not a fence on layout: proves the classes, not the rendered
     // size. The 44px proof is the browser measurement at the visual gate.
@@ -222,7 +252,8 @@ describe("TBD-323 Switch: visual invariants", () => {
     const sw = screen.getByRole("switch", { name: "Budgets" });
     const all = [sw, ...Array.from(sw.querySelectorAll("*"))].flatMap(tokens);
     for (const t of all) {
-      expect(t).not.toMatch(/(^|:)outline-(none|hidden|0)$/);
+      // Bare and variant-prefixed (focus:, focus-visible:, md:focus:, ...).
+      expect(t).not.toMatch(/(^|:)outline-(none|hidden|0|transparent)$/);
       expect(t).not.toMatch(/(^|:)ring(-|$)/);
     }
   });

@@ -1,4 +1,5 @@
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import ts from "typescript";
 import { describe, it, expect } from "vitest";
@@ -9,8 +10,15 @@ import { describe, it, expect } from "vitest";
  * ⚠ THIS PARSES. A grep can be satisfied (or tripped) by a comment; a
  * `role="switch"` in prose must not count, and `role={"switch"}` in JSX must.
  *
+ * Static values are unwrapped through parentheses, `as` and `satisfies`, so
+ * `role={("switch")}` and `role={"switch" as const}` count. The walk reads
+ * .ts, .tsx, .js and .jsx (tsconfig has allowJs).
+ *
  * ## What this cannot see (the ceiling)
  * - spread props (`{...{ role: "switch" }}`) and `React.createElement`;
+ * - a non-static role (`role={kind}`);
+ * - a `role="checkbox"` button styled to look like a switch (C2 allows
+ *   aria-checked on role=checkbox, correctly, and nothing here reads classes);
  * - `aria-pressed` on/off buttons, which cannot be told apart from legitimate
  *   toggle buttons syntactically;
  * - a `label` computed by a helper call such as `stateLabel(checked)` (C3
@@ -39,7 +47,7 @@ function walk(dir: string): string[] {
     if (entry.startsWith(".") || SKIP_DIRS.has(entry)) continue;
     const full = path.join(dir, entry);
     if (statSync(full).isDirectory()) out.push(...walk(full));
-    else if (full.endsWith(".tsx") || full.endsWith(".ts")) out.push(full);
+    else if (/\.(tsx?|jsx?)$/.test(full)) out.push(full);
   }
   return out;
 }
@@ -50,7 +58,10 @@ function staticValue(attr: ts.JsxAttribute): string | undefined {
   if (!init) return undefined;
   if (ts.isStringLiteral(init)) return init.text;
   if (ts.isJsxExpression(init) && init.expression) {
-    const e = init.expression;
+    let e: ts.Expression = init.expression;
+    while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isSatisfiesExpression(e)) {
+      e = e.expression;
+    }
     if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return e.text;
   }
   return undefined;
@@ -163,6 +174,20 @@ describe("TBD-323: the Switch primitive is the only switch", () => {
 });
 
 describe("TBD-323: anti-vacuity", () => {
+  it("C4c: the walk reads .js/.jsx as well as .ts/.tsx", () => {
+    // allowJs is on, so a hand-rolled switch in a .jsx file is a real file.
+    // Driven through the walk itself on a scratch tree, not a read of its source.
+    const dir = mkdtempSync(path.join(tmpdir(), "tbd323-walk-"));
+    try {
+      for (const f of ["a.ts", "b.tsx", "c.js", "d.jsx", "e.css", "f.md"]) {
+        writeFileSync(path.join(dir, f), "");
+      }
+      expect(walk(dir).map((f) => path.basename(f)).sort()).toEqual(["a.ts", "b.tsx", "c.js", "d.jsx"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("C4: the walk reaches the primitive and every migrated site", () => {
     const rels = scanned.map((s) => s.rel);
     for (const required of [
@@ -188,9 +213,12 @@ describe("TBD-323: anti-vacuity", () => {
       'export const E = () => <div role="radio" aria-checked={true} />;',
       'export const F = () => <Switch label={on ? "Disable X" : "Enable X"} />;',
       'export const G = () => <Switch label={`${title} email notifications`} />;',
+      'export const H = () => <button role={("switch")} />;',
+      'export const I = () => <button role={"switch" as const} />;',
+      'export const J = () => <button role={"switch" satisfies string} />;',
     ].join("\n");
     const r = scan("hostile.tsx", hostile);
-    expect(r.switches.map((h) => h.line)).toEqual([4, 5]);
+    expect(r.switches.map((h) => h.line)).toEqual([4, 5, 11, 12, 13]);
     expect(r.bareChecked.map((h) => h.line)).toEqual([6]);
     expect(r.conditionalLabels.map((h) => h.line)).toEqual([9]);
   });
