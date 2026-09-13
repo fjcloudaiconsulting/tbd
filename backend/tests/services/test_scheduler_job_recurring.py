@@ -75,7 +75,7 @@ async def test_run_success_records_and_notifies(session_factory, monkeypatch):
         db.add(org); await db.commit(); await db.refresh(org)
         res = await job.run(db, org, datetime.date(2026, 7, 4))
     assert res.outcome == OUTCOME_SUCCESS
-    assert res.counts == {"generated": 2, "settled": 1, "pending": 0}
+    assert res.counts == {"generated": 2, "settled": 1, "pending": 0, "backfilled": 0}
     assert calls == {"audit": 1, "notify": 1}
 
 
@@ -122,7 +122,52 @@ async def test_run_threads_the_ticks_clock_into_generation(session_factory, monk
     )
 
 
-def _fake_generate(*, generated, settled, sink=None):
+async def test_notification_reports_backfilled_rows(session_factory, monkeypatch):
+    """fence (TBD-285) — the scheduler notification names back-dated rows.
+
+    On the scheduler path nobody clicks Generate, so this body is the signal.
+    Kills: a sentence that is always on (red at 0), never on (red at 2), a
+    job that does not carry the count to the template (red at 2), "1 of them
+    are" (red at 1), and a count missing from the audit detail / JobResult.
+    """
+    bodies: list[str] = []
+    details: list[dict] = []
+    results = []
+
+    async def _dispatch(*a, **k):
+        bodies.append(k["body"])
+
+    async def _record(**k):
+        details.append(k["detail"])
+        return 1
+
+    monkeypatch.setattr(
+        "app.services.scheduler.jobs.recurring_generation.record_run", _record,
+    )
+    monkeypatch.setattr(
+        "app.services.scheduler.jobs.recurring_generation.dispatch_notification_to_org_members",
+        _dispatch,
+    )
+    job = RecurringGenerationJob()
+    async with session_factory() as db:
+        org = Organization(name="Acme", billing_cycle_day=1)
+        db.add(org); await db.commit(); await db.refresh(org)
+        for backfilled in (2, 1, 0):
+            monkeypatch.setattr(
+                "app.services.scheduler.jobs.recurring_generation.generate_due_transactions",
+                _fake_generate(generated=3, settled=0, backfilled=backfilled),
+            )
+            results.append(await job.run(db, org, datetime.date(2026, 7, 4)))
+
+    assert len(bodies) == 3
+    assert "2 of them are dated before the current billing cycle." in bodies[0]
+    assert "1 of them is dated before the current billing cycle." in bodies[1]
+    assert "dated before the current billing cycle" not in bodies[2]
+    assert [d["backfilled"] for d in details] == [2, 1, 0]
+    assert [r.counts["backfilled"] for r in results] == [2, 1, 0]
+
+
+def _fake_generate(*, generated, settled, sink=None, backfilled=0):
     # ``today`` defaults to None ON PURPOSE (TBD-284). If the job stops passing
     # the tick's clock, this fake still accepts the call and records None, so
     # the fence fails on the VALUE. A fake with a REQUIRED ``today`` would go
@@ -132,7 +177,7 @@ def _fake_generate(*, generated, settled, sink=None):
         if sink is not None:
             sink.append(today)
         return {"generated": generated, "settled": settled, "pending": 0,
-                "period_end": "2026-07-31"}
+                "backfilled": backfilled, "period_end": "2026-07-31"}
     return _f
 
 

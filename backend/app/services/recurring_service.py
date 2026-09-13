@@ -747,13 +747,23 @@ async def generate_due_transactions(
     settles instances whose date has passed. Overdue prior-period instances are
     caught up. Idempotent: re-running advances next_due_date past the window end.
 
+    Catch-up writes back-dated rows on their REAL nominal dates, even into a
+    closed billing period (TBD-285 ruling). Every user-entry path floors the
+    frontier at the cycle start AT WRITE TIME only; a frontier still falls
+    behind as cycles pass with no successful generation run (automation off,
+    scheduler down). Those occurrences are real obligations, and a closed
+    period is a reporting boundary, not a write lock. It is reported, not
+    silent: ``backfilled`` counts created rows dated before the cycle start
+    (``frontier_lower_bound``, the same derivation the write paths use),
+    logged as ``recurring.generate.backfill``.
+
     `today` is the caller's resolved clock. The scheduler passes the value the
     runner resolved once for the whole tick (``RecurringGenerationJob.run``), so
     one tick cannot straddle midnight and materialise rows against a different
     day than the one it decided was due (TBD-284). Passing None falls back to
     ``date.today()``; do NOT rely on that from any path that has already
     resolved a clock.
-    Returns {"generated", "settled", "pending", "period_end"}.
+    Returns {"generated", "settled", "pending", "backfilled", "period_end"}.
     """
     if today is None:
         today = datetime.date.today()
@@ -761,6 +771,7 @@ async def generate_due_transactions(
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
     cycle_day = org.billing_cycle_day if org else 1
     _, period_end = current_cycle_window(cycle_day, today)
+    p_start = await frontier_lower_bound(db, org_id, today=today)
 
     settled_now = await _settle_due_auto(db, org_id, today)
 
@@ -777,6 +788,7 @@ async def generate_due_transactions(
     due_items = list(result.scalars().all())
     created = 0
     created_settled = 0
+    backfilled: list[datetime.date] = []
 
     for r in due_items:
         iterations = 0
@@ -838,11 +850,19 @@ async def generate_due_transactions(
             created += 1
             if tx_status == TransactionStatus.SETTLED:
                 created_settled += 1
+            if due < p_start:
+                backfilled.append(due)
 
     await db.commit()
+    if backfilled:
+        await logger.ainfo(
+            "recurring.generate.backfill",
+            org_id=org_id, count=len(backfilled), earliest_date=str(min(backfilled)),
+        )
     return {
         "generated": created,
         "settled": created_settled + settled_now,
         "pending": created - created_settled,
+        "backfilled": len(backfilled),
         "period_end": period_end.isoformat(),
     }

@@ -623,6 +623,9 @@ export default async function DocsPage() {
               appear; they are not created automatically. Stopping a
               template removes its remaining pending future rows; settled
               past rows are kept because they are real money movements.
+              Occurrences missed in earlier cycles are created on their
+              original dates, and the confirmation message says how many
+              are dated before the current cycle.
             </p>
           </section>
 
