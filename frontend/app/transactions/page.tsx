@@ -1749,7 +1749,7 @@ function TransactionsPageContent() {
                                       type="button"
                                       onClick={() => setConfirmSkipTx(tx)}
                                       aria-label={`Skip this occurrence: ${tx.description}`}
-                                      className="mt-1 min-h-[44px] w-fit rounded-md border border-border px-4 text-sm text-text-secondary hover:bg-surface-raised"
+                                      className={`${btnSecondary} mt-1 min-h-[44px] w-fit`}
                                     >
                                       Skip this occurrence
                                     </button>
@@ -2319,7 +2319,7 @@ function TransactionsPageContent() {
                                         type="button"
                                         onClick={() => setConfirmSkipTx(tx)}
                                         aria-label={`Skip this occurrence: ${tx.description}`}
-                                        className="mt-1 min-h-[44px] w-fit px-4 rounded-md border border-border text-sm text-text-secondary"
+                                        className={`${btnSecondary} mt-1 min-h-[44px] w-fit`}
                                       >
                                         Skip this occurrence
                                       </button>
@@ -2685,8 +2685,8 @@ function TransactionsPageContent() {
         open={confirmSkipTx !== null}
         title="Skip This Occurrence"
         message={confirmSkipTx
-          ? `Skip "${confirmSkipTx.description}" on ${confirmSkipTx.date} (${confirmSkipTx.type === "income" ? "+" : "-"}${money(confirmSkipTx.amount)})?\n\nIt will stay in your list marked Excluded and count toward nothing. The rest of the series is unchanged.` +
-            (editingSeries?.occurrence_count != null ? `\n\nIt still counts as 1 of the ${editingSeries.occurrence_count} payments.` : "") +
+          ? `Skip "${confirmSkipTx.description}" on ${confirmSkipTx.date} (${confirmSkipTx.type === "income" ? "+" : "-"}${money(confirmSkipTx.amount)})?\n\nIt will stay in your list marked Excluded and won't be counted in balances or reports. The rest of the series is unchanged.` +
+            (editingSeries?.occurrence_count != null ? `\n\nIt still counts as 1 of the ${editingSeries.occurrence_count} occurrences.` : "") +
             "\n\nThis can't be undone."
           : ""}
         confirmLabel="Skip"

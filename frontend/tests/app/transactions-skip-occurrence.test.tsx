@@ -81,7 +81,7 @@ function makeTx(over: Partial<Transaction> & { id: number; description: string }
 function series(over: Partial<RecurringTransaction> = {}): RecurringTransaction {
   return {
     id: 31, account_id: ACCT.id, account_name: ACCT.name, category_id: CAT.id,
-    category_name: CAT.name, description: "Netflix", amount: 15.99, type: "expense",
+    category_name: CAT.name, description: "Netflix", amount: "15.99", type: "expense",
     frequency: "monthly", next_due_date: "2026-10-05", auto_settle: false,
     is_active: true, occurrence_count: null, occurrences_elapsed: 0, ...over,
   };
@@ -184,9 +184,10 @@ describe("transactions page: skip this occurrence (TBD-272)", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Skip This Occurrence")).toBeInTheDocument();
     await waitFor(() =>
-      expect(dialog.textContent).toContain("It still counts as 1 of the 12 payments."),
+      expect(dialog.textContent).toContain("It still counts as 1 of the 12 occurrences."),
     );
     expect(dialog.textContent).toContain(`Skip "Netflix" on 2026-09-05 (-${formatMoney(15.99)})?`);
+    expect(dialog.textContent).toContain("It will stay in your list marked Excluded and won't be counted in balances or reports.");
     expect(dialog.textContent).toContain("This can't be undone.");
 
     const confirm = within(dialog).getByRole("button", { name: "Skip" });
@@ -210,11 +211,11 @@ describe("transactions page: skip this occurrence (TBD-272)", () => {
     await waitFor(() => expect(calls().some((c) => c.key === "GET /api/v1/recurring")).toBe(true));
     clickSkip("edit-recurring-row-mobile-505", label);
     const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).not.toMatch(/payments/);
+    expect(dialog.textContent).not.toMatch(/occurrences\./);
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   });
 
-  it("F9: a 409 shows the server message verbatim", async () => {
+  it("C4: a 409 shows the server message verbatim and leaves the edit form open", async () => {
     const tx = makeTx({ id: 506, description: "Netflix" });
     setupApi([tx], {
       skip: () => {
@@ -227,6 +228,9 @@ describe("transactions page: skip this occurrence (TBD-272)", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Skip" }));
     expect(await screen.findByText("Only a pending occurrence can be skipped.")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("edit-recurring-row-506")).toBeInTheDocument();
+    expect(screen.getByTestId("edit-recurring-row-mobile-506")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Save$/ }).length).toBeGreaterThan(0);
   });
 });
 

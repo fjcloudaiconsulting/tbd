@@ -9,7 +9,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import Pagination from "@/components/ui/Pagination";
 import SortableHeader from "@/components/ui/SortableHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { ApiResponseError, apiFetch, extractErrorMessage } from "@/lib/api";
 
 import { demotionNotice } from "@/lib/demotion";
 import {
@@ -108,7 +108,7 @@ function sortRecurring(
         // ISO date strings (YYYY-MM-DD) sort chronologically as strings.
         return cmpString(a.next_due_date, b.next_due_date, factor);
       case "amount":
-        return cmpNumber(a.amount, b.amount, factor);
+        return cmpNumber(Number(a.amount), Number(b.amount), factor);
       default:
         return 0;
     }
@@ -289,7 +289,7 @@ function RecurringTable({
                   {money(r.amount)}
                 </td>
                 <td className="px-3 py-3">
-                  <span className="flex justify-end gap-2">
+                  <span className="flex flex-wrap justify-end gap-x-2 gap-y-1">
                     {/* TBD-272/273. Only for a series that can still deliver an
                         occurrence; the server's 409 decides everything else. */}
                     {onEditNext && onSkipNext && seriesRunning(r) && (
@@ -546,9 +546,18 @@ export default function RecurringPage() {
     setConfirmSkip(null);
   }
 
-  // Up to 2 decimals and above 0; the input's own min/step are not enforced
-  // on a typed value.
-  const editNextValid = editNext !== null && /^\d+(\.\d{1,2})?$/.test(editNext.amount) && Number(editNext.amount) > 0;
+  // Checked before the irreversible create. The input's own min/step are not
+  // enforced on a typed value; the server takes 12 digits with 2 decimals.
+  const editNextError = editNext === null
+    ? null
+    : /^\d{1,10}(\.\d{1,2})?$/.test(editNext.amount) && Number(editNext.amount) > 0
+      ? null
+      : Number(editNext.amount) > 0
+        ? "Enter an amount with up to 10 digits and 2 decimals."
+        : "Enter an amount above 0.";
+  const editNextValid = editNext !== null && editNextError === null;
+  // Amounts are Decimal strings on the wire ("1200.00"): compare as numbers.
+  const editNextUnchanged = editNext !== null && Number(editNext.amount) === Number(editNext.item.amount);
 
   // TBD-273. Write the occurrence, then edit its amount. Never retry the
   // materialise: it moved the frontier, so a retry would 409 or take the NEXT one.
@@ -567,9 +576,13 @@ export default function RecurringPage() {
       });
       setSuccessMsg(`"${item.description}" on ${item.next_due_date} is now ${signed(item, amount)}. Later occurrences stay at ${signed(item, item.amount)}.`);
     } catch (err) {
+      const msg = extractErrorMessage(err);
       setError(created
-        ? `The ${item.next_due_date} occurrence was created at ${signed(item, item.amount)}, but the new amount didn't save: ${extractErrorMessage(err)} Edit it on the Transactions page.`
-        : extractErrorMessage(err));
+        ? `The ${item.next_due_date} occurrence was created at ${signed(item, item.amount)}, but the new amount didn't save: ${msg} Edit it on the Transactions page.`
+        : err instanceof ApiResponseError
+          ? msg
+          // No HTTP response: the row may exist. A retry is safe (the server 409s).
+          : `${msg}${/[.!?]$/.test(msg) ? "" : "."} Refresh to check whether it was created.`);
     }
     await reload().catch(() => {});
     setSubmitting(false);
@@ -693,8 +706,8 @@ export default function RecurringPage() {
         open={confirmSkip !== null}
         title="Skip Next Occurrence"
         message={confirmSkip
-          ? `Skip "${confirmSkip.description}" on ${confirmSkip.next_due_date} (${signed(confirmSkip, confirmSkip.amount)})?\n\nIt will stay in your transactions marked Excluded and count toward nothing. Later occurrences are unchanged.` +
-            (confirmSkip.occurrence_count != null ? `\n\nIt still counts as 1 of the ${confirmSkip.occurrence_count} payments.` : "") +
+          ? `Skip "${confirmSkip.description}" on ${confirmSkip.next_due_date} (${signed(confirmSkip, confirmSkip.amount)})?\n\nIt will stay on your Transactions page marked Excluded and won't be counted in balances or reports. Later occurrences are unchanged.` +
+            (confirmSkip.occurrence_count != null ? `\n\nIt still counts as 1 of the ${confirmSkip.occurrence_count} occurrences.` : "") +
             "\n\nThis can't be undone."
           : ""}
         confirmLabel="Skip"
@@ -711,9 +724,9 @@ export default function RecurringPage() {
           : ""}
         confirmLabel="Save amount"
         submitting={submitting}
-        confirmDisabled={!editNextValid || Number(editNext?.amount) === editNext?.item.amount}
+        confirmDisabled={!editNextValid || editNextUnchanged}
         onConfirm={() => {
-          if (editNext && editNextValid && Number(editNext.amount) !== editNext.item.amount) {
+          if (editNext && editNextValid && !editNextUnchanged) {
             doEditNext(editNext.item, editNext.amount);
           }
         }}
@@ -734,12 +747,12 @@ export default function RecurringPage() {
               value={editNext.amount}
               onChange={(e) => setEditNext({ ...editNext, amount: e.target.value })}
               aria-invalid={!editNextValid}
-              aria-describedby={editNextValid ? undefined : "edit-next-amount-error"}
+              aria-describedby={editNextError ? "edit-next-amount-error" : undefined}
               className={inputCls}
             />
-            {!editNextValid && (
+            {editNextError && (
               <p id="edit-next-amount-error" className="mt-1 text-xs text-danger">
-                Enter an amount above 0.
+                {editNextError}
               </p>
             )}
           </div>

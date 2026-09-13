@@ -249,7 +249,7 @@ export interface RecurringTransaction {
   category_id: number;
   category_name: string;
   description: string;
-  amount: number;
+  amount: string;
   type: "income" | "expense";
   frequency: "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly";
   next_due_date: string;

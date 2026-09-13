@@ -21,8 +21,11 @@
  *      with body keys exactly ["amount"].
  *      Kills: a PUT to the template, the wrong id, a full-form body, reversed
  *      order.
- *  F7  0, abc, 1.234 and the template's own amount send NO request, and Save
- *      is disabled.
+ *  F7  0, abc, 1.234, an 11-digit amount and the template's own amount (typed
+ *      as "1200" against the wire's "1200.00") send NO request, and Save is
+ *      disabled, with the message for each case.
+ *      Kills: an uncapped integer part, one message for both cases, and a
+ *      strict compare of the typed string against the Decimal string.
  *  F8  A PUT failure after materialise shows the partial copy, reloads, and
  *      never retries materialise.
  */
@@ -68,25 +71,25 @@ const USER = {
 function rec(over: Partial<RecurringTransaction>): RecurringTransaction {
   return {
     id: 1, account_id: 1, account_name: "Checking", category_id: 1,
-    category_name: "Bills", description: "x", amount: 10,
+    category_name: "Bills", description: "x", amount: "10.00",
     type: "expense", frequency: "monthly", next_due_date: "2026-09-01",
     auto_settle: false, is_active: true, occurrence_count: null,
     occurrences_elapsed: 0, ...over,
   };
 }
 
-// Distinct ids and dates, listed OUT of the table's default (next_due_date asc)
+// Amounts are STRINGS, as the Decimal is on the wire. Distinct ids and dates, listed OUT of the table's default (next_due_date asc)
 // order, so a lookup by position instead of by row cannot pass.
-const RENT = rec({ id: 41, description: "Rent", amount: 1200, next_due_date: "2026-10-01" });
+const RENT = rec({ id: 41, description: "Rent", amount: "1200.00", next_due_date: "2026-10-01" });
 const SOFA = rec({
-  id: 42, description: "Sofa", amount: 250, next_due_date: "2026-08-15",
+  id: 42, description: "Sofa", amount: "250.00", next_due_date: "2026-08-15",
   occurrence_count: 12, occurrences_elapsed: 3,
 });
 const LAPTOP_DONE = rec({
-  id: 43, description: "Laptop", amount: 99, next_due_date: "2026-07-01",
+  id: 43, description: "Laptop", amount: "99.00", next_due_date: "2026-07-01",
   occurrence_count: 12, occurrences_elapsed: 12,
 });
-const PAUSED = rec({ id: 44, description: "Gym", amount: 30, is_active: false });
+const PAUSED = rec({ id: 44, description: "Gym", amount: "30.00", is_active: false });
 const ROWS = [RENT, SOFA, LAPTOP_DONE, PAUSED];
 
 type Handler = (init?: RequestInit) => unknown;
@@ -165,9 +168,9 @@ describe("recurring page: skip next (TBD-272)", () => {
     expect(within(dialog).getByText("Skip Next Occurrence")).toBeInTheDocument();
     const text = dialog.textContent ?? "";
     expect(text).toContain(`Skip "Rent" on 2026-10-01 (${signed(1200)})?`);
-    expect(text).toContain("marked Excluded and count toward nothing");
+    expect(text).toContain("It will stay on your Transactions page marked Excluded and won't be counted in balances or reports.");
     expect(text).toContain("This can't be undone.");
-    expect(text).not.toMatch(/payments/);
+    expect(text).not.toMatch(/occurrences\./);
   });
 
   it("F2: instalment copy says it still counts as 1 of the N payments", async () => {
@@ -176,7 +179,7 @@ describe("recurring page: skip next (TBD-272)", () => {
     const dialog = await open("Skip next: Sofa");
     const text = dialog.textContent ?? "";
     expect(text).toContain(`Skip "Sofa" on 2026-08-15 (${signed(250)})?`);
-    expect(text).toContain("It still counts as 1 of the 12 payments.");
+    expect(text).toContain("It still counts as 1 of the 12 occurrences.");
   });
 
   it("F3: both actions in BOTH trees; not for a finished series or a paused one", async () => {
@@ -246,7 +249,7 @@ describe("recurring page: edit next amount (TBD-273)", () => {
     });
     render(<RecurringPage />);
     const { dialog, input, save } = await openEdit();
-    expect(input.value).toBe("1200");
+    expect(input.value).toBe("1200.00");
     expect(dialog.textContent).toContain(
       `Change the amount of "Rent" on 2026-10-01 only. The series stays at ${signed(1200)}.`,
     );
@@ -270,7 +273,16 @@ describe("recurring page: edit next amount (TBD-273)", () => {
     ).toBeInTheDocument();
   });
 
-  it.each(["0", "abc", "1.234", "1200"])("F7: amount %j sends no request and Save is disabled", async (value) => {
+  const ABOVE_ZERO = "Enter an amount above 0.";
+  const DIGITS = "Enter an amount with up to 10 digits and 2 decimals.";
+  it.each([
+    ["0", ABOVE_ZERO],
+    ["abc", ABOVE_ZERO],
+    ["1.234", DIGITS],
+    ["99999999999", DIGITS],
+    ["1200", null],
+    ["1200.00", null],
+  ])("F7: amount %j sends no request and Save is disabled", async (value, message) => {
     mockApi();
     render(<RecurringPage />);
     const { input, save } = await openEdit();
@@ -279,9 +291,10 @@ describe("recurring page: edit next amount (TBD-273)", () => {
     expect(save).toBeDisabled();
     fireEvent.click(save);
     expect(calls().length).toBe(before);
-    if (value !== "1200") {
+    if (message) {
       expect(input).toHaveAttribute("aria-invalid", "true");
-      expect(screen.getByText("Enter an amount above 0.")).toBeInTheDocument();
+      expect(screen.getByText(message)).toBeInTheDocument();
+      expect(screen.queryByText(message === DIGITS ? ABOVE_ZERO : DIGITS)).toBeNull();
     } else {
       expect(input).not.toHaveAttribute("aria-invalid", "true");
     }
@@ -309,6 +322,22 @@ describe("recurring page: edit next amount (TBD-273)", () => {
     fireEvent.click(save);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByText(detail)).toBeInTheDocument();
+    expect(calls().some((c) => c.key.startsWith("PUT"))).toBe(false);
+    expect(listLoadsAfter("POST /api/v1/recurring/41/materialise-next")).toBeGreaterThanOrEqual(1);
+  });
+
+  it("C3: a materialise with no HTTP response says to refresh, and reloads", async () => {
+    mockApi({
+      "POST /api/v1/recurring/41/materialise-next": () => {
+        throw new TypeError("Failed to fetch");
+      },
+    });
+    render(<RecurringPage />);
+    const { input, save } = await openEdit();
+    fireEvent.change(input, { target: { value: "10" } });
+    fireEvent.click(save);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByText("Failed to fetch. Refresh to check whether it was created.")).toBeInTheDocument();
     expect(calls().some((c) => c.key.startsWith("PUT"))).toBe(false);
     expect(listLoadsAfter("POST /api/v1/recurring/41/materialise-next")).toBeGreaterThanOrEqual(1);
   });

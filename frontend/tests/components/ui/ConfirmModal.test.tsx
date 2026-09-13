@@ -102,6 +102,25 @@ describe("ConfirmModal focus with children (TBD-273)", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  // B1. A disabled confirm is not focusable, so a trap that counts it as the
+  // last element never wraps and Tab leaves the dialog. Kills the unfiltered
+  // selector. (jsdom does not move focus on Tab, so the fence reads whether the
+  // trap handled the key: a handled Tab is defaultPrevented.)
+  it("B1: with confirm disabled, Tab from Cancel stays in the dialog and Shift+Tab wraps", () => {
+    render(
+      <ConfirmModal open title="T" message="M" confirmLabel="Save amount" confirmDisabled onConfirm={vi.fn()} onCancel={vi.fn()}>
+        <input aria-label="Amount" autoFocus />
+      </ConfirmModal>,
+    );
+    const input = screen.getByLabelText("Amount");
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    cancel.focus();
+    expect(fireEvent.keyDown(cancel, { key: "Tab" }), "Tab handled").toBe(false);
+    expect(document.activeElement).toBe(input);
+    expect(fireEvent.keyDown(input, { key: "Tab", shiftKey: true }), "Shift+Tab handled").toBe(false);
+    expect(document.activeElement).toBe(cancel);
+  });
+
   it("confirmDisabled disables only the confirm button", () => {
     render(<ConfirmModal open title="T" message="M" confirmLabel="Go" confirmDisabled onConfirm={vi.fn()} onCancel={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Go" })).toBeDisabled();
