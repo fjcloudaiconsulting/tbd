@@ -57,6 +57,9 @@ const stableRouter = { push: vi.fn(), replace: vi.fn() };
 vi.mock("next/navigation", () => ({
   useRouter: () => stableRouter,
   usePathname: () => "/recurring",
+  // TBD-316 makes the recurring page read ?recurring_id; without this the
+  // merged tree crashes this file, as it did TBD-285's toast test.
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 const USER = {
