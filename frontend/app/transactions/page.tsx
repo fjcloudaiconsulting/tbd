@@ -13,7 +13,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
 import { isOpenPeriod } from "@/lib/billingPeriodStatus";
 import { demotionNotice } from "@/lib/demotion";
-import { input, label, badgeNeutral, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
+import { input, label, badgeNeutral, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar, warning as warningCls } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { useAccounts } from "@/lib/hooks/use-accounts";
 import { useCategories } from "@/lib/hooks/use-categories";
@@ -212,8 +212,9 @@ const ADJUSTMENT_READ_ONLY_NOTE =
 // while a row the user never picked was still removed. Compare against the
 // user-facing count instead.
 //
-// Every sentence gates itself, so the helper is correct for any response rather
-// than only inside the call site's `skipped_ids.length > 0` branch.
+// Every sentence gates itself. TBD-317: the whole banner does too. A plain
+// delete (nothing skipped, no cascade) returns "", so the call site needs no
+// gate of its own and a pure cascade with zero skips still explains itself.
 function bulkDeleteNotice(res: {
   requested_count: number;
   deleted_count: number;
@@ -225,11 +226,13 @@ function bulkDeleteNotice(res: {
   // "of the 1 transaction you selected" reads badly, so the article is dropped
   // in the singular and the sentence stays natural at either count.
   const selection = selected === 1 ? "1 transaction" : `the ${selected} transactions`;
+  const cascaded = res.deleted_count > removed;
+  if (skipped === 0 && !cascaded) return "";
   const parts = [`Deleted ${removed} of ${selection} you selected.`];
   if (skipped > 0) {
     parts.push(`${skipped} ${skipped === 1 ? "was" : "were"} already gone.`);
   }
-  if (res.deleted_count > removed) {
+  if (cascaded) {
     parts.push("Transfers come in pairs, so the matching halves went too.");
   }
   return parts.join(" ");
@@ -312,6 +315,10 @@ function TransactionsPageContent() {
   // TBD-294: a non-error, non-blocking outcome banner. The demotion is a
   // side effect of a successful delete, so it must not render as an error.
   const [notice, setNotice] = useState("");
+  // TBD-317: a partial or cascading bulk delete. A caution, not a failure, so
+  // it renders in the warning family, and it is its own state so it never
+  // overwrites the demotion sentence in `notice` set by the same delete.
+  const [bulkDeleteResult, setBulkDeleteResult] = useState("");
   // Non-blocking refresh-error state for the AppShell post-write event
   // listener. The page keeps the previous list; banner offers a Retry.
   const [refreshError, setRefreshError] = useState(false);
@@ -481,6 +488,7 @@ function TransactionsPageContent() {
     // this call and set the notice AFTERWARDS, so the clear can never race
     // ahead of the message it is meant to precede.
     setNotice("");
+    setBulkDeleteResult("");
     // collapse_transfers=true (TBD-268): the server folds each MUTUALLY-linked
     // transfer pair to one row BEFORE applying the limit, so a page of
     // `pageSize` rows is `pageSize` transfers. This replaces a client-side
@@ -724,6 +732,7 @@ function TransactionsPageContent() {
     setConfirmBulkDelete(false);
     setError("");
     setNotice("");
+    setBulkDeleteResult("");
     setBulkDeleting(true);
     try {
       const body = { ids: Array.from(selectedIds) };
@@ -739,9 +748,7 @@ function TransactionsPageContent() {
       clearSelection();
       await loadTransactions(page);
       setNotice(demotionNotice(res?.demoted_ids ?? []));
-      if (res.skipped_ids.length > 0) {
-        setError(bulkDeleteNotice(res));
-      }
+      setBulkDeleteResult(bulkDeleteNotice(res));
     } catch (err) {
       setError(extractErrorMessage(err));
     } finally {
@@ -1266,6 +1273,12 @@ function TransactionsPageContent() {
           announced never. The visible box stays conditional (and keeps the
           testid) — it is the announcer that has to be permanent. */}
       <div role="status" aria-live="polite" data-testid="transactions-live-region">
+        {bulkDeleteResult && (
+          <div className={`mb-6 ${warningCls}`} data-testid="transactions-bulk-delete-result">
+            {bulkDeleteResult}
+          </div>
+        )}
+
         {notice && (
           <div
             className="mb-6 rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-text-secondary"

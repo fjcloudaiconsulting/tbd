@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithSWR } from "../utils/render-with-swr";
 import { waitForStableTxList } from "../utils/wait-for-stable-tx-list";
@@ -104,11 +104,15 @@ interface BulkDeleteResponse {
   demoted_ids: number[];
 }
 
-function setupApiFetch(bulkDeleteResponse: BulkDeleteResponse) {
+// Pass an Error to make the bulk-delete request itself fail.
+function setupApiFetch(bulkDeleteResponse: BulkDeleteResponse | Error) {
   const apiFetchMock = vi.mocked(apiFetch);
   apiFetchMock.mockReset();
   apiFetchMock.mockImplementation(async (url: string) => {
-    if (url === "/api/v1/transactions/bulk-delete") return bulkDeleteResponse as never;
+    if (url === "/api/v1/transactions/bulk-delete") {
+      if (bulkDeleteResponse instanceof Error) throw bulkDeleteResponse;
+      return bulkDeleteResponse as never;
+    }
     if (url.startsWith("/api/v1/accounts")) return [ACCT_A, ACCT_B] as never;
     if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
@@ -129,6 +133,18 @@ function setupApiFetch(bulkDeleteResponse: BulkDeleteResponse) {
 async function bulkDeleteAndReadBanner(
   ids: number[] = ROWS.map((t) => t.id),
 ): Promise<string> {
+  confirmBulkDelete(await openBulkDeleteDialog(ids));
+  const banner = await screen.findByText(/^Deleted /);
+  return banner.textContent ?? "";
+}
+
+// Tick `ids`, press "Delete selected" and return the confirmation dialog.
+//
+// Confirming is a separate SYNCHRONOUS step on purpose: the caller must start
+// its findBy/waitFor in the same tick as the click. Resolving an async helper
+// in between hands the delete handler microtasks in which its state updates
+// land outside any act() scope (measured: 3 act() warnings per test).
+async function openBulkDeleteDialog(ids: number[] = ROWS.map((t) => t.id)) {
   renderWithSWR(<TransactionsPage />);
 
   await waitForStableTxList();
@@ -142,13 +158,13 @@ async function bulkDeleteAndReadBanner(
   const deleteSelected = await screen.findByRole("button", { name: /^Delete selected$/ });
   fireEvent.click(deleteSelected);
 
-  // Confirm inside the dialog: plain /^Delete$/ would also match the per-row
-  // action buttons behind the modal.
-  const dialog = await screen.findByRole("dialog");
-  fireEvent.click(within(dialog).getByRole("button", { name: /^Delete$/ }));
+  return screen.findByRole("dialog");
+}
 
-  const banner = await screen.findByText(/^Deleted /);
-  return banner.textContent ?? "";
+// Confirm inside the dialog: plain /^Delete$/ would also match the per-row
+// action buttons behind the modal.
+function confirmBulkDelete(dialog: HTMLElement) {
+  fireEvent.click(within(dialog).getByRole("button", { name: /^Delete$/ }));
 }
 
 // The defect this file fences: a banner that reads "Deleted 6 of 4
@@ -268,8 +284,8 @@ describe("TransactionsPage — bulk-delete banner counts (TBD-290)", () => {
 
   it("a single selected row, already gone: the sentence reads in the singular", async () => {
     // The only case with requested_count 1, which is what kills a dropped
-    // transaction/transactions ternary. The banner renders only when something
-    // was skipped, so a lone selection reaching it is necessarily the row that
+    // transaction/transactions ternary. A lone selection that was deleted
+    // outright shows no banner, so the one reaching it here is the row that
     // had already gone.
     setupApiFetch({
       requested_count: 1,
@@ -285,5 +301,121 @@ describe("TransactionsPage — bulk-delete banner counts (TBD-290)", () => {
     expect(text).not.toMatch(/transactions/);
     expect(text).not.toMatch(/of the 1\b/);
     expectNoInvertedCount(text);
+  });
+});
+
+describe("TransactionsPage — bulk-delete banner tone, announcement and gate (TBD-317)", () => {
+  const useAuthMock = vi.mocked(useAuth);
+
+  beforeEach(() => {
+    useAuthMock.mockReturnValue({
+      user: USER as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+  });
+
+  const PARTIAL: BulkDeleteResponse = {
+    requested_count: 4,
+    deleted_count: 3,
+    skipped_ids: [4],
+    demoted_ids: [],
+  };
+
+  it("a partial success renders in the warning family, not the danger family", async () => {
+    // Kills leaving the banner on setError (errorCls, danger/coral): 3 of 4
+    // deleted is a caution, not a failure.
+    setupApiFetch(PARTIAL);
+    confirmBulkDelete(await openBulkDeleteDialog());
+
+    const banner = await screen.findByText(/^Deleted /);
+    expect(banner.className).toMatch(/\bbg-warning-dim\b/);
+    expect(banner.className).not.toMatch(/danger/);
+  });
+
+  it("the banner is announced through the transactions live region", async () => {
+    // Kills a warning box mounted outside `transactions-live-region` (or a
+    // second, conditionally mounted announcer): the region is the one that
+    // exists before the message does.
+    setupApiFetch(PARTIAL);
+    confirmBulkDelete(await openBulkDeleteDialog());
+
+    const banner = await screen.findByText(/^Deleted /);
+    expect(screen.getByTestId("transactions-live-region").contains(banner)).toBe(true);
+  });
+
+  it("the demotion warning survives next to a partial success, in the same interaction", async () => {
+    // Kills the naive setError -> setNotice swap: `notice` already holds the
+    // demotion sentence one line earlier, and overwriting it drops a warning
+    // about an irreversible change.
+    setupApiFetch({ ...PARTIAL, deleted_count: 5, demoted_ids: [9001] });
+    confirmBulkDelete(await openBulkDeleteDialog());
+
+    const region = screen.getByTestId("transactions-live-region");
+    await waitFor(() => expect(region.textContent).toContain("Deleted "));
+    expect(region.textContent).toContain(
+      "Deleted 3 of the 4 transactions you selected. 1 was already gone. Transfers come in pairs, so the matching halves went too.",
+    );
+    expect(region.textContent).toContain(
+      "1 matched duplicate was marked rejected. It no longer counts toward balances or reports.",
+    );
+  });
+
+  it("a pure transfer cascade with nothing skipped still explains itself", async () => {
+    // skipped == 0, deleted_count > requested_count: 4 selected, 2 of them
+    // transfer legs, 6 rows gone. Kills keeping the `skipped_ids.length > 0`
+    // gate, under which the user is never told rows they did not pick went.
+    setupApiFetch({ requested_count: 4, deleted_count: 6, skipped_ids: [], demoted_ids: [] });
+    confirmBulkDelete(await openBulkDeleteDialog());
+
+    const region = screen.getByTestId("transactions-live-region");
+    await waitFor(() =>
+      expect(region.textContent).toContain(
+        "Deleted 4 of the 4 transactions you selected. Transfers come in pairs, so the matching halves went too.",
+      ),
+    );
+    expect(region.textContent).not.toMatch(/already gone/);
+  });
+
+  it("an ordinary delete (N selected, N deleted, nothing skipped, no cascade) shows no banner", async () => {
+    // Kills widening the gate to always-show. The demotion notice is the
+    // positive signal that the handler reached the point where the banner
+    // would have been set, so the absence below is not vacuous.
+    setupApiFetch({ requested_count: 4, deleted_count: 4, skipped_ids: [], demoted_ids: [9001] });
+    confirmBulkDelete(await openBulkDeleteDialog());
+
+    const region = screen.getByTestId("transactions-live-region");
+    await waitFor(() => expect(region.textContent).toMatch(/matched duplicate was marked rejected/));
+    expect(document.body.textContent).not.toMatch(/Deleted \d+ of/);
+  });
+
+  it("a failed bulk delete stays a danger-styled error and is not presented as a caution", async () => {
+    // Kills routing the catch branch into the warning banner along with the
+    // partial-success message.
+    setupApiFetch(new Error("Bulk delete exploded"));
+    confirmBulkDelete(await openBulkDeleteDialog());
+
+    const err = await screen.findByText("Bulk delete exploded");
+    expect(err.className).toMatch(/\bbg-danger-dim\b/);
+    expect(err.className).not.toMatch(/warning/);
+    expect(screen.getByTestId("transactions-live-region").contains(err)).toBe(false);
+  });
+
+  it("the banner clears on the next list load", async () => {
+    // Same scope rule as the TBD-294 notice: a caution about a delete must not
+    // outlive the list it describes. Kills not clearing it in loadTransactions.
+    setupApiFetch(PARTIAL);
+    confirmBulkDelete(await openBulkDeleteDialog());
+    await screen.findByText(/^Deleted /);
+
+    fireEvent.change(screen.getByLabelText("Search transactions"), {
+      target: { value: "bakery" },
+    });
+
+    await waitFor(() => expect(screen.queryByText(/^Deleted /)).toBeNull());
   });
 });
