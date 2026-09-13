@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
@@ -129,6 +130,7 @@ interface RecurringTableProps {
   onEditNext?: (item: RecurringTransaction) => void;
   onDelete: (id: number) => void;
   testId: string;
+  targetId: number | null;
 }
 
 function RecurringTable({
@@ -143,6 +145,7 @@ function RecurringTable({
   onEditNext,
   onDelete,
   testId,
+  targetId,
 }: RecurringTableProps) {
   const money = useMoney();
   const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } =
@@ -164,6 +167,35 @@ function RecurringTable({
     [sorted, safePage, pageSize],
   );
   const showPagination = totalPages > 1;
+
+  // TBD-316: `?recurring_id=` lands on the page holding the target, ONCE, so
+  // the user can page away afterwards. The table mounts after the list has
+  // loaded, so the target's position is known on the first effect run.
+  const targetIndex = targetId === null ? -1 : sorted.findIndex((r) => r.id === targetId);
+  const jumpedRef = useRef(false);
+  useEffect(() => {
+    if (targetIndex < 0 || jumpedRef.current) return;
+    jumpedRef.current = true;
+    setPage(Math.floor(targetIndex / pageSize) + 1);
+  }, [targetIndex, pageSize, setPage]);
+
+  // Same scroll and ring as the transactions page's `?transaction_id=` deep
+  // link, WITHOUT its `bg-accent-dim` tint: in the light theme that tint takes
+  // `text-danger` amounts to 4.47:1, under WCAG AA's 4.5, and against the
+  // surface it measures ~1.1:1, so the ring was already doing the work.
+  const targetDesktopRowRef = useRef<HTMLTableRowElement | null>(null);
+  const targetMobileRowRef = useRef<HTMLElement | null>(null);
+  const targetOnPage = targetId !== null && pageRows.some((r) => r.id === targetId);
+  useEffect(() => {
+    if (!targetOnPage) return;
+    const prefersDesktop =
+      typeof window.matchMedia !== "function" ||
+      window.matchMedia("(min-width: 768px)").matches;
+    const row = prefersDesktop
+      ? targetDesktopRowRef.current ?? targetMobileRowRef.current
+      : targetMobileRowRef.current ?? targetDesktopRowRef.current;
+    row?.scrollIntoView({ block: "center", behavior: "auto" });
+  }, [targetOnPage]);
 
   // Click a header: toggle direction if already the active column, else
   // switch to that column starting ascending.
@@ -242,9 +274,12 @@ function RecurringTable({
             {pageRows.map((r) => (
               <tr
                 key={r.id}
+                ref={r.id === targetId ? targetDesktopRowRef : null}
                 data-testid="recurring-row"
                 data-description={r.description}
-                className={`transition-colors hover:bg-surface-raised ${paused ? "opacity-50" : ""}`}
+                className={`transition-colors hover:bg-surface-raised ${paused ? "opacity-50" : ""} ${
+                  r.id === targetId ? "ring-2 ring-accent ring-inset" : ""
+                }`}
               >
                 <td className="px-3 py-3 text-sm text-text-primary">
                   {r.description}
@@ -351,7 +386,12 @@ function RecurringTable({
         {pageRows.map((r) => (
           <article
             key={r.id}
-            className={`flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 ${paused ? "opacity-60" : ""}`}
+            ref={r.id === targetId ? targetMobileRowRef : null}
+            data-testid="recurring-card"
+            data-description={r.description}
+            className={`flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 ${paused ? "opacity-60" : ""} ${
+              r.id === targetId ? "ring-2 ring-accent" : ""
+            }`}
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
@@ -453,8 +493,25 @@ function RecurringTable({
   );
 }
 
-export default function RecurringPage() {
+// useSearchParams needs a Suspense boundary under the App Router. The inner
+// component keeps the name `RecurringPage`: the act() baseline is keyed on it.
+export default function RecurringRoute() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center">
+        <Spinner />
+      </div>
+    }>
+      <RecurringPage />
+    </Suspense>
+  );
+}
+
+function RecurringPage() {
   const { user, loading } = useAuth();
+  const searchParams = useSearchParams();
+  // TBD-316: an unknown or malformed id matches no row, which is the plain list.
+  const targetId = Number(searchParams.get("recurring_id")) || null;
   const [items, setItems] = useState<RecurringTransaction[]>([]);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState("");
@@ -677,6 +734,7 @@ export default function RecurringPage() {
             onEditNext={(item) => setEditNext({ item, amount: String(item.amount) })}
             onDelete={handleDelete}
             testId="recurring-active-table"
+            targetId={targetId}
           />
 
           {pausedItems.length > 0 && (
@@ -689,6 +747,7 @@ export default function RecurringPage() {
               onResume={handleResume}
               onDelete={handleDelete}
               testId="recurring-paused-table"
+              targetId={targetId}
             />
           )}
         </div>

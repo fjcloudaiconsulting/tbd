@@ -41,6 +41,7 @@ const stableRouter = { push: vi.fn(), replace: vi.fn() };
 vi.mock("next/navigation", () => ({
   useRouter: () => stableRouter,
   usePathname: () => "/recurring",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 const USER = {

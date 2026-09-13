@@ -180,17 +180,23 @@ describe("TransactionsPage — recurring series pointer (TBD-277)", () => {
     }
   });
 
-  it("the pointer is a link to the recurring page, in BOTH render trees", async () => {
-    const tx = makeTx({ id: 202, description: "Spotify", recurring_id: 9 });
+  // TBD-316 FENCE: the link addresses THIS series. Two rows with different
+  // `recurring_id`s must produce different targets; asserting one href alone
+  // stays green against a hard-coded `/recurring?recurring_id=9`.
+  it.each([
+    [202, 9],
+    [206, 14],
+  ])("row %i: the pointer links to its own series (recurring_id=%i), in BOTH render trees", async (id, rid) => {
+    const tx = makeTx({ id, description: "Spotify", recurring_id: rid });
     await openEdit(tx);
 
     for (const mobile of [false, true]) {
-      const link = await tree(202, mobile).findByRole("link", {
+      const link = await tree(id, mobile).findByRole("link", {
         name: "Recurring page",
       });
       expect(link, mobile ? "mobile" : "desktop").toHaveAttribute(
         "href",
-        "/recurring",
+        `/recurring?recurring_id=${rid}`,
       );
     }
   });
