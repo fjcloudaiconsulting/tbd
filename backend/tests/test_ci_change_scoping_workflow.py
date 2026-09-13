@@ -18,6 +18,8 @@ for deploys since TBD-391) was held by a comment until now. It is a test here.
 """
 from __future__ import annotations
 
+import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -181,6 +183,95 @@ def test_gates_route_every_result_through_the_shared_script(gate):
         f"gate `{gate}` only inspects {checked} upstream result(s); expected "
         "at least the detector plus its own work job(s)."
     )
+
+
+_RESULT_ARG = re.compile(r"^\$\{\{ needs\.([A-Za-z0-9_-]+)\.result \}\}$")
+_IF_AREA = re.compile(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+) == 'true'")
+
+
+def _gate_mismatches(jobs: dict, gate: str) -> list[str]:
+    """Every way `gate`'s `needs:` and its assert-gate.sh calls disagree.
+
+    Parses each step's `run:` as a shell command rather than searching it: a
+    `needs.<job>.result` inside an `echo` asserts nothing and must not count.
+    """
+    problems = []
+    asserted = {}
+    for step in jobs[gate]["steps"]:
+        run = str(step.get("run", ""))
+        # Cheap prefix check first: other steps carry heredocs whose
+        # apostrophes are not valid shell quoting on their own.
+        if run.split()[:2] != ["bash", GATE_SCRIPT]:
+            continue
+        tokens = shlex.split(run)
+        match = _RESULT_ARG.match(tokens[2]) if len(tokens) == 5 else None
+        if not match:
+            problems.append(f"unparseable {GATE_SCRIPT} call: {tokens}")
+            continue
+        asserted[match.group(1)] = tokens[3]
+
+    needs = set(jobs[gate].get("needs") or [])
+    for job in sorted(needs - set(asserted)):
+        problems.append(f"`{job}` is in needs: but its result is never asserted")
+    for job in sorted(set(asserted) - needs):
+        problems.append(f"`{job}` is asserted but not in needs: (always empty)")
+
+    # The skip-accept argument must be the area the job itself is scoped to.
+    # Asserting `frontend-static` against the BACKEND output would wave its
+    # skip through on a frontend-only PR where it never ran.
+    for job, area_arg in sorted(asserted.items()):
+        if job not in needs:
+            continue
+        if job == DETECTOR:
+            expected = "true"
+        else:
+            scoped = _IF_AREA.search(str(jobs[job].get("if", "")))
+            expected = f"${{{{ needs.changes.outputs.{scoped.group(1)} }}}}" if scoped else None
+        if area_arg != expected:
+            problems.append(f"`{job}` asserted with area {area_arg!r}, expected {expected!r}")
+    return problems
+
+
+@pytest.mark.parametrize("gate", GATES)
+def test_every_job_a_gate_needs_has_its_result_asserted(gate):
+    """⚠ TBD-422. `needs:` membership alone does not gate anything.
+
+    `test_every_job_is_wired_into_one_of_the_two_gates` (and its in-workflow
+    twin) only prove a job is in a gate's `needs:`. A job listed there whose result no step passes to
+    assert-gate.sh goes red while the required gate stays GREEN, with every
+    other fence in this file passing. So `needs:` (including `changes`, which
+    both gates assert with a literal `true`) must equal the asserted set, and
+    each assert must use the job's own area.
+    """
+    problems = _gate_mismatches(JOBS, gate)
+    assert not problems, f"gate `{gate}`:\n  " + "\n  ".join(problems)
+    assert len(JOBS[gate]["needs"]) >= 3, f"gate `{gate}` needs only {JOBS[gate]['needs']}"
+
+
+def test_the_needs_vs_asserted_fence_is_not_vacuous():
+    """Drive the checker over the two broken shapes it exists to catch."""
+
+    def assert_step(job, area):
+        return {"run": f'bash {GATE_SCRIPT} "${{{{ needs.{job}.result }}}}" "{area}" "x"'}
+
+    work = {"needs": ["changes"], "if": "${{ needs.changes.outputs.frontend == 'true' }}"}
+    frontend_area = "${{ needs.changes.outputs.frontend }}"
+    good_steps = [assert_step("changes", "true"), assert_step("a", frontend_area), assert_step("b", frontend_area)]
+
+    good = {"changes": {}, "a": work, "b": work, "g": {"needs": ["changes", "a", "b"], "steps": good_steps}}
+    assert _gate_mismatches(good, "g") == []
+
+    missing_assert = {**good, "g": {"needs": ["changes", "a", "b"], "steps": good_steps[:2]}}
+    assert _gate_mismatches(missing_assert, "g") == ["`b` is in needs: but its result is never asserted"]
+
+    not_needed = {**good, "g": {"needs": ["changes", "a"], "steps": good_steps}}
+    assert _gate_mismatches(not_needed, "g") == ["`b` is asserted but not in needs: (always empty)"]
+
+    echo_only = {**good, "g": {"needs": ["changes", "a", "b"], "steps": [*good_steps[:2], {"run": 'echo "${{ needs.b.result }}"'}]}}
+    assert _gate_mismatches(echo_only, "g") == ["`b` is in needs: but its result is never asserted"]
+
+    wrong_area = {**good, "g": {"needs": ["changes", "a", "b"], "steps": [*good_steps[:2], assert_step("b", "${{ needs.changes.outputs.backend }}")]}}
+    assert len(_gate_mismatches(wrong_area, "g")) == 1
 
 
 @pytest.mark.parametrize("gate", GATES)
