@@ -389,14 +389,17 @@ describe("TransactionsPage — bulk-delete banner tone, announcement and gate (T
   });
 
   it("a pure cascade from a single selected row reads in the singular", async () => {
-    // Kills a dropped singular branch in the complete-delete lead-in.
+    // One leg selected removes exactly one partner (extra === 1). Kills a
+    // dropped singular branch in the complete-delete lead-in, and a hard-coded
+    // plural "halves" in the cascade sentence. The plural (extra === 2) is
+    // pinned by the pure-cascade test above and the demotion test.
     setupApiFetch({ requested_count: 1, deleted_count: 2, skipped_ids: [], demoted_ids: [] });
     confirmBulkDelete(await openBulkDeleteDialog([1]));
 
     const region = screen.getByTestId("transactions-live-region");
     await waitFor(() =>
       expect(region.textContent).toBe(
-        "Deleted the transaction you selected. Transfers come in pairs, so the matching halves went too.",
+        "Deleted the transaction you selected. Transfers come in pairs, so the matching half went too.",
       ),
     );
   });
@@ -544,5 +547,30 @@ describe("TransactionsPage — bulk-delete banner tone, announcement and gate (T
       target: { value: "bakery" },
     });
     await waitFor(() => expect(region.textContent).toBe(""));
+  });
+
+  it("a failed batch edit after a partial bulk delete does not leave the caution on screen", async () => {
+    // Kills a write handler that clears `error` but not the delete banners:
+    // the failed request does not reload, so the old caution would sit next
+    // to the new error. Representative of handleBatchEdit, handleSkipOccurrence,
+    // handleSaveEdit and handleToggleStatus, which share the same clear.
+    setupApiFetch(PARTIAL);
+    confirmBulkDelete(await openBulkDeleteDialog());
+    await screen.findByText(/^Deleted /);
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    const base = apiFetchMock.getMockImplementation()!;
+    apiFetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === "/api/v1/transactions/bulk-update") throw new Error("Batch edit exploded");
+      return base(url, opts);
+    });
+    fireEvent.click(screen.getAllByLabelText("Select transaction 1")[0]);
+    fireEvent.click((await screen.findAllByRole("button", { name: /^Batch edit$/ }))[0]);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(dialog.querySelector("#batch-edit-status")!, { target: { value: "pending" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /apply/i }));
+
+    await screen.findByText("Batch edit exploded");
+    expect(screen.queryByTestId("transactions-bulk-delete-result")).toBeNull();
   });
 });

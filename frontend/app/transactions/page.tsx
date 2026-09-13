@@ -226,7 +226,10 @@ function bulkDeleteNotice(res: {
   // "of the 1 transaction you selected" reads badly, so the article is dropped
   // in the singular and the sentence stays natural at either count.
   const selection = selected === 1 ? "1 transaction" : `the ${selected} transactions`;
-  const cascaded = res.deleted_count > removed;
+  // Partner rows removed beyond what the user picked. Selecting one transfer
+  // leg removes exactly one partner, so the noun has to follow this count.
+  const extra = res.deleted_count - removed;
+  const cascaded = extra > 0;
   if (skipped === 0 && !cascaded) return "";
   // Nothing skipped means every selected row went: "4 of the 4" would frame a
   // complete delete as a partial one.
@@ -239,7 +242,9 @@ function bulkDeleteNotice(res: {
     parts.push(`${skipped} ${skipped === 1 ? "was" : "were"} already gone.`);
   }
   if (cascaded) {
-    parts.push("Transfers come in pairs, so the matching halves went too.");
+    parts.push(
+      `Transfers come in pairs, so the matching ${extra === 1 ? "half" : "halves"} went too.`,
+    );
   }
   return parts.join(" ");
 }
@@ -628,6 +633,11 @@ function TransactionsPageContent() {
       // pageCount() is at least 1, so `last` >= 0 and this always CHANGES
       // `page`: the load effect re-runs and consumes the ref straight away,
       // so it can never stay armed and swallow a later clear.
+      //
+      // The ref is spent by the NEXT loadTransactions call, whoever makes it.
+      // A direct loadTransactions call landing in the one-commit gap between
+      // this clamp and the load effect would consume it early and the effect's
+      // reload would clear the banners again. Nothing does that today.
       keepBannersOnNextLoadRef.current = true;
       // eslint-disable-next-line react-hooks/set-state-in-effect -- clamp the current page down after a refetch shrinks the result set past it
       setPage(Math.max(0, last));
@@ -783,6 +793,8 @@ function TransactionsPageContent() {
   }) {
     setShowBatchEdit(false);
     setError("");
+    setNotice("");
+    setBulkDeleteResult("");
     setBatchEditing(true);
     try {
       const res = await apiFetch<{
@@ -892,6 +904,8 @@ function TransactionsPageContent() {
 
   async function handleSkipOccurrence(tx: Transaction) {
     setError("");
+    setNotice("");
+    setBulkDeleteResult("");
     setSkipping(true);
     try {
       await apiFetch(`/api/v1/transactions/${tx.id}/skip`, { method: "POST" });
@@ -929,6 +943,8 @@ function TransactionsPageContent() {
       return;
     }
     setError("");
+    setNotice("");
+    setBulkDeleteResult("");
     // Capture the row pre-save so we can decide whether the promote step
     // applies (transfer legs and already-recurring rows are excluded).
     // TBD-268: "transfer leg" is `linked_account_name != null`, matching the
@@ -1079,6 +1095,8 @@ function TransactionsPageContent() {
 
   async function handleToggleStatus(tx: Transaction) {
     setError("");
+    setNotice("");
+    setBulkDeleteResult("");
     try {
       await apiFetch(`/api/v1/transactions/${tx.id}`, {
         method: "PUT",
