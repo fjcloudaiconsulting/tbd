@@ -13,8 +13,11 @@ import React from "react";
  * recharts internals and DOM layout) and directly verifies what the
  * component hands each Bar.
  *
- * TBD-382 adds F5 (the `stacked` boolean flips `stackId`), F27 (reduced
- * motion) and F28 (the 1.4.11 segment separator).
+ * TBD-382 adds F5 (the `stacked` boolean flips `stackId`) and F28 (the
+ * 1.4.11 segment separator). Its F27 (reduced motion) was removed by TBD-437:
+ * it read a prop back off this file's own recharts stub, so it could not see
+ * reduced motion at all. That is covered for real, against unmocked recharts,
+ * by tests/components/charts/reduced-motion.test.tsx.
  */
 vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
@@ -30,8 +33,6 @@ vi.mock("recharts", () => ({
     stackId,
     stroke,
     strokeWidth,
-    isAnimationActive,
-    animationDuration,
   }: {
     dataKey?: string;
     fill?: string;
@@ -39,8 +40,6 @@ vi.mock("recharts", () => ({
     stackId?: string;
     stroke?: string;
     strokeWidth?: number;
-    isAnimationActive?: boolean;
-    animationDuration?: number;
   }) => (
     <g
       data-testid={`bar-${dataKey}`}
@@ -49,8 +48,6 @@ vi.mock("recharts", () => ({
       data-stack-id={stackId === undefined ? "undefined" : stackId}
       data-stroke={stroke}
       data-stroke-width={String(strokeWidth)}
-      data-is-animation-active={String(isAnimationActive)}
-      data-animation-duration={String(animationDuration)}
     />
   ),
   CartesianGrid: () => null,
@@ -214,58 +211,6 @@ describe("BarWidgetChart", () => {
             .getAttribute("data-radius") || "null",
         ),
       ).toEqual([4, 4, 0, 0]);
-    });
-  });
-
-  // ── F27 ─────────────────────────────────────────────────────────────
-  describe("F27: reduced motion", () => {
-    it("disables the JS animation even for a viewer who asked for reduced motion", () => {
-      // globals.css implements prefers-reduced-motion as a CSS block zeroing
-      // animation-duration. Recharts animates through react-smooth's rAF loop
-      // writing inline attributes per frame, so that block never reaches it.
-      const original = window.matchMedia;
-      window.matchMedia = ((query: string) => ({
-        matches: query.includes("prefers-reduced-motion"),
-        media: query,
-        onchange: null,
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      })) as unknown as typeof window.matchMedia;
-      try {
-        expect(window.matchMedia("(prefers-reduced-motion: reduce)").matches).toBe(
-          true,
-        );
-
-        const { container } = renderSliced();
-        for (const key of ["s0", "s1"]) {
-          const bar = container.querySelector(`[data-testid="bar-${key}"]`);
-          expect(bar?.getAttribute("data-is-animation-active")).toBe("false");
-          expect(bar?.getAttribute("data-animation-duration")).toBe("undefined");
-        }
-
-        const single = render(
-          <BarWidgetChart
-            rows={rows}
-            sliced={false}
-            stacked
-            secondaryValues={[]}
-            seriesKeys={[]}
-            sliceColors={[]}
-            valueName="Amount"
-            format="number"
-          />,
-        );
-        expect(
-          single.container
-            .querySelector('[data-testid="bar-value"]')
-            ?.getAttribute("data-is-animation-active"),
-        ).toBe("false");
-      } finally {
-        window.matchMedia = original;
-      }
     });
   });
 

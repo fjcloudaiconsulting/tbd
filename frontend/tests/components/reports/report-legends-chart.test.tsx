@@ -24,6 +24,8 @@
  */
 import { render, waitFor } from "@testing-library/react";
 
+import { renderChartsWithReducedMotion } from "@/tests/utils/recharts";
+
 import { renderWithSWR, screen } from "../../utils/render-with-swr";
 import { mockReportSources } from "../../utils/mock-report-sources";
 import LineWidgetChart from "@/components/reports/widgets/LineWidgetChart";
@@ -43,6 +45,10 @@ vi.mock("@/lib/api", () => ({
 }));
 
 vi.mock("@/lib/reports/api", () => ({ runQuery: vi.fn() }));
+
+// These assertions read committed geometry, which an animating chart has not
+// drawn yet. Report reduced motion so recharts renders final shapes (TBD-437).
+renderChartsWithReducedMotion();
 
 const chart = (n: number) => `var(--color-chart-${n})`;
 const BORDER_STRONG = "var(--color-border-strong)";

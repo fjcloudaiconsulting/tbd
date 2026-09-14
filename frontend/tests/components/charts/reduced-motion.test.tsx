@@ -1,7 +1,19 @@
 import { render, screen } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
-import { BarChart, Bar, PieChart, Pie, Cell, Tooltip, XAxis } from "recharts";
+import {
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  XAxis,
+  LineChart,
+  Line,
+  AreaChart,
+  Area,
+} from "recharts";
 
 /**
  * TBD-428 — behavioural fence on reduced-motion chart animation.
@@ -47,6 +59,9 @@ import { BarChart, Bar, PieChart, Pie, Cell, Tooltip, XAxis } from "recharts";
  * F3/F6  over-correction — disabling animation for EVERYONE (what
  *        ``isAnimationActive={false}`` does) rather than only for users who
  *        asked. TBD-382 did exactly that to the report widgets.
+ * F10-F15 the same three shapes for ``<Area>`` and ``<Line>`` (TBD-437).
+ *        ⚠ F13 pins a recharts 3.8.1 DEFECT, not a correct state: see its
+ *        note, line-geometry.test.tsx, and TBD-528.
  *
  * ## Discriminator
  *
@@ -266,5 +281,127 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
   it("F9 guard: tooltip still transitions for users who did not opt out", () => {
     mockMatchMedia(false);
     expect(renderTooltip().style.transition).toBe("transform 400ms ease");
+  });
+
+  // ---- Area and Line (TBD-437). TBD-437 re-enabled animation on the report
+  // and scenario Area marks by deleting `isAnimationActive={false}`, so "auto"
+  // is now what stands between those charts and a reduced-motion user. The
+  // app's Lines stay hard-off (TBD-528, see F13). Neither mark can use the
+  // Bar/Pie "no path yet" discriminator: both render their path at t === 0
+  // and animate something else.
+
+  const SERIES = [
+    { name: "a", v: 10 },
+    { name: "b", v: 40 },
+    { name: "c", v: 20 },
+  ];
+
+  function animationProps(active?: boolean) {
+    return {
+      animationDuration: 220,
+      ...(active === undefined ? {} : { isAnimationActive: active }),
+    };
+  }
+
+  /** `<Area>` animates by growing a clip rect from width 0, so at first paint
+   *  an animating area is fully clipped and a committed one is not. */
+  function areaClipWidth(active?: boolean): number {
+    render(
+      <div data-testid="host">
+        <AreaChart width={300} height={100} data={SERIES}>
+          <Area dataKey="v" {...animationProps(active)} />
+        </AreaChart>
+      </div>,
+    );
+    expectChartRendered();
+    const host = screen.getByTestId("host");
+    expect(host.querySelector(".recharts-area-area"), "area path did not render").not.toBeNull();
+    const rect = host.querySelector(".recharts-area clipPath rect");
+    expect(rect, "area animation clip rect did not render").not.toBeNull();
+    return Number(rect!.getAttribute("width"));
+  }
+
+  it("F10 fence: <Area> with the app's prop shape does not animate under reduce", () => {
+    mockMatchMedia(true);
+    expect(areaClipWidth()).toBeGreaterThan(0);
+  });
+
+  it("F11 fence + positive control: <Area isAnimationActive={true}> animates even under reduce", () => {
+    mockMatchMedia(true);
+    expect(areaClipWidth(true)).toBe(0);
+  });
+
+  it("F12 guard: <Area> still animates for users who did not opt out", () => {
+    mockMatchMedia(false);
+    expect(areaClipWidth()).toBe(0);
+  });
+
+  describe("<Line>", () => {
+    // `<Line>` animates by growing `stroke-dasharray` from `0px <length>px`,
+    // where the length comes from `SVGPathElement.getTotalLength()`. jsdom
+    // does not implement it, and recharts falls back to 0, which makes an
+    // animating line (`0px 0px`) indistinguishable from a committed one: every
+    // case below would pass whatever recharts did. So the method is supplied.
+    // ⚠ This stub is what makes F14/F15 able to FAIL. Without it they go red,
+    // not green: that is the positive control doing its job.
+    const LENGTH = 500;
+    let original: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      original = Object.getOwnPropertyDescriptor(SVGElement.prototype, "getTotalLength");
+      Object.defineProperty(SVGElement.prototype, "getTotalLength", {
+        configurable: true,
+        value: () => LENGTH,
+      });
+    });
+
+    afterEach(() => {
+      if (original) Object.defineProperty(SVGElement.prototype, "getTotalLength", original);
+      else delete (SVGElement.prototype as unknown as Record<string, unknown>).getTotalLength;
+    });
+
+    /** The `stroke-dasharray` recharts committed on first paint. */
+    function lineDash(active?: boolean): string | null {
+      render(
+        <div data-testid="host">
+          <LineChart width={300} height={100} data={SERIES}>
+            <Line dataKey="v" dot={false} {...animationProps(active)} />
+          </LineChart>
+        </div>,
+      );
+      expectChartRendered();
+      const path = screen.getByTestId("host").querySelector(".recharts-line-curve");
+      expect(path, "line path did not render").not.toBeNull();
+      return path!.getAttribute("stroke-dasharray");
+    }
+
+    /** First frame of the draw-on animation: nothing drawn, a gap the length
+     *  of the whole path. */
+    const ANIMATING = `0px ${LENGTH}px`;
+
+    it("F13 pin: under reduce, 'auto' does not start the draw-on, but commits the recharts 3.8.1 stale dash", () => {
+      // ⚠ NOT an acceptable committed state. Animation resolves OFF, so there
+      // is no `0px <length>px` first frame, but recharts 3.8.1 gates its dash
+      // override on the RAW prop (`"auto"` is truthy) and builds the dash from
+      // the length of the PREVIOUS commit's path, which on mount is 0. A real
+      // Line should carry no dash here. Review measured the same bug leaving
+      // 46% of a line undrawn after a resize, which is why the app's four
+      // Lines stay `isAnimationActive={false}` (line-geometry.test.tsx).
+      //
+      // Pinned exactly so a recharts bump that fixes it goes red HERE too,
+      // pointing at TBD-528 rather than passing silently.
+      mockMatchMedia(true);
+      expect(lineDash()).toBe("0px 0px");
+    });
+
+    it("F14 fence + positive control: <Line isAnimationActive={true}> animates even under reduce", () => {
+      mockMatchMedia(true);
+      expect(lineDash(true)).toBe(ANIMATING);
+    });
+
+    it("F15 guard: <Line> still animates for users who did not opt out", () => {
+      mockMatchMedia(false);
+      expect(lineDash()).toBe(ANIMATING);
+    });
   });
 });

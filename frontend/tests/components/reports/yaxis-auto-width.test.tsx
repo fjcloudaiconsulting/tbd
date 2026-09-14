@@ -26,12 +26,18 @@
  */
 import { render, waitFor } from "@testing-library/react";
 
+import { renderChartsWithReducedMotion } from "@/tests/utils/recharts";
+
 import BarWidgetChart from "@/components/reports/widgets/BarWidgetChart";
 
 vi.mock("recharts", async () => {
   const { rechartsWithFixedSize } = await import("@/tests/utils/recharts");
   return rechartsWithFixedSize();
 });
+
+// These assertions read committed geometry, which an animating chart has not
+// drawn yet. Report reduced motion so recharts renders final shapes (TBD-437).
+renderChartsWithReducedMotion();
 
 /** x offset where the plot area begins, read off the first bar's path. */
 function plotStartX(container: HTMLElement): number {

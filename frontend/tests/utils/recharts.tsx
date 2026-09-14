@@ -90,3 +90,38 @@ export async function rechartsWithFixedSize(
     ),
   };
 }
+
+/**
+ * Make recharts commit final geometry on first paint (TBD-437).
+ *
+ * recharts 3.x animates by default (`isAnimationActive="auto"`), and every
+ * report and scenario chart animates since TBD-437. While animating, a `<Bar>`
+ * or `<Pie>` renders NO path at all and an `<Area>` is fully clipped, so a test
+ * that reads rendered geometry (a bar's `d`, a sector's `fill`) finds nothing.
+ *
+ * This reports `prefers-reduced-motion: reduce`, which recharts' own "auto"
+ * resolution honours, so the chart renders exactly as it does for a user who
+ * opted out of motion. It is NOT `isAnimationActive={false}` smuggled into
+ * tests: it drives the same production path a real preference does.
+ *
+ * Call at the top level of a test file (it registers its own hooks). Do not
+ * use it in `tests/components/charts/reduced-motion.test.tsx`, which controls
+ * the preference per case.
+ */
+export function renderChartsWithReducedMotion() {
+  beforeEach(() => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+}
