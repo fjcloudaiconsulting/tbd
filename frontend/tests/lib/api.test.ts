@@ -396,6 +396,8 @@ describe("apiFetch", () => {
 
       expect(getAccessToken()).toBe("stale-token");
       expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
+      // 1 primary + 3 refresh attempts; no retry of the primary.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
     } finally {
       vi.useRealTimers();
     }

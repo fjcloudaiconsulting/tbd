@@ -168,8 +168,9 @@ describe("AccountsPage — sortable columns", () => {
   });
 });
 
-// TBD-288: legitimate headroom. The page renders 30 then 25 rows, which
-// measured 4.8s on a loaded worker, near the default 5000ms test timeout.
+// TBD-288: anticipatory headroom. The page renders 30 then 25 rows, which
+// measured up to 4.8s on a loaded worker. It never exceeded the default
+// 5000ms test timeout, but sits within 200ms of it.
 describe("AccountsPage — page clamping when row count shrinks", { timeout: 15_000 }, () => {
   function manyAccounts(n: number) {
     return Array.from({ length: n }, (_, i) => ({

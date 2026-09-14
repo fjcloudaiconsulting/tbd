@@ -229,6 +229,8 @@ describe("AuthProvider", () => {
     await waitFor(() =>
       expect(screen.getByTestId("error")).toHaveTextContent("ApiTimeoutError:"),
     );
+    // status + refresh + login + 3x /me: the full retry budget was spent.
+    expect(apiFetchMock).toHaveBeenCalledTimes(6);
     // User state remained null (initial state); accessToken stayed
     // SET at "login-token" — fetchMe must NOT have cleared either.
     expect(screen.getByTestId("user")).toHaveTextContent("none");
@@ -453,16 +455,28 @@ describe("AuthProvider", () => {
       .mockRejectedValueOnce(new ApiTimeoutError())
       .mockRejectedValueOnce(new ApiTimeoutError());
 
-    fakeBackoffClock();
+    // An exact clock (no shouldAdvanceTime) so the backoff schedule itself is
+    // pinned: each retry fires on its 250ms / 500ms boundary, not before.
+    vi.useFakeTimers();
     render(
       <AuthProvider>
         <Harness />
       </AuthProvider>,
     );
-    await elapseBackoff(750);
+    await elapseBackoff(0);
+    expect(apiFetchMock).toHaveBeenCalledTimes(2); // status + refresh attempt 1
+    await elapseBackoff(249);
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+    await elapseBackoff(1);
+    expect(apiFetchMock).toHaveBeenCalledTimes(3); // attempt 2 at 250ms
+    await elapseBackoff(499);
+    expect(apiFetchMock).toHaveBeenCalledTimes(3);
+    await elapseBackoff(1);
+    expect(apiFetchMock).toHaveBeenCalledTimes(4); // attempt 3 at 750ms
 
-    // Wait until all 4 calls completed (status + 3x refresh).
-    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(4));
+    // Budget exhausted: nothing retries after it.
+    await elapseBackoff(1000);
+    expect(apiFetchMock).toHaveBeenCalledTimes(4);
 
     expect(screen.getByTestId("loading")).toHaveTextContent("true");
     expect(screen.getByTestId("user")).toHaveTextContent("none");
@@ -792,6 +806,9 @@ describe("AuthProvider", () => {
 
     // Wait until all 5 calls completed (status + refresh + 3x /me).
     await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(5));
+    // Budget exhausted: nothing retries after it.
+    await elapseBackoff(1000);
+    expect(apiFetchMock).toHaveBeenCalledTimes(5);
 
     // accessToken set once with the restored token and NEVER cleared.
     expect(setAccessTokenMock).toHaveBeenCalledTimes(1);

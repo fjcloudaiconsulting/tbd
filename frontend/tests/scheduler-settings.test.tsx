@@ -25,16 +25,18 @@ vi.mock("@/lib/api", async () => {
 beforeEach(() => {
   vi.mocked(api.getSchedulerSettings).mockReset();
   vi.mocked(api.updateSchedulerSettings).mockReset();
+  // automate_billing_close is false on purpose: with every value true, a
+  // loaded value could not be told apart from a switch checked by default.
   vi.mocked(api.getSchedulerSettings).mockResolvedValue({
     automate_recurring_generation: true,
-    automate_billing_close: true,
+    automate_billing_close: false,
     billing_close_reminder_lead_days: 3,
     automate_cc_statement_alerts: true,
     cc_statement_reminder_lead_days: 5,
   });
   vi.mocked(api.updateSchedulerSettings).mockResolvedValue({
     automate_recurring_generation: true,
-    automate_billing_close: false,
+    automate_billing_close: true,
     billing_close_reminder_lead_days: 3,
     automate_cc_statement_alerts: true,
     cc_statement_reminder_lead_days: 5,
@@ -49,7 +51,7 @@ describe("SchedulerSettingsCard", () => {
     // waiting on it let the next synchronous query race the fetch.
     expect(
       await screen.findByRole("switch", { name: "Automatically close billing period" }),
-    ).toBeChecked();
+    ).not.toBeChecked();
     expect(screen.getByText(/Automatic tasks/i)).toBeInTheDocument();
     expect(
       screen.getByLabelText(/Automatically generate recurring transactions/i),
@@ -69,7 +71,7 @@ describe("SchedulerSettingsCard", () => {
     );
     await waitFor(() =>
       expect(api.updateSchedulerSettings).toHaveBeenCalledWith({
-        automate_billing_close: false,
+        automate_billing_close: true,
       }),
     );
   });
@@ -108,13 +110,13 @@ describe("SchedulerSettingsCard", () => {
     // regex queries above would pass "Disable automatically close billing period".
     render(<SchedulerSettingsCard />);
     const sw = await screen.findByRole("switch", { name: "Automatically close billing period" });
-    expect(sw).toHaveAttribute("aria-checked", "true");
+    expect(sw).toHaveAttribute("aria-checked", "false");
     fireEvent.click(sw);
     await waitFor(() => expect(api.updateSchedulerSettings).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(screen.getByRole("switch", { name: "Automatically close billing period" })).toHaveAttribute(
         "aria-checked",
-        "false",
+        "true",
       ),
     );
     expect(screen.getByRole("switch", { name: "Automatically close billing period" })).toBe(sw);
@@ -139,7 +141,7 @@ describe("SchedulerSettingsCard", () => {
 
     reject(new Error("boom"));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
-    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "false"));
     expect(api.updateSchedulerSettings).toHaveBeenCalledTimes(1);
   });
 
@@ -189,7 +191,7 @@ describe("SchedulerSettingsCard", () => {
 
     rejectA(new Error("boom"));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
-    await waitFor(() => expect(a).toHaveAttribute("aria-checked", "true"));
+    await waitFor(() => expect(a).toHaveAttribute("aria-checked", "false"));
     expect(b).toHaveAttribute("aria-checked", "false");
   });
 
