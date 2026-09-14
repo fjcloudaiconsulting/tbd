@@ -215,6 +215,7 @@ function oklchHue(rgb: Vec3): number {
 // ─── reading the tokens ──────────────────────────────────────────────────
 
 const BLOCKS = { dark: ":root", light: '[data-theme="light"]' } as const;
+const MEASURED_TOKEN = /^--theme-(cat-\d+|surface|border-strong|success|danger|warning|accent)$/;
 type Theme = keyof typeof BLOCKS;
 
 function block(selector: string): Map<string, string> {
@@ -254,6 +255,41 @@ function tokens(theme: Theme) {
 const THEMES: Theme[] = ["light", "dark"];
 const MODELS = ["vienot", "brettel"] as const;
 const KINDS: Kind[] = ["protan", "deutan", "tritan"];
+const CVD_LABELS = ["normal", ...MODELS.flatMap((m) => KINDS.map((k) => `${m} ${k}`))];
+
+/**
+ * Every pair (slots 1..n-1 named cat-N, the last colour named Other) closer
+ * than CVD_DE_MIN, keyed by viewing condition. Every condition key is present,
+ * with an empty list when it has no failing pair.
+ */
+function cvdFailures(hexes: string[]): Record<string, Array<[string, number]>> {
+  const names = hexes.map((_, i) => (i === hexes.length - 1 ? "Other" : `cat-${i + 1}`));
+  const rgb = hexes.map(hexToRgb);
+  const conditions: Array<[string, (c: Vec3) => Vec3]> = [
+    ["normal", (c) => c],
+    ...MODELS.flatMap((model) =>
+      KINDS.map(
+        (kind) => [`${model} ${kind}`, (c: Vec3) => simulate(c, kind, model)] as [string, (c: Vec3) => Vec3],
+      ),
+    ),
+  ];
+  const out: Record<string, Array<[string, number]>> = {};
+  let pairs = 0;
+  for (const [label, fn] of conditions) {
+    const labs = rgb.map((c) => rgbToLab(fn(c)));
+    out[label] = [];
+    for (let i = 0; i < labs.length; i++) {
+      for (let j = i + 1; j < labs.length; j++) {
+        pairs++;
+        const d = ciede2000(labs[i], labs[j]);
+        if (d < CVD_DE_MIN) out[label].push([`${names[i]} vs ${names[j]}`, d]);
+      }
+    }
+  }
+  const n = hexes.length;
+  expect(pairs, "every pair under every condition").toBe((CVD_LABELS.length * n * (n - 1)) / 2);
+  return out;
+}
 
 // ─── guards on the maths ─────────────────────────────────────────────────
 
@@ -335,6 +371,30 @@ describe("categorical chart palette (globals.css)", () => {
     cat.forEach((hex) => expect(() => hexToRgb(hex)).not.toThrow());
   });
 
+  it("the measured tokens are declared ONLY in the two owning theme rules", () => {
+    // A redeclaration anywhere else (a prefers-color-scheme block, a scoped
+    // class, html[data-theme], an at-rule nested in :root) would repaint the
+    // palette without this file ever reading it.
+    const owners = new Set<postcss.Node>(
+      Object.values(BLOCKS).map(
+        (sel) =>
+          (sheet.nodes ?? []).find((n) => n.type === "rule" && (n as postcss.Rule).selector === sel)!,
+      ),
+    );
+    expect(owners.size).toBe(2);
+    const stray: string[] = [];
+    let seen = 0;
+    sheet.walkDecls(MEASURED_TOKEN, (d) => {
+      seen++;
+      if (!owners.has(d.parent!)) {
+        const where = d.parent?.type === "rule" ? (d.parent as postcss.Rule).selector : d.parent?.toString().split("{")[0].trim();
+        stray.push(`${d.prop} in ${where} (line ${d.source?.start?.line})`);
+      }
+    });
+    expect(seen, "8 cat + 6 measured tokens in each owning block").toBeGreaterThanOrEqual(28);
+    expect(stray).toEqual([]);
+  });
+
   it.each(THEMES)(`%s: every slot is >= ${CONTRAST_MIN}:1 on the surface`, (theme) => {
     const t = tokens(theme);
     const surface = hexToRgb(t.surface);
@@ -349,39 +409,35 @@ describe("categorical chart palette (globals.css)", () => {
     `%s: every pair incl. Other is >= ${CVD_DE_MIN} dE2000 under normal and dichromat vision (Vienot + Brettel)`,
     (theme) => {
       const t = tokens(theme);
-      const names = [...t.cat.map((_, i) => `cat-${i + 1}`), "Other"];
-      const rgb = [...t.cat, t.other].map(hexToRgb);
-      const conditions: Array<[string, (c: Vec3) => Vec3]> = [
-        ["normal", (c) => c],
-        ...MODELS.flatMap((model) =>
-          KINDS.map(
-            (kind) =>
-              [`${model} ${kind}`, (c: Vec3) => simulate(c, kind, model)] as [
-                string,
-                (c: Vec3) => Vec3,
-              ],
-          ),
+      const failures = cvdFailures([...t.cat, t.other]);
+      expect(Object.keys(failures)).toEqual(CVD_LABELS);
+      expect(
+        Object.entries(failures).flatMap(([label, pairs]) =>
+          pairs.map(([pair, d]) => `${label}: ${pair} dE ${d.toFixed(2)}`),
         ),
-      ];
-      expect(conditions).toHaveLength(7);
-      const failures: string[] = [];
-      let pairs = 0;
-      for (const [label, fn] of conditions) {
-        const labs = rgb.map((c) => rgbToLab(fn(c)));
-        for (let i = 0; i < labs.length; i++) {
-          for (let j = i + 1; j < labs.length; j++) {
-            pairs++;
-            const d = ciede2000(labs[i], labs[j]);
-            if (d < CVD_DE_MIN) {
-              failures.push(`${label}: ${names[i]} vs ${names[j]} dE ${d.toFixed(2)}`);
-            }
-          }
-        }
-      }
-      expect(pairs).toBe(7 * 36);
-      expect(failures).toEqual([]);
+      ).toEqual([]);
     },
   );
+
+  it("canary: the pre-TBD-429 light palette fails under every simulation, and only there", () => {
+    // Proves the simulation is APPLIED per condition: a loop that skipped
+    // simulate() would report nothing below, and a loop that wired every
+    // deficiency to one simulator would report the same pairs for all three.
+    // Measured with daltonlens (Python) on the palette this ticket replaced.
+    const OLD_LIGHT = ["#B88A2E", "#2f7fb0", "#16a34a", "#7c3aed", "#0d9488", "#db2777", "#d97706", "#dc2626"];
+    const failures = cvdFailures([...OLD_LIGHT, "#818ea3"]);
+    const pairsOf = (label: string) => failures[label].map(([pair]) => pair);
+    expect(pairsOf("normal")).toEqual([]);
+    for (const model of MODELS) {
+      expect(pairsOf(`${model} protan`)).toEqual(["cat-1 vs cat-3", "cat-1 vs cat-7"]);
+      expect(pairsOf(`${model} deutan`)).toEqual(["cat-1 vs cat-7"]);
+      expect(pairsOf(`${model} tritan`)).toEqual([
+        "cat-2 vs cat-5",
+        "cat-3 vs cat-5",
+        "cat-6 vs cat-8",
+      ]);
+    }
+  });
 
   it.each(THEMES)(
     `%s: no slot is within ${SEMANTIC_DE_MIN} dE2000 of a status or accent token`,

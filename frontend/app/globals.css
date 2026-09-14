@@ -74,7 +74,9 @@
   --theme-scrim: rgba(7, 13, 24, 0.55);
   --theme-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
 
-  /* Categorical chart scale — Brass Harmony (W3). Chart-only; see docs/design/DESIGN.md amendment. */
+  /* Categorical chart scale (TBD-429): evenly spaced hues, disjoint from the
+     status and accent tokens. Chart-only; see docs/design/DESIGN.md, Data
+     Visualization. Invariant enforced by tests/lib/chart-palette-invariant.test.ts. */
   --theme-cat-1: #f9699b;
   --theme-cat-2: #6bc41d;
   --theme-cat-3: #d78dfb;
@@ -199,8 +201,9 @@
   --color-scrim: var(--theme-scrim);
   --shadow-card: var(--theme-card-shadow);
 
-  /* Chart palette. Aliases of the Brass Harmony categorical scale.
-     Theme switches cascade automatically. See docs/design/DESIGN.md amendment. */
+  /* Chart palette. Aliases of the TBD-429 categorical scale (--theme-cat-*).
+     Theme switches cascade automatically. See docs/design/DESIGN.md, Data
+     Visualization, and tests/lib/chart-palette-invariant.test.ts. */
   --color-chart-1: var(--theme-cat-1);
   --color-chart-2: var(--theme-cat-2);
   --color-chart-3: var(--theme-cat-3);
