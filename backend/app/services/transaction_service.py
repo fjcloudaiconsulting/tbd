@@ -2936,8 +2936,8 @@ def _apply_transaction_filters(
     q,
     org_id: int,
     *,
-    account_id: int | None,
-    category_id: int | None,
+    account_id: int | list[int] | None,
+    category_id: int | list[int] | None,
     tx_type: str | None,
     status: str | None,
     date_from: datetime.date | None,
@@ -2960,15 +2960,19 @@ def _apply_transaction_filters(
     from three sites in ``list_transactions``; a required kwarg would have to
     be threaded through all three to say "unchanged".
     """
+    # TBD-463: both accept one id or a list (the router sends a list; the
+    # service's own callers and tests still pass a bare int). A list is OR.
     if account_id is not None:
-        q = q.where(Transaction.account_id == account_id)
+        account_ids = account_id if isinstance(account_id, list) else [account_id]
+        q = q.where(Transaction.account_id.in_(account_ids))
     if category_id is not None:
+        category_ids = category_id if isinstance(category_id, list) else [category_id]
         if category_match == "exact":
             # TBD-221: the row's OWN category, which is what the
             # /api/v1/forecast per-category rollup groups by
             # (forecast_service.py:266-278). Opt-in only -- see the
             # subtree branch below for why it cannot be the default.
-            q = q.where(Transaction.category_id == category_id)
+            q = q.where(Transaction.category_id.in_(category_ids))
         else:
             # Master-includes-subs semantics: the /transactions filter
             # dropdown lists masters and subs flat, so a user picking a
@@ -2981,16 +2985,20 @@ def _apply_transaction_filters(
             # ⚠ This stays the DEFAULT. Flipping it would silently narrow
             # every existing caller of a PAT-reachable endpoint
             # (TBD-268 §5) and re-open the 2026-05-13 report.
+            #
+            # ⚠ TBD-463: WHERE predicates only, never a JOIN or UNION. A row
+            # on a child whose master is also selected matches twice, and a
+            # join would return it twice and count it twice.
             sub_ids_q = (
                 select(Category.id)
                 .where(
                     Category.org_id == org_id,
-                    Category.parent_id == category_id,
+                    Category.parent_id.in_(category_ids),
                 )
             )
             q = q.where(
                 or_(
-                    Transaction.category_id == category_id,
+                    Transaction.category_id.in_(category_ids),
                     Transaction.category_id.in_(sub_ids_q),
                 )
             )
@@ -3034,7 +3042,20 @@ def _apply_transaction_filters(
         # a Decimal — and matches both signs so that searching "42" finds
         # both +42.00 and -42.00 rows (users don't think in signs when
         # they look for "that 42 euro charge").
-        predicates = [Transaction.description.ilike(f"%{search}%")]
+        #
+        # TBD-463: it also matches the row's OWN category name (never its
+        # parent's). A subquery, not a join: sort_by=category_name already
+        # joins Category onto the page query, and a join would also land in
+        # the count query.
+        predicates = [
+            Transaction.description.ilike(f"%{search}%"),
+            Transaction.category_id.in_(
+                select(Category.id).where(
+                    Category.org_id == org_id,
+                    Category.name.ilike(f"%{search}%"),
+                )
+            ),
+        ]
         amount_value = _parse_search_amount(search)
         if amount_value is not None:
             predicates.append(
@@ -3099,8 +3120,8 @@ def _apply_transaction_filters(
 async def list_transactions(
     db: AsyncSession,
     org_id: int,
-    account_id: int | None = None,
-    category_id: int | None = None,
+    account_id: int | list[int] | None = None,
+    category_id: int | list[int] | None = None,
     tx_type: str | None = None,
     status: str | None = None,
     date_from: datetime.date | None = None,

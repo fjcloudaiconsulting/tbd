@@ -259,3 +259,143 @@ def test_b13c_income_filter_no_longer_blacks_out(client, paired):
     body = res.json()
     assert [i["id"] for i in body["items"]] == [paired["income_id"]]
     assert body["total"] == 1
+
+
+# ── TBD-463: multi-valued account/category filters, category-name search ────
+
+
+async def _seed_multi(factory) -> dict:
+    """Three extra accounts, a master "Housing" with child "Rent", and one
+    row per bucket, so the multi-value filters have something to discriminate.
+    """
+    from sqlalchemy import select as _select
+
+    from app.models.tag import Tag, TransactionTag
+
+    async with factory() as db:
+        org = (await db.execute(_select(Organization))).scalars().first()
+        at = (await db.execute(_select(AccountType))).scalars().first()
+        groceries = (await db.execute(_select(Category))).scalars().first()
+        a1, a2, a3 = (
+            Account(
+                org_id=org.id, name=f"Multi {n}", account_type_id=at.id,
+                balance=Decimal("0"), currency="EUR",
+            )
+            for n in ("1", "2", "3")
+        )
+        housing = Category(
+            org_id=org.id, name="Housing", slug="housing",
+            type=CategoryType.EXPENSE, is_system=False,
+        )
+        db.add_all([a1, a2, a3, housing])
+        await db.flush()
+        rent = Category(
+            org_id=org.id, name="Rent", slug="rent",
+            type=CategoryType.EXPENSE, is_system=False, parent_id=housing.id,
+        )
+        db.add(rent)
+        await db.flush()
+
+        def tx(acct, cat, desc):
+            return Transaction(
+                org_id=org.id, account_id=acct.id, category_id=cat.id,
+                description=desc, amount=Decimal("5.00"),
+                type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+                date=date(2026, 3, 1), settled_date=date(2026, 3, 1),
+            )
+
+        on_a1 = tx(a1, groceries, "multi-a1")
+        on_a2 = tx(a2, groceries, "multi-a2")
+        on_a3 = tx(a3, groceries, "multi-a3")
+        # Descriptions deliberately do not contain the category names, so a
+        # name-search hit can only come from the category term.
+        on_housing = tx(a1, housing, "multi-master")
+        on_rent = tx(a1, rent, "multi-child")
+        db.add_all([on_a1, on_a2, on_a3, on_housing, on_rent])
+        await db.flush()
+        t_x = Tag(org_id=org.id, name="x", name_normalized="x")
+        t_y = Tag(org_id=org.id, name="y", name_normalized="y")
+        db.add_all([t_x, t_y])
+        await db.flush()
+        db.add_all([
+            TransactionTag(transaction_id=on_a1.id, tag_id=t_x.id),
+            TransactionTag(transaction_id=on_a1.id, tag_id=t_y.id),
+            TransactionTag(transaction_id=on_a2.id, tag_id=t_x.id),
+        ])
+        await db.commit()
+        return {
+            "a1": a1.id, "a2": a2.id, "a3": a3.id,
+            "housing": housing.id, "rent": rent.id,
+            "on_a1": on_a1.id, "on_a2": on_a2.id, "on_a3": on_a3.id,
+            "on_housing": on_housing.id, "on_rent": on_rent.id,
+        }
+
+
+@pytest_asyncio.fixture
+async def multi(session_factory, client):
+    return await _seed_multi(session_factory)
+
+
+def _ids(res) -> list[int]:
+    assert res.status_code == 200, res.text
+    return [i["id"] for i in res.json()["items"]]
+
+
+def test_f1_repeated_account_id_is_or_over_the_set(client, multi):
+    """F1: ``?account_id=A2&account_id=A3`` returns exactly the A2 and A3 rows
+    (A1 carries rows too, and they stay out).
+
+    Kills a scalar param (FastAPI keeps the last value, so A3 only) and AND
+    semantics (a row sits on one account, so nothing).
+    """
+    res = client.get(
+        f"/api/v1/transactions?account_id={multi['a2']}&account_id={multi['a3']}"
+    )
+    assert sorted(_ids(res)) == sorted([multi["on_a2"], multi["on_a3"]])
+    assert res.json()["total"] == 2
+
+
+@pytest.mark.parametrize("collapse", ["false", "true"])
+def test_f2_master_and_its_child_return_each_row_once(client, multi, collapse):
+    """F2: ``?category_id=M&category_id=C`` (C a child of M) returns the M row
+    and the C row exactly once each, and ``total`` agrees.
+
+    Kills a JOIN or UNION ALL implementation: the C row matches both the
+    selected C and the selected M's subtree, so it would come back twice.
+    """
+    res = client.get(
+        f"/api/v1/transactions?category_id={multi['housing']}"
+        f"&category_id={multi['rent']}&collapse_transfers={collapse}"
+    )
+    assert sorted(_ids(res)) == sorted([multi["on_housing"], multi["on_rent"]])
+    assert res.json()["total"] == 2
+
+
+def test_f7_category_name_search_with_category_name_sort(client, multi):
+    """F7: ``search=hous&sort_by=category_name`` is a 200 with the row once.
+
+    The sort already joins ``Category``; a JOIN-based name search would join
+    it a second time (an error) or leak the join into the count.
+    """
+    res = client.get("/api/v1/transactions?search=hous&sort_by=category_name")
+    assert _ids(res) == [multi["on_housing"]]
+    assert res.json()["total"] == 1
+
+
+def test_guard_single_account_id_still_filters(client, multi):
+    res = client.get(f"/api/v1/transactions?account_id={multi['a3']}")
+    assert _ids(res) == [multi["on_a3"]]
+
+
+def test_guard_single_category_id_defaults_to_subtree(client, multi):
+    res = client.get(f"/api/v1/transactions?category_id={multi['housing']}")
+    assert sorted(_ids(res)) == sorted([multi["on_housing"], multi["on_rent"]])
+
+
+def test_guard_non_integer_account_id_is_422(client):
+    assert client.get("/api/v1/transactions?account_id=abc").status_code == 422
+
+
+def test_guard_tags_without_tag_match_stay_and(client, multi):
+    """The side panel sends ``tag_match=any``; the API default stays ``all``."""
+    assert _ids(client.get("/api/v1/transactions?tags=x,y")) == [multi["on_a1"]]

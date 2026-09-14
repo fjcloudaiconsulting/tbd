@@ -235,3 +235,111 @@ async def test_search_empty_string_skips_filter(db_session, world):
         db_session, world["org"].id, search="   ",
     )
     assert sorted(r.description for r in rows) == ["A", "B"]
+
+
+# ── TBD-463: search also matches the row's OWN category name ────────────────
+#
+# Case is varied in ASCII only: SQLite cannot reproduce MySQL's accent folding
+# under utf8mb4_0900_ai_ci, so an accented test here would prove nothing.
+
+
+async def _other_category(db_session, world, name: str, **kw) -> Category:
+    cat = Category(
+        org_id=kw.pop("org_id", world["org"].id), name=name,
+        slug=name.lower(), type=CategoryType.EXPENSE, is_system=False, **kw,
+    )
+    db_session.add(cat)
+    await db_session.flush()
+    return cat
+
+
+async def test_f5_search_matches_category_name(db_session, world):
+    """F5: ``grocer`` finds a "Groceries" row whose description does not match."""
+    dining = await _other_category(db_session, world, "Dining")
+    db_session.add_all([
+        _make_tx(world, description="Weekly shop"),
+        Transaction(
+            org_id=world["org"].id, account_id=world["account"].id,
+            category_id=dining.id, description="Dinner", amount=Decimal("5"),
+            type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+            date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+        ),
+    ])
+    await db_session.flush()
+
+    rows, total = await transaction_service.list_transactions(
+        db_session, world["org"].id, search="GROCER",
+    )
+    assert [r.description for r in rows] == ["Weekly shop"]
+    assert total == 1
+
+
+async def test_f6_search_name_does_not_expand_to_children(db_session, world):
+    """F6: ``Groceries`` does NOT return a row on its child "Bulk"."""
+    bulk = await _other_category(
+        db_session, world, "Bulk", parent_id=world["category"].id,
+    )
+    db_session.add_all([
+        _make_tx(world, description="Weekly shop"),
+        Transaction(
+            org_id=world["org"].id, account_id=world["account"].id,
+            category_id=bulk.id, description="Pallet", amount=Decimal("5"),
+            type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+            date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+        ),
+    ])
+    await db_session.flush()
+
+    rows, _ = await transaction_service.list_transactions(
+        db_session, world["org"].id, search="Groceries",
+    )
+    assert [r.description for r in rows] == ["Weekly shop"]
+
+
+async def test_f8_search_name_is_org_scoped(db_session, world):
+    """F8: another org's category name does not match.
+
+    Transaction.org_id already scopes the rows, so the name lookup's own org
+    scope is only observable through a row that references a foreign org's
+    category id. No constraint forbids that row, so the test builds it.
+    """
+    other_org = Organization(name="Other", billing_cycle_day=1)
+    db_session.add(other_org)
+    await db_session.flush()
+    foreign = await _other_category(db_session, world, "Pets", org_id=other_org.id)
+    db_session.add(Transaction(
+        org_id=world["org"].id, account_id=world["account"].id,
+        category_id=foreign.id, description="Dinner", amount=Decimal("5"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    ))
+    await db_session.flush()
+
+    rows, _ = await transaction_service.list_transactions(
+        db_session, world["org"].id, search="pets",
+    )
+    assert rows == []
+
+
+async def test_guard_description_and_category_hit_returns_row_once(db_session, world):
+    db_session.add(_make_tx(world, description="Groceries at the market"))
+    await db_session.flush()
+
+    rows, total = await transaction_service.list_transactions(
+        db_session, world["org"].id, search="groceries",
+    )
+    assert len(rows) == 1
+    assert total == 1
+
+
+async def test_guard_amount_search_alongside_category_term(db_session, world):
+    db_session.add_all([
+        _make_tx(world, description="Charge", amount="42.00"),
+        _make_tx(world, description="Other", amount="7.00"),
+    ])
+    await db_session.flush()
+
+    rows, _ = await transaction_service.list_transactions(
+        db_session, world["org"].id, search="42",
+    )
+    assert [r.description for r in rows] == ["Charge"]
