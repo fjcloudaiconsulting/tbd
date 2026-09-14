@@ -11,20 +11,26 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
-  Legend,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
 
-import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
+import { chartColor } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
 
 export interface AreaWidgetChartProps {
   rows: Array<{ label: string } & Record<string, number | string>>;
   seriesKeys: string[];
   labels: string[];
+  /**
+   * Stroke colour per series, parallel to ``seriesKeys``. Supplied by the
+   * widget, which hands the SAME array to its DOM legend (TBD-427), so the
+   * key and the plot cannot disagree. Recomputing ``CHART_SERIES[i % 8]``
+   * here would re-open that drift.
+   */
+  seriesColors: string[];
   stackId?: string;
   /** Display format for the measure value (tooltip + value axis). */
   format: "currency" | "number" | "percent";
@@ -42,6 +48,7 @@ export default function AreaWidgetChart({
   rows,
   seriesKeys,
   labels,
+  seriesColors,
   stackId,
   format,
   currency,
@@ -52,7 +59,7 @@ export default function AreaWidgetChart({
       <AreaChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
         <defs>
           {seriesKeys.map((key, i) => {
-            const color = CHART_SERIES[i % CHART_SERIES.length];
+            const color = seriesColors[i];
             // For overlaid multi-series, reduce fill density so lower series
             // remain legible behind upper ones. Stacked charts use a single
             // visual layer per series so the full 0.5 opacity is fine there.
@@ -94,7 +101,6 @@ export default function AreaWidgetChart({
           cursor={{ stroke: "var(--color-border)" }}
           formatter={(v) => formatMeasureValue(Number(v), format, currency)}
         />
-        {seriesKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
         {seriesKeys.map((key, i) => (
           <Area
             key={key}
@@ -102,7 +108,7 @@ export default function AreaWidgetChart({
             dataKey={key}
             name={labels[i]}
             stackId={stackId}
-            stroke={CHART_SERIES[i % CHART_SERIES.length]}
+            stroke={seriesColors[i]}
             fill={`url(#grad-${widgetId}-${i})`}
             strokeWidth={2}
             isAnimationActive={false}

@@ -62,10 +62,9 @@ export const OTHER_KEY = "sOther";
  * Falling through to `CHART_SERIES[7]` would paint "not a category" in
  * Overdue Coral, the danger hue — asserting a status that is not there.
  *
- * Measured 3.31:1 dark / 3.32:1 light against `bg-surface`. The
- * `PieWidgetChart` precedent uses `var(--color-border)`, which measures 1.35:1
- * and fails WCAG 1.4.11; this copies the SHAPE of that precedent, not its
- * token. Fixing Pie is filed separately.
+ * Measured 3.31:1 dark / 3.32:1 light against `bg-surface`. Pie uses this
+ * same constant for its folded "Other" since TBD-427; its former
+ * `var(--color-border)` measured 1.35:1 and failed WCAG 1.4.11.
  */
 export const OTHER_COLOR = "var(--color-border-strong)";
 

@@ -56,6 +56,7 @@ import type {
   StackedBarWidget as StackedBarWidgetType,
 } from "@/lib/reports/types";
 import WidgetCsvButton from "./WidgetCsvButton";
+import WidgetLegend from "./WidgetLegend";
 import WidgetNotices from "@/components/reports/WidgetNotices";
 import type { CsvCell } from "@/lib/reports/csv";
 
@@ -304,44 +305,17 @@ export default function BarWidget({
         )}
       </div>
 
-      {/* DOM legend (outside the SVG) maps each color → secondary value.
-          Rendered ourselves rather than via Recharts ``<Legend>`` so it
-          stays visible in headless layouts (jsdom collapses the chart)
-          and so swatch colors stay theme-token driven. */}
+      {/* DOM legend maps each colour to its secondary value; see
+          `WidgetLegend` for why this is not recharts' `<Legend>`. */}
       {sliced && !isLoading && !error && hasRows && (
-        // TBD-430: capped + scrollable. Uncapped, this `flex-wrap` list
-        // grew without bound and bled out of the card on a wide break-down.
-        // `tabIndex={0}` is not decoration — WCAG 2.1.1 requires a
-        // scrollable region to be keyboard-scrollable, and the list already
-        // carries an accessible name. No notice accompanies this: a
-        // scrollbar says "there is more" natively, and the colour key stays
-        // reachable where it belongs.
-        <ul
-          data-testid={`${tid}-legend`}
-          aria-label={legendLabel}
-          tabIndex={0}
-          className="mt-2 flex max-h-16 flex-wrap gap-x-3 gap-y-1 overflow-y-auto text-xs text-text-secondary"
-        >
-          {breakdown.secondaryValues.map((sv, i) => (
-            <li
-              key={breakdown.seriesKeys[i]}
-              data-testid={`${tid}-legend-item`}
-              className="flex items-center gap-1"
-            >
-              <span
-                data-testid={`${tid}-legend-swatch`}
-                data-color={breakdown.sliceColors[i]}
-                aria-hidden="true"
-                // ring-1: the light-theme swatch/surface contrast measures
-                // 3.13–3.30, passing with no margin at 10×10px unbordered,
-                // so the swatch's shape is bounded independently of its fill.
-                className="inline-block h-2.5 w-2.5 rounded-sm ring-1 ring-border"
-                style={{ backgroundColor: breakdown.sliceColors[i] }}
-              />
-              <span>{sv}</span>
-            </li>
-          ))}
-        </ul>
+        <WidgetLegend
+          testidPrefix={tid}
+          label={legendLabel}
+          items={breakdown.secondaryValues.map((sv, i) => ({
+            label: sv,
+            color: breakdown.sliceColors[i],
+          }))}
+        />
       )}
     </div>
   );

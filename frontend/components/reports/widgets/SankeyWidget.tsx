@@ -65,10 +65,7 @@ export default function SankeyWidget({ widget, canvasFilters, editMode, currency
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div
-        className="mb-2 flex items-center justify-between gap-2"
-        aria-label={widget.title || "Cash flow Sankey diagram"}
-      >
+      <div className="mb-2 flex items-center justify-between gap-2">
         <div className="text-sm font-semibold text-text-primary">
           {widget.title || "Cash flow"}
         </div>

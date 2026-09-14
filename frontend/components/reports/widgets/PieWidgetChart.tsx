@@ -6,13 +6,20 @@
  * PieWidget keeps all data wiring (top-N roll-up, CSV); this renders the
  * already-prepared rows.
  */
-import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
-import { CHART_SERIES } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
 
 export interface PieWidgetChartProps {
   rows: Array<{ label: string; value: number }>;
+  /**
+   * Fill per slice, parallel to ``rows``. Supplied by the widget, which hands
+   * the SAME array to its DOM legend (TBD-427), and which paints the folded
+   * "Other" with the neutral ``OTHER_COLOR`` (``--color-border-strong``).
+   * The old ``--color-border`` measured 1.35:1 / 1.31:1 against the surface
+   * and failed WCAG 1.4.11.
+   */
+  sliceColors: string[];
   /** Display format for the measure value (tooltip only — pie has no axis). */
   format: "currency" | "number" | "percent";
   /** Org currency ISO code; prefixes the symbol when format is "currency". */
@@ -32,6 +39,7 @@ export interface PieWidgetChartProps {
 
 export default function PieWidgetChart({
   rows,
+  sliceColors,
   format,
   currency,
   suppressTotal,
@@ -54,12 +62,11 @@ export default function PieWidgetChart({
             className="pointer-events-none absolute inset-0 flex items-center justify-center"
             aria-hidden="true"
           >
-            {/*
-             * -mt-8 compensates for the bottom Legend row (~32px / 2rem).
-             * Revisit if the legend wraps to two lines (e.g. many slices).
-             */}
+            {/* Centred on the donut exactly: the legend lives outside this
+                box (in PieWidget), so the box is the chart and `<Pie>`'s
+                default cx/cy is its centre. */}
             <span
-              className="-mt-8 text-sm font-bold text-text-primary"
+              className="text-sm font-bold text-text-primary"
               data-testid="pie-center-total"
             >
               {formattedTotal}
@@ -78,24 +85,14 @@ export default function PieWidgetChart({
             stroke="var(--color-surface)"
             isAnimationActive={false}
           >
-            {rows.map((row, i) => (
-              <Cell
-                key={row.label}
-                fill={
-                  row.label === "Other"
-                    ? "var(--color-border)"
-                    : CHART_SERIES[i % CHART_SERIES.length]
-                }
-              />
+            {/* Index keys: labels are not unique (a real "Other" category
+                beside the folded one). */}
+            {rows.map((_, i) => (
+              <Cell key={i} fill={sliceColors[i]} />
             ))}
           </Pie>
           <Tooltip
             formatter={(v) => formatMeasureValue(Number(v), format, currency)}
-          />
-          <Legend
-            verticalAlign="bottom"
-            wrapperStyle={{ fontSize: 11 }}
-            iconSize={8}
           />
         </PieChart>
       </ResponsiveContainer>
