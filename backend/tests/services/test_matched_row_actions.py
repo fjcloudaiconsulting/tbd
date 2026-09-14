@@ -2285,11 +2285,19 @@ async def test_include_non_reportable_report_counts_a_matched_charge_once(
     from app.services.reports_query_service import execute_query
 
     seed = await _seed(db_session)
-    dup, canonical = await _make_matched_pair(
-        db_session, seed, amount="64.00", canonical_account="acct_a_id",
+    # Distinct amounts so the sum names the row counted: 64 correct, 71 double
+    # count, 7 the wrong row. ``_apply_match`` does not require equal amounts.
+    canonical = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="64.00",
+        label="canonical",
     )
+    dup, canonical = await _make_matched_pair(
+        db_session, seed, amount="7.00", canonical=canonical,
+    )
+    assert canonical.linked_transaction_id is None, "match must stay ONE-WAY"
     await _drive_dup_to(db_session, seed, dup, end_state)
-    # Premise: the dup's amount is NOT in the balance (the match reverted it).
+    # Premise: only the canonical 64.00 is in the balance. The dup's 7.00 was
+    # applied at create and reverted by the match.
     assert (await _account(db_session, seed["acct_a_id"])).balance == (
         ACCT_A_OPENING - Decimal("64.00")
     )
@@ -2325,9 +2333,15 @@ async def test_pending_forecast_does_not_count_a_matched_pending_duplicate(db_se
         db_session, seed, amount="64.00", canonical_account="acct_a_id",
         dup_status=TransactionStatus.PENDING,
     )
+    # Positive control: an ordinary pending row in the same account and window
+    # must still be projected, so the window is proven live.
+    await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="5.00",
+        label="control", status=TransactionStatus.PENDING,
+    )
 
     result = await compute_account_balance_forecast(
         db_session, seed["org_id"], today=TX_DATE,
     )
     acct_a = next(a for a in result["accounts"] if a["account_id"] == seed["acct_a_id"])
-    assert Decimal(str(acct_a["pending_delta"])) == Decimal("0")
+    assert Decimal(str(acct_a["pending_delta"])) == Decimal("-5.00")
