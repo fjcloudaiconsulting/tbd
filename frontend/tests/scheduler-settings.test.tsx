@@ -44,12 +44,13 @@ beforeEach(() => {
 describe("SchedulerSettingsCard", () => {
   it("loads and renders current settings", async () => {
     render(<SchedulerSettingsCard />);
-    await waitFor(() =>
-      expect(screen.getByText(/Automatic tasks/i)).toBeInTheDocument(),
-    );
+    // TBD-288: settle on a control that only exists once GET has resolved.
+    // The "Automatic tasks" heading renders during "Loading..." too, so
+    // waiting on it let the next synchronous query race the fetch.
     expect(
-      screen.getByLabelText(/Automatically close billing period/i),
+      await screen.findByLabelText(/Automatically close billing period/i),
     ).toBeChecked();
+    expect(screen.getByText(/Automatic tasks/i)).toBeInTheDocument();
     expect(
       screen.getByLabelText(/Automatically generate recurring transactions/i),
     ).toBeChecked();

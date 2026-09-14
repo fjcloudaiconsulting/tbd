@@ -94,6 +94,22 @@ describe("AuthProvider", () => {
     setAccessTokenMock.mockReset();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // TBD-288: withAuthRetry sleeps 250ms then 500ms between attempts. On real
+  // timers that is 750ms of wall clock spent inside Testing Library's default
+  // 1000ms waitFor, leaving ~250ms for React to render on a loaded worker.
+  // These helpers fake the clock (still ticking in real time, so waitFor and
+  // React keep working) and step it through the backoff instead of sleeping.
+  function fakeBackoffClock() {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  }
+  async function elapseBackoff(ms: number) {
+    await act(() => vi.advanceTimersByTimeAsync(ms));
+  }
+
   it("stops at setup mode without attempting session restore", async () => {
     apiFetchMock.mockResolvedValueOnce({ needs_setup: true });
 
@@ -178,9 +194,11 @@ describe("AuthProvider", () => {
       .mockRejectedValueOnce(new ApiTimeoutError())                     // login /me attempt 2
       .mockResolvedValueOnce(TEST_USER);                                // login /me attempt 3
 
+    fakeBackoffClock();
     render(<AuthProvider><Harness /></AuthProvider>);
     await waitFor(() => expect(screen.getByTestId("loading")).toHaveTextContent("false"));
     fireEvent.click(screen.getByText("Login"));
+    await elapseBackoff(750);
     await waitFor(() => expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email));
     // No error surfaced.
     expect(screen.getByTestId("error")).toHaveTextContent("none");
@@ -202,9 +220,11 @@ describe("AuthProvider", () => {
       .mockRejectedValueOnce(new ApiTimeoutError())
       .mockRejectedValueOnce(new ApiTimeoutError());
 
+    fakeBackoffClock();
     render(<AuthProvider><Harness /></AuthProvider>);
     await waitFor(() => expect(screen.getByTestId("loading")).toHaveTextContent("false"));
     fireEvent.click(screen.getByText("Login"));
+    await elapseBackoff(750);
     // login() rejects with ApiTimeoutError → Harness catch sets error.
     await waitFor(() =>
       expect(screen.getByTestId("error")).toHaveTextContent("ApiTimeoutError:"),
@@ -339,11 +359,13 @@ describe("AuthProvider", () => {
       .mockResolvedValueOnce({ access_token: "recovered-token" })
       .mockResolvedValueOnce(TEST_USER);
 
+    fakeBackoffClock();
     render(
       <AuthProvider>
         <Harness />
       </AuthProvider>,
     );
+    await elapseBackoff(750);
 
     await waitFor(() =>
       expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
@@ -358,11 +380,13 @@ describe("AuthProvider", () => {
       .mockResolvedValueOnce({ access_token: "recovered-token" })
       .mockResolvedValueOnce(TEST_USER);
 
+    fakeBackoffClock();
     render(
       <AuthProvider>
         <Harness />
       </AuthProvider>,
     );
+    await elapseBackoff(250);
 
     await waitFor(() =>
       expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
@@ -402,11 +426,13 @@ describe("AuthProvider", () => {
       .mockResolvedValueOnce({ access_token: "recovered-token" })
       .mockResolvedValueOnce(TEST_USER);
 
+    fakeBackoffClock();
     render(
       <AuthProvider>
         <Harness />
       </AuthProvider>,
     );
+    await elapseBackoff(250);
 
     await waitFor(() =>
       expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
@@ -427,11 +453,13 @@ describe("AuthProvider", () => {
       .mockRejectedValueOnce(new ApiTimeoutError())
       .mockRejectedValueOnce(new ApiTimeoutError());
 
+    fakeBackoffClock();
     render(
       <AuthProvider>
         <Harness />
       </AuthProvider>,
     );
+    await elapseBackoff(750);
 
     // Wait until all 4 calls completed (status + 3x refresh).
     await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(4));
@@ -451,11 +479,13 @@ describe("AuthProvider", () => {
       .mockRejectedValueOnce(new ApiTimeoutError())
       .mockResolvedValueOnce(TEST_USER);
 
+    fakeBackoffClock();
     render(
       <AuthProvider>
         <Harness />
       </AuthProvider>,
     );
+    await elapseBackoff(750);
 
     await waitFor(() =>
       expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
@@ -752,11 +782,13 @@ describe("AuthProvider", () => {
       .mockRejectedValueOnce(new ApiTimeoutError())
       .mockRejectedValueOnce(new ApiTimeoutError());
 
+    fakeBackoffClock();
     render(
       <AuthProvider>
         <Harness />
       </AuthProvider>,
     );
+    await elapseBackoff(750);
 
     // Wait until all 5 calls completed (status + refresh + 3x /me).
     await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(5));
