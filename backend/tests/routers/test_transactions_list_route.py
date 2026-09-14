@@ -392,6 +392,23 @@ def test_guard_single_category_id_defaults_to_subtree(client, multi):
     assert sorted(_ids(res)) == sorted([multi["on_housing"], multi["on_rent"]])
 
 
+def test_guard_filters_and_search_all_and(client, multi):
+    """Account and category AND with each other and with search.
+
+    ``a1`` also holds ``on_a1`` (Groceries), so OR'ing the two filters would
+    return it; ``on_rent``'s name and description miss "hous", so dropping
+    the search under a category filter would return it.
+    """
+    base = (
+        f"/api/v1/transactions?account_id={multi['a1']}"
+        f"&category_id={multi['housing']}"
+    )
+    assert sorted(_ids(client.get(base))) == sorted(
+        [multi["on_housing"], multi["on_rent"]]
+    )
+    assert _ids(client.get(base + "&search=hous")) == [multi["on_housing"]]
+
+
 def test_guard_non_integer_account_id_is_422(client):
     assert client.get("/api/v1/transactions?account_id=abc").status_code == 422
 

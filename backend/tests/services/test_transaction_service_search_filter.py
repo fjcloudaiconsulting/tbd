@@ -302,6 +302,9 @@ async def test_f8_search_name_is_org_scoped(db_session, world):
     Transaction.org_id already scopes the rows, so the name lookup's own org
     scope is only observable through a row that references a foreign org's
     category id. No constraint forbids that row, so the test builds it.
+    Such a row cannot occur through the app (every category writer validates
+    org ownership) but is not DB-enforced, so this guards the "every query
+    filters by org_id" convention rather than a reachable state.
     """
     other_org = Organization(name="Other", billing_cycle_day=1)
     db_session.add(other_org)

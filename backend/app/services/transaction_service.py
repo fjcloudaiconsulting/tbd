@@ -2963,10 +2963,10 @@ def _apply_transaction_filters(
     # TBD-463: both accept one id or a list (the router sends a list; the
     # service's own callers and tests still pass a bare int). A list is OR.
     if account_id is not None:
-        account_ids = account_id if isinstance(account_id, list) else [account_id]
+        account_ids = [account_id] if isinstance(account_id, int) else list(account_id)
         q = q.where(Transaction.account_id.in_(account_ids))
     if category_id is not None:
-        category_ids = category_id if isinstance(category_id, list) else [category_id]
+        category_ids = [category_id] if isinstance(category_id, int) else list(category_id)
         if category_match == "exact":
             # TBD-221: the row's OWN category, which is what the
             # /api/v1/forecast per-category rollup groups by
@@ -2999,8 +2999,7 @@ def _apply_transaction_filters(
             q = q.where(
                 or_(
                     Transaction.category_id.in_(category_ids),
-                    Transaction.category_id.in_(sub_ids_q),
-                )
+                    Transaction.category_id.in_(sub_ids_q),                )
             )
     if reportable:
         # TBD-221: the SAME clause every server aggregate uses, so a
@@ -3146,6 +3145,11 @@ async def list_transactions(
     ``limit`` rows renders ``limit`` transfers. Without it the server
     paginates and the client then hides a leg, which is how a filtered list
     could render zero rows against a non-zero ``total``.
+
+    ``account_id`` and ``category_id`` (TBD-463) each take one int or a list
+    of ints; a list is OR within that filter, and the filters AND with each
+    other and with ``search``. Under ``category_match="subtree"`` every listed
+    id expands to its direct children; under ``"exact"`` none does.
 
     Sort caveat (accepted, TBD-268 ruling 9; survivor rule updated by TBD-386):
     the surviving leg is chosen by ``(liveness, id)`` -- a live leg outranks a
