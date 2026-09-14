@@ -205,7 +205,10 @@ async function waitForStableTxList() {
   await screen.findByLabelText(/per page/i, undefined, { timeout: 8000 });
 }
 
-describe("TransactionsPage — server-side pagination/sort/selection (Task 4)", () => {
+// TBD-288: legitimate headroom. waitForStableTxList allows each settle up to
+// 8000ms, but the default 5000ms test timeout killed the test first. On a
+// loaded worker tests in this file measured up to 11.7s.
+describe("TransactionsPage — server-side pagination/sort/selection (Task 4)", { timeout: 20_000 }, () => {
   const useAuthMock = vi.mocked(useAuth);
 
   beforeEach(() => {
@@ -393,7 +396,8 @@ function mobileRowCount(): number {
   return screen.getAllByTestId(/^tx-row-mobile-\d+$/).length;
 }
 
-describe("TransactionsPage — transfer collapse (TBD-268)", () => {
+// TBD-288: same 8000ms settles as above, so the same test-timeout headroom.
+describe("TransactionsPage — transfer collapse (TBD-268)", { timeout: 20_000 }, () => {
   const useAuthMock = vi.mocked(useAuth);
 
   beforeEach(() => {

@@ -105,7 +105,11 @@ describe("DashboardPage — Recent Transactions sort-header tap targets (WCAG 2.
       if (!(hasDate && hasDescription && hasAmount)) {
         throw new Error("sort-header buttons not rendered yet");
       }
-    });
+      // TBD-288: legitimate headroom. The whole dashboard mounts behind a
+      // two-stage fetch chain (refs + period, then transactions). On a loaded
+      // worker the default 1000ms wait failed with the test at 1.7-1.9s, and
+      // the whole test measured up to 3.7s.
+    }, { timeout: 4000 });
 
     const buttons = screen.getAllByRole("button");
     const findHeader = (name: string) => {
@@ -118,5 +122,7 @@ describe("DashboardPage — Recent Transactions sort-header tap targets (WCAG 2.
       const btn = findHeader(name);
       expect(btn.className).toContain("min-h-[32px]");
     }
-  });
+    // TBD-288: the test budget must cover the initial render plus the 4000ms
+    // settle above (whole test measured up to 3.7s on a loaded worker).
+  }, 10_000);
 });
