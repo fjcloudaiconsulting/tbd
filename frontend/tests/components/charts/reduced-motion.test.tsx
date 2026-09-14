@@ -59,8 +59,9 @@ import {
  * F3/F6  over-correction — disabling animation for EVERYONE (what
  *        ``isAnimationActive={false}`` does) rather than only for users who
  *        asked. TBD-382 did exactly that to the report widgets.
- * F10-F15 the same three shapes for ``<Line>`` and ``<Area>`` (TBD-437), the
- *        two marks TBD-437 re-enabled on the report and scenario charts.
+ * F10-F15 the same three shapes for ``<Area>`` and ``<Line>`` (TBD-437).
+ *        ⚠ F13 pins a recharts 3.8.1 DEFECT, not a correct state: see its
+ *        note, line-geometry.test.tsx, and TBD-528.
  *
  * ## Discriminator
  *
@@ -282,11 +283,12 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
     expect(renderTooltip().style.transition).toBe("transform 400ms ease");
   });
 
-  // ---- Line and Area (TBD-437). TBD-437 re-enabled animation on the report
-  // and scenario Line / Area marks by deleting `isAnimationActive={false}`,
-  // so "auto" is now what stands between those charts and a reduced-motion
-  // user. Neither mark can use the Bar/Pie "no path yet" discriminator: both
-  // render their path at t === 0 and animate something else.
+  // ---- Area and Line (TBD-437). TBD-437 re-enabled animation on the report
+  // and scenario Area marks by deleting `isAnimationActive={false}`, so "auto"
+  // is now what stands between those charts and a reduced-motion user. The
+  // app's Lines stay hard-off (TBD-528, see F13). Neither mark can use the
+  // Bar/Pie "no path yet" discriminator: both render their path at t === 0
+  // and animate something else.
 
   const SERIES = [
     { name: "a", v: 10 },
@@ -358,10 +360,8 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
       else delete (SVGElement.prototype as unknown as Record<string, unknown>).getTotalLength;
     });
 
-    /** True when the stroke is fully hidden by its dash pattern, i.e. the line
-     *  is at the start of its draw-on animation. A committed line is either
-     *  undashed (`0px 0px`, which SVG renders solid) or fully revealed. */
-    function lineStrokeHidden(active?: boolean): boolean {
+    /** The `stroke-dasharray` recharts committed on first paint. */
+    function lineDash(active?: boolean): string | null {
       render(
         <div data-testid="host">
           <LineChart width={300} height={100} data={SERIES}>
@@ -372,24 +372,36 @@ describe("TBD-428: recharts honours prefers-reduced-motion", () => {
       expectChartRendered();
       const path = screen.getByTestId("host").querySelector(".recharts-line-curve");
       expect(path, "line path did not render").not.toBeNull();
-      const dash = path!.getAttribute("stroke-dasharray") ?? "";
-      const m = /^0px ([\d.]+)px$/.exec(dash);
-      return m !== null && Number(m[1]) > 0;
+      return path!.getAttribute("stroke-dasharray");
     }
 
-    it("F13 fence: <Line> with the app's prop shape does not animate under reduce", () => {
+    /** First frame of the draw-on animation: nothing drawn, a gap the length
+     *  of the whole path. */
+    const ANIMATING = `0px ${LENGTH}px`;
+
+    it("F13 pin: under reduce, 'auto' does not start the draw-on, but commits the recharts 3.8.1 stale dash", () => {
+      // ⚠ NOT an acceptable committed state. Animation resolves OFF, so there
+      // is no `0px <length>px` first frame, but recharts 3.8.1 gates its dash
+      // override on the RAW prop (`"auto"` is truthy) and builds the dash from
+      // the length of the PREVIOUS commit's path, which on mount is 0. A real
+      // Line should carry no dash here. Review measured the same bug leaving
+      // 46% of a line undrawn after a resize, which is why the app's four
+      // Lines stay `isAnimationActive={false}` (line-geometry.test.tsx).
+      //
+      // Pinned exactly so a recharts bump that fixes it goes red HERE too,
+      // pointing at TBD-528 rather than passing silently.
       mockMatchMedia(true);
-      expect(lineStrokeHidden()).toBe(false);
+      expect(lineDash()).toBe("0px 0px");
     });
 
     it("F14 fence + positive control: <Line isAnimationActive={true}> animates even under reduce", () => {
       mockMatchMedia(true);
-      expect(lineStrokeHidden(true)).toBe(true);
+      expect(lineDash(true)).toBe(ANIMATING);
     });
 
     it("F15 guard: <Line> still animates for users who did not opt out", () => {
       mockMatchMedia(false);
-      expect(lineStrokeHidden()).toBe(true);
+      expect(lineDash()).toBe(ANIMATING);
     });
   });
 });

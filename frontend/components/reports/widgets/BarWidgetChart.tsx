@@ -64,6 +64,12 @@ export interface BarWidgetChartProps {
   currency?: string;
 }
 
+/**
+ * Neither Bar below sets `isAnimationActive`, so recharts' 'auto' default
+ * plays the 220ms entrance only when prefers-reduced-motion is not set
+ * (TBD-437). Bars have no dash geometry, so the TBD-528 Line defect does not
+ * apply here.
+ */
 export default function BarWidgetChart({
   rows,
   sliced,
@@ -147,7 +153,6 @@ export default function BarWidgetChart({
               radius={
                 stackId && i !== secondaryValues.length - 1 ? 0 : [4, 4, 0, 0]
               }
-              // Animation uses recharts' 'auto' default so reduced motion is honoured (TBD-437).
               animationDuration={220}
             />
           ))

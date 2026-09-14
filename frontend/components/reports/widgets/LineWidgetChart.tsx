@@ -79,7 +79,8 @@ export default function LineWidgetChart({
             stroke={seriesColors[i]}
             strokeWidth={2}
             dot={false}
-            animationDuration={220}
+            // recharts 3.8.1 bug: Line gates its dash on the raw prop, so 'auto' draws a stale, partial stroke under reduced motion. Off until TBD-528.
+            isAnimationActive={false}
           />
         ))}
       </LineChart>

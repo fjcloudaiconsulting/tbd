@@ -177,7 +177,7 @@ export default function SankeyWidgetChart({ links, currency, title }: SankeyWidg
           {formatMeasureValue(link.value, "currency", currency)}
         </div>
       )}
-      // Off, and NOT for consistency: the recharts widgets animate (TBD-437).
+      // Off, and NOT for consistency: the recharts Bar/Area/Pie widgets animate (TBD-437).
       // @nivo/core@0.99 passes `immediate: !animate` to react-spring and never
       // reads prefers-reduced-motion, and nothing here calls react-spring's
       // useReducedMotion, so enabling this would ship motion to users who
