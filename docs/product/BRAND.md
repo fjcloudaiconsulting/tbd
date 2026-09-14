@@ -105,8 +105,10 @@ surface free of hex literals while brand surfaces stay locked.
 **The One Brass Rule.** Brass is reserved for emphasis: primary CTA,
 focus ring, the lead chevron in the mark, and the second line of the
 locked tagline ("Only better ones."). It must never appear in chart
-series or product-data colors. Charts use the info/success/neutral
-tokens (see `--color-chart-{1..5}` in globals.css).
+series or product-data colors. Charts use the categorical
+`--color-chart-{1..8}` tokens in globals.css, which contain no brass
+and are kept apart from the status tokens (see DESIGN.md, Data
+Visualization).
 
 ## Logo
 

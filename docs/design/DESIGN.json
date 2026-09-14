@@ -24,14 +24,14 @@
       "scrim":           { "role": "neutral", "displayName": "Tour Scrim",      "canonical": "oklch(11% 0.02 257 / 0.55)" },
       "sidebar-bg":      { "role": "neutral", "displayName": "Sidebar Navy",    "canonical": "oklch(8% 0.02 257)" },
       "sidebar-muted":   { "role": "neutral", "displayName": "Sidebar Muted",   "canonical": "oklch(40% 0.03 252)" },
-      "chart-1":         { "role": "chart",   "displayName": "Gold",            "canonical": "oklch(74% 0.13 80)",  "note": "Brass-Harmony exception: one gold among eight data-series hues does not violate The One Brass Rule." },
-      "chart-2":         { "role": "chart",   "displayName": "Reference Blue",  "canonical": "oklch(70% 0.10 230)" },
-      "chart-3":         { "role": "chart",   "displayName": "Settled Green",   "canonical": "oklch(78% 0.20 145)" },
-      "chart-4":         { "role": "chart",   "displayName": "Violet",          "canonical": "oklch(70% 0.15 290)" },
-      "chart-5":         { "role": "chart",   "displayName": "Teal",            "canonical": "oklch(78% 0.14 188)" },
-      "chart-6":         { "role": "chart",   "displayName": "Pink",            "canonical": "oklch(72% 0.18 345)" },
-      "chart-7":         { "role": "chart",   "displayName": "Amber",           "canonical": "oklch(76% 0.16 70)",  "note": "Light-mode value coincides with Warning Amber (#f59e0b); the warning semantic token remains the authoritative caution signal. Chart-7 is a data-series hue — they diverge in dark theme." },
-      "chart-8":         { "role": "chart",   "displayName": "Coral",           "canonical": "oklch(70% 0.18 22)",  "note": "Available as a series color; the over-budget state uses chartColor.over (= danger token), not this index." }
+      "chart-1":         { "role": "chart",   "displayName": "Raspberry",       "canonical": "oklch(71% 0.18 1)", "note": "Categorical palette (TBD-429): evenly spaced hues, disjoint from the status and accent tokens. Invariant (>= 3:1 vs surface, CVD dE2000 >= 5 incl. Other under Vienot and Brettel, >= 12 from success/danger/warning/accent, light/dark hue within 20 deg) is enforced by frontend/tests/lib/chart-palette-invariant.test.ts." },
+      "chart-2":         { "role": "chart",   "displayName": "Leaf",            "canonical": "oklch(74% 0.21 135)" },
+      "chart-3":         { "role": "chart",   "displayName": "Orchid",          "canonical": "oklch(76% 0.17 314)" },
+      "chart-4":         { "role": "chart",   "displayName": "Teal",            "canonical": "oklch(76% 0.14 175)" },
+      "chart-5":         { "role": "chart",   "displayName": "Mustard",         "canonical": "oklch(86% 0.17 91)" },
+      "chart-6":         { "role": "chart",   "displayName": "Cerulean",        "canonical": "oklch(70% 0.13 225)" },
+      "chart-7":         { "role": "chart",   "displayName": "Terracotta",      "canonical": "oklch(76% 0.14 44)" },
+      "chart-8":         { "role": "chart",   "displayName": "Indigo",          "canonical": "oklch(66% 0.17 271)" }
     },
     "typographyMeta": {
       "display": { "displayName": "Editorial Display", "purpose": "Page titles and one or two emphasis moments per route. Fraunces, an opsz-aware editorial serif. Reserved by The Display-Is-A-Deposit Rule." },

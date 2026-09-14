@@ -25,9 +25,9 @@ export const chartColor = {
 // Categorical multi-series palette for report widgets (W3 visual refresh).
 // Single source of truth — every widget imports CHART_SERIES rather than
 // maintaining its own local array. Palette expanded to 8 tokens as part of
-// W3; the docs/design/DESIGN.md chart-palette exception documents why these colors are
-// exempt from The One Brass Rule (they are data-series hues, not brand
-// surfaces). Tokens defined in `app/globals.css` so theme-switches cascade
+// W3; since TBD-429 the hues contain no brass and are disjoint from the
+// status tokens (docs/design/DESIGN.md, Data Visualization), enforced by
+// tests/lib/chart-palette-invariant.test.ts. Tokens defined in `app/globals.css` so theme-switches cascade
 // automatically; never embed raw hex here.
 export const CHART_SERIES = [
   "var(--color-chart-1)",
