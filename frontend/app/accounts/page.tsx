@@ -12,6 +12,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage, ApiResponseError } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
+import { scrollBehavior } from "@/lib/reduced-motion";
 import { formatMoney } from "@/lib/format";
 import {
   useTableState,
@@ -783,17 +784,20 @@ export default function AccountsPage() {
   useEffect(() => {
     const id = pendingScrollId.current;
     if (id == null) return;
-    // Editor closed or switched before we scrolled: stop tracking so this
-    // effect self-terminates instead of polling getElementById every render.
+    // Editor not open for this card. A null editAcctId is NOT a close: the
+    // deep-link effect above arms the marker in the same commit it calls
+    // startEditAcct, so this effect first runs before that state lands and
+    // used to disarm itself every time (the scroll never fired, TBD-436).
+    // Only a switch to another card's editor stops tracking.
     if (editAcctId !== id) {
-      pendingScrollId.current = null;
+      if (editAcctId != null) pendingScrollId.current = null;
       return;
     }
     const el = document.getElementById(`edit-acct-upcoming-payments-${id}`);
     if (el) {
       // Optional-chain: scrollIntoView is absent in jsdom (tests) and can be
       // missing in older engines; the deep-link open still succeeds without it.
-      el.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      el.scrollIntoView?.({ behavior: scrollBehavior(), block: "center" });
       pendingScrollId.current = null;
     }
   });
