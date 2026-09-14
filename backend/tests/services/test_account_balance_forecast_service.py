@@ -709,8 +709,8 @@ async def test_cc_synth_excludes_reconcile_matched_reverted_duplicate_ledger(
     """Money-moving regression: a reconcile-MATCHED imported duplicate of a
     settled CC charge has its balance contribution REVERTED at match time
     (``reconciliation_service._apply_balance_for_transition``), but
-    ``non_reverted_transaction_filter()`` only excludes skipped/rejected
-    rows -- so a naive ledger query double-counts the canonical charge via
+    a state-only clause over skipped/rejected (``non_reverted_transaction_filter()``
+    before TBD-470) keeps it -- so a naive ledger query double-counts the canonical charge via
     the duplicate, doubling B_k's owed amount and the projected CC payment.
 
     The duplicate here: status=settled, reconciliation_state=matched,
