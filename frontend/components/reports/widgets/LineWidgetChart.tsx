@@ -79,7 +79,7 @@ export default function LineWidgetChart({
             stroke={seriesColors[i]}
             strokeWidth={2}
             dot={false}
-            isAnimationActive={false}
+            animationDuration={220}
           />
         ))}
       </LineChart>

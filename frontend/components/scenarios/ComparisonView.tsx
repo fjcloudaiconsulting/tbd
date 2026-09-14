@@ -274,7 +274,7 @@ export function ComparisonView({
                 stroke={pickColor(idx)}
                 strokeWidth={2}
                 dot={false}
-                isAnimationActive={false}
+                animationDuration={220}
               />
             ))}
           </LineChart>

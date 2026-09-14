@@ -177,7 +177,11 @@ export default function SankeyWidgetChart({ links, currency, title }: SankeyWidg
           {formatMeasureValue(link.value, "currency", currency)}
         </div>
       )}
-      // Disable animation for consistency with every other widget.
+      // Off, and NOT for consistency: the recharts widgets animate (TBD-437).
+      // @nivo/core@0.99 passes `immediate: !animate` to react-spring and never
+      // reads prefers-reduced-motion, and nothing here calls react-spring's
+      // useReducedMotion, so enabling this would ship motion to users who
+      // opted out. Fenced by tests/convention/chart-animation-gate.test.ts.
       animate={false}
       ariaLabel={title ?? "Cash flow Sankey chart"}
     />

@@ -232,7 +232,7 @@ export function ProjectionChart({
               stroke={pickColor(idx)}
               fill={pickColor(idx)}
               fillOpacity={0.3}
-              isAnimationActive={false}
+              animationDuration={220}
             />
           ))}
           {projection.real_terms_series && (
@@ -243,7 +243,7 @@ export function ProjectionChart({
               stroke="var(--color-danger)"
               strokeDasharray="4 2"
               dot={false}
-              isAnimationActive={false}
+              animationDuration={220}
             />
           )}
           {alertDots.map((d, i) => (

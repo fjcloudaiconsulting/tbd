@@ -36,7 +36,7 @@ export default function SparklineWidgetChart({
           stroke="var(--color-accent)"
           strokeWidth={2}
           dot={false}
-          isAnimationActive={false}
+          animationDuration={220}
         />
       </LineChart>
     </ResponsiveContainer>
