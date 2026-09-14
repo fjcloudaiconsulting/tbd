@@ -210,10 +210,7 @@ export default function TableWidget({
         }`}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1">
-          <span
-            className="min-w-0 truncate text-sm font-semibold text-text-primary"
-            aria-label={widget.title || "Table"}
-          >
+          <span className="min-w-0 truncate text-sm font-semibold text-text-primary">
             {widget.title || "Table"}
           </span>
           {/* LOUD on truncation: the totals row sums ACROSS the returned

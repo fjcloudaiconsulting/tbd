@@ -11,7 +11,9 @@ vi.mock("@/lib/reports/csv", async (importOriginal) => {
 describe("WidgetCsvButton", () => {
   const downloadMock = vi.mocked(downloadCsv);
 
-  beforeEach(() => downloadMock.mockReset());
+  beforeEach(() => {
+    downloadMock.mockReset();
+  });
 
   it("renders in view mode", () => {
     render(
