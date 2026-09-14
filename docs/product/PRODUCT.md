@@ -41,7 +41,7 @@ Clear, household-friendly, planful. Three notes:
 
 WCAG 2.2 AA across the app. Specifically:
 
-- Color contrast meets AA against both the dark default theme and the light theme.
+- Color contrast meets AA against both the light default theme and the dark theme.
 - Focus states are visible on every interactive element (the gold accent doubles as the focus ring color).
 - `prefers-reduced-motion` is respected for any non-essential motion (page transitions, chart animations).
 - Data visualizations never rely on color alone to convey state; budget bars, forecast tiles, and status badges always pair color with a label, icon, or shape.

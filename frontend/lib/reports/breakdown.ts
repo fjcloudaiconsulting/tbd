@@ -59,8 +59,8 @@ export const OTHER_KEY = "sOther";
 /**
  * "Other" renders in a NEUTRAL, never a categorical hue, and is pinned last
  * in both stack order and legend order so position is a second channel.
- * Falling through to `CHART_SERIES[7]` would paint "not a category" in
- * Overdue Coral, the danger hue — asserting a status that is not there.
+ * Falling through to `CHART_SERIES[7]` would paint "not a category" in a
+ * category's hue, asserting an identity that is not there.
  *
  * Measured 3.31:1 dark / 3.32:1 light against `bg-surface`. Pie uses this
  * same constant for its folded "Other" since TBD-427; its former
@@ -213,7 +213,7 @@ export function buildBreakdown(
   // ── 5. colour from a STABLE ordering of the label, not arrival order ─
   // `pivotBySecondaryDimension` mints s0..sN in FIRST-SEEN order and the
   // compiler defaults to ORDER BY value DESC, so arrival order is a function
-  // of the values: Groceries would be gold this month and violet next. A
+  // of the values: Groceries would be one colour this month and another next. A
   // category changing its own colour between two loads is the same false
   // assertion of identity the fold exists to remove, on the time axis.
   const rendered = [...head].sort((a, b) => a.label.localeCompare(b.label));

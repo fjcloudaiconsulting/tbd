@@ -91,7 +91,7 @@ export default function GoogleSSOButton({
   const disabled = loading || !enabled;
 
   // Surface colors are locked by Google's branding guide and live in
-  // globals.css under `.gsi-button` (dark default) +
+  // globals.css under `.gsi-button` (dark theme) +
   // `[data-theme="light"] .gsi-button` (light flip). They do NOT consume
   // product theme tokens because Google's spec does not allow recolor.
   const surface = "gsi-button";

@@ -29,14 +29,14 @@ colors:
   warning-dim: "#F59E0B29"
   warning-text: "#0B1F3A"
   scrim: "#070D188C"
-  chart-1: "#D4A64A"
-  chart-2: "#5FA8D3"
-  chart-3: "#4ade80"
-  chart-4: "#a78bfa"
-  chart-5: "#2dd4bf"
-  chart-6: "#f472b6"
-  chart-7: "#f59e0b"
-  chart-8: "#f87171"
+  chart-1: "#f9699b"
+  chart-2: "#6bc41d"
+  chart-3: "#d78dfb"
+  chart-4: "#14cfad"
+  chart-5: "#fccb08"
+  chart-6: "#02afdc"
+  chart-7: "#fb9060"
+  chart-8: "#6b87f7"
   sidebar-bg: "#06101e"
   sidebar-text: "#7a8da6"
   sidebar-text-bright: "#E6EAF0"
@@ -160,7 +160,7 @@ What this system explicitly rejects: the bank-app idiom (heavy navy-and-white co
 - Single accent, used rarely
 - Numbers-first typography
 - Calm at rest, expressive on state
-- Dark default, light theme available and equally considered
+- Light default, dark theme available and equally considered
 
 ## 2. Colors
 
@@ -170,7 +170,7 @@ A muted financial palette with one warm accent. Deep navies do the work of conta
 
 - **Brass Tally** (`#D4A64A` dark / `#B88A2E` light): The single warm accent. Reserved for primary CTAs, the active item in a list or sidebar, and the focus ring. In a typical screen it should appear in *one* place, two at most. The hover state shifts to **Aged Brass** (`#B88A2E` dark / `#9a7425` light) and the dim state to its 12%-alpha tint (`accent-dim`) for subtle emphasis like selection backgrounds. On dark, brass ink (`accent-text`) is Ledger Navy; on light it flips to white for AA contrast on the brass fill.
 
-### Neutral (Dark Theme — Default)
+### Neutral (Dark Theme)
 
 - **Night Navy** (`#070d18`): The deepest layer; the page background and the sidebar context.
 - **Ledger Navy** (`#0B1F3A`): Surface color for cards, panels, and modals. The brand's anchor color.
@@ -182,7 +182,7 @@ A muted financial palette with one warm accent. Deep navies do the work of conta
 - **Mist** (`#9ba8bd`): Secondary text — captions, helper copy, table headers.
 - **Fog** (`#5a6a82`): Muted text — placeholders, disabled labels, decorative metadata.
 
-### Neutral (Light Theme)
+### Neutral (Light Theme, Default)
 
 The light theme inverts the surface roles but keeps the *sidebar always navy* — a deliberate choice. The product chrome stays calm regardless of theme, while the data canvas adapts.
 
@@ -205,9 +205,10 @@ Every status color carries a `-dim` low-alpha sibling for backgrounds (banners, 
 
 ### Data Visualization
 
-The categorical chart palette is an 8-hue scale (`chart-1..8`) with light and dark variants defined in `globals.css`, so a theme switch cascades through every chart automatically. *The One Brass Rule* continues to govern chrome (primary CTAs, the active sidebar/list item, the focus ring). The chart palette carries a narrow carve-out: one of the eight series slots is gold/brass because charts are **data**, not CTAs — they legitimately need many distinct hues, and one gold slice among eight does not dilute the "where do I click" signal. The over-budget state uses the `chartColor.over` semantic token (= `danger`/coral), not a positional chart-N index.
+The categorical chart palette is an 8-hue scale (`chart-1..8`) with light and dark variants defined in `globals.css`, so a theme switch cascades through every chart automatically. Its hues are evenly spaced around the wheel and **deliberately disjoint from the status and accent tokens** (TBD-429): a spending category painted in the over-budget red, the settled green, the warning amber or the brass accent would read as a status it does not have (*status-is-data*). Green and red keep their meaning for money direction and state; categories get their own set. *The One Brass Rule* governs chrome (primary CTAs, the active sidebar/list item, the focus ring) and the palette has no brass slot, so it needs no carve-out. Status states in charts use the `chartColor.*` semantic tokens (`chartColor.over` = `danger`), never a positional chart-N index.
 
-- **chart-1** = Gold, **chart-2** = Reference Blue, **chart-3** = Settled Green, **chart-4** = Violet, **chart-5** = Teal, **chart-6** = Pink, **chart-7** = Amber, **chart-8** = Coral.
+- **chart-1** = Raspberry, **chart-2** = Leaf, **chart-3** = Orchid, **chart-4** = Teal, **chart-5** = Mustard, **chart-6** = Cerulean, **chart-7** = Terracotta, **chart-8** = Indigo. The slot order maximises the separation of adjacent slots: charts with few series use slots 1..N, and the stacked-bar fold uses 1..7 plus "Other".
+- **The palette invariant**, in both themes: every slot is >= 3:1 against `surface`; every pair, including "Other" (`border-strong`), is >= 5 CIEDE2000 apart under normal vision and simulated protan, deutan and tritan dichromacy under both the Viénot 1999 and Brettel 1997 models; every slot is >= 12 CIEDE2000 from `success`, `danger`, `warning` and `accent`; a slot's light and dark variants stay within 20° of OKLCH hue. `frontend/tests/lib/chart-palette-invariant.test.ts` measures the tokens in `globals.css` and enforces it, so a palette edit that breaks any of these fails the suite.
 
 ### Overlay Chrome
 
@@ -371,6 +372,6 @@ Removing that indicator (`outline-none`, `outline-hidden`) is allowed only where
 - **Don't** use Fraunces for numbers, currency, or status text. Fraunces is for titles and selective emphasis only.
 - **Don't** introduce a new accent. The system has one. If a screen seems to call for a second, the answer is contrast through neutrals, not a second hue. (Warning Amber, coral, green, and blue are *status* tokens, not decorative accents.)
 - **Don't** use raw Tailwind palette colors (`amber-500`, `slate-700`, `gray-200`). There are no surviving exceptions; the old `btnWarning` carve-out is closed.
-- **Don't** theme-switch a brand surface. Brand surfaces stay locked navy/brass; chart series are data — the chart-palette exception (one gold among eight) is documented in the Data Visualization section.
+- **Don't** theme-switch a brand surface. Brand surfaces stay locked navy/brass; chart series are data, and their palette (disjoint from status and accent) is documented in the Data Visualization section.
 - **Don't** rely on color alone to convey state. Pair every color with text, icon, or shape — required for AA compliance.
 - **Don't** put a shadow on the sidebar to "separate" it from the content. The dark navy already does that work.

@@ -6,10 +6,12 @@
    Text:    Off-White #E6EAF0
    Info:    Secondary Blue #5FA8D3
    Hover:   Dark Gold #B88A2E
-   Default: premium dark theme
+   Default: light theme (TBD-429). The dark tokens stay on :root and the
+   light tokens on [data-theme="light"]; the pre-paint script in
+   app/layout.tsx sets that attribute unless 'dark' is stored.
 ─── */
 
-/* ─── Dark theme (default — premium dark) ─── */
+/* ─── Dark theme (tokens on :root; selected when data-theme is absent) ─── */
 :root {
   --theme-bg: #070d18;
   --theme-surface: #0B1F3A;
@@ -72,18 +74,20 @@
   --theme-scrim: rgba(7, 13, 24, 0.55);
   --theme-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
 
-  /* Categorical chart scale — Brass Harmony (W3). Chart-only; see docs/design/DESIGN.md amendment. */
-  --theme-cat-1: #D4A64A;
-  --theme-cat-2: #5FA8D3;
-  --theme-cat-3: #4ade80;
-  --theme-cat-4: #a78bfa;
-  --theme-cat-5: #2dd4bf;
-  --theme-cat-6: #f472b6;
-  --theme-cat-7: #f59e0b;
-  --theme-cat-8: #f87171;
+  /* Categorical chart scale (TBD-429): evenly spaced hues, disjoint from the
+     status and accent tokens. Chart-only; see docs/design/DESIGN.md, Data
+     Visualization. Invariant enforced by tests/lib/chart-palette-invariant.test.ts. */
+  --theme-cat-1: #f9699b;
+  --theme-cat-2: #6bc41d;
+  --theme-cat-3: #d78dfb;
+  --theme-cat-4: #14cfad;
+  --theme-cat-5: #fccb08;
+  --theme-cat-6: #02afdc;
+  --theme-cat-7: #fb9060;
+  --theme-cat-8: #6b87f7;
 }
 
-/* ─── Light theme ─── */
+/* ─── Light theme (default) ─── */
 [data-theme="light"] {
   --theme-bg: #f0f2f5;
   --theme-surface: #ffffff;
@@ -138,14 +142,14 @@
   --theme-scrim: rgba(11, 31, 58, 0.20);
   --theme-card-shadow: 0 18px 48px rgba(11, 31, 58, 0.18);
 
-  --theme-cat-1: #B88A2E;
-  --theme-cat-2: #2f7fb0;
-  --theme-cat-3: #16a34a;
-  --theme-cat-4: #7c3aed;
-  --theme-cat-5: #0d9488;
-  --theme-cat-6: #db2777;
-  --theme-cat-7: #d97706;
-  --theme-cat-8: #dc2626;
+  --theme-cat-1: #cf126d;
+  --theme-cat-2: #488605;
+  --theme-cat-3: #9b41c1;
+  --theme-cat-4: #079b89;
+  --theme-cat-5: #b48c0a;
+  --theme-cat-6: #0f83a5;
+  --theme-cat-7: #d56b46;
+  --theme-cat-8: #424ff5;
 }
 
 @theme {
@@ -197,8 +201,9 @@
   --color-scrim: var(--theme-scrim);
   --shadow-card: var(--theme-card-shadow);
 
-  /* Chart palette. Aliases of the Brass Harmony categorical scale.
-     Theme switches cascade automatically. See docs/design/DESIGN.md amendment. */
+  /* Chart palette. Aliases of the TBD-429 categorical scale (--theme-cat-*).
+     Theme switches cascade automatically. See docs/design/DESIGN.md, Data
+     Visualization, and tests/lib/chart-palette-invariant.test.ts. */
   --color-chart-1: var(--theme-cat-1);
   --color-chart-2: var(--theme-cat-2);
   --color-chart-3: var(--theme-cat-3);
@@ -319,8 +324,8 @@ a, button { transition: all 0.15s ease; }
 
 /* Google "Sign in with Google" button (L5.9). Surface colors are locked
    by Google's branding guide and do NOT consume product theme tokens.
-   The button is dark-by-default (the app's default theme) and lightens
-   when the html root carries data-theme="light". Sizing, focus, and
+   The button is dark on :root (the dark theme) and lightens when the
+   html root carries data-theme="light" (the default theme). Sizing, focus, and
    typography are owned by the component className; only the brand
    surface lives here so the values are reviewable in one place. */
 .gsi-button {

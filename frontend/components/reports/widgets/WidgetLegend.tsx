@@ -61,7 +61,7 @@ export default function WidgetLegend({ testidPrefix, label, items }: Props) {
             data-color={item.color}
             aria-hidden="true"
             // The FILL carries the 1.4.11 contrast: swatch vs surface is
-            // >= 3.13:1 on every palette hue in both themes, and
+            // >= 3:1 on every palette hue in both themes (TBD-429 invariant), and
             // `border-strong` ("Other") is 3.31 / 3.32. The `ring-border`
             // hairline is 1.35 / 1.31 against the surface, so it bounds
             // nothing on its own; it only softens the edge.
