@@ -83,7 +83,7 @@ export default function PieWidgetChart({
             innerRadius="58%"
             outerRadius="80%"
             stroke="var(--color-surface)"
-            isAnimationActive={false}
+            animationDuration={220}
           >
             {/* Index keys: labels are not unique (a real "Other" category
                 beside the folded one). */}

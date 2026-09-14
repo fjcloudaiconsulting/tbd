@@ -111,7 +111,7 @@ export default function AreaWidgetChart({
             stroke={seriesColors[i]}
             fill={`url(#grad-${widgetId}-${i})`}
             strokeWidth={2}
-            isAnimationActive={false}
+            animationDuration={220}
           />
         ))}
       </AreaChart>
