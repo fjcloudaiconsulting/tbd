@@ -25,13 +25,15 @@ import { ProjectionChart, type ProjectionInput } from "@/components/scenarios/Pr
  * recharts bump (TBD-528), and this fence renders the real components to prove
  * the strokes are whole.
  *
- * ## Why `getTotalLength` is computed from `d`, not a constant
+ * ## Why `getTotalLength` is stubbed at all
  *
- * jsdom does not implement it. A CONSTANT stub makes every path the same
- * length, so a dash built from a stale path still "covers" the new one and a
- * resize or data change cannot expose the partial stroke. Measuring the
- * polyline through the numbers in `d` makes the length change whenever the
- * geometry does, which is the property the defect breaks.
+ * jsdom does not implement it. The reduced-motion assertions do not depend on
+ * the stub: they reject ANY dash containing `px`, whatever length produced it
+ * (a constant stub with a Line on 'auto' still goes red). The stub exists for
+ * the positive control, which needs a non-zero length to show the animated
+ * `0px <n>px` first frame. It measures the polyline from `d` so that length
+ * follows the geometry, which keeps a future "dash covers the path" assertion
+ * honest.
  *
  * ⚠⚠ THIS FILE MUST NOT replace recharts' marks with stubs. Only
  * `ResponsiveContainer` is swapped, for a fixed size that the test can change.

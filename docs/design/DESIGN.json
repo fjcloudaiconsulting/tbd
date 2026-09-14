@@ -47,7 +47,7 @@
     "motion": [
       { "name": "color-fade",   "value": "background-color 0.2s ease, color 0.2s ease",     "purpose": "Body theme transition; minimal and unobtrusive." },
       { "name": "interactive",  "value": "all 0.15s ease",                                   "purpose": "Default for links and buttons. Quiet feedback, not choreographed." },
-      { "name": "chart-entrance", "value": "220ms",                                          "purpose": "recharts Bar, Area and Pie entrance (animationDuration={220}). Plays only when prefers-reduced-motion is not set, through recharts' 'auto' default. Line marks stay static until TBD-528. Enforced by frontend/tests/convention/chart-animation-gate.test.ts." }
+      { "name": "chart-entrance", "value": "220ms",                                          "purpose": "recharts Bar, Area and Pie entrance (animationDuration={220}). Plays only when prefers-reduced-motion is not set, through recharts' 'auto' default. Line marks stay static until TBD-528. Mirrored (not read) by frontend/tests/convention/chart-animation-gate.test.ts: change both together." }
     ],
     "breakpoints": [
       { "name": "sm", "value": "640px",  "purpose": "Phone landscape and up; switches form buttons from full-width to content-width." },
