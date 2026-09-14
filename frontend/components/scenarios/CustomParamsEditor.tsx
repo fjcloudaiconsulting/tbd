@@ -30,6 +30,7 @@ import {
 } from "react";
 
 import { input, label as labelCls, btnSecondary } from "@/lib/styles";
+import { scrollBehavior } from "@/lib/reduced-motion";
 
 export type EventType =
   | "income_off"
@@ -156,7 +157,7 @@ export function CustomParamsEditor({
       newestRef.current
       && typeof newestRef.current.scrollIntoView === "function"
     ) {
-      newestRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      newestRef.current.scrollIntoView({ block: "nearest", behavior: scrollBehavior() });
     }
   }, [events.length]);
 
