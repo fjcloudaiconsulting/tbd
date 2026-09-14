@@ -48,7 +48,7 @@ describe("SchedulerSettingsCard", () => {
     // The "Automatic tasks" heading renders during "Loading..." too, so
     // waiting on it let the next synchronous query race the fetch.
     expect(
-      await screen.findByLabelText(/Automatically close billing period/i),
+      await screen.findByRole("switch", { name: "Automatically close billing period" }),
     ).toBeChecked();
     expect(screen.getByText(/Automatic tasks/i)).toBeInTheDocument();
     expect(

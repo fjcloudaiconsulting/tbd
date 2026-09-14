@@ -273,7 +273,10 @@ function affordanceCount(action: string, tx: Transaction): number {
   }).length;
 }
 
-describe("TBD-387 — manual balance adjustment affordances", () => {
+// TBD-288: legitimate headroom. Each test mounts the full transactions page
+// (both render trees), which hit the default 5000ms test timeout on a loaded
+// worker (measured max 6.3s).
+describe("TBD-387 — manual balance adjustment affordances", { timeout: 15_000 }, () => {
   it("F1: offers no Edit on an adjustment row, while an ordinary row keeps both", async () => {
     await renderRows([ADJUSTMENT, ORDINARY]);
 
