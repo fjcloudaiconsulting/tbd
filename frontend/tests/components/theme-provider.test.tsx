@@ -82,6 +82,39 @@ describe("ThemeProvider (light is the default, TBD-429)", () => {
     expect(attr()).toBe("light");
   });
 
+  it("survives storage that throws (Safari SecurityError): light, and the toggle still works", () => {
+    const blocked = () => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    };
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(blocked);
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(blocked);
+    const errors: unknown[] = [];
+    const onError = (e: ErrorEvent) => {
+      errors.push(e.error);
+      e.preventDefault();
+    };
+    window.addEventListener("error", onError);
+    try {
+      renderProvider();
+      expect(getItem).toHaveBeenCalled();
+      expect(screen.getByTestId("theme").textContent).toBe("light");
+      expect(attr()).toBe("light");
+
+      fireEvent.click(screen.getByRole("button", { name: "toggle" }));
+      expect(setItem).toHaveBeenCalled();
+      expect(screen.getByTestId("theme").textContent).toBe("dark");
+      expect(attr()).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "toggle" }));
+      expect(attr()).toBe("light");
+      expect(errors).toEqual([]);
+    } finally {
+      window.removeEventListener("error", onError);
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
+  });
+
   it("does not read the legacy pfv2-theme key", () => {
     // A leftover legacy entry must be ignored; visitor falls back to default.
     window.localStorage.setItem("pfv2-theme", "dark");

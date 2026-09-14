@@ -12,30 +12,42 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 
 import RootLayout from "@/app/layout";
 
-vi.mock("@/lib/nonce", () => ({ readNonce: async () => "" }));
+const nonceState = vi.hoisted(() => ({ value: "" }));
+vi.mock("@/lib/nonce", () => ({ readNonce: async () => nonceState.value }));
 
-function findScripts(node: ReactNode, out: string[] = []): string[] {
+type ScriptProps = {
+  children?: ReactNode;
+  nonce?: string;
+  dangerouslySetInnerHTML?: { __html: string };
+};
+type Found = { el: ReactElement<ScriptProps>; ancestors: unknown[] };
+
+/** Every inline <script>, with the element types of its ancestors. */
+function findScripts(node: ReactNode, ancestors: unknown[] = [], out: Found[] = []): Found[] {
   if (Array.isArray(node)) {
-    node.forEach((child) => findScripts(child, out));
+    node.forEach((child) => findScripts(child, ancestors, out));
     return out;
   }
   if (!isValidElement(node)) return out;
-  const el = node as ReactElement<{
-    children?: ReactNode;
-    dangerouslySetInnerHTML?: { __html: string };
-  }>;
+  const el = node as ReactElement<ScriptProps>;
   if (el.type === "script" && el.props.dangerouslySetInnerHTML) {
-    out.push(el.props.dangerouslySetInnerHTML.__html);
+    out.push({ el, ancestors });
   }
-  findScripts(el.props?.children, out);
+  findScripts(el.props?.children, [...ancestors, el.type], out);
   return out;
 }
 
-async function bootstrapScript(): Promise<string> {
+async function bootstrapElement(): Promise<Found> {
   const tree = await RootLayout({ children: <div /> });
-  const scripts = findScripts(tree).filter((s) => s.includes("tbd-theme"));
+  const scripts = findScripts(tree).filter((s) =>
+    s.el.props.dangerouslySetInnerHTML!.__html.includes("tbd-theme"),
+  );
   expect(scripts, "exactly one inline theme bootstrap script").toHaveLength(1);
   return scripts[0];
+}
+
+async function bootstrapScript(): Promise<string> {
+  return (await bootstrapElement()).el.props.dangerouslySetInnerHTML!.__html;
 }
 
 /** Run the script; return the data-theme it leaves on the root, or null. */
@@ -57,6 +69,23 @@ function runWith(script: string, getItem: () => string | null): string | null {
 }
 
 describe("root layout theme bootstrap script", () => {
+  afterEach(() => {
+    nonceState.value = "";
+  });
+
+  it("carries the per-request CSP nonce, and sits in <head> before paint", async () => {
+    nonceState.value = "n0nce";
+    const { el, ancestors } = await bootstrapElement();
+    expect(el.props.nonce).toBe("n0nce");
+    expect(ancestors).toContain("head");
+    expect(ancestors).not.toContain("body");
+  });
+
+  it("ships without a nonce attribute when there is none (apex static export)", async () => {
+    const { el } = await bootstrapElement();
+    expect(el.props).not.toHaveProperty("nonce");
+  });
+
   it("paints light when nothing is stored", async () => {
     expect(runWith(await bootstrapScript(), () => null)).toBe("light");
   });

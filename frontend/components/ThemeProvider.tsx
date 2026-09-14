@@ -21,7 +21,13 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<Theme>("light");
 
   useEffect(() => {
-    if (localStorage.getItem("tbd-theme") === "dark") {
+    // Storage can throw (Safari with site data blocked: SecurityError). An
+    // unguarded throw here unmounts the root layout; fall back to light.
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem("tbd-theme");
+    } catch {}
+    if (stored === "dark") {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- restore persisted theme from localStorage after mount (client-only, avoids SSR hydration mismatch)
       setTheme("dark");
       document.documentElement.removeAttribute("data-theme");
@@ -38,7 +44,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     } else {
       document.documentElement.removeAttribute("data-theme");
     }
-    localStorage.setItem("tbd-theme", next);
+    try {
+      localStorage.setItem("tbd-theme", next);
+    } catch {
+      // Not persisted; the theme still switches for this session.
+    }
   }, [theme]);
 
   return (
