@@ -537,7 +537,7 @@ describe("TBD-428: no chart forces animation on past prefers-reduced-motion", ()
     // frontend root and EXCLUDES: the chart files are found by content across
     // the whole tree rather than inside a hand-listed subset of it.
     const chartRel = scanned
-      .filter((f) => /from\s+["']recharts["']/.test(sources.get(f)!))
+      .filter((f) => /from\s+["']recharts(?:\/[^"']*)?["']/.test(sources.get(f)!))
       .map(rel);
 
     for (const required of [
