@@ -122,6 +122,15 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
     render(<AdminOrgDetailPage />);
 
     const deleteBtn = await screen.findByRole("button", { name: /Delete organization/i });
+    // TBD-459: the button is not the settle point. It commits together with
+    // FeatureOverridesCard and OrgFeatureGateCard, whose fetches start in their
+    // mount effects; on a loaded runner those effects are still pending here.
+    // The un-awaited fireEvent below would then flush them inside act() and
+    // their resolves would land after it, unwrapped. Wait for both cards.
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Feature overrides" })).toBeInTheDocument();
+      expect(screen.queryByText(/Loading feature gates/i)).not.toBeInTheDocument();
+    });
     expect(deleteBtn).toBeDisabled();
 
     const confirmInput = screen.getByLabelText(/Confirm organization name/i);
