@@ -62,9 +62,12 @@ function collectAutoContext(): AutoContext {
     }
   }
 
+  // Light is the default theme (TBD-429); no data-theme attribute is dark.
   const theme =
     typeof document !== "undefined"
-      ? document.documentElement.getAttribute("data-theme") ?? "default"
+      ? document.documentElement.getAttribute("data-theme") === "light"
+        ? "light"
+        : "dark"
       : "default";
 
   return {

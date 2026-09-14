@@ -199,4 +199,28 @@ describe("FeedbackWidget", () => {
       ) as HTMLInputElement).checked,
     ).toBe(false);
   });
+
+  // TBD-429: light is the default theme, so "no data-theme attribute" is the
+  // DARK theme. The payload must name the theme, not "default".
+  it.each([
+    ["light", "light"],
+    [null, "dark"],
+  ])("records data-theme=%s as theme %s in the payload", async (attr, want) => {
+    if (attr) document.documentElement.setAttribute("data-theme", attr);
+    else document.documentElement.removeAttribute("data-theme");
+    try {
+      mockedApiFetch.mockResolvedValue({ id: 1 });
+      render(<FeedbackWidget open onClose={() => {}} />);
+      fireEvent.change(screen.getByTestId("feedback-message"), {
+        target: { value: "theme check" },
+      });
+      fireEvent.click(screen.getByTestId("feedback-submit"));
+
+      await waitFor(() => expect(mockedApiFetch).toHaveBeenCalledTimes(1));
+      const body = JSON.parse(mockedApiFetch.mock.calls[0][1]?.body as string);
+      expect(body.context.theme).toBe(want);
+    } finally {
+      document.documentElement.removeAttribute("data-theme");
+    }
+  });
 });
