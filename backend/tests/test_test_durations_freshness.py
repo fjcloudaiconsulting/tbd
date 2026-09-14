@@ -43,9 +43,11 @@ runtime, so it would go red within a week or two of every regeneration. A
 fence that is red almost always is a fence somebody deletes.
 
 The surviving derivation anchors to the real failure mode -- a shard
-overshooting far enough to push `Backend Checks` back above the ~347s
-`Frontend Checks` floor, which is the project's stated CI target since
-TBD-421. 80% is the last decile that keeps double-digit-percent margin.
+overshooting far enough to become the slowest job in the run, where it sets
+the wall clock. At TBD-421 that bar was the ~347s `Frontend Checks` job; by
+2026-09-13 shard 5/6 had already crossed it (~470s against the frontend
+suite's ~400s), tracked as TBD-524. 80% is the last decile that keeps
+double-digit-percent margin.
 
 No single PR can cross it: the largest test file on disk is ~1.4% of collected
 items and the top three combined are ~4%. Nobody gets cornered into raising
@@ -246,7 +248,7 @@ def test_thresholds_are_not_quietly_relaxed():
         3000,
     ), (
         "The freshness thresholds were changed. These are derived in this "
-        "module's docstring from the ~347s Frontend Checks floor; changing "
+        "module's docstring from the TBD-421 shard-balance target (see TBD-524); changing "
         "them changes what 'the shards are balanced' means. Regenerate the "
         "durations file instead."
     )

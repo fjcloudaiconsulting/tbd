@@ -102,11 +102,13 @@ jobs:
   # Each shard runs a deterministic, duration-balanced slice of the suite
   # using the recorded backend/.test_durations file.
   #
-  # ⚠ The original "<3 minute backend check" target is RETIRED (TBD-421). It
-  # was not merely unmet, it was the wrong target: `Frontend Checks` is ~330s
-  # and is the run's floor, so backend time below that is unobservable in the
-  # run's wall clock. Successor target: `Backend Checks` stays below
-  # `Frontend Checks`.
+  # ⚠ The original "<3 minute backend check" target is RETIRED (TBD-421). A
+  # run's wall clock is set by its slowest job, so backend time below that job
+  # is unobservable. At TBD-421 the slowest job was `Frontend Checks` (~347s)
+  # and the target became "`Backend Checks` stays below `Frontend Checks`".
+  # That target is already missed: as of 2026-09-13 Backend Shard 5/6 (~470s)
+  # is the slowest job, ahead of the frontend suite (~400s) and the other
+  # shards (~220-375s). The shard-5 imbalance is tracked as TBD-524.
   #
   # See specs/2026-08-19-ci-shard-rebalance.md for the current rationale, and
   # specs/ci-test-sharding.md for the original audit (superseded on the shard
@@ -135,11 +137,14 @@ jobs:
   # every check stays green. backend/tests/test_ci_shard_config.py fences the
   # invariant for anyone who reverts to literals.
   #
-  # Six, not eight (TBD-421): `Frontend Checks` is ~347s and is the run's floor,
-  # so shards below that buy no wall-clock at all. Six is bought for headroom --
-  # it is where the backend stays under that floor for ~7 months of suite growth
-  # rather than ~2. Eight would also put two concurrent PRs over the 20-job
-  # public-runner budget, and queueing costs more than the extra shard saves.
+  # Six, not eight (TBD-421): shards were sized against the then-slowest job,
+  # `Frontend Checks` (~347s), since a shard faster than the slowest job buys
+  # no wall clock. Six was bought for headroom rather than speed. ⚠ By
+  # 2026-09-13 shard 5/6 (~470s) had become the slowest job itself (TBD-524).
+  # A full run peaks at 9 concurrent jobs (8 before TBD-422 split the frontend
+  # suite), so two concurrent PRs peak at 18 of the 20 public runners. Eight
+  # shards would put them over that budget, and queueing costs more than the
+  # extra shard saves.
   backend-shard:
     name: Backend Shard ${{ matrix.group }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
@@ -629,9 +634,8 @@ jobs:
           exit 1
 
 
-  # ── Frontend (TBD-404) ───────────────────────────────────────────────────
-  # SPLIT INTO WORK + AGGREGATE, deliberately, even though there is only one
-  # work job.
+  # ── Frontend (TBD-404, TBD-422) ──────────────────────────────────────────
+  # SPLIT INTO WORK + AGGREGATE, deliberately.
   #
   # `Frontend Checks` is a REQUIRED status check. If the required job were
   # itself the conditional one, a docs-only PR would skip it — and branch
@@ -644,8 +648,54 @@ jobs:
   # `Backend Checks` already had this shape (it aggregates the shards); this
   # brings the frontend side to the same shape rather than inventing a second
   # one.
+  #
+  # TBD-422: the work is TWO parallel jobs. `frontend-work` runs the vitest
+  # suite (~69% of the old single job's time); `frontend-static` runs the
+  # static checks and both builds. The old single job took ~399s median over 20
+  # runs; the suite alone is ~281s and static + builds ~115s. ⚠ This shortens
+  # frontend-only PRs only: on a full run the slowest job is Backend Shard 5/6
+  # (~470s, TBD-524), so wall clock is unchanged until that shard is rebalanced.
+  # ⚠ Both builds stay together in `frontend-static`: build-apex.sh MOVES files
+  # out of `app/` for its duration, so it must never share a checkout with
+  # vitest, and the out-apex checks read that build's output.
   frontend-work:
     name: Frontend Suite
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test | tee /tmp/fe-test.log; exit ${PIPESTATUS[0]}
+
+      # TBD-500: as above, number only, `main` pushes only, fails soft.
+      # ⚠ `exit ${PIPESTATUS[0]}` on the step above is load-bearing: piping into
+      # tee would otherwise report tee's exit code and turn a red suite green.
+      - name: Publish frontend coverage badge
+        if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+        continue-on-error: true
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          PCT=$(grep -m1 '^Statements' /tmp/fe-test.log | grep -oE '[0-9]+\.?[0-9]*%' | head -1 | tr -d '%')
+          ./scripts/ci/update-coverage-badge.sh frontend "$PCT"
+
+  frontend-static:
+    name: Frontend Static Checks
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.frontend == 'true' }}
@@ -672,22 +722,6 @@ jobs:
         working-directory: frontend
         run: npm run lint -- --quiet
 
-      - name: Run frontend tests
-        working-directory: frontend
-        run: npm test | tee /tmp/fe-test.log; exit ${PIPESTATUS[0]}
-
-      # TBD-500: as above, number only, `main` pushes only, fails soft.
-      # ⚠ `exit ${PIPESTATUS[0]}` on the step above is load-bearing: piping into
-      # tee would otherwise report tee's exit code and turn a red suite green.
-      - name: Publish frontend coverage badge
-        if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
-        continue-on-error: true
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-        run: |
-          PCT=$(grep -m1 '^Statements' /tmp/fe-test.log | grep -oE '[0-9]+\.?[0-9]*%' | head -1 | tr -d '%')
-          ./scripts/ci/update-coverage-badge.sh frontend "$PCT"
-
       - name: Run frontend production build
         working-directory: frontend
         run: npm run build
@@ -712,7 +746,7 @@ jobs:
   frontend:
     name: Frontend Checks
     runs-on: ubuntu-latest
-    needs: [changes, frontend-work]
+    needs: [changes, frontend-work, frontend-static]
     if: ${{ always() }}
     steps:
       - name: Checkout repository
@@ -730,3 +764,10 @@ jobs:
           "${{ needs.frontend-work.result }}"
           "${{ needs.changes.outputs.frontend }}"
           "Frontend suite"
+
+      - name: Verify frontend static checks and builds passed
+        run: >-
+          bash scripts/ci/assert-gate.sh
+          "${{ needs.frontend-static.result }}"
+          "${{ needs.changes.outputs.frontend }}"
+          "Frontend static checks"
