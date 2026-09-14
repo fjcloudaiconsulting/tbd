@@ -6,10 +6,12 @@
    Text:    Off-White #E6EAF0
    Info:    Secondary Blue #5FA8D3
    Hover:   Dark Gold #B88A2E
-   Default: premium dark theme
+   Default: light theme (TBD-429). The dark tokens stay on :root and the
+   light tokens on [data-theme="light"]; the pre-paint script in
+   app/layout.tsx sets that attribute unless 'dark' is stored.
 ─── */
 
-/* ─── Dark theme (default — premium dark) ─── */
+/* ─── Dark theme (tokens on :root; selected when data-theme is absent) ─── */
 :root {
   --theme-bg: #070d18;
   --theme-surface: #0B1F3A;
@@ -83,7 +85,7 @@
   --theme-cat-8: #f87171;
 }
 
-/* ─── Light theme ─── */
+/* ─── Light theme (default) ─── */
 [data-theme="light"] {
   --theme-bg: #f0f2f5;
   --theme-surface: #ffffff;
@@ -319,8 +321,8 @@ a, button { transition: all 0.15s ease; }
 
 /* Google "Sign in with Google" button (L5.9). Surface colors are locked
    by Google's branding guide and do NOT consume product theme tokens.
-   The button is dark-by-default (the app's default theme) and lightens
-   when the html root carries data-theme="light". Sizing, focus, and
+   The button is dark on :root (the dark theme) and lightens when the
+   html root carries data-theme="light" (the default theme). Sizing, focus, and
    typography are owned by the component className; only the brand
    surface lives here so the values are reviewable in one place. */
 .gsi-button {

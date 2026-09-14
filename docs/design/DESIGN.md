@@ -160,7 +160,7 @@ What this system explicitly rejects: the bank-app idiom (heavy navy-and-white co
 - Single accent, used rarely
 - Numbers-first typography
 - Calm at rest, expressive on state
-- Dark default, light theme available and equally considered
+- Light default, dark theme available and equally considered
 
 ## 2. Colors
 
@@ -170,7 +170,7 @@ A muted financial palette with one warm accent. Deep navies do the work of conta
 
 - **Brass Tally** (`#D4A64A` dark / `#B88A2E` light): The single warm accent. Reserved for primary CTAs, the active item in a list or sidebar, and the focus ring. In a typical screen it should appear in *one* place, two at most. The hover state shifts to **Aged Brass** (`#B88A2E` dark / `#9a7425` light) and the dim state to its 12%-alpha tint (`accent-dim`) for subtle emphasis like selection backgrounds. On dark, brass ink (`accent-text`) is Ledger Navy; on light it flips to white for AA contrast on the brass fill.
 
-### Neutral (Dark Theme — Default)
+### Neutral (Dark Theme)
 
 - **Night Navy** (`#070d18`): The deepest layer; the page background and the sidebar context.
 - **Ledger Navy** (`#0B1F3A`): Surface color for cards, panels, and modals. The brand's anchor color.
@@ -182,7 +182,7 @@ A muted financial palette with one warm accent. Deep navies do the work of conta
 - **Mist** (`#9ba8bd`): Secondary text — captions, helper copy, table headers.
 - **Fog** (`#5a6a82`): Muted text — placeholders, disabled labels, decorative metadata.
 
-### Neutral (Light Theme)
+### Neutral (Light Theme, Default)
 
 The light theme inverts the surface roles but keeps the *sidebar always navy* — a deliberate choice. The product chrome stays calm regardless of theme, while the data canvas adapts.
 

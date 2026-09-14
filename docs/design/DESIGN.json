@@ -138,7 +138,7 @@
       "Single accent, used rarely",
       "Numbers-first typography",
       "Calm at rest, expressive on state",
-      "Dark default, light theme available and equally considered"
+      "Light default, dark theme available and equally considered"
     ],
     "rules": [
       { "name": "The One Brass Rule",            "section": "colors",     "body": "The accent appears at most twice on any screen, and ideally once. Its rarity is the point." },

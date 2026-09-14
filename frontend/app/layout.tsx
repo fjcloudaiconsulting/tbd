@@ -64,13 +64,16 @@ export default async function RootLayout({
           href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Outfit:wght@300;400;500;600&display=swap"
           rel="stylesheet"
         />
+        {/* Pre-paint theme (TBD-429): light is the default; only a stored
+            'dark' paints dark. Fenced by tests/app/theme-bootstrap-script. */}
         <script
           {...nonceProp}
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
-                var t = localStorage.getItem('tbd-theme');
-                if (t === 'light') {
+                var t = null;
+                try { t = localStorage.getItem('tbd-theme'); } catch (e) {}
+                if (t !== 'dark') {
                   document.documentElement.setAttribute('data-theme', 'light');
                 }
               })();
