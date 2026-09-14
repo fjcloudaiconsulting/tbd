@@ -119,7 +119,9 @@ describe("RecurringPage — default sort", () => {
   });
 });
 
-describe("RecurringPage — sorting by header click", () => {
+// TBD-288: legitimate headroom. Repeated full-table re-sorts hit the default
+// 5000ms test timeout on a loaded worker (measured max 8.7s).
+describe("RecurringPage — sorting by header click", { timeout: 20_000 }, () => {
   it("re-sorts by name when the Name header is clicked (asc then desc)", async () => {
     mockApiWith([
       rec({ id: 1, description: "Gamma", next_due_date: "2026-03-15" }),
@@ -205,7 +207,9 @@ describe("RecurringPage — sorting by header click", () => {
   });
 });
 
-describe("RecurringPage — pagination", () => {
+// TBD-288: legitimate headroom. Three renders of a 25-row page hit the
+// default 5000ms test timeout on a loaded worker (measured max 12.0s).
+describe("RecurringPage — pagination", { timeout: 20_000 }, () => {
   function manyItems(n: number): RecurringTransaction[] {
     return Array.from({ length: n }, (_, i) =>
       rec({
@@ -247,7 +251,9 @@ describe("RecurringPage — pagination", () => {
   });
 });
 
-describe("RecurringPage — page clamping when row count shrinks", () => {
+// TBD-288: legitimate headroom. Paging, a confirm modal and a reload hit the
+// default 5000ms test timeout on a loaded worker (measured max 8.1s).
+describe("RecurringPage — page clamping when row count shrinks", { timeout: 20_000 }, () => {
   function manyItems(n: number): RecurringTransaction[] {
     return Array.from({ length: n }, (_, i) =>
       rec({

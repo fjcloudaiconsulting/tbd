@@ -313,24 +313,31 @@ describe("apiFetch", () => {
 
   it("refresh transient (TypeError, AbortError, then OK) retries within budget without logout", async () => {
     // Team F 2026-05-17: retry budget on refresh -- 2 retries with 250ms
-    // exponential backoff -- absorbs a flaky network on idle return. With
-    // real timers so the backoff actually elapses; the fetch path itself
-    // resolves synchronously in this test.
-    setAccessToken("stale-token");
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 })) // primary
-      .mockRejectedValueOnce(new TypeError("fetch failed"))                          // refresh attempt 1 -- transient
-      .mockRejectedValueOnce(new DOMException("aborted", "AbortError"))             // refresh attempt 2 -- transient
-      .mockResolvedValueOnce(jsonResponse({ access_token: "fresh-token" }))         // refresh attempt 3 -- OK
-      .mockResolvedValueOnce(jsonResponse({ ok: true }));                            // retry of primary
+    // exponential backoff -- absorbs a flaky network on idle return. The
+    // fetch path itself resolves synchronously in this test. TBD-288: the
+    // 250ms + 500ms backoff runs on a fake clock rather than real wall clock.
+    vi.useFakeTimers();
+    try {
+      setAccessToken("stale-token");
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 })) // primary
+        .mockRejectedValueOnce(new TypeError("fetch failed"))                          // refresh attempt 1 -- transient
+        .mockRejectedValueOnce(new DOMException("aborted", "AbortError"))             // refresh attempt 2 -- transient
+        .mockResolvedValueOnce(jsonResponse({ access_token: "fresh-token" }))         // refresh attempt 3 -- OK
+        .mockResolvedValueOnce(jsonResponse({ ok: true }));                            // retry of primary
 
-    const data = await apiFetch<{ ok: boolean }>("/api/v1/protected");
+      const promise = apiFetch<{ ok: boolean }>("/api/v1/protected");
+      await vi.advanceTimersByTimeAsync(250 + 500);
+      const data = await promise;
 
-    expect(data).toEqual({ ok: true });
-    expect(getAccessToken()).toBe("fresh-token");
-    expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
-    // 1 primary + 3 refresh attempts + 1 retry = 5
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+      expect(data).toEqual({ ok: true });
+      expect(getAccessToken()).toBe("fresh-token");
+      expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
+      // 1 primary + 3 refresh attempts + 1 retry = 5
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("primary 401 + refresh timeout (all retries) does NOT clear token, does NOT dispatch, throws recoverable", async () => {
@@ -369,21 +376,31 @@ describe("apiFetch", () => {
   });
 
   it("primary 401 + refresh 500 (all retries) does NOT clear token, does NOT dispatch, throws recoverable", async () => {
-    setAccessToken("stale-token");
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 }))
-      .mockResolvedValueOnce(jsonResponse({ detail: "server error" }, { status: 500 }))
-      .mockResolvedValueOnce(jsonResponse({ detail: "server error" }, { status: 500 }))
-      .mockResolvedValueOnce(jsonResponse({ detail: "server error" }, { status: 500 }));
+    // TBD-288: fake clock for the 250ms + 500ms backoff between attempts.
+    vi.useFakeTimers();
+    try {
+      setAccessToken("stale-token");
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 }))
+        .mockResolvedValueOnce(jsonResponse({ detail: "server error" }, { status: 500 }))
+        .mockResolvedValueOnce(jsonResponse({ detail: "server error" }, { status: 500 }))
+        .mockResolvedValueOnce(jsonResponse({ detail: "server error" }, { status: 500 }));
 
-    await expect(apiFetch("/api/v1/protected")).rejects.toMatchObject({
-      name: "ApiResponseError",
-      status: 503,
-      code: "refresh_transient",
-    });
+      const assertion = expect(apiFetch("/api/v1/protected")).rejects.toMatchObject({
+        name: "ApiResponseError",
+        status: 503,
+        code: "refresh_transient",
+      });
+      await vi.advanceTimersByTimeAsync(250 + 500);
+      await assertion;
 
-    expect(getAccessToken()).toBe("stale-token");
-    expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
+      expect(getAccessToken()).toBe("stale-token");
+      expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
+      // 1 primary + 3 refresh attempts; no retry of the primary.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("parallel 401 herd with transient refresh fires exactly one /refresh (and its retries) across all callers", async () => {

@@ -168,7 +168,10 @@ describe("AccountsPage — sortable columns", () => {
   });
 });
 
-describe("AccountsPage — page clamping when row count shrinks", () => {
+// TBD-288: anticipatory headroom. The page renders 30 then 25 rows, which
+// measured up to 4.8s on a loaded worker. It never exceeded the default
+// 5000ms test timeout, but sits within 200ms of it.
+describe("AccountsPage — page clamping when row count shrinks", { timeout: 15_000 }, () => {
   function manyAccounts(n: number) {
     return Array.from({ length: n }, (_, i) => ({
       id: 100 + i,
@@ -245,7 +248,9 @@ describe("AccountsPage — page clamping when row count shrinks", () => {
   });
 });
 
-describe("AccountsPage — pagination", () => {
+// TBD-288: legitimate headroom. Three renders of a 25-row page hit the
+// default 5000ms test timeout on a loaded worker (measured max 5.6s).
+describe("AccountsPage — pagination", { timeout: 15_000 }, () => {
   function manyAccounts(n: number) {
     return Array.from({ length: n }, (_, i) => ({
       id: 100 + i,
