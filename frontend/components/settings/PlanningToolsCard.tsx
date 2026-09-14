@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
+import Switch from "@/components/ui/Switch";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { card, cardHeader, cardTitle, error as errorCls } from "@/lib/styles";
 
@@ -25,7 +26,7 @@ const TOOL_LABEL: Record<PlanningTool, string> = {
   budgets: "Budgets",
 };
 
-function Switch({
+function ToolRow({
   tool,
   enabled,
   saving,
@@ -51,60 +52,18 @@ function Switch({
       <div>
         <p className="text-sm font-medium text-text-primary">{label}</p>
         {lockedByAdmin && (
-          <p className="text-xs text-text-muted">
+          <p id={`planning-tool-${tool}-locked`} className="text-xs text-text-muted">
             Off &mdash; set by your administrator
           </p>
         )}
       </div>
-      <div className="flex items-center gap-3">
-        {/* State in TEXT, never colour alone. */}
-        <span className="text-sm text-text-secondary">
-          {enabled ? "Enabled" : "Disabled"}
-        </span>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={enabled}
-          // The accessible name is the OBJECT, never the action. `role="switch"`
-          // already announces the state through aria-checked, so an
-          // action-phrased name that flips on every toggle ("Disable Budgets" →
-          // "Enable Budgets") makes a screen reader read a control that appears
-          // to have become a different control, and states it twice — once as
-          // the name, once as the checked state, in opposite polarities.
-          aria-label={label}
-          disabled={saving}
-          onClick={() => onToggle(!enabled)}
-          // 44px hit area via padding on an h-11 box; the visible track stays
-          // small. `h-6 w-11` alone is 24px, under the docs/design/DESIGN.md touch floor.
-          className="inline-flex h-11 w-11 items-center justify-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:opacity-50"
-        >
-          <span
-            aria-hidden="true"
-            // `bg-success`/`bg-border`, matching the six existing switches
-            // (SchedulerSettingsCard, SmartRulesSection, notifications), four of
-            // which render on THIS page. Deliberately NOT `bg-accent`: the switch
-            // form was chosen over the neighbouring aria-pressed button precisely
-            // to keep this control off the brass budget, and both tools default
-            // to enabled, so a brass track would be lit at rest on every load —
-            // a sixth accent moment on a page already carrying five btnPrimary,
-            // against The One Brass Rule's "at most twice, ideally once".
-            className={`relative block h-6 w-11 rounded-full transition-colors ${
-              enabled ? "bg-success" : "bg-border"
-            }`}
-          >
-            {/* Knob fill is the `surface` THEME TOKEN, deliberately — the raw
-                Tailwind `bg-white` renders identically here and passes CI
-                (the design-token gate only rejects raw foreground colours),
-                but it does not theme-switch and so violates No Off-Token.
-                No resting shadow either (State-Only Shadow Rule). */}
-            <span
-              className={`absolute top-0.5 block h-5 w-5 rounded-full bg-surface transition-transform ${
-                enabled ? "translate-x-[1.375rem]" : "translate-x-0.5"
-              }`}
-            />
-          </span>
-        </button>
-      </div>
+      <Switch
+        checked={enabled}
+        onChange={onToggle}
+        label={label}
+        pending={saving}
+        describedBy={lockedByAdmin ? `planning-tool-${tool}-locked` : undefined}
+      />
     </div>
   );
 }
@@ -121,7 +80,10 @@ export default function PlanningToolsCard({
   const [written, setWritten] = useState<Partial<Record<PlanningTool, boolean>>>(
     {},
   );
-  const [saving, setSaving] = useState<PlanningTool | null>(null);
+  // Every tool with a save in flight (TBD-323). A SET, not one value: with a
+  // single value, finishing Forecast cleared the pending state of a Budgets
+  // save still in flight.
+  const [saving, setSaving] = useState<ReadonlySet<PlanningTool>>(() => new Set());
   // "Off — set by your administrator" is WRITE-RESPONSE-ONLY. /auth/status
   // returns a single resolved boolean, so a global "off" and an org opt-out
   // are indistinguishable at page load; the only moment the difference becomes
@@ -134,9 +96,17 @@ export default function PlanningToolsCard({
   const isEnabled = (tool: PlanningTool) =>
     written[tool] ?? features?.[tool] !== false;
 
+  // Synchronous re-entry guard (TBD-323), the second line behind the switch's
+  // `pending` no-op: this card tracks independent saves per tool, and a second
+  // PUT for a tool still in flight must be refused even if rendered state were
+  // ever wrong about it. Per tool, so saving Budgets never blocks Forecast.
+  const inFlight = useRef(new Set<PlanningTool>());
+
   async function handleToggle(tool: PlanningTool, next: boolean) {
+    if (inFlight.current.has(tool)) return;
+    inFlight.current.add(tool);
     setError("");
-    setSaving(tool);
+    setSaving((current) => new Set(current).add(tool));
     try {
       const res = await apiFetch<{ feature: PlanningTool; enabled: boolean }>(
         `/api/v1/settings/features/${tool}`,
@@ -168,7 +138,12 @@ export default function PlanningToolsCard({
     } catch (err) {
       setError(extractErrorMessage(err));
     } finally {
-      setSaving(null);
+      inFlight.current.delete(tool);
+      setSaving((current) => {
+        const next = new Set(current);
+        next.delete(tool);
+        return next;
+      });
     }
   }
 
@@ -182,13 +157,17 @@ export default function PlanningToolsCard({
           Turn off the parts of the app your household doesn&apos;t use. Nothing
           is deleted, and turning a tool back on restores everything.
         </p>
-        {error && <div className={errorCls}>{error}</div>}
+        {error && (
+          <div className={errorCls} role="alert">
+            {error}
+          </div>
+        )}
         {tools.map((tool) => (
-          <Switch
+          <ToolRow
             key={tool}
             tool={tool}
             enabled={isEnabled(tool)}
-            saving={saving === tool}
+            saving={saving.has(tool)}
             lockedByAdmin={Boolean(lockedByAdmin[tool])}
             onToggle={(next) => void handleToggle(tool, next)}
           />

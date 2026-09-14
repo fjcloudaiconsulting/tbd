@@ -288,4 +288,38 @@ describe("Notification preferences settings page", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/nope/i);
   });
+
+  // ── TBD-323 ────────────────────────────────────────────────────────────
+  it("T10 fence: a channel switch's name is exact and survives a toggle on the same node; locked stays really disabled", async () => {
+    // Kills: an action- or state-phrased name at this site (the regex queries
+    // above would pass "Disable account email notifications").
+    serve([{ path: "/api/v1/notifications/preferences", body: makePrefs() }]);
+    render(<NotificationsPage />);
+    const sw = await screen.findByRole("switch", { name: "Account email notifications" });
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(sw);
+    const after = screen.getByRole("switch", { name: "Account email notifications" });
+    expect(after).toBe(sw);
+    expect(after).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("switch", { name: "Security email notifications" })).toBeDisabled();
+  });
+
+  it("T17b fence: while the page save is in flight, switches stay focusable but ignore clicks", async () => {
+    // Kills: real `disabled` while saving (keyboard focus lost), and a toggle
+    // accepted mid-save, which would show a state the in-flight PUT did not send.
+    let resolvePut!: (v: unknown) => void;
+    vi.mocked(apiFetch).mockImplementation((async (_p: unknown, init?: { method?: string }) => {
+      if (init?.method === "PUT") return new Promise((r) => { resolvePut = r; });
+      return makePrefs();
+    }) as never);
+    render(<NotificationsPage />);
+    const sw = await screen.findByRole("switch", { name: "Account email notifications" });
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(sw).toHaveAttribute("aria-disabled", "true"));
+    expect(sw).not.toBeDisabled();
+    fireEvent.click(sw);
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    resolvePut(makePrefs());
+    await waitFor(() => expect(sw).not.toHaveAttribute("aria-disabled"));
+  });
 });

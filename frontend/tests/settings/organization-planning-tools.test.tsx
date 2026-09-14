@@ -16,7 +16,7 @@
  */
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import OrganizationSettingsPage from "@/app/settings/organization/page";
 import { apiFetch } from "@/lib/api";
@@ -189,11 +189,14 @@ describe("OrganizationSettingsPage — Planning tools card (TBD-197 F14)", () =>
     });
 
     // Non-destructive change: immediate mutation, no ConfirmModal in the way.
+    // T11 (TBD-323): EXACT name on the SAME node. `/budgets/i` would pass
+    // "Disable Budgets", a name that flips with state.
     await waitFor(() => {
       expect(
-        row.getByRole("switch", { name: /budgets/i }).getAttribute("aria-checked"),
+        row.getByRole("switch", { name: "Budgets" }).getAttribute("aria-checked"),
       ).toBe("false");
     });
+    expect(row.getByRole("switch", { name: "Budgets" })).toBe(sw);
     expect(row.getByText("Disabled")).toBeTruthy();
   });
 
@@ -287,5 +290,139 @@ describe("OrganizationSettingsPage — Planning tools card (TBD-197 F14)", () =>
     expect(
       budgets.getByRole("switch", { name: /budgets/i }).getAttribute("aria-checked"),
     ).toBe("true");
+  });
+
+  // ── TBD-323 ────────────────────────────────────────────────────────────
+  it("T13 fence: a second click while the save is in flight issues exactly one PUT", async () => {
+    // Real `disabled` was the only re-entry guard. The switch now stays
+    // focusable while saving, so the double save must be refused elsewhere.
+    setAuth(true);
+    let resolvePut!: (v: unknown) => void;
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
+        return new Promise((r) => { resolvePut = r; });
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const row = await toolRow("budgets");
+    const sw = row.getByRole("switch", { name: "Budgets" });
+    fireEvent.click(sw);
+    fireEvent.click(sw);
+    fireEvent.click(sw);
+    const puts = () =>
+      vi.mocked(apiFetch).mock.calls.filter(
+        ([url, init]) =>
+          url === "/api/v1/settings/features/budgets" && (init as RequestInit | undefined)?.method === "PUT",
+      );
+    expect(puts()).toHaveLength(1);
+    expect(sw).toHaveAttribute("aria-disabled", "true");
+    expect(sw).not.toBeDisabled();
+    resolvePut({ feature: "budgets", enabled: false });
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "false"));
+    expect(puts()).toHaveLength(1);
+  });
+
+  it("T14 fence: a failed save is announced in role=alert", async () => {
+    // The switch keeps focus through the save now, so the failure has to
+    // reach a screen reader without the user hunting for it.
+    setAuth(true);
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
+        return Promise.reject(new Error("Could not save the Budgets setting"));
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const row = await toolRow("budgets");
+    fireEvent.click(row.getByRole("switch", { name: "Budgets" }));
+    const card = await planningToolsCard();
+    await waitFor(() => expect(card.getByRole("alert")).toHaveTextContent(/could not save the budgets setting/i));
+    expect(row.getByRole("switch", { name: "Budgets" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("X3 fence: Forecast's save finishing leaves Budgets pending, and Budgets still refuses a second PUT", async () => {
+    // Kills a single-value `saving` state: finishing Forecast cleared the
+    // Budgets pending state (the aria-disabled assertion) and re-opened Budgets
+    // to a second PUT (the count). It does NOT fence the ref guard: with pending
+    // rendered correctly the switch refuses the click first. X3b does.
+    setAuth(true, true);
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
+        return new Promise(() => {});
+      }
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/forecast") {
+        return Promise.resolve({ feature: "forecast", enabled: false });
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const budgets = (await toolRow("budgets")).getByRole("switch", { name: "Budgets" });
+    const forecast = (await toolRow("forecast")).getByRole("switch", { name: "Forecast" });
+
+    fireEvent.click(budgets);
+    fireEvent.click(forecast);
+    await waitFor(() => expect(forecast).toHaveAttribute("aria-checked", "false"));
+    await waitFor(() => expect(forecast).not.toHaveAttribute("aria-disabled"));
+    expect(budgets).toHaveAttribute("aria-disabled", "true");
+
+    fireEvent.click(budgets);
+    const budgetPuts = vi
+      .mocked(apiFetch)
+      .mock.calls.filter(
+        ([url, init]) =>
+          url === "/api/v1/settings/features/budgets" && (init as RequestInit | undefined)?.method === "PUT",
+      );
+    expect(budgetPuts).toHaveLength(1);
+  });
+
+  it("T18 fence: the administrator lock note is the switch's accessible description", async () => {
+    // Kills an unlinked note: a screen reader on the switch hears "off" with no
+    // reason, while a sighted user reads why.
+    setAuth(false);
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
+        return Promise.resolve({ feature: "budgets", enabled: false });
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const row = await toolRow("budgets");
+    const sw = row.getByRole("switch", { name: "Budgets" });
+    expect(sw).not.toHaveAttribute("aria-describedby");
+
+    fireEvent.click(sw);
+    await waitFor(() => expect(row.getByText(/set by your administrator/i)).toBeTruthy());
+    expect(sw).toHaveAccessibleDescription(/set by your administrator/i);
+  });
+
+  it("X3b fence: two clicks delivered before React re-renders issue one PUT (the ref guard)", async () => {
+    // Same shape as the Scheduler X1b: inside one act() batch the second click
+    // sees pre-render props, so only the handler's ref guard can refuse it.
+    setAuth(true);
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && url === "/api/v1/settings/features/budgets") {
+        return new Promise(() => {});
+      }
+      return baseFixtures()(url, init);
+    }) as never);
+
+    render(<OrganizationSettingsPage />);
+    const budgets = (await toolRow("budgets")).getByRole("switch", { name: "Budgets" });
+    act(() => {
+      budgets.click();
+      budgets.click();
+    });
+    const budgetPuts = vi
+      .mocked(apiFetch)
+      .mock.calls.filter(
+        ([url, init]) =>
+          url === "/api/v1/settings/features/budgets" && (init as RequestInit | undefined)?.method === "PUT",
+      );
+    expect(budgetPuts).toHaveLength(1);
   });
 });
