@@ -3,7 +3,7 @@
 import { RefObject, useEffect } from "react";
 
 const FOCUSABLE_SELECTOR =
-  'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+  'button, [href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])';
 
 interface UseFocusTrapOptions {
   /** When true, the trap is engaged and the previously focused element

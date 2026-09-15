@@ -61,20 +61,35 @@ function cat(id: number, name: string, parent_id: number | null) {
   };
 }
 
+function makeTx(id: number, description: string) {
+  return {
+    id, account_id: 100, account_name: "Checking A",
+    category_id: 11, category_name: "Groceries",
+    description, amount: 10, type: "expense" as const, status: "settled" as const,
+    linked_transaction_id: null, recurring_id: null,
+    date: "2026-05-01", settled_date: null, is_imported: false,
+  };
+}
+
 const ACCOUNTS = [acct(100, "Checking A"), acct(200, "Checking B"), acct(300, "Old Savings", false)];
-// Food is a master with two subs; Transport is a master with none.
+// Two masters, each with two subs.
 const CATEGORIES = [
   cat(10, "Food", null),
   cat(11, "Groceries", 10),
   cat(12, "Dining", 10),
   cat(20, "Transport", null),
+  cat(21, "Fuel", 20),
+  cat(22, "Parking", 20),
 ];
 const TAGS = [
   { id: 1, name: "trip", name_normalized: "trip", usage_count: 2 },
   { id: 2, name: "work", name_normalized: "work", usage_count: 1 },
 ];
 
-function setupApiFetch(total = 3) {
+function setupApiFetch(
+  total: number | ((params: URLSearchParams) => number) = 3,
+  items: unknown[] = [],
+) {
   const mock = vi.mocked(apiFetch);
   mock.mockReset();
   mock.mockImplementation(async (url: string) => {
@@ -82,8 +97,11 @@ function setupApiFetch(total = 3) {
     if (url.startsWith("/api/v1/categories")) return CATEGORIES as never;
     if (url.startsWith("/api/v1/tags")) return TAGS as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
-    if (url.startsWith("/api/v1/transactions"))
-      return { items: [], total, limit: 25, offset: 0 } as never;
+    if (url.startsWith("/api/v1/transactions")) {
+      const params = new URL(url, "http://x").searchParams;
+      const t = typeof total === "function" ? total(params) : total;
+      return { items, total: t, limit: 25, offset: 0 } as never;
+    }
     return null as never;
   });
   return mock;
@@ -104,14 +122,30 @@ function lastParams(mock: Mock, from = 0) {
   return new URL(urls[urls.length - 1], "http://x").searchParams;
 }
 
+function sortedCategoryIds(params: URLSearchParams) {
+  return params.getAll("category_id").sort();
+}
+
 function panel() {
   return screen.getByTestId("transactions-filter-panel");
+}
+
+function checkbox(name: string) {
+  return screen.getByRole("checkbox", { name: `Category ${name}` }) as HTMLInputElement;
 }
 
 async function ready() {
   await screen.findByRole("button", { name: "Account Checking A" });
   await screen.findByRole("checkbox", { name: "Category Food" });
   await waitFor(() => expect(screen.queryByRole("status", { name: "Loading" })).toBeNull());
+}
+
+async function openDrawer() {
+  const open = screen.getByRole("button", { name: /^Filters/ });
+  open.focus();
+  fireEvent.click(open);
+  const dialog = await screen.findByRole("dialog", { name: "Filters" });
+  return { open, dialog };
 }
 
 describe("TransactionsPage — filter side panel (TBD-464)", () => {
@@ -132,6 +166,8 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
 
   afterEach(() => {
     cleanup();
+    // @ts-expect-error -- remove a matchMedia stub a test installed
+    delete window.matchMedia;
   });
 
   it("keeps the panel mounted and focus on the control while the list refetches", async () => {
@@ -155,6 +191,28 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     expect(chip).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("the result count stays in its live region, unblanked, while a load is in flight", async () => {
+    // FENCE (N3). Kills: blanking the count during `fetching`, which makes
+    // every load re-announce an unchanged count.
+    const mock = setupApiFetch(3);
+    const base = mock.getMockImplementation()!;
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    const region = screen.getByTestId("transactions-result-count");
+    await waitFor(() => expect(region).toHaveTextContent("3 transactions"));
+    expect(region).toHaveAttribute("aria-live", "polite");
+
+    mock.mockImplementation(async (url: string) =>
+      url.startsWith("/api/v1/transactions?") ? (new Promise(() => {}) as never) : base(url),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Account Checking A" }));
+    await waitFor(() => expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument());
+
+    expect(region.isConnected).toBe(true);
+    expect(region.textContent).toBe("3 transactions");
+  });
+
   it("sends one account_id per account picked in the panel, inactive accounts included", async () => {
     const mock = setupApiFetch();
     renderWithSWR(<TransactionsPage />);
@@ -167,65 +225,79 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     await waitFor(() => expect(lastParams(mock).getAll("account_id")).toEqual(["100", "300"]));
   });
 
-  it("checking a master sends the master; unchecking one sub sends only the remaining subs", async () => {
-    // FENCE. Kills: sending a partially selected master's id, which with the
-    // default subtree match pulls the unchecked sub straight back in.
+  // ── R1: exact, independent master selection ───────────────────────────
+
+  it("checking a master checks its subs; unchecking the master keeps its subs; the request is exact", async () => {
+    // FENCE (R1). Kills: unchecking a master clearing its subs, and sending
+    // the ids without category_match=exact (the API default is subtree).
     const mock = setupApiFetch();
     renderWithSWR(<TransactionsPage />);
     await ready();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Category Food" }));
-    await waitFor(() =>
-      expect(lastParams(mock).getAll("category_id").sort()).toEqual(["10", "11", "12"]),
-    );
-    expect(screen.getByRole("checkbox", { name: "Category Dining" })).toBeChecked();
+    fireEvent.click(checkbox("Food"));
+    await waitFor(() => expect(sortedCategoryIds(lastParams(mock))).toEqual(["10", "11", "12"]));
+    expect(lastParams(mock).get("category_match")).toBe("exact");
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Category Dining" }));
+    fireEvent.click(checkbox("Food"));
+    await waitFor(() => expect(sortedCategoryIds(lastParams(mock))).toEqual(["11", "12"]));
+    expect(lastParams(mock).get("category_match")).toBe("exact");
+    expect(checkbox("Food")).not.toBeChecked();
+    expect(checkbox("Food").indeterminate).toBe(false);
+    expect(checkbox("Groceries")).toBeChecked();
+    expect(checkbox("Dining")).toBeChecked();
+
+    fireEvent.click(checkbox("Dining"));
     await waitFor(() => expect(lastParams(mock).getAll("category_id")).toEqual(["11"]));
-    expect(screen.getByRole("checkbox", { name: "Category Food" })).not.toBeChecked();
-
-    // Unchecking the last sub clears the master too, not a lone master that
-    // would read as "the whole subtree".
-    fireEvent.click(screen.getByRole("checkbox", { name: "Category Groceries" }));
-    await waitFor(() => expect(lastParams(mock).getAll("category_id")).toEqual([]));
-    expect(screen.getByRole("checkbox", { name: "Category Food" })).not.toBeChecked();
   });
 
-  it("a master with no subs is sent as itself", async () => {
+  it("two masters and a partial pick send exactly the checked ids", async () => {
     const mock = setupApiFetch();
     renderWithSWR(<TransactionsPage />);
     await ready();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Category Transport" }));
-    await waitFor(() => expect(lastParams(mock).getAll("category_id")).toEqual(["20"]));
+    fireEvent.click(checkbox("Food"));
+    await waitFor(() => expect(checkbox("Dining")).toBeChecked());
+    fireEvent.click(checkbox("Transport"));
+    await waitFor(() =>
+      expect(sortedCategoryIds(lastParams(mock))).toEqual(["10", "11", "12", "20", "21", "22"]),
+    );
+
+    fireEvent.click(checkbox("Fuel"));
+    await waitFor(() =>
+      expect(sortedCategoryIds(lastParams(mock))).toEqual(["10", "11", "12", "20", "22"]),
+    );
+    expect(checkbox("Transport")).toBeChecked();
+    expect(lastParams(mock).get("category_match")).toBe("exact");
   });
 
-  it("a ?category_id= deep link of a master shows it fully checked and still sends the master", async () => {
+  it("a subtree ?category_id= deep link seeds the master plus its subs", async () => {
+    // FENCE (R1). Kills: seeding only the master, which under exact match
+    // drops every sub a budget or forecast link meant to include.
     searchParamsState.value = new URLSearchParams("category_id=10");
     const mock = setupApiFetch();
     renderWithSWR(<TransactionsPage />);
     await ready();
 
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Category Food" })).toBeChecked());
-    expect(screen.getByRole("checkbox", { name: "Category Groceries" })).toBeChecked();
-    expect(lastParams(mock).getAll("category_id")).toContain("10");
+    await waitFor(() => expect(sortedCategoryIds(lastParams(mock))).toEqual(["10", "11", "12"]));
+    expect(lastParams(mock).get("category_match")).toBe("exact");
+    // The first list request already carries the seed.
+    expect(sortedCategoryIds(new URL(listUrls(mock)[0], "http://x").searchParams)).toEqual(["10", "11", "12"]);
+    expect(checkbox("Food")).toBeChecked();
+    expect(checkbox("Groceries")).toBeChecked();
   });
 
-  it("a stored single-select master (pre-panel) keeps filtering its subtree", async () => {
-    // FENCE. Kills: applying the partial-master rule to a lone stored master,
-    // which silently widens a saved filter to every category.
-    window.localStorage.setItem(FILTERS_KEY_TRANSACTIONS, JSON.stringify({ filterCategory: 10 }));
+  it("a legacy ?category=<name> bookmark seeds the same way", async () => {
+    searchParamsState.value = new URLSearchParams("category=food");
     const mock = setupApiFetch();
     renderWithSWR(<TransactionsPage />);
     await ready();
 
-    await waitFor(() => expect(lastParams(mock).getAll("category_id")).toContain("10"));
-    expect(screen.getByRole("checkbox", { name: "Category Food" })).toBeChecked();
+    await waitFor(() => expect(sortedCategoryIds(lastParams(mock))).toEqual(["10", "11", "12"]));
   });
 
-  it("keeps a category_match=exact drilldown on the master alone", async () => {
-    // FENCE. Kills: expanding or omitting the master under exact match, which
-    // either widens the list past the slice that opened it or unfilters it.
+  it("an exact drilldown keeps its category when the user adds another", async () => {
+    // FENCE (vacuity review BLOCKING). Kills: a pick replacing the linked
+    // category, or dropping exact once the user touches the tree.
     searchParamsState.value = new URLSearchParams("category_id=10&category_match=exact");
     const mock = setupApiFetch();
     renderWithSWR(<TransactionsPage />);
@@ -237,14 +309,48 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
       expect(params.get("category_match")).toBe("exact");
     });
 
-    // Picking in the tree drops exact and applies the tree's rules.
     const from = mock.mock.calls.length;
-    fireEvent.click(screen.getByRole("checkbox", { name: "Category Transport" }));
+    fireEvent.click(checkbox("Transport"));
     await waitFor(() => {
       const params = lastParams(mock, from);
-      expect(params.getAll("category_id")).toContain("20");
-      expect(params.get("category_match")).toBeNull();
+      expect(sortedCategoryIds(params)).toEqual(["10", "20", "21", "22"]);
+      expect(params.get("category_match")).toBe("exact");
     });
+  });
+
+  it("a saved master from before R1 is read as that master alone (accepted)", async () => {
+    window.localStorage.setItem(FILTERS_KEY_TRANSACTIONS, JSON.stringify({ filterCategory: 10 }));
+    const mock = setupApiFetch();
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    await waitFor(() => {
+      const params = lastParams(mock);
+      expect(params.getAll("category_id")).toEqual(["10"]);
+      expect(params.get("category_match")).toBe("exact");
+    });
+  });
+
+  // ── R2: a deep link clears saved filters ───────────────────────────────
+
+  it("a deep link starts from default filters, then applies its own", async () => {
+    // FENCE (R2). Kills: keeping saved filters under a deep link, which can
+    // hide the very row it points at.
+    window.localStorage.setItem(
+      FILTERS_KEY_TRANSACTIONS,
+      JSON.stringify({ filterTags: ["work"], filterType: "expense" }),
+    );
+    searchParamsState.value = new URLSearchParams("account_id=100&transaction_id=5");
+    const mock = setupApiFetch();
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    await waitFor(() => expect(lastParams(mock).getAll("account_id")).toEqual(["100"]));
+    for (const url of listUrls(mock)) {
+      const params = new URL(url, "http://x").searchParams;
+      expect(params.get("tags")).toBeNull();
+      expect(params.get("type")).toBeNull();
+    }
   });
 
   it("sends picked tags with tag_match=any and shows no match radios", async () => {
@@ -278,9 +384,11 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     expect(screen.queryByRole("checkbox", { name: "Category Transport" })).toBeNull();
   });
 
+  // ── The drawer (below xl) ──────────────────────────────────────────────
+
   it("below xl, Filters opens a focus-trapped dialog; Escape closes it and returns focus", async () => {
-    // FENCE. Kills: no focus trap (focus never enters the drawer) and no
-    // focus return (focus is stranded when the drawer closes).
+    // FENCE. Kills: no focus trap (focus never enters the drawer), no focus
+    // return, and a closed drawer that stays reachable (no `invisible`).
     setupApiFetch();
     renderWithSWR(<TransactionsPage />);
     await ready();
@@ -290,12 +398,8 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     expect(aside.className.split(/\s+/)).toContain("invisible");
     expect(aside.className.split(/\s+/)).toContain("xl:visible");
 
-    const open = screen.getByRole("button", { name: /^Filters/ });
-    expect(open).toHaveAttribute("aria-expanded", "false");
-    open.focus();
-    fireEvent.click(open);
-
-    const dialog = await screen.findByRole("dialog", { name: "Filters" });
+    expect(screen.getByRole("button", { name: /^Filters/ })).toHaveAttribute("aria-expanded", "false");
+    const { open, dialog } = await openDrawer();
     expect(dialog).toBe(aside);
     expect(dialog).toHaveAttribute("aria-modal", "true");
     expect(open).toHaveAttribute("aria-expanded", "true");
@@ -305,30 +409,98 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(open);
+    expect(aside.className.split(/\s+/)).toContain("invisible");
   });
 
-  it("the drawer footer names the result count and closes the drawer", async () => {
-    setupApiFetch(3);
+  it("the scrim and the Close button each close the drawer", async () => {
+    setupApiFetch();
     renderWithSWR(<TransactionsPage />);
     await ready();
 
-    const open = screen.getByRole("button", { name: /^Filters/ });
-    open.focus();
-    fireEvent.click(open);
-    const dialog = await screen.findByRole("dialog", { name: "Filters" });
+    await openDrawer();
+    fireEvent.click(screen.getByTestId("transactions-filter-scrim"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByTestId("transactions-filter-scrim")).toBeNull();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Show 3 transactions" }));
+    const { open, dialog } = await openDrawer();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close filters" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(open);
   });
 
-  it("announces the result count in an always-mounted live region", async () => {
-    setupApiFetch(3);
+  it("the footer names the current result count and closes the drawer", async () => {
+    // Kills: a footer count frozen at the first load.
+    const mock = setupApiFetch((params) => (params.getAll("account_id").includes("100") ? 7 : 3));
     renderWithSWR(<TransactionsPage />);
     await ready();
 
-    const count = await screen.findByText("3 transactions");
-    expect(count.closest('[aria-live="polite"]')).not.toBeNull();
+    const { open, dialog } = await openDrawer();
+    within(dialog).getByRole("button", { name: "Show 3 transactions" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Account Checking A" }));
+    await waitFor(() => expect(lastParams(mock).getAll("account_id")).toEqual(["100"]));
+    const show = await within(dialog).findByRole("button", { name: "Show 7 transactions" });
+
+    fireEvent.click(show);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(open);
+  });
+
+  it("the Filters button names how many filters are active", async () => {
+    window.localStorage.setItem(
+      FILTERS_KEY_TRANSACTIONS,
+      JSON.stringify({ filterAccount: [100], filterCategory: [20], filterTags: ["trip"], filterType: "expense" }),
+    );
+    setupApiFetch();
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    // jsdom's name computation pads element boundaries, hence the \s*.
+    expect(screen.getByRole("button", { name: /^Filters\s*,\s*4 active$/ })).toBeInTheDocument();
+  });
+
+  it("crossing into xl closes the drawer so the side panel is not left modal", async () => {
+    // FENCE (N2). Kills: no matchMedia listener (the panel stays a modal
+    // dialog trapping focus after a resize or rotate).
+    const listeners: (() => void)[] = [];
+    const xl = { matches: false };
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      get matches() {
+        return query === "(min-width: 80rem)" ? xl.matches : false;
+      },
+      media: query,
+      addEventListener: (_: string, cb: () => void) => {
+        if (query === "(min-width: 80rem)") listeners.push(cb);
+      },
+      removeEventListener: () => {},
+    }));
+    setupApiFetch();
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    await openDrawer();
+    expect(listeners.length).toBeGreaterThan(0);
+    act(() => {
+      xl.matches = true;
+      listeners.forEach((cb) => cb());
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(panel()).not.toHaveAttribute("aria-modal");
+  });
+
+  it("Escape that closes the drawer does not clear selected rows", async () => {
+    // FENCE. Kills: the page-level Escape handler also dropping the selection.
+    setupApiFetch(1, [makeTx(1, "Coffee")]);
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    fireEvent.click((await screen.findAllByRole("checkbox", { name: "Select transaction 1" }))[0]);
+    await screen.findByText("1 selected");
+
+    await openDrawer();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
   });
 
   it("Reset in the panel header clears every filter", async () => {
@@ -340,6 +512,8 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     renderWithSWR(<TransactionsPage />);
     await ready();
     expect(lastParams(mock).getAll("account_id")).toEqual(["100"]);
+    // There is exactly one Reset on the page, and it is in the panel.
+    expect(screen.getAllByTestId("reset-sort-filters")).toHaveLength(1);
 
     const from = mock.mock.calls.length;
     fireEvent.click(within(panel()).getByRole("button", { name: "Reset filters and sort" }));
@@ -353,7 +527,6 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     });
     expect(window.localStorage.getItem(FILTERS_KEY_TRANSACTIONS)).toBeNull();
     expect(screen.getByRole("button", { name: "Account Checking A" })).toHaveAttribute("aria-pressed", "false");
-    // There is still exactly one reset on the page.
     expect(screen.queryAllByTestId("reset-sort-filters")).toHaveLength(0);
   });
 

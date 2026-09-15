@@ -278,9 +278,10 @@ describe("TransactionsPage — dashboard deep links", () => {
     });
   });
 
-  it("does not persist category_match past the deep link that carried it", async () => {
-    // FENCE. Kills: storing category_match with the persisted filters, which
-    // would keep a later visit leaf-flat with no link asking for it.
+  // TBD-464 R1 superseded PR 1's "category_match is not persisted" rule: the
+  // panel's category selection is always exact, so a saved selection comes
+  // back exact too, and a subtree link is seeded as master plus subs instead.
+  it("a saved category selection comes back exact on the next visit", async () => {
     searchParamsState.value = new URLSearchParams("category_id=7&category_match=exact");
     const first = setupApiFetch([]);
     renderWithSWR(<TransactionsPage />);
@@ -296,13 +297,13 @@ describe("TransactionsPage — dashboard deep links", () => {
     await waitFor(() => {
       const params = lastParams(second);
       expect(params.getAll("category_id")).toEqual(["7"]);
-      expect(params.get("category_match")).toBeNull();
+      expect(params.get("category_match")).toBe("exact");
     });
   });
 
-  it("drops category_match once the user picks a category", async () => {
-    // FENCE. Kills: never clearing it, so a user-picked master opens exact
-    // (its own rows only) instead of the default subtree.
+  it("a pick adds to an exact drilldown's category and stays exact", async () => {
+    // FENCE. Kills: a pick replacing the linked category, and dropping exact
+    // (a user-checked master means its own rows, R1).
     searchParamsState.value = new URLSearchParams("category_id=7&category_match=exact");
     const mock = setupApiFetch([]);
     renderWithSWR(<TransactionsPage />);
@@ -320,7 +321,7 @@ describe("TransactionsPage — dashboard deep links", () => {
       const params = new URL(after[after.length - 1], "http://x").searchParams;
       // The panel is multi-select: the pick adds to the linked category.
       expect(params.getAll("category_id")).toEqual(["7", String(CATEGORY.id)]);
-      expect(params.get("category_match")).toBeNull();
+      expect(params.get("category_match")).toBe("exact");
     });
   });
 

@@ -293,48 +293,9 @@ function positiveIds(values: unknown[]): number[] {
   return values.map(Number).filter((n) => Number.isInteger(n) && n > 0);
 }
 
-// TBD-464: the category tree selects a master together with its subs, but the
-// list API matches a category id with its WHOLE subtree. These translate
-// between the two. One level of hierarchy: a sub has no subs.
-function subIdsByMaster(categories: Category[]): Map<number, number[]> {
-  const out = new Map<number, number[]>();
-  for (const c of categories) {
-    if (c.parent_id != null) out.set(c.parent_id, [...(out.get(c.parent_id) ?? []), c.id]);
-  }
-  return out;
-}
-
-// A master selected with NONE of its subs is a whole-subtree selection made
-// outside the tree: a `?category_id=` deep link, a `?category=` bookmark, or a
-// value saved by the old single select. Show it fully checked. The tree never
-// produces this shape itself (see `withoutLoneMasters`).
-function withLoneMastersExpanded(ids: number[], subs: Map<number, number[]>): number[] {
-  const selected = new Set(ids);
-  for (const id of ids) {
-    const children = subs.get(id);
-    if (children && !children.some((s) => selected.has(s))) {
-      for (const s of children) selected.add(s);
-    }
-  }
-  return [...selected];
-}
-
-// Unchecking a master's last sub leaves the master alone in the list, which
-// would read back as its whole subtree. Drop it.
-function withoutLoneMasters(ids: number[], subs: Map<number, number[]>): number[] {
-  const selected = new Set(ids);
-  return ids.filter((id) => {
-    const children = subs.get(id);
-    return !children || children.some((s) => selected.has(s));
-  });
-}
-
-// Omit a master whose subs are not all selected: under subtree match its id
-// would pull the unchecked subs straight back in.
-function withoutPartialMasters(ids: number[], subs: Map<number, number[]>): number[] {
-  const selected = new Set(ids);
-  return ids.filter((id) => (subs.get(id) ?? []).every((s) => selected.has(s)));
-}
+// TBD-464 R2: any of these in the URL makes it a deep link, which starts from
+// default filters so saved filters cannot hide what the link points at.
+const LINK_PARAMS = ["account_id", "category_id", "category", "date_from", "date_to", "transaction_id"];
 
 // Column-aware sort defaults. When the user clicks a different column, that
 // column's natural default direction is applied (Option B in the data-table
@@ -376,8 +337,6 @@ function TransactionsPageContent() {
   const ai = useAiStatus();
   const categorizeAi = ai?.categorize;
   const searchParams = useSearchParams();
-  const urlFiltersSyncedRef = useRef(false);
-  const categoryUrlSyncedRef = useRef(false);
   const targetDesktopRowRef = useRef<HTMLDivElement | null>(null);
   const targetMobileRowRef = useRef<HTMLElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -387,7 +346,7 @@ function TransactionsPageContent() {
   // is how the post-write event and inline category-create force a refresh.
   const refsEnabled = !loading && !!user;
   const { data: accountsData, mutate: mutateAccounts } = useAccounts(refsEnabled);
-  const { data: categoriesData, mutate: mutateCategories } = useCategories(refsEnabled);
+  const { data: categoriesData, error: categoriesError, mutate: mutateCategories } = useCategories(refsEnabled);
   const { data: periodsData, error: periodsError, mutate: mutateBillingPeriods } = useBillingPeriods(refsEnabled);
   const accounts = accountsData ?? EMPTY_ACCOUNTS;
   const categories = categoriesData ?? EMPTY_CATEGORIES;
@@ -405,8 +364,12 @@ function TransactionsPageContent() {
   // generous delay we let the list load anyway; if periods do eventually arrive
   // it re-fetches with the real range, matching the old periods-independent
   // behavior for this rare case.
-  const [periodsWaitElapsed, setPeriodsWaitElapsed] = useState(false);
-  const canLoadList = periodsSettled || periodsWaitElapsed;
+  const [refsWaitElapsed, setRefsWaitElapsed] = useState(false);
+  // TBD-464: categories settle too, because a category deep link is seeded
+  // from them, and the first load waits until the link has been applied.
+  const categoriesSettled = categoriesData !== undefined || categoriesError !== undefined;
+  const [linkApplied, setLinkApplied] = useState(false);
+  const canLoadList = linkApplied && ((periodsSettled && categoriesSettled) || refsWaitElapsed);
   const [error, setError] = useState("");
   // TBD-294: a non-error, non-blocking outcome banner. The demotion is a
   // side effect of a successful delete, so it must not render as an error.
@@ -502,20 +465,15 @@ function TransactionsPageContent() {
   const persistedSetField = persistedFilters.setField;
   const setFilterAccount = (v: number[]) =>
     persistedSetField("filterAccount", v);
-  // A deep link from a leaf-flat rollup carries `category_match=exact`. It is
-  // not persisted: it holds until the user picks categories themselves.
-  const [categoryMatchExact, setCategoryMatchExact] = useState(
-    () => searchParams.get("category_match") === "exact",
-  );
-  // Stable across renders (setField is memoized) so effects that call this
-  // setter can list it in their dep array without re-running every render.
-  const setFilterCategory = useCallback(
-    (v: number[]) => {
-      setCategoryMatchExact(false);
-      persistedSetField("filterCategory", v);
-    },
-    [persistedSetField],
-  );
+  // TBD-464 R1: the category selection is EXACT, the checked ids and nothing
+  // else, and is always sent with `category_match=exact`. A subtree deep link
+  // is seeded as the master plus its subs (see the link effect).
+  //
+  // A value saved before this change (e.g. `[M]` from the old single select)
+  // is therefore read as exact M: its subs drop out. Accepted: saved filters
+  // are a local convenience and the app is pre-launch, so no migration.
+  const setFilterCategory = (v: number[]) =>
+    persistedSetField("filterCategory", v);
   const setFilterType = (v: string) =>
     persistedSetField("filterType", v);
   const setFilterStatus = (v: string) =>
@@ -534,27 +492,6 @@ function TransactionsPageContent() {
   );
   const setFilterTags = (v: string[]) => persistedSetField("filterTags", v);
 
-  // TBD-464: what the category tree shows, and the ids the list request sends.
-  // Under `category_match=exact` (a leaf-flat drilldown) the ids pass through
-  // untouched: the subtree rules would widen or unfilter that list.
-  const subsByMaster = useMemo(() => subIdsByMaster(categories), [categories]);
-  const categorySelection = useMemo(() => {
-    const ids = positiveIds(filterCategory);
-    return categoryMatchExact ? ids : withLoneMastersExpanded(ids, subsByMaster);
-  }, [filterCategory, categoryMatchExact, subsByMaster]);
-  // A string, so an equal selection never re-creates loadTransactions.
-  const categoryParams = useMemo(() => {
-    if (categoryMatchExact) {
-      return categorySelection.map((id) => `&category_id=${id}`).join("") +
-        (categorySelection.length > 0 ? "&category_match=exact" : "");
-    }
-    return withoutPartialMasters(categorySelection, subsByMaster)
-      .map((id) => `&category_id=${id}`)
-      .join("");
-  }, [categorySelection, categoryMatchExact, subsByMaster]);
-  const pickCategories = (next: number[]) =>
-    setFilterCategory(withoutLoneMasters(next, subsByMaster));
-
   // Below xl the filter panel is a drawer. At xl it is always visible and
   // this stays false.
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -569,13 +506,25 @@ function TransactionsPageContent() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [filtersOpen]);
+  // Crossing into xl (resize, rotate) turns the drawer into the side panel,
+  // which must not stay a modal dialog trapping focus. Same idiom as
+  // `use-is-mobile.ts`; 80rem is Tailwind's xl.
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(min-width: 80rem)");
+    const onChange = () => {
+      if (mq.matches) setFiltersOpen(false);
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
   // A section opens by default when it holds a selection, then follows the
   // user. The latch keeps clearing the last selection from collapsing the
   // section under the pointer.
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
   const activeFilterCount = [
     filterAccount.length,
-    categorySelection.length,
+    filterCategory.length,
     filterTags.length,
     filterType,
     filterStatus,
@@ -644,7 +593,9 @@ function TransactionsPageContent() {
     // One repeated param per id: the API reads `list[int]`, so a comma-joined
     // value 422s.
     for (const id of positiveIds(filterAccount)) url += `&account_id=${id}`;
-    url += categoryParams;
+    const categoryIds = positiveIds(filterCategory);
+    for (const id of categoryIds) url += `&category_id=${id}`;
+    if (categoryIds.length > 0) url += "&category_match=exact";
     // Operator ruling 2026-09-14: the tag filter is OR. Never rely on the
     // API default, which is `all`.
     if (filterTags.length > 0) {
@@ -682,57 +633,56 @@ function TransactionsPageContent() {
     setTransactions(data?.items ?? []);
     setTotal(data?.total ?? 0);
     setFetching(false);
-  }, [filterAccount, categoryParams, filterTags, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, periods, pageSize, sortField, sortDir]);
+  }, [filterAccount, filterCategory, filterTags, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, periods, pageSize, sortField, sortDir]);
 
   // Reference data (accounts/categories/periods) auto-fetches via the SWR
   // hooks above once ``refsEnabled`` flips true — no explicit mount effect.
 
-  // Apply supported URL params once so dashboard deep links don't fight
-  // user-edited filters after initial hydration.
+  // Apply a deep link once, after categories settle, so dashboard deep links
+  // don't fight user-edited filters after initial hydration.
+  //
+  // TBD-464 R2: a link resets the saved filters to defaults first, then
+  // applies its own params, so a saved filter can never hide its target.
+  // R1: the panel's category selection is exact, so a subtree link
+  // (`?category_id=M` without `category_match=exact`, as budget and forecast
+  // links send) is seeded as M plus all its subs: the same rows as the
+  // subtree, shown fully checked. An exact link seeds `[M]`.
   useEffect(() => {
-    if (urlFiltersSyncedRef.current) return;
-    urlFiltersSyncedRef.current = true;
+    if (linkApplied || !(categoriesSettled || refsWaitElapsed)) return;
+    if (LINK_PARAMS.some((k) => searchParams.get(k) !== null)) {
+      const patch: TxFilters = { ...TX_FILTER_DEFAULTS };
+      patch.filterAccount = positiveIds(searchParams.getAll("account_id"));
 
-    const patch: Partial<TxFilters> = {};
-    const accountIds = positiveIds(searchParams.getAll("account_id"));
-    if (accountIds.length > 0) patch.filterAccount = accountIds;
-    const categoryIds = positiveIds(searchParams.getAll("category_id"));
-    if (categoryIds.length > 0) patch.filterCategory = categoryIds;
+      let categoryIds = positiveIds(searchParams.getAll("category_id"));
+      // A legacy ?category=<name> bookmark. Names are not unique, so prefer a
+      // master and seed nothing if the name is still ambiguous.
+      const categoryName = searchParams.get("category");
+      if (categoryIds.length === 0 && categoryName) {
+        const named = categories.filter(
+          (c) => c.name.toLowerCase() === categoryName.toLowerCase()
+        );
+        const masters = named.filter((c) => c.parent_id == null);
+        const candidates = masters.length > 0 ? masters : named;
+        if (candidates.length === 1) categoryIds = [candidates[0].id];
+      }
+      if (searchParams.get("category_match") !== "exact") {
+        categoryIds = [...new Set(categoryIds.flatMap((id) => [
+          id,
+          ...categories.filter((c) => c.parent_id === id).map((c) => c.id),
+        ]))];
+      }
+      patch.filterCategory = categoryIds;
 
-    const dateFrom = searchParams.get("date_from");
-    const dateTo = searchParams.get("date_to");
-    if (dateFrom && DATE_PARAM_RE.test(dateFrom)) {
-      patch.filterDateFrom = dateFrom;
-      patch.filterPeriod = "";
-    }
-    if (dateTo && DATE_PARAM_RE.test(dateTo)) {
-      patch.filterDateTo = dateTo;
-      patch.filterPeriod = "";
-    }
+      const dateFrom = searchParams.get("date_from");
+      const dateTo = searchParams.get("date_to");
+      if (dateFrom && DATE_PARAM_RE.test(dateFrom)) patch.filterDateFrom = dateFrom;
+      if (dateTo && DATE_PARAM_RE.test(dateTo)) patch.filterDateTo = dateTo;
 
-    if (Object.keys(patch).length > 0) {
       persistedFilters.set(patch);
     }
-  }, [persistedFilters, searchParams]);
-
-  // Apply a legacy ?category=<name> bookmark once categories are loaded. New
-  // links carry category_id. Names are not unique, so prefer a master and
-  // seed nothing if the name is still ambiguous.
-  useEffect(() => {
-    if (categoryUrlSyncedRef.current) return;
-    const categoryName = searchParams.get("category");
-    if (categoryName && categories.length > 0) {
-      const named = categories.filter(
-        (c) => c.name.toLowerCase() === categoryName.toLowerCase()
-      );
-      const masters = named.filter((c) => c.parent_id == null);
-      const candidates = masters.length > 0 ? masters : named;
-      if (candidates.length === 1) {
-        categoryUrlSyncedRef.current = true;
-        setFilterCategory([candidates[0].id]);
-      }
-    }
-  }, [categories, searchParams, setFilterCategory]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot gate: the first list load waits until the link has been applied
+    setLinkApplied(true);
+  }, [linkApplied, categoriesSettled, refsWaitElapsed, categories, persistedFilters, searchParams]);
 
   // TBD-242: the dropdown offers only CLOSED periods — an open period has no
   // end bound, so it cannot express a date range.
@@ -749,12 +699,12 @@ function TransactionsPageContent() {
     if (!selectedClosedPeriod) setFilterPeriod("");
   }, [closedPeriods, filterPeriod, periodsLoaded, setFilterPeriod]);
 
-  // Arm the stalled-periods fallback only while we are actually waiting.
+  // Arm the stalled-refs fallback only while we are actually waiting.
   useEffect(() => {
-    if (loading || !user || periodsSettled) return;
-    const timer = setTimeout(() => setPeriodsWaitElapsed(true), 10000);
+    if (loading || !user || (periodsSettled && categoriesSettled)) return;
+    const timer = setTimeout(() => setRefsWaitElapsed(true), 10000);
     return () => clearTimeout(timer);
-  }, [loading, user, periodsSettled]);
+  }, [loading, user, periodsSettled, categoriesSettled]);
 
   useEffect(() => {
     if (!loading && user && canLoadList) {
@@ -1400,7 +1350,7 @@ function TransactionsPageContent() {
         }}
         className="group border-b border-border px-4 py-2 last:border-b-0"
       >
-        <summary className="flex min-h-[44px] cursor-pointer list-none items-center gap-2 xl:min-h-8 [&::-webkit-details-marker]:hidden">
+        <summary className="flex min-h-[44px] cursor-pointer list-none items-center gap-2 xl:min-h-0 [&::-webkit-details-marker]:hidden">
           <span className={`${label} mb-0`}>{title}</span>
           {count > 0 && <span className={badgeNeutral}>{count}</span>}
           <ChevronDown aria-hidden="true" className="ml-auto h-4 w-4 text-text-muted transition-transform group-open:rotate-180 motion-reduce:transition-none" />
@@ -1576,16 +1526,19 @@ function TransactionsPageContent() {
         </button>
       </div>
 
-      {/* Announces the result count after every load. Its own always-mounted
-          region: the banner region above has fences that read its whole text. */}
-      <p className="sr-only" role="status" aria-live="polite">
-        {fetching ? "" : resultCountText}
+      {/* Announces the result count when it changes. Not blanked while a load
+          is in flight, or every fetch would re-announce an unchanged count.
+          Its own always-mounted region: the banner region above has fences
+          that read its whole text. */}
+      <p className="sr-only" role="status" aria-live="polite" data-testid="transactions-result-count">
+        {resultCountText}
       </p>
 
       <div className="xl:flex xl:items-start xl:gap-6">
         {filtersOpen && (
           <div
             aria-hidden="true"
+            data-testid="transactions-filter-scrim"
             onClick={() => setFiltersOpen(false)}
             className="fixed inset-0 z-40 bg-scrim xl:hidden"
           />
@@ -1632,8 +1585,8 @@ function TransactionsPageContent() {
             {filterSection("accounts", "Accounts", filterAccount.length, true,
               <AccountFilter label="" includeInactive value={filterAccount} onChange={setFilterAccount} />,
             )}
-            {filterSection("categories", "Categories", categorySelection.length, true,
-              <CategoryPicker label="" value={categorySelection} onChange={pickCategories} />,
+            {filterSection("categories", "Categories", filterCategory.length, true,
+              <CategoryPicker label="" independentMasters value={filterCategory} onChange={setFilterCategory} />,
             )}
             {filterSection("tags", "Tags", filterTags.length, false,
               <TagFilter label="" hideMatch match="any" value={filterTags} onChange={({ tag_names }) => setFilterTags(tag_names)} />,

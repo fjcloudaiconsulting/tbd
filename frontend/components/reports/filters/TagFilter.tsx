@@ -88,7 +88,7 @@ export default function TagFilter({
       ) : tags.length === 0 ? (
         <span className="text-xs text-text-muted">No tags yet</span>
       ) : (
-        <div role="group" aria-label={label || "Tags"} className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+        <div role="group" aria-label={label || "Tags"} className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto p-1">
           {tags.map((t) => {
             const active = selectedSet.has(t.name);
             return (

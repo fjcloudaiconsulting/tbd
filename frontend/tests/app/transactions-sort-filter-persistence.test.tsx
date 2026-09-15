@@ -244,7 +244,8 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
 
     expect(search.value).toBe("");
     expect(document.activeElement).toBe(search);
-    expect(account).toHaveAttribute("aria-pressed", "true");
+    // Re-queried: the node held from before the clear could be a detached one.
+    expect(screen.getByRole("button", { name: "Account Checking" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
     // Settle the refetch the cleared search triggers.
     await waitFor(() => {
