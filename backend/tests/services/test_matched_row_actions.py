@@ -2247,3 +2247,101 @@ async def test_amount_edit_logs_a_balance_move_only_when_money_moved(
         "a matched row's amount edit moves no money, so it must not claim to; "
         "an event here means the balance gate went vacuously true (THE TRAP)"
     )
+
+
+# ── TBD-470: the "include transfers & adjustments" report and pending forecast ─
+
+
+async def _drive_dup_to(db: AsyncSession, seed: dict, dup: Transaction, end_state: str):
+    """Walk an already-MATCHED ``dup`` to ``end_state`` through the real inbox."""
+    if end_state in ("accepted", "pending_review"):
+        await _reconcile(db, seed, _transition(dup.id, ReconciliationState.ACCEPTED))
+    if end_state == "pending_review":
+        await _reconcile(
+            db, seed, _transition(dup.id, ReconciliationState.PENDING_REVIEW),
+        )
+    dup = await _reload(db, dup.id)
+    assert dup.reconciliation_state == end_state
+    return dup
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end_state", ["matched", "accepted", "pending_review"])
+async def test_include_non_reportable_report_counts_a_matched_charge_once(
+    db_session, end_state
+):
+    """F50 (TBD-470). Reports' ``include_non_reportable`` swaps in
+    ``non_reverted_transaction_filter()``, which was a STATE-only clause over
+    ``("skipped", "rejected")``. A reconcile-matched duplicate is reverted by
+    its ONE-WAY LINK, not by a state, so the canonical charge was summed twice.
+
+    Parametrized over the dup's end state because a ``'matched'``-keyed fix
+    (adding it to the reverted roster) is green on the first cell only: the link
+    survives MATCHED -> ACCEPTED -> PENDING_REVIEW, and so does the revert.
+    """
+    from app.schemas.reports_query import (
+        Aggregation, Dataset, Dimension, Measure, MeasureField, ReportsQuery,
+    )
+    from app.services.reports_query_service import execute_query
+
+    seed = await _seed(db_session)
+    # Distinct amounts so the sum names the row counted: 64 correct, 71 double
+    # count, 7 the wrong row. ``_apply_match`` does not require equal amounts.
+    canonical = await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="64.00",
+        label="canonical",
+    )
+    dup, canonical = await _make_matched_pair(
+        db_session, seed, amount="7.00", canonical=canonical,
+    )
+    assert canonical.linked_transaction_id is None, "match must stay ONE-WAY"
+    await _drive_dup_to(db_session, seed, dup, end_state)
+    # Premise: only the canonical 64.00 is in the balance. The dup's 7.00 was
+    # applied at create and reverted by the match.
+    assert (await _account(db_session, seed["acct_a_id"])).balance == (
+        ACCT_A_OPENING - Decimal("64.00")
+    )
+
+    ast = ReportsQuery(
+        dataset=Dataset.TRANSACTIONS,
+        measure=Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT),
+        dimensions=[Dimension.ACCOUNT],
+        filters=[],
+        limit=100,
+        include_non_reportable=True,
+    )
+    rows, _meta = await execute_query(db_session, ast, org_id=seed["org_id"])
+    acct_a = [r for r in rows if r["account"] == "Acct A"]
+    assert len(acct_a) == 1
+    assert Decimal(str(acct_a[0]["value"])) == Decimal("64.00")
+
+
+@pytest.mark.asyncio
+async def test_pending_forecast_does_not_count_a_matched_pending_duplicate(db_session):
+    """F51 (TBD-470). ``compute_account_balance_forecast``'s pending aggregate is
+    the other consumer of ``non_reverted_transaction_filter()``. A PENDING dup
+    matched onto a settled canonical charge will never move the balance when it
+    settles (``update_transaction`` gates on ``contributes_to_cached_balance``),
+    so projecting it as a pending delta double-counts the charge.
+    """
+    from app.services.account_balance_forecast_service import (
+        compute_account_balance_forecast,
+    )
+
+    seed = await _seed(db_session)
+    await _make_matched_pair(
+        db_session, seed, amount="64.00", canonical_account="acct_a_id",
+        dup_status=TransactionStatus.PENDING,
+    )
+    # Positive control: an ordinary pending row in the same account and window
+    # must still be projected, so the window is proven live.
+    await _create(
+        db_session, seed, account_id=seed["acct_a_id"], amount="5.00",
+        label="control", status=TransactionStatus.PENDING,
+    )
+
+    result = await compute_account_balance_forecast(
+        db_session, seed["org_id"], today=TX_DATE,
+    )
+    acct_a = next(a for a in result["accounts"] if a["account_id"] == seed["acct_a_id"])
+    assert Decimal(str(acct_a["pending_delta"])) == Decimal("-5.00")

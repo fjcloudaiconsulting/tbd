@@ -319,8 +319,11 @@ def compile_ast_to_query(
     # adjustments, and reverted (skipped/rejected) reconciliation rows, so a
     # transaction-source report matches Budgets / Forecast / Sankey. The opt-in
     # ``include_non_reportable`` flag re-includes transfer legs + manual
-    # adjustments; reverted recon rows stay excluded either way (their amount
-    # was reverted from the account balance, so counting them double-counts).
+    # adjustments; reverted rows stay excluded either way (their amount was
+    # reverted from the account balance, so counting them double-counts). On
+    # the opt-in path that means skipped/rejected rows AND reconcile-matched
+    # duplicates, which ``non_reverted_transaction_filter()`` drops via
+    # ``balance_contribution_filter()``'s one-way-link arm (TBD-470).
     # This compiler only ever builds on ``Transaction`` (the transactions
     # source), so the clause is transactions-scoped by construction.
     if ast.include_non_reportable:

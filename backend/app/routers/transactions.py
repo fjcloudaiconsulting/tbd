@@ -74,8 +74,8 @@ router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
 async def list_transactions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    account_id: int | None = Query(default=None),
-    category_id: int | None = Query(default=None),
+    account_id: list[int] | None = Query(default=None),
+    category_id: list[int] | None = Query(default=None),
     tx_type: Literal["income", "expense"] | None = Query(default=None, alias="type"),
     status: Literal["settled", "pending"] | None = Query(default=None),
     date_from: datetime.date | None = Query(default=None),
@@ -99,7 +99,8 @@ async def list_transactions(
         default="all",
         description=(
             "Match mode for the ``tags`` filter. 'all' (default) "
-            "requires every named tag; 'any' requires at least one."
+            "requires every named tag; 'any' requires at least one. The "
+            "transactions side panel sends 'any'; the API default stays 'all'."
         ),
     ),
     category_match: Literal["exact", "subtree"] = Query(
@@ -145,6 +146,15 @@ async def list_transactions(
         ),
     ),
 ):
+    """List transactions.
+
+    ``account_id`` and ``category_id`` repeat (``?account_id=1&account_id=2``)
+    and OR within each key; different keys AND. ``search`` matches the
+    description, the amount, or the row's own category name.
+
+    Tags need no multi-value change: the side panel sends ``tag_match=any``
+    (operator ruling, TBD-463) while the API default stays ``all``.
+    """
     tag_list = (
         [t for t in (s.strip() for s in tags.split(",")) if t]
         if tags else None

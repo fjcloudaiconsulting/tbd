@@ -69,17 +69,24 @@ def reportable_transaction_filter():
 def non_reverted_transaction_filter():
     """SQL clause: rows whose amount still counts against the account balance.
 
-    The always-on half of ``reportable_transaction_filter``: it excludes ONLY
-    the reverted reconciliation rows (skipped/rejected), whose amount was
-    reverted from ``accounts.balance`` at the state transition. Transfer legs
-    and manual balance adjustments are NOT excluded here.
+    The always-on half of ``reportable_transaction_filter``: it drops every
+    row whose amount was reverted from ``accounts.balance`` -- skipped/rejected
+    rows AND reconcile-matched duplicates -- while keeping reciprocal transfer
+    legs and manual balance adjustments.
 
-    Used by the Reports "Include transfers & adjustments" opt-in: when a report
-    widget asks to include transfers + adjustments, it must still drop the
-    reverted rows, otherwise their amount double-counts against a balance that
-    no longer contains them.
+    Used by the Reports "Include transfers & adjustments" opt-in and by the
+    pending aggregates in ``account_balance_forecast_service`` and
+    ``recurring_service._settle_due_auto``: a reverted row must stay out,
+    otherwise its amount double-counts against a balance that no longer
+    contains it.
+
+    ⚠ TBD-470: this is ``balance_contribution_filter()``, NOT a state clause
+    over ``_RECON_EXCLUDED_STATES``. A matched duplicate is reverted by its
+    ONE-WAY LINK, and the link (and the revert) survives MATCHED -> ACCEPTED
+    -> PENDING_REVIEW, so neither the old state-only clause nor adding
+    ``'matched'`` to that roster drops it.
     """
-    return Transaction.reconciliation_state.notin_(_RECON_EXCLUDED_STATES)
+    return balance_contribution_filter()
 
 
 def balance_contribution_filter():

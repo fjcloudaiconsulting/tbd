@@ -225,8 +225,9 @@ async def test_is_reverted_agrees_with_the_production_sql_predicate(
 
     An earlier revision of this docstring claimed the SQL comparison made the
     two sides "independent implementations". That was FALSE and is withdrawn:
-    ``non_reverted_transaction_filter()`` is one line over
-    ``_RECON_EXCLUDED_STATES``, and ``REVERTED_RECONCILIATION_STATES`` is the
+    ``non_reverted_transaction_filter()``'s state clause is
+    ``_RECON_EXCLUDED_STATES`` (since TBD-470 via ``balance_contribution_filter``,
+    whose link arm is inert here because ``_make_tx`` writes no link), and ``REVERTED_RECONCILIATION_STATES`` is the
     SAME OBJECT (test above). Both sides bottom out in one tuple; only the
     evaluation mechanism differs, SQL ``NOT IN`` versus Python ``in``.
     Measured: shrink the roster to ``("skipped",)`` and all seven cases here
