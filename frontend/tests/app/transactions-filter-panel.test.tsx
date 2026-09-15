@@ -53,11 +53,11 @@ function acct(id: number, name: string, is_active = true) {
   };
 }
 
-function cat(id: number, name: string, parent_id: number | null) {
+function cat(id: number, name: string, parent_id: number | null, transaction_count = 0) {
   return {
     id, name, type: "expense" as const,
     parent_id, parent_name: null, description: null,
-    slug: name.toLowerCase(), is_system: false, transaction_count: 0,
+    slug: name.toLowerCase(), is_system: false, transaction_count,
   };
 }
 
@@ -72,9 +72,10 @@ function makeTx(id: number, description: string) {
 }
 
 const ACCOUNTS = [acct(100, "Checking A"), acct(200, "Checking B"), acct(300, "Old Savings", false)];
-// Two masters, each with two subs.
+// Two masters, each with two subs. Food holds transactions of its own, so it
+// gets a "Food (other)" row; Transport holds none.
 const CATEGORIES = [
-  cat(10, "Food", null),
+  cat(10, "Food", null, 4),
   cat(11, "Groceries", 10),
   cat(12, "Dining", 10),
   cat(20, "Transport", null),
@@ -225,11 +226,11 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     await waitFor(() => expect(lastParams(mock).getAll("account_id")).toEqual(["100", "300"]));
   });
 
-  // ── R1: exact, independent master selection ───────────────────────────
+  // ── Option C: tri-state groups plus an (other) row ─────────────────────
 
-  it("checking a master checks its subs; unchecking the master keeps its subs; the request is exact", async () => {
-    // FENCE (R1). Kills: unchecking a master clearing its subs, and sending
-    // the ids without category_match=exact (the API default is subtree).
+  it("the group toggle checks and clears the whole group; a missing sub leaves it partial; the request is exact", async () => {
+    // FENCE (option C). Kills: option B (unchecking the master unchecks only
+    // itself), and sending ids without category_match=exact.
     const mock = setupApiFetch();
     renderWithSWR(<TransactionsPage />);
     await ready();
@@ -237,17 +238,36 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     fireEvent.click(checkbox("Food"));
     await waitFor(() => expect(sortedCategoryIds(lastParams(mock))).toEqual(["10", "11", "12"]));
     expect(lastParams(mock).get("category_match")).toBe("exact");
-
-    fireEvent.click(checkbox("Food"));
-    await waitFor(() => expect(sortedCategoryIds(lastParams(mock))).toEqual(["11", "12"]));
-    expect(lastParams(mock).get("category_match")).toBe("exact");
-    expect(checkbox("Food")).not.toBeChecked();
-    expect(checkbox("Food").indeterminate).toBe(false);
-    expect(checkbox("Groceries")).toBeChecked();
-    expect(checkbox("Dining")).toBeChecked();
+    expect(checkbox("Food (other)")).toBeChecked();
 
     fireEvent.click(checkbox("Dining"));
-    await waitFor(() => expect(lastParams(mock).getAll("category_id")).toEqual(["11"]));
+    await waitFor(() => expect(sortedCategoryIds(lastParams(mock))).toEqual(["10", "11"]));
+    expect(lastParams(mock).get("category_match")).toBe("exact");
+    expect(checkbox("Food")).not.toBeChecked();
+    expect(checkbox("Food").indeterminate).toBe(true);
+
+    fireEvent.click(checkbox("Food"));
+    await waitFor(() => expect(sortedCategoryIds(lastParams(mock))).toEqual(["10", "11", "12"]));
+    fireEvent.click(checkbox("Food"));
+    await waitFor(() => expect(lastParams(mock).getAll("category_id")).toEqual([]));
+    expect(checkbox("Groceries")).not.toBeChecked();
+    expect(checkbox("Food (other)")).not.toBeChecked();
+  });
+
+  it("the (other) row alone sends only the master, exact, and leaves the group partial", async () => {
+    const mock = setupApiFetch();
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    fireEvent.click(checkbox("Food (other)"));
+    await waitFor(() => {
+      const params = lastParams(mock);
+      expect(params.getAll("category_id")).toEqual(["10"]);
+      expect(params.get("category_match")).toBe("exact");
+    });
+    expect(checkbox("Food")).not.toBeChecked();
+    expect(checkbox("Food").indeterminate).toBe(true);
+    expect(checkbox("Groceries")).not.toBeChecked();
   });
 
   it("two masters and a partial pick send exactly the checked ids", async () => {
@@ -255,6 +275,9 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     renderWithSWR(<TransactionsPage />);
     await ready();
 
+    // Transport holds no transactions of its own: no (other) row, but the
+    // group toggle still sends its id.
+    expect(screen.queryByRole("checkbox", { name: "Category Transport (other)" })).toBeNull();
     fireEvent.click(checkbox("Food"));
     await waitFor(() => expect(checkbox("Dining")).toBeChecked());
     fireEvent.click(checkbox("Transport"));
@@ -266,13 +289,15 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     await waitFor(() =>
       expect(sortedCategoryIds(lastParams(mock))).toEqual(["10", "11", "12", "20", "22"]),
     );
-    expect(checkbox("Transport")).toBeChecked();
+    expect(checkbox("Transport")).not.toBeChecked();
+    expect(checkbox("Transport").indeterminate).toBe(true);
+    expect(checkbox("Food")).toBeChecked();
     expect(lastParams(mock).get("category_match")).toBe("exact");
   });
 
-  it("a subtree ?category_id= deep link seeds the master plus its subs", async () => {
-    // FENCE (R1). Kills: seeding only the master, which under exact match
-    // drops every sub a budget or forecast link meant to include.
+  it("a subtree ?category_id= deep link seeds the whole group, (other) included", async () => {
+    // FENCE. Kills: seeding only the master, which under exact match drops
+    // every sub a budget or forecast link meant to include.
     searchParamsState.value = new URLSearchParams("category_id=10");
     const mock = setupApiFetch();
     renderWithSWR(<TransactionsPage />);
@@ -283,6 +308,7 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     // The first list request already carries the seed.
     expect(sortedCategoryIds(new URL(listUrls(mock)[0], "http://x").searchParams)).toEqual(["10", "11", "12"]);
     expect(checkbox("Food")).toBeChecked();
+    expect(checkbox("Food (other)")).toBeChecked();
     expect(checkbox("Groceries")).toBeChecked();
   });
 
@@ -295,7 +321,7 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     await waitFor(() => expect(sortedCategoryIds(lastParams(mock))).toEqual(["10", "11", "12"]));
   });
 
-  it("an exact drilldown keeps its category when the user adds another", async () => {
+  it("an exact drilldown shows only (other) checked and keeps its category when the user adds another", async () => {
     // FENCE (vacuity review BLOCKING). Kills: a pick replacing the linked
     // category, or dropping exact once the user touches the tree.
     searchParamsState.value = new URLSearchParams("category_id=10&category_match=exact");
@@ -308,6 +334,9 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
       expect(params.getAll("category_id")).toEqual(["10"]);
       expect(params.get("category_match")).toBe("exact");
     });
+    expect(checkbox("Food (other)")).toBeChecked();
+    expect(checkbox("Groceries")).not.toBeChecked();
+    await waitFor(() => expect(checkbox("Food").indeterminate).toBe(true));
 
     const from = mock.mock.calls.length;
     fireEvent.click(checkbox("Transport"));
@@ -318,7 +347,7 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     });
   });
 
-  it("a saved master from before R1 is read as that master alone (accepted)", async () => {
+  it("a saved master from before option C is read as that master alone: a partial group (accepted)", async () => {
     window.localStorage.setItem(FILTERS_KEY_TRANSACTIONS, JSON.stringify({ filterCategory: 10 }));
     const mock = setupApiFetch();
     renderWithSWR(<TransactionsPage />);
@@ -329,6 +358,21 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
       expect(params.getAll("category_id")).toEqual(["10"]);
       expect(params.get("category_match")).toBe("exact");
     });
+    expect(checkbox("Food (other)")).toBeChecked();
+    await waitFor(() => expect(checkbox("Food").indeterminate).toBe(true));
+  });
+
+  it("the Categories badge leaves out a master the tree cannot show", async () => {
+    // FENCE. Kills: counting the raw selection, where a master with no own
+    // transactions (no (other) row) adds an invisible 1.
+    window.localStorage.setItem(FILTERS_KEY_TRANSACTIONS, JSON.stringify({ filterCategory: [20, 21] }));
+    setupApiFetch();
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    const summary = screen.getByTestId("filter-section-categories").querySelector("summary")!;
+    expect(within(summary).getByText("1")).toBeInTheDocument();
+    expect(within(summary).queryByText("2")).toBeNull();
   });
 
   it("drops saved category ids that no longer exist once categories load", async () => {

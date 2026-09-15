@@ -465,13 +465,17 @@ function TransactionsPageContent() {
   const persistedSetField = persistedFilters.setField;
   const setFilterAccount = (v: number[]) =>
     persistedSetField("filterAccount", v);
-  // TBD-464 R1: the category selection is EXACT, the checked ids and nothing
-  // else, and is always sent with `category_match=exact`. A subtree deep link
-  // is seeded as the master plus its subs (see the link effect).
+  // TBD-464 option C: the category selection is EXACT, the checked ids and
+  // nothing else, and is always sent with `category_match=exact`. The tree's
+  // master box is a group toggle over the master and its subs, and a master
+  // holding its own transactions has a "<Master> (other)" row for its own id.
+  // A subtree deep link is seeded as the master plus its subs (see the link
+  // effect).
   //
   // A value saved before this change (e.g. `[M]` from the old single select)
-  // is therefore read as exact M: its subs drop out. Accepted: saved filters
-  // are a local convenience and the app is pre-launch, so no migration.
+  // is therefore read as exact M: it shows a partial master with only
+  // (other) checked, and its subs drop out. Accepted: saved filters are a
+  // local convenience and the app is pre-launch, so no migration.
   const setFilterCategory = (v: number[]) =>
     persistedSetField("filterCategory", v);
   const setFilterType = (v: string) =>
@@ -522,6 +526,18 @@ function TransactionsPageContent() {
   // user. The latch keeps clearing the last selection from collapsing the
   // section under the pointer.
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
+  // The Categories badge counts what the tree SHOWS: a master whose (other)
+  // row is hidden (no transactions of its own) is left out unless its whole
+  // group is checked. The request still sends it; it matches no rows.
+  const visibleCategoryCount = useMemo(() => {
+    const selected = new Set(filterCategory);
+    return filterCategory.filter((id) => {
+      const master = categories.find((c) => c.id === id);
+      const subs = categories.filter((c) => c.parent_id === id);
+      return !master || subs.length === 0 || master.transaction_count > 0 ||
+        subs.every((c) => selected.has(c.id));
+    }).length;
+  }, [filterCategory, categories]);
   const activeFilterCount = [
     filterAccount.length,
     filterCategory.length,
@@ -643,10 +659,11 @@ function TransactionsPageContent() {
   //
   // TBD-464 R2: a link resets the saved filters to defaults first, then
   // applies its own params, so a saved filter can never hide its target.
-  // R1: the panel's category selection is exact, so a subtree link
+  // Option C: the panel's category selection is exact, so a subtree link
   // (`?category_id=M` without `category_match=exact`, as budget and forecast
   // links send) is seeded as M plus all its subs: the same rows as the
-  // subtree, shown fully checked. An exact link seeds `[M]`.
+  // subtree, shown as a fully checked group including (other). An exact link
+  // seeds `[M]`: only (other) is checked and the master shows partial.
   useEffect(() => {
     if (linkApplied || !(categoriesSettled || refsWaitElapsed)) return;
     if (LINK_PARAMS.some((k) => searchParams.get(k) !== null)) {
@@ -1666,8 +1683,8 @@ function TransactionsPageContent() {
                     </select>
                   </div>
                 )}
-            {filterSection("categories", "Categories", filterCategory.length, true,
-              <CategoryPicker label="" independentMasters value={filterCategory} onChange={setFilterCategory} />,
+            {filterSection("categories", "Categories", visibleCategoryCount, true,
+              <CategoryPicker label="" ownRow value={filterCategory} onChange={setFilterCategory} />,
             )}
             {filterSection("tags", "Tags", filterTags.length, false,
               <TagFilter label="" hideMatch match="any" value={filterTags} onChange={({ tag_names }) => setFilterTags(tag_names)} />,
