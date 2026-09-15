@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -660,5 +660,69 @@ describe("AppShell — proactive refresh focus/visibility", () => {
       visibilityStateSpy.mockRestore();
     }
     expect(ensureFreshAccessTokenMock).not.toHaveBeenCalled();
+  });
+});
+
+// TBD-467: the footer's 11px "Give feedback" text was hard to find, so the
+// sidebar carries a second entry. The widget is a SlideInPanel with no
+// portal (`fixed inset-0`), and the <aside> has translate classes, which
+// make it the containing block: a widget mounted inside <aside> would be
+// clipped to the 224px sidebar. So AppShell mounts it once, outside.
+describe("AppShell — sidebar feedback entry (TBD-467)", () => {
+  const useAuthMock = vi.mocked(useAuth);
+
+  function authState(user: unknown, loading: boolean) {
+    useAuthMock.mockReturnValue({
+      user: user as never,
+      loading,
+      needsSetup: false,
+      billingUiEnabled: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+  }
+
+  beforeEach(() => {
+    useAuthMock.mockReset();
+  });
+
+  it("opens the feedback widget outside <aside> and moves focus into it", async () => {
+    authState(BASE_USER, false);
+    await renderShell();
+
+    const trigger = screen.getByTestId("sidebar-feedback-trigger");
+    const aside = document.querySelector("aside");
+    expect(aside).not.toBeNull();
+    expect(aside!.contains(trigger)).toBe(true);
+    // A button, never a nav Link: it can never be the current page.
+    expect(trigger.tagName).toBe("BUTTON");
+    expect(trigger).not.toHaveAttribute("aria-current");
+    expect(trigger).toHaveAccessibleName(/give feedback/i);
+
+    await act(async () => {
+      fireEvent.click(trigger);
+    });
+
+    const widget = screen.getByTestId("feedback-widget");
+    expect(aside!.contains(widget)).toBe(false);
+    const dialog = within(widget).getByRole("dialog");
+    await waitFor(() => {
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    });
+    expect(trigger).not.toHaveAttribute("aria-current");
+  });
+
+  it.each([
+    ["loading", null, true],
+    ["signed out", null, false],
+  ])("renders no feedback trigger while %s", async (_label, user, loading) => {
+    authState(user, loading);
+    await renderShell();
+
+    expect(screen.queryByTestId("sidebar-feedback-trigger")).toBeNull();
+    expect(screen.queryByTestId("feedback-trigger")).toBeNull();
+    expect(screen.queryByRole("button", { name: /give feedback/i })).toBeNull();
   });
 });
