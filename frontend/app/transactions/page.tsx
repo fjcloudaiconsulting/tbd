@@ -679,10 +679,17 @@ function TransactionsPageContent() {
       if (dateTo && DATE_PARAM_RE.test(dateTo)) patch.filterDateTo = dateTo;
 
       persistedFilters.set(patch);
+    } else if (categoriesData !== undefined) {
+      // Saved ids of categories deleted since are dropped. Otherwise they stay
+      // sent and counted in the badge while the tree cannot show them, so only
+      // Reset would clear them.
+      const known = new Set(categories.map((c) => c.id));
+      const kept = filterCategory.filter((id) => known.has(id));
+      if (kept.length !== filterCategory.length) persistedFilters.set({ filterCategory: kept });
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot gate: the first list load waits until the link has been applied
     setLinkApplied(true);
-  }, [linkApplied, categoriesSettled, refsWaitElapsed, categories, persistedFilters, searchParams]);
+  }, [linkApplied, categoriesSettled, refsWaitElapsed, categoriesData, categories, filterCategory, persistedFilters, searchParams]);
 
   // TBD-242: the dropdown offers only CLOSED periods — an open period has no
   // end bound, so it cannot express a date range.
@@ -1585,33 +1592,7 @@ function TransactionsPageContent() {
             {filterSection("accounts", "Accounts", filterAccount.length, true,
               <AccountFilter label="" includeInactive value={filterAccount} onChange={setFilterAccount} />,
             )}
-            {filterSection("categories", "Categories", filterCategory.length, true,
-              <CategoryPicker label="" independentMasters value={filterCategory} onChange={setFilterCategory} />,
-            )}
-            {filterSection("tags", "Tags", filterTags.length, false,
-              <TagFilter label="" hideMatch match="any" value={filterTags} onChange={({ tag_names }) => setFilterTags(tag_names)} />,
-            )}
-            {filterSection("type", "Type and status", [filterType, filterStatus].filter(Boolean).length, false,
-              <div className="flex flex-col gap-2">
-                <div>
-                  <label htmlFor="f-type" className="sr-only">Filter by type</label>
-                  <select id="f-type" value={filterType} onChange={(e) => setFilterType(e.target.value)} className={input}>
-                    <option value="">All types</option>
-                    <option value="income">Income</option>
-                    <option value="expense">Expense</option>
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="f-status" className="sr-only">Filter by status</label>
-                  <select id="f-status" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className={input}>
-                    <option value="">All statuses</option>
-                    <option value="settled">Settled</option>
-                    <option value="pending">Pending</option>
-                  </select>
-                </div>
-              </div>,
-            )}
-            {filterSection("date", "Date", filterDateFrom || filterDateTo || filterPeriod ? 1 : 0, false,
+            {filterSection("date", "Date", filterDateFrom || filterDateTo || filterPeriod ? 1 : 0, true,
               <div className="flex flex-col gap-2">
                 <div className="flex flex-wrap gap-1">
                   {(() => {
@@ -1685,6 +1666,32 @@ function TransactionsPageContent() {
                     </select>
                   </div>
                 )}
+            {filterSection("categories", "Categories", filterCategory.length, true,
+              <CategoryPicker label="" independentMasters value={filterCategory} onChange={setFilterCategory} />,
+            )}
+            {filterSection("tags", "Tags", filterTags.length, false,
+              <TagFilter label="" hideMatch match="any" value={filterTags} onChange={({ tag_names }) => setFilterTags(tag_names)} />,
+            )}
+            {filterSection("type", "Type and status", [filterType, filterStatus].filter(Boolean).length, false,
+              <div className="flex flex-col gap-2">
+                <div>
+                  <label htmlFor="f-type" className="sr-only">Filter by type</label>
+                  <select id="f-type" value={filterType} onChange={(e) => setFilterType(e.target.value)} className={input}>
+                    <option value="">All types</option>
+                    <option value="income">Income</option>
+                    <option value="expense">Expense</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="f-status" className="sr-only">Filter by status</label>
+                  <select id="f-status" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className={input}>
+                    <option value="">All statuses</option>
+                    <option value="settled">Settled</option>
+                    <option value="pending">Pending</option>
+                  </select>
+                </div>
+              </div>,
+            )}
               </div>,
             )}
           </div>

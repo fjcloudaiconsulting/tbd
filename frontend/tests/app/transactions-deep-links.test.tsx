@@ -282,7 +282,8 @@ describe("TransactionsPage — dashboard deep links", () => {
   // panel's category selection is always exact, so a saved selection comes
   // back exact too, and a subtree link is seeded as master plus subs instead.
   it("a saved category selection comes back exact on the next visit", async () => {
-    searchParamsState.value = new URLSearchParams("category_id=7&category_match=exact");
+    // A category that exists: saved ids for deleted categories are dropped.
+    searchParamsState.value = new URLSearchParams(`category_id=${CATEGORY.id}&category_match=exact`);
     const first = setupApiFetch([]);
     renderWithSWR(<TransactionsPage />);
     await waitFor(() => {
@@ -296,7 +297,7 @@ describe("TransactionsPage — dashboard deep links", () => {
 
     await waitFor(() => {
       const params = lastParams(second);
-      expect(params.getAll("category_id")).toEqual(["7"]);
+      expect(params.getAll("category_id")).toEqual([String(CATEGORY.id)]);
       expect(params.get("category_match")).toBe("exact");
     });
   });

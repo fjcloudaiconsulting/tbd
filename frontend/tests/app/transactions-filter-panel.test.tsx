@@ -331,6 +331,23 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     });
   });
 
+  it("drops saved category ids that no longer exist once categories load", async () => {
+    // FENCE (re-review). Kills: a deleted category's id staying in the saved
+    // selection, sent on every request and counted in the badge while
+    // nothing in the tree shows it, so only Reset could clear it.
+    window.localStorage.setItem(FILTERS_KEY_TRANSACTIONS, JSON.stringify({ filterCategory: [10, 999] }));
+    const mock = setupApiFetch();
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    await waitFor(() => expect(lastParams(mock).getAll("category_id")).toEqual(["10"]));
+    for (const url of listUrls(mock)) {
+      expect(new URL(url, "http://x").searchParams.getAll("category_id")).not.toContain("999");
+    }
+    expect(screen.getByRole("button", { name: /^Filters\s*,\s*1 active$/ })).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(FILTERS_KEY_TRANSACTIONS)!).filterCategory).toEqual([10]);
+  });
+
   // ── R2: a deep link clears saved filters ───────────────────────────────
 
   it("a deep link starts from default filters, then applies its own", async () => {
@@ -535,6 +552,18 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     setupApiFetch();
     renderWithSWR(<TransactionsPage />);
     await ready();
+
+    // Operator request: Date sits before Categories and starts open, like
+    // Accounts and Categories.
+    const order = Array.from(panel().querySelectorAll("details")).map((d) => d.dataset.testid);
+    expect(order).toEqual([
+      "filter-section-accounts",
+      "filter-section-date",
+      "filter-section-categories",
+      "filter-section-tags",
+      "filter-section-type",
+    ]);
+    expect((screen.getByTestId("filter-section-date") as HTMLDetailsElement).open).toBe(true);
 
     const tags = screen.getByTestId("filter-section-tags") as HTMLDetailsElement;
     expect(tags.open).toBe(true);
