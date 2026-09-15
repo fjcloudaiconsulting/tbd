@@ -20,6 +20,7 @@ import {
   LogOut,
   Megaphone,
   Menu,
+  MessageSquare,
   PieChart,
   RefreshCw,
   Settings,
@@ -45,6 +46,7 @@ import AppShellAddTransactionCta, {
 import AnnouncementBar from "@/components/announcements/AnnouncementBar";
 import NotificationBell from "@/components/notifications/NotificationBell";
 import AppShellFooter from "@/components/AppShellFooter";
+import FeedbackWidget from "@/components/feedback/FeedbackWidget";
 import { Logo } from "@/components/brand/Logo";
 import HideBalancesToggle from "@/components/ui/HideBalancesToggle";
 import ThemeToggle from "@/components/ui/ThemeToggle";
@@ -335,6 +337,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const tour = useTour();
   const [userExpanded, setUserExpanded] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
 
   useFocusTrap({ active: sidebarOpen, containerRef: sidebarRef });
@@ -627,6 +630,26 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </nav>
 
+        {/* TBD-467: a button, not a Link, so it never takes aria-current
+            or the active style. The widget it opens is mounted at the
+            shell root below: the translated <aside> is the containing
+            block for SlideInPanel's `fixed inset-0`, so mounting it in
+            here would clip it to the sidebar. */}
+        <div className="px-3 pb-2">
+          <button
+            type="button"
+            onClick={() => {
+              setSidebarOpen(false);
+              setFeedbackOpen(true);
+            }}
+            data-testid="sidebar-feedback-trigger"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-colors text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-bright"
+          >
+            <MessageSquare {...NAV_ICON_PROPS} />
+            Give feedback
+          </button>
+        </div>
+
         {/* User section at bottom */}
         <div className="relative border-t border-sidebar-border px-3 py-3">
           <button
@@ -740,6 +763,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <main id="main-content" tabIndex={-1} className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-[1760px]">{children}</div></main>
         <AppShellFooter />
       </div>
+      <FeedbackWidget open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
     </div>
   );
 }

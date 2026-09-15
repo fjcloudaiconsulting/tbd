@@ -722,6 +722,12 @@ jobs:
         working-directory: frontend
         run: npm run lint -- --quiet
 
+      # `next build` type-checks only what it bundles, so a type error in a
+      # test file merged green before this (TBD-516: #761 + #762, fixed #763).
+      - name: Type-check frontend
+        working-directory: frontend
+        run: npx tsc --noEmit
+
       - name: Run frontend production build
         working-directory: frontend
         run: npm run build

@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { X } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
@@ -296,6 +297,7 @@ function TransactionsPageContent() {
   const categoryUrlSyncedRef = useRef(false);
   const targetDesktopRowRef = useRef<HTMLDivElement | null>(null);
   const targetMobileRowRef = useRef<HTMLElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   // Reference data via shared SWR hooks (SWR Phase 2). Gated on resolved
   // auth so a fetch never fires before the bearer token is set. ``mutate``
@@ -1361,9 +1363,22 @@ function TransactionsPageContent() {
 
       {/* Search + Preset filters */}
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
-        <div className="w-full sm:flex-1 sm:min-w-[200px]">
+        <div className="relative w-full sm:flex-1 sm:min-w-[200px]">
           <label htmlFor="f-search" className="sr-only">Search transactions</label>
-          <input id="f-search" type="text" placeholder="Search by description or amount..." value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} className={input} />
+          <input ref={searchInputRef} id="f-search" type="text" placeholder="Search by description or amount..." value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} className={`${input} pr-10`} />
+          {filterSearch && (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => {
+                setFilterSearch("");
+                searchInputRef.current?.focus();
+              }}
+              className="absolute inset-y-0 right-0 flex items-center rounded-md px-3 text-text-muted hover:text-text-primary"
+            >
+              <X aria-hidden="true" className="h-4 w-4" />
+            </button>
+          )}
         </div>
         <div className="flex flex-wrap gap-1">
           {(() => {

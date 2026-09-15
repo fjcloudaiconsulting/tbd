@@ -249,3 +249,94 @@ async def test_from_forecast_seeds_named_next_period(session_factory):
     async with session_factory() as db:
         current = await budget_service.list_budgets(db, seed["org_id"])
     assert current == []
+
+
+# ── TBD-466: plan items roll up to ONE budget per master ───────────────────
+#
+# Budgets are master-only by rule (create_budget), and a master's spent
+# already includes its subs, so a sub-level budget row double counts.
+# Fixture, asymmetric on purpose: master Groceries (M) with subs
+# Supermarket (S), Restaurant (T) and a BOTH-typed Deli (S2). Items M
+# expense 500, S expense 200, S2 INCOME 10. Settled spend M 30, S 70,
+# T 11, S2 50.
+
+
+async def _seed_master_with_subs(factory) -> dict:
+    from app.models.account import Account, AccountType
+    from app.models.transaction import Transaction, TransactionStatus, TransactionType
+
+    seed = await _seed(factory, with_plan=False)
+    org_id = seed["org_id"]
+    m = seed["cats"]["groceries"]
+    async with factory() as db:
+        at = AccountType(org_id=org_id, name="Cash", slug="cash", is_system=True)
+        db.add(at)
+        await db.commit()
+        acc = Account(org_id=org_id, account_type_id=at.id, name="W", balance=Decimal("0"))
+        s = Category(org_id=org_id, name="Supermarket", slug="sm", type=CategoryType.EXPENSE, parent_id=m)
+        t = Category(org_id=org_id, name="Restaurant", slug="rs", type=CategoryType.EXPENSE, parent_id=m)
+        s2 = Category(org_id=org_id, name="Deli", slug="dl", type=CategoryType.BOTH, parent_id=m)
+        db.add_all([acc, s, t, s2])
+        await db.commit()
+        for cat_id, amount in ((m, "30"), (s.id, "70"), (t.id, "11"), (s2.id, "50")):
+            db.add(Transaction(
+                org_id=org_id, account_id=acc.id, category_id=cat_id,
+                type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+                amount=Decimal(amount), date=datetime.date(2026, 4, 10),
+                settled_date=datetime.date(2026, 4, 10), description="spend",
+            ))
+        plan = ForecastPlan(org_id=org_id, billing_period_id=seed["period_id"], status=PlanStatus.ACTIVE)
+        db.add(plan)
+        await db.commit()
+        db.add_all([
+            ForecastPlanItem(
+                plan_id=plan.id, org_id=org_id, category_id=cat_id, type=item_type,
+                planned_amount=Decimal(amount), source=ItemSource.MANUAL,
+            )
+            for cat_id, item_type, amount in (
+                (m, ForecastItemType.EXPENSE, "500"),
+                (s.id, ForecastItemType.EXPENSE, "200"),
+                (s2.id, ForecastItemType.INCOME, "10"),
+            )
+        ])
+        await db.commit()
+    seed["cats"].update({"supermarket": s.id, "restaurant": t.id, "deli": s2.id})
+    return seed
+
+
+@pytest.mark.asyncio
+async def test_f8_master_and_sub_items_become_one_master_budget(session_factory):
+    """F8: exactly one budget, on M, amount 700, spent 161; no S row.
+    Kills today's per-item copy (two rows, 231 spent across them)."""
+    seed = await _seed_master_with_subs(session_factory)
+
+    async with session_factory() as db:
+        result = await budget_service.create_budgets_from_forecast(db, seed["org_id"])
+
+    assert [(r.category_id, r.amount) for r in result] == [
+        (seed["cats"]["groceries"], Decimal("700")),
+    ]
+    assert sum(r.spent for r in result) == Decimal("161")
+
+
+@pytest.mark.asyncio
+async def test_f9_legacy_sub_budget_row_blocks_the_master_row(session_factory):
+    """F9: a legacy budget row on T (a sub with NO forecast item) already in
+    the period → no M row is created (M's spent includes T, so both would
+    double count). T is resolved to its master only because the existing
+    rows' categories are looked up too. Kills a skip keyed on the exact item
+    category id, and a parent lookup over the plan items alone."""
+    seed = await _seed_master_with_subs(session_factory)
+    async with session_factory() as db:
+        db.add(Budget(
+            org_id=seed["org_id"], category_id=seed["cats"]["restaurant"],
+            amount=Decimal("75"), period_start=seed["period_start"], period_end=None,
+        ))
+        await db.commit()
+
+    async with session_factory() as db:
+        result = await budget_service.create_budgets_from_forecast(db, seed["org_id"])
+
+    assert [(r.category_id, r.amount) for r in result] == [
+        (seed["cats"]["restaurant"], Decimal("75")),
+    ]
