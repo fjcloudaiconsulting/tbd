@@ -1,6 +1,45 @@
 import { currencyPrefix } from "@/lib/currencies";
 
+// Hide balances (TBD-527): a per-device flag every money formatter reads.
+// ponytail: a module store, no provider and no pre-paint script. That is safe
+// only because AppShell renders a spinner while `loading || !user`, so neither
+// SSR nor hydration ever contains a figure. A money page outside that gate
+// would paint unmasked first; add a pre-paint script if one ever exists.
+const HIDE_KEY = "tbd-hide-balances";
+const MASK = "•••••";
+let hidden: boolean | undefined;
+const listeners = new Set<() => void>();
+
+export function isBalancesHidden(): boolean {
+  if (hidden === undefined) {
+    if (typeof window === "undefined") return false;
+    try {
+      hidden = window.localStorage.getItem(HIDE_KEY) === "1";
+    } catch {
+      hidden = false;
+    }
+  }
+  return hidden;
+}
+
+export function setBalancesHidden(value: boolean): void {
+  hidden = value;
+  try {
+    window.localStorage.setItem(HIDE_KEY, value ? "1" : "0");
+  } catch {
+    // Storage blocked: the choice lasts for this page load only.
+  }
+  listeners.forEach((fn) => fn());
+}
+
+export function subscribeBalancesHidden(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+// ⚠ Fixed length and no sign: the mask must not leak magnitude or direction.
 export function formatAmount(value: number | string): string {
+  if (isBalancesHidden()) return MASK;
   return Number(value).toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,

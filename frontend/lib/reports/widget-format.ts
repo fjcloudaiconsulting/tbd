@@ -49,6 +49,7 @@
  * follow-up rather than smuggled in here.
  */
 import type { Measure, SourceCatalogEntry } from "@/lib/reports/types";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { useReportSources } from "@/lib/reports/use-report-sources";
 
 /** The format vocabulary the widget configs and `formatMeasureValue` share. */
@@ -202,6 +203,7 @@ export function useWidgetFormat(
   dataset: string | undefined,
   measures: Array<Measure | undefined>,
 ): { format: WidgetFormat | undefined; entry: SourceCatalogEntry | undefined; isLoading: boolean } {
+  useBalancesHidden(); // repaint the widget when "Hide balances" flips (TBD-527)
   const { sources, isLoading } = useReportSources();
   const entry = entryFor(sources, dataset);
   return { format: sharedFormatFor(entry, measures), entry, isLoading };
