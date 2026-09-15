@@ -6,7 +6,7 @@ import { currencyPrefix } from "@/lib/currencies";
 // SSR nor hydration ever contains a figure. A money page outside that gate
 // would paint unmasked first; add a pre-paint script if one ever exists.
 const HIDE_KEY = "tbd-hide-balances";
-const MASK = "•••••";
+export const BALANCE_MASK = "•••••";
 let hidden: boolean | undefined;
 const listeners = new Set<() => void>();
 
@@ -39,7 +39,7 @@ export function subscribeBalancesHidden(fn: () => void): () => void {
 
 // ⚠ Fixed length and no sign: the mask must not leak magnitude or direction.
 export function formatAmount(value: number | string): string {
-  if (isBalancesHidden()) return MASK;
+  if (isBalancesHidden()) return BALANCE_MASK;
   return Number(value).toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
