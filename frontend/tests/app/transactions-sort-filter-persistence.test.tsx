@@ -251,7 +251,7 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
       expect(
         mock.mock.calls
           .slice(callsBefore)
-          .some((c) => typeof c[0] === "string" && c[0].startsWith("/api/v1/transactions") && !c[0].includes("search=")),
+          .some((c) => typeof c[0] === "string" && c[0].startsWith("/api/v1/transactions") && !c[0].includes("search=") && c[0].includes("account_id=100")),
       ).toBe(true);
     });
   });
