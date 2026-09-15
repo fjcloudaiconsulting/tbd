@@ -157,5 +157,6 @@ describe("F4: money components re-render on Hide balances", () => {
       scans.flatMap((s) => s.staleMemos.map((line) => `${s.rel}:${line}`)),
       "these memoise a formatted figure without `hidden` or `money` in their deps",
     ).toEqual([]);
-  });
+    // Static scan over the whole tree: 3.7s on CI against the 5s default (TBD-540).
+  }, 30_000);
 });
