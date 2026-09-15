@@ -4,10 +4,11 @@
 // applies by POSTing new budgets into the next period. No balance meter
 // (a draft is not conservation-constrained).
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import BudgetDraftModal from "@/components/budgets/BudgetDraftModal";
 import { apiFetch } from "@/lib/api";
+import { setBalancesHidden } from "@/lib/format";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -106,4 +107,21 @@ it("shows an empty state when there is no history to draft from", async () => {
       /not enough recent spending history/i,
     ),
   );
+});
+
+it("Hide balances masks the server-built reasoning (TBD-527)", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({
+    ...DRAFT_OK,
+    // budget_draft_service: `f"Based on about {projected:.2f} per month ..."`
+    suggestions: [{ ...DRAFT_OK.suggestions[0], reasoning: "Based on about 7373.37 per month over the last 3 months." }],
+  } as never);
+  render(<BudgetDraftModal open periodStart="2026-08-01" onApplied={() => {}} onClose={() => {}} />);
+  expect(await screen.findByText(/Based on about 7373\.37 per month/)).toBeInTheDocument();
+  try {
+    act(() => setBalancesHidden(true));
+    expect(document.body.textContent).not.toMatch(/7,?373/);
+    expect(screen.getByText("Based on about ••••• per month over the last 3 months.")).toBeInTheDocument();
+  } finally {
+    act(() => setBalancesHidden(false));
+  }
 });

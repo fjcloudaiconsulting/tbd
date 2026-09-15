@@ -17,6 +17,7 @@ import {
 
 import { chartColor } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 
 export interface LineWidgetChartProps {
   rows: Array<{ label: string } & Record<string, number | string>>;
@@ -45,6 +46,7 @@ export default function LineWidgetChart({
   format,
   currency,
 }: LineWidgetChartProps) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>

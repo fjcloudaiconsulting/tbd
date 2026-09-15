@@ -1,6 +1,73 @@
 import { currencyPrefix } from "@/lib/currencies";
 
+// Hide balances (TBD-527): a per-device flag every money formatter reads.
+// ponytail: a module store, no provider and no pre-paint script. That is safe
+// only because AppShell renders a spinner while `loading || !user`, so neither
+// SSR nor hydration ever contains a figure. A money page outside that gate
+// would paint unmasked first; add a pre-paint script if one ever exists.
+const HIDE_KEY = "tbd-hide-balances";
+export const BALANCE_MASK = "•••••";
+let hidden: boolean | undefined;
+const listeners = new Set<() => void>();
+
+export function isBalancesHidden(): boolean {
+  if (hidden === undefined) {
+    if (typeof window === "undefined") return false;
+    try {
+      hidden = window.localStorage.getItem(HIDE_KEY) === "1";
+    } catch {
+      hidden = false;
+    }
+  }
+  return hidden;
+}
+
+export function setBalancesHidden(value: boolean): void {
+  hidden = value;
+  try {
+    window.localStorage.setItem(HIDE_KEY, value ? "1" : "0");
+  } catch {
+    // Storage blocked: the choice lasts for this page load only.
+  }
+  listeners.forEach((fn) => fn());
+}
+
+// No cross-tab `storage` listener: another open tab picks the change up on
+// reload, which is fine for a per-device preference.
+export function subscribeBalancesHidden(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+// Amounts inside SERVER-BUILT text. The shapes, read off the backend:
+//   - notification body: `f"{owed:,.2f}"` -> "1,240.00 EUR" (grouped)
+//   - budget draft / rebalance reasoning: `{x:.2f}` -> "7373.37" (unsigned)
+//   - scenario expected_outcome: `_q(delta)` = str(quantize) -> "7373.37"
+//   - balance adjustment: `f"{old_balance} -> {target_balance}"`. old is a
+//     Numeric(12,2) column ("-120.50"), but target is the request Decimal and
+//     the modal posts a JS number, so it prints "7400" or "7400.5": the
+//     second alternative masks whatever follows "-> ".
+// The decimal branch refuses a digit or dot on either side, so dotted dates
+// and versions in bank descriptions survive ("15.09.2026", "2026.09.15",
+// "v2.10.3"), as does "12.50%". A dot is refused after the amount only when a
+// digit follows it, so a sentence-final "about 7373.37." still masks.
+// ⚠ A bare "14.35" IS masked: it is indistinguishable from an amount, and a
+// masked clock time costs a glance while an unmasked amount is the leak.
+// (Leading capture groups, not lookbehinds: tsconfig targets ES2017.)
+const MONEY_IN_TEXT = /(-> )-?\d+(?:\.\d+)?|(^|[^\d.])-?\d[\d,]*\.\d{2}(?![\d%]|\.\d)/g;
+
+/** Mask every amount in free text when balances are hidden; else unchanged. */
+export function maskMoneyText(text: string): string {
+  if (!isBalancesHidden()) return text;
+  return text.replace(
+    MONEY_IN_TEXT,
+    (_m, arrow?: string, lead?: string) => `${arrow ?? lead ?? ""}${BALANCE_MASK}`,
+  );
+}
+
+// ⚠ Fixed length and no sign: the mask must not leak magnitude or direction.
 export function formatAmount(value: number | string): string {
+  if (isBalancesHidden()) return BALANCE_MASK;
   return Number(value).toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,

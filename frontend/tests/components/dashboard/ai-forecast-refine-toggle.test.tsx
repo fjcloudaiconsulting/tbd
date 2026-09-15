@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AIForecastRefineToggle, {
   type RefinedForecastResponse,
 } from "@/components/dashboard/AIForecastRefineToggle";
+import { setBalancesHidden } from "@/lib/format";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -279,6 +280,46 @@ describe("AIForecastRefineToggle - tooltip details", () => {
     // Anomaly listed — match the description via a text-content includes
     // check because the severity tag renders as a sibling span.
     expect(screen.getByText(/Spike vs\. trailing average/i)).toBeInTheDocument();
+  });
+});
+
+describe("AIForecastRefineToggle - Hide balances (TBD-527)", () => {
+  it("masks the LLM summary in the review modal and in the details panel", async () => {
+    // provenance.summary is free LLM text; the refine prompt never forbids amounts.
+    const SUMMARY = "Groceries rose to about 7373.37 this month.";
+    mockedFetch
+      .mockResolvedValueOnce(estimateFixture())
+      .mockResolvedValueOnce(
+        refinedFixture({ provenance: { ...refinedFixture().provenance, summary: SUMMARY } }),
+      );
+
+    render(<AIForecastRefineToggle periodStart="2026-05-01" />);
+    fireEvent.click(screen.getByTestId("ai-forecast-refine-toggle"));
+    fireEvent.click(await screen.findByRole("button", { name: /confirm/i }));
+
+    try {
+      // Review modal (AIForecastRefineReviewModal): raw first, masked after the toggle.
+      expect(await screen.findByText(SUMMARY)).toBeInTheDocument();
+      act(() => setBalancesHidden(true));
+      expect(document.body.textContent).not.toMatch(/7,?373/);
+      expect(screen.getByText("Groceries rose to about ••••• this month.")).toBeInTheDocument();
+
+      // Details panel (AIForecastRefineToggle), still hidden.
+      await waitFor(() =>
+        expect(screen.getByRole("checkbox", { name: /Apply adjustment for Groceries/i })).toBeChecked(),
+      );
+      fireEvent.click(screen.getByTestId("forecast-refine-apply"));
+      await screen.findByTestId("ai-forecast-refined-panel");
+      fireEvent.click(screen.getByRole("button", { name: /What changed/i }));
+      await screen.findByTestId("ai-adjustments-list");
+      expect(document.body.textContent).not.toMatch(/7,?373/);
+      expect(screen.getByText("Groceries rose to about ••••• this month.")).toBeInTheDocument();
+
+      act(() => setBalancesHidden(false));
+      expect(screen.getByText(SUMMARY)).toBeInTheDocument();
+    } finally {
+      act(() => setBalancesHidden(false));
+    }
   });
 });
 

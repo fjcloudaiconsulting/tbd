@@ -7,6 +7,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 
 import { btnPrimary, btnSecondary, card, error as errorCls } from "@/lib/styles";
 import type { RebalanceSuggestion } from "@/components/budgets/BudgetRebalanceModal";
+import { maskMoneyText } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export type DraftStatus = "ok" | "empty_no_history";
@@ -261,7 +262,7 @@ export default function BudgetDraftModal({
                             {money(toNumber(s.suggested_amount))}
                           </td>
                           <td className="py-2 pr-3 text-xs text-text-muted">
-                            {s.reasoning}
+                            {maskMoneyText(s.reasoning)}
                           </td>
                         </tr>
                       );

@@ -21,6 +21,7 @@ import Link from "next/link";
 
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { loanPayoffStatus, type LoanPayoffState } from "@/lib/loan";
 import { badgeForTone, card, cardHeader, cardTitle } from "@/lib/styles";
 
@@ -45,6 +46,7 @@ const FOCUS_RING =
   "focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent";
 
 export default function LoanPayoffTile() {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const { activeAccounts, accountMonthEndForecast } = useDashboard();
 
   const nextPaymentByAccount = useMemo(() => {

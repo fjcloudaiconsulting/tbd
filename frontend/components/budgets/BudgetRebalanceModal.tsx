@@ -6,6 +6,7 @@ import Spinner from "@/components/ui/Spinner";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 
 import { btnPrimary, btnSecondary, card, error as errorCls } from "@/lib/styles";
+import { maskMoneyText } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export type RebalanceStatus =
@@ -279,7 +280,7 @@ export default function BudgetRebalanceModal({
           )}
 
           {!loading && response && response.status !== "ok" && (
-            <EmptyState status={response.status} message={response.summary} />
+            <EmptyState status={response.status} message={maskMoneyText(response.summary)} />
           )}
 
           {!loading && response && response.status === "ok" && !hasOkSuggestions && (
@@ -296,7 +297,7 @@ export default function BudgetRebalanceModal({
             <>
               {response.summary && (
                 <p className="mb-4 text-sm text-text-secondary">
-                  {response.summary}
+                  {maskMoneyText(response.summary)}
                 </p>
               )}
               {Number(response.uncovered_overspend ?? 0) > 0 && (
@@ -401,7 +402,7 @@ export default function BudgetRebalanceModal({
                             {money(delta)}
                           </td>
                           <td className="py-2 pr-3 text-xs text-text-muted">
-                            {s.reasoning}
+                            {maskMoneyText(s.reasoning)}
                           </td>
                         </tr>
                       );

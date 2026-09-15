@@ -32,6 +32,7 @@ import {
 } from "recharts";
 
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 
 export interface ProjectionPoint {
@@ -188,6 +189,7 @@ export function ComparisonView({
   onOpen?: (scenarioId: number) => void;
   testId?: string;
 }) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const months = useMemo(() => unionMonths(projections), [projections]);
   const rows = useMemo<ChartRow[]>(() => {
     return months.map((month) => {

@@ -34,6 +34,7 @@ import {
 
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import { formatAmount, formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { card, cardHeader, cardTitle } from "@/lib/styles";
 
 /** Assets first, liabilities last, custom/unknown types after. */
@@ -87,6 +88,7 @@ function spokenAmount({ currency, total }: CurrencySubtotal): string {
 }
 
 export default function BalancesByTypeTile() {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const { activeAccounts } = useDashboard();
 
   const groups = useMemo<TypeGroup[]>(() => {

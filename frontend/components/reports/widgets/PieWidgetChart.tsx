@@ -9,6 +9,7 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
 import { formatMeasureValue } from "@/lib/reports/series";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 
 export interface PieWidgetChartProps {
   rows: Array<{ label: string; value: number }>;
@@ -44,6 +45,7 @@ export default function PieWidgetChart({
   currency,
   suppressTotal,
 }: PieWidgetChartProps) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   // Self-guard: parent already ensures rows is non-empty, but be defensive.
   if (rows.length === 0) return null;
 

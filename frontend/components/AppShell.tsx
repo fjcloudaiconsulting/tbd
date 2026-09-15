@@ -48,6 +48,7 @@ import NotificationBell from "@/components/notifications/NotificationBell";
 import AppShellFooter from "@/components/AppShellFooter";
 import FeedbackWidget from "@/components/feedback/FeedbackWidget";
 import { Logo } from "@/components/brand/Logo";
+import HideBalancesToggle from "@/components/ui/HideBalancesToggle";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import TrialBanner from "@/components/ui/TrialBanner";
 import { hasPlatformPermission } from "@/lib/auth";
@@ -741,6 +742,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 ``loading || !user`` early return drops this entire
                 JSX subtree). */}
             <NotificationBell />
+            <HideBalancesToggle />
             <Link
               href="/docs"
               className="rounded-md p-2 text-text-muted transition-colors hover:text-text-primary"

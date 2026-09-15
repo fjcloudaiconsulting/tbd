@@ -25,6 +25,7 @@ import { ResponsiveSankey } from "@nivo/sankey";
 
 import { CHART_SERIES } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import type { SankeyLink } from "@/lib/reports/types";
 
 // Nivo's sankey types
@@ -93,6 +94,7 @@ export interface SankeyWidgetChartProps {
 }
 
 export default function SankeyWidgetChart({ links, currency, title }: SankeyWidgetChartProps) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const data = useMemo(() => buildNivoData(links), [links]);
 
   return (

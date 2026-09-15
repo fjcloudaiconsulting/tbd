@@ -31,6 +31,8 @@ import { useRouter } from "next/navigation";
 import { useCallback } from "react";
 
 import { apiFetch } from "@/lib/api";
+import { maskMoneyText } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import type { Notification, NotificationCategory } from "@/lib/types";
 
 interface Props {
@@ -68,6 +70,8 @@ export default function NotificationPopover({
   onClose,
 }: Props) {
   const router = useRouter();
+  // Bodies are built server-side (e.g. the CC statement amount due).
+  useBalancesHidden();
 
   const handleRowClick = useCallback(
     async (notif: Notification) => {
@@ -168,7 +172,7 @@ export default function NotificationPopover({
                   </span>
                 </span>
                 <span className="mt-0.5 block line-clamp-2 text-xs text-text-muted">
-                  {notif.body}
+                  {maskMoneyText(notif.body)}
                 </span>
               </span>
             </button>

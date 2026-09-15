@@ -11,7 +11,7 @@ import HelpTooltip from "@/components/help/HelpTooltip";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { equalsAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
+import { equalsAmount, formatLocalDate, maskMoneyText, toEditAmount, todayISO } from "@/lib/format";
 import { isOpenPeriod } from "@/lib/billingPeriodStatus";
 import { demotionNotice } from "@/lib/demotion";
 import { input, label, badgeNeutral, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar, warning as warningCls } from "@/lib/styles";
@@ -1326,7 +1326,7 @@ function TransactionsPageContent() {
             className="mb-6 rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-text-secondary"
             data-testid="transactions-notice"
           >
-            {notice}
+            {maskMoneyText(notice)}
           </div>
         )}
 
@@ -1815,7 +1815,7 @@ function TransactionsPageContent() {
                                     <button
                                       type="button"
                                       onClick={() => setConfirmSkipTx(tx)}
-                                      aria-label={`Skip this occurrence: ${tx.description}`}
+                                      aria-label={`Skip this occurrence: ${maskMoneyText(tx.description)}`}
                                       className={`${btnSecondary} mt-1 min-h-[44px] w-fit`}
                                     >
                                       Skip this occurrence
@@ -1943,7 +1943,7 @@ function TransactionsPageContent() {
                             {tx.settled_date ?? "—"}
                           </span>
                           <span className="col-span-2 flex flex-col text-sm text-text-primary">
-                            <span>{tx.description}</span>
+                            <span>{maskMoneyText(tx.description)}</span>
                             {tx.tags && tx.tags.length > 0 && (
                               <span className="mt-0.5 flex flex-wrap gap-1" data-testid={`row-tags-${tx.id}`}>
                                 {tx.tags.map((t) => (
@@ -2175,14 +2175,14 @@ function TransactionsPageContent() {
                               />
                             ) : (
                               <>
-                                <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
+                                <button onClick={() => startEdit(tx)} aria-label={`Edit: ${maskMoneyText(tx.description)}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
                                 {!isPairedTransfer && !isReconcileMatched && (
-                                  <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark transfer</button>
+                                  <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${maskMoneyText(tx.description)}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark transfer</button>
                                 )}
                                 {isPairedTransfer && (
-                                  <button onClick={() => openUnpairModal(tx)} aria-label={`Unlink transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Unlink</button>
+                                  <button onClick={() => openUnpairModal(tx)} aria-label={`Unlink transfer: ${maskMoneyText(tx.description)}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Unlink</button>
                                 )}
-                                <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
+                                <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${maskMoneyText(tx.description)}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
                               </>
                             )}
                           </span>
@@ -2385,7 +2385,7 @@ function TransactionsPageContent() {
                                       <button
                                         type="button"
                                         onClick={() => setConfirmSkipTx(tx)}
-                                        aria-label={`Skip this occurrence: ${tx.description}`}
+                                        aria-label={`Skip this occurrence: ${maskMoneyText(tx.description)}`}
                                         className={`${btnSecondary} mt-1 min-h-[44px] w-fit`}
                                       >
                                         Skip this occurrence
@@ -2506,7 +2506,7 @@ function TransactionsPageContent() {
                             />
                             <div className="min-w-0 flex-1">
                               <div className="truncate text-sm font-medium text-text-primary">
-                                {tx.description}
+                                {maskMoneyText(tx.description)}
                               </div>
                               {tx.tags && tx.tags.length > 0 && (
                                 <div
@@ -2680,7 +2680,7 @@ function TransactionsPageContent() {
                               <>
                                 <button
                                   onClick={() => startEdit(tx)}
-                                  aria-label={`Edit: ${tx.description}`}
+                                  aria-label={`Edit: ${maskMoneyText(tx.description)}`}
                                   disabled={bulkDeleting}
                                   className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                                 >
@@ -2689,7 +2689,7 @@ function TransactionsPageContent() {
                                 {!isPairedTransfer && !isReconcileMatched && (
                                   <button
                                     onClick={() => setMarkModalSource(tx)}
-                                    aria-label={`Mark as transfer: ${tx.description}`}
+                                    aria-label={`Mark as transfer: ${maskMoneyText(tx.description)}`}
                                     disabled={bulkDeleting}
                                     className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                                   >
@@ -2699,7 +2699,7 @@ function TransactionsPageContent() {
                                 {isPairedTransfer && (
                                   <button
                                     onClick={() => openUnpairModal(tx)}
-                                    aria-label={`Unlink transfer: ${tx.description}`}
+                                    aria-label={`Unlink transfer: ${maskMoneyText(tx.description)}`}
                                     disabled={bulkDeleting}
                                     className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                                   >
@@ -2708,7 +2708,7 @@ function TransactionsPageContent() {
                                 )}
                                 <button
                                   onClick={() => setConfirmDeleteId(tx.id)}
-                                  aria-label={`Delete: ${tx.description}`}
+                                  aria-label={`Delete: ${maskMoneyText(tx.description)}`}
                                   disabled={bulkDeleting}
                                   className="min-h-[44px] px-3 rounded-md border border-border text-sm text-danger disabled:opacity-40 disabled:cursor-not-allowed"
                                 >
@@ -2752,7 +2752,7 @@ function TransactionsPageContent() {
         open={confirmSkipTx !== null}
         title="Skip This Occurrence"
         message={confirmSkipTx
-          ? `Skip "${confirmSkipTx.description}" on ${confirmSkipTx.date} (${confirmSkipTx.type === "income" ? "+" : "-"}${money(confirmSkipTx.amount)})?\n\nIt will stay in your list marked Excluded and won't be counted in balances or reports. The rest of the series is unchanged.` +
+          ? `Skip "${maskMoneyText(confirmSkipTx.description)}" on ${confirmSkipTx.date} (${confirmSkipTx.type === "income" ? "+" : "-"}${money(confirmSkipTx.amount)})?\n\nIt will stay in your list marked Excluded and won't be counted in balances or reports. The rest of the series is unchanged.` +
             (editingSeries?.occurrence_count != null ? `\n\nIt still counts as 1 of the ${editingSeries.occurrence_count} occurrences.` : "") +
             "\n\nThis can't be undone."
           : ""}

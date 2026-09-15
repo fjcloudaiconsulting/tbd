@@ -29,10 +29,10 @@
  * ⚠ When `Organization.primary_currency` lands (TBD-325 PR 2) the provider is
  * the ONE place that changes. Every consumer reads the hook, so none moves.
  */
-import { createContext, useCallback, useContext, useMemo } from "react";
+import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from "react";
 
 import { deriveOrgCurrency } from "@/lib/currencies";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, isBalancesHidden, subscribeBalancesHidden } from "@/lib/format";
 import { useAccounts } from "@/lib/hooks/use-accounts";
 
 const OrgCurrencyContext = createContext<string | undefined>(undefined);
@@ -64,7 +64,17 @@ export function OrgCurrencyProvider({
   );
 }
 
+/**
+ * Re-renders the caller when "Hide balances" flips (TBD-527). The formatters
+ * read the flag themselves; this hook only makes a component paint again.
+ * Server snapshot is `false`: no figure renders before AppShell's auth gate.
+ */
+export function useBalancesHidden(): boolean {
+  return useSyncExternalStore(subscribeBalancesHidden, isBalancesHidden, () => false);
+}
+
 export function useOrgCurrency(): string | undefined {
+  useBalancesHidden();
   // ⚠ CONTEXT ONLY. This hook must never fetch.
   //
   // A version that fell back to `useAccounts()` when no provider was mounted
@@ -88,8 +98,11 @@ export function useOrgCurrency(): string | undefined {
  */
 export function useMoney(): (value: number | string) => string {
   const currency = useOrgCurrency();
+  const hidden = useBalancesHidden();
   return useCallback(
     (value: number | string) => formatMoney(value, currency),
-    [currency],
+    // `hidden` is read inside formatMoney; a new identity repaints memoised consumers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currency, hidden],
   );
 }

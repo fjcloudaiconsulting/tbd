@@ -38,6 +38,7 @@ import {
 } from "recharts";
 
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 
 export interface ProjectionPoint {
@@ -112,6 +113,7 @@ export function ProjectionChart({
   projection: ProjectionInput;
   testId?: string;
 }) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   // ResponsiveContainer measures its parent on mount. When the chart
   // lives in a freshly painted flex/grid pane (the right column of the
   // Plans editor), the parent's width can come back as -1 on the first

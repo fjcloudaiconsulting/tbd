@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiFetch, ApiResponseError } from "@/lib/api";
+import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { card } from "@/lib/styles";
 import type { ForecastRefineEstimate } from "@/lib/types";
 import type { RefinedForecastResponse } from "@/components/dashboard/AIForecastRefineToggle";
@@ -45,6 +47,7 @@ export function AIForecastRefinePanel({
   onCancel,
   onGateBlock,
 }: AIForecastRefinePanelProps) {
+  useBalancesHidden();
   const [timeframe, setTimeframe] = useState<number>(6);
   const [scope, setScope] = useState<string>("top_20");
   const [estimate, setEstimate] = useState<ForecastRefineEstimate | null>(null);
@@ -119,9 +122,7 @@ export function AIForecastRefinePanel({
   };
 
   const canProceed = !!estimate?.can_proceed;
-  const dollars = estimate
-    ? `$${(estimate.est_cost_cents / 100).toFixed(2)}`
-    : null;
+  const dollars = estimate ? formatMoney(estimate.est_cost_cents / 100, "USD") : null;
 
   return (
     <div className={`${card} mt-3 p-3 md:p-4`} data-testid="ai-forecast-refine-panel">

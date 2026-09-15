@@ -10,6 +10,7 @@ import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
 import HelpTooltip from "@/components/help/HelpTooltip";
+import { maskMoneyText } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 
 // Friendly copy for the typed backend fallback_reason codes, so the badge
@@ -302,7 +303,7 @@ export default function AIForecastRefineToggle({
           className="mt-3 border-t border-border pt-3 text-xs text-text-secondary"
         >
           {aiApplied && refined.provenance.summary && (
-            <p className="mb-2 italic">{refined.provenance.summary}</p>
+            <p className="mb-2 italic">{maskMoneyText(refined.provenance.summary)}</p>
           )}
           {adjustments.length > 0 && (
             <ul className="mb-2 list-disc space-y-1 pl-4" data-testid="ai-adjustments-list">
@@ -327,7 +328,7 @@ export default function AIForecastRefineToggle({
                     <span className="font-medium text-text-primary">
                       {anom.category_name}
                     </span>
-                    : {anom.description}{" "}
+                    : {maskMoneyText(anom.description)}{" "}
                     <span className="text-text-muted">[{anom.severity}]</span>
                   </li>
                 ))}

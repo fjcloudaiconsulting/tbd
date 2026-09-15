@@ -15,6 +15,7 @@
  * falls back to a plain count label so it never blocks on load.
  */
 import { currencyPrefix } from "@/lib/currencies";
+import { BALANCE_MASK, isBalancesHidden } from "@/lib/format";
 import { buildPresetRanges } from "@/lib/reports/date-presets";
 import {
   asTxnTypeArray,
@@ -187,9 +188,14 @@ function capitalize(s: string): string {
 // no single currency, matching every other money figure.
 function amountLabel(min?: number, max?: number, currency?: string | null): string {
   const p = currencyPrefix(currency);
-  if (min !== undefined && max !== undefined) return `${p}${min} to ${p}${max}`;
-  if (min !== undefined) return `≥ ${p}${min}`;
-  return `≤ ${p}${max}`;
+  // Hide balances (TBD-527). Not `formatMoney`: that would add ".00" to every
+  // unhidden chip, which is a format change this ticket does not rule on.
+  const hide = isBalancesHidden();
+  const lo = hide ? BALANCE_MASK : min;
+  const hi = hide ? BALANCE_MASK : max;
+  if (min !== undefined && max !== undefined) return `${p}${lo} to ${p}${hi}`;
+  if (min !== undefined) return `≥ ${p}${lo}`;
+  return `≤ ${p}${hi}`;
 }
 
 // "Groceries +2" — first name plus a count of the rest. A bare list of

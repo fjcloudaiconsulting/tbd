@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { card } from "@/lib/styles";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import type { Account } from "@/lib/types";
 
 export interface AccountTilesCardProps {
@@ -47,6 +48,7 @@ export interface AccountTileRowProps {
 }
 
 export function AccountTileRow({ account, pendingAmount }: AccountTileRowProps) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const typeLabel = account.account_type_name ?? null;
   const hasPending = pendingAmount !== 0;
 

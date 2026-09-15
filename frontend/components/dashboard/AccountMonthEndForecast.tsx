@@ -5,6 +5,7 @@ import { TriangleAlert } from "lucide-react";
 
 import { badgeError, btnLink, card, cardHeader, cardTitle } from "@/lib/styles";
 import { formatAmount, formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { currencyPrefix } from "@/lib/currencies";
 
 export interface AccountMonthEndForecastTotal {
@@ -80,6 +81,7 @@ export default function AccountMonthEndForecast({
   hasAnyAccounts,
   hasError = false,
 }: AccountMonthEndForecastProps) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   // No accounts: page-level empty state owns this surface; render nothing
   // regardless of period. Runs BEFORE the period check so an empty org
   // viewing a past/future period doesn't see a neutral month-end card it

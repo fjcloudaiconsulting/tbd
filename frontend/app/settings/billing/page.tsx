@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { useRouter } from "next/navigation";
 import SettingsLayout from "@/components/SettingsLayout";
 import Spinner from "@/components/ui/Spinner";
@@ -21,6 +22,7 @@ import {
 import type { Plan, SubscriptionDetail } from "@/lib/types";
 
 export default function BillingPage() {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const { user, loading, refreshMe, billingUiEnabled } = useAuth();
   const router = useRouter();
   const [subscription, setSubscription] = useState<SubscriptionDetail | null>(null);
