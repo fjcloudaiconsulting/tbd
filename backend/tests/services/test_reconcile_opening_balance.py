@@ -282,8 +282,9 @@ async def test_reconcile_consistent_with_matched_duplicate(db_session):
       * the unfixed query (settled rows summed with no balance-contribution
         clause) -- the matched duplicates land in ``computed`` but not in
         ``accounts.balance``;
-      * ``non_reverted_transaction_filter()`` as the fix -- MATCHED is NOT in
-        the excluded-state roster, so a state-only clause still counts these;
+      * a state-only clause over ``_RECON_EXCLUDED_STATES`` as the fix (what
+        ``non_reverted_transaction_filter()`` was before TBD-470) -- MATCHED is
+        NOT in that roster, so it still counts these;
       * the HALF-FIX: the clause on only the income or only the expense
         subquery (one matched duplicate per side).
 

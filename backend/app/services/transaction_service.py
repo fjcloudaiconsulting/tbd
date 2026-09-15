@@ -3278,9 +3278,10 @@ async def reconcile_account(
     It is deliberately NOT ``reportable_transaction_filter()``: that one also
     drops reciprocal transfer legs and manual balance adjustments, both of
     which ARE inside ``accounts.balance`` and must stay inside ``computed``.
-    Nor ``non_reverted_transaction_filter()``: MATCHED is excluded by the
-    ONE-WAY LINK, not by any state clause, so a state-only filter leaves the
-    matched duplicate double-counted.
+    Nor a state-only clause: MATCHED is excluded by the ONE-WAY LINK, not by
+    any state, so a state-only filter leaves the matched duplicate
+    double-counted (TBD-470 fixed ``non_reverted_transaction_filter()`` for
+    exactly that; it now delegates to ``balance_contribution_filter()``).
     """
     contributes = balance_contribution_filter()
     income = await db.scalar(
