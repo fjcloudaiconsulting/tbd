@@ -35,7 +35,7 @@ export default function ForecastPlanChart({
   onBarClick,
 }: {
   chartData: ForecastPlanChartDatum[];
-  onBarClick: (name: string | undefined) => void;
+  onBarClick: (categoryId: number | undefined) => void;
 }) {
   const money = useMoney();
   return (
@@ -63,7 +63,7 @@ export default function ForecastPlanChart({
           radius={[4, 4, 4, 4]}
           animationDuration={220}
           cursor="pointer"
-          onClick={(data) => onBarClick(data?.name || data?.payload?.name)}
+          onClick={(data) => onBarClick(data?.payload?.categoryId)}
         />
         <Bar
           dataKey="actual"

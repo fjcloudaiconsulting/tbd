@@ -1212,8 +1212,10 @@ export default function ForecastPlansClient({
                 <div className="w-full min-w-0" style={{ height: Math.max(chartData.length * 40, 100) }}>
                   <ForecastPlanChart
                     chartData={chartData}
-                    onBarClick={(name) => {
-                      if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
+                    onBarClick={(categoryId) => {
+                      // By id: names are not unique. A bar is a master group,
+                      // so the default subtree match (master plus its subs).
+                      if (categoryId) router.push(`/transactions?category_id=${categoryId}`);
                     }}
                   />
                 </div>

@@ -315,6 +315,7 @@ export default function BudgetsPage() {
   const budgetChartData = useMemo(
     () =>
       budgets.map((b) => ({
+        categoryId: b.category_id,
         name: b.category_name,
         spent: Number(b.spent),
         remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
@@ -505,8 +506,10 @@ export default function BudgetsPage() {
                   <BudgetOverviewChart
                     budgetChartData={budgetChartData}
                     cellMeta={budgets}
-                    onBarClick={(name) => {
-                      if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
+                    onBarClick={(categoryId) => {
+                      // By id: names are not unique. Budgets are master-only
+                      // and spend includes subs, so the default subtree match.
+                      if (categoryId) router.push(`/transactions?category_id=${categoryId}`);
                     }}
                   />
                 </div>

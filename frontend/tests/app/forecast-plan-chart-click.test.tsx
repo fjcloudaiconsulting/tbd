@@ -60,7 +60,7 @@ describe("ForecastPlanChart bar click", () => {
     expect(plannedBars(container)).toHaveLength(DATA.length);
   });
 
-  it("calls onBarClick with the clicked category name", () => {
+  it("calls onBarClick with the clicked category id", () => {
     // FENCE. Wrong implementation killed: removing the `onClick` from the
     // `planned` Bar (app/forecast-plans/ForecastPlanChart.tsx:64).
     const { container, onBarClick } = renderChart();
@@ -68,7 +68,7 @@ describe("ForecastPlanChart bar click", () => {
     fireEvent.click(plannedBars(container)[0]);
 
     expect(onBarClick).toHaveBeenCalledTimes(1);
-    expect(onBarClick).toHaveBeenCalledWith("Groceries");
+    expect(onBarClick).toHaveBeenCalledWith(1);
   });
 
   it("distinguishes bars — clicking the second reports the second category", () => {
@@ -80,7 +80,7 @@ describe("ForecastPlanChart bar click", () => {
     fireEvent.click(bars[1]);
 
     expect(onBarClick).toHaveBeenCalledTimes(1);
-    expect(onBarClick).toHaveBeenCalledWith("Transport");
+    expect(onBarClick).toHaveBeenCalledWith(2);
   });
 
   it("does not fire for the actual series, which has no handler", () => {

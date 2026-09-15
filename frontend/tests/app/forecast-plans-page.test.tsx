@@ -24,8 +24,10 @@ import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
 // boundary on `lib/auth-server.ts` (a client-side leak would fail
 // `npm run build`).
 
+const push = vi.hoisted(() => vi.fn());
+
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push, replace: vi.fn() }),
   usePathname: () => "/forecast-plans",
   useSearchParams: () => ({ get: () => null }),
 }));
@@ -51,14 +53,29 @@ vi.mock("@/lib/api", async () => {
 
 // recharts pulls in window.matchMedia and friends; stub the bits the test
 // surfaces touch.
+//
+// TBD-464: the stubs record the chart rows and the clickable Bar's handler so
+// the bar-click navigation can be driven through the page's real
+// `onBarClick` and the real `ForecastPlanChart` handler. Real recharts here
+// is not an option: rendering axis ticks duplicates category names and breaks
+// six text queries in this file.
+const chartProbe = vi.hoisted(() => ({
+  data: [] as Array<Record<string, unknown>>,
+  onClick: null as null | ((d: unknown) => void),
+}));
+
 vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
-  BarChart: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  Bar: () => null,
+  BarChart: ({ children, data }: { children: React.ReactNode; data?: Array<Record<string, unknown>> }) => {
+    chartProbe.data = data ?? [];
+    return <div>{children}</div>;
+  },
+  Bar: ({ onClick }: { onClick?: (d: unknown) => void }) => {
+    if (onClick) chartProbe.onClick = onClick;
+    return null;
+  },
   XAxis: () => null,
   YAxis: () => null,
   Tooltip: () => null,
@@ -1604,5 +1621,46 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
 
     // Settle the save so the test cleanly resolves.
     resolveSettings();
+  });
+});
+
+describe("ForecastPlansClient — chart bar navigation (TBD-464)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    chartProbe.data = [];
+    chartProbe.onClick = null;
+    vi.mocked(useAuth).mockReturnValue({
+      user: { id: 1, role: "owner", is_superadmin: false },
+    } as never);
+  });
+
+  it("a bar links to its master's transactions by category_id, not by name", async () => {
+    // FENCE. Kills: linking by `?category=<name>` (names are not unique), and
+    // dropping `categoryId` from the chart rows. Two sub items, so the bar's
+    // id is the MASTER (20), not either item's own category. A bar is a
+    // master group, so the default subtree match applies and no
+    // category_match is sent.
+    //
+    // Driven through the recorded Bar handler, not a DOM click: this file
+    // stubs recharts (see the mock). The real payload shape is fenced by a
+    // real click in tests/app/forecast-plan-chart-click.test.tsx.
+    const plan = makePlan(
+      [
+        { category_id: 21, category_name: "Supermarket", type: "expense", planned_amount: 300, parent_id: 20 },
+        { category_id: 22, category_name: "Restaurant", type: "expense", planned_amount: 100, parent_id: 20 },
+      ],
+      "subcategory",
+    );
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(chartProbe.onClick).not.toBeNull();
+      expect(chartProbe.data).toHaveLength(1);
+    });
+    chartProbe.onClick!({ payload: chartProbe.data[0] });
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push).toHaveBeenCalledWith("/transactions?category_id=20");
   });
 });
