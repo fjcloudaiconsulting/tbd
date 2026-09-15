@@ -254,6 +254,76 @@ describe("TransactionsPage — dashboard deep links", () => {
     expect(desktopRow.className).toContain("ring-accent");
   });
 
+  it("a deep link's account_id REPLACES the saved accounts", async () => {
+    // FENCE. Kills: appending URL ids to the stored selection.
+    storeFilters({ filterAccount: [5] });
+    searchParamsState.value = new URLSearchParams("account_id=100");
+    const mock = setupApiFetch([]);
+
+    renderWithSWR(<TransactionsPage />);
+
+    await waitFor(() => {
+      expect(lastParams(mock).getAll("account_id")).toEqual(["100"]);
+    });
+  });
+
+  it("ignores URL account ids that are not positive integers", async () => {
+    searchParamsState.value = new URLSearchParams("account_id=0&account_id=abc&account_id=200");
+    const mock = setupApiFetch([]);
+
+    renderWithSWR(<TransactionsPage />);
+
+    await waitFor(() => {
+      expect(lastParams(mock).getAll("account_id")).toEqual(["200"]);
+    });
+  });
+
+  it("does not persist category_match past the deep link that carried it", async () => {
+    // FENCE. Kills: storing category_match with the persisted filters, which
+    // would keep a later visit leaf-flat with no link asking for it.
+    searchParamsState.value = new URLSearchParams("category_id=7&category_match=exact");
+    const first = setupApiFetch([]);
+    renderWithSWR(<TransactionsPage />);
+    await waitFor(() => {
+      expect(lastParams(first).get("category_match")).toBe("exact");
+    });
+    cleanup();
+
+    searchParamsState.value = new URLSearchParams();
+    const second = setupApiFetch([]);
+    renderWithSWR(<TransactionsPage />);
+
+    await waitFor(() => {
+      const params = lastParams(second);
+      expect(params.getAll("category_id")).toEqual(["7"]);
+      expect(params.get("category_match")).toBeNull();
+    });
+  });
+
+  it("drops category_match once the user picks a category", async () => {
+    // FENCE. Kills: never clearing it, so a user-picked master opens exact
+    // (its own rows only) instead of the default subtree.
+    searchParamsState.value = new URLSearchParams("category_id=7&category_match=exact");
+    const mock = setupApiFetch([]);
+    renderWithSWR(<TransactionsPage />);
+    const select = await screen.findByLabelText("Filter by category");
+    await waitFor(() => {
+      expect(lastParams(mock).get("category_match")).toBe("exact");
+      expect(select).toHaveTextContent("Groceries");
+    });
+
+    const startCount = mock.mock.calls.length;
+    fireEvent.change(select, { target: { value: String(CATEGORY.id) } });
+
+    await waitFor(() => {
+      const after = listUrlsAfter(mock, startCount);
+      expect(after.length).toBeGreaterThan(0);
+      const params = new URL(after[after.length - 1], "http://x").searchParams;
+      expect(params.getAll("category_id")).toEqual([String(CATEGORY.id)]);
+      expect(params.get("category_match")).toBeNull();
+    });
+  });
+
   it("passes category_id and category_match=exact through from a deep link", async () => {
     // FENCE. Kills: dropping category_match (the list silently widens to the
     // subtree and no longer sums to the slice that opened it).
