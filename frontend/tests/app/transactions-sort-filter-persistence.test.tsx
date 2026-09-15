@@ -216,6 +216,46 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
     expect(screen.getByTestId("reset-sort-filters")).toBeInTheDocument();
   });
 
+  // TBD-462. The clear control empties ONLY the search box. The account
+  // assertion is what separates it from the reset-all button above.
+  it("Clear search appears only with text, empties the search, refocuses it and leaves other filters alone", async () => {
+    const mock = setupApiFetch();
+    renderWithSWR(<TransactionsPage />);
+    await awaitReady(mock);
+
+    const search = screen.getByLabelText("Search transactions") as HTMLInputElement;
+    const account = screen.getByLabelText("Filter by account") as HTMLSelectElement;
+    expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
+
+    fireEvent.change(account, { target: { value: "100" } });
+    fireEvent.change(search, { target: { value: "rent" } });
+    await waitFor(() => {
+      expect(
+        mock.mock.calls.some(
+          (c) => typeof c[0] === "string" && c[0].includes("account_id=100") && c[0].includes("search=rent"),
+        ),
+      ).toBe(true);
+    });
+
+    const clear = screen.getByRole("button", { name: "Clear search" });
+    expect(clear).toHaveAttribute("type", "button");
+    const callsBefore = mock.mock.calls.length;
+    fireEvent.click(clear);
+
+    expect(search.value).toBe("");
+    expect(document.activeElement).toBe(search);
+    expect(account.value).toBe("100");
+    expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
+    // Settle the refetch the cleared search triggers.
+    await waitFor(() => {
+      expect(
+        mock.mock.calls
+          .slice(callsBefore)
+          .some((c) => typeof c[0] === "string" && c[0].startsWith("/api/v1/transactions") && !c[0].includes("search=") && c[0].includes("account_id=100")),
+      ).toBe(true);
+    });
+  });
+
   it("Reset clears persisted filters too", async () => {
     window.localStorage.setItem(
       FILTERS_KEY_TRANSACTIONS,
