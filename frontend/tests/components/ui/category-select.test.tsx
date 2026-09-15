@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
-import CategorySelect from "@/components/ui/CategorySelect";
+import CategorySelect, { OWN_ITEM_SUFFIX } from "@/components/ui/CategorySelect";
 import type { Category } from "@/lib/types";
 
 vi.mock("@/components/ui/AddCategoryModal", () => ({
@@ -372,6 +372,50 @@ describe("CategorySelect — value resolution under filterType", () => {
 
     // The master itself is now a selectable option.
     fireEvent.click(within(listbox).getByText("Groceries"));
+    expect(onChange).toHaveBeenCalledWith(20);
+  });
+
+  it("F11 default: a master with subcategories is a group header, never an option (TBD-466 guard)", () => {
+    // Every caller but the forecast page relies on this. Kills the
+    // selectableParents default flipping to true.
+    render(
+      <CategorySelect
+        id="d1"
+        categories={CATEGORIES}
+        value=""
+        onChange={vi.fn()}
+        filterType="expense"
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    const names = within(screen.getByRole("listbox"))
+      .getAllByRole("option")
+      .map((o) => o.textContent);
+    expect(names).toContain("Supermarket");
+    // Prefix match: a flipped default renders it with the own-item suffix.
+    expect(names.some((n) => n?.startsWith("Groceries"))).toBe(false);
+  });
+
+  it("selectableParents: a master with subcategories is selectable, suffixed, and listed before its subs", () => {
+    const onChange = vi.fn();
+    render(
+      <CategorySelect
+        id="d2"
+        categories={CATEGORIES}
+        value=""
+        onChange={onChange}
+        filterType="expense"
+        selectableParents
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    const options = within(screen.getByRole("listbox")).getAllByRole("option");
+    const names = options.map((o) => o.textContent);
+    // The option differs from its group header ("Groceries") by the suffix.
+    const own = names.indexOf(`Groceries ${OWN_ITEM_SUFFIX}`);
+    expect(own).toBeGreaterThanOrEqual(0);
+    expect(own).toBeLessThan(names.indexOf("Supermarket"));
+    fireEvent.click(options[own]);
     expect(onChange).toHaveBeenCalledWith(20);
   });
 
