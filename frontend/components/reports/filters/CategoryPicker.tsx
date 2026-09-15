@@ -5,15 +5,18 @@
  * master / sub category hierarchy from the existing
  * ``backend/app/models/category.py`` model.
  *
- * Two master modes:
+ * Two modes:
  *  - Default (Reports): the master checkbox toggles the master AND all its
  *    subs. When some but not all are selected it shows the indeterminate /
  *    partial state, so unselecting a sub under a fully checked master leaves
  *    the master partial.
- *  - ``independentMasters`` (transactions panel, TBD-464 R1): the master
- *    checkbox stands for the master's own rows. Checking it also checks all
- *    its subs; unchecking it unchecks only the master; it shows its own
- *    checked state, never a partial one.
+ *  - ``ownRow`` (transactions panel, TBD-464 option C): the master checkbox
+ *    is a standard tri-state group toggle over the master AND all its subs,
+ *    including subs a search hides. A master with subs that also holds
+ *    transactions of its own gets an extra first child row,
+ *    "<Master> (other)", toggling only the master's id. The group's
+ *    checked / partial state is derived from its VISIBLE rows, so a master
+ *    whose (other) row is hidden does not affect it.
  * Sub row (both modes): checkbox toggles its own id.
  *
  * Search input filters the tree by name; matching subs keep their
@@ -26,6 +29,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
+import { OWN_ITEM_SUFFIX } from "@/components/ui/CategorySelect";
 import { useCategories } from "@/lib/hooks/use-categories";
 import type { Category } from "@/lib/types";
 
@@ -34,17 +38,18 @@ interface Props {
   onChange: (next: number[]) => void;
   label?: string;
   /**
-   * TBD-464 R1 (transactions panel). The master box stands for the master's
-   * OWN rows: checking it also checks its subs as a convenience, unchecking
-   * it unchecks only the master, and it never shows a derived partial state.
-   * Default (Reports): the master toggles its whole subtree.
+   * TBD-464 option C (transactions panel): a tri-state group toggle plus a
+   * "<Master> (other)" row for the master's own transactions. See the file
+   * header. Default (Reports): the master toggles its whole subtree.
    */
-  independentMasters?: boolean;
+  ownRow?: boolean;
 }
 
 interface TreeNode {
   master: Category;
   subs: Category[];
+  /** False when a search hides the master's own name (and its (other) row). */
+  masterMatches?: boolean;
 }
 
 function buildTree(cats: Category[]): TreeNode[] {
@@ -61,7 +66,7 @@ export default function CategoryPicker({
   value,
   onChange,
   label = "Categories",
-  independentMasters = false,
+  ownRow = false,
 }: Props) {
   // Share the org categories cache via the bare-path `useCategories` hook,
   // auth-gated (`!loading && !!user`) like the page-level consumers.
@@ -80,28 +85,35 @@ export default function CategoryPicker({
     if (!search.trim()) return tree;
     const q = search.toLowerCase();
     return tree
-      .map((node) => {
+      .map((node): TreeNode | null => {
         const masterMatches = node.master.name.toLowerCase().includes(q);
         const subs = node.subs.filter((s) => s.name.toLowerCase().includes(q));
-        if (masterMatches) return { master: node.master, subs: node.subs };
-        if (subs.length > 0) return { master: node.master, subs };
+        if (masterMatches) return { master: node.master, subs: node.subs, masterMatches };
+        if (subs.length > 0) return { master: node.master, subs, masterMatches };
         return null;
       })
       .filter((n): n is TreeNode => n !== null);
   }, [tree, search]);
 
   function toggleMaster(visible: TreeNode) {
-    // The row hands over the search-filtered node. Checking a master must
-    // check ALL its subs in independent mode, not only the visible ones.
-    const node = independentMasters
-      ? (tree.find((n) => n.master.id === visible.master.id) ?? visible)
-      : visible;
-    const ids = [node.master.id, ...node.subs.map((s) => s.id)];
-    if (independentMasters && selected.has(node.master.id)) {
-      onChange(value.filter((v) => v !== node.master.id));
+    if (ownRow) {
+      // The row hands over the search-filtered node, but the group toggle
+      // covers the WHOLE group: every sub, and always the master's own id,
+      // even when its (other) row is hidden. A fully checked group is then
+      // the same rows as the subtree.
+      const node = tree.find((n) => n.master.id === visible.master.id) ?? visible;
+      const ids = [node.master.id, ...node.subs.map((s) => s.id)];
+      const checked = groupState(visible, selected).checked;
+      onChange(
+        checked
+          ? value.filter((v) => !ids.includes(v))
+          : [...new Set([...value, ...ids])],
+      );
       return;
     }
-    const allSelected = !independentMasters && ids.every((id) => selected.has(id));
+    const node = visible;
+    const ids = [node.master.id, ...node.subs.map((s) => s.id)];
+    const allSelected = ids.every((id) => selected.has(id));
     if (allSelected) {
       onChange(value.filter((v) => !ids.includes(v)));
     } else {
@@ -164,7 +176,7 @@ export default function CategoryPicker({
                     key={node.master.id}
                     node={node}
                     selected={selected}
-                    independentMasters={independentMasters}
+                    ownRow={ownRow}
                     onToggleMaster={() => toggleMaster(node)}
                     onToggleSub={toggleSub}
                   />
@@ -178,25 +190,50 @@ export default function CategoryPicker({
   );
 }
 
+// ownRow mode: whether a master's "(other)" row is shown. Only a master with
+// subs that also holds transactions of its own, and only while a search has
+// not hidden the master's name.
+function showsOtherRow(node: TreeNode): boolean {
+  return node.subs.length > 0 && node.master.transaction_count > 0 && node.masterMatches !== false;
+}
+
+// ownRow mode: the group's state over its VISIBLE rows. A master with no subs
+// is a plain leaf, its own row.
+function groupState(node: TreeNode, selected: Set<number>) {
+  const ids =
+    node.subs.length === 0
+      ? [node.master.id]
+      : [...(showsOtherRow(node) ? [node.master.id] : []), ...node.subs.map((s) => s.id)];
+  const count = ids.filter((id) => selected.has(id)).length;
+  return {
+    count,
+    total: ids.length,
+    checked: ids.length > 0 && count === ids.length,
+    partial: count > 0 && count < ids.length,
+  };
+}
+
 function CategoryTreeRow({
   node,
   selected,
-  independentMasters,
+  ownRow,
   onToggleMaster,
   onToggleSub,
 }: {
   node: TreeNode;
   selected: Set<number>;
-  independentMasters: boolean;
+  ownRow: boolean;
   onToggleMaster: () => void;
   onToggleSub: (sub: Category) => void;
 }) {
   const masterRef = useRef<HTMLInputElement>(null);
   const allIds = [node.master.id, ...node.subs.map((s) => s.id)];
-  const selCount = allIds.filter((id) => selected.has(id)).length;
-  const total = allIds.length;
-  const allChecked = independentMasters ? selected.has(node.master.id) : selCount === total;
-  const partial = !independentMasters && selCount > 0 && selCount < total;
+  const own = ownRow ? groupState(node, selected) : null;
+  const selCount = own ? own.count : allIds.filter((id) => selected.has(id)).length;
+  const total = own ? own.total : allIds.length;
+  const allChecked = own ? own.checked : selCount === total;
+  const partial = own ? own.partial : selCount > 0 && selCount < total;
+  const otherRow = ownRow && showsOtherRow(node);
 
   // The HTML input doesn't have an attribute for indeterminate; it's
   // a DOM-only property. Sync it whenever the count changes.
@@ -213,7 +250,6 @@ function CategoryTreeRow({
           data-testid={`category-master-${node.master.id}`}
           checked={allChecked}
           onChange={onToggleMaster}
-          aria-checked={partial ? "mixed" : allChecked}
           aria-label={`Category ${node.master.name}`}
         />
         <span className="font-medium">{node.master.name}</span>
@@ -223,6 +259,20 @@ function CategoryTreeRow({
       </label>
       {node.subs.length > 0 && (
         <ul className="ml-5 mt-1 flex flex-col gap-0.5">
+          {otherRow && (
+            <li>
+              <label className="flex min-h-[44px] items-center gap-2 text-xs text-text-secondary xl:min-h-0">
+                <input
+                  type="checkbox"
+                  data-testid={`category-own-${node.master.id}`}
+                  checked={selected.has(node.master.id)}
+                  onChange={() => onToggleSub(node.master)}
+                  aria-label={`Category ${node.master.name} ${OWN_ITEM_SUFFIX}`}
+                />
+                <span>{node.master.name} {OWN_ITEM_SUFFIX}</span>
+              </label>
+            </li>
+          )}
           {node.subs.map((s) => (
             <li key={s.id}>
               <label className="flex min-h-[44px] items-center gap-2 text-xs text-text-secondary xl:min-h-0">

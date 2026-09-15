@@ -70,6 +70,11 @@ const CATEGORIES: Category[] = [
   },
 ];
 
+// Food (10) holds transactions of its own; Transport (20) holds none.
+const OWN_CATEGORIES: Category[] = CATEGORIES.map((c) =>
+  c.id === 10 ? { ...c, transaction_count: 4 } : c,
+);
+
 describe("CategoryPicker", () => {
   const apiFetchMock = vi.mocked(apiFetch);
 
@@ -119,36 +124,103 @@ describe("CategoryPicker", () => {
     });
   });
 
-  // TBD-464 R1. Reports keeps the linked master toggle: unchecking a fully
-  // checked master clears its subs too.
-  it("default mode: unchecking a checked master clears its subs (Reports)", async () => {
-    apiFetchMock.mockResolvedValueOnce(CATEGORIES);
+  // TBD-464. Reports keeps the linked master toggle: unchecking a fully
+  // checked master clears its subs too, and there is never an (other) row.
+  it("default mode: unchecking a checked master clears its subs, with no (other) row (Reports)", async () => {
+    apiFetchMock.mockResolvedValueOnce(OWN_CATEGORIES);
     const onChange = vi.fn();
 
     renderWithSWR(<CategoryPicker value={[10, 11, 12]} onChange={onChange} />);
 
     fireEvent.click(await screen.findByRole("checkbox", { name: "Category Food" }));
     expect(onChange).toHaveBeenCalledWith([]);
+    expect(screen.queryByRole("checkbox", { name: "Category Food (other)" })).toBeNull();
   });
 
-  describe("independentMasters (transactions panel, TBD-464 R1)", () => {
-    it("checking a master checks it and all its subs", async () => {
-      apiFetchMock.mockResolvedValueOnce(CATEGORIES);
-      const onChange = vi.fn();
+  describe("ownRow (transactions panel, TBD-464 option C)", () => {
+    function render(value: number[], onChange: (next: number[]) => void = () => {}) {
+      apiFetchMock.mockResolvedValue(OWN_CATEGORIES as never);
+      return renderWithSWR(<CategoryPicker ownRow value={value} onChange={onChange} />);
+    }
 
-      renderWithSWR(<CategoryPicker independentMasters value={[21]} onChange={onChange} />);
+    it("checking the group selects the master and all its subs", async () => {
+      // FENCE. Kills: the master checking only itself.
+      const onChange = vi.fn();
+      render([21], onChange);
 
       fireEvent.click(await screen.findByRole("checkbox", { name: "Category Food" }));
       expect((onChange.mock.calls[0][0] as number[]).sort()).toEqual([10, 11, 12, 21]);
     });
 
-    it("checking a master while a search hides some subs still checks ALL its subs", async () => {
-      // FENCE (re-review NB-5). Kills: building the master's ids from the
-      // search-filtered node, which adds only the subs still visible.
-      apiFetchMock.mockResolvedValueOnce(CATEGORIES);
+    it("unchecking the group clears the master and all its subs", async () => {
+      // FENCE. Kills: option B, where the master unchecks only itself.
       const onChange = vi.fn();
+      render([10, 11, 12, 21], onChange);
 
-      renderWithSWR(<CategoryPicker independentMasters value={[]} onChange={onChange} />);
+      const food = (await screen.findByRole("checkbox", { name: "Category Food" })) as HTMLInputElement;
+      expect(food).toBeChecked();
+      fireEvent.click(food);
+      expect(onChange).toHaveBeenCalledWith([21]);
+    });
+
+    it("a master with subs and own transactions has an (other) row that toggles only its id", async () => {
+      const onChange = vi.fn();
+      render([], onChange);
+
+      const other = await screen.findByRole("checkbox", { name: "Category Food (other)" });
+      fireEvent.click(other);
+      expect(onChange).toHaveBeenCalledWith([10]);
+    });
+
+    it("the (other) row alone, or a missing sub, leaves the group indeterminate", async () => {
+      const { unmount } = render([10]);
+      let food = (await screen.findByRole("checkbox", { name: "Category Food" })) as HTMLInputElement;
+      await waitFor(() => expect(food.indeterminate).toBe(true));
+      expect(food).not.toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "Category Food (other)" })).toBeChecked();
+      unmount();
+
+      render([10, 11]);
+      food = (await screen.findByRole("checkbox", { name: "Category Food" })) as HTMLInputElement;
+      await waitFor(() => expect(food.indeterminate).toBe(true));
+      expect(food).not.toBeChecked();
+    });
+
+    it("no (other) row without own transactions; the group toggle still adds and removes the master", async () => {
+      // FENCE. Kills: the group toggle skipping the master when its (other)
+      // row is hidden, which makes a fully checked group narrower than the
+      // subtree.
+      const onChange = vi.fn();
+      const { unmount } = render([], onChange);
+
+      await screen.findByRole("checkbox", { name: "Category Transport" });
+      expect(screen.queryByRole("checkbox", { name: "Category Transport (other)" })).toBeNull();
+      fireEvent.click(screen.getByRole("checkbox", { name: "Category Transport" }));
+      expect((onChange.mock.calls[0][0] as number[]).sort()).toEqual([20, 21]);
+      unmount();
+
+      // Every VISIBLE row checked, hidden master not: the group reads checked,
+      // and unchecking it still removes the master.
+      const onChange2 = vi.fn();
+      render([20, 21], onChange2);
+      const transport = (await screen.findByRole("checkbox", { name: "Category Transport" })) as HTMLInputElement;
+      expect(transport).toBeChecked();
+      fireEvent.click(transport);
+      expect(onChange2).toHaveBeenCalledWith([]);
+    });
+
+    it("a hidden master does not make the group partial", async () => {
+      render([21]);
+      const transport = (await screen.findByRole("checkbox", { name: "Category Transport" })) as HTMLInputElement;
+      expect(transport).toBeChecked();
+      expect(transport.indeterminate).toBe(false);
+    });
+
+    it("a search that hides a sub: checking the group still includes it", async () => {
+      // FENCE (re-review NB-5). Kills: building the group's ids from the
+      // search-filtered node.
+      const onChange = vi.fn();
+      render([], onChange);
 
       await screen.findByRole("checkbox", { name: "Category Food" });
       fireEvent.change(screen.getByTestId("category-picker-search"), { target: { value: "groc" } });
@@ -158,27 +230,16 @@ describe("CategoryPicker", () => {
       expect((onChange.mock.calls[0][0] as number[]).sort()).toEqual([10, 11, 12]);
     });
 
-    it("unchecking a master unchecks only the master", async () => {
-      apiFetchMock.mockResolvedValueOnce(CATEGORIES);
-      const onChange = vi.fn();
-
-      renderWithSWR(<CategoryPicker independentMasters value={[10, 11, 12]} onChange={onChange} />);
-
-      fireEvent.click(await screen.findByRole("checkbox", { name: "Category Food" }));
-      expect(onChange).toHaveBeenCalledWith([11, 12]);
-    });
-
-    it("the master box shows only its own check, never a derived partial state", async () => {
-      apiFetchMock.mockResolvedValueOnce(CATEGORIES);
-
-      renderWithSWR(<CategoryPicker independentMasters value={[10, 11]} onChange={() => {}} />);
-
+    it("native checkboxes carry no aria-checked; the partial group sets indeterminate", async () => {
+      // FENCE. Kills: aria-checked on a native checkbox (ARIA in HTML forbids
+      // it), and a partial group with no indeterminate state.
+      render([11]);
       const food = (await screen.findByRole("checkbox", { name: "Category Food" })) as HTMLInputElement;
-      const transport = screen.getByRole("checkbox", { name: "Category Transport" }) as HTMLInputElement;
-      expect(food).toBeChecked();
-      expect(food.indeterminate).toBe(false);
-      expect(food).not.toHaveAttribute("aria-checked", "mixed");
-      expect(transport).not.toBeChecked();
+      await waitFor(() => expect(food.indeterminate).toBe(true));
+      for (const box of screen.getAllByRole("checkbox")) {
+        expect(box).not.toHaveAttribute("aria-checked");
+      }
+      expect((screen.getByRole("checkbox", { name: "Category Food (other)" }) as HTMLElement).closest("label")!.className).toContain("min-h-[44px]");
     });
   });
 
