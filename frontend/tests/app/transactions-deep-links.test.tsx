@@ -1,9 +1,11 @@
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import { FILTERS_KEY_TRANSACTIONS } from "@/lib/hooks/persisted-keys";
 
 const searchParamsState = vi.hoisted(() => ({
   value: new URLSearchParams(),
@@ -12,9 +14,7 @@ const searchParamsState = vi.hoisted(() => ({
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => "/transactions",
-  useSearchParams: () => ({
-    get: (key: string) => searchParamsState.value.get(key),
-  }),
+  useSearchParams: () => searchParamsState.value,
 }));
 
 vi.mock("@/components/AppShell", () => ({
@@ -156,7 +156,7 @@ describe("TransactionsPage — dashboard deep links", () => {
     );
     const mock = setupApiFetch([]);
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitFor(() => {
       const urls = listUrls(mock);
@@ -189,7 +189,7 @@ describe("TransactionsPage — dashboard deep links", () => {
       makeTx({ id: 42, description: "Target tx" }),
     ]);
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     const desktopRow = await screen.findByTestId("tx-row-desktop-42");
     const mobileRow = await screen.findByTestId("tx-row-mobile-42");
@@ -198,6 +198,154 @@ describe("TransactionsPage — dashboard deep links", () => {
     expect(mobileRow.className).toContain("ring-accent");
     await waitFor(() => {
       expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "auto" });
+    });
+  });
+
+  // ── TBD-464: multi-valued filter state and the list URL contract ─────────
+
+  function lastParams(mock: ReturnType<typeof vi.mocked<typeof apiFetch>>) {
+    const urls = listUrls(mock);
+    expect(urls.length).toBeGreaterThan(0);
+    return new URL(urls[urls.length - 1], "http://x").searchParams;
+  }
+
+  function storeFilters(patch: Record<string, unknown>) {
+    window.localStorage.setItem(FILTERS_KEY_TRANSACTIONS, JSON.stringify(patch));
+  }
+
+  it("migrates an old scalar stored filterAccount into account_id", async () => {
+    // FENCE. Kills: renaming the field (the stored value is dropped), passing
+    // the scalar through to array code, and the hook dropping arrays.
+    storeFilters({ filterAccount: 5 });
+    const mock = setupApiFetch([]);
+
+    renderWithSWR(<TransactionsPage />);
+
+    await waitFor(() => {
+      expect(lastParams(mock).getAll("account_id")).toEqual(["5"]);
+    });
+  });
+
+  it("sends one account_id per selected account", async () => {
+    // FENCE. Kills: comma-joining the ids, and last-wins.
+    storeFilters({ filterAccount: [100, 200] });
+    const mock = setupApiFetch([]);
+
+    renderWithSWR(<TransactionsPage />);
+
+    await waitFor(() => {
+      expect(lastParams(mock).getAll("account_id")).toEqual(["100", "200"]);
+    });
+  });
+
+  it("reads every account_id from the URL and keeps the transaction highlight", async () => {
+    // FENCE. Kills: `searchParams.get` into a scalar (only the first id lands).
+    searchParamsState.value = new URLSearchParams(
+      "account_id=100&account_id=200&transaction_id=42",
+    );
+    const mock = setupApiFetch([makeTx({ id: 42, description: "Target tx" })]);
+
+    renderWithSWR(<TransactionsPage />);
+
+    await waitFor(() => {
+      expect(lastParams(mock).getAll("account_id")).toEqual(["100", "200"]);
+    });
+    const desktopRow = await screen.findByTestId("tx-row-desktop-42");
+    expect(desktopRow.className).toContain("ring-accent");
+  });
+
+  it("passes category_id and category_match=exact through from a deep link", async () => {
+    // FENCE. Kills: dropping category_match (the list silently widens to the
+    // subtree and no longer sums to the slice that opened it).
+    searchParamsState.value = new URLSearchParams("category_id=7&category_match=exact");
+    const mock = setupApiFetch([]);
+
+    renderWithSWR(<TransactionsPage />);
+
+    await waitFor(() => {
+      const params = lastParams(mock);
+      expect(params.getAll("category_id")).toEqual(["7"]);
+      expect(params.get("category_match")).toBe("exact");
+    });
+  });
+
+  it("sends selected tags with tag_match=any", async () => {
+    // FENCE. Kills: relying on the API default `all` (operator ruling
+    // 2026-09-14: the panel's tag filter is OR).
+    storeFilters({ filterTags: ["a", "b"] });
+    const mock = setupApiFetch([]);
+
+    renderWithSWR(<TransactionsPage />);
+
+    await waitFor(() => {
+      const params = lastParams(mock);
+      expect(params.get("tags")).toBe("a,b");
+      expect(params.get("tag_match")).toBe("any");
+    });
+  });
+
+  it("hides the Reset button once the account filter is cleared back to All", async () => {
+    // FENCE. Kills: `[] !== []` in isDefault (a cleared select holds a fresh
+    // empty array, never the default's reference).
+    const mock = setupApiFetch([]);
+    renderWithSWR(<TransactionsPage />);
+    const select = await screen.findByLabelText("Filter by account");
+    await waitFor(() => expect(select).toHaveTextContent("Checking B"));
+    expect(screen.queryByTestId("reset-sort-filters")).toBeNull();
+
+    fireEvent.change(select, { target: { value: "100" } });
+    await screen.findByTestId("reset-sort-filters");
+    fireEvent.change(select, { target: { value: "" } });
+
+    await waitFor(() => {
+      expect(lastParams(mock).getAll("account_id")).toEqual([]);
+      expect(screen.queryByTestId("reset-sort-filters")).toBeNull();
+    });
+  });
+
+  describe("legacy ?category=<name> bookmarks", () => {
+    const MASTER = { ...CATEGORY, id: 11, name: "Food", parent_id: null };
+    const SUB = { ...CATEGORY, id: 12, name: "Food", parent_id: 99, parent_name: "Home" };
+    const OTHER_MASTER = { ...CATEGORY, id: 13, name: "Food", parent_id: null };
+
+    function withCategories(
+      mock: ReturnType<typeof vi.mocked<typeof apiFetch>>,
+      cats: unknown[],
+    ) {
+      const base = mock.getMockImplementation()!;
+      mock.mockImplementation(async (url: string) =>
+        url.startsWith("/api/v1/categories") ? (cats as never) : base(url),
+      );
+    }
+
+    it("prefers the master when a sub shares its name", async () => {
+      searchParamsState.value = new URLSearchParams("category=food");
+      const mock = setupApiFetch([]);
+      withCategories(mock, [SUB, MASTER]);
+
+      renderWithSWR(<TransactionsPage />);
+
+      await waitFor(() => {
+        expect(lastParams(mock).getAll("category_id")).toEqual(["11"]);
+      });
+    });
+
+    it("seeds nothing when the name is still ambiguous", async () => {
+      // FENCE. Kills: first-match-by-name (it would silently pick one of two
+      // unrelated categories).
+      searchParamsState.value = new URLSearchParams("category=Food");
+      const mock = setupApiFetch([]);
+      withCategories(mock, [MASTER, OTHER_MASTER]);
+
+      renderWithSWR(<TransactionsPage />);
+
+      await screen.findByLabelText("Filter by category");
+      await waitFor(() =>
+        expect(screen.getByLabelText("Filter by category")).toHaveTextContent("Food"),
+      );
+      // Give the name-resolution effect a chance to (wrongly) seed a filter.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(lastParams(mock).getAll("category_id")).toEqual([]);
     });
   });
 });

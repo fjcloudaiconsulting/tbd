@@ -34,6 +34,7 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/transactions",
   useSearchParams: () => ({
     get: (key: string) => searchParamsState.value.get(key),
+    getAll: (key: string) => searchParamsState.value.getAll(key),
   }),
 }));
 

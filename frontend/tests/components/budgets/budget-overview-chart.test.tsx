@@ -47,10 +47,9 @@
  *
  * ## What this file does NOT cover
  *
- * The component's prop contract only. `app/budgets/page.tsx` turns the name
- * into `router.push("/transactions?category=...")`; renaming that query param,
- * dropping `encodeURIComponent` (a category like `Food & Drink` would break the
- * URL), or deleting the push leaves every assertion here green.
+ * The component's prop contract only. `app/budgets/page.tsx` turns the id
+ * into `router.push("/transactions?category_id=...")` (TBD-464); that push is
+ * fenced at page level in `tests/app/budgets-layout.test.tsx`.
  */
 import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -65,8 +64,8 @@ import BudgetOverviewChart, {
 } from "@/app/budgets/BudgetOverviewChart";
 
 const DATA: BudgetOverviewDatum[] = [
-  { name: "Groceries", spent: 120, remaining: 80, over: 0 },
-  { name: "Transport", spent: 300, remaining: 0, over: 50 },
+  { categoryId: 1, name: "Groceries", spent: 120, remaining: 80, over: 0 },
+  { categoryId: 2, name: "Transport", spent: 300, remaining: 0, over: 50 },
 ];
 
 const CELL_META = [
@@ -118,24 +117,21 @@ describe("BudgetOverviewChart bar click", () => {
     expect(spentBars(container)).toHaveLength(DATA.length);
   });
 
-  it("calls onBarClick with the clicked category name", () => {
+  it("calls onBarClick with the clicked category id", () => {
     // FENCE. Wrong implementation killed: removing the `onClick` from the
     // `spent` Bar (app/budgets/BudgetOverviewChart.tsx:60), moving it to the
     // `remaining`/`over` Bar, or reading a field the datum does not carry.
     //
-    // ⚠ Knowingly NOT killed: dropping the `|| data?.payload?.name` fallback.
-    // Recharts builds its click payload as `{...entry, payload: entry}`, so
-    // both disjuncts are the same string and the second arm is masked by the
-    // first. It is dead either way; this test cannot tell.
     const { container, onBarClick } = renderChart();
 
     fireEvent.click(spentBars(container)[0]);
 
     expect(onBarClick).toHaveBeenCalledTimes(1);
-    // Asserts the ARGUMENT, not merely that something fired. The name drives a
+    // Asserts the ARGUMENT, not merely that something fired. The id drives a
     // navigation, so a handler wired to the wrong datum field would send the
-    // user to the wrong category while still "being called".
-    expect(onBarClick).toHaveBeenCalledWith("Groceries");
+    // user to the wrong category while still "being called". TBD-464: an id,
+    // not the name, because category names are not unique.
+    expect(onBarClick).toHaveBeenCalledWith(1);
   });
 
   it("distinguishes bars — clicking the second reports the second category", () => {
@@ -149,6 +145,6 @@ describe("BudgetOverviewChart bar click", () => {
     fireEvent.click(bars[1]);
 
     expect(onBarClick).toHaveBeenCalledTimes(1);
-    expect(onBarClick).toHaveBeenCalledWith("Transport");
+    expect(onBarClick).toHaveBeenCalledWith(2);
   });
 });

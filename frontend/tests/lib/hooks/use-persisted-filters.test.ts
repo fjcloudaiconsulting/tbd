@@ -106,8 +106,7 @@ describe("usePersistedFilters", () => {
     expect(result.current.filters.status).toBe("settled");
   });
 
-  it("rejects non-primitive stored values for known fields", () => {
-    // Fields with object/array stored values fall back to defaults.
+  it("rejects objects, and arrays for fields whose default is not an array", () => {
     // Primitives (string/number/boolean/null) are accepted because union
     // types like `number | ""` are common in this codebase.
     window.localStorage.setItem(
@@ -124,6 +123,66 @@ describe("usePersistedFilters", () => {
     expect(result.current.filters.search).toBe("");
     expect(result.current.filters.account).toBe(1);
     expect(result.current.filters.status).toBe("");
+  });
+
+  describe("array fields (TBD-464)", () => {
+    type MultiFilters = { accounts: number[]; tags: string[]; search: string };
+    const MULTI_DEFAULTS: MultiFilters = { accounts: [], tags: [], search: "" };
+
+    it("keeps a stored array of primitives", () => {
+      // FENCE. Kills: arrays silently dropped by the primitive-only merge.
+      window.localStorage.setItem(
+        KEY,
+        JSON.stringify({ accounts: [1, 2], tags: ["a", "b"] }),
+      );
+      const { result } = renderHook(() =>
+        usePersistedFilters<MultiFilters>(KEY, MULTI_DEFAULTS),
+      );
+      expect(result.current.filters.accounts).toEqual([1, 2]);
+      expect(result.current.filters.tags).toEqual(["a", "b"]);
+    });
+
+    it("migrates a scalar stored before the field became an array", () => {
+      // FENCE. Kills: an old `{filterAccount: 5}` payload dropped or crashing.
+      window.localStorage.setItem(
+        KEY,
+        JSON.stringify({ accounts: 5, tags: "" }),
+      );
+      const { result } = renderHook(() =>
+        usePersistedFilters<MultiFilters>(KEY, MULTI_DEFAULTS),
+      );
+      expect(result.current.filters.accounts).toEqual([5]);
+      expect(result.current.filters.tags).toEqual([]);
+    });
+
+    it("migrates null to an empty array and rejects nested values", () => {
+      window.localStorage.setItem(
+        KEY,
+        JSON.stringify({ accounts: null, tags: [{ x: 1 }] }),
+      );
+      const { result } = renderHook(() =>
+        usePersistedFilters<MultiFilters>(KEY, MULTI_DEFAULTS),
+      );
+      expect(result.current.filters.accounts).toEqual([]);
+      expect(result.current.filters.tags).toEqual([]);
+    });
+
+    it("compares arrays element-wise for isDefault", () => {
+      // FENCE. Kills: `[] !== []`, which leaves isDefault false forever once a
+      // fresh empty array (a cleared select, a migrated "") is in state.
+      window.localStorage.setItem(
+        KEY,
+        JSON.stringify({ accounts: "", tags: "", search: "" }),
+      );
+      const { result } = renderHook(() =>
+        usePersistedFilters<MultiFilters>(KEY, MULTI_DEFAULTS),
+      );
+      expect(result.current.isDefault).toBe(true);
+      act(() => result.current.set({ accounts: [3] }));
+      expect(result.current.isDefault).toBe(false);
+      act(() => result.current.set({ accounts: [] }));
+      expect(result.current.isDefault).toBe(true);
+    });
   });
 
   it("isDefault flips with set/reset", () => {

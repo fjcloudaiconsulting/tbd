@@ -31,12 +31,26 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isPrimitive(value: unknown): boolean {
+  const t = typeof value;
+  return value === null || t === "string" || t === "number" || t === "boolean";
+}
+
+// Arrays compare element-wise: a fresh `[]` is a different reference from the
+// default `[]`, so `!==` would keep `isDefault` false forever.
+function valueEqual(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+  return a === b;
+}
+
 function shallowEqual<T extends Record<string, unknown>>(a: T, b: T): boolean {
   const aKeys = Object.keys(a);
   const bKeys = Object.keys(b);
   if (aKeys.length !== bKeys.length) return false;
   for (const key of aKeys) {
-    if (a[key] !== b[key]) return false;
+    if (!valueEqual(a[key], b[key])) return false;
   }
   return true;
 }
@@ -51,20 +65,24 @@ export function usePersistedFilters<T extends Record<string, unknown>>(
     // Merge over defaults so adding a new filter field later doesn't leave
     // the value `undefined` from a stale stored payload. Accept any JSON
     // primitive (string | number | boolean | null) for known keys; reject
-    // objects/arrays since the filter shape is intentionally flat. Union
-    // types like `number | ""` are common in this codebase, so a strict
-    // typeof match against the default is too aggressive.
+    // objects. Union types like `number | ""` are common in this codebase, so
+    // a strict typeof match against the default is too aggressive.
+    //
+    // Arrays of primitives are accepted only where the DEFAULT is an array.
+    // A scalar stored before such a field became multi-valued is migrated,
+    // not dropped: `""`/`null` becomes `[]`, any other primitive `v` `[v]`.
     const merged = { ...defaults } as T;
     for (const k of Object.keys(defaults) as (keyof T)[]) {
       const incoming = (stored as Record<string, unknown>)[k as string];
       if (incoming === undefined) continue;
-      const t = typeof incoming;
-      if (
-        incoming === null ||
-        t === "string" ||
-        t === "number" ||
-        t === "boolean"
-      ) {
+      if (Array.isArray(defaults[k])) {
+        if (Array.isArray(incoming)) {
+          if (incoming.every(isPrimitive)) (merged[k] as unknown) = incoming;
+        } else if (isPrimitive(incoming)) {
+          (merged[k] as unknown) =
+            incoming === "" || incoming === null ? [] : [incoming];
+        }
+      } else if (isPrimitive(incoming)) {
         (merged[k] as unknown) = incoming;
       }
     }

@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import BudgetsPage from "@/app/budgets/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -25,8 +25,15 @@ vi.mock("@/lib/hooks/use-ai-status", () => ({
   useAiStatus: vi.fn(),
 }));
 
+const push = vi.hoisted(() => vi.fn());
+
+vi.mock("recharts", async () => {
+  const { rechartsWithFixedSize } = await import("@/tests/utils/recharts");
+  return rechartsWithFixedSize();
+});
+
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push, replace: vi.fn() }),
   usePathname: () => "/budgets",
   useSearchParams: () => ({ get: () => null }),
 }));
@@ -124,5 +131,24 @@ describe("Budgets page — proportional layout", () => {
     expect(detailsHeading.closest('[class*="xl:col-span-5"]')).not.toBeNull();
 
     expect(screen.queryByText("Budget Overview")).toBeNull();
+  });
+
+  it("a Budget Overview bar links to its transactions by category_id, not by name", async () => {
+    // FENCE (TBD-464). Kills: linking by `?category=<name>`. Names are not
+    // unique, so a name link can open the wrong category. Budgets are
+    // master-only and their spend includes subs, so the default subtree
+    // match is right and no category_match is sent.
+    push.mockReset();
+    setupApiFetch([BUDGET]);
+    const { container } = render(<BudgetsPage />);
+
+    const bar = await waitFor(() => {
+      const el = container.querySelector(".recharts-bar .recharts-bar-rectangle");
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    fireEvent.click(bar);
+
+    expect(push).toHaveBeenCalledWith("/transactions?category_id=10");
   });
 });

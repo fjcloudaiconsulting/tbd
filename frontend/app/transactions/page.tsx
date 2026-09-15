@@ -253,6 +253,42 @@ function bulkDeleteNotice(res: {
 
 const DATE_PARAM_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// Filters: persisted via localStorage so a navigate-away-and-back, or a
+// tab reload, lands the user back on the same view. Item 6 of the
+// launch-prep punch list.
+//
+// TBD-464: account and category are multi-valued. The field names are kept
+// on purpose: usePersistedFilters migrates a scalar stored under the old
+// name to `[v]`, and a rename would silently drop every saved filter.
+type TxFilters = {
+  filterAccount: number[];
+  filterCategory: number[];
+  filterTags: string[];
+  filterType: string;
+  filterStatus: string;
+  filterDateFrom: string;
+  filterDateTo: string;
+  filterSearch: string;
+  filterPeriod: string;
+};
+// Module scope so `reset` restores a stable reference.
+const TX_FILTER_DEFAULTS: TxFilters = {
+  filterAccount: [],
+  filterCategory: [],
+  filterTags: [],
+  filterType: "",
+  filterStatus: "",
+  filterDateFrom: "",
+  filterDateTo: "",
+  filterSearch: "",
+  filterPeriod: "",
+};
+
+// Keeps only positive integer ids, from URL strings or stored values alike.
+function positiveIds(values: unknown[]): number[] {
+  return values.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+}
+
 // Column-aware sort defaults. When the user clicks a different column, that
 // column's natural default direction is applied (Option B in the data-table
 // pattern). Same-column clicks toggle direction. Numeric/date columns default
@@ -399,29 +435,6 @@ function TransactionsPageContent() {
   // the blank case indistinguishable from a cleared field mid-edit.
   const [editRecOccurrenceCount, setEditRecOccurrenceCount] = useState("");
 
-  // Filters: persisted via localStorage so a navigate-away-and-back, or a
-  // tab reload, lands the user back on the same view. Item 6 of the
-  // launch-prep punch list.
-  type TxFilters = {
-    filterAccount: number | "";
-    filterCategory: number | "";
-    filterType: string;
-    filterStatus: string;
-    filterDateFrom: string;
-    filterDateTo: string;
-    filterSearch: string;
-    filterPeriod: string;
-  };
-  const TX_FILTER_DEFAULTS: TxFilters = {
-    filterAccount: "",
-    filterCategory: "",
-    filterType: "",
-    filterStatus: "",
-    filterDateFrom: "",
-    filterDateTo: "",
-    filterSearch: "",
-    filterPeriod: "",
-  };
   const persistedFilters = usePersistedFilters<TxFilters>(
     FILTERS_KEY_TRANSACTIONS,
     TX_FILTER_DEFAULTS,
@@ -429,6 +442,7 @@ function TransactionsPageContent() {
   const {
     filterAccount,
     filterCategory,
+    filterTags,
     filterType,
     filterStatus,
     filterDateFrom,
@@ -439,12 +453,20 @@ function TransactionsPageContent() {
   // setField is memoized inside the hook; hoist it to a stable identifier so
   // the useCallback-wrapped setters below get a clean, stable dependency.
   const persistedSetField = persistedFilters.setField;
-  const setFilterAccount = (v: number | "") =>
+  const setFilterAccount = (v: number[]) =>
     persistedSetField("filterAccount", v);
+  // A deep link from a leaf-flat rollup carries `category_match=exact`. It is
+  // not persisted: it holds until the user picks categories themselves.
+  const [categoryMatchExact, setCategoryMatchExact] = useState(
+    () => searchParams.get("category_match") === "exact",
+  );
   // Stable across renders (setField is memoized) so effects that call this
   // setter can list it in their dep array without re-running every render.
   const setFilterCategory = useCallback(
-    (v: number | "") => persistedSetField("filterCategory", v),
+    (v: number[]) => {
+      setCategoryMatchExact(false);
+      persistedSetField("filterCategory", v);
+    },
     [persistedSetField],
   );
   const setFilterType = (v: string) =>
@@ -518,8 +540,17 @@ function TransactionsPageContent() {
     // page — and blanked the list entirely under `type=income`.
     let url = `/api/v1/transactions?limit=${pageSize}&offset=${p * pageSize}&collapse_transfers=true`;
     url += `&sort_by=${encodeURIComponent(sortField)}&sort_dir=${encodeURIComponent(sortDir)}`;
-    if (filterAccount) url += `&account_id=${filterAccount}`;
-    if (filterCategory) url += `&category_id=${filterCategory}`;
+    // One repeated param per id: the API reads `list[int]`, so a comma-joined
+    // value 422s.
+    for (const id of positiveIds(filterAccount)) url += `&account_id=${id}`;
+    const categoryIds = positiveIds(filterCategory);
+    for (const id of categoryIds) url += `&category_id=${id}`;
+    if (categoryIds.length > 0 && categoryMatchExact) url += "&category_match=exact";
+    // Operator ruling 2026-09-14: the tag filter is OR. Never rely on the
+    // API default, which is `all`.
+    if (filterTags.length > 0) {
+      url += `&tags=${encodeURIComponent(filterTags.join(","))}&tag_match=any`;
+    }
     if (filterType) url += `&type=${filterType}`;
     if (filterStatus) url += `&status=${filterStatus}`;
 
@@ -543,7 +574,7 @@ function TransactionsPageContent() {
     setTransactions(data?.items ?? []);
     setTotal(data?.total ?? 0);
     setFetching(false);
-  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, periods, pageSize, sortField, sortDir]);
+  }, [filterAccount, filterCategory, categoryMatchExact, filterTags, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, periods, pageSize, sortField, sortDir]);
 
   // Reference data (accounts/categories/periods) auto-fetches via the SWR
   // hooks above once ``refsEnabled`` flips true — no explicit mount effect.
@@ -555,10 +586,10 @@ function TransactionsPageContent() {
     urlFiltersSyncedRef.current = true;
 
     const patch: Partial<TxFilters> = {};
-    const accountId = Number(searchParams.get("account_id"));
-    if (Number.isInteger(accountId) && accountId > 0) {
-      patch.filterAccount = accountId;
-    }
+    const accountIds = positiveIds(searchParams.getAll("account_id"));
+    if (accountIds.length > 0) patch.filterAccount = accountIds;
+    const categoryIds = positiveIds(searchParams.getAll("category_id"));
+    if (categoryIds.length > 0) patch.filterCategory = categoryIds;
 
     const dateFrom = searchParams.get("date_from");
     const dateTo = searchParams.get("date_to");
@@ -576,17 +607,21 @@ function TransactionsPageContent() {
     }
   }, [persistedFilters, searchParams]);
 
-  // Apply ?category= URL param once categories are loaded
+  // Apply a legacy ?category=<name> bookmark once categories are loaded. New
+  // links carry category_id. Names are not unique, so prefer a master and
+  // seed nothing if the name is still ambiguous.
   useEffect(() => {
     if (categoryUrlSyncedRef.current) return;
     const categoryName = searchParams.get("category");
     if (categoryName && categories.length > 0) {
-      const match = categories.find(
+      const named = categories.filter(
         (c) => c.name.toLowerCase() === categoryName.toLowerCase()
       );
-      if (match) {
+      const masters = named.filter((c) => c.parent_id == null);
+      const candidates = masters.length > 0 ? masters : named;
+      if (candidates.length === 1) {
         categoryUrlSyncedRef.current = true;
-        setFilterCategory(match.id);
+        setFilterCategory([candidates[0].id]);
       }
     }
   }, [categories, searchParams, setFilterCategory]);
@@ -624,7 +659,7 @@ function TransactionsPageContent() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset pagination to the first page whenever any filter selection changes
     setPage(0);
-  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod]);
+  }, [filterAccount, filterCategory, filterTags, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod]);
 
   // Clamp the page after a refetch shrinks the result set (e.g. a bulk
   // delete that empties the last page) so the user is never stranded on a
@@ -677,7 +712,7 @@ function TransactionsPageContent() {
   // or page size) so navigation never leaves an invisible selection behind.
   useEffect(() => {
     clearSelection();
-  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, sortField, sortDir, page, pageSize]);
+  }, [filterAccount, filterCategory, filterTags, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, sortField, sortDir, page, pageSize]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1445,14 +1480,14 @@ function TransactionsPageContent() {
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-3">
         <div className="w-full sm:w-auto">
           <label htmlFor="f-account" className="sr-only">Filter by account</label>
-          <select id="f-account" value={filterAccount} onChange={(e) => setFilterAccount(e.target.value === "" ? "" : Number(e.target.value))} className={`w-full sm:w-40 ${input}`}>
+          <select id="f-account" value={filterAccount[0] ?? ""} onChange={(e) => setFilterAccount(e.target.value === "" ? [] : [Number(e.target.value)])} className={`w-full sm:w-40 ${input}`}>
             <option value="">All accounts</option>
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </div>
         <div className="w-full sm:w-auto">
           <label htmlFor="f-category" className="sr-only">Filter by category</label>
-          <select id="f-category" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value === "" ? "" : Number(e.target.value))} className={`w-full sm:w-40 ${input}`}>
+          <select id="f-category" value={filterCategory[0] ?? ""} onChange={(e) => setFilterCategory(e.target.value === "" ? [] : [Number(e.target.value)])} className={`w-full sm:w-40 ${input}`}>
             <option value="">All categories</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>

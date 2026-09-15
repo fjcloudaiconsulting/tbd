@@ -24,6 +24,7 @@ import { resolveBudgetSeries } from "@/lib/reports/chart-series-tooltip";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 
 export interface BudgetOverviewDatum {
+  categoryId: number;
   name: string;
   spent: number;
   remaining: number;
@@ -38,7 +39,7 @@ export default function BudgetOverviewChart({
   budgetChartData: BudgetOverviewDatum[];
   // Index-aligned per-row color driver (percent_used) + a stable key.
   cellMeta: Array<{ category_id: number; percent_used: number }>;
-  onBarClick: (name: string | undefined) => void;
+  onBarClick: (categoryId: number | undefined) => void;
 }) {
   const money = useMoney();
   return (
@@ -59,7 +60,7 @@ export default function BudgetOverviewChart({
           shape={(props: BudgetSpentBarShapeProps) => (
             <BudgetSpentBarShape {...props} />
           )}
-          onClick={(data) => onBarClick(data?.name || data?.payload?.name)}
+          onClick={(data) => onBarClick(data?.payload?.categoryId)}
         >
           {cellMeta.map((b) => (
             <Cell

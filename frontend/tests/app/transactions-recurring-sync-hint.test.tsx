@@ -9,7 +9,7 @@ import { waitForStableTxList } from "../utils/wait-for-stable-tx-list";
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => "/transactions",
-  useSearchParams: () => ({ get: () => null }),
+  useSearchParams: () => ({ get: () => null, getAll: () => [] }),
 }));
 
 vi.mock("@/components/AppShell", () => ({
