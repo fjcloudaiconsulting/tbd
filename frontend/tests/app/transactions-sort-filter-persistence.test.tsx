@@ -224,10 +224,10 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
     await awaitReady(mock);
 
     const search = screen.getByLabelText("Search transactions") as HTMLInputElement;
-    const account = screen.getByLabelText("Filter by account") as HTMLSelectElement;
+    const account = await screen.findByRole("button", { name: "Account Checking" });
     expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
 
-    fireEvent.change(account, { target: { value: "100" } });
+    fireEvent.click(account);
     fireEvent.change(search, { target: { value: "rent" } });
     await waitFor(() => {
       expect(
@@ -244,7 +244,7 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
 
     expect(search.value).toBe("");
     expect(document.activeElement).toBe(search);
-    expect(account.value).toBe("100");
+    expect(account).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
     // Settle the refetch the cleared search triggers.
     await waitFor(() => {

@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { X } from "lucide-react";
+import { ChevronDown, SlidersHorizontal, X } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
@@ -40,6 +40,10 @@ import SuggestCategoryButton from "@/components/transactions/SuggestCategoryButt
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import ResetSortFiltersButton from "@/components/ui/ResetSortFiltersButton";
+import AccountFilter from "@/components/reports/filters/AccountFilter";
+import CategoryPicker from "@/components/reports/filters/CategoryPicker";
+import TagFilter from "@/components/reports/filters/TagFilter";
+import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 import {
   FILTERS_KEY_TRANSACTIONS,
   PAGE_SIZE_KEY_TRANSACTIONS,
@@ -289,6 +293,49 @@ function positiveIds(values: unknown[]): number[] {
   return values.map(Number).filter((n) => Number.isInteger(n) && n > 0);
 }
 
+// TBD-464: the category tree selects a master together with its subs, but the
+// list API matches a category id with its WHOLE subtree. These translate
+// between the two. One level of hierarchy: a sub has no subs.
+function subIdsByMaster(categories: Category[]): Map<number, number[]> {
+  const out = new Map<number, number[]>();
+  for (const c of categories) {
+    if (c.parent_id != null) out.set(c.parent_id, [...(out.get(c.parent_id) ?? []), c.id]);
+  }
+  return out;
+}
+
+// A master selected with NONE of its subs is a whole-subtree selection made
+// outside the tree: a `?category_id=` deep link, a `?category=` bookmark, or a
+// value saved by the old single select. Show it fully checked. The tree never
+// produces this shape itself (see `withoutLoneMasters`).
+function withLoneMastersExpanded(ids: number[], subs: Map<number, number[]>): number[] {
+  const selected = new Set(ids);
+  for (const id of ids) {
+    const children = subs.get(id);
+    if (children && !children.some((s) => selected.has(s))) {
+      for (const s of children) selected.add(s);
+    }
+  }
+  return [...selected];
+}
+
+// Unchecking a master's last sub leaves the master alone in the list, which
+// would read back as its whole subtree. Drop it.
+function withoutLoneMasters(ids: number[], subs: Map<number, number[]>): number[] {
+  const selected = new Set(ids);
+  return ids.filter((id) => {
+    const children = subs.get(id);
+    return !children || children.some((s) => selected.has(s));
+  });
+}
+
+// Omit a master whose subs are not all selected: under subtree match its id
+// would pull the unchecked subs straight back in.
+function withoutPartialMasters(ids: number[], subs: Map<number, number[]>): number[] {
+  const selected = new Set(ids);
+  return ids.filter((id) => (subs.get(id) ?? []).every((s) => selected.has(s)));
+}
+
 // Column-aware sort defaults. When the user clicks a different column, that
 // column's natural default direction is applied (Option B in the data-table
 // pattern). Same-column clicks toggle direction. Numeric/date columns default
@@ -485,6 +532,55 @@ function TransactionsPageContent() {
     (v: string) => persistedSetField("filterPeriod", v),
     [persistedSetField],
   );
+  const setFilterTags = (v: string[]) => persistedSetField("filterTags", v);
+
+  // TBD-464: what the category tree shows, and the ids the list request sends.
+  // Under `category_match=exact` (a leaf-flat drilldown) the ids pass through
+  // untouched: the subtree rules would widen or unfilter that list.
+  const subsByMaster = useMemo(() => subIdsByMaster(categories), [categories]);
+  const categorySelection = useMemo(() => {
+    const ids = positiveIds(filterCategory);
+    return categoryMatchExact ? ids : withLoneMastersExpanded(ids, subsByMaster);
+  }, [filterCategory, categoryMatchExact, subsByMaster]);
+  // A string, so an equal selection never re-creates loadTransactions.
+  const categoryParams = useMemo(() => {
+    if (categoryMatchExact) {
+      return categorySelection.map((id) => `&category_id=${id}`).join("") +
+        (categorySelection.length > 0 ? "&category_match=exact" : "");
+    }
+    return withoutPartialMasters(categorySelection, subsByMaster)
+      .map((id) => `&category_id=${id}`)
+      .join("");
+  }, [categorySelection, categoryMatchExact, subsByMaster]);
+  const pickCategories = (next: number[]) =>
+    setFilterCategory(withoutLoneMasters(next, subsByMaster));
+
+  // Below xl the filter panel is a drawer. At xl it is always visible and
+  // this stays false.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filterPanelRef = useRef<HTMLElement>(null);
+  const filterTitleRef = useRef<HTMLHeadingElement>(null);
+  useFocusTrap({ active: filtersOpen, containerRef: filterPanelRef });
+  useEffect(() => {
+    if (!filtersOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFiltersOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [filtersOpen]);
+  // A section opens by default when it holds a selection, then follows the
+  // user. The latch keeps clearing the last selection from collapsing the
+  // section under the pointer.
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
+  const activeFilterCount = [
+    filterAccount.length,
+    categorySelection.length,
+    filterTags.length,
+    filterType,
+    filterStatus,
+    filterDateFrom || filterDateTo || filterPeriod,
+  ].filter(Boolean).length;
 
   const persistedSort = usePersistedSort<SortField>(
     SORT_KEY_TRANSACTIONS,
@@ -548,9 +644,7 @@ function TransactionsPageContent() {
     // One repeated param per id: the API reads `list[int]`, so a comma-joined
     // value 422s.
     for (const id of positiveIds(filterAccount)) url += `&account_id=${id}`;
-    const categoryIds = positiveIds(filterCategory);
-    for (const id of categoryIds) url += `&category_id=${id}`;
-    if (categoryIds.length > 0 && categoryMatchExact) url += "&category_match=exact";
+    url += categoryParams;
     // Operator ruling 2026-09-14: the tag filter is OR. Never rely on the
     // API default, which is `all`.
     if (filterTags.length > 0) {
@@ -588,7 +682,7 @@ function TransactionsPageContent() {
     setTransactions(data?.items ?? []);
     setTotal(data?.total ?? 0);
     setFetching(false);
-  }, [filterAccount, filterCategory, categoryMatchExact, filterTags, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, periods, pageSize, sortField, sortDir]);
+  }, [filterAccount, categoryParams, filterTags, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, periods, pageSize, sortField, sortDir]);
 
   // Reference data (accounts/categories/periods) auto-fetches via the SWR
   // hooks above once ``refsEnabled`` flips true — no explicit mount effect.
@@ -734,14 +828,16 @@ function TransactionsPageContent() {
         e.key === "Escape" &&
         selectedIds.size > 0 &&
         !confirmBulkDelete &&
-        !bulkDeleting
+        !bulkDeleting &&
+        // That Escape closes the filter drawer; it must not also drop rows.
+        !filtersOpen
       ) {
         clearSelection();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedIds.size, confirmBulkDelete, bulkDeleting]);
+  }, [selectedIds.size, confirmBulkDelete, bulkDeleting, filtersOpen]);
 
   // Selection operates on every returned row. The server collapses each
   // MUTUALLY-linked transfer pair to a single leg (collapse_transfers=true on
@@ -1282,6 +1378,38 @@ function TransactionsPageContent() {
 
   const linkSelection = evaluateLinkSelection();
 
+  const resultCountText = `${total} ${total === 1 ? "transaction" : "transactions"}`;
+
+  // One collapsible section of the filter panel. It starts open when
+  // `alwaysOpen` or it holds a selection, until the user toggles it; see
+  // `openSections`.
+  function filterSection(
+    key: string,
+    title: string,
+    count: number,
+    alwaysOpen: boolean,
+    body: React.ReactNode,
+  ) {
+    return (
+      <details
+        data-testid={`filter-section-${key}`}
+        open={openSections[key] ?? (alwaysOpen || count > 0)}
+        onToggle={(e) => {
+          const open = e.currentTarget.open;
+          setOpenSections((s) => (s[key] === open ? s : { ...s, [key]: open }));
+        }}
+        className="group border-b border-border px-4 py-2 last:border-b-0"
+      >
+        <summary className="flex min-h-[44px] cursor-pointer list-none items-center gap-2 xl:min-h-8 [&::-webkit-details-marker]:hidden">
+          <span className={`${label} mb-0`}>{title}</span>
+          {count > 0 && <span className={badgeNeutral}>{count}</span>}
+          <ChevronDown aria-hidden="true" className="ml-auto h-4 w-4 text-text-muted transition-transform group-open:rotate-180 motion-reduce:transition-none" />
+        </summary>
+        <div className="pb-2 pt-1">{body}</div>
+      </details>
+    );
+  }
+
   return (
     <AppShell>
       {selectedIds.size > 0 && (
@@ -1410,9 +1538,10 @@ function TransactionsPageContent() {
         </div>
       )}
 
-      {/* Search + Preset filters */}
-      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
-        <div className="relative w-full sm:flex-1 sm:min-w-[200px]">
+      {/* TBD-462's clear button lives here; the search stays full width
+          above both the panel and the table. */}
+      <div className="mb-4 flex items-center gap-2">
+        <div className="relative w-full flex-1">
           <label htmlFor="f-search" className="sr-only">Search transactions</label>
           <input ref={searchInputRef} id="f-search" type="text" placeholder="Search by description or amount..." value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} className={`${input} pr-10`} />
           {filterSearch && (
@@ -1429,122 +1558,193 @@ function TransactionsPageContent() {
             </button>
           )}
         </div>
-        <div className="flex flex-wrap gap-1">
-          {(() => {
-            // Quick-filter buttons. Each clears `filterPeriod` first because the
-            // period filter overrides date_from/date_to in the URL builder, so
-            // leaving it set would silently make the click a no-op.
-            const setRange = (from: string, to: string) => {
-              setFilterPeriod("");
-              setFilterDateFrom(from);
-              setFilterDateTo(to);
-            };
-            const presets: { label: string; fn: () => void }[] = [
-              {
-                label: "Today",
-                fn: () => {
-                  const d = todayISO();
-                  setRange(d, d);
-                },
-              },
-              {
-                label: "This Week",
-                fn: () => {
-                  const now = new Date();
-                  const day = now.getDay();
-                  const diff = day === 0 ? 6 : day - 1; // Monday = start of week
-                  const mon = new Date(now);
-                  mon.setDate(now.getDate() - diff);
-                  setRange(formatLocalDate(mon), todayISO());
-                },
-              },
-              {
-                label: "This Month",
-                fn: () => {
-                  const now = new Date();
-                  setRange(
-                    formatLocalDate(new Date(now.getFullYear(), now.getMonth(), 1)),
-                    formatLocalDate(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
-                  );
-                },
-              },
-              {
-                label: "All",
-                fn: () => setRange("", ""),
-              },
-            ];
-            return presets.map((p) => (
-              <button key={p.label} type="button" onClick={p.fn} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised min-h-[44px] sm:min-h-0">
-                {p.label}
-              </button>
-            ));
-          })()}
-          {/* Item 6: Reset affordance. Visible only when sort or any filter
-              differs from defaults so the toolbar stays clean for new
-              users. Clears localStorage for both keys. */}
-          <ResetSortFiltersButton
-            visible={!persistedFilters.isDefault || !persistedSort.isDefault}
-            onClick={() => {
-              persistedFilters.reset();
-              persistedSort.reset();
-            }}
-          />
-        </div>
-      </div>
-      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-3">
-        <div className="w-full sm:w-auto">
-          <label htmlFor="f-account" className="sr-only">Filter by account</label>
-          <select id="f-account" value={filterAccount[0] ?? ""} onChange={(e) => setFilterAccount(e.target.value === "" ? [] : [Number(e.target.value)])} className={`w-full sm:w-40 ${input}`}>
-            <option value="">All accounts</option>
-            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
-        </div>
-        <div className="w-full sm:w-auto">
-          <label htmlFor="f-category" className="sr-only">Filter by category</label>
-          <select id="f-category" value={filterCategory[0] ?? ""} onChange={(e) => setFilterCategory(e.target.value === "" ? [] : [Number(e.target.value)])} className={`w-full sm:w-40 ${input}`}>
-            <option value="">All categories</option>
-            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </div>
-        <div className="w-full sm:w-auto">
-          <label htmlFor="f-type" className="sr-only">Filter by type</label>
-          <select id="f-type" value={filterType} onChange={(e) => setFilterType(e.target.value)} className={`w-full sm:w-32 ${input}`}>
-            <option value="">All types</option>
-            <option value="income">Income</option>
-            <option value="expense">Expense</option>
-          </select>
-        </div>
-        <div className="w-full sm:w-auto">
-          <label htmlFor="f-status" className="sr-only">Filter by status</label>
-          <select id="f-status" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className={`w-full sm:w-32 ${input}`}>
-            <option value="">All statuses</option>
-            <option value="settled">Settled</option>
-            <option value="pending">Pending</option>
-          </select>
-        </div>
-        <div className="w-full sm:w-auto">
-          <label htmlFor="f-from" className="sr-only">From date</label>
-          <input id="f-from" type="date" value={filterDateFrom} onChange={(e) => { setFilterPeriod(""); setFilterDateFrom(e.target.value); }} className={`w-full sm:w-32 ${input}`} placeholder="From" />
-        </div>
-        <div className="w-full sm:w-auto">
-          <label htmlFor="f-to" className="sr-only">To date</label>
-          <input id="f-to" type="date" value={filterDateTo} onChange={(e) => { setFilterPeriod(""); setFilterDateTo(e.target.value); }} className={`w-full sm:w-32 ${input}`} placeholder="To" />
-        </div>
-        {closedPeriods.length > 0 && (
-          <div className="w-full sm:w-auto">
-            <label htmlFor="f-period" className="sr-only">Billing period</label>
-            <select id="f-period" value={filterPeriod} onChange={(e) => { setFilterPeriod(e.target.value); if (e.target.value) { setFilterDateFrom(""); setFilterDateTo(""); } }} className={`w-full sm:w-40 ${input}`}>
-              <option value="">All periods</option>
-              {closedPeriods.map((p) => (
-                <option key={p.id} value={String(p.id)}>
-                  {p.start_date} – {p.end_date}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+        <button
+          type="button"
+          onClick={() => setFiltersOpen(true)}
+          aria-expanded={filtersOpen}
+          aria-controls="transactions-filter-panel"
+          className={`${btnSecondary} inline-flex min-h-[44px] shrink-0 items-center gap-1.5 xl:hidden`}
+        >
+          <SlidersHorizontal aria-hidden="true" className="h-4 w-4" />
+          Filters
+          {activeFilterCount > 0 && (
+            <>
+              <span aria-hidden="true">· {activeFilterCount}</span>
+              <span className="sr-only">, {activeFilterCount} active</span>
+            </>
+          )}
+        </button>
       </div>
 
+      {/* Announces the result count after every load. Its own always-mounted
+          region: the banner region above has fences that read its whole text. */}
+      <p className="sr-only" role="status" aria-live="polite">
+        {fetching ? "" : resultCountText}
+      </p>
+
+      <div className="xl:flex xl:items-start xl:gap-6">
+        {filtersOpen && (
+          <div
+            aria-hidden="true"
+            onClick={() => setFiltersOpen(false)}
+            className="fixed inset-0 z-40 bg-scrim xl:hidden"
+          />
+        )}
+        {/* TBD-464. ONE element: a drawer below xl, a sticky side panel from
+            xl. It must stay OUTSIDE the `fetching` ternary below, or every
+            filter click unmounts the control that was just used. */}
+        <aside
+          ref={filterPanelRef}
+          id="transactions-filter-panel"
+          data-testid="transactions-filter-panel"
+          aria-labelledby="transactions-filter-title"
+          {...(filtersOpen ? { role: "dialog", "aria-modal": true } : {})}
+          className={`fixed inset-y-0 right-0 z-50 flex w-full max-w-sm flex-col overflow-y-auto bg-surface shadow-xl transition-[transform,visibility] duration-200 motion-reduce:transition-none xl:sticky xl:top-4 xl:bottom-auto xl:right-auto xl:z-auto xl:mb-4 xl:max-h-[calc(100dvh-2rem)] xl:w-64 xl:max-w-none xl:shrink-0 xl:self-start xl:translate-x-0 xl:rounded-lg xl:border xl:border-border xl:shadow-none ${filtersOpen ? "translate-x-0" : "invisible translate-x-full xl:visible"}`}
+        >
+          <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-2">
+            <h2 id="transactions-filter-title" ref={filterTitleRef} tabIndex={-1} className="text-sm font-semibold text-text-primary">
+              Filters
+            </h2>
+            <div className="flex items-center gap-1">
+              {/* Item 6: the one Reset. Visible only when sort or any filter
+                  differs from defaults. Clears localStorage for both keys. */}
+              <ResetSortFiltersButton
+                visible={!persistedFilters.isDefault || !persistedSort.isDefault}
+                onClick={() => {
+                  persistedFilters.reset();
+                  persistedSort.reset();
+                  // The button unmounts on reset; keep focus in the panel.
+                  filterTitleRef.current?.focus();
+                }}
+              />
+              <button
+                type="button"
+                aria-label="Close filters"
+                onClick={() => setFiltersOpen(false)}
+                className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-text-muted hover:text-text-primary xl:hidden"
+              >
+                <X aria-hidden="true" className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1">
+            {filterSection("accounts", "Accounts", filterAccount.length, true,
+              <AccountFilter label="" includeInactive value={filterAccount} onChange={setFilterAccount} />,
+            )}
+            {filterSection("categories", "Categories", categorySelection.length, true,
+              <CategoryPicker label="" value={categorySelection} onChange={pickCategories} />,
+            )}
+            {filterSection("tags", "Tags", filterTags.length, false,
+              <TagFilter label="" hideMatch match="any" value={filterTags} onChange={({ tag_names }) => setFilterTags(tag_names)} />,
+            )}
+            {filterSection("type", "Type and status", [filterType, filterStatus].filter(Boolean).length, false,
+              <div className="flex flex-col gap-2">
+                <div>
+                  <label htmlFor="f-type" className="sr-only">Filter by type</label>
+                  <select id="f-type" value={filterType} onChange={(e) => setFilterType(e.target.value)} className={input}>
+                    <option value="">All types</option>
+                    <option value="income">Income</option>
+                    <option value="expense">Expense</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="f-status" className="sr-only">Filter by status</label>
+                  <select id="f-status" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className={input}>
+                    <option value="">All statuses</option>
+                    <option value="settled">Settled</option>
+                    <option value="pending">Pending</option>
+                  </select>
+                </div>
+              </div>,
+            )}
+            {filterSection("date", "Date", filterDateFrom || filterDateTo || filterPeriod ? 1 : 0, false,
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap gap-1">
+                  {(() => {
+                    // Quick-filter buttons. Each clears `filterPeriod` first because the
+                    // period filter overrides date_from/date_to in the URL builder, so
+                    // leaving it set would silently make the click a no-op.
+                    const setRange = (from: string, to: string) => {
+                      setFilterPeriod("");
+                      setFilterDateFrom(from);
+                      setFilterDateTo(to);
+                    };
+                    const presets: { label: string; fn: () => void }[] = [
+                      {
+                        label: "Today",
+                        fn: () => {
+                          const d = todayISO();
+                          setRange(d, d);
+                        },
+                      },
+                      {
+                        label: "This Week",
+                        fn: () => {
+                          const now = new Date();
+                          const day = now.getDay();
+                          const diff = day === 0 ? 6 : day - 1; // Monday = start of week
+                          const mon = new Date(now);
+                          mon.setDate(now.getDate() - diff);
+                          setRange(formatLocalDate(mon), todayISO());
+                        },
+                      },
+                      {
+                        label: "This Month",
+                        fn: () => {
+                          const now = new Date();
+                          setRange(
+                            formatLocalDate(new Date(now.getFullYear(), now.getMonth(), 1)),
+                            formatLocalDate(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
+                          );
+                        },
+                      },
+                      {
+                        label: "All",
+                        fn: () => setRange("", ""),
+                      },
+                    ];
+                    return presets.map((p) => (
+                      <button key={p.label} type="button" onClick={p.fn} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised min-h-[44px] xl:min-h-0">
+                        {p.label}
+                      </button>
+                    ));
+                  })()}
+                </div>
+                <div>
+                  <label htmlFor="f-from" className="sr-only">From date</label>
+                  <input id="f-from" type="date" value={filterDateFrom} onChange={(e) => { setFilterPeriod(""); setFilterDateFrom(e.target.value); }} className={input} placeholder="From" />
+                </div>
+                <div>
+                  <label htmlFor="f-to" className="sr-only">To date</label>
+                  <input id="f-to" type="date" value={filterDateTo} onChange={(e) => { setFilterPeriod(""); setFilterDateTo(e.target.value); }} className={input} placeholder="To" />
+                </div>
+                {closedPeriods.length > 0 && (
+                  <div>
+                    <label htmlFor="f-period" className="sr-only">Billing period</label>
+                    <select id="f-period" value={filterPeriod} onChange={(e) => { setFilterPeriod(e.target.value); if (e.target.value) { setFilterDateFrom(""); setFilterDateTo(""); } }} className={input}>
+                      <option value="">All periods</option>
+                      {closedPeriods.map((p) => (
+                        <option key={p.id} value={String(p.id)}>
+                          {p.start_date} – {p.end_date}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>,
+            )}
+          </div>
+
+          {/* Filters apply live; this only closes the drawer. */}
+          <div className="border-t border-border p-4 xl:hidden">
+            <button type="button" onClick={() => setFiltersOpen(false)} className={`${btnPrimary} w-full`}>
+              Show {resultCountText}
+            </button>
+          </div>
+        </aside>
+
+        <div className="min-w-0 xl:flex-1">
       {fetching ? (
         <Spinner />
       ) : (
@@ -2797,6 +2997,8 @@ function TransactionsPageContent() {
           )}
         </>
       )}
+        </div>
+      </div>
       <ConfirmModal
         open={confirmSkipTx !== null}
         title="Skip This Occurrence"
