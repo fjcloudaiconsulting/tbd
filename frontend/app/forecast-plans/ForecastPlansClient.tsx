@@ -422,47 +422,23 @@ export default function ForecastPlansClient({
     void refreshAfterTransactionAdded();
   });
 
-  // Build a category-id → master-id lookup so the disable predicate can
-  // reason about masters and their subs regardless of build mode.
-  const masterOf = useMemo(() => {
-    const m = new Map<number, number>();
-    for (const c of categories) m.set(c.id, c.parent_id ?? c.id);
-    return m;
-  }, [categories]);
-
-  // Disable predicate (spec R6 — replaces the old "disable the whole
-  // master tree once any one is used" rule that caused the core bug).
-  // For the currently-selected type:
-  //   - disable the EXACT category already added (any item),
-  //   - disable a master if it has subcategory items (mixing not allowed),
-  //   - disable a subcategory whose master has a master-level item.
-  // After adding one subcategory, OTHER subs of the same master stay
-  // enabled — only the exact added one and the master are disabled.
-  const disabledForType = useMemo(() => {
-    const ids = new Set<number>();
-    const mastersWithMasterItem = new Set<number>();
-    const mastersWithSubItem = new Set<number>();
-    for (const i of plan?.items ?? []) {
-      if (i.type !== formType) continue;
-      ids.add(i.category_id); // exact category already added
-      const m = masterOf.get(i.category_id) ?? i.category_id;
-      if (i.category_id === m) mastersWithMasterItem.add(m);
-      else mastersWithSubItem.add(m);
-    }
-    for (const c of categories) {
-      const isMaster = c.parent_id === null;
-      if (isMaster && mastersWithSubItem.has(c.id)) ids.add(c.id);
-      if (!isMaster && c.parent_id !== null && mastersWithMasterItem.has(c.parent_id)) {
-        ids.add(c.id);
-      }
-    }
-    return ids;
-  }, [plan?.items, formType, categories, masterOf]);
+  // Disable predicate: only the EXACT (category, type) already in the plan.
+  // A master's own item and its sub items coexist and sum (TBD-466), so
+  // there is no master/sub lock.
+  const disabledForType = useMemo(
+    () =>
+      new Set(
+        (plan?.items ?? [])
+          .filter((i) => i.type === formType)
+          .map((i) => i.category_id),
+      ),
+    [plan?.items, formType],
+  );
 
   // Resolve the category id to store, depending on build mode.
   //   - master mode: roll a selected subcategory up to its master (legacy).
-  //   - subcategory mode: store the selected category id verbatim (the
-  //     backend rejects masters in this mode).
+  //   - subcategory mode: store the selected category id verbatim, master
+  //     or sub (a master's own item sums with its sub items).
   const resolveSubmitCategoryId = (catId: number | ""): number | "" => {
     if (catId === "") return "";
     const cat = categories.find((c) => c.id === catId);
@@ -506,7 +482,7 @@ export default function ForecastPlansClient({
 
   // Group items under their master so the forecast list and chart always
   // present "the forecast is for the master" (product decision). A master's
-  // total is the sum of its rows (one master-level item, OR its subs).
+  // total is the sum of its rows (its own item, its subs, or both).
   // Master-level items form a single-row group named after themselves; sub
   // items group under their parent master.
   const groupByMaster = useCallback(
@@ -540,8 +516,11 @@ export default function ForecastPlansClient({
           actual,
           variance: actual - planned,
           // All rows in the group. A master-level group has exactly one
-          // (the master item itself); a sub group has its sub items.
-          subItems: groupItems,
+          // (the master item itself); a sub group has its sub items, led by
+          // the master's own item when there is one (TBD-466).
+          subItems: [...groupItems].sort(
+            (a, b) => Number(b.category_id === m) - Number(a.category_id === m),
+          ),
           isMasterLevel,
         };
       });
@@ -980,7 +959,7 @@ export default function ForecastPlansClient({
           </div>
           <HelpIcon
             label="Build granularity"
-            text="Master builds one forecast row per master category. Subcategories let a master's forecast be built from multiple subcategory rows that sum into the master. Applies to everyone in your organization."
+            text="Master builds one forecast row per master category. Subcategories let a master's forecast be built from subcategory rows, plus an optional row on the master itself, that all sum into the master. Applies to everyone in your organization."
           />
         </div>
       )}
@@ -1147,6 +1126,7 @@ export default function ForecastPlansClient({
                 onChange={(id) => setFormCategoryId(id)}
                 filterType={formType}
                 masterOnly={mode === "master"}
+                selectableParents={mode === "subcategory"}
                 disabledIds={disabledForType}
                 className={input}
                 aria-label="Plan item category"
@@ -1384,6 +1364,12 @@ function ItemSection({
   function renderItemRow(item: ForecastPlanItem, indented: boolean) {
     const variance = Number(item.variance);
     const isOver = item.type === "expense" ? variance > 0 : variance < 0;
+    // A master's own item sitting under its own header (TBD-466). The
+    // label is provisional pending the operator's visual gate.
+    const name =
+      indented && item.parent_id === null
+        ? `${item.category_name} (other)`
+        : item.category_name;
     return (
       <div
         key={item.id}
@@ -1394,7 +1380,7 @@ function ItemSection({
                   {!readOnly && editingId === item.id ? (
                     <>
                       <div className="text-sm text-text-primary">
-                        {item.category_name}
+                        {name}
                         <div className="md:hidden mt-1 text-xs text-text-muted">
                           Actual {money(item.actual_amount)}
                         </div>
@@ -1449,7 +1435,7 @@ function ItemSection({
                   ) : (
                     <>
                       <div className="text-sm text-text-primary">
-                        {item.category_name}
+                        {name}
                         <div className="md:hidden mt-1 text-xs text-text-muted">
                           Actual {money(item.actual_amount)}
                           {" · "}Variance{" "}

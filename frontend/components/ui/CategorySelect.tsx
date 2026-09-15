@@ -56,9 +56,16 @@ interface Props {
    * rows, grouped under their master's header.
    */
   masterOnly?: boolean;
+  /**
+   * Also offer a master that HAS subcategories as a selectable row, listed
+   * first in its own group. Default (off) keeps it a non-selectable header.
+   * Used by the Forecast Plans page in "Subcategories" build mode, where a
+   * master's own item sums with its sub items (TBD-466).
+   */
+  selectableParents?: boolean;
 }
 
-export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, onCategoryCreated, disabledIds, masterOnly = false }: Props) {
+export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, onCategoryCreated, disabledIds, masterOnly = false, selectableParents = false }: Props) {
   const disabledSet = useMemo(() => {
     if (!disabledIds) return null;
     return disabledIds instanceof Set ? disabledIds : new Set(disabledIds);
@@ -103,7 +110,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
       : rawSelected;
 
   // Precompute parent IDs set and selectable items (O(n) instead of O(n^2))
-  const { selectable } = useMemo(() => {
+  const { selectable, parentIds } = useMemo(() => {
     const pIds = new Set<number>();
     for (const c of categories) {
       if (c.parent_id !== null) pIds.add(c.parent_id);
@@ -113,10 +120,10 @@ export default function CategorySelect({ id, categories, value, onChange, filter
       if (effectiveFilterType && c.type !== effectiveFilterType && c.type !== "both") return false;
       // Master mode: only masters are selectable (subcategories hidden).
       if (masterOnly) return c.parent_id === null;
-      return c.parent_id !== null || !pIds.has(c.id);
+      return selectableParents || c.parent_id !== null || !pIds.has(c.id);
     });
-    return { selectable: items };
-  }, [categories, effectiveFilterType, bothOnly, masterOnly]);
+    return { selectable: items, parentIds: pIds };
+  }, [categories, effectiveFilterType, bothOnly, masterOnly, selectableParents]);
 
   const q = query.toLowerCase();
   const filtered = useMemo(() =>
@@ -209,13 +216,17 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     }
     const groups: { label: string; items: Category[] }[] = [];
     for (const master of masters) {
-      const items = nonRecent.filter((c) => c.parent_id === master.id);
+      // A master with children is only in `nonRecent` under
+      // selectableParents; it then leads its own group.
+      const items = nonRecent
+        .filter((c) => c.parent_id === master.id || (c.id === master.id && parentIds.has(c.id)))
+        .sort((a, b) => Number(b.id === master.id) - Number(a.id === master.id));
       if (items.length > 0) groups.push({ label: master.name, items });
     }
-    const masterless = nonRecent.filter((c) => c.parent_id === null);
+    const masterless = nonRecent.filter((c) => c.parent_id === null && !parentIds.has(c.id));
     if (masterless.length > 0) groups.push({ label: "Other", items: masterless });
     return groups;
-  }, [masters, nonRecent, masterOnly]);
+  }, [masters, nonRecent, masterOnly, parentIds]);
 
   const activeDescendant = highlightIdx >= 0 && highlightIdx < flatList.length
     ? `${id}-opt-${flatList[highlightIdx].id}` : undefined;

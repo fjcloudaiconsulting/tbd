@@ -375,6 +375,47 @@ describe("CategorySelect — value resolution under filterType", () => {
     expect(onChange).toHaveBeenCalledWith(20);
   });
 
+  it("F11 default: a master with subcategories is a group header, never an option (TBD-466 guard)", () => {
+    // Every caller but the forecast page relies on this. Kills the
+    // selectableParents default flipping to true.
+    render(
+      <CategorySelect
+        id="d1"
+        categories={CATEGORIES}
+        value=""
+        onChange={vi.fn()}
+        filterType="expense"
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    const names = within(screen.getByRole("listbox"))
+      .getAllByRole("option")
+      .map((o) => o.textContent);
+    expect(names).toContain("Supermarket");
+    expect(names).not.toContain("Groceries");
+  });
+
+  it("selectableParents: a master with subcategories is selectable, listed before its subs", () => {
+    const onChange = vi.fn();
+    render(
+      <CategorySelect
+        id="d2"
+        categories={CATEGORIES}
+        value=""
+        onChange={onChange}
+        filterType="expense"
+        selectableParents
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    const options = within(screen.getByRole("listbox")).getAllByRole("option");
+    const names = options.map((o) => o.textContent);
+    expect(names.indexOf("Groceries")).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf("Groceries")).toBeLessThan(names.indexOf("Supermarket"));
+    fireEvent.click(options[names.indexOf("Groceries")]);
+    expect(onChange).toHaveBeenCalledWith(20);
+  });
+
   it("masterOnly: childless master is still selectable; subcategories never appear", () => {
     const onChange = vi.fn();
     render(
