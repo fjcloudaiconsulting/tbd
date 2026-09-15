@@ -119,10 +119,20 @@ async function settle() {
   });
 }
 
-/** Positive control, click the real header toggle, then assert nothing leaks. */
-async function expectToggleMasksPage() {
-  await waitFor(() => expect(leaks().length).toBeGreaterThan(0), { timeout: 5000 });
+const sentinelHits = () => (document.body.textContent ?? "").match(/7[,.]?373/g)?.length ?? 0;
+
+/**
+ * Positive control, click the real header toggle, then assert nothing leaks.
+ *
+ * ⚠ `minHits` is the number of seeded sentinel fields the page actually
+ * renders, counted per page. A bare "at least one hit" control is satisfied
+ * by the first figure it finds, so a seeded field that never rendered (and so
+ * was never tested) would pass unnoticed.
+ */
+async function expectToggleMasksPage(minHits: number) {
+  await waitFor(() => expect(sentinelHits()).toBeGreaterThanOrEqual(minHits), { timeout: 5000 });
   await settle();
+  expect(sentinelHits()).toBeGreaterThanOrEqual(minHits);
   fireEvent.click(screen.getByRole("button", { name: "Hide balances" }));
   expect(leaks()).toEqual([]);
 }
@@ -193,13 +203,42 @@ const TX = {
   settled_date: "2026-09-10",
 };
 
+// Server-built description (transaction_service): the ONLY sentinel on this
+// row, so its hit is the description's, not the amount's.
+const ADJUSTMENT = {
+  ...TX,
+  id: 2,
+  amount: "26.63",
+  type: "income",
+  description: "Balance adjustment: 7373.37 -> 7400.00",
+  is_manual_adjustment: true,
+};
+
+// Server-built forecast projection for the dashboard's on-track tile.
+const FORECAST = {
+  period_start: "2026-09-01",
+  period_end: "2026-09-30",
+  executed_income: "0.00",
+  executed_expense: String(AMOUNT),
+  executed_net: String(-AMOUNT),
+  pending_income: "0.00",
+  pending_expense: "0.00",
+  recurring_income: "0.00",
+  recurring_expense: "0.00",
+  forecast_income: "0.00",
+  forecast_expense: String(AMOUNT),
+  forecast_net: String(-AMOUNT),
+  categories: [],
+};
+
+// amount - spent = remaining = the sentinel, so all three budget figures carry it.
 const BUDGET = {
   id: 1,
   category_id: 1,
   category_name: "Groceries",
-  amount: AMOUNT,
-  spent: 100,
-  remaining: AMOUNT - 100,
+  amount: 14746.74,
+  spent: AMOUNT,
+  remaining: AMOUNT,
   percent_used: 1,
   period_start: "2026-09-01",
   period_end: "2026-09-30",
@@ -214,7 +253,7 @@ const PLAN = {
   total_planned_income: 0,
   total_planned_expense: AMOUNT,
   total_actual_income: 0,
-  total_actual_expense: 0,
+  total_actual_expense: AMOUNT,
   items: [
     {
       id: 1,
@@ -225,8 +264,8 @@ const PLAN = {
       type: "expense",
       planned_amount: AMOUNT,
       source: "manual",
-      actual_amount: 0,
-      variance: AMOUNT,
+      actual_amount: AMOUNT,
+      variance: 0,
     },
   ],
 };
@@ -243,9 +282,12 @@ function routeApi() {
     if (url.startsWith("/api/v1/settings/billing-cycle")) return { billing_cycle_day: 1 };
     if (url.startsWith("/api/v1/budgets")) return [BUDGET];
     if (url.startsWith("/api/v1/forecast-plans")) return PLAN;
+    if (url.startsWith("/api/v1/forecast?")) return FORECAST;
     if (url.startsWith("/api/v1/forecast")) return null;
     if (url.startsWith("/api/v1/recurring")) return [];
-    if (url.startsWith("/api/v1/transactions")) return { items: [TX], total: 1, limit: 200, offset: 0 };
+    // Pending keeps the sentinel row alone so the accounts "Pending:" line carries it.
+    if (url.startsWith("/api/v1/transactions?status=pending")) return { items: [TX], total: 1, limit: 200, offset: 0 };
+    if (url.startsWith("/api/v1/transactions")) return { items: [TX, ADJUSTMENT], total: 2, limit: 200, offset: 0 };
     if (url.startsWith("/api/v1/notifications")) return { items: [], unread_count: 0 };
     return [];
   }) as never);
@@ -291,17 +333,17 @@ describe("F3 scanner self-test", () => {
 describe("F3: Hide balances masks every figure on the page", () => {
   it("accounts", async () => {
     renderPage(<AccountsPage />);
-    await expectToggleMasksPage();
+    await expectToggleMasksPage(2); // balance + Pending line
   });
 
   it("transactions", async () => {
     renderPage(<TransactionsPage />);
-    await expectToggleMasksPage();
+    await expectToggleMasksPage(4); // amount + adjustment description, desktop and mobile rows
   });
 
   it("budgets", async () => {
     renderPage(<BudgetsPage />);
-    await expectToggleMasksPage();
+    await expectToggleMasksPage(4); // spent + remaining stat cards, row spent (mobile + desktop)
   });
 
   it("forecast plans", async () => {
@@ -312,12 +354,12 @@ describe("F3: Hide balances masks every figure on the page", () => {
         initialPlan={PLAN as never}
       />,
     );
-    await expectToggleMasksPage();
+    await expectToggleMasksPage(7); // planned/actual totals, net, row planned + actual
   });
 
   it("dashboard", async () => {
     renderPage(<DashboardPage />);
-    await expectToggleMasksPage();
+    await expectToggleMasksPage(7); // on-track tile x3, account tile balance + pending, recent tx amount, adjustment description
   });
 
   it("notifications popover", async () => {
@@ -339,7 +381,7 @@ describe("F3: Hide balances masks every figure on the page", () => {
         <NotificationPopover items={[item]} onAfterReadChange={() => {}} onClose={() => {}} />
       </>,
     );
-    await expectToggleMasksPage();
+    await expectToggleMasksPage(3); // accounts balance + pending, notification body
   });
 
   describe("reports", () => {
@@ -404,12 +446,12 @@ describe("F3: Hide balances masks every figure on the page", () => {
 
     it("a report with a KPI, a table and a bar widget", async () => {
       renderPage(<ReportEditorPage params={{ id: "10" } as never} />);
-      await expectToggleMasksPage();
+      await expectToggleMasksPage(3); // KPI value, table cell, table total
     });
 
     it("F5: CSV export stays unmasked while hidden", async () => {
       renderPage(<ReportEditorPage params={{ id: "10" } as never} />);
-      await expectToggleMasksPage();
+      await expectToggleMasksPage(3); // KPI value, table cell, table total
 
       const buttons = screen.getAllByTestId("widget-csv-export");
       expect(buttons.length).toBe(3);
