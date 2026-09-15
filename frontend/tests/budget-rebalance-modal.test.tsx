@@ -6,10 +6,11 @@
 // An honest "uncovered overspend" banner shows when spending exceeds the
 // total budget, and an empty state covers the no-surplus refusal.
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import BudgetRebalanceModal from "@/components/budgets/BudgetRebalanceModal";
 import { apiFetch } from "@/lib/api";
+import { setBalancesHidden } from "@/lib/format";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -119,4 +120,23 @@ it("renders a friendly empty state when there is no surplus to move", async () =
       /nothing to reallocate/i,
     ),
   );
+});
+
+it("Hide balances masks the server-built reasoning and summary (TBD-527)", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({
+    ...OK,
+    summary: "Move 7373.37 from surplus to bills.",
+    // budget_rebalance_service: `f"Freeing {-delta:.2f} of projected surplus"`
+    suggestions: [{ ...OK.suggestions[0], reasoning: "Freeing 7373.37 of projected surplus" }, OK.suggestions[1]],
+  } as never);
+  render(<BudgetRebalanceModal open budgets={BUDGETS} onApplied={() => {}} onClose={() => {}} />);
+  expect(await screen.findByText("Freeing 7373.37 of projected surplus")).toBeInTheDocument();
+  expect(document.body.textContent).toMatch(/Move 7373\.37 from surplus/);
+  try {
+    act(() => setBalancesHidden(true));
+    expect(document.body.textContent).not.toMatch(/7,?373/);
+    expect(screen.getByText("Freeing ••••• of projected surplus")).toBeInTheDocument();
+  } finally {
+    act(() => setBalancesHidden(false));
+  }
 });

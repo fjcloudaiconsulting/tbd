@@ -31,7 +31,7 @@ import { useRouter } from "next/navigation";
 import { useCallback } from "react";
 
 import { apiFetch } from "@/lib/api";
-import { BALANCE_MASK } from "@/lib/format";
+import { maskMoneyText } from "@/lib/format";
 import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import type { Notification, NotificationCategory } from "@/lib/types";
 
@@ -50,11 +50,6 @@ const SEVERITY_DOT: Record<NotificationCategory, string> = {
   org_activity: "bg-text-muted/40",
   cc_statement: "bg-text-muted/40",
 };
-
-// Hide balances (TBD-527): bodies are built server-side, e.g. the CC statement
-// template's `f"{amount_str} {currency}"` with `amount_str = f"{owed:,.2f}"`.
-// Mask the amount that precedes an ISO code; a new money template must match.
-const SERVER_AMOUNT = /\d[\d,]*\.\d{2}(?= [A-Z]{3})/g;
 
 function timeAgo(iso: string): string {
   const now = Date.now();
@@ -75,7 +70,8 @@ export default function NotificationPopover({
   onClose,
 }: Props) {
   const router = useRouter();
-  const hidden = useBalancesHidden();
+  // Bodies are built server-side (e.g. the CC statement amount due).
+  useBalancesHidden();
 
   const handleRowClick = useCallback(
     async (notif: Notification) => {
@@ -176,7 +172,7 @@ export default function NotificationPopover({
                   </span>
                 </span>
                 <span className="mt-0.5 block line-clamp-2 text-xs text-text-muted">
-                  {hidden ? notif.body.replace(SERVER_AMOUNT, BALANCE_MASK) : notif.body}
+                  {maskMoneyText(notif.body)}
                 </span>
               </span>
             </button>

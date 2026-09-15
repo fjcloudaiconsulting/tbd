@@ -11,11 +11,12 @@
  * - Verdict badge color matches the API verdict.
  */
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import PlansPage from "@/app/plans/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import { setBalancesHidden } from "@/lib/format";
 
 const replaceMock = vi.fn();
 let searchParamsString = "";
@@ -392,6 +393,50 @@ describe("/plans page", () => {
     expect(screen.getByTestId("projection-suggestions")).toHaveTextContent(
       /close the gap/i,
     );
+  });
+
+  it("Hide balances masks the dip alert and the server-built suggestion (TBD-527)", async () => {
+    setUser();
+    const plan = {
+      ...RETIREMENT_PLAN,
+      projection_json: {
+        ...RETIREMENT_PLAN.projection_json,
+        alerts: [
+          { account_id: 12, month: "2027-01", projected_balance: "7373.37", trigger: "retirement", severity: "warn" },
+        ],
+        suggestions: [
+          {
+            action: "raise_monthly_contribution",
+            by_amount: "7373.37",
+            // scenario_engine: `_q(delta)` into the outcome sentence.
+            expected_outcome:
+              "Raise the monthly contribution by about 7373.37 to close the gap to the real-terms target.",
+          },
+        ],
+      },
+    };
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([plan]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Retire at 65");
+    fireEvent.click(screen.getByTestId(`plan-row-${RETIREMENT_PLAN.id}`));
+    const view = await screen.findByTestId("projection-view");
+    const alerts = within(view).getByText(/dip to/);
+    const suggestions = screen.getByTestId("projection-suggestions");
+    expect(alerts.textContent).toMatch(/7,?373/);
+    expect(suggestions.textContent).toMatch(/7,?373/);
+
+    try {
+      act(() => setBalancesHidden(true));
+      expect(within(view).getByText(/dip to/).textContent).not.toMatch(/7,?373/);
+      expect(screen.getByTestId("projection-suggestions").textContent).not.toMatch(/7,?373/);
+      expect(screen.getByTestId("projection-suggestions")).toHaveTextContent("by about ••••• to close");
+    } finally {
+      act(() => setBalancesHidden(false));
+    }
   });
 
   // ── Save / Discard editor controls (PR #plans-editor-save-discard) ──

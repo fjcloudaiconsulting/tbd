@@ -11,6 +11,7 @@ import Spinner from "@/components/ui/Spinner";
 import ImportMarkAsTransferModal from "@/components/transactions/ImportMarkAsTransferModal";
 import CsvFormatHelp from "@/components/import/CsvFormatHelp";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle, badgeWarning, badgeError, badgeInfo } from "@/lib/styles";
+import { maskMoneyText } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 import type {
   Account,
@@ -685,8 +686,8 @@ function ImportPageContent() {
                           />
                         </td>
                         <td className="px-4 py-2 tabular-nums text-text-secondary">{previewRow.date}</td>
-                        <td className="max-w-[300px] truncate px-4 py-2 text-text-primary" title={previewRow.description}>
-                          {previewRow.description}
+                        <td className="max-w-[300px] truncate px-4 py-2 text-text-primary" title={maskMoneyText(previewRow.description)}>
+                          {maskMoneyText(previewRow.description)}
                           {isDup && (
                             <span className="ml-2 text-xs text-warning">duplicate</span>
                           )}
@@ -809,7 +810,7 @@ function ImportPageContent() {
                                   <span className="tabular-nums">
                                     {money(previewRow.duplicate_candidate.amount)}
                                   </span>{" "}
-                                  · {previewRow.duplicate_candidate.description}
+                                  · {maskMoneyText(previewRow.duplicate_candidate.description)}
                                 </div>
                                 {previewRow.duplicate_candidate.existing_leg_is_imported === false && (
                                   <span className={badgeInfo}>
@@ -847,7 +848,7 @@ function ImportPageContent() {
                                     <span className="tabular-nums">
                                       {money(previewRow.transfer_candidates[0].amount)}
                                     </span>{" "}
-                                    · {previewRow.transfer_candidates[0].description}
+                                    · {maskMoneyText(previewRow.transfer_candidates[0].description)}
                                   </div>
                                   <label className="flex items-center gap-2">
                                     <input
@@ -907,7 +908,7 @@ function ImportPageContent() {
                                               <span className="tabular-nums">
                                                 {money(cand.amount)}
                                               </span>{" "}
-                                              · {cand.description}
+                                              · {maskMoneyText(cand.description)}
                                               {isClosest && (
                                                 <span className="ml-2 text-xs text-warning">closest</span>
                                               )}

@@ -28,6 +28,7 @@ import { extractErrorMessage } from "@/lib/api";
 
 import { card, cardHeader, cardTitle } from "@/lib/styles";
 import type { Transaction } from "@/lib/types";
+import { maskMoneyText } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 
 function transactionHighlightHref(tx: Transaction) {
@@ -199,7 +200,7 @@ export default function RecentTransactionsWidget() {
                     </span>
                   </span>
                   <div className="min-w-0">
-                    <p className="text-sm text-text-primary truncate">{tx.description}</p>
+                    <p className="text-sm text-text-primary truncate">{maskMoneyText(tx.description)}</p>
                     <p className="text-[11px] text-text-secondary truncate">{subline}</p>
                   </div>
                 </Link>

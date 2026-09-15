@@ -6,6 +6,7 @@ import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { maskMoneyText } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 import { TRANSFER_LOCKED_TARGETS } from "@/lib/reconcile-transfer-lock";
 import {
@@ -691,7 +692,7 @@ function ReconcileRow({
             </span>
           </div>
           <p className="mt-2 break-words text-sm font-medium text-text-primary">
-            {row.description}
+            {maskMoneyText(row.description)}
           </p>
           <p
             className={

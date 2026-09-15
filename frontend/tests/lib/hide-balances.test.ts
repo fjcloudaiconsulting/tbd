@@ -6,7 +6,7 @@
  * is deliberately untouched: it seeds controlled number inputs, and masking it
  * would save the mask.
  */
-import { formatAmount, formatMoney, isBalancesHidden, setBalancesHidden, subscribeBalancesHidden, toEditAmount } from "@/lib/format";
+import { formatAmount, formatMoney, isBalancesHidden, maskMoneyText, setBalancesHidden, subscribeBalancesHidden, toEditAmount } from "@/lib/format";
 import { formatMeasureValue } from "@/lib/reports/series";
 
 const MASK = "•••••";
@@ -93,5 +93,42 @@ describe("F2: formatMeasureValue (widget cells, tooltips, axis ticks)", () => {
 
   it("unhidden, number keeps its grouped figure", () => {
     expect(formatMeasureValue(7373.37, "number")).toBe((7373.37).toLocaleString());
+  });
+});
+
+describe("maskMoneyText: amounts inside server-built text", () => {
+  const M = "•••••";
+  const cases: Array<[string, string]> = [
+    // transaction_service: Numeric(12,2) old balance, request-Decimal target
+    ["Balance adjustment: 7373.37 -> 7400.00", `Balance adjustment: ${M} -> ${M}`],
+    ["Balance adjustment: -120.50 -> 7400", `Balance adjustment: ${M} -> ${M}`],
+    ["Balance adjustment: 0.00 -> -50.5 (deposit)", `Balance adjustment: ${M} -> ${M} (deposit)`],
+    // budget_draft_service `{projected:.2f}`
+    ["Based on about 7373.37 per month over the last 3 months.", `Based on about ${M} per month over the last 3 months.`],
+    // budget_rebalance_service `{-delta:.2f}`
+    ["Freeing 7373.37 of projected surplus", `Freeing ${M} of projected surplus`],
+    // scenario_engine `_q(delta)`
+    [
+      "Raise the monthly contribution by about 7373.37 to close the gap to the real-terms target.",
+      `Raise the monthly contribution by about ${M} to close the gap to the real-terms target.`,
+    ],
+    // cc_statement_close `f"{owed:,.2f}"`
+    ["Your Visa statement closed. 17,373.37 EUR is due on 2026-10-01.", `Your Visa statement closed. ${M} EUR is due on 2026-10-01.`],
+  ];
+
+  it.each(cases)("masks %j", (input, expected) => {
+    setBalancesHidden(true);
+    expect(maskMoneyText(input)).toBe(expected);
+  });
+
+  it("leaves text without an amount, dates and percentages alone", () => {
+    setBalancesHidden(true);
+    for (const plain of ["Groceries at Lidl", "Uber 2 trips", "usage reached 80%", "rate 12.50%", "due 2026-10-01"]) {
+      expect(maskMoneyText(plain)).toBe(plain);
+    }
+  });
+
+  it("returns the text unchanged when balances are shown", () => {
+    expect(maskMoneyText(cases[0][0])).toBe(cases[0][0]);
   });
 });

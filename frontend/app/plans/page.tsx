@@ -30,8 +30,8 @@ import { CustomParamsEditor } from "@/components/scenarios/CustomParamsEditor";
 import { ProjectionChart } from "@/components/scenarios/ProjectionChart";
 import { RetirementParamsEditor } from "@/components/scenarios/RetirementParamsEditor";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatMoney } from "@/lib/format";
-import { useOrgCurrency } from "@/lib/hooks/use-org-currency";
+import { formatMoney, maskMoneyText } from "@/lib/format";
+import { useBalancesHidden, useOrgCurrency } from "@/lib/hooks/use-org-currency";
 import {
   btnPrimary,
   btnSecondary,
@@ -915,6 +915,7 @@ function PlanEditor({
 
 
 function ProjectionView({ projection }: { projection: ProjectionResult }) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   return (
     <div data-testid="projection-view">
       <div className="mb-3 flex items-center gap-2">
@@ -954,7 +955,7 @@ function ProjectionView({ projection }: { projection: ProjectionResult }) {
           <ul className="space-y-1">
             {projection.suggestions.map((s, idx) => (
               <li key={idx} className="text-xs text-text-primary">
-                {s.expected_outcome}
+                {maskMoneyText(s.expected_outcome)}
               </li>
             ))}
           </ul>
