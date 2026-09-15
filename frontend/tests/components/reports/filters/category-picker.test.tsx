@@ -1,4 +1,4 @@
-import { renderWithSWR, act, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
+import { renderWithSWR, act, fireEvent, screen, waitFor, within } from "../../../utils/render-with-swr";
 
 import CategoryPicker from "@/components/reports/filters/CategoryPicker";
 import { useCategories } from "@/lib/hooks/use-categories";
@@ -240,6 +240,55 @@ describe("CategoryPicker", () => {
         expect(box).not.toHaveAttribute("aria-checked");
       }
       expect((screen.getByRole("checkbox", { name: "Category Food (other)" }) as HTMLElement).closest("label")!.className).toContain("min-h-[44px]");
+    });
+  });
+
+  // TBD-464 visual gate: the tree scrolled horizontally in the 16rem side
+  // panel. jsdom has no layout, so this fences the structure that prevents it
+  // in both modes: the scroll box hides x-overflow, every name can shrink and
+  // wrap (even a single long token), and no checkbox or count can be squashed.
+  describe.each([
+    ["Reports (default)", false],
+    ["transactions panel (ownRow)", true],
+  ])("never scrolls horizontally: %s", (_mode, ownRow) => {
+    // A long master with its own transactions, so ownRow renders the widest
+    // row there is: "Subscriptions & Streaming Services (other)", indented.
+    const LONG: Category[] = [
+      ...OWN_CATEGORIES,
+      { ...CATEGORIES[0], id: 30, name: "Subscriptions & Streaming Services", slug: "subs", transaction_count: 2 },
+      { ...CATEGORIES[1], id: 31, name: "SupercalifragilisticexpialidociousStreaming", parent_id: 30, parent_name: "Subscriptions & Streaming Services", slug: "long" },
+    ];
+
+    it("hides x-overflow, lets every name wrap, and keeps checkboxes and counts unsquashed", async () => {
+      apiFetchMock.mockResolvedValue(LONG as never);
+      renderWithSWR(<CategoryPicker ownRow={ownRow} value={[]} onChange={() => {}} />);
+
+      await screen.findByRole("checkbox", { name: "Category Subscriptions & Streaming Services" });
+      if (ownRow) {
+        screen.getByRole("checkbox", { name: "Category Subscriptions & Streaming Services (other)" });
+      }
+
+      const tree = screen.getByRole("group", { name: "Categories" });
+      expect(tree.className.split(/\s+/)).toContain("overflow-x-hidden");
+
+      const boxes = within(tree).getAllByRole("checkbox");
+      expect(boxes.length).toBeGreaterThan(0);
+      for (const box of boxes) {
+        expect(box.className.split(/\s+/)).toContain("shrink-0");
+      }
+
+      const labels = Array.from(tree.querySelectorAll("label"));
+      expect(labels).toHaveLength(boxes.length);
+      for (const label of labels) {
+        const names = Array.from(label.querySelectorAll(":scope > span:not([data-testid^='category-count-'])"));
+        expect(names).toHaveLength(1);
+        const classes = names[0].className.split(/\s+/);
+        expect(classes).toContain("min-w-0");
+        expect(classes).toContain("[overflow-wrap:anywhere]");
+      }
+      for (const count of Array.from(tree.querySelectorAll("[data-testid^='category-count-']"))) {
+        expect(count.className.split(/\s+/)).toContain("shrink-0");
+      }
     });
   });
 

@@ -166,7 +166,13 @@ export default function CategoryPicker({
             placeholder="Search categories..."
             className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-primary"
           />
-          <div role="group" aria-label={label || "Categories"} className="max-h-56 overflow-y-auto rounded-md border border-border bg-bg p-2">
+          {/* TBD-464: the tree must never scroll sideways in the 16rem side
+              panel. overflow-y-auto alone computes overflow-x to auto, so a
+              name that cannot shrink became a horizontal scrollbar. Names
+              wrap instead (min-w-0 + overflow-wrap:anywhere, so even one long
+              token breaks); checkboxes and counts never shrink. The p-2 inset
+              keeps the 2px + 2px focus outline inside the clip. */}
+          <div role="group" aria-label={label || "Categories"} className="max-h-56 overflow-y-auto overflow-x-hidden rounded-md border border-border bg-bg p-2">
             {visibleTree.length === 0 ? (
               <span className="text-xs text-text-muted">No categories match</span>
             ) : (
@@ -247,13 +253,14 @@ function CategoryTreeRow({
         <input
           ref={masterRef}
           type="checkbox"
+          className="shrink-0"
           data-testid={`category-master-${node.master.id}`}
           checked={allChecked}
           onChange={onToggleMaster}
           aria-label={`Category ${node.master.name}`}
         />
-        <span className="font-medium">{node.master.name}</span>
-        <span className="text-[10px] text-text-muted">
+        <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{node.master.name}</span>
+        <span data-testid={`category-count-${node.master.id}`} className="shrink-0 text-[10px] text-text-muted">
           {selCount}/{total}
         </span>
       </label>
@@ -264,12 +271,13 @@ function CategoryTreeRow({
               <label className="flex min-h-[44px] items-center gap-2 text-xs text-text-secondary xl:min-h-0">
                 <input
                   type="checkbox"
+                  className="shrink-0"
                   data-testid={`category-own-${node.master.id}`}
                   checked={selected.has(node.master.id)}
                   onChange={() => onToggleSub(node.master)}
                   aria-label={`Category ${node.master.name} ${OWN_ITEM_SUFFIX}`}
                 />
-                <span>{node.master.name} {OWN_ITEM_SUFFIX}</span>
+                <span className="min-w-0 [overflow-wrap:anywhere]">{node.master.name} {OWN_ITEM_SUFFIX}</span>
               </label>
             </li>
           )}
@@ -278,12 +286,13 @@ function CategoryTreeRow({
               <label className="flex min-h-[44px] items-center gap-2 text-xs text-text-secondary xl:min-h-0">
                 <input
                   type="checkbox"
+                  className="shrink-0"
                   data-testid={`category-sub-${s.id}`}
                   checked={selected.has(s.id)}
                   onChange={() => onToggleSub(s)}
                   aria-label={`Category ${s.name}`}
                 />
-                <span>{s.name}</span>
+                <span className="min-w-0 [overflow-wrap:anywhere]">{s.name}</span>
               </label>
             </li>
           ))}
