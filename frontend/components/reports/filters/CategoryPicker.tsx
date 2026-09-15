@@ -5,11 +5,16 @@
  * master / sub category hierarchy from the existing
  * ``backend/app/models/category.py`` model.
  *
- * Master row: checkbox toggles ALL sub categories under that master.
- * When some but not all subs are selected, the master shows the
- * indeterminate / partial state.
- * Sub row: checkbox toggles its own id. Unselecting a sub while the
- * master is fully checked leaves the master partial.
+ * Two master modes:
+ *  - Default (Reports): the master checkbox toggles the master AND all its
+ *    subs. When some but not all are selected it shows the indeterminate /
+ *    partial state, so unselecting a sub under a fully checked master leaves
+ *    the master partial.
+ *  - ``independentMasters`` (transactions panel, TBD-464 R1): the master
+ *    checkbox stands for the master's own rows. Checking it also checks all
+ *    its subs; unchecking it unchecks only the master; it shows its own
+ *    checked state, never a partial one.
+ * Sub row (both modes): checkbox toggles its own id.
  *
  * Search input filters the tree by name; matching subs keep their
  * master visible (collapsed if the master itself doesn't match).
@@ -85,7 +90,12 @@ export default function CategoryPicker({
       .filter((n): n is TreeNode => n !== null);
   }, [tree, search]);
 
-  function toggleMaster(node: TreeNode) {
+  function toggleMaster(visible: TreeNode) {
+    // The row hands over the search-filtered node. Checking a master must
+    // check ALL its subs in independent mode, not only the visible ones.
+    const node = independentMasters
+      ? (tree.find((n) => n.master.id === visible.master.id) ?? visible)
+      : visible;
     const ids = [node.master.id, ...node.subs.map((s) => s.id)];
     if (independentMasters && selected.has(node.master.id)) {
       onChange(value.filter((v) => v !== node.master.id));

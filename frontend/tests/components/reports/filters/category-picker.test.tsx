@@ -142,6 +142,22 @@ describe("CategoryPicker", () => {
       expect((onChange.mock.calls[0][0] as number[]).sort()).toEqual([10, 11, 12, 21]);
     });
 
+    it("checking a master while a search hides some subs still checks ALL its subs", async () => {
+      // FENCE (re-review NB-5). Kills: building the master's ids from the
+      // search-filtered node, which adds only the subs still visible.
+      apiFetchMock.mockResolvedValueOnce(CATEGORIES);
+      const onChange = vi.fn();
+
+      renderWithSWR(<CategoryPicker independentMasters value={[]} onChange={onChange} />);
+
+      await screen.findByRole("checkbox", { name: "Category Food" });
+      fireEvent.change(screen.getByTestId("category-picker-search"), { target: { value: "groc" } });
+      await waitFor(() => expect(screen.queryByRole("checkbox", { name: "Category Restaurants" })).toBeNull());
+
+      fireEvent.click(screen.getByRole("checkbox", { name: "Category Food" }));
+      expect((onChange.mock.calls[0][0] as number[]).sort()).toEqual([10, 11, 12]);
+    });
+
     it("unchecking a master unchecks only the master", async () => {
       apiFetchMock.mockResolvedValueOnce(CATEGORIES);
       const onChange = vi.fn();
