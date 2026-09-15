@@ -8,6 +8,7 @@ import {
 } from "../utils/render-with-swr";
 
 import ForecastPlansClient from "@/app/forecast-plans/ForecastPlansClient";
+import { OWN_ITEM_SUFFIX } from "@/components/ui/CategorySelect";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 import { todayISO } from "@/lib/format";
@@ -626,7 +627,9 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     const listbox = await screen.findByRole("listbox");
     const groceries = within(listbox)
       .getAllByRole("option")
-      .find((o) => o.textContent === "Groceries") as HTMLButtonElement | undefined;
+      .find(
+        (o) => o.textContent === `Groceries ${OWN_ITEM_SUFFIX}`,
+      ) as HTMLButtonElement | undefined;
     expect(groceries).toBeTruthy();
     expect(groceries!.disabled).toBe(false);
     fireEvent.click(groceries!);
@@ -647,7 +650,37 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     });
   });
 
-  it("a master's own item sums with its sub items and renders first, labelled (other) (TBD-466)", async () => {
+  it("subcategory mode: a plan holding only the master's own item leaves its subs enabled (TBD-466 reverse lock)", async () => {
+    // Kills: a restored lock that disables a master's subs once the master
+    // has its own item.
+    const plan = makePlan(
+      [
+        {
+          category_id: 20, category_name: "Groceries", type: "expense",
+          planned_amount: 500, parent_id: null, source: "manual",
+        },
+      ],
+      "subcategory",
+    );
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /\+ Add Item/ })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
+    fireEvent.focus(
+      screen.getByRole("combobox", { name: /Plan item category/i }),
+    );
+    const listbox = await screen.findByRole("listbox");
+    const supermarket = within(listbox)
+      .getAllByRole("option")
+      .find((o) => o.textContent === "Supermarket") as HTMLButtonElement | undefined;
+    expect(supermarket).toBeTruthy();
+    expect(supermarket!.disabled).toBe(false);
+  });
+
+  it("a master's own item sums with its sub items and renders first, labelled with the own-item suffix (TBD-466)", async () => {
     const plan = makePlan(
       [
         {
@@ -670,7 +703,7 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     const header = screen.getByTestId("fp-master-20");
     expect(header.textContent).toContain("700");
     const group = header.parentElement!;
-    const own = within(group).getByText("Groceries (other)");
+    const own = within(group).getByText(`Groceries ${OWN_ITEM_SUFFIX}`);
     const sub = within(group).getByText("Supermarket");
     expect(
       own.compareDocumentPosition(sub) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -768,10 +801,10 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     expect(optionNames.some((t) => t.includes("Restaurant"))).toBe(true);
     // TBD-466: the Groceries master is also selectable, first in its group,
     // because a master's own item sums with its sub items.
-    expect(optionNames.indexOf("Groceries")).toBeGreaterThanOrEqual(0);
-    expect(optionNames.indexOf("Groceries")).toBeLessThan(
-      optionNames.indexOf("Supermarket"),
-    );
+    // Its option carries the own-item suffix so it differs from the header.
+    const own = optionNames.indexOf(`Groceries ${OWN_ITEM_SUFFIX}`);
+    expect(own).toBeGreaterThanOrEqual(0);
+    expect(own).toBeLessThan(optionNames.indexOf("Supermarket"));
   });
 
   it("subcategory mode: list groups subs under their master with the master total", async () => {

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
-import CategorySelect from "@/components/ui/CategorySelect";
+import CategorySelect, { OWN_ITEM_SUFFIX } from "@/components/ui/CategorySelect";
 import type { Category } from "@/lib/types";
 
 vi.mock("@/components/ui/AddCategoryModal", () => ({
@@ -392,10 +392,11 @@ describe("CategorySelect — value resolution under filterType", () => {
       .getAllByRole("option")
       .map((o) => o.textContent);
     expect(names).toContain("Supermarket");
-    expect(names).not.toContain("Groceries");
+    // Prefix match: a flipped default renders it with the own-item suffix.
+    expect(names.some((n) => n?.startsWith("Groceries"))).toBe(false);
   });
 
-  it("selectableParents: a master with subcategories is selectable, listed before its subs", () => {
+  it("selectableParents: a master with subcategories is selectable, suffixed, and listed before its subs", () => {
     const onChange = vi.fn();
     render(
       <CategorySelect
@@ -410,9 +411,11 @@ describe("CategorySelect — value resolution under filterType", () => {
     fireEvent.focus(screen.getByRole("combobox"));
     const options = within(screen.getByRole("listbox")).getAllByRole("option");
     const names = options.map((o) => o.textContent);
-    expect(names.indexOf("Groceries")).toBeGreaterThanOrEqual(0);
-    expect(names.indexOf("Groceries")).toBeLessThan(names.indexOf("Supermarket"));
-    fireEvent.click(options[names.indexOf("Groceries")]);
+    // The option differs from its group header ("Groceries") by the suffix.
+    const own = names.indexOf(`Groceries ${OWN_ITEM_SUFFIX}`);
+    expect(own).toBeGreaterThanOrEqual(0);
+    expect(own).toBeLessThan(names.indexOf("Supermarket"));
+    fireEvent.click(options[own]);
     expect(onChange).toHaveBeenCalledWith(20);
   });
 

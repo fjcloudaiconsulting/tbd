@@ -5,6 +5,14 @@ import type { KeyboardEvent } from "react";
 import AddCategoryModal from "@/components/ui/AddCategoryModal";
 import type { Category } from "@/lib/types";
 
+/**
+ * Suffix that tells a master's OWN row apart from the header of the group
+ * it leads (TBD-466): the picker option under `selectableParents` and the
+ * Forecast Plans row. Provisional; the operator's visual gate picks the
+ * wording, so it lives only here.
+ */
+export const OWN_ITEM_SUFFIX = "(other)";
+
 const RECENT_KEY = "pfv2-recent-categories";
 const MAX_RECENT = 5;
 
@@ -124,6 +132,8 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     });
     return { selectable: items, parentIds: pIds };
   }, [categories, effectiveFilterType, bothOnly, masterOnly, selectableParents]);
+  const optionLabel = (cat: Category) =>
+    selectableParents && parentIds.has(cat.id) ? `${cat.name} ${OWN_ITEM_SUFFIX}` : cat.name;
 
   const q = query.toLowerCase();
   const filtered = useMemo(() =>
@@ -284,7 +294,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
                     aria-selected={cat.id === value}
                   >
                     <span>
-                      {cat.name}
+                      {optionLabel(cat)}
                       {disabled && (
                         <span className="ml-1.5 text-[11px] italic text-text-muted">(already added)</span>
                       )}
@@ -326,7 +336,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
                     aria-selected={cat.id === value}
                   >
                     <span>
-                      {cat.name}
+                      {optionLabel(cat)}
                       {disabled && (
                         <span className="ml-1.5 text-[11px] italic text-text-muted">(already added)</span>
                       )}

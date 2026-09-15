@@ -9,7 +9,7 @@ import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import StatCard from "@/components/ui/StatCard";
 import ConfirmModal from "@/components/ui/ConfirmModal";
-import CategorySelect from "@/components/ui/CategorySelect";
+import CategorySelect, { OWN_ITEM_SUFFIX } from "@/components/ui/CategorySelect";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 import FeatureDisabledNotice from "@/components/features/FeatureDisabledNotice";
@@ -1368,7 +1368,7 @@ function ItemSection({
     // label is provisional pending the operator's visual gate.
     const name =
       indented && item.parent_id === null
-        ? `${item.category_name} (other)`
+        ? `${item.category_name} ${OWN_ITEM_SUFFIX}`
         : item.category_name;
     return (
       <div
