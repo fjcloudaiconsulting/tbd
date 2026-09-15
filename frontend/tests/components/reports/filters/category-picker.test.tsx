@@ -216,6 +216,33 @@ describe("CategoryPicker", () => {
       expect(transport.indeterminate).toBe(false);
     });
 
+    it("a search that hides a sub, every visible row checked: the group reads checked and clears everything", async () => {
+      // FENCE. Kills: deriving the checked state from hidden rows, and a group
+      // uncheck that leaves the hidden sub or the master behind.
+      async function searchGroc(value: number[]) {
+        const onChange = vi.fn();
+        const view = render(value, onChange);
+        await screen.findByRole("checkbox", { name: "Category Food" });
+        fireEvent.change(screen.getByTestId("category-picker-search"), { target: { value: "groc" } });
+        await waitFor(() => expect(screen.queryByRole("checkbox", { name: "Category Restaurants" })).toBeNull());
+        return { onChange, view, food: screen.getByRole("checkbox", { name: "Category Food" }) as HTMLInputElement };
+      }
+
+      // The hidden sub is selected: the uncheck must clear it too.
+      let run = await searchGroc([10, 11, 12, 21]);
+      expect(run.food).toBeChecked();
+      fireEvent.click(run.food);
+      expect(run.onChange).toHaveBeenCalledWith([21]);
+      run.view.unmount();
+
+      // The hidden sub is NOT selected: the group still reads checked from
+      // its visible rows, and the click still clears the whole group.
+      run = await searchGroc([10, 11, 21]);
+      expect(run.food).toBeChecked();
+      fireEvent.click(run.food);
+      expect(run.onChange).toHaveBeenCalledWith([21]);
+    });
+
     it("a search that hides a sub: checking the group still includes it", async () => {
       // FENCE (re-review NB-5). Kills: building the group's ids from the
       // search-filtered node.
@@ -233,13 +260,19 @@ describe("CategoryPicker", () => {
     it("native checkboxes carry no aria-checked; the partial group sets indeterminate", async () => {
       // FENCE. Kills: aria-checked on a native checkbox (ARIA in HTML forbids
       // it), and a partial group with no indeterminate state.
-      render([11]);
+      const onChange = vi.fn();
+      render([11], onChange);
       const food = (await screen.findByRole("checkbox", { name: "Category Food" })) as HTMLInputElement;
       await waitFor(() => expect(food.indeterminate).toBe(true));
       for (const box of screen.getAllByRole("checkbox")) {
         expect(box).not.toHaveAttribute("aria-checked");
       }
-      expect((screen.getByRole("checkbox", { name: "Category Food (other)" }) as HTMLElement).closest("label")!.className).toContain("min-h-[44px]");
+      // Structural: the (other) row is a 44px touch target. Behavioural: the
+      // whole label, not just the box, toggles it.
+      const otherLabel = (screen.getByRole("checkbox", { name: "Category Food (other)" }) as HTMLElement).closest("label")!;
+      expect(otherLabel.className).toContain("min-h-[44px]");
+      fireEvent.click(within(otherLabel).getByText("Food (other)"));
+      expect(onChange).toHaveBeenCalledWith([11, 10]);
     });
   });
 

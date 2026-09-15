@@ -362,17 +362,58 @@ describe("TransactionsPage — filter side panel (TBD-464)", () => {
     await waitFor(() => expect(checkbox("Food").indeterminate).toBe(true));
   });
 
-  it("the Categories badge leaves out a master the tree cannot show", async () => {
-    // FENCE. Kills: counting the raw selection, where a master with no own
-    // transactions (no (other) row) adds an invisible 1.
-    window.localStorage.setItem(FILTERS_KEY_TRANSACTIONS, JSON.stringify({ filterCategory: [20, 21] }));
+  it("unchecking every sub of a checked group with no own transactions reveals a checked (other) row", async () => {
+    // FENCE (re-review BLOCKING). Kills: hiding (other) purely on
+    // transaction_count, which leaves `[20]` selected, sent and invisible:
+    // an empty list with nothing on screen to explain or clear it.
+    const mock = setupApiFetch();
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    expect(screen.queryByRole("checkbox", { name: "Category Transport (other)" })).toBeNull();
+    fireEvent.click(checkbox("Transport"));
+    await waitFor(() => expect(sortedCategoryIds(lastParams(mock))).toEqual(["20", "21", "22"]));
+    // A fully checked group needs no (other) row.
+    expect(screen.queryByRole("checkbox", { name: "Category Transport (other)" })).toBeNull();
+
+    fireEvent.click(checkbox("Fuel"));
+    await waitFor(() => expect(checkbox("Fuel")).not.toBeChecked());
+    fireEvent.click(checkbox("Parking"));
+    await waitFor(() => expect(lastParams(mock).getAll("category_id")).toEqual(["20"]));
+
+    const other = await screen.findByRole("checkbox", { name: "Category Transport (other)" });
+    expect(other).toBeChecked();
+    expect(checkbox("Transport")).not.toBeChecked();
+    await waitFor(() => expect(checkbox("Transport").indeterminate).toBe(true));
+    const summary = screen.getByTestId("filter-section-categories").querySelector("summary")!;
+    expect(within(summary).getByText("1")).toBeInTheDocument();
+
+    // And it can be cleared from there.
+    fireEvent.click(other);
+    await waitFor(() => expect(lastParams(mock).getAll("category_id")).toEqual([]));
+  });
+
+  it("a saved master with no own transactions shows its (other) row checked", async () => {
+    window.localStorage.setItem(FILTERS_KEY_TRANSACTIONS, JSON.stringify({ filterCategory: [20] }));
     setupApiFetch();
     renderWithSWR(<TransactionsPage />);
     await ready();
 
+    expect(await screen.findByRole("checkbox", { name: "Category Transport (other)" })).toBeChecked();
+  });
+
+  it("the Categories badge is the selection size, including a fully checked group's master", async () => {
+    // FENCE. Kills: a badge that leaves out a master it cannot see. With the
+    // (other) rule a hidden master only exists inside a fully checked group,
+    // so the raw count is what the tree shows.
+    window.localStorage.setItem(FILTERS_KEY_TRANSACTIONS, JSON.stringify({ filterCategory: [20, 21, 22] }));
+    setupApiFetch();
+    renderWithSWR(<TransactionsPage />);
+    await ready();
+
+    expect(checkbox("Transport")).toBeChecked();
     const summary = screen.getByTestId("filter-section-categories").querySelector("summary")!;
-    expect(within(summary).getByText("1")).toBeInTheDocument();
-    expect(within(summary).queryByText("2")).toBeNull();
+    expect(within(summary).getByText("3")).toBeInTheDocument();
   });
 
   it("drops saved category ids that no longer exist once categories load", async () => {

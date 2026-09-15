@@ -526,18 +526,6 @@ function TransactionsPageContent() {
   // user. The latch keeps clearing the last selection from collapsing the
   // section under the pointer.
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
-  // The Categories badge counts what the tree SHOWS: a master whose (other)
-  // row is hidden (no transactions of its own) is left out unless its whole
-  // group is checked. The request still sends it; it matches no rows.
-  const visibleCategoryCount = useMemo(() => {
-    const selected = new Set(filterCategory);
-    return filterCategory.filter((id) => {
-      const master = categories.find((c) => c.id === id);
-      const subs = categories.filter((c) => c.parent_id === id);
-      return !master || subs.length === 0 || master.transaction_count > 0 ||
-        subs.every((c) => selected.has(c.id));
-    }).length;
-  }, [filterCategory, categories]);
   const activeFilterCount = [
     filterAccount.length,
     filterCategory.length,
@@ -1683,7 +1671,10 @@ function TransactionsPageContent() {
                     </select>
                   </div>
                 )}
-            {filterSection("categories", "Categories", visibleCategoryCount, true,
+            {/* The badge is the raw selection size: the tree shows a master's
+                (other) row whenever the master is selected outside a fully
+                checked group, so no selected id is ever invisible. */}
+            {filterSection("categories", "Categories", filterCategory.length, true,
               <CategoryPicker label="" ownRow value={filterCategory} onChange={setFilterCategory} />,
             )}
             {filterSection("tags", "Tags", filterTags.length, false,

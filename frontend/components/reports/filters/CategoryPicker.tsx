@@ -12,11 +12,11 @@
  *    the master partial.
  *  - ``ownRow`` (transactions panel, TBD-464 option C): the master checkbox
  *    is a standard tri-state group toggle over the master AND all its subs,
- *    including subs a search hides. A master with subs that also holds
- *    transactions of its own gets an extra first child row,
- *    "<Master> (other)", toggling only the master's id. The group's
- *    checked / partial state is derived from its VISIBLE rows, so a master
- *    whose (other) row is hidden does not affect it.
+ *    including subs a search hides. A master with subs gets an extra first
+ *    child row, "<Master> (other)", toggling only the master's id, when it
+ *    holds transactions of its own or is selected outside a fully checked
+ *    group. The group's checked / partial state is derived from its VISIBLE
+ *    rows, so a master whose (other) row is hidden does not affect it.
  * Sub row (both modes): checkbox toggles its own id.
  *
  * Search input filters the tree by name; matching subs keep their
@@ -50,6 +50,8 @@ interface TreeNode {
   subs: Category[];
   /** False when a search hides the master's own name (and its (other) row). */
   masterMatches?: boolean;
+  /** Every sub of the master, when `subs` is narrowed by a search. */
+  allSubs?: Category[];
 }
 
 function buildTree(cats: Category[]): TreeNode[] {
@@ -89,7 +91,7 @@ export default function CategoryPicker({
         const masterMatches = node.master.name.toLowerCase().includes(q);
         const subs = node.subs.filter((s) => s.name.toLowerCase().includes(q));
         if (masterMatches) return { master: node.master, subs: node.subs, masterMatches };
-        if (subs.length > 0) return { master: node.master, subs, masterMatches };
+        if (subs.length > 0) return { master: node.master, subs, masterMatches, allSubs: node.subs };
         return null;
       })
       .filter((n): n is TreeNode => n !== null);
@@ -196,11 +198,20 @@ export default function CategoryPicker({
   );
 }
 
-// ownRow mode: whether a master's "(other)" row is shown. Only a master with
-// subs that also holds transactions of its own, and only while a search has
-// not hidden the master's name.
-function showsOtherRow(node: TreeNode): boolean {
-  return node.subs.length > 0 && node.master.transaction_count > 0 && node.masterMatches !== false;
+// ownRow mode: whether a master's "(other)" row is shown. A master with subs
+// shows it when it holds transactions of its own, OR when its id is selected
+// outside a fully checked group. Without that second arm, unchecking every sub
+// of a checked group (or a saved `[M]`) leaves M selected, sent and invisible:
+// an empty list with nothing on screen to explain or clear it. A hidden M can
+// therefore only exist inside a fully checked group. A search that hides the
+// master's name hides the row too.
+function showsOtherRow(node: TreeNode, selected: Set<number>): boolean {
+  if (node.subs.length === 0 || node.masterMatches === false) return false;
+  const allSubs = node.allSubs ?? node.subs;
+  return (
+    node.master.transaction_count > 0 ||
+    (selected.has(node.master.id) && !allSubs.every((s) => selected.has(s.id)))
+  );
 }
 
 // ownRow mode: the group's state over its VISIBLE rows. A master with no subs
@@ -209,7 +220,7 @@ function groupState(node: TreeNode, selected: Set<number>) {
   const ids =
     node.subs.length === 0
       ? [node.master.id]
-      : [...(showsOtherRow(node) ? [node.master.id] : []), ...node.subs.map((s) => s.id)];
+      : [...(showsOtherRow(node, selected) ? [node.master.id] : []), ...node.subs.map((s) => s.id)];
   const count = ids.filter((id) => selected.has(id)).length;
   return {
     count,
@@ -239,7 +250,7 @@ function CategoryTreeRow({
   const total = own ? own.total : allIds.length;
   const allChecked = own ? own.checked : selCount === total;
   const partial = own ? own.partial : selCount > 0 && selCount < total;
-  const otherRow = ownRow && showsOtherRow(node);
+  const otherRow = ownRow && showsOtherRow(node, selected);
 
   // The HTML input doesn't have an attribute for indeterminate; it's
   // a DOM-only property. Sync it whenever the count changes.
