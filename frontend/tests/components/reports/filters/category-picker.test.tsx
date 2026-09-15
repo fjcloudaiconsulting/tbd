@@ -119,6 +119,53 @@ describe("CategoryPicker", () => {
     });
   });
 
+  // TBD-464 R1. Reports keeps the linked master toggle: unchecking a fully
+  // checked master clears its subs too.
+  it("default mode: unchecking a checked master clears its subs (Reports)", async () => {
+    apiFetchMock.mockResolvedValueOnce(CATEGORIES);
+    const onChange = vi.fn();
+
+    renderWithSWR(<CategoryPicker value={[10, 11, 12]} onChange={onChange} />);
+
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Category Food" }));
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
+
+  describe("independentMasters (transactions panel, TBD-464 R1)", () => {
+    it("checking a master checks it and all its subs", async () => {
+      apiFetchMock.mockResolvedValueOnce(CATEGORIES);
+      const onChange = vi.fn();
+
+      renderWithSWR(<CategoryPicker independentMasters value={[21]} onChange={onChange} />);
+
+      fireEvent.click(await screen.findByRole("checkbox", { name: "Category Food" }));
+      expect((onChange.mock.calls[0][0] as number[]).sort()).toEqual([10, 11, 12, 21]);
+    });
+
+    it("unchecking a master unchecks only the master", async () => {
+      apiFetchMock.mockResolvedValueOnce(CATEGORIES);
+      const onChange = vi.fn();
+
+      renderWithSWR(<CategoryPicker independentMasters value={[10, 11, 12]} onChange={onChange} />);
+
+      fireEvent.click(await screen.findByRole("checkbox", { name: "Category Food" }));
+      expect(onChange).toHaveBeenCalledWith([11, 12]);
+    });
+
+    it("the master box shows only its own check, never a derived partial state", async () => {
+      apiFetchMock.mockResolvedValueOnce(CATEGORIES);
+
+      renderWithSWR(<CategoryPicker independentMasters value={[10, 11]} onChange={() => {}} />);
+
+      const food = (await screen.findByRole("checkbox", { name: "Category Food" })) as HTMLInputElement;
+      const transport = screen.getByRole("checkbox", { name: "Category Transport" }) as HTMLInputElement;
+      expect(food).toBeChecked();
+      expect(food.indeterminate).toBe(false);
+      expect(food).not.toHaveAttribute("aria-checked", "mixed");
+      expect(transport).not.toBeChecked();
+    });
+  });
+
   it("filters the tree by the search input", async () => {
     apiFetchMock.mockResolvedValueOnce(CATEGORIES);
 

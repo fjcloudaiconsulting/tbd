@@ -28,6 +28,13 @@ interface Props {
   value: number[];
   onChange: (next: number[]) => void;
   label?: string;
+  /**
+   * TBD-464 R1 (transactions panel). The master box stands for the master's
+   * OWN rows: checking it also checks its subs as a convenience, unchecking
+   * it unchecks only the master, and it never shows a derived partial state.
+   * Default (Reports): the master toggles its whole subtree.
+   */
+  independentMasters?: boolean;
 }
 
 interface TreeNode {
@@ -49,6 +56,7 @@ export default function CategoryPicker({
   value,
   onChange,
   label = "Categories",
+  independentMasters = false,
 }: Props) {
   // Share the org categories cache via the bare-path `useCategories` hook,
   // auth-gated (`!loading && !!user`) like the page-level consumers.
@@ -79,7 +87,11 @@ export default function CategoryPicker({
 
   function toggleMaster(node: TreeNode) {
     const ids = [node.master.id, ...node.subs.map((s) => s.id)];
-    const allSelected = ids.every((id) => selected.has(id));
+    if (independentMasters && selected.has(node.master.id)) {
+      onChange(value.filter((v) => v !== node.master.id));
+      return;
+    }
+    const allSelected = !independentMasters && ids.every((id) => selected.has(id));
     if (allSelected) {
       onChange(value.filter((v) => !ids.includes(v)));
     } else {
@@ -142,6 +154,7 @@ export default function CategoryPicker({
                     key={node.master.id}
                     node={node}
                     selected={selected}
+                    independentMasters={independentMasters}
                     onToggleMaster={() => toggleMaster(node)}
                     onToggleSub={toggleSub}
                   />
@@ -158,11 +171,13 @@ export default function CategoryPicker({
 function CategoryTreeRow({
   node,
   selected,
+  independentMasters,
   onToggleMaster,
   onToggleSub,
 }: {
   node: TreeNode;
   selected: Set<number>;
+  independentMasters: boolean;
   onToggleMaster: () => void;
   onToggleSub: (sub: Category) => void;
 }) {
@@ -170,8 +185,8 @@ function CategoryTreeRow({
   const allIds = [node.master.id, ...node.subs.map((s) => s.id)];
   const selCount = allIds.filter((id) => selected.has(id)).length;
   const total = allIds.length;
-  const allChecked = selCount === total;
-  const partial = selCount > 0 && selCount < total;
+  const allChecked = independentMasters ? selected.has(node.master.id) : selCount === total;
+  const partial = !independentMasters && selCount > 0 && selCount < total;
 
   // The HTML input doesn't have an attribute for indeterminate; it's
   // a DOM-only property. Sync it whenever the count changes.
