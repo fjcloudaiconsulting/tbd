@@ -44,6 +44,7 @@ from app.schemas.forecast_plan import (
     BulkUpsertItem,
     BulkUpsertRequest,
     ForecastPlanItemCreate,
+    ForecastPlanItemUpdate,
 )
 from app.services import forecast_plan_service
 from app.services.exceptions import ValidationError
@@ -512,10 +513,11 @@ async def _seed_second_period(factory, seed: dict) -> int:
 
 
 @pytest.mark.asyncio
-async def test_copy_carries_master_when_target_has_subs(session_factory):
-    """Source (May) has a master-level Groceries item; target (June) already
-    has a manual Supermarket sub. The master item is copied alongside it
-    (TBD-466: they sum)."""
+async def test_f14_copy_skips_master_when_target_has_subs(session_factory):
+    """F14. Source (May, master mode) has a rolled-up Groceries M=200; target
+    (June) already has a manual Supermarket S=120. M carries the subs' spend,
+    so copying it next to S plans S twice: it is skipped, total 120. Kills a
+    one-directional copy guard (sub-skip only) and no copy guard at all."""
     # May plan built in master mode with a master Groceries item.
     seed = await _seed(session_factory, granularity="master")
     org_id = seed["org_id"]
@@ -524,7 +526,7 @@ async def test_copy_carries_master_when_target_has_subs(session_factory):
             db, org_id, seed["plan_id"],
             ForecastPlanItemCreate(
                 category_id=seed["groceries_id"], type="expense",
-                planned_amount=Decimal("500"),
+                planned_amount=Decimal("200"),
             ),
         )
 
@@ -553,7 +555,7 @@ async def test_copy_carries_master_when_target_has_subs(session_factory):
             db, org_id, jun_plan.id,
             ForecastPlanItemCreate(
                 category_id=seed["supermarket_id"], type="expense",
-                planned_amount=Decimal("200"),
+                planned_amount=Decimal("120"),
             ),
         )
 
@@ -566,14 +568,16 @@ async def test_copy_carries_master_when_target_has_subs(session_factory):
         )
     cat_ids = {i.category_id for i in resp.items}
     assert seed["supermarket_id"] in cat_ids  # manual sub stays
-    assert seed["groceries_id"] in cat_ids  # master copied alongside it
+    assert seed["groceries_id"] not in cat_ids  # master skipped
+    assert resp.total_planned_expense == Decimal("120")
 
 
 @pytest.mark.asyncio
-async def test_copy_carries_sub_when_target_has_master(session_factory):
+async def test_copy_skips_sub_when_target_has_master(session_factory):
     """Source (May) has a subcategory item for Groceries; target (June)
-    already has a master-level Groceries item. The sub is copied alongside
-    it (TBD-466: they sum)."""
+    already had a master-level Groceries item. Copying must SKIP the sub:
+    a target master may be a rolled-up one that already carries it. Kills a
+    one-directional copy guard (master-skip only)."""
     # May plan built in subcategory mode with two subs.
     seed = await _seed(session_factory, granularity="subcategory")
     org_id = seed["org_id"]
@@ -622,7 +626,7 @@ async def test_copy_carries_sub_when_target_has_master(session_factory):
         )
     cat_ids = {i.category_id for i in resp.items}
     assert seed["groceries_id"] in cat_ids  # target master stays
-    assert seed["supermarket_id"] in cat_ids  # sub copied alongside it
+    assert seed["supermarket_id"] not in cat_ids  # conflicting sub skipped
 
 
 # ── TBD-466: a master's own item and its sub items SUM ─────────────────────
@@ -820,8 +824,9 @@ async def test_f7_subcategory_mode_populate_creates_master_from_its_own_spend(
     session_factory,
 ):
     """F7: subcategory mode, S has an item, spend is booked on M itself →
-    populate creates an M item from that spend. Kills the populate guard
-    kept in subcategory mode."""
+    populate creates an M item from that spend. Kills the master-mode
+    populate guard applied in subcategory mode (a master candidate is never
+    skipped there)."""
     seed = await _seed_sum(session_factory)
     async with session_factory() as db:
         await forecast_plan_service.upsert_item(
@@ -838,3 +843,133 @@ async def test_f7_subcategory_mode_populate_creates_master_from_its_own_spend(
     items = _by_key(resp)
     assert items[(seed["groceries_id"], "expense")].planned_amount == Decimal("30")
     assert items[(seed["supermarket_id"], "expense")].planned_amount == Decimal("200")
+
+
+# ── TBD-466 review round 1: a mode switch must not plan the subtree twice ──
+#
+# History per month, Mar + Apr 2026 (inside both the May and the June
+# 3-month windows, outside both current periods): M-own 30, S 120, T 50. A
+# master-mode rollup therefore suggests M = 200.
+
+
+async def _seed_history(factory, seed: dict) -> None:
+    async with factory() as db:
+        for month in (3, 4):
+            for cat_id, amount in (
+                (seed["groceries_id"], "30"),
+                (seed["supermarket_id"], "120"),
+                (seed["restaurant_id"], "50"),
+            ):
+                db.add(Transaction(
+                    org_id=seed["org_id"], account_id=seed["account_id"],
+                    category_id=cat_id, type=TransactionType.EXPENSE,
+                    status=TransactionStatus.SETTLED, amount=Decimal(amount),
+                    date=datetime.date(2026, month, 10),
+                    settled_date=datetime.date(2026, month, 10),
+                    description="hist",
+                ))
+        await db.commit()
+
+
+async def _set_granularity(factory, org_id: int, value: str) -> None:
+    async with factory() as db:
+        setting = (await db.execute(
+            select(OrgSetting).where(OrgSetting.org_id == org_id)
+        )).scalar_one()
+        setting.value = value
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_f12_edited_rollup_master_blocks_sub_suggestions_after_mode_switch(
+    session_factory,
+):
+    """F12: master mode populates a rolled-up M (200); the user edits it to
+    210, which makes it MANUAL; the org switches to subcategory mode and
+    populates again. Only M survives, total 210. With no guard the subs are
+    planned on top (380); a source-based claim misses the edited M."""
+    seed = await _seed(session_factory, granularity="master")
+    await _seed_history(session_factory, seed)
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    m_item = _by_key(resp)[(seed["groceries_id"], "expense")]
+    assert m_item.planned_amount == Decimal("200")
+    async with session_factory() as db:
+        await forecast_plan_service.update_item(
+            db, seed["org_id"], seed["plan_id"], m_item.id,
+            ForecastPlanItemUpdate(planned_amount=Decimal("210")),
+        )
+    await _set_granularity(session_factory, seed["org_id"], "subcategory")
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    assert resp.total_planned_expense == Decimal("210")
+    assert set(_by_key(resp)) == {(seed["groceries_id"], "expense")}
+
+
+@pytest.mark.asyncio
+async def test_f13_copied_master_blocks_sub_suggestions_in_subcategory_mode(
+    session_factory,
+):
+    """F13: a master-mode M=200 is copied into an EMPTY June plan (copy
+    writes MANUAL), the org is in subcategory mode, then populate. Total
+    200. The source-based rule gives 370."""
+    seed = await _seed(session_factory, granularity="master")
+    await _seed_history(session_factory, seed)
+    async with session_factory() as db:
+        await forecast_plan_service.upsert_item(
+            db, seed["org_id"], seed["plan_id"],
+            ForecastPlanItemCreate(
+                category_id=seed["groceries_id"], type="expense",
+                planned_amount=Decimal("200"),
+            ),
+        )
+    jun_start = await _seed_second_period(session_factory, seed)
+    await _set_granularity(session_factory, seed["org_id"], "subcategory")
+    async with session_factory() as db:
+        await forecast_plan_service.copy_from_period(
+            db, seed["org_id"],
+            target_period_start=jun_start,
+            source_period_start=seed["may_start"],
+        )
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, seed["org_id"], period_start=jun_start
+        )
+    assert resp.total_planned_expense == Decimal("200")
+    assert set(_by_key(resp)) == {(seed["groceries_id"], "expense")}
+
+
+@pytest.mark.asyncio
+async def test_f15_copy_source_master_and_sub_into_empty_target_keeps_both(
+    session_factory,
+):
+    """F15: a subcategory-mode source holding M=30 and S=50 copies into an
+    EMPTY target as both, total 80. The guard is seeded from the target as
+    it was before the copy; claims added inside the loop give 30 or 50."""
+    seed = await _seed(session_factory, granularity="subcategory")
+    for cat_id, amount in (
+        (seed["groceries_id"], "30"), (seed["supermarket_id"], "50"),
+    ):
+        async with session_factory() as db:
+            await forecast_plan_service.upsert_item(
+                db, seed["org_id"], seed["plan_id"],
+                ForecastPlanItemCreate(
+                    category_id=cat_id, type="expense",
+                    planned_amount=Decimal(amount),
+                ),
+            )
+    jun_start = await _seed_second_period(session_factory, seed)
+    async with session_factory() as db:
+        resp = await forecast_plan_service.copy_from_period(
+            db, seed["org_id"],
+            target_period_start=jun_start,
+            source_period_start=seed["may_start"],
+        )
+    assert set(_by_key(resp)) == {
+        (seed["groceries_id"], "expense"), (seed["supermarket_id"], "expense"),
+    }
+    assert resp.total_planned_expense == Decimal("80")

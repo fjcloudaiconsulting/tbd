@@ -321,14 +321,16 @@ async def test_f8_master_and_sub_items_become_one_master_budget(session_factory)
 
 @pytest.mark.asyncio
 async def test_f9_legacy_sub_budget_row_blocks_the_master_row(session_factory):
-    """F9: a legacy S budget row already in the period → no M row is
-    created (M's spent includes S, so both would double count). Kills a
-    skip keyed on the exact item category id only."""
+    """F9: a legacy budget row on T (a sub with NO forecast item) already in
+    the period → no M row is created (M's spent includes T, so both would
+    double count). T is resolved to its master only because the existing
+    rows' categories are looked up too. Kills a skip keyed on the exact item
+    category id, and a parent lookup over the plan items alone."""
     seed = await _seed_master_with_subs(session_factory)
     async with session_factory() as db:
         db.add(Budget(
-            org_id=seed["org_id"], category_id=seed["cats"]["supermarket"],
-            amount=Decimal("200"), period_start=seed["period_start"], period_end=None,
+            org_id=seed["org_id"], category_id=seed["cats"]["restaurant"],
+            amount=Decimal("75"), period_start=seed["period_start"], period_end=None,
         ))
         await db.commit()
 
@@ -336,5 +338,5 @@ async def test_f9_legacy_sub_budget_row_blocks_the_master_row(session_factory):
         result = await budget_service.create_budgets_from_forecast(db, seed["org_id"])
 
     assert [(r.category_id, r.amount) for r in result] == [
-        (seed["cats"]["supermarket"], Decimal("200")),
+        (seed["cats"]["restaurant"], Decimal("75")),
     ]

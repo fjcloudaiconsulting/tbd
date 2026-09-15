@@ -453,12 +453,23 @@ async def populate_from_sources(
             return cat_id
         return cat_to_master.get(cat_id, cat_id)
 
-    # Master-mode guard for populate. A master item rolls up ALL its subs'
-    # history, so next to a sub item left over from a mode switch it would
-    # plan that sub's spend twice. Seed from the persisted plan, then keep it
-    # updated as we add candidates. Subcategory mode needs no guard (TBD-466):
-    # its group keys are leaf ids, so a master item there covers only spend
-    # booked on the master itself and nothing overlaps.
+    # Double-planning guard for populate.
+    #
+    # Master mode: a master item rolls up ALL its subs' history, so next to a
+    # sub item it would plan that sub's spend twice. Seeded from the
+    # persisted plan and updated as candidates are added.
+    #
+    # Subcategory mode (TBD-466 review): a master item that was PERSISTED
+    # before this run may be a master-mode rollup carried across a mode
+    # switch or a copy, so it can already hold its subs' spend. Its subs are
+    # therefore not suggested. ``source`` cannot tell a rollup apart: edit,
+    # upsert, bulk and copy all write MANUAL and refresh keeps MANUAL, so the
+    # rule ignores source. Master candidates are never skipped here, and items
+    # created DURING this run block nothing (they cover only their own leaf).
+    #
+    # Accepted cost: a hand-added master item also stops populate from
+    # suggesting that master's subs. That errs toward planning less, and the
+    # user can still add the subs by hand.
     claimed_master: set[tuple[int, str]] = set()
     claimed_sub: set[tuple[int, str]] = set()
     for i in plan.items:
@@ -467,13 +478,14 @@ async def populate_from_sources(
             claimed_master.add((m, i.type.value))
         else:
             claimed_sub.add((m, i.type.value))
+    seeded_master = frozenset(claimed_master)  # snapshot, before this run
 
     def would_conflict(cat_id: int, type_value: str) -> bool:
-        """True if adding (cat_id, type) would double-plan in master mode."""
-        if sub_mode:
-            return False
+        """True if adding (cat_id, type) would plan the same spend twice."""
         m = cat_to_master.get(cat_id, cat_id)
         key = (m, type_value)
+        if sub_mode:
+            return cat_id != m and key in seeded_master
         if cat_id == m:
             return key in claimed_sub
         return key in claimed_master
@@ -990,9 +1002,36 @@ async def copy_from_period(
     if target_plan.items:
         existing_keys = {(i.category_id, i.type.value) for i in target_plan.items}
 
+    # Double-planning guard (TBD-466 review), seeded ONLY from the target as
+    # it was before this copy, in both directions: a target master item may
+    # be a rollup that already carries its subs, and a source master item may
+    # be one. Deliberately no claims inside the loop, so a source holding a
+    # master item AND its sub items still copies all of them into an empty
+    # target (there they are the summing kind, built side by side).
+    ids = {i.category_id for i in source_plan.items} | {
+        i.category_id for i in target_plan.items
+    }
+    master_of = {
+        cid: pid if pid is not None else cid
+        for cid, pid in (await db.execute(
+            select(Category.id, Category.parent_id).where(
+                Category.id.in_(ids), Category.org_id == org_id
+            )
+        )).all()
+    }
+    target_master: set[tuple[int, str]] = set()
+    target_sub: set[tuple[int, str]] = set()
+    for i in target_plan.items:
+        m = master_of.get(i.category_id, i.category_id)
+        (target_master if i.category_id == m else target_sub).add((m, i.type.value))
+
     for src_item in source_plan.items:
         key = (src_item.category_id, src_item.type.value)
         if key in existing_keys:
+            continue
+        m = master_of.get(src_item.category_id, src_item.category_id)
+        gkey = (m, src_item.type.value)
+        if gkey in (target_sub if src_item.category_id == m else target_master):
             continue
         # L3.11 residual cleanup (PR #294, 2026-05-16): copied items
         # are always MANUAL on the target plan, regardless of the
