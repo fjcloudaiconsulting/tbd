@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import type { RefinedForecastResponse } from "@/components/dashboard/AIForecastRefineToggle";
 
 import { btnPrimary, btnSecondary, card } from "@/lib/styles";
+import { maskMoneyText } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 
 /**
@@ -110,7 +111,7 @@ export default function AIForecastRefineReviewModal({
         <div className="px-6 py-5">
           {refined.provenance.summary && (
             <p className="mb-4 text-sm text-text-secondary">
-              {refined.provenance.summary}
+              {maskMoneyText(refined.provenance.summary)}
             </p>
           )}
 

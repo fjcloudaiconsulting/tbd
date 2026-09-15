@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/api", async () => {
@@ -7,6 +7,7 @@ vi.mock("@/lib/api", async () => {
 });
 
 import { apiFetch } from "@/lib/api";
+import { setBalancesHidden } from "@/lib/format";
 import { AIForecastRefinePanel } from "@/components/dashboard/AIForecastRefinePanel";
 
 const mockedFetch = apiFetch as unknown as ReturnType<typeof vi.fn>;
@@ -32,6 +33,26 @@ describe("AIForecastRefinePanel", () => {
     await waitFor(() => expect(screen.getByText(/\$0\.15/)).toBeInTheDocument());
     expect(screen.getByText(/~20-40s/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /confirm/i })).toBeEnabled();
+  });
+
+  it("masks the estimated cost under Hide balances (TBD-527, F8)", async () => {
+    mockedFetch.mockResolvedValue({
+      est_prompt_tokens: 11000,
+      est_output_tokens: 2000,
+      est_cost_cents: 737337,
+      duration_band: "~20-40s",
+      can_proceed: true,
+      reason: null,
+    });
+    setBalancesHidden(true);
+    try {
+      render(<AIForecastRefinePanel onApplied={() => {}} />);
+      await waitFor(() => expect(screen.getByText(/~20-40s/)).toBeInTheDocument());
+      expect(document.body.textContent).toContain("$•••••");
+      expect(document.body.textContent).not.toMatch(/7,?373/);
+    } finally {
+      act(() => setBalancesHidden(false));
+    }
   });
 
   it("disables Confirm and shows the reason when can_proceed is false", async () => {

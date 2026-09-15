@@ -26,6 +26,7 @@ import { BarChart, Bar, XAxis, YAxis, Cell, ResponsiveContainer } from "recharts
 import { chartColor } from "@/lib/chart-colors";
 import { creditUtilization } from "@/lib/credit";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 
 export interface CreditUtilizationBarProps {
@@ -43,6 +44,7 @@ export interface CreditUtilizationBarProps {
 }
 
 export default function CreditUtilizationBar({ name, balance, creditLimit, currency, hideName = false }: CreditUtilizationBarProps) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const { utilizationPct, over } = creditUtilization(balance, creditLimit);
   const util = Math.round(utilizationPct);
   const spent = Math.min(utilizationPct, 100);

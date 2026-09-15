@@ -10,6 +10,8 @@ import {
   useState,
 } from "react";
 import { apiFetch } from "@/lib/api";
+import { maskMoneyText } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { input } from "@/lib/styles";
 
 /**
@@ -120,6 +122,7 @@ export default function DescriptionAutocomplete({
   debounceMs = DEFAULT_DEBOUNCE_MS,
   maxItems = DEFAULT_MAX_ITEMS,
 }: DescriptionAutocompleteProps) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const listboxId = useId();
   const [suggestions, setSuggestions] = useState<DescriptionSuggestion[]>([]);
   const [open, setOpen] = useState(false);
@@ -310,7 +313,8 @@ export default function DescriptionAutocomplete({
               }`}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate">{s.description}</span>
+                {/* Display only: commitPick inserts the raw text, or a save would store the mask. */}
+                <span className="truncate">{maskMoneyText(s.description)}</span>
                 <span className="shrink-0 text-[10px] text-text-muted">
                   {s.category_name}
                 </span>

@@ -439,9 +439,10 @@ async def _get_existing_budget_cat_ids(
 async def create_budgets_from_forecast(
     db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
 ) -> list[BudgetResponse]:
-    """Copy expense items from a period's forecast plan into Budget rows
-    for that same period. Categories that already have a budget are
-    skipped — calling this twice is a no-op on the second call.
+    """Roll a period's forecast plan expense items up into one Budget row
+    per master for that same period. Masters that already have a budget
+    (on the master or on any of its subs) are skipped — calling this twice
+    is a no-op on the second call.
 
     ``period_start`` defaults to the current open period (back-compat).
     Pass a future period's start to seed the NEXT period from its plan;
@@ -474,11 +475,27 @@ async def create_budgets_from_forecast(
 
     existing_cat_ids = await _get_existing_budget_cat_ids(db, org_id, period.start_date)
 
-    new_items = [
-        item for item in plan.items
-        if item.type == ForecastItemType.EXPENSE
-        and item.category_id not in existing_cat_ids
-    ]
+    # TBD-466: budgets are master-only (see create_budget) and a master's
+    # spent already includes its subs, so plan items roll up to ONE budget per
+    # master: a master's own item and its sub items sum. A master is skipped
+    # when the period already budgets it OR any of its subs (legacy sub rows),
+    # since either would double count. Existing rows are never rewritten.
+    expense_items = [i for i in plan.items if i.type == ForecastItemType.EXPENSE]
+    ids = {i.category_id for i in expense_items} | existing_cat_ids
+    master_of: dict[int, int] = {}
+    if ids:
+        rows = await db.execute(
+            select(Category.id, Category.parent_id).where(
+                Category.id.in_(ids), Category.org_id == org_id
+            )
+        )
+        master_of = {cid: pid if pid is not None else cid for cid, pid in rows.all()}
+    budgeted_masters = {master_of.get(cid, cid) for cid in existing_cat_ids}
+    amount_by_master: dict[int, Decimal] = {}
+    for item in expense_items:
+        m = master_of.get(item.category_id, item.category_id)
+        if m not in budgeted_masters:
+            amount_by_master[m] = amount_by_master.get(m, Decimal("0")) + item.planned_amount
 
     # Per-row savepoint so a concurrent caller that inserted the same
     # (org, category, period) row between our existing-check and our
@@ -489,13 +506,13 @@ async def create_budgets_from_forecast(
     # forecast_plan_service.
     from sqlalchemy.exc import IntegrityError
     inserted_any = False
-    for item in new_items:
+    for master_id, amount in amount_by_master.items():
         try:
             async with db.begin_nested():
                 db.add(Budget(
                     org_id=org_id,
-                    category_id=item.category_id,
-                    amount=item.planned_amount,
+                    category_id=master_id,
+                    amount=amount,
                     period_start=period.start_date,
                     period_end=period.end_date,
                 ))

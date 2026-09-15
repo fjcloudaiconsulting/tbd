@@ -13,7 +13,7 @@
  * Unifying them yields one function with a mode flag and a third bug.
  */
 import { deriveOrgCurrency } from "@/lib/currencies";
-import { formatMoney } from "@/lib/format";
+import { formatAmount, formatMoney, isBalancesHidden } from "@/lib/format";
 import type {
   Dimension,
   Measure,
@@ -149,7 +149,9 @@ export function formatMeasureValue(
     // grouped, 2dp; symbol prefix when the org currency is known.
     return formatMoney(value, currency);
   }
-  return value.toLocaleString();
+  // ⚠ Hide balances (TBD-527): a currency measure lands on "number" when the
+  // catalog fails or a shared axis mixes formats, so mask it too.
+  return isBalancesHidden() ? formatAmount(value) : value.toLocaleString();
 }
 
 /**

@@ -15,13 +15,13 @@
  * new wire field too.
  */
 import React from "react";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { ApiResponseError, apiFetch } from "@/lib/api";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, setBalancesHidden } from "@/lib/format";
 import type { RecurringTransaction, Transaction } from "@/lib/types";
 import { waitForStableTxList } from "../utils/wait-for-stable-tx-list";
 
@@ -202,6 +202,28 @@ describe("transactions page: skip this occurrence (TBD-272)", () => {
     expect(keys.slice(post + 1).some((k) => k.startsWith("GET /api/v1/transactions?"))).toBe(true);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByTestId("edit-recurring-row-504")).toBeNull();
+  });
+
+  it("the skip notice follows Hide balances after it is shown (TBD-527)", async () => {
+    // The notice is stored raw and masked where it renders. Baking the mask in
+    // at action time would leave this amount visible after the toggle.
+    const tx = makeTx({ id: 506, description: "Rent share 7373.37" });
+    setupApi([tx]);
+    const label = await openEdit(tx);
+    clickSkip("edit-recurring-row-506", label);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Skip" }));
+
+    const notice = await screen.findByTestId("transactions-notice");
+    await waitFor(() => expect(notice).toHaveTextContent('Skipped "Rent share 7373.37" on 2026-09-05.'));
+    try {
+      act(() => setBalancesHidden(true));
+      expect(screen.getByTestId("transactions-notice")).toHaveTextContent('Skipped "Rent share •••••" on 2026-09-05.');
+      act(() => setBalancesHidden(false));
+      expect(screen.getByTestId("transactions-notice")).toHaveTextContent('Skipped "Rent share 7373.37" on 2026-09-05.');
+    } finally {
+      act(() => setBalancesHidden(false));
+    }
   });
 
   it("F9: open-ended series has no payments line", async () => {

@@ -14,6 +14,7 @@ import {
 
 import type { Account } from "@/lib/types";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 
 interface Props {
   account: Account;
@@ -42,6 +43,7 @@ interface AdjustResponse {
  * disabling the button, so the user sees why).
  */
 export default function AdjustBalanceModal({ account, onClose, onAdjusted }: Props) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const dialogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);

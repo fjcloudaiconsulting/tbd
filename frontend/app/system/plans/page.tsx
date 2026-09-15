@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { useRouter } from "next/navigation";
 import SystemLayout from "@/components/SystemLayout";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -53,6 +54,7 @@ const PLAN_SORT_FIELDS = [
 type PlanSortField = (typeof PLAN_SORT_FIELDS)[number];
 
 export default function SystemPlansPage() {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const { user, loading } = useAuth();
   const router = useRouter();
   const [plans, setPlans] = useState<PlanWithCount[]>([]);

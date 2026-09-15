@@ -29,6 +29,7 @@ import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import { chartColor } from "@/lib/chart-colors";
 import { makeReportBarTooltipResolver } from "@/lib/reports/bar-tooltip";
 import { formatMeasureValue } from "@/lib/reports/series";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 
 export interface BarWidgetChartProps {
   rows: Array<Record<string, number | string>>;
@@ -81,6 +82,7 @@ export default function BarWidgetChart({
   format,
   currency,
 }: BarWidgetChartProps) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   // Resolve each hovered series to its label + swatch, dropping backfilled-zero
   // breakdown segments so the tooltip only lists categories present in the
   // hovered bar (see lib/reports/bar-tooltip). The dep array is intentionally a

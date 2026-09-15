@@ -16,9 +16,11 @@ import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import CreditUtilizationBar from "@/components/dashboard/widgets/CreditUtilizationBar";
 import { creditUtilization } from "@/lib/credit";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { badgeNeutral, card, cardHeader, cardTitle } from "@/lib/styles";
 
 export default function CreditUtilizationWidget() {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const { activeAccounts, accountMonthEndForecast } = useDashboard();
 
   const creditCards = useMemo(

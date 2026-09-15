@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 
 import { btnPrimary, btnSecondary, card, error as errorCls, input, label } from "@/lib/styles";
 import type { Account } from "@/lib/types";
@@ -41,6 +42,7 @@ export default function ImportMarkAsTransferModal({
   onConfirm,
   onCancel,
 }: Props) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const [destAccountId, setDestAccountId] = useState<number | "">(
     initialDestAccountId ?? "",
   );

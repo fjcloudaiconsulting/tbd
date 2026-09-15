@@ -9,6 +9,7 @@
 import { Line, LineChart, ResponsiveContainer, Tooltip } from "recharts";
 
 import { formatMeasureValue } from "@/lib/reports/series";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 
 export interface SparklineWidgetChartProps {
   rows: Array<{ label: string; value: number }>;
@@ -23,6 +24,7 @@ export default function SparklineWidgetChart({
   format,
   currency,
 }: SparklineWidgetChartProps) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={rows} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>

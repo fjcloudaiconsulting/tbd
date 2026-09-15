@@ -14,7 +14,7 @@ import CustomDashboard from "@/components/dashboard/CustomDashboard";
 import type { SpendingByCategoryResponse } from "@/components/dashboard/DashboardDataProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
-import { formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
+import { formatLocalDate, maskMoneyText, projectedPeriodEnd, todayISO } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 import { periodStatus, selectCurrentPeriodIndex } from "@/lib/billingPeriodStatus";
 import { btnSecondary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
@@ -1630,7 +1630,7 @@ function LegacyDashboard() {
                           </span>
                         </span>
                         <div className="min-w-0">
-                          <p className="text-sm text-text-primary truncate">{tx.description}</p>
+                          <p className="text-sm text-text-primary truncate">{maskMoneyText(tx.description)}</p>
                           <p className="text-[11px] text-text-secondary truncate">{subline}</p>
                         </div>
                       </Link>

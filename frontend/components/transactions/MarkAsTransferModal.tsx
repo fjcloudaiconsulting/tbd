@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 
+import { maskMoneyText } from "@/lib/format";
 import { useMoney } from "@/lib/hooks/use-org-currency";
 import {
   btnPrimary,
@@ -189,7 +190,7 @@ export default function MarkAsTransferModal({
       c.date_diff_days === 0
         ? "same day"
         : `${c.date_diff_days} day${c.date_diff_days === 1 ? "" : "s"} off`;
-    const ariaLabel = `${c.account_name} ${c.date} ${money(c.amount)} ${c.description}`;
+    const ariaLabel = `${c.account_name} ${c.date} ${money(c.amount)} ${maskMoneyText(c.description)}`;
     return (
       <label
         key={c.id}
@@ -213,7 +214,7 @@ export default function MarkAsTransferModal({
             <span className="ml-1 text-text-secondary">
               settled {c.settled_date ?? "—"}
             </span>{" "}
-            &middot; {c.description} &middot; {money(c.amount)}
+            &middot; {maskMoneyText(c.description)} &middot; {money(c.amount)}
           </span>
           <span className="text-xs text-text-secondary">
             {c.account_name} &middot; {diffText}

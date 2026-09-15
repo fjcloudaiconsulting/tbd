@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { setBalancesHidden } from "@/lib/format";
 import { describeWidgetFilters } from "@/lib/reports/describe-filters";
 import { buildPresetRanges } from "@/lib/reports/date-presets";
 import type { BarWidget, WidgetFilters } from "@/lib/reports/types";
@@ -429,6 +430,24 @@ describe("describeWidgetFilters", () => {
     expect(label("CHF")).toBe("CHF 100 to CHF 500");
     // A mixed-currency org resolves to undefined: bare, never a wrong symbol.
     expect(label(undefined)).toBe("100 to 500");
+  });
+
+  it("masks the amount chip under Hide balances (TBD-527, F8)", () => {
+    setBalancesHidden(true);
+    try {
+      const label = describeWidgetFilters(
+        bar({ amount_range: { min: 7373, max: 9000 } }),
+        {},
+        NO_LOOKUPS,
+        NOW,
+        true,
+        true,
+        "EUR",
+      ).find((c) => c.key === "amount")?.label;
+      expect(label).toBe("€••••• to €•••••");
+    } finally {
+      setBalancesHidden(false);
+    }
   });
 
   it("emits a tags chip and adds the (any) suffix only for tag_match=any", () => {
