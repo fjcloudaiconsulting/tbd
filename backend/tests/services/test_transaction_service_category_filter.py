@@ -206,3 +206,56 @@ async def test_category_filter_compounds_with_date_range(db_session, world):
         date_to=date(2026, 5, 31),
     )
     assert [r.description for r in rows] == ["g-may"]
+
+
+# ── TBD-463: a list of category ids ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize("master_first", [True, False])
+async def test_f3_every_selected_master_expands_and_no_child_expands_up(
+    db_session, world, master_first,
+):
+    """F3: ``[M1, C2]`` (C2 a child of M2) returns M1's child row and C2's row,
+    but not the row on M2 itself.
+
+    Both orders run, so expanding only ``ids[0]`` (or only the last id) goes
+    red, and a child -> parent expansion would pull in ``d-master``.
+    """
+    dining_sub = Category(
+        org_id=world["org"].id, name="Takeaway", slug="takeaway",
+        type=CategoryType.EXPENSE, is_system=False,
+        parent_id=world["dining"].id,
+    )
+    db_session.add(dining_sub)
+    await db_session.flush()
+    db_session.add_all([
+        _make_tx(world, category=world["groceries_sub"], description="g-sub"),
+        _make_tx(world, category=dining_sub, description="d-sub"),
+        _make_tx(world, category=world["dining"], description="d-master"),
+    ])
+    await db_session.flush()
+
+    ids = [world["groceries"].id, dining_sub.id]
+    rows, total = await transaction_service.list_transactions(
+        db_session, world["org"].id,
+        category_id=ids if master_first else ids[::-1],
+    )
+    assert sorted(r.description for r in rows) == ["d-sub", "g-sub"]
+    assert total == 2
+
+
+async def test_f4_exact_match_with_a_list_does_not_expand(db_session, world):
+    """F4: ``category_match="exact"`` with ``[M, D]`` excludes M's child row."""
+    db_session.add_all([
+        _make_tx(world, category=world["groceries"], description="g-master"),
+        _make_tx(world, category=world["groceries_sub"], description="g-sub"),
+        _make_tx(world, category=world["dining"], description="d-master"),
+    ])
+    await db_session.flush()
+
+    rows, _ = await transaction_service.list_transactions(
+        db_session, world["org"].id,
+        category_id=[world["groceries"].id, world["dining"].id],
+        category_match="exact",
+    )
+    assert sorted(r.description for r in rows) == ["d-master", "g-master"]
