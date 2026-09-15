@@ -575,7 +575,15 @@ function TransactionsPageContent() {
     }
 
     if (filterSearch) url += `&search=${encodeURIComponent(filterSearch)}`;
-    const data = await apiFetch<{ items: Transaction[]; total: number }>(url);
+    let data: { items: Transaction[]; total: number } | null;
+    try {
+      data = await apiFetch<{ items: Transaction[]; total: number }>(url);
+    } catch (e) {
+      // A superseded load returned early without clearing `fetching`, and
+      // most direct callers only set an error, so the newest load clears it.
+      if (seq === loadSeqRef.current) setFetching(false);
+      throw e;
+    }
     if (seq !== loadSeqRef.current) return;
     setTransactions(data?.items ?? []);
     setTotal(data?.total ?? 0);

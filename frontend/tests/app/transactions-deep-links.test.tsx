@@ -316,6 +316,45 @@ describe("TransactionsPage — dashboard deep links", () => {
     expect(screen.getAllByText("Latest rows").length).toBeGreaterThan(0);
   });
 
+  it("clears the spinner when a stale load is superseded by a load that rejects", async () => {
+    // FENCE (TBD-535 review). Filter change starts load A (spinner up); a
+    // post-write refresh starts load B. A resolves stale and must not write,
+    // B rejects. Kills: a seq guard that skips `setFetching(false)` on the
+    // stale path with no rejection handling for the newest load, which
+    // strands the spinner until the next filter or page change.
+    const apiFetchMock = setupApiFetch([]);
+    const base = apiFetchMock.getMockImplementation()!;
+    const deferred: { resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = [];
+    let gate = false;
+    apiFetchMock.mockImplementation(async (url: string) => {
+      if (gate && url.startsWith("/api/v1/transactions?")) {
+        return new Promise((resolve, reject) => deferred.push({ resolve, reject })) as never;
+      }
+      return base(url);
+    });
+
+    renderWithSWR(<TransactionsPage />);
+    const select = await screen.findByLabelText("Filter by account");
+    await waitFor(() => expect(select).toHaveTextContent("Checking B"));
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Loading" })).toBeNull());
+
+    gate = true;
+    fireEvent.change(select, { target: { value: "100" } });
+    await waitFor(() => expect(deferred).toHaveLength(1));
+    expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
+
+    window.dispatchEvent(new Event("pfv:transaction-added"));
+    await waitFor(() => expect(deferred).toHaveLength(2));
+
+    deferred[0].resolve({ items: [makeTx({ id: 1, description: "Stale rows" })], total: 1 });
+    await new Promise((r) => setTimeout(r, 20));
+    deferred[1].reject(new Error("boom"));
+
+    await screen.findByTestId("transactions-refresh-error");
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Loading" })).toBeNull());
+    expect(screen.queryAllByText("Stale rows")).toHaveLength(0);
+  });
+
   it("hides the Reset button once the account filter is cleared back to All", async () => {
     // FENCE. Kills: `[] !== []` in isDefault (a cleared select holds a fresh
     // empty array, never the default's reference).
