@@ -137,7 +137,7 @@ describe("F4: money components re-render on Hide balances", () => {
     const moneyFiles = scans.filter((s) => s.formatsMoney);
     // Strict, like the repo's other ratchets: a drop means the matcher died or
     // a file stopped formatting money; either way, read it and update this.
-    expect(moneyFiles.length).toBe(47);
+    expect(moneyFiles.length).toBe(48);
 
     expect(
       moneyFiles.filter((s) => !s.subscribes).map((s) => s.rel),

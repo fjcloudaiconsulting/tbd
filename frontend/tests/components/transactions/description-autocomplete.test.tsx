@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import DescriptionAutocomplete, {
   type DescriptionSuggestion,
 } from "@/components/transactions/DescriptionAutocomplete";
+import { setBalancesHidden } from "@/lib/format";
 
 type Fetcher = (
   type: "income" | "expense" | "transfer",
@@ -213,6 +214,36 @@ describe("DescriptionAutocomplete", () => {
     fireEvent.mouseDown(options[0]);
     expect(onPick).toHaveBeenCalledWith(SAMPLE[0]);
     expect((cb as HTMLInputElement).value).toBe("Albert Heijn");
+  });
+
+  it("Hide balances masks the displayed suggestion but selects the raw text (TBD-527)", async () => {
+    // transaction_suggestions_service does not exclude manual adjustments,
+    // whose server-built description carries both balances.
+    const RAW = "Balance adjustment: 7373.37 -> 7400.00";
+    const fetcher = vi.fn<Fetcher>().mockResolvedValue([{ ...SAMPLE[0], description: RAW }]);
+    const onPick = vi.fn();
+    render(<Harness fetcher={fetcher} onPick={onPick} />);
+    const cb = screen.getByRole("combobox");
+    fireEvent.change(cb, { target: { value: "Ba" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    const [option] = await screen.findAllByRole("option");
+    expect(option).toHaveTextContent(RAW);
+
+    try {
+      act(() => setBalancesHidden(true));
+      expect(option.textContent).not.toMatch(/7,?373|7,?400/);
+      expect(option).toHaveTextContent("Balance adjustment: ••••• -> •••••");
+
+      fireEvent.mouseDown(option);
+      // The input is a form field: it must receive the real text, or saving
+      // the transaction would store the mask.
+      expect((cb as HTMLInputElement).value).toBe(RAW);
+      expect(onPick).toHaveBeenCalledWith(expect.objectContaining({ description: RAW }));
+    } finally {
+      act(() => setBalancesHidden(false));
+    }
   });
 
   it("aborts the in-flight request when the user keeps typing", async () => {

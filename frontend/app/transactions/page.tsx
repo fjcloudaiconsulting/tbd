@@ -913,7 +913,7 @@ function TransactionsPageContent() {
       setConfirmSkipTx(null);
       // loadTransactions clears `notice`, so it is set afterwards.
       await loadTransactions(page);
-      setNotice(`Skipped "${maskMoneyText(tx.description)}" on ${tx.date}.`);
+      setNotice(`Skipped "${tx.description}" on ${tx.date}.`);
     } catch (err) {
       setConfirmSkipTx(null);
       setError(extractErrorMessage(err));
@@ -1324,7 +1324,7 @@ function TransactionsPageContent() {
             className="mb-6 rounded-md border border-border bg-surface-raised px-4 py-3 text-sm text-text-secondary"
             data-testid="transactions-notice"
           >
-            {notice}
+            {maskMoneyText(notice)}
           </div>
         )}
 
