@@ -303,7 +303,7 @@ export default function AIForecastRefineToggle({
           className="mt-3 border-t border-border pt-3 text-xs text-text-secondary"
         >
           {aiApplied && refined.provenance.summary && (
-            <p className="mb-2 italic">{refined.provenance.summary}</p>
+            <p className="mb-2 italic">{maskMoneyText(refined.provenance.summary)}</p>
           )}
           {adjustments.length > 0 && (
             <ul className="mb-2 list-disc space-y-1 pl-4" data-testid="ai-adjustments-list">
