@@ -246,13 +246,11 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
     }) as never);
     render(<AdminOrgDetailPage />);
 
-    // TBD-319: await the page's REAL settle point, not just the one element
-    // under assertion. AdminOrgDetailPage fires three parallel fetches
-    // (feature-state, the org detail, plans); waiting only on the button lets
-    // the other two resolve AFTER the test body ends, so their state updates
-    // land outside act(). That is timing-dependent -- it passes on a fast
-    // machine and fails on a slower CI runner, which is exactly how it
-    // surfaced. The other tests in this file already await the heading.
+    // TBD-319: the page loads detail, plans and members in parallel; the
+    // "Acme" heading commits once they settle. It is NOT a settle point for
+    // FeatureOverridesCard or OrgFeatureGateCard, which mount in that same
+    // render and start their own fetches (TBD-459). This test is safe only
+    // because it ends on a wait, so no un-awaited event flushes those effects.
     await screen.findByRole("heading", { name: "Acme" });
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /Change plan/i })).toBeInTheDocument();
@@ -291,7 +289,7 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
     }) as never);
     render(<AdminOrgDetailPage />);
 
-    // See the note above: await the page settling, not only the feature row.
+    // The page heading, then the feature row (FeatureOverridesCard settled).
     await screen.findByRole("heading", { name: "Acme" });
     await waitFor(() => {
       expect(screen.getByText(/AI Budget Rebalancing/i)).toBeInTheDocument();
