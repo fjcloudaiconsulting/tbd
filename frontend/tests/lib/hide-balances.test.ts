@@ -114,6 +114,20 @@ describe("maskMoneyText: amounts inside server-built text", () => {
     ],
     // cc_statement_close `f"{owed:,.2f}"`
     ["Your Visa statement closed. 17,373.37 EUR is due on 2026-10-01.", `Your Visa statement closed. ${M} EUR is due on 2026-10-01.`],
+    // Bare shapes, alone and with a symbol prefix that must survive.
+    ["7373.37", M],
+    ["1,240.00", M],
+    ["-120.50", M],
+    ["due -120.50 today", `due ${M} today`],
+    ["€7,373.37", `€${M}`],
+    ["-> 7400", `-> ${M}`],
+    ["-> 7400.5", `-> ${M}`],
+    ["Freeing 12.00 of", `Freeing ${M} of`],
+    // A sentence-final amount: the trailing full stop is not a dotted date.
+    ["Move about 7373.37.", `Move about ${M}.`],
+    // ⚠ Deliberately MASKED: "14.35" cannot be told apart from an amount, and
+    // leaving an amount visible is the failure this feature exists to prevent.
+    ["Parking 14.35", `Parking ${M}`],
   ];
 
   it.each(cases)("masks %j", (input, expected) => {
@@ -121,9 +135,20 @@ describe("maskMoneyText: amounts inside server-built text", () => {
     expect(maskMoneyText(input)).toBe(expected);
   });
 
-  it("leaves text without an amount, dates and percentages alone", () => {
+  it("leaves text without an amount, dotted dates, versions and percentages alone", () => {
     setBalancesHidden(true);
-    for (const plain of ["Groceries at Lidl", "Uber 2 trips", "usage reached 80%", "rate 12.50%", "due 2026-10-01"]) {
+    for (const plain of [
+      "Groceries at Lidl",
+      "Uber 2 trips",
+      "usage reached 80%",
+      "12.50%",
+      "rate 12.50%",
+      "due 2026-10-01",
+      "15.09.2026",
+      "CARD PAYMENT 15.09.2026 LIDL",
+      "2026.09.15",
+      "v2.10.3",
+    ]) {
       expect(maskMoneyText(plain)).toBe(plain);
     }
   });

@@ -47,14 +47,22 @@ export function subscribeBalancesHidden(fn: () => void): () => void {
 //     Numeric(12,2) column ("-120.50"), but target is the request Decimal and
 //     the modal posts a JS number, so it prints "7400" or "7400.5": the
 //     second alternative masks whatever follows "-> ".
-// `(?![\d%])` leaves a percentage and a longer decimal alone.
-// (A capture group, not a lookbehind: tsconfig targets ES2017.)
-const MONEY_IN_TEXT = /(-> )-?\d+(?:\.\d+)?|-?\d[\d,]*\.\d{2}(?![\d%])/g;
+// The decimal branch refuses a digit or dot on either side, so dotted dates
+// and versions in bank descriptions survive ("15.09.2026", "2026.09.15",
+// "v2.10.3"), as does "12.50%". A dot is refused after the amount only when a
+// digit follows it, so a sentence-final "about 7373.37." still masks.
+// ⚠ A bare "14.35" IS masked: it is indistinguishable from an amount, and a
+// masked clock time costs a glance while an unmasked amount is the leak.
+// (Leading capture groups, not lookbehinds: tsconfig targets ES2017.)
+const MONEY_IN_TEXT = /(-> )-?\d+(?:\.\d+)?|(^|[^\d.])-?\d[\d,]*\.\d{2}(?![\d%]|\.\d)/g;
 
 /** Mask every amount in free text when balances are hidden; else unchanged. */
 export function maskMoneyText(text: string): string {
   if (!isBalancesHidden()) return text;
-  return text.replace(MONEY_IN_TEXT, (_m, arrow?: string) => `${arrow ?? ""}${BALANCE_MASK}`);
+  return text.replace(
+    MONEY_IN_TEXT,
+    (_m, arrow?: string, lead?: string) => `${arrow ?? lead ?? ""}${BALANCE_MASK}`,
+  );
 }
 
 // ⚠ Fixed length and no sign: the mask must not leak magnitude or direction.
