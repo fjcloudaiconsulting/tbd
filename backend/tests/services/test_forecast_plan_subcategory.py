@@ -973,3 +973,167 @@ async def test_f15_copy_source_master_and_sub_into_empty_target_keeps_both(
         (seed["groceries_id"], "expense"), (seed["supermarket_id"], "expense"),
     }
     assert resp.total_planned_expense == Decimal("80")
+
+
+# ── TBD-466 review round 2: a master claims its subtree only if it existed
+# when the run started AND no sub item of it existed before the run ─────────
+
+
+async def _plan_totals(resp) -> tuple[dict, Decimal]:
+    return (
+        {k: i.planned_amount for k, i in _by_key(resp).items()},
+        resp.total_planned_expense,
+    )
+
+
+@pytest.mark.asyncio
+async def test_f16_refresh_after_editing_master_keeps_its_history_subs(
+    session_factory,
+):
+    """F16: subcategory mode populates M 30, S 120, T 50 (all HISTORY); the
+    user edits M to 35 (MANUAL) and refreshes. Refresh deletes S and T, but
+    they existed before the run, so M does not claim: {M 35, S 120, T 50},
+    total 205. The level-only claim (or a claim set taken after refresh's
+    delete) shrinks the plan to 35."""
+    seed = await _seed(session_factory, granularity="subcategory")
+    await _seed_history(session_factory, seed)
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    m_item = _by_key(resp)[(seed["groceries_id"], "expense")]
+    async with session_factory() as db:
+        await forecast_plan_service.update_item(
+            db, seed["org_id"], seed["plan_id"], m_item.id,
+            ForecastPlanItemUpdate(planned_amount=Decimal("35")),
+        )
+    async with session_factory() as db:
+        resp = await forecast_plan_service.refresh_from_sources(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    amounts, total = await _plan_totals(resp)
+    assert total == Decimal("205")
+    assert amounts == {
+        (seed["groceries_id"], "expense"): Decimal("35"),
+        (seed["supermarket_id"], "expense"): Decimal("120"),
+        (seed["restaurant_id"], "expense"): Decimal("50"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_f18_refresh_after_mode_switch_rebuilds_from_subs(session_factory):
+    """F18: master mode populates a rolled-up M 200 (HISTORY); the org
+    switches to subcategory mode and refreshes with nothing edited. Refresh
+    deletes M, so it does not survive to claim: {M 30, S 120, T 50}, total
+    200. Claiming from a pre-delete M that refresh deletes gives 30."""
+    seed = await _seed(session_factory, granularity="master")
+    await _seed_history(session_factory, seed)
+    async with session_factory() as db:
+        await forecast_plan_service.populate_from_sources(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    await _set_granularity(session_factory, seed["org_id"], "subcategory")
+    async with session_factory() as db:
+        resp = await forecast_plan_service.refresh_from_sources(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    amounts, total = await _plan_totals(resp)
+    assert total == Decimal("200")
+    assert amounts == {
+        (seed["groceries_id"], "expense"): Decimal("30"),
+        (seed["supermarket_id"], "expense"): Decimal("120"),
+        (seed["restaurant_id"], "expense"): Decimal("50"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_f17_accepted_cost_hand_added_sub_releases_rollup_master_claim(
+    session_factory,
+):
+    """F17, a DOCUMENTED ACCEPTED COST (Escape 1), pinned so it cannot change
+    silently: F12's rolled-up M 210 is carried into subcategory mode, the
+    user hand-adds S 120, then populates. A sub existed before the run, so M
+    no longer claims and T 50 is suggested on top of the rollup: total 380.
+    M renders with the own-item suffix, so the user can see it."""
+    seed = await _seed(session_factory, granularity="master")
+    await _seed_history(session_factory, seed)
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    m_item = _by_key(resp)[(seed["groceries_id"], "expense")]
+    async with session_factory() as db:
+        await forecast_plan_service.update_item(
+            db, seed["org_id"], seed["plan_id"], m_item.id,
+            ForecastPlanItemUpdate(planned_amount=Decimal("210")),
+        )
+    await _set_granularity(session_factory, seed["org_id"], "subcategory")
+    async with session_factory() as db:
+        await forecast_plan_service.upsert_item(
+            db, seed["org_id"], seed["plan_id"],
+            ForecastPlanItemCreate(
+                category_id=seed["supermarket_id"], type="expense",
+                planned_amount=Decimal("120"),
+            ),
+        )
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    amounts, total = await _plan_totals(resp)
+    assert total == Decimal("380")
+    assert amounts == {
+        (seed["groceries_id"], "expense"): Decimal("210"),
+        (seed["supermarket_id"], "expense"): Decimal("120"),
+        (seed["restaurant_id"], "expense"): Decimal("50"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_f19_copy_sub_into_target_already_holding_master_and_sub(
+    session_factory,
+):
+    """F19: the target already holds M 30 and S 120 (summing kind: a sub
+    exists, so M claims nothing); the source holds T 50. T is copied, total
+    200. Kills the copy sub-skip without ``not in target_sub``."""
+    seed = await _seed(session_factory, granularity="subcategory")
+    async with session_factory() as db:
+        await forecast_plan_service.upsert_item(
+            db, seed["org_id"], seed["plan_id"],
+            ForecastPlanItemCreate(
+                category_id=seed["restaurant_id"], type="expense",
+                planned_amount=Decimal("50"),
+            ),
+        )
+    jun_start = await _seed_second_period(session_factory, seed)
+    async with session_factory() as db:
+        await forecast_plan_service.get_or_create_plan(
+            db, seed["org_id"], period_start=jun_start
+        )
+    async with session_factory() as db:
+        jun_plan = (await db.execute(
+            select(ForecastPlan).join(BillingPeriod).where(
+                ForecastPlan.org_id == seed["org_id"],
+                BillingPeriod.start_date == jun_start,
+            )
+        )).scalar_one()
+    for cat_id, amount in (
+        (seed["groceries_id"], "30"), (seed["supermarket_id"], "120"),
+    ):
+        async with session_factory() as db:
+            await forecast_plan_service.upsert_item(
+                db, seed["org_id"], jun_plan.id,
+                ForecastPlanItemCreate(
+                    category_id=cat_id, type="expense",
+                    planned_amount=Decimal(amount),
+                ),
+            )
+    async with session_factory() as db:
+        resp = await forecast_plan_service.copy_from_period(
+            db, seed["org_id"],
+            target_period_start=jun_start,
+            source_period_start=seed["may_start"],
+        )
+    amounts, total = await _plan_totals(resp)
+    assert total == Decimal("200")
+    assert amounts[(seed["restaurant_id"], "expense")] == Decimal("50")

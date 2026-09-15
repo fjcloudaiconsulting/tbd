@@ -403,10 +403,16 @@ async def get_plan_for_period(
 async def populate_from_sources(
     db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
     *, today: datetime.date | None = None,
+    pre_existing_sub_pairs: frozenset[tuple[int, str]] | None = None,
 ) -> ForecastPlanResponse:
     """Auto-populate plan items from recurring templates and 3-month history averages.
 
     Only adds items for categories not already in the plan.
+
+    ``pre_existing_sub_pairs``: the (master_id, type) pairs that had a sub
+    item BEFORE this run. ``refresh_from_sources`` passes the set it read
+    before its own delete; by default it is read from the plan's current
+    items. See the double-planning guard below.
     """
     period = await resolve_period(db, org_id, period_start, today=today)
     plan = await _get_or_create_plan_row(db, org_id, period.id)
@@ -459,17 +465,27 @@ async def populate_from_sources(
     # sub item it would plan that sub's spend twice. Seeded from the
     # persisted plan and updated as candidates are added.
     #
-    # Subcategory mode (TBD-466 review): a master item that was PERSISTED
-    # before this run may be a master-mode rollup carried across a mode
-    # switch or a copy, so it can already hold its subs' spend. Its subs are
-    # therefore not suggested. ``source`` cannot tell a rollup apart: edit,
-    # upsert, bulk and copy all write MANUAL and refresh keeps MANUAL, so the
-    # rule ignores source. Master candidates are never skipped here, and items
-    # created DURING this run block nothing (they cover only their own leaf).
+    # Subcategory mode (TBD-466 review): a master item may be a master-mode
+    # rollup carried across a mode switch or a copy, so it can already hold
+    # its subs' spend. It claims its subtree for a type, and its subs are not
+    # suggested, only if BOTH hold:
+    #   (i)  the master item exists when this run starts (for refresh: it
+    #        SURVIVED refresh's delete), and
+    #   (ii) NO sub item under that (master, type) existed before the run
+    #        (for refresh: before its delete). A master next to subs is the
+    #        summing kind, and its subs must come back on refresh.
+    # ``source`` cannot tell a rollup apart: edit, upsert, bulk and copy all
+    # write MANUAL and refresh keeps MANUAL, so the rule ignores source.
+    # Master candidates are never skipped here, and items created DURING this
+    # run block nothing (they cover only their own leaf).
     #
-    # Accepted cost: a hand-added master item also stops populate from
-    # suggesting that master's subs. That errs toward planning less, and the
-    # user can still add the subs by hand.
+    # Accepted costs, both erring toward the visible:
+    #   - a hand-added master item with no subs stops populate from suggesting
+    #     that master's subs. That plans less, and the user can still add the
+    #     subs by hand.
+    #   - Escape 1: a rolled-up M carried into subcategory mode stops claiming
+    #     once the user hand-adds a sub under it; M renders as "(other)", so
+    #     the user can see it.
     claimed_master: set[tuple[int, str]] = set()
     claimed_sub: set[tuple[int, str]] = set()
     for i in plan.items:
@@ -478,14 +494,21 @@ async def populate_from_sources(
             claimed_master.add((m, i.type.value))
         else:
             claimed_sub.add((m, i.type.value))
-    seeded_master = frozenset(claimed_master)  # snapshot, before this run
+    # Snapshots, before this run adds anything.
+    seeded_master = frozenset(claimed_master)
+    if pre_existing_sub_pairs is None:
+        pre_existing_sub_pairs = frozenset(claimed_sub)
 
     def would_conflict(cat_id: int, type_value: str) -> bool:
         """True if adding (cat_id, type) would plan the same spend twice."""
         m = cat_to_master.get(cat_id, cat_id)
         key = (m, type_value)
         if sub_mode:
-            return cat_id != m and key in seeded_master
+            return (
+                cat_id != m
+                and key in seeded_master
+                and key not in pre_existing_sub_pairs
+            )
         if cat_id == m:
             return key in claimed_sub
         return key in claimed_master
@@ -727,6 +750,22 @@ async def refresh_from_sources(
     _require_draft(plan)
     await db.refresh(plan, ["billing_period", "items"])
 
+    # TBD-466 review: the (master, type) pairs that had a sub item BEFORE the
+    # delete. Taken after it, deleting a HISTORY sub would let a surviving
+    # master claim the subtree and silently drop that sub for good.
+    item_cat_ids = {i.category_id for i in plan.items}
+    parent_of = dict((await db.execute(
+        select(Category.id, Category.parent_id).where(
+            Category.id.in_(item_cat_ids),
+            Category.org_id == org_id,
+            Category.parent_id.is_not(None),
+        )
+    )).all()) if item_cat_ids else {}
+    pre_existing_sub_pairs = frozenset(
+        (parent_of[i.category_id], i.type.value)
+        for i in plan.items if i.category_id in parent_of
+    )
+
     for item in list(plan.items):
         if item.source != ItemSource.MANUAL:
             await db.delete(item)
@@ -737,7 +776,8 @@ async def refresh_from_sources(
     # commit; we ride on its commit so the deletes and inserts land
     # together.
     return await populate_from_sources(
-        db, org_id, period_start=period_start, today=today
+        db, org_id, period_start=period_start, today=today,
+        pre_existing_sub_pairs=pre_existing_sub_pairs,
     )
 
 
@@ -1031,7 +1071,12 @@ async def copy_from_period(
             continue
         m = master_of.get(src_item.category_id, src_item.category_id)
         gkey = (m, src_item.type.value)
-        if gkey in (target_sub if src_item.category_id == m else target_master):
+        if src_item.category_id == m:
+            if gkey in target_sub:
+                continue
+        # Same claim rule as populate: a target master next to target subs is
+        # the summing kind and claims nothing, so a source sub still copies.
+        elif gkey in target_master and gkey not in target_sub:
             continue
         # L3.11 residual cleanup (PR #294, 2026-05-16): copied items
         # are always MANUAL on the target plan, regardless of the
