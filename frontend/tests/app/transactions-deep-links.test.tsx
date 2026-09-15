@@ -1,5 +1,5 @@
 import React from "react";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
@@ -413,12 +413,18 @@ describe("TransactionsPage — dashboard deep links", () => {
     await waitFor(() => expect(deferred).toHaveLength(1));
     expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
 
-    window.dispatchEvent(new Event("pfv:transaction-added"));
+    act(() => {
+      window.dispatchEvent(new Event("pfv:transaction-added"));
+    });
     await waitFor(() => expect(deferred).toHaveLength(2));
 
-    deferred[0].resolve({ items: [makeTx({ id: 1, description: "Stale rows" })], total: 1 });
-    await new Promise((r) => setTimeout(r, 20));
-    deferred[1].reject(new Error("boom"));
+    await act(async () => {
+      deferred[0].resolve({ items: [makeTx({ id: 1, description: "Stale rows" })], total: 1 });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    await act(async () => {
+      deferred[1].reject(new Error("boom"));
+    });
 
     await screen.findByTestId("transactions-refresh-error");
     await waitFor(() => expect(screen.queryByRole("status", { name: "Loading" })).toBeNull());
