@@ -3,11 +3,12 @@
 Covers spec 2026-06-01-forecast-subcategory-items.md (R1-R4):
 
 - R1: mode-aware master validation on upsert_item AND bulk_upsert. In
-  subcategory mode a sub item is accepted; a master item is rejected. In
-  master mode behavior is unchanged (sub rejected, master accepted).
-- R3: per-master XOR guard — a master is built by ONE master-level item OR
-  by one-or-more subcategory items, never both. Enforced on upsert_item and
-  bulk_upsert, both directions, with ConflictError code "mixed_granularity".
+  subcategory mode sub AND master items are accepted (TBD-466). In master
+  mode behavior is unchanged (sub rejected, master accepted).
+- TBD-466 replaced the R3 "never both" XOR guard: a master's own item and
+  its sub items coexist and SUM. Actuals are keyed by (category, type): a
+  master's own item takes spend on the master plus spend on subs that have
+  no item of that type.
 - R2: granularity-aware populate/copy.
 - core regression: two subs of the same master both persist and sum into
   the master's planned total.
@@ -45,7 +46,7 @@ from app.schemas.forecast_plan import (
     ForecastPlanItemCreate,
 )
 from app.services import forecast_plan_service
-from app.services.exceptions import ConflictError, ValidationError
+from app.services.exceptions import ValidationError
 from app.services.settings_service import FORECAST_INPUT_GRANULARITY_KEY
 
 
@@ -193,20 +194,6 @@ async def test_subcategory_mode_accepts_subcategory_upsert(session_factory):
     assert any(i.category_id == seed["supermarket_id"] for i in resp.items)
 
 
-@pytest.mark.asyncio
-async def test_subcategory_mode_rejects_master_upsert(session_factory):
-    """In subcategory mode, a master-level item is rejected (must use subs)."""
-    seed = await _seed(session_factory, granularity="subcategory")
-    body = ForecastPlanItemCreate(
-        category_id=seed["groceries_id"], type="expense", planned_amount=Decimal("50"),
-    )
-    async with session_factory() as db:
-        with pytest.raises(ValidationError):
-            await forecast_plan_service.upsert_item(
-                db, seed["org_id"], seed["plan_id"], body
-            )
-
-
 # ── Core regression: two subs of one master both persist + sum ─────────────
 
 
@@ -236,12 +223,13 @@ async def test_two_subs_of_one_master_both_persist_and_sum(session_factory):
     assert resp.total_planned_expense == Decimal("350")
 
 
-# ── R3: per-master XOR guard ───────────────────────────────────────────────
+# ── TBD-466: master + sub items coexist across a mode switch ───────────────
 
 
 @pytest.mark.asyncio
-async def test_guard_rejects_master_when_subs_exist(session_factory):
-    """A sub item exists for Groceries; adding the master item must reject."""
+async def test_master_item_accepted_when_leftover_subs_exist(session_factory):
+    """A sub item exists for Groceries; after a switch to master mode the
+    master item is accepted alongside it and the two sum (TBD-466)."""
     seed = await _seed(session_factory, granularity="subcategory")
     async with session_factory() as db:
         await forecast_plan_service.upsert_item(
@@ -259,20 +247,23 @@ async def test_guard_rejects_master_when_subs_exist(session_factory):
         setting.value = "master"
         await db.commit()
     async with session_factory() as db:
-        with pytest.raises(ConflictError) as exc:
-            await forecast_plan_service.upsert_item(
-                db, seed["org_id"], seed["plan_id"],
-                ForecastPlanItemCreate(
-                    category_id=seed["groceries_id"], type="expense",
-                    planned_amount=Decimal("500"),
-                ),
-            )
-        assert exc.value.code == "mixed_granularity"
+        resp = await forecast_plan_service.upsert_item(
+            db, seed["org_id"], seed["plan_id"],
+            ForecastPlanItemCreate(
+                category_id=seed["groceries_id"], type="expense",
+                planned_amount=Decimal("500"),
+            ),
+        )
+    assert {i.category_id for i in resp.items} == {
+        seed["groceries_id"], seed["supermarket_id"],
+    }
+    assert resp.total_planned_expense == Decimal("700")
 
 
 @pytest.mark.asyncio
-async def test_guard_rejects_sub_when_master_exists(session_factory):
-    """A master item exists for Groceries; adding a sub must reject."""
+async def test_sub_item_accepted_when_master_item_exists(session_factory):
+    """A master item exists for Groceries; after a switch to subcategory
+    mode a sub item is accepted alongside it (TBD-466)."""
     seed = await _seed(session_factory, granularity="master")
     async with session_factory() as db:
         await forecast_plan_service.upsert_item(
@@ -289,15 +280,17 @@ async def test_guard_rejects_sub_when_master_exists(session_factory):
         setting.value = "subcategory"
         await db.commit()
     async with session_factory() as db:
-        with pytest.raises(ConflictError) as exc:
-            await forecast_plan_service.upsert_item(
-                db, seed["org_id"], seed["plan_id"],
-                ForecastPlanItemCreate(
-                    category_id=seed["supermarket_id"], type="expense",
-                    planned_amount=Decimal("50"),
-                ),
-            )
-        assert exc.value.code == "mixed_granularity"
+        resp = await forecast_plan_service.upsert_item(
+            db, seed["org_id"], seed["plan_id"],
+            ForecastPlanItemCreate(
+                category_id=seed["supermarket_id"], type="expense",
+                planned_amount=Decimal("50"),
+            ),
+        )
+    assert {i.category_id for i in resp.items} == {
+        seed["groceries_id"], seed["supermarket_id"],
+    }
+    assert resp.total_planned_expense == Decimal("550")
 
 
 @pytest.mark.asyncio
@@ -368,28 +361,7 @@ async def test_bulk_master_mode_rejects_subs(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_bulk_guard_rejects_master_plus_sub_same_request(session_factory):
-    """A single bulk request mixing a master + its sub (same type) rejects."""
-    seed = await _seed(session_factory, granularity="subcategory")
-    body = BulkUpsertRequest(items=[
-        BulkUpsertItem(
-            category_id=seed["groceries_id"], type="expense",
-            planned_amount=Decimal("500"),
-        ),
-        BulkUpsertItem(
-            category_id=seed["supermarket_id"], type="expense",
-            planned_amount=Decimal("200"),
-        ),
-    ])
-    async with session_factory() as db:
-        with pytest.raises((ConflictError, ValidationError)):
-            await forecast_plan_service.bulk_upsert(
-                db, seed["org_id"], seed["plan_id"], body
-            )
-
-
-@pytest.mark.asyncio
-async def test_bulk_guard_rejects_sub_when_master_already_persisted(session_factory):
+async def test_bulk_accepts_sub_when_master_already_persisted(session_factory):
     seed = await _seed(session_factory, granularity="master")
     async with session_factory() as db:
         await forecast_plan_service.upsert_item(
@@ -412,10 +384,10 @@ async def test_bulk_guard_rejects_sub_when_master_already_persisted(session_fact
         ),
     ])
     async with session_factory() as db:
-        with pytest.raises(ConflictError):
-            await forecast_plan_service.bulk_upsert(
-                db, seed["org_id"], seed["plan_id"], body
-            )
+        resp = await forecast_plan_service.bulk_upsert(
+            db, seed["org_id"], seed["plan_id"], body
+        )
+    assert resp.total_planned_expense == Decimal("700")
 
 
 # ── R2: granularity-aware populate ─────────────────────────────────────────
@@ -523,7 +495,7 @@ async def test_populate_skips_master_with_existing_manual_subs(session_factory):
     assert seed["groceries_id"] not in cat_ids
 
 
-# ── R2/R3 on copy_from_period: XOR guard skips conflicting source items ─────
+# ── copy_from_period: master and sub items both carry over (TBD-466) ───────
 
 
 async def _seed_second_period(factory, seed: dict) -> int:
@@ -540,10 +512,10 @@ async def _seed_second_period(factory, seed: dict) -> int:
 
 
 @pytest.mark.asyncio
-async def test_copy_skips_master_when_target_has_subs(session_factory):
+async def test_copy_carries_master_when_target_has_subs(session_factory):
     """Source (May) has a master-level Groceries item; target (June) already
-    has a manual Supermarket sub. Copying must SKIP the master item so the
-    target never mixes master+sub for Groceries/expense."""
+    has a manual Supermarket sub. The master item is copied alongside it
+    (TBD-466: they sum)."""
     # May plan built in master mode with a master Groceries item.
     seed = await _seed(session_factory, granularity="master")
     org_id = seed["org_id"]
@@ -594,13 +566,14 @@ async def test_copy_skips_master_when_target_has_subs(session_factory):
         )
     cat_ids = {i.category_id for i in resp.items}
     assert seed["supermarket_id"] in cat_ids  # manual sub stays
-    assert seed["groceries_id"] not in cat_ids  # conflicting master skipped
+    assert seed["groceries_id"] in cat_ids  # master copied alongside it
 
 
 @pytest.mark.asyncio
-async def test_copy_skips_sub_when_target_has_master(session_factory):
-    """Source (May) has subcategory items for Groceries; target (June)
-    already has a master-level Groceries item. Copying must SKIP the subs."""
+async def test_copy_carries_sub_when_target_has_master(session_factory):
+    """Source (May) has a subcategory item for Groceries; target (June)
+    already has a master-level Groceries item. The sub is copied alongside
+    it (TBD-466: they sum)."""
     # May plan built in subcategory mode with two subs.
     seed = await _seed(session_factory, granularity="subcategory")
     org_id = seed["org_id"]
@@ -649,4 +622,219 @@ async def test_copy_skips_sub_when_target_has_master(session_factory):
         )
     cat_ids = {i.category_id for i in resp.items}
     assert seed["groceries_id"] in cat_ids  # target master stays
-    assert seed["supermarket_id"] not in cat_ids  # conflicting sub skipped
+    assert seed["supermarket_id"] in cat_ids  # sub copied alongside it
+
+
+# ── TBD-466: a master's own item and its sub items SUM ─────────────────────
+#
+# Fixture, asymmetric on purpose (spec 2026-09-14-tbd-466):
+#   Master M = Groceries (expense). Subs S = Supermarket, T = Restaurant.
+#   S2 = Deli, a BOTH-typed sub of M.
+#   Items: M expense 500, S expense 200, S2 INCOME 10. No item on T.
+#   Settled May expense spend: M 30, S 70, T 11, S2 50.
+
+
+async def _seed_sum(factory, *, granularity: str = "subcategory") -> dict:
+    seed = await _seed(factory, granularity=granularity)
+    async with factory() as db:
+        deli = Category(
+            org_id=seed["org_id"], name="Deli", slug="deli",
+            type=CategoryType.BOTH, parent_id=seed["groceries_id"],
+        )
+        db.add(deli)
+        await db.commit()
+        seed["s2_id"] = deli.id
+        spend = (
+            (seed["groceries_id"], "30"), (seed["supermarket_id"], "70"),
+            (seed["restaurant_id"], "11"), (deli.id, "50"),
+        )
+        for cat_id, amount in spend:
+            db.add(Transaction(
+                org_id=seed["org_id"], account_id=seed["account_id"],
+                category_id=cat_id, type=TransactionType.EXPENSE,
+                status=TransactionStatus.SETTLED, amount=Decimal(amount),
+                date=datetime.date(2026, 5, 10),
+                settled_date=datetime.date(2026, 5, 10), description="spend",
+            ))
+        await db.commit()
+    return seed
+
+
+async def _add_sum_items(factory, seed: dict) -> None:
+    """Persist the fixture's three items straight onto the May plan."""
+    rows = (
+        (seed["groceries_id"], ForecastItemType.EXPENSE, "500"),
+        (seed["supermarket_id"], ForecastItemType.EXPENSE, "200"),
+        (seed["s2_id"], ForecastItemType.INCOME, "10"),
+    )
+    async with factory() as db:
+        for cat_id, item_type, amount in rows:
+            db.add(ForecastPlanItem(
+                plan_id=seed["plan_id"], org_id=seed["org_id"],
+                category_id=cat_id, type=item_type,
+                planned_amount=Decimal(amount), source=ItemSource.MANUAL,
+            ))
+        await db.commit()
+
+
+def _by_key(resp) -> dict:
+    return {(i.category_id, i.type): i for i in resp.items}
+
+
+@pytest.mark.asyncio
+async def test_f1_master_item_and_sub_item_sum_in_planned_totals(session_factory):
+    """F1: M 500 + S 200 → 700. Kills master-replaces-subs (500) and max."""
+    seed = await _seed_sum(session_factory)
+    for cat_id, item_type, amount in (
+        (seed["supermarket_id"], "expense", "200"),
+        (seed["groceries_id"], "expense", "500"),
+        (seed["s2_id"], "income", "10"),
+    ):
+        async with session_factory() as db:
+            resp = await forecast_plan_service.upsert_item(
+                db, seed["org_id"], seed["plan_id"],
+                ForecastPlanItemCreate(
+                    category_id=cat_id, type=item_type,
+                    planned_amount=Decimal(amount),
+                ),
+            )
+    assert resp.total_planned_expense == Decimal("700")
+    m_group = sum(
+        i.planned_amount for i in resp.items
+        if i.type == "expense"
+        and (i.parent_id or i.category_id) == seed["groceries_id"]
+    )
+    assert m_group == Decimal("700")
+
+
+@pytest.mark.asyncio
+async def test_f2_actuals_each_transaction_lands_in_exactly_one_item(session_factory):
+    """F2: actual(M) = 30+11+50 = 91, actual(S) = 70, total 161.
+    Kills the loop-swap (M 161 / S 0), a full rollup into M (M 161, total
+    231) and master-own-only (M 30)."""
+    seed = await _seed_sum(session_factory)
+    await _add_sum_items(session_factory, seed)
+    async with session_factory() as db:
+        resp = await forecast_plan_service.get_or_create_plan(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    items = _by_key(resp)
+    assert items[(seed["groceries_id"], "expense")].actual_amount == Decimal("91")
+    assert items[(seed["supermarket_id"], "expense")].actual_amount == Decimal("70")
+    assert items[(seed["s2_id"], "income")].actual_amount == Decimal("0")
+    assert resp.total_actual_expense == Decimal("161")
+
+
+@pytest.mark.asyncio
+async def test_f3_both_typed_sub_expense_lands_in_master_despite_its_income_item(
+    session_factory,
+):
+    """F3: S2 has an INCOME item only, so its expense 50 belongs to M
+    (M = 91, not 41). Kills keying on category id alone (type-blind)."""
+    seed = await _seed_sum(session_factory)
+    await _add_sum_items(session_factory, seed)
+    async with session_factory() as db:
+        resp = await forecast_plan_service.get_or_create_plan(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    m_actual = _by_key(resp)[(seed["groceries_id"], "expense")].actual_amount
+    assert m_actual != Decimal("41")
+    assert m_actual == Decimal("91")
+
+
+@pytest.mark.asyncio
+async def test_f4_subcategory_mode_upsert_sub_then_master_both_persist(session_factory):
+    """F4 (single): subcategory mode, upsert S then M, both persist. Kills
+    the never-both guard and the subcategory-mode rejection of masters."""
+    seed = await _seed_sum(session_factory)
+    for cat_id, amount in (
+        (seed["supermarket_id"], "200"), (seed["groceries_id"], "500"),
+    ):
+        async with session_factory() as db:
+            resp = await forecast_plan_service.upsert_item(
+                db, seed["org_id"], seed["plan_id"],
+                ForecastPlanItemCreate(
+                    category_id=cat_id, type="expense",
+                    planned_amount=Decimal(amount),
+                ),
+            )
+    items = _by_key(resp)
+    assert items[(seed["supermarket_id"], "expense")].planned_amount == Decimal("200")
+    assert items[(seed["groceries_id"], "expense")].planned_amount == Decimal("500")
+
+
+@pytest.mark.asyncio
+async def test_f4_subcategory_mode_bulk_sub_then_master_both_persist(session_factory):
+    """F4 (bulk): S persisted by one bulk call; M arrives in the next one
+    alongside another sub of the same master."""
+    seed = await _seed_sum(session_factory)
+    async with session_factory() as db:
+        await forecast_plan_service.bulk_upsert(
+            db, seed["org_id"], seed["plan_id"],
+            BulkUpsertRequest(items=[BulkUpsertItem(
+                category_id=seed["supermarket_id"], type="expense",
+                planned_amount=Decimal("200"),
+            )]),
+        )
+    async with session_factory() as db:
+        resp = await forecast_plan_service.bulk_upsert(
+            db, seed["org_id"], seed["plan_id"],
+            BulkUpsertRequest(items=[
+                BulkUpsertItem(
+                    category_id=seed["groceries_id"], type="expense",
+                    planned_amount=Decimal("500"),
+                ),
+                BulkUpsertItem(
+                    category_id=seed["restaurant_id"], type="expense",
+                    planned_amount=Decimal("40"),
+                ),
+            ]),
+        )
+    items = _by_key(resp)
+    assert items[(seed["supermarket_id"], "expense")].planned_amount == Decimal("200")
+    assert items[(seed["groceries_id"], "expense")].planned_amount == Decimal("500")
+    assert items[(seed["restaurant_id"], "expense")].planned_amount == Decimal("40")
+
+
+@pytest.mark.asyncio
+async def test_f5_copy_master_and_sub_into_empty_plan_keeps_both(session_factory):
+    """F5: copy_from_period of M+S into an empty plan → both items, 700.
+    Kills a leftover copy guard (it silently drops one of them)."""
+    seed = await _seed_sum(session_factory)
+    await _add_sum_items(session_factory, seed)
+    jun_start = await _seed_second_period(session_factory, seed)
+    async with session_factory() as db:
+        resp = await forecast_plan_service.copy_from_period(
+            db, seed["org_id"],
+            target_period_start=jun_start,
+            source_period_start=seed["may_start"],
+        )
+    items = _by_key(resp)
+    assert (seed["groceries_id"], "expense") in items
+    assert (seed["supermarket_id"], "expense") in items
+    assert resp.total_planned_expense == Decimal("700")
+
+
+@pytest.mark.asyncio
+async def test_f7_subcategory_mode_populate_creates_master_from_its_own_spend(
+    session_factory,
+):
+    """F7: subcategory mode, S has an item, spend is booked on M itself →
+    populate creates an M item from that spend. Kills the populate guard
+    kept in subcategory mode."""
+    seed = await _seed_sum(session_factory)
+    async with session_factory() as db:
+        await forecast_plan_service.upsert_item(
+            db, seed["org_id"], seed["plan_id"],
+            ForecastPlanItemCreate(
+                category_id=seed["supermarket_id"], type="expense",
+                planned_amount=Decimal("200"),
+            ),
+        )
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, seed["org_id"], period_start=seed["may_start"]
+        )
+    items = _by_key(resp)
+    assert items[(seed["groceries_id"], "expense")].planned_amount == Decimal("30")
+    assert items[(seed["supermarket_id"], "expense")].planned_amount == Decimal("200")
