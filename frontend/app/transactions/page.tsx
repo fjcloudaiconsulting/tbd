@@ -518,7 +518,12 @@ function TransactionsPageContent() {
   // filter the Account select and to render the mirror-amount notice.
   const [editPartner, setEditPartner] = useState<Transaction | null>(null);
 
+  // TBD-535: filter changes fire overlapping loads. Only the newest may write
+  // the list, or a slow earlier response overwrites the rows for the current
+  // filters.
+  const loadSeqRef = useRef(0);
   const loadTransactions = useCallback(async (p: number) => {
+    const seq = ++loadSeqRef.current;
     // The demotion notice is scoped to the delete that produced it. Without
     // this it survived filter changes, page changes and edits — it was only
     // ever cleared by the NEXT delete, so a warning about rows the user can
@@ -571,6 +576,7 @@ function TransactionsPageContent() {
 
     if (filterSearch) url += `&search=${encodeURIComponent(filterSearch)}`;
     const data = await apiFetch<{ items: Transaction[]; total: number }>(url);
+    if (seq !== loadSeqRef.current) return;
     setTransactions(data?.items ?? []);
     setTotal(data?.total ?? 0);
     setFetching(false);

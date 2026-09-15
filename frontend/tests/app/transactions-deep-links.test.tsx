@@ -284,6 +284,38 @@ describe("TransactionsPage — dashboard deep links", () => {
     });
   });
 
+  it("shows the latest filter's rows when responses resolve in reverse order", async () => {
+    // FENCE (TBD-535). Kills: a missing sequence guard in loadTransactions.
+    const apiFetchMock = setupApiFetch([]);
+    const pending = new Map<string, (v: unknown) => void>();
+    const base = apiFetchMock.getMockImplementation()!;
+    apiFetchMock.mockImplementation(async (url: string) => {
+      const acct = url.startsWith("/api/v1/transactions?")
+        ? new URL(url, "http://x").searchParams.get("account_id")
+        : null;
+      if (acct) return new Promise((resolve) => pending.set(acct, resolve)) as never;
+      return base(url);
+    });
+
+    renderWithSWR(<TransactionsPage />);
+    const select = await screen.findByLabelText("Filter by account");
+    await waitFor(() => expect(select).toHaveTextContent("Checking B"));
+
+    fireEvent.change(select, { target: { value: "100" } });
+    await waitFor(() => expect(pending.has("100")).toBe(true));
+    fireEvent.change(select, { target: { value: "200" } });
+    await waitFor(() => expect(pending.has("200")).toBe(true));
+
+    pending.get("200")!({ items: [makeTx({ id: 2, description: "Latest rows" })], total: 1 });
+    await screen.findAllByText("Latest rows");
+    pending.get("100")!({ items: [makeTx({ id: 1, description: "Stale rows" })], total: 1 });
+
+    // Let the stale resolution flush before asserting it changed nothing.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryAllByText("Stale rows")).toHaveLength(0);
+    expect(screen.getAllByText("Latest rows").length).toBeGreaterThan(0);
+  });
+
   it("hides the Reset button once the account filter is cleared back to All", async () => {
     // FENCE. Kills: `[] !== []` in isDefault (a cleared select holds a fresh
     // empty array, never the default's reference).
