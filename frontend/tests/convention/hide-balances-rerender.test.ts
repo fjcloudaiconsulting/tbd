@@ -37,6 +37,12 @@ const FORMATTERS = new Set(["formatMoney", "formatAmount", "formatMeasureValue",
 const HOOKS = new Set(["useMoney", "useOrgCurrency", "useBalancesHidden", "useWidgetFormat"]);
 const MEMO_HOOKS = new Set(["useMemo", "useCallback"]);
 const MEMO_DEPS_OK = new Set(["hidden", "money"]);
+const MONEY_CALL = "money";
+// Parsing every .tsx is the slow part (TBD-540). Only a formatter name or a
+// `money(` call can make scan() report anything (a hook alone flags nothing,
+// and an aliased import still spells the original name), so a file whose raw
+// text contains none of them cannot change the result.
+const CANDIDATE = new RegExp([...FORMATTERS, MONEY_CALL].join("|"));
 
 interface Scan {
   formatsMoney: boolean;
@@ -57,7 +63,7 @@ function scan(source: string): Scan {
       // A declaration of the name is not a use of it.
       return !((ts.isFunctionDeclaration(p) || ts.isVariableDeclaration(p)) && p.name === node);
     }
-    return ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "money";
+    return ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === MONEY_CALL;
   };
   const containsFormatter = (node: ts.Node): boolean =>
     isFormatterUse(node) || (ts.forEachChild(node, (c) => (containsFormatter(c) ? true : undefined)) ?? false);
@@ -133,7 +139,10 @@ describe("F4: money components re-render on Hide balances", () => {
     const files = globSync("{app,components,lib}/**/*.tsx", { cwd: ROOT });
     expect(files.length).toBeGreaterThan(200);
 
-    const scans = files.map((rel) => ({ rel, ...scan(readFileSync(join(ROOT, rel), "utf8")) }));
+    const scans = files.flatMap((rel) => {
+      const source = readFileSync(join(ROOT, rel), "utf8");
+      return CANDIDATE.test(source) ? [{ rel, ...scan(source) }] : [];
+    });
     const moneyFiles = scans.filter((s) => s.formatsMoney);
     // Strict, like the repo's other ratchets: a drop means the matcher died or
     // a file stopped formatting money; either way, read it and update this.
@@ -148,5 +157,6 @@ describe("F4: money components re-render on Hide balances", () => {
       scans.flatMap((s) => s.staleMemos.map((line) => `${s.rel}:${line}`)),
       "these memoise a formatted figure without `hidden` or `money` in their deps",
     ).toEqual([]);
-  });
+    // Static scan over the whole tree: 3.7s on CI against the 5s default (TBD-540).
+  }, 30_000);
 });
