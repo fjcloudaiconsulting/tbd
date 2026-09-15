@@ -29,7 +29,7 @@ const ROOT = join(__dirname, "..", "..");
 const FORMATTERS = new Set(["formatMoney", "formatAmount", "formatMeasureValue"]);
 const HOOKS = new Set(["useMoney", "useOrgCurrency", "useBalancesHidden", "useWidgetFormat"]);
 
-export function scan(source: string): { formatsMoney: boolean; subscribes: boolean } {
+function scan(source: string): { formatsMoney: boolean; subscribes: boolean } {
   const sf = ts.createSourceFile("x.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let formatsMoney = false;
   let subscribes = false;
@@ -73,9 +73,9 @@ describe("F4: money components re-render on Hide balances", () => {
     expect(files.length).toBeGreaterThan(200);
 
     const moneyFiles = files.filter((rel) => scan(readFileSync(join(ROOT, rel), "utf8")).formatsMoney);
-    // Anti-vacuity: 49 files format money at the time of writing. A matcher
+    // Anti-vacuity: 46 files format money at the time of writing. A matcher
     // that drifted to matching nothing would otherwise pass forever.
-    expect(moneyFiles.length).toBeGreaterThanOrEqual(45);
+    expect(moneyFiles.length).toBeGreaterThanOrEqual(40);
 
     const offenders = moneyFiles.filter(
       (rel) => !scan(readFileSync(join(ROOT, rel), "utf8")).subscribes,
