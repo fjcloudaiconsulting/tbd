@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
@@ -103,6 +104,7 @@ type KpiTile = {
 };
 
 function KpiStrip({ kpis }: { kpis: AdminSubscriptionKPIs }) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const tiles: KpiTile[] = [
     { label: "Total", value: kpis.total_subscriptions },
     { label: "Active", value: kpis.active },

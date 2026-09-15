@@ -19,6 +19,7 @@ import {
 
 import { chartColor } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 
 export interface AreaWidgetChartProps {
   rows: Array<{ label: string } & Record<string, number | string>>;
@@ -54,6 +55,7 @@ export default function AreaWidgetChart({
   currency,
   widgetId = "area",
 }: AreaWidgetChartProps) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   return (
     <ResponsiveContainer width="100%" height="100%">
       <AreaChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>

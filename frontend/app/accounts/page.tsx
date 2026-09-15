@@ -14,6 +14,7 @@ import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
 import { scrollBehavior } from "@/lib/reduced-motion";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import {
   useTableState,
   paginate,
@@ -83,6 +84,7 @@ function sortAccounts(
 }
 
 export default function AccountsPage() {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const { user, loading } = useAuth();
   const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   // Accounts come from the shared SWR hook (SWR Phase 2, bare-path key) so

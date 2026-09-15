@@ -20,6 +20,7 @@
 import CreditUtilizationBar from "@/components/dashboard/widgets/CreditUtilizationBar";
 import { creditUtilization } from "@/lib/credit";
 import { formatMonthYear, formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { loanPayoffStatus } from "@/lib/loan";
 import { badgeForTone, cardTitle } from "@/lib/styles";
 import type { Account } from "@/lib/types";
@@ -229,6 +230,7 @@ function LoanCard({ account, accounts }: { account: Account; accounts: Account[]
 }
 
 export default function LiabilityCards({ accounts }: { accounts: Account[] }) {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   // Credit cards first (by utilization desc), then loans (by balance magnitude
   // desc), rendered in ONE responsive grid capped at 3 columns on large screens
   // (2 on tablet, 1 on mobile). A grid (not flex-wrap) keeps every card an equal

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
@@ -106,6 +107,7 @@ function FeatureOverrideRow({ row }: { row: AdminFeatureOverrideSnapshot }) {
 }
 
 export default function AdminSubscriptionDetailPage() {
+  useBalancesHidden(); // repaint on Hide balances (TBD-527)
   const params = useParams();
   const subscriptionId = Number(params?.id);
   const { user, loading } = useAuth();
