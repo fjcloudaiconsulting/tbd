@@ -96,6 +96,35 @@ describe("TagFilter", () => {
     });
   });
 
+  // TBD-464: the transactions panel's tag filter is always OR, so it hides
+  // the match radios. Reports keeps them.
+  it("hides the match radios when hideMatch is set", async () => {
+    apiFetchMock.mockResolvedValue(TAGS as never);
+
+    const { unmount } = renderWithSWR(<TagFilter value={[]} match="all" onChange={() => {}} />);
+    await screen.findByTestId("tag-filter-chip-groceries");
+    expect(screen.getByRole("radio", { name: "Tag match any" })).toBeInTheDocument();
+    unmount();
+
+    renderWithSWR(<TagFilter value={[]} match="any" onChange={() => {}} hideMatch />);
+    await screen.findByTestId("tag-filter-chip-groceries");
+    expect(screen.queryByRole("radio")).toBeNull();
+  });
+
+  it("renders a Check icon on pressed chips only", async () => {
+    apiFetchMock.mockResolvedValueOnce(TAGS);
+
+    renderWithSWR(<TagFilter value={["groceries"]} match="all" onChange={() => {}} />);
+
+    const pressed = await screen.findByRole("button", { name: "Tag groceries" });
+    const unpressed = screen.getByRole("button", { name: "Tag essentials" });
+    expect(pressed).toHaveAttribute("aria-pressed", "true");
+    expect(pressed.querySelector("svg.lucide-check")).not.toBeNull();
+    expect(pressed.className.split(/\s+/)).not.toContain("bg-accent");
+    expect(unpressed.querySelector("svg.lucide-check")).toBeNull();
+    expect(screen.getByRole("group", { name: "Tags" })).toContainElement(pressed);
+  });
+
   it("renders an error state when the fetch fails", async () => {
     apiFetchMock.mockRejectedValueOnce(new Error("boom"));
 

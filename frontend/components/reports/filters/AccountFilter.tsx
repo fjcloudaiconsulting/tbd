@@ -9,8 +9,11 @@
  * toggleable chip. Selecting / deselecting a chip flips its id in
  * the ``value`` list. Empty list = no filter (inherit / unfiltered).
  */
+import { Check } from "lucide-react";
+
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useAccounts } from "@/lib/hooks/use-accounts";
+import { filterChip, filterChipOff, filterChipOn } from "@/lib/styles";
 
 interface Props {
   value: number[];
@@ -19,6 +22,8 @@ interface Props {
   label?: string;
   /** Aria-prefix on chip remove buttons + the empty hint. */
   ariaPrefix?: string;
+  /** List inactive accounts too. The transactions page lists every account. */
+  includeInactive?: boolean;
 }
 
 export default function AccountFilter({
@@ -26,6 +31,7 @@ export default function AccountFilter({
   onChange,
   label = "Accounts",
   ariaPrefix = "Account",
+  includeInactive = false,
 }: Props) {
   // Share the org accounts cache with every other consumer via the bare-path
   // `useAccounts` hook. Gate the fetch on auth-readiness (`!loading && !!user`)
@@ -37,7 +43,7 @@ export default function AccountFilter({
   // Deactivated accounts must not be selectable as report filters; the
   // shared /api/v1/accounts endpoint returns active + inactive (the
   // accounts management page needs the inactive ones to reactivate them).
-  const accounts = (data ?? []).filter((a) => a.is_active);
+  const accounts = (data ?? []).filter((a) => includeInactive || a.is_active);
   const selectedSet = new Set(value);
 
   function toggle(id: number) {
@@ -49,9 +55,11 @@ export default function AccountFilter({
 
   return (
     <div className="flex flex-col gap-1" data-testid="account-filter">
-      <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
-        {label}
-      </span>
+      {label && (
+        <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
+          {label}
+        </span>
+      )}
       {error ? (
         <div
           role="alert"
@@ -71,7 +79,7 @@ export default function AccountFilter({
       ) : accounts.length === 0 ? (
         <span className="text-xs text-text-muted">No accounts yet</span>
       ) : (
-        <div className="flex flex-wrap gap-1.5">
+        <div role="group" aria-label={label || "Accounts"} className="flex flex-wrap gap-1.5">
           {accounts.map((a) => {
             const active = selectedSet.has(a.id);
             return (
@@ -82,12 +90,9 @@ export default function AccountFilter({
                 aria-pressed={active}
                 aria-label={`${ariaPrefix} ${a.name}`}
                 onClick={() => toggle(a.id)}
-                className={`rounded-full border px-2.5 py-0.5 text-xs transition ${
-                  active
-                    ? "border-accent bg-accent text-accent-text"
-                    : "border-border text-text-secondary hover:bg-surface-raised"
-                }`}
+                className={`${filterChip} ${active ? filterChipOn : filterChipOff}`}
               >
+                {active && <Check aria-hidden="true" className="h-3 w-3 shrink-0" />}
                 {a.name}
               </button>
             );

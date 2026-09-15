@@ -167,18 +167,18 @@ describe("TransactionsPage — dashboard deep links", () => {
       expect(last).toContain("date_to=2026-05-31");
     });
 
-    expect(screen.getByLabelText("Filter by account")).toHaveValue("200");
+    expect(await screen.findByRole("button", { name: "Account Checking B" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Account Checking A" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByLabelText("From date")).toHaveValue("2026-05-01");
     expect(screen.getByLabelText("To date")).toHaveValue("2026-05-31");
 
     const startCount = mock.mock.calls.length;
-    fireEvent.change(screen.getByLabelText("Filter by account"), {
-      target: { value: "100" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Account Checking A" }));
 
     await waitFor(() => {
       const after = listUrlsAfter(mock, startCount);
-      expect(after.at(-1)).toContain("account_id=100");
+      expect(after.length).toBeGreaterThan(0);
+      expect(new URL(after.at(-1)!, "http://x").searchParams.getAll("account_id")).toEqual(["200", "100"]);
     });
   });
 
@@ -278,10 +278,12 @@ describe("TransactionsPage — dashboard deep links", () => {
     });
   });
 
-  it("does not persist category_match past the deep link that carried it", async () => {
-    // FENCE. Kills: storing category_match with the persisted filters, which
-    // would keep a later visit leaf-flat with no link asking for it.
-    searchParamsState.value = new URLSearchParams("category_id=7&category_match=exact");
+  // TBD-464 R1 superseded PR 1's "category_match is not persisted" rule: the
+  // panel's category selection is always exact, so a saved selection comes
+  // back exact too, and a subtree link is seeded as master plus subs instead.
+  it("a saved category selection comes back exact on the next visit", async () => {
+    // A category that exists: saved ids for deleted categories are dropped.
+    searchParamsState.value = new URLSearchParams(`category_id=${CATEGORY.id}&category_match=exact`);
     const first = setupApiFetch([]);
     renderWithSWR(<TransactionsPage />);
     await waitFor(() => {
@@ -295,32 +297,32 @@ describe("TransactionsPage — dashboard deep links", () => {
 
     await waitFor(() => {
       const params = lastParams(second);
-      expect(params.getAll("category_id")).toEqual(["7"]);
-      expect(params.get("category_match")).toBeNull();
+      expect(params.getAll("category_id")).toEqual([String(CATEGORY.id)]);
+      expect(params.get("category_match")).toBe("exact");
     });
   });
 
-  it("drops category_match once the user picks a category", async () => {
-    // FENCE. Kills: never clearing it, so a user-picked master opens exact
-    // (its own rows only) instead of the default subtree.
+  it("a pick adds to an exact drilldown's category and stays exact", async () => {
+    // FENCE. Kills: a pick replacing the linked category, and dropping exact
+    // (a user-checked master means its own rows, R1).
     searchParamsState.value = new URLSearchParams("category_id=7&category_match=exact");
     const mock = setupApiFetch([]);
     renderWithSWR(<TransactionsPage />);
-    const select = await screen.findByLabelText("Filter by category");
+    const groceries = await screen.findByRole("checkbox", { name: "Category Groceries" });
     await waitFor(() => {
       expect(lastParams(mock).get("category_match")).toBe("exact");
-      expect(select).toHaveTextContent("Groceries");
     });
 
     const startCount = mock.mock.calls.length;
-    fireEvent.change(select, { target: { value: String(CATEGORY.id) } });
+    fireEvent.click(groceries);
 
     await waitFor(() => {
       const after = listUrlsAfter(mock, startCount);
       expect(after.length).toBeGreaterThan(0);
       const params = new URL(after[after.length - 1], "http://x").searchParams;
-      expect(params.getAll("category_id")).toEqual([String(CATEGORY.id)]);
-      expect(params.get("category_match")).toBeNull();
+      // The panel is multi-select: the pick adds to the linked category.
+      expect(params.getAll("category_id")).toEqual(["7", String(CATEGORY.id)]);
+      expect(params.get("category_match")).toBe("exact");
     });
   });
 
@@ -361,22 +363,19 @@ describe("TransactionsPage — dashboard deep links", () => {
     const base = apiFetchMock.getMockImplementation()!;
     apiFetchMock.mockImplementation(async (url: string) => {
       const acct = url.startsWith("/api/v1/transactions?")
-        ? new URL(url, "http://x").searchParams.get("account_id")
-        : null;
+        ? new URL(url, "http://x").searchParams.getAll("account_id").join(",")
+        : "";
       if (acct) return new Promise((resolve) => pending.set(acct, resolve)) as never;
       return base(url);
     });
 
     renderWithSWR(<TransactionsPage />);
-    const select = await screen.findByLabelText("Filter by account");
-    await waitFor(() => expect(select).toHaveTextContent("Checking B"));
-
-    fireEvent.change(select, { target: { value: "100" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Account Checking A" }));
     await waitFor(() => expect(pending.has("100")).toBe(true));
-    fireEvent.change(select, { target: { value: "200" } });
-    await waitFor(() => expect(pending.has("200")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Account Checking B" }));
+    await waitFor(() => expect(pending.has("100,200")).toBe(true));
 
-    pending.get("200")!({ items: [makeTx({ id: 2, description: "Latest rows" })], total: 1 });
+    pending.get("100,200")!({ items: [makeTx({ id: 2, description: "Latest rows" })], total: 1 });
     await screen.findAllByText("Latest rows");
     pending.get("100")!({ items: [makeTx({ id: 1, description: "Stale rows" })], total: 1 });
 
@@ -404,12 +403,11 @@ describe("TransactionsPage — dashboard deep links", () => {
     });
 
     renderWithSWR(<TransactionsPage />);
-    const select = await screen.findByLabelText("Filter by account");
-    await waitFor(() => expect(select).toHaveTextContent("Checking B"));
+    const chip = await screen.findByRole("button", { name: "Account Checking A" });
     await waitFor(() => expect(screen.queryByRole("status", { name: "Loading" })).toBeNull());
 
     gate = true;
-    fireEvent.change(select, { target: { value: "100" } });
+    fireEvent.click(chip);
     await waitFor(() => expect(deferred).toHaveLength(1));
     expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
 
@@ -431,18 +429,17 @@ describe("TransactionsPage — dashboard deep links", () => {
     expect(screen.queryAllByText("Stale rows")).toHaveLength(0);
   });
 
-  it("hides the Reset button once the account filter is cleared back to All", async () => {
-    // FENCE. Kills: `[] !== []` in isDefault (a cleared select holds a fresh
-    // empty array, never the default's reference).
+  it("hides the Reset button once the last account is deselected", async () => {
+    // FENCE. Kills: `[] !== []` in isDefault (a cleared selection holds a
+    // fresh empty array, never the default's reference).
     const mock = setupApiFetch([]);
     renderWithSWR(<TransactionsPage />);
-    const select = await screen.findByLabelText("Filter by account");
-    await waitFor(() => expect(select).toHaveTextContent("Checking B"));
+    const chip = await screen.findByRole("button", { name: "Account Checking A" });
     expect(screen.queryByTestId("reset-sort-filters")).toBeNull();
 
-    fireEvent.change(select, { target: { value: "100" } });
+    fireEvent.click(chip);
     await screen.findByTestId("reset-sort-filters");
-    fireEvent.change(select, { target: { value: "" } });
+    fireEvent.click(chip);
 
     await waitFor(() => {
       expect(lastParams(mock).getAll("account_id")).toEqual([]);
@@ -486,10 +483,7 @@ describe("TransactionsPage — dashboard deep links", () => {
 
       renderWithSWR(<TransactionsPage />);
 
-      await screen.findByLabelText("Filter by category");
-      await waitFor(() =>
-        expect(screen.getByLabelText("Filter by category")).toHaveTextContent("Food"),
-      );
+      expect(await screen.findAllByRole("checkbox", { name: "Category Food" })).toHaveLength(2);
       // Give the name-resolution effect a chance to (wrongly) seed a filter.
       await new Promise((r) => setTimeout(r, 50));
       expect(lastParams(mock).getAll("category_id")).toEqual([]);
