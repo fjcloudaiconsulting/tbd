@@ -114,6 +114,38 @@ describe("AccountFilter", () => {
     expect(screen.queryByText("Old Savings")).not.toBeInTheDocument();
   });
 
+  // TBD-464: the transactions page lists every account, inactive ones
+  // included, so it opts in. Reports keeps the default.
+  it("shows inactive accounts only when includeInactive is set", async () => {
+    const withInactive = [...ACCOUNTS, { ...ACCOUNTS[0], id: 3, name: "Old Savings", is_active: false }];
+    apiFetchMock.mockResolvedValue(withInactive as never);
+
+    const { unmount } = renderWithSWR(<AccountFilter value={[]} onChange={() => {}} />);
+    await screen.findByTestId("account-filter-chip-1");
+    expect(screen.queryByTestId("account-filter-chip-3")).toBeNull();
+    unmount();
+
+    renderWithSWR(<AccountFilter value={[]} onChange={() => {}} includeInactive />);
+    expect(await screen.findByTestId("account-filter-chip-3")).toBeInTheDocument();
+  });
+
+  // TBD-464: selection is not colour-only (One Brass Rule restyle). A
+  // pressed chip carries a Check icon; an unpressed one does not.
+  it("renders a Check icon on pressed chips only, and exposes the chips as a named group", async () => {
+    apiFetchMock.mockResolvedValueOnce(ACCOUNTS);
+
+    renderWithSWR(<AccountFilter value={[1]} onChange={() => {}} />);
+
+    const pressed = await screen.findByRole("button", { name: "Account Checking" });
+    const unpressed = screen.getByRole("button", { name: "Account Credit Card" });
+    expect(pressed).toHaveAttribute("aria-pressed", "true");
+    expect(pressed.querySelector("svg.lucide-check")).not.toBeNull();
+    expect(pressed.className.split(/\s+/)).not.toContain("bg-accent");
+    expect(unpressed).toHaveAttribute("aria-pressed", "false");
+    expect(unpressed.querySelector("svg.lucide-check")).toBeNull();
+    expect(screen.getByRole("group", { name: "Accounts" })).toContainElement(pressed);
+  });
+
   it("renders an error state when the fetch fails", async () => {
     apiFetchMock.mockRejectedValueOnce(new Error("boom"));
 

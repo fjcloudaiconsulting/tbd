@@ -14,10 +14,12 @@
  * UI. ``resolveFilters`` still emits the correct AST.
  */
 import { useId } from "react";
+import { Check } from "lucide-react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useTags } from "@/lib/hooks/use-tags";
 import type { TagMatch } from "@/lib/reports/types";
+import { filterChip, filterChipOff, filterChipOn } from "@/lib/styles";
 
 interface Props {
   value: string[];
@@ -27,6 +29,8 @@ interface Props {
   label?: string;
   /** Aria-prefix on chip toggle buttons. */
   ariaPrefix?: string;
+  /** Hide the all/any radios when the caller fixes the match mode. */
+  hideMatch?: boolean;
 }
 
 export default function TagFilter({
@@ -35,6 +39,7 @@ export default function TagFilter({
   onChange,
   label = "Tags",
   ariaPrefix = "Tag",
+  hideMatch = false,
 }: Props) {
   // Share the org tags cache via the bare-path `useTags` hook, auth-gated
   // (`!loading && !!user`) like the other reference-data consumers.
@@ -59,9 +64,11 @@ export default function TagFilter({
 
   return (
     <div className="flex flex-col gap-1.5" data-testid="tag-filter">
-      <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
-        {label}
-      </span>
+      {label && (
+        <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
+          {label}
+        </span>
+      )}
       {error ? (
         <div
           role="alert"
@@ -81,7 +88,7 @@ export default function TagFilter({
       ) : tags.length === 0 ? (
         <span className="text-xs text-text-muted">No tags yet</span>
       ) : (
-        <div className="flex flex-wrap gap-1.5">
+        <div role="group" aria-label={label || "Tags"} className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
           {tags.map((t) => {
             const active = selectedSet.has(t.name);
             return (
@@ -92,42 +99,41 @@ export default function TagFilter({
                 aria-pressed={active}
                 aria-label={`${ariaPrefix} ${t.name}`}
                 onClick={() => toggle(t.name)}
-                className={`rounded-full border px-2.5 py-0.5 text-xs transition ${
-                  active
-                    ? "border-accent bg-accent text-accent-text"
-                    : "border-border text-text-secondary hover:bg-surface-raised"
-                }`}
+                className={`${filterChip} ${active ? filterChipOn : filterChipOff}`}
               >
+                {active && <Check aria-hidden="true" className="h-3 w-3 shrink-0" />}
                 {t.name}
               </button>
             );
           })}
         </div>
       )}
-      <div className="mt-1 flex gap-3 text-xs text-text-secondary">
-        <label className="flex items-center gap-1">
-          <input
-            type="radio"
-            name={radioName}
-            data-testid="tag-filter-match-all"
-            aria-label="Tag match all"
-            checked={match === "all"}
-            onChange={() => setMatch("all")}
-          />
-          <span>Match all</span>
-        </label>
-        <label className="flex items-center gap-1">
-          <input
-            type="radio"
-            name={radioName}
-            data-testid="tag-filter-match-any"
-            aria-label="Tag match any"
-            checked={match === "any"}
-            onChange={() => setMatch("any")}
-          />
-          <span>Match any</span>
-        </label>
-      </div>
+      {!hideMatch && (
+        <div className="mt-1 flex gap-3 text-xs text-text-secondary">
+          <label className="flex items-center gap-1">
+            <input
+              type="radio"
+              name={radioName}
+              data-testid="tag-filter-match-all"
+              aria-label="Tag match all"
+              checked={match === "all"}
+              onChange={() => setMatch("all")}
+            />
+            <span>Match all</span>
+          </label>
+          <label className="flex items-center gap-1">
+            <input
+              type="radio"
+              name={radioName}
+              data-testid="tag-filter-match-any"
+              aria-label="Tag match any"
+              checked={match === "any"}
+              onChange={() => setMatch("any")}
+            />
+            <span>Match any</span>
+          </label>
+        </div>
+      )}
     </div>
   );
 }

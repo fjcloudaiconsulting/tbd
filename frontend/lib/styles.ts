@@ -114,6 +114,16 @@ export const badgeSuccess =
 export const badgeNeutral =
   `${badgeBase} bg-surface-raised text-text-secondary`;
 
+// Toggle chips in the multi-select filters (AccountFilter, TagFilter).
+// TBD-464: selected is an accent BORDER on accent-dim, never a brass fill
+// (The One Brass Rule), and the caller renders a Check icon so selection is
+// not colour-only. 44px touch target below xl.
+export const filterChip =
+  "inline-flex min-h-[44px] items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition xl:min-h-0";
+export const filterChipOn = "border-accent bg-accent-dim text-text-primary";
+export const filterChipOff =
+  "border-border text-text-secondary hover:bg-surface-raised";
+
 // Semantic badge tone -> resolved badge class. A single home so any surface
 // that classifies a status into a tone (e.g. loanPayoffStatus in lib/loan.ts)
 // resolves to the identical badge token, and two surfaces can't drift on which

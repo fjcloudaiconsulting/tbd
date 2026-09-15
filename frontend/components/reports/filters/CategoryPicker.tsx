@@ -98,9 +98,11 @@ export default function CategoryPicker({
 
   return (
     <div className="flex flex-col gap-1.5" data-testid="category-picker">
-      <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
-        {label}
-      </span>
+      {label && (
+        <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
+          {label}
+        </span>
+      )}
       {error ? (
         <div
           role="alert"
@@ -130,7 +132,7 @@ export default function CategoryPicker({
             placeholder="Search categories..."
             className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-primary"
           />
-          <div className="max-h-56 overflow-y-auto rounded-md border border-border bg-bg p-2">
+          <div role="group" aria-label={label || "Categories"} className="max-h-56 overflow-y-auto rounded-md border border-border bg-bg p-2">
             {visibleTree.length === 0 ? (
               <span className="text-xs text-text-muted">No categories match</span>
             ) : (
@@ -179,7 +181,7 @@ function CategoryTreeRow({
 
   return (
     <li>
-      <label className="flex items-center gap-2 text-sm text-text-primary">
+      <label className="flex min-h-[44px] items-center gap-2 text-sm text-text-primary xl:min-h-0">
         <input
           ref={masterRef}
           type="checkbox"
@@ -198,7 +200,7 @@ function CategoryTreeRow({
         <ul className="ml-5 mt-1 flex flex-col gap-0.5">
           {node.subs.map((s) => (
             <li key={s.id}>
-              <label className="flex items-center gap-2 text-xs text-text-secondary">
+              <label className="flex min-h-[44px] items-center gap-2 text-xs text-text-secondary xl:min-h-0">
                 <input
                   type="checkbox"
                   data-testid={`category-sub-${s.id}`}
