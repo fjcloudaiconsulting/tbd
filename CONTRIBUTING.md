@@ -483,9 +483,14 @@ If you are working through a parallel agent session, use `-p team-<name>` on eve
 ### Frontend (vitest / jest)
 
 ```bash
-docker compose exec frontend npm test
-docker compose exec frontend npm test -- tests/lib/api.test.ts
+docker compose exec frontend npm test                                  # whole suite + the act() warning gate
+docker compose exec frontend npx vitest run tests/lib/api.test.ts      # one file
 ```
+
+⚠ `npm test -- <path>` is **not** a filtered run. The `test` script ends in the act()
+gate's judge, so npm appends the path to the judge command and vitest still runs
+everything. Use `npx vitest run <file>` for a single file, then the full `npm test`
+before you trust a green: only the full run arms the act() gate.
 
 ### TypeScript type checking
 
@@ -494,6 +499,10 @@ docker compose exec frontend npx tsc --noEmit
 # or, on the host
 cd frontend && npx tsc --noEmit
 ```
+
+CI runs the same check in the `Frontend Static Checks` job on every PR that touches
+the frontend area. It covers test files, which `next build` does not, so a type error
+in a test can no longer merge green.
 
 ### Manual smoke testing
 

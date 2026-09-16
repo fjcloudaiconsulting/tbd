@@ -25,6 +25,7 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 - **AI assistance** (bring-your-own provider), transaction categorization, forecast refinement, budget rebalancing
 - **Billing periods**, org-level month close dates with configurable cycle day
 - **Authentication**, email / password, Google SSO, TOTP MFA with recovery codes and email fallback
+- **Hide balances**, an eye toggle in the header that masks every money amount on screen, for when someone can see your screen
 - **Org-scoped**, all data isolated per organization, multi-user ready
 - **Responsive**, works on desktop and narrow viewports (tablet, half-screen)
 
