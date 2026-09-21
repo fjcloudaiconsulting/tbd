@@ -22,13 +22,33 @@ def test_transactions_rejects_balance_measure():
         src.validate(q)
 
 
-def test_transactions_rejects_currency_dimension():
+def test_transactions_rejects_an_out_of_source_dimension():
+    """⚠ RE-POINTED, NOT DELETED (TBD-507).
+
+    This was ``test_transactions_rejects_currency_dimension`` until the
+    transactions source gained the currency dimension. Deleting it would have
+    removed the only assertion that the catalog rejects a dimension the source
+    does not publish -- coverage of ``validate_against_catalog`` itself, not of
+    currency. ``account_type`` is the replacement: a real ``Dimension`` member
+    that only the ``accounts`` source publishes.
+    """
+    src = registry.get_source("transactions")
+    q = _q(Dataset.TRANSACTIONS,
+           Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT),
+           dims=[Dimension.ACCOUNT_TYPE])
+    with pytest.raises(ValueError):
+        src.validate(q)
+
+
+def test_transactions_now_accepts_the_currency_dimension():
+    """The other half of the inversion above: what used to be rejected is the
+    feature. Without this, re-pointing the test above would leave the currency
+    dimension unasserted at the validation layer."""
     src = registry.get_source("transactions")
     q = _q(Dataset.TRANSACTIONS,
            Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT),
            dims=[Dimension.CURRENCY])
-    with pytest.raises(ValueError):
-        src.validate(q)
+    src.validate(q)
 
 
 def test_transactions_accepts_its_own_surface():

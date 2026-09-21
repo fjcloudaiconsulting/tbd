@@ -19,6 +19,11 @@
         "kind": "account"
       },
       {
+        "key": "currency",
+        "label": "Currency",
+        "kind": "currency"
+      },
+      {
         "key": "tag",
         "label": "Tag",
         "kind": "tag"
@@ -111,6 +116,15 @@
           "in"
         ],
         "kind": "account"
+      },
+      {
+        "field": "currency",
+        "label": "Currency",
+        "ops": [
+          "eq",
+          "in"
+        ],
+        "kind": "currency"
       },
       {
         "field": "txn_type",

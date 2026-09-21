@@ -40,9 +40,20 @@ def test_transactions_source_catalog_matches_ast_enums():
         assert m.field in field_values, f"bad field: {m.field}"
 
     # exact catalog contract (not just subset)
-    assert dim_keys == {"category", "category_master", "account", "tag",
-                        "txn_type", "status", "month", "week", "day"}
+    # ``currency`` joined in TBD-507, bringing transactions level with the four
+    # sibling sources that already published it (accounts, recurring, networth,
+    # credit_utilization).
+    assert dim_keys == {"category", "category_master", "account", "currency",
+                        "tag", "txn_type", "status", "month", "week", "day"}
     assert {m.key for m in src.measures()} == {"sum_amount", "avg_amount", "count_rows"}
+    # ⚠ Exact FILTER set too, matching what ``test_accounts_source_catalog`` and
+    # ``test_recurring_source_catalog`` already assert for their sources. Without
+    # it the new ``currency`` filter could be removed and only the generated
+    # frontend fixture would notice.
+    assert {f.field for f in src.filters()} == {
+        "date", "amount", "category_id", "account_id", "currency",
+        "txn_type", "status", "tag_name",
+    }
     by_key = {m.key: m for m in src.measures()}
     assert (by_key["avg_amount"].agg, by_key["avg_amount"].field, by_key["avg_amount"].format) == ("avg", "amount", "currency")
     assert (by_key["count_rows"].agg, by_key["count_rows"].field, by_key["count_rows"].format) == ("count", "id", "number")
