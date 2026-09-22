@@ -44,14 +44,20 @@ def test_transactions_source_catalog_matches_ast_enums():
     # sibling sources that already published it (accounts, recurring, networth,
     # credit_utilization).
     assert dim_keys == {"category", "category_master", "account", "currency",
-                        "tag", "txn_type", "status", "month", "week", "day"}
+                        "account_type", "tag", "txn_type", "status",
+                        "month", "week", "day"}
     assert {m.key for m in src.measures()} == {"sum_amount", "avg_amount", "count_rows"}
     # ⚠ Exact FILTER set too, matching what ``test_accounts_source_catalog`` and
     # ``test_recurring_source_catalog`` already assert for their sources. Without
     # it the new ``currency`` filter could be removed and only the generated
     # frontend fixture would notice.
+    # ⚠ ``transfer`` is here and ``account_type`` deliberately is NOT: TBD-471
+    # published the account_type DIMENSION (reachable with zero frontend code,
+    # the picker is catalog-driven) and cut the account_type FILTER, which would
+    # have been the second backend-only filter with no control after TBD-507's
+    # currency. This exact set is what keeps that ruling from eroding quietly.
     assert {f.field for f in src.filters()} == {
-        "date", "amount", "category_id", "account_id", "currency",
+        "date", "amount", "category_id", "account_id", "currency", "transfer",
         "txn_type", "status", "tag_name",
     }
     by_key = {m.key: m for m in src.measures()}

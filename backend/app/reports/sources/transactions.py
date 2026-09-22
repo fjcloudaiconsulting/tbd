@@ -22,6 +22,7 @@ _DIMENSIONS = [
     SourceDimension("category_master", "Category group", "category"),
     SourceDimension("account", "Account", "account"),
     SourceDimension("currency", "Currency", "currency"),
+    SourceDimension("account_type", "Account type", "account_type"),
     SourceDimension("tag", "Tag", "tag"),
     SourceDimension("txn_type", "Type", "type"),
     SourceDimension("status", "Status", "status"),
@@ -42,6 +43,17 @@ _FILTERS = [
     SourceFilter("category_id", "Category", ("eq", "in"), "category"),
     SourceFilter("account_id", "Account", ("eq", "in"), "account"),
     SourceFilter("currency", "Currency", ("eq", "in"), "currency"),
+    # TBD-471. ⚠ The account_type DIMENSION is published; the account_type
+    # FILTER deliberately is NOT. A dimension reaches the editor with zero
+    # frontend code (the picker is catalog-driven), whereas a filter needs a
+    # control. ``account_id`` already covers explicit account selection, so the
+    # filter would buy nothing and would repeat TBD-507's currency filter, which
+    # renders zero pixels to this day.
+    # ⚠ ``transfer`` below is published WITHOUT a control in PR 1 and is
+    # therefore in exactly that state -- deliberately and temporarily. PR 2 adds
+    # the control in the same ticket. If PR 2 does not land, this filter is the
+    # third unreachable one and should be reconsidered, not left to settle.
+    SourceFilter("transfer", "Transfers", ("eq",), "boolean"),
     SourceFilter("txn_type", "Type", ("eq", "in"), "type"),
     SourceFilter("status", "Status", ("eq",), "status"),
     SourceFilter("tag_name", "Tag", ("eq", "in"), "tag"),

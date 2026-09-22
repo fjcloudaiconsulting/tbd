@@ -52,6 +52,7 @@ const FALLBACK_DIMENSION_KEYS: readonly Dimension[] = [
   "category_master",
   "account",
   "currency",
+  "account_type",
   "tag",
   "txn_type",
   "status",

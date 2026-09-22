@@ -265,9 +265,24 @@ def _apply_user_filters(stmt, filters: list[Filter], org_id: int):
 
     Raises:
         ValueError: when a filter field is not in the Sankey-supported
-            whitelist (e.g. ``account_type``, ``currency``, ``balance``,
-            ``account_active``, ``frequency``, ``recurring_active``).
-            The router maps this to HTTP 422.
+            whitelist (e.g. ``transfer``, ``account_type``, ``currency``,
+            ``balance``, ``account_active``, ``frequency``,
+            ``recurring_active``). The router maps this to HTTP 422.
+
+    ⚠⚠ ``transfer`` and ``currency`` are the DANGEROUS entries in that list, and
+    they are dangerous for a reason the others are not: a Sankey widget's
+    dataset IS ``transactions``, which now publishes both as filters (TBD-507,
+    TBD-471). Neither can reach here today only because the frontend has no
+    control for either -- ``FILTER_KEY_TO_SOURCE_FIELD`` has no key mapping to
+    them, so ``resolveFilters`` never emits one and ``buildSankeyBody`` has
+    nothing to forward. **The moment a control is added for either field, every
+    Sankey widget carrying it renders "Couldn't load".** The fix then is to
+    strip the field in ``buildSankeyBody`` (which today strips only
+    ``txn_type``), NOT to add it here: the Sankey builder locks type and
+    excludes transfer legs by construction, so a transfers-only Sankey is
+    semantically empty. Tracked structurally as TBD-552; the identical
+    ``tag_name``-on-networth bug already happened once and is documented in
+    ``FilterEditor.tsx``.
     """
     for f in filters:
         if f.field is FilterField.TXN_TYPE:

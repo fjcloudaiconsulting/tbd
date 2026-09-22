@@ -1,4 +1,9 @@
-"""Filters and predicates expressing transfer-leg exclusion in aggregates.
+"""Filters and predicates about transfer legs and balance contribution.
+
+⚠ The module used to be described as "transfer-leg EXCLUSION". Since TBD-471 it
+also holds a transfer-leg **inclusion** clause (``reciprocal_transfer_filter``),
+so read the heading as "predicates ABOUT transfer legs" -- some exclude, one
+selects, and two of them do so with deliberately OPPOSITE failure polarities.
 
 Lives in its own module to avoid a circular import with category_rules_service,
 which already imports from transaction_service.
@@ -47,6 +52,9 @@ REVERTED_RECONCILIATION_STATES = _RECON_EXCLUDED_STATES
 # check. Defined once at module level so the correlated EXISTS subquery
 # below can reference it.
 _bcf_partner = aliased(Transaction)
+# TBD-471. A SEPARATE alias from ``_bcf_partner``: a ``transfer=true`` query
+# carries both clauses, so sharing one alias would collide in the rendered SQL.
+_rtf_partner = aliased(Transaction)
 
 
 def reportable_transaction_filter():
@@ -163,6 +171,72 @@ def balance_contribution_filter():
                 )
             ),
         ),
+    )
+
+
+def reciprocal_transfer_filter():
+    """SQL clause: rows that are ONE LEG of a REAL transfer pair (TBD-471).
+
+    THE RULE, from ``is_reciprocal_pair`` above: a link is a transfer link iff
+    the partner links back. This is its SQL twin, term for term, and it FAILS
+    CLOSED -- an unproven link is never treated as a transfer.
+
+    ⚠⚠ OPPOSITE POLARITY to ``balance_contribution_filter()``, which fails OPEN
+    and is FROZEN under TBD-280. That one asks "is this row's amount inside
+    ``accounts.balance``?" and must KEEP on uncertainty, because dropping a row
+    there loses money from a reconstruction. This one asks "are these two rows
+    ONE transfer pair?" and must DROP on uncertainty, because keeping a row here
+    calls a reconcile match a transfer. Same column, two questions, two
+    polarities. **Do not harmonise them, and do not factor out the shared
+    EXISTS** -- the six lines they have in common are the least valuable part;
+    the polarity is the whole point.
+
+    ⚠ ``_rtf_partner.id != Transaction.id`` IS LOAD-BEARING and is the term that
+    diverges from the frozen sibling. A self-linked row satisfies the other
+    conjuncts against ITSELF, so without it this clause calls corrupt data a
+    transfer. ``balance_contribution_filter`` deliberately KEEPS self-links, so
+    copying its EXISTS verbatim ships exactly that mutant, green.
+
+    ⚠ ``org_id`` is likewise a deliberate addition, matching
+    ``is_reciprocal_pair``'s ``partner.org_id == tx.org_id``. Under a
+    fail-closed polarity a cross-org link is not a pair.
+
+    ⚠ WHICH CELLS ARE VISIBLE COMPOSED, stated precisely because the first
+    draft of this docstring got it wrong. Conjoined with
+    ``balance_contribution_filter()`` -- which is what happens on every path
+    this clause runs on today -- a bare ``linked_transaction_id IS NOT NULL``
+    mutant reduces to ``link NOT NULL AND EXISTS_bcf``. That is NOT identical to
+    this clause, because ``balance_contribution_filter``'s EXISTS carries only
+    TWO conjuncts (partner-by-id, links-back) and this one carries four:
+      * SELF-LINK -- diverges, and is VISIBLE composed, because
+        ``balance_contribution_filter`` deliberately KEEPS self-links;
+      * CROSS-ORG -- diverges in principle, unfenced in practice (no fixture
+        builds one, and no writer produces one);
+      * ONE-WAY reconcile match -- does NOT diverge composed, because
+        ``balance_contribution_filter`` has already dropped it.
+    So the one-way cell is the one that needs an UNCOMPOSED fence, and that is
+    why F1 in ``tests/services/test_reports_transfer_axis.py`` compiles this
+    clause alone. Do not read that as "the end-to-end fences prove nothing" --
+    they do kill the mutant, via the self-link cell.
+
+    ⚠ HONEST SCOPE. On data the product can actually produce, this clause
+    selects exactly what ``linked_transaction_id IS NOT NULL`` selects: no
+    writer creates a self-link or a cross-org link, and the one-way case is
+    already excluded upstream. It is written this way for the NEXT caller, who
+    will not have ``balance_contribution_filter()`` conjoined.
+
+    No NULL guard is needed on ``linked_transaction_id``: when it is NULL the
+    first conjunct is NULL, the EXISTS matches nothing, and the row drops.
+    Fail-closed by construction rather than by a defensive clause. Both engines
+    short-circuit the correlated subquery for unlinked rows.
+    """
+    return exists().where(
+        and_(
+            _rtf_partner.id == Transaction.linked_transaction_id,
+            _rtf_partner.org_id == Transaction.org_id,
+            _rtf_partner.linked_transaction_id == Transaction.id,
+            _rtf_partner.id != Transaction.id,
+        )
     )
 
 

@@ -84,6 +84,11 @@ class FilterField(str, enum.Enum):
     STATUS = "status"
     ACCOUNT_TYPE = "account_type"
     CURRENCY = "currency"
+    # TBD-471. Transfer-ness is its own axis, NOT a fourth ``txn_type`` value:
+    # ``txn_type`` is an OR multiselect, so "is a transfer leg AND inbound" is
+    # inexpressible there. As a separate field it ANDs with ``txn_type`` at the
+    # filter-list level, which is the question the operator actually asks.
+    TRANSFER = "transfer"
     ACCOUNT_ACTIVE = "account_active"
     BALANCE = "balance"
     FREQUENCY = "frequency"
@@ -496,6 +501,17 @@ def _coerce_filter_scalar(field: FilterField, value):
         if not (len(v) == 3 and v.isalpha()):
             raise ValueError("currency must be a 3-letter code")
         return v
+    if field is FilterField.TRANSFER:
+        # Same coercion as ACCOUNT_ACTIVE below: the wire may carry a real
+        # boolean or a string, and both mean the same thing.
+        if isinstance(value, bool):
+            return value
+        v = str(value).strip().lower()
+        if v in ("true", "1"):
+            return True
+        if v in ("false", "0"):
+            return False
+        raise ValueError("transfer must be a boolean")
     if field is FilterField.ACCOUNT_ACTIVE:
         if isinstance(value, bool):
             return value

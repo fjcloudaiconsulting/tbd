@@ -201,8 +201,14 @@ class RecurringSource:
         # NO transfer. The shared txn_type scalar coercion accepts transfer
         # (correct for transactions), so a transfer filter passes schema +
         # catalog here and would compile to type=='transfer' (silent empty
-        # result on MySQL). Reject it authoritatively for this source only;
-        # transactions legitimately allows transfer.
+        # result on MySQL). Reject it authoritatively for this source only.
+        # ⚠ An earlier version of this comment said "transactions legitimately
+        # allows transfer". That was FALSE: ``TransactionType.TRANSFER`` has no
+        # write sites at all, so the value never matched a row on EITHER source.
+        # TBD-471 PR 2 retires it from the transactions UI (PR 1 is backend
+        # only, so the dead checkbox is still live until then); this guard stays as
+        # defence in depth, and the AST keeps ACCEPTING the value so a persisted
+        # widget carrying it returns empty rather than 422.
         for f in query.filters:
             if f.field is FilterField.TXN_TYPE:
                 values = f.value if isinstance(f.value, (list, tuple)) else [f.value]

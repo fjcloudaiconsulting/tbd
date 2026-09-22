@@ -24,6 +24,11 @@
         "kind": "currency"
       },
       {
+        "key": "account_type",
+        "label": "Account type",
+        "kind": "account_type"
+      },
+      {
         "key": "tag",
         "label": "Tag",
         "kind": "tag"
@@ -125,6 +130,14 @@
           "in"
         ],
         "kind": "currency"
+      },
+      {
+        "field": "transfer",
+        "label": "Transfers",
+        "ops": [
+          "eq"
+        ],
+        "kind": "boolean"
       },
       {
         "field": "txn_type",
