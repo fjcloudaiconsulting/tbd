@@ -1230,9 +1230,17 @@ async def test_f9_the_reports_transactions_source_is_scoped(db, with_history):
     WHERE of a GROUPED statement; a total-only assertion can be satisfied by a
     coincidence of offsetting rows, and the reports surface renders the rows.
 
-    ⚠ The transactions source is the one dataset of the four whose catalog
-    publishes NO currency dimension and NO currency filter, so the user cannot
-    separate the money by hand either.
+    ⚠ THIS TEST'S ORIGINAL RATIONALE EXPIRED IN TBD-507, and the test is still
+    right. It read: "the transactions source is the one dataset of the four
+    whose catalog publishes NO currency dimension and NO currency filter, so the
+    user cannot separate the money by hand either" -- i.e. scoping was the only
+    defence available. Transactions now publishes both (and the population was
+    five sources, not four: ``credit_utilization`` publishes them too). What
+    survives is the narrower and still load-bearing claim: a query that says
+    NOTHING about currency must still be scoped, because a user who did not ask
+    to see the split must not be handed a silent cross-currency sum. The
+    opted-in behaviour is fenced separately in
+    ``tests/services/test_reports_currency_dimension.py``.
     """
     rows, _meta = await reports_query_service.execute_query(
         db,

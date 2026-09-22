@@ -66,6 +66,7 @@ _DIM_KEYS: dict[Dimension, str] = {
     Dimension.CATEGORY: "category",
     Dimension.CATEGORY_MASTER: "category_master",
     Dimension.ACCOUNT: "account",
+    Dimension.CURRENCY: "currency",
     Dimension.TAG: "tag",
     Dimension.TXN_TYPE: "txn_type",
     Dimension.STATUS: "status",
@@ -73,6 +74,26 @@ _DIM_KEYS: dict[Dimension, str] = {
     Dimension.WEEK: "week",
     Dimension.DAY: "day",
 }
+
+
+def _currency_key():
+    """The canonical currency expression: ``UPPER(TRIM(accounts.currency))``.
+
+    ⚠ NOT the bare column, and not only for tidiness. ``accounts.currency`` was
+    FREE TEXT before TBD-325 PR 1, and ``AccountUpdate`` carries no currency
+    field (``schemas/account.py``), so a legacy ``'eur'`` row is unrepairable
+    through the product. MySQL's ``utf8mb4_0900_ai_ci`` folds case inside GROUP
+    BY and comparisons; SQLite does not -- and every CI shard except ``Migration
+    Checks`` runs on aiosqlite. A bare column therefore splits ``'eur'`` and
+    ``'EUR'`` into two partitions, and drops the lowercase row from a filter,
+    ON CI ONLY. The same normalise-BOTH-sides rule
+    ``currency_service.resolve_currency_scope`` spells out.
+
+    One function, used by the dimension AND the filter, so the group key and the
+    predicate cannot drift apart into the case where a filter matches rows the
+    grouping then splits.
+    """
+    return func.upper(func.trim(Account.currency))
 
 
 def _dimension_expr(dim: Dimension, dialect_name: str):
@@ -94,6 +115,8 @@ def _dimension_expr(dim: Dimension, dialect_name: str):
         )
     if dim is Dimension.ACCOUNT:
         return Account.name
+    if dim is Dimension.CURRENCY:
+        return _currency_key()
     if dim is Dimension.TAG:
         return Tag.name
     if dim is Dimension.TXN_TYPE:
@@ -194,6 +217,128 @@ def _apply_scalar_filter(stmt: Select, f: Filter) -> Select:
         lo, hi = f.value
         return stmt.where(col.between(lo, hi))
     raise ValueError(f"unsupported op {op!r}")
+
+
+# TBD-507. ⚠ The sentence for a figure that ADDS currencies together. It is a
+# different fact from ``currency_service.currency_warning``'s, which says money
+# was left OUT, so it is a different sentence -- and it is inlined here rather
+# than put beside that one because it has exactly one consumer. The remedy is
+# named, because the user can act on it: the currency dimension now exists.
+# ⚠ Opening clause matches ``currency_warning`` and ``networth.py``'s notice
+# verbatim -- three sentences in one family, and the user may see two of them on
+# one canvas.
+_MIXED_CURRENCY_WARNING = (
+    "Multiple currencies held; this figure adds them together, because the "
+    "filter selected several and the rows are not grouped by currency. Add "
+    "Currency as a dimension to separate them."
+)
+
+
+def _selected_currencies(ast: ReportsQuery) -> set[str] | None:
+    """The currency codes this AST's filters admit; ``None`` means unrestricted.
+
+    Several currency filters AND together, so the admitted set is their
+    intersection -- ``currency eq EUR`` plus ``currency eq USD`` admits nothing,
+    which is an empty set, not "unrestricted".
+    """
+    selected: set[str] | None = None
+    for f in ast.filters:
+        if f.field is not FilterField.CURRENCY:
+            continue
+        codes = set(f.value) if f.op is FilterOp.IN else {f.value}
+        selected = codes if selected is None else selected & codes
+    return selected
+
+
+# TBD-507. How a query treats currency. THREE states, ONE function.
+#
+# ⚠ Deliberately not two booleans. The first cut had one predicate answering two
+# questions and shipped a silent cross-currency sum; the obvious repair is a
+# second boolean, but two booleans describe FOUR states and only three are
+# reachable, so the fourth ("scoped, yet mixing") is a bug waiting for someone
+# to construct it. One function with three answers cannot disagree with itself,
+# which is the same argument ``org_currency_filter`` makes for taking the whole
+# scope dict instead of a currency string.
+#
+# Compare against these NAMES, never against the bare strings: a mistyped name
+# is a NameError, a mistyped literal is a silently false branch.
+_SCOPED = "scoped"          # caller said nothing -> scope to the primary currency
+_PARTITIONED = "partitioned"  # every row is exactly one currency
+_MIXED = "mixed"            # rows can span currencies, and nobody asked them to
+
+
+def _currency_mode(ast: ReportsQuery) -> str:
+    """Return ``_SCOPED`` / ``_PARTITIONED`` / ``_MIXED`` for this AST.
+
+    * No mention of currency -> ``_SCOPED``. Unchanged TBD-325 behaviour: a user
+      who did not ask to see the split must not be handed a cross-currency sum.
+    * ``Dimension.CURRENCY`` requested -> ``_PARTITIONED``, whatever the filters
+      say, because the group key separates every row by currency.
+    * A filter naming exactly ONE code -> ``_PARTITIONED``. Every surviving row
+      is that currency.
+    * A filter naming several -> ``_MIXED``. The rows are summed across
+      currencies with no column to tell them apart, so the notice has to say so.
+    * A filter naming NONE -- two ``eq`` filters that contradict, so the
+      intersection is empty -> also ``_MIXED``. The result is zero rows and the
+      notice describes a figure that does not exist, which is over-warning on
+      the safe side: never ``_SCOPED``, never a silent number. Deliberate.
+
+    ⚠ ``_SCOPED`` must not be returned when a currency filter is present, even
+    though that looks conservative: the scope says EUR and the filter says USD,
+    the conjunction is unsatisfiable, and the user gets an empty chart with no
+    explanation.
+
+    ⚠ Derived from the AST ALONE, never from ``currency_scope``. A scope-derived
+    version would read ``excluded_account_count``, which is 0 for a
+    NULL-``primary_currency`` legacy multi-currency org (the exclusion
+    comprehension in ``currency_service.resolve_currency_scope`` requires a
+    non-NULL primary) -- precisely the cohort most able to mix, so it would go
+    silent exactly where the sentence matters. See TBD-551. The price is
+    over-warning: an all-EUR org asking for ``currency in ["EUR","USD"]`` is
+    told the figure can mix when it cannot. Cheap, and it cannot go silent.
+    """
+    if Dimension.CURRENCY in ast.dimensions:
+        return _PARTITIONED
+    selected = _selected_currencies(ast)
+    if selected is None:
+        return _SCOPED
+    return _PARTITIONED if len(selected) == 1 else _MIXED
+
+
+def _apply_currency_filter(stmt: Select, f: Filter, org_id: int) -> Select:
+    """Filter to transactions on accounts denominated in the given currency.
+
+    ⚠ A CORRELATED SUBQUERY, not a ``_FILTER_COLUMN`` entry plus a join. The
+    generic scalar path would need ``Account`` joined for every filtered query,
+    changing row multiplicity on statements that already join -- the same reason
+    ``transaction_filters.org_currency_filter`` is shaped this way. Values are
+    already normalised by the AST validator
+    (``schemas/reports_query.py`` uppercases and length-checks the code) and the
+    stored column is normalised here, so BOTH sides are canonical.
+    """
+    # ⚠ RAISE, never fall through to ``eq``. The catalog publishes only
+    # ``("eq", "in")`` so nothing else reaches here today, but the AST layer
+    # would accept ``gte``/``lte`` on this field, and an unsupported op silently
+    # treated as ``eq`` returns a confidently wrong answer the day someone
+    # widens the ops tuple. ``_apply_tag_filter`` and ``accounts.py`` both raise.
+    if f.op is FilterOp.IN:
+        values = list(f.value)
+    elif f.op is FilterOp.EQ:
+        values = [f.value]
+    else:
+        raise ValueError(f"currency: unsupported op {f.op.value!r}")
+    # ⚠ NOT re-normalised here. ``schemas/reports_query._coerce_filter_scalar``
+    # already strips, uppercases and rejects anything that is not three alpha
+    # characters, and it runs on every ``Filter`` construction. A second
+    # normalisation is a second thing to drift.
+    return stmt.where(
+        Transaction.account_id.in_(
+            select(Account.id).where(
+                Account.org_id == org_id,
+                _currency_key().in_(values),
+            )
+        )
+    )
 
 
 def _apply_tag_filter(stmt: Select, f: Filter, org_id: int) -> Select:
@@ -305,7 +450,14 @@ def compile_ast_to_query(
     if Dimension.CATEGORY_MASTER in requested:
         parent = _category_parent_alias()
         stmt = stmt.outerjoin(parent, parent.id == Category.parent_id)
-    if Dimension.ACCOUNT in requested:
+    # ⚠ CURRENCY rides the SAME join, and the join is REQUIRED, not an
+    # optimisation. Referencing ``Account.currency`` under
+    # ``select_from(Transaction)`` with no join renders ``FROM transactions,
+    # accounts`` -- a CROSS JOIN that does not raise, it silently multiplies
+    # every row by the org's account count. ``or`` rather than a second
+    # ``.join()`` because joining the same table twice raises at compile time
+    # for ACCOUNT + CURRENCY together, which is an ordinary query.
+    if Dimension.ACCOUNT in requested or Dimension.CURRENCY in requested:
         stmt = stmt.join(Account, Account.id == Transaction.account_id)
     if Dimension.TAG in requested:
         stmt = stmt.join(
@@ -331,29 +483,49 @@ def compile_ast_to_query(
     else:
         stmt = stmt.where(reportable_transaction_filter())
 
-    # TBD-325 PR 2. Currency lives only on ``accounts.currency``, and this
-    # compiler builds the transactions source -- whose catalog, alone among the
-    # four sources, exposes NO currency dimension and NO currency filter
-    # (``accounts.py``, ``recurring.py`` and ``networth.py`` all do). So an
-    # unscoped ``SUM(amount)`` here adds EUR to USD unless the user happens to
-    # group by account.
+    # TBD-325 PR 2, as amended by TBD-507. Currency lives only on
+    # ``accounts.currency``, so an unscoped ``SUM(amount)`` here adds EUR to USD
+    # unless the rows are separated by something that implies a currency.
+    #
+    # ⚠ HISTORY, because the reason this clause exists is no longer the reason
+    # it was written: until TBD-507 the transactions catalog was the only one of
+    # the FIVE sources publishing no currency dimension and no currency filter
+    # (``accounts.py``, ``recurring.py``, ``networth.py`` and
+    # ``credit_utilization.py`` all did), so the user had no way to separate the
+    # money by hand and scoping was the only defence. Transactions now publishes
+    # both, which is why the clause below is conditional rather than absolute.
     #
     # ⚠ The clause goes on the WHERE, never inside ``_measure_expr``: currency
     # enters at the GROUP BY / filter level, not at the aggregate. Scoping the
     # measure would also silently apply to COUNT and AVG, which is a different
     # question.
     #
-    # ⚠ This is the SCOPE mechanism, deliberately the weaker one. Partitioning
-    # (the ``credit_utilization.py`` always-group-then-pop pattern) loses no
-    # money and is the right long-term answer for the reports surface; it is
-    # TBD-507, and it is sequenced after this PR because it is a different
-    # shape of change. Scoping ships now so that a report and the dashboard
-    # donut beside it cannot disagree in the meantime.
-    stmt = stmt.where(org_currency_filter(org_id, currency_scope))
+    # TBD-507. The scope STANDS DOWN when the caller explicitly asked about
+    # currency, and is otherwise unchanged.
+    #
+    # ⚠ Without the stand-down the feature ships broken in BOTH directions, not
+    # merely conservative: ``dimensions=[CURRENCY]`` returns exactly ONE row (a
+    # currency breakdown with a single bar, which looks authoritative), and
+    # ``filters=[currency in ["USD"]]`` returns ZERO rows, because the scope
+    # says EUR and the filter says USD and the conjunction is unsatisfiable.
+    #
+    # ⚠ Partition ON REQUEST, never unconditionally. The always-group-then-pop
+    # pattern in ``reports/sources/credit_utilization.py`` and ``networth.py``
+    # is NOT portable here: those two sort and slice in PYTHON over the full
+    # grouped set, so their "is the whole result one currency?" predicate sees
+    # every row, while this compiler applies a SQL ``LIMIT`` at step 6 -- the
+    # same predicate would only ever see a PAGE, and a two-currency org whose
+    # first page sorted all-EUR would have the key popped and be reported as
+    # single-currency. Unconditional grouping also breaks the KPI shape
+    # (``dimensions=[]``, ``limit=1``), which reads row zero as THE total.
+    if _currency_mode(ast) == _SCOPED:
+        stmt = stmt.where(org_currency_filter(org_id, currency_scope))
 
     for f in ast.filters:
         if f.field is FilterField.TAG_NAME:
             stmt = _apply_tag_filter(stmt, f, org_id)
+        elif f.field is FilterField.CURRENCY:
+            stmt = _apply_currency_filter(stmt, f, org_id)
         else:
             stmt = _apply_scalar_filter(stmt, f)
 
@@ -434,6 +606,24 @@ def _apply_query_timeout(stmt: Select, dialect_name: str) -> Select:
     return stmt
 
 
+def _currency_notice(currency_mode: str, currency_scope: dict | None) -> str | None:
+    """The ``meta.warning`` for a currency mode. THREE outcomes, not two.
+
+    * ``_SCOPED`` -> the TBD-325 exclusion sentence (``None`` when nothing was
+      excluded, which is every org in production today).
+    * ``_PARTITIONED`` -> ``None``. Nothing was excluded and every row names its
+      own currency, so any sentence here would be a lie.
+    * ``_MIXED`` -> say the figure adds currencies together. ⚠ This is the case
+      an earlier cut got wrong, returning an unlabelled EUR+USD total with
+      ``warning: null``.
+    """
+    if currency_mode == _SCOPED:
+        return currency_service.currency_warning(currency_scope)
+    if currency_mode == _MIXED:
+        return _MIXED_CURRENCY_WARNING
+    return None
+
+
 async def execute_query(
     db: AsyncSession,
     ast: ReportsQuery,
@@ -457,7 +647,18 @@ async def execute_query(
         dialect = db.get_bind().dialect.name
     except Exception:
         dialect = "mysql"
-    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
+    # ⚠ Skipped entirely for an opted-in query: both consumers below are gated
+    # on the currency mode, so resolving it would be one round trip per
+    # report whose result is discarded. ``org_currency_filter(org_id, None)`` returns
+    # ``true()``, so the ``None`` is safe even on the path that still compiles
+    # the clause. ``org_currency_filter``'s own docstring counts statements for
+    # exactly this reason.
+    currency_mode = _currency_mode(ast)
+    currency_scope = (
+        await currency_service.resolve_currency_scope(db, org_id=org_id)
+        if currency_mode == _SCOPED
+        else None
+    )
     stmt = compile_ast_to_query(
         ast,
         org_id=org_id,
@@ -520,9 +721,19 @@ async def execute_query(
         # beside a Sankey widget on one dashboard canvas, so the two must not
         # differ in whether they admit what was excluded.
         #
-        # ``None`` when nothing was excluded -- read off the SAME key
-        # ``org_currency_filter`` short-circuits on, so the clause and the
-        # notice can never disagree about whether money went missing.
-        "warning": currency_service.currency_warning(currency_scope),
+        # ⚠ TBD-507 NARROWED THAT PARITY TO THE ``_SCOPED`` PATH, and left
+        # sankey alone. ``build_sankey`` emits a GRAPH, not rows, so there is no
+        # group-key column to pop: partitioning it means per-currency node
+        # identities, which breaks ``frontend/lib/reports/sankey-labels.ts``'s
+        # literal-keyed map, the nivo node ids and the CSV export -- and nivo
+        # cannot draw two disconnected graphs in one canvas, so the real answer
+        # is probably two widgets, which is a product call. Tracked as TBD-549.
+        # Until then: a currency-mentioning reports query partitions while the
+        # sankey beside it still scopes. They differ deliberately, and each says
+        # what it did.
+        #
+        # Three outcomes, not two; see ``_currency_notice`` above for which and
+        # why.
+        "warning": _currency_notice(currency_mode, currency_scope),
     }
     return out_rows, meta
