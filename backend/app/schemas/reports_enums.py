@@ -55,6 +55,15 @@ class MeasureField(str, enum.Enum):
     UTILIZATION_PCT = "utilization_pct"
     OUTSTANDING = "outstanding"
     CREDIT_LIMIT = "credit_limit"
+    # TransactionsSource (TBD-553). A NOMINAL field, same species as NET_WORTH /
+    # OUTSTANDING / UTILIZATION_PCT: it is not a re-signing of AMOUNT (that stays
+    # a magnitude everywhere -- the ``amount`` FILTER, ``recurring.py``'s own
+    # ``sum_amount`` over a different table, and every already-saved widget all
+    # depend on it staying unsigned), it is an ADDITIVE measure that compiles to
+    # a signed CASE on ``type`` (see ``transaction_filters.signed_amount_expr``).
+    # Only ``sum`` is a coherent aggregation over it -- ``avg``/``count`` are
+    # refused by ``TransactionsSource.validate()``'s ``_DECLARED_AGG``.
+    NET_AMOUNT = "net_amount"
 
 
 class RelativeDateToken(str, enum.Enum):

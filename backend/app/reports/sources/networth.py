@@ -31,11 +31,11 @@ from datetime import date as date_cls
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import case, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
-from app.models.transaction import Transaction, TransactionStatus, TransactionType
+from app.models.transaction import Transaction, TransactionStatus
 from app.reports.sources import register
 from app.reports.sources.base import (
     ReportSource, SourceDimension, SourceFilter, SourceMeasure,
@@ -53,6 +53,7 @@ from app.services.reports_query_service import QUERY_TIMEOUT_MS
 from app.services.transaction_filters import (
     balance_contribution_filter,
     effective_period_date_expr,
+    signed_amount_expr,
 )
 
 _TIME_DIMS = {Dimension.MONTH, Dimension.WEEK, Dimension.DAY}
@@ -122,9 +123,7 @@ def _signed_delta():
     INCOME/EXPENSE by direction (TransactionType.TRANSFER is reserved/unused on
     legs), so this signs them correctly and the two legs cancel within a
     currency."""
-    return func.sum(
-        case((Transaction.type == TransactionType.INCOME, Transaction.amount), else_=-Transaction.amount)
-    )
+    return func.sum(signed_amount_expr())
 
 
 def _as_float(value) -> float:

@@ -46,7 +46,11 @@ def test_transactions_source_catalog_matches_ast_enums():
     assert dim_keys == {"category", "category_master", "account", "currency",
                         "account_type", "tag", "txn_type", "status",
                         "month", "week", "day"}
-    assert {m.key for m in src.measures()} == {"sum_amount", "avg_amount", "count_rows"}
+    # TBD-553. ``sum_net_amount`` joined -- additive, not a re-signing of
+    # ``sum_amount``; see ``SourceMeasure`` in ``reports/sources/transactions.py``.
+    assert {m.key for m in src.measures()} == {
+        "sum_amount", "avg_amount", "count_rows", "sum_net_amount",
+    }
     # ⚠ Exact FILTER set too, matching what ``test_accounts_source_catalog`` and
     # ``test_recurring_source_catalog`` already assert for their sources. Without
     # it the new ``currency`` filter could be removed and only the generated
@@ -63,6 +67,7 @@ def test_transactions_source_catalog_matches_ast_enums():
     by_key = {m.key: m for m in src.measures()}
     assert (by_key["avg_amount"].agg, by_key["avg_amount"].field, by_key["avg_amount"].format) == ("avg", "amount", "currency")
     assert (by_key["count_rows"].agg, by_key["count_rows"].field, by_key["count_rows"].format) == ("count", "id", "number")
+    assert (by_key["sum_net_amount"].agg, by_key["sum_net_amount"].field, by_key["sum_net_amount"].format) == ("sum", "net_amount", "currency")
 
 
 def test_accounts_source_catalog():

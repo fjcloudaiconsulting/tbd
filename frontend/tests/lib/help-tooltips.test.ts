@@ -17,6 +17,7 @@ import {
   getHelpTooltip,
   type HelpTooltipKey,
 } from "@/lib/help/tooltips";
+import { MEASURE_FIELD_LABELS } from "@/lib/reports/series";
 
 describe("HELP_TOOLTIPS", () => {
   const entries = Object.entries(HELP_TOOLTIPS) as [
@@ -97,5 +98,39 @@ describe("HELP_TOOLTIPS", () => {
     for (const k of required) {
       expect(HELP_TOOLTIPS[k]).toBeTruthy();
     }
+  });
+
+  // TBD-553, fence `tooltip_names_only_real_kpis`. Not a string snapshot of
+  // the new copy (a snapshot would pass against any future wrong copy
+  // someone pastes in): parse the parenthesized name list out of the live
+  // content and check each one against a whitelist of KPIs that actually
+  // exist, so a regression to "Net Cashflow" / "Total Spent" / "Savings
+  // Rate" fails regardless of the sentence's exact wording.
+  it("reports.kpi names no KPI absent from the measure catalog / template tile titles", () => {
+    // "Net" is the sum(net_amount) catalog label (MEASURE_FIELD_LABELS).
+    // "Income" / "Expense" are the mr-kpi-income / mr-kpi-expense tile
+    // titles (backend/app/reports/templates.py) -- sum(amount) filtered by
+    // txn_type, not their own catalog measure, so they aren't derivable
+    // from MEASURE_FIELD_LABELS and are named explicitly here instead.
+    const REAL_KPI_NAMES = new Set<string>([
+      MEASURE_FIELD_LABELS.net_amount,
+      "Income",
+      "Expense",
+    ]);
+
+    const content = HELP_TOOLTIPS["reports.kpi"].content;
+    const parenMatch = content.match(/\(([^)]+)\)/);
+    expect(parenMatch, content).not.toBeNull();
+    const names = parenMatch![1].split(",").map((s) => s.trim());
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) {
+      expect(REAL_KPI_NAMES.has(name), `"${name}" is not a real KPI`).toBe(true);
+    }
+
+    // Anti-vacuity: the retired names must be absent from the whitelist
+    // itself, so this fence would have failed against the pre-fix copy.
+    expect(REAL_KPI_NAMES.has("Net Cashflow")).toBe(false);
+    expect(REAL_KPI_NAMES.has("Total Spent")).toBe(false);
+    expect(REAL_KPI_NAMES.has("Savings Rate")).toBe(false);
   });
 });

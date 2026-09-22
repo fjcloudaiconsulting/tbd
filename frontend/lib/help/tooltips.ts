@@ -127,7 +127,7 @@ export const HELP_TOOLTIPS = {
   // Reports
   "reports.kpi": {
     content:
-      "Drop in KPIs (Net Cashflow, Total Spent, Savings Rate) and charts over any date range. Layouts are saved per user.",
+      "Drop in KPIs (Net, Income, Expense) and charts over any date range. Layouts are saved per user.",
     learnMoreSection: "reports",
     triggerLabel: "What can I put in a report?",
   },

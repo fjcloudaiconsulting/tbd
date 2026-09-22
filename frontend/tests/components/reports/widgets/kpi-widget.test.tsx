@@ -130,6 +130,31 @@ describe("KPIWidget", () => {
     expect(value.textContent).not.toContain("—");
   });
 
+  // TBD-553: fence `frontend_net_amount_formats_as_currency`. The format
+  // comes off the REGENERATED catalog (net_amount → "currency"), not a
+  // hardcoded default — and a negative net renders its sign, not a mangled
+  // or absolute-valued string.
+  it("resolves net_amount to currency format off the catalog and renders a negative sign", async () => {
+    runQueryMock.mockResolvedValueOnce({
+      rows: [{ value: -1000 }],
+      meta: { row_count: 1, truncated: false, query_ms: 1 },
+    });
+
+    renderWithSWR(
+      <KPIWidget
+        widget={makeWidget({
+          config: { dataset: "transactions", measure: { agg: "sum", field: "net_amount" } },
+        })}
+        currency="EUR"
+      />,
+    );
+
+    const value = await screen.findByTestId("kpi-widget-value");
+    expect(value.textContent).toContain("€");
+    expect(value.textContent).toContain("-");
+    expect(value.textContent).toContain("1,000.00");
+  });
+
   it("renders an inline error when the query fails", async () => {
     runQueryMock.mockRejectedValueOnce(new Error("boom"));
 

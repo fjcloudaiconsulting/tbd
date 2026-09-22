@@ -11,6 +11,7 @@ describe("measureFieldLabel", () => {
   it("maps every raw measure field to a friendly label (no bare keys)", () => {
     const fields: MeasureField[] = [
       "amount",
+      "net_amount",
       "id",
       "category_id",
       "account_id",
@@ -26,6 +27,7 @@ describe("measureFieldLabel", () => {
 
   it("uses the expected human labels", () => {
     expect(measureFieldLabel("amount")).toBe("Amount");
+    expect(measureFieldLabel("net_amount")).toBe("Net");
     expect(measureFieldLabel("id")).toBe("Row count");
     expect(measureFieldLabel("category_id")).toBe("Category");
     expect(measureFieldLabel("account_id")).toBe("Account");

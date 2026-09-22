@@ -15,14 +15,15 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import case, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.transaction import Transaction, TransactionType
+from app.models.transaction import Transaction
 from app.services import cc_forecast_service as ccf
 from app.services.transaction_filters import (
     balance_contribution_filter,
     effective_period_date_expr,
+    signed_amount_expr,
 )
 
 
@@ -62,10 +63,7 @@ async def load_cc_ledgers(
         return {}
 
     eff_date = effective_period_date_expr()
-    signed = case(
-        (Transaction.type == TransactionType.INCOME, Transaction.amount),
-        else_=-Transaction.amount,
-    )
+    signed = signed_amount_expr()
     conditions = [
         Transaction.org_id == org_id,
         Transaction.account_id.in_(account_ids),

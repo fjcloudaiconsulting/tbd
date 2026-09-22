@@ -36,6 +36,9 @@ export type Aggregation = "sum" | "count" | "avg" | "distinct";
 
 export type MeasureField =
   | "amount"
+  // Signed income-minus-expense sum (TBD-553); "amount" stays an unsigned
+  // magnitude, this is an additive nominal field, not a re-signing.
+  | "net_amount"
   | "id"
   | "category_id"
   | "account_id"

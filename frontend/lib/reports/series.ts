@@ -70,6 +70,7 @@ export function dimensionHeader(key: string): string {
  */
 export const MEASURE_FIELD_LABELS: Record<MeasureField, string> = {
   amount: "Amount",
+  net_amount: "Net",
   id: "Row count",
   category_id: "Category",
   account_id: "Account",

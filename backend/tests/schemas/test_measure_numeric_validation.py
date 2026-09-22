@@ -31,4 +31,9 @@ def test_numeric_measure_field_set_is_pinned():
         MeasureField.UTILIZATION_PCT,
         MeasureField.OUTSTANDING,
         MeasureField.CREDIT_LIMIT,
+        # TBD-553. Unlike its nominal siblings above, net_amount really is
+        # additive (SUM over a signed CASE) -- it needs to be here so
+        # sum(net_amount) passes this gate; avg/count on it are refused by
+        # TransactionsSource.validate()'s _DECLARED_AGG, not here.
+        MeasureField.NET_AMOUNT,
     }

@@ -4,7 +4,7 @@ from decimal import Decimal
 import structlog
 from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import and_, case, delete, func, or_, select, union_all
+from sqlalchemy import and_, delete, func, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -12,7 +12,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.billing import BillingPeriod
 from app.models.settings import OrgSetting
-from app.models.transaction import Transaction, TransactionStatus, TransactionType
+from app.models.transaction import Transaction, TransactionStatus
 from app.models.user import Organization, Role, User
 from app.rate_limit import get_client_ip
 from app.schemas.billing_roster import (
@@ -51,6 +51,7 @@ from app.services.settings_service import (
 from app.services.transaction_filters import (
     org_currency_filter,
     reportable_transaction_filter,
+    signed_amount_expr,
 )
 
 logger = structlog.stdlib.get_logger()
@@ -665,10 +666,7 @@ async def _roster_settled_net(
 
     One-sided when `counting_through` is null, exactly as the count above.
     """
-    signed = case(
-        (Transaction.type == TransactionType.INCOME, Transaction.amount),
-        else_=-Transaction.amount,
-    )
+    signed = signed_amount_expr()
     stmt = select(func.coalesce(func.sum(signed), 0)).where(
         Transaction.org_id == org_id,
         reportable_transaction_filter(),

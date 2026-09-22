@@ -80,6 +80,13 @@
         "agg": "count",
         "field": "id",
         "format": "number"
+      },
+      {
+        "key": "sum_net_amount",
+        "label": "Net",
+        "agg": "sum",
+        "field": "net_amount",
+        "format": "currency"
       }
     ],
     "filters": [

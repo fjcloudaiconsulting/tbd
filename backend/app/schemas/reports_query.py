@@ -66,6 +66,10 @@ NUMERIC_MEASURE_FIELDS = {
     MeasureField.UTILIZATION_PCT,
     MeasureField.OUTSTANDING,
     MeasureField.CREDIT_LIMIT,
+    # TBD-553. Without this, ``sum(net_amount)`` 422s here before
+    # ``TransactionsSource.validate()`` is ever consulted. ``avg``/``count`` on
+    # it are refused at the source's own ``_DECLARED_AGG`` gate, not here.
+    MeasureField.NET_AMOUNT,
 }
 
 
