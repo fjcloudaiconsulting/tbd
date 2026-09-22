@@ -20,7 +20,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-import structlog.testing
+import structlog.stdlib
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -33,6 +33,66 @@ from app.models.category import Category
 from app.models.user import Organization
 from app.services import billing_service
 from app.services.exceptions import ConflictError, ValidationError
+
+
+class _Recorder:
+    """Collects structlog events instead of rendering them.
+
+    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
+    processor chain on the GLOBAL structlog config — which ``app.main``
+    already replaced by calling ``setup_logging()`` at import, and which
+    other modules in this suite reconfigure without restoring. So whether a
+    ``capture_logs`` fence sees anything depends entirely on what ran before
+    it: green alone, red in a full or parallel run. Same remedy as
+    ``tests/auth/test_anonymous_audit_bounds``.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def _add(self, level: str, event: str, kw: dict) -> None:
+        self.events.append({"event": event, "log_level": level, **kw})
+
+    async def adebug(self, event, **kw):
+        self._add("debug", event, kw)
+
+    async def ainfo(self, event, **kw):
+        self._add("info", event, kw)
+
+    async def awarning(self, event, **kw):
+        self._add("warning", event, kw)
+
+    async def aerror(self, event, **kw):
+        self._add("error", event, kw)
+
+    def debug(self, event, **kw):
+        self._add("debug", event, kw)
+
+    def info(self, event, **kw):
+        self._add("info", event, kw)
+
+    def warning(self, event, **kw):
+        self._add("warning", event, kw)
+
+    def error(self, event, **kw):
+        self._add("error", event, kw)
+
+    def bind(self, **_kw):
+        return self
+
+
+def _record_logs(monkeypatch) -> _Recorder:
+    """Bind a ``_Recorder`` in place of the logger ``billing_service`` builds.
+
+    ⚠ ``billing_service`` does ``import structlog`` INSIDE each function and
+    calls ``structlog.stdlib.get_logger()`` there, so there is no module
+    attribute to bind onto — the factory is the only handle. Unlike
+    ``capture_logs`` this touches no global structlog *configuration*, so it
+    neither depends on nor leaks test order, and ``monkeypatch`` restores it.
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(structlog.stdlib, "get_logger", lambda *a, **k: recorder)
+    return recorder
 
 
 @pytest_asyncio.fixture
@@ -545,7 +605,7 @@ async def test_clamp_target_is_min_start_not_insert_order(session_factory):
 
 @pytest.mark.asyncio
 async def test_straddling_row_is_excluded_from_clamp_selection_and_logged(
-    session_factory,
+    session_factory, monkeypatch,
 ):
     """§5 test 6 — D12.
 
@@ -568,9 +628,9 @@ async def test_straddling_row_is_excluded_from_clamp_selection_and_logged(
         session_factory, org_id, datetime.date(2026, 6, 1), datetime.date(2026, 8, 31)
     )
 
-    with structlog.testing.capture_logs() as logs:
-        async with session_factory() as db:
-            result = await billing_service.close_period(db, org_id, today=_TODAY)
+    logs = _record_logs(monkeypatch).events
+    async with session_factory() as db:
+        result = await billing_service.close_period(db, org_id, today=_TODAY)
 
     ignored = [e for e in logs if e.get("event") == "billing.close.straddling_row_ignored"]
     assert len(ignored) == 1
@@ -590,7 +650,7 @@ async def test_straddling_row_is_excluded_from_clamp_selection_and_logged(
 
 
 @pytest.mark.asyncio
-async def test_duplicate_open_row_is_not_reported_as_straddling(session_factory):
+async def test_duplicate_open_row_is_not_reported_as_straddling(session_factory, monkeypatch):
     """§5 test 6b — D12 excludes `end_date IS NULL`, so a second OPEN row at an
     earlier start is not a straddler. Only `get_current_period`'s own warning
     fires."""
@@ -600,9 +660,9 @@ async def test_duplicate_open_row_is_not_reported_as_straddling(session_factory)
     )
     await _add_period(session_factory, org_id, datetime.date(2026, 6, 25), None)
 
-    with structlog.testing.capture_logs() as logs:
-        async with session_factory() as db:
-            await billing_service.close_period(db, org_id, today=_TODAY)
+    logs = _record_logs(monkeypatch).events
+    async with session_factory() as db:
+        await billing_service.close_period(db, org_id, today=_TODAY)
 
     assert not [
         e for e in logs if e.get("event") == "billing.close.straddling_row_ignored"
@@ -933,7 +993,7 @@ async def test_d5_refreshes_the_budget_snapshot_on_both_rows(
 
 
 @pytest.mark.asyncio
-async def test_revive_emits_the_overwritten_end_date_on_every_revive(session_factory):
+async def test_revive_emits_the_overwritten_end_date_on_every_revive(session_factory, monkeypatch):
     """§5 test 20b — D10's `revived_previous_end`.
 
     Nulling the revived row's `end_date` is chain-close's one irreversible
@@ -951,11 +1011,11 @@ async def test_revive_emits_the_overwritten_end_date_on_every_revive(session_fac
     )
 
     # Unclamped revive: s0 == new_start already, so no clamp fires.
-    with structlog.testing.capture_logs() as logs:
-        async with session_factory() as db:
-            await billing_service.close_period(
-                db, org_id, datetime.date(2026, 7, 24), today=_TODAY
-            )
+    logs = _record_logs(monkeypatch).events
+    async with session_factory() as db:
+        await billing_service.close_period(
+            db, org_id, datetime.date(2026, 7, 24), today=_TODAY
+        )
     assert not [e for e in logs if e.get("event") == "billing.close.clamped"]
     revived = [e for e in logs if e.get("event") == "billing.close.revived"]
     assert len(revived) == 1
@@ -975,11 +1035,11 @@ async def test_revive_emits_the_overwritten_end_date_on_every_revive(session_fac
         session_factory, org_id, datetime.date(2026, 6, 25), datetime.date(2026, 7, 24)
     )
 
-    with structlog.testing.capture_logs() as logs:
-        async with session_factory() as db:
-            await billing_service.close_period(
-                db, org_id, datetime.date(2026, 7, 24), today=_TODAY
-            )
+    logs = _record_logs(monkeypatch).events
+    async with session_factory() as db:
+        await billing_service.close_period(
+            db, org_id, datetime.date(2026, 7, 24), today=_TODAY
+        )
 
     clamped = [e for e in logs if e.get("event") == "billing.close.clamped"]
     assert len(clamped) == 1

@@ -30,7 +30,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.extension import _rate_limit_exceeded_handler
 
-from app import rate_limit
+from app import rate_limit, rate_limit_failopen
 from app.rate_limit_failopen import FailOpenRedisStorage, wrap_limiter_failopen
 
 
@@ -185,32 +185,49 @@ def test_endpoint_returns_200_when_redis_storage_raises(exc):
     assert resp.json() == {"ok": True}
 
 
-def test_degraded_log_event_emitted_with_required_fields(capsys):
+def test_degraded_log_event_emitted_with_required_fields(monkeypatch):
     """Acceptance criterion 2: a structured ``rate_limit.degraded`` warning
     surfaces with ``error_type``, ``path`` (query stripped), and
     ``backend="redis"``. Emitted exactly once per failed request.
+
+    ⚠ Observed by binding a recorder onto the module's own ``logger``, NOT
+    by sampling ``capsys``. Rendered-output sampling made this fence
+    order-dependent: ``app.main`` calls ``setup_logging()`` at import, which
+    puts structlog on the stdlib bridge behind a ``StreamHandler`` holding
+    import-time ``sys.stdout`` — invisible to ``capsys``. It only passed
+    when some earlier file happened to leave structlog at its defaults.
+    Same remedy as ``tests/auth/test_anonymous_audit_bounds``. Asserting the
+    fields directly is also strictly stronger than substring-matching one
+    flattened blob, where ``backend`` and ``redis`` could match different
+    events (or the JSON key names alone).
     """
+    warnings: list[tuple[str, dict]] = []
+
+    class _Recorder:
+        def warning(self, event, **kw):
+            warnings.append((event, kw))
+
+    monkeypatch.setattr(rate_limit_failopen, "logger", _Recorder())
+
     app = _build_app_with_exploding_limiter(RedisTimeoutError("Timeout"))
     with TestClient(app, raise_server_exceptions=False) as client:
         # Include a query string to confirm we strip it from the logged path.
         resp = client.post("/probe?secret=abc")
     assert resp.status_code == 200
 
-    captured = capsys.readouterr()
-    out = captured.out + captured.err
-    # structlog renders JSON when configured by the app; in test context it
-    # may render key=value. Tolerate both shapes — assert on the substrings.
-    assert "rate_limit.degraded" in out, (
-        "expected a rate_limit.degraded log event"
-    )
-    assert "error_type" in out and "TimeoutError" in out
-    assert 'backend' in out and 'redis' in out
-    assert "/probe" in out
-    assert "secret=abc" not in out, (
-        "query string must be stripped from logged path"
-    )
     # Exactly one degraded event per request (no retry spam).
-    assert out.count("rate_limit.degraded") == 1
+    assert [event for event, _ in warnings] == ["rate_limit.degraded"], (
+        f"expected exactly one rate_limit.degraded event, got {warnings!r}"
+    )
+    fields = warnings[0][1]
+    assert fields["error_type"] == "TimeoutError", fields
+    assert fields["backend"] == "redis", fields
+    assert fields["path"] == "/probe", (
+        f"query string must be stripped from logged path, got {fields['path']!r}"
+    )
+    assert "secret=abc" not in repr(fields), (
+        f"query string leaked into the degraded event: {fields!r}"
+    )
 
 
 def test_rate_limit_exceeded_still_raises_429():

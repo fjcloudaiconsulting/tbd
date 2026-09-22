@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -20,6 +21,44 @@ os.environ.setdefault(
     "test-jwt-secret-that-is-long-enough-for-pytest-1234567890",
 )
 os.environ.setdefault("APP_ENV", "development")
+
+# ---------------------------------------------------------------------------
+# Per-xdist-worker Redis isolation (TBD-555).
+#
+# The slowapi ``Limiter`` is a PROCESS-GLOBAL built at import time from
+# ``settings.redis_url``, and under ``TestClient`` the bucket key is the
+# constant ``("testclient", <scope>)``. With ``pytest -n`` every worker would
+# otherwise share one Redis logical DB, so two things break at once: counters
+# from one worker inflate another's, and ``limiter.reset()`` -- the autouse
+# fixture in every rate-limit module -- flushes the counter a boundary test in
+# a *different* worker is halfway through building.
+#
+# Give each worker its own logical DB. Redis ships 16 (0-15); db 0 stays with
+# the non-xdist session. Past 15 workers the DBs wrap and the interference
+# returns, so raise ``databases`` on the Redis service if that day comes.
+#
+# CI leaves ``REDIS_URL`` unset (MemoryStorage, already per-process), so this
+# is a no-op there. It must stay ABOVE any ``app.`` import: ``app.config``
+# reads the env once, at import.
+# ---------------------------------------------------------------------------
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")  # "gw0", "gw1", ...
+if _XDIST_WORKER and os.environ.get("REDIS_URL"):
+    _worker_n = int(_XDIST_WORKER.removeprefix("gw"))
+    # ⚠ FAIL LOUDLY rather than wrap. ``1 + n % 15`` would hand gw15 the same
+    # logical DB as gw0 and silently restore exactly the cross-worker counter
+    # interference this block exists to remove -- as a rare 429 flake in a
+    # boundary test, which is the least debuggable shape it could take.
+    if _worker_n >= 15:
+        raise RuntimeError(
+            f"pytest-xdist worker {_XDIST_WORKER} exceeds the 15 Redis logical "
+            "DBs available for per-worker rate-limiter isolation. Run with "
+            "-n 15 or fewer, or raise `databases` on the Redis service and "
+            "update this guard (backend/tests/conftest.py)."
+        )
+    _worker_db = 1 + _worker_n
+    os.environ["REDIS_URL"] = (
+        re.sub(r"/\d+$", "", os.environ["REDIS_URL"]) + f"/{_worker_db}"
+    )
 
 # Match the production logging.py suppression: ofxtools emits per-row INFO
 # during OFX parses ("Converting <STMTTRN>"). For tests that parse the

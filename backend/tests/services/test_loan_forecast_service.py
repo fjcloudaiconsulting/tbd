@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
+from app.services import loan_forecast_service
 from app.services.loan_forecast_service import (
     due_loan_payment_dates,
     synthesize_account_loan_payment,
@@ -122,22 +123,36 @@ def test_synth_no_date_in_window_noop():
     assert out == []
 
 
-def test_synth_multiple_dates_projects_earliest_only_and_warns():
+def test_synth_multiple_dates_projects_earliest_only_and_warns(monkeypatch):
     # A wide (2-month) window holds two monthly dates; only the earliest is
     # projected AND the >1 case emits the observability warning.
-    from structlog.testing import capture_logs
+    #
+    # ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
+    # processor chain on the GLOBAL structlog config — which ``app.main``
+    # already replaced by calling ``setup_logging()`` at import, and which
+    # other modules in this suite reconfigure without restoring. So whether a
+    # ``capture_logs`` fence sees anything depends entirely on what ran before
+    # it: green alone, red in a full or parallel run. Binding a recorder onto
+    # the module's own ``logger`` is immune to all of it. Same remedy as
+    # ``tests/auth/test_anonymous_audit_bounds``.
+    logs: list[dict] = []
 
-    with capture_logs() as logs:
-        out = synthesize_account_loan_payment(
-            balance=Decimal("-10000.00"),
-            already_paid=False,
-            first_payment_date=datetime.date(2026, 5, 15),
-            term_months=60,
-            pmt=Decimal("232.00"),
-            p_start=datetime.date(2026, 5, 1),
-            p_end=datetime.date(2026, 6, 30),
-            account_id=7,
-        )
+    class _Recorder:
+        def warning(self, event, **kw):
+            logs.append({"event": event, "log_level": "warning", **kw})
+
+    monkeypatch.setattr(loan_forecast_service, "logger", _Recorder())
+
+    out = synthesize_account_loan_payment(
+        balance=Decimal("-10000.00"),
+        already_paid=False,
+        first_payment_date=datetime.date(2026, 5, 15),
+        term_months=60,
+        pmt=Decimal("232.00"),
+        p_start=datetime.date(2026, 5, 1),
+        p_end=datetime.date(2026, 6, 30),
+        account_id=7,
+    )
     assert out == [(datetime.date(2026, 5, 15), Decimal("232.00"))]
     assert any(
         e.get("event") == "loan_forecast.multiple_due_dates_in_window" for e in logs

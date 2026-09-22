@@ -37,7 +37,6 @@ from unittest.mock import patch
 import jwt as pyjwt
 import pytest
 import pytest_asyncio
-import structlog
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
@@ -55,6 +54,7 @@ from app.deps import get_session_factory
 from app.models import Base
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
+from app.routers import auth as auth_module
 from app.routers.auth import router as auth_router
 from app.security import create_refresh_token, hash_password
 
@@ -62,6 +62,41 @@ from tests.conftest import set_refresh_cookie
 
 
 PASSWORD = "starting-password-1"
+
+
+class _LogRecorder:
+    """Collects structlog events emitted on ``app.routers.auth._LOGGER``.
+
+    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
+    processor chain on the GLOBAL structlog config — which ``app.main``
+    already replaced by calling ``setup_logging()`` at import, and which
+    other modules in this suite reconfigure without restoring. So whether a
+    ``capture_logs`` fence sees anything depends entirely on what ran before
+    it: green alone, red in a full or parallel run. Binding onto the
+    module's own logger is immune to all of it. Same remedy as
+    ``tests/auth/test_anonymous_audit_bounds``.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    def _add(self, level: str, event: str, kw: dict[str, Any]) -> None:
+        self.events.append({"event": event, "log_level": level, **kw})
+
+    def debug(self, event: str, **kw: Any) -> None:
+        self._add("debug", event, kw)
+
+    def info(self, event: str, **kw: Any) -> None:
+        self._add("info", event, kw)
+
+    def warning(self, event: str, **kw: Any) -> None:
+        self._add("warning", event, kw)
+
+    def error(self, event: str, **kw: Any) -> None:
+        self._add("error", event, kw)
+
+    def bind(self, **_kw: Any) -> "_LogRecorder":
+        return self
 
 
 @pytest_asyncio.fixture
@@ -511,7 +546,7 @@ class TestNoRedisWriteOnCatchup:
 class TestMissingSuccessorFailsClosed:
     @pytest.mark.asyncio
     async def test_missing_successor_jti_logs_and_401s(
-        self, session_factory
+        self, session_factory, monkeypatch
     ) -> None:
         """Grace row exists but doesn't carry ``successor_jti`` (data
         corruption / future migration / handcrafted row). Helper must
@@ -531,13 +566,16 @@ class TestMissingSuccessorFailsClosed:
         client._sets[f"auth:session:by_sid:{sid}"].add(old_jti)
         token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
 
+        recorder = _LogRecorder()
+        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
+
         app = _make_app(session_factory)
-        with structlog.testing.capture_logs() as captured:
-            with TestClient(app) as cli:
-                set_refresh_cookie(cli, token)
-                res = cli.post(
-                    "/api/v1/auth/refresh"
-                )
+        with TestClient(app) as cli:
+            set_refresh_cookie(cli, token)
+            res = cli.post(
+                "/api/v1/auth/refresh"
+            )
+        captured = recorder.events
         assert res.status_code == 401
         # Reason log emitted.
         rejection_logs = [
@@ -560,7 +598,7 @@ class TestMissingSuccessorFailsClosed:
 
     @pytest.mark.asyncio
     async def test_successor_not_in_family_set_logs_and_401s(
-        self, session_factory
+        self, session_factory, monkeypatch
     ) -> None:
         """P2 architect addition: PR #308 made family-set membership the
         authoritative revocation contract. Successor primary row alive
@@ -596,13 +634,16 @@ class TestMissingSuccessorFailsClosed:
         client._sets[f"auth:session:by_sid:{sid}"].add(old_jti)
         token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
 
+        recorder = _LogRecorder()
+        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
+
         app = _make_app(session_factory)
-        with structlog.testing.capture_logs() as captured:
-            with TestClient(app) as cli:
-                set_refresh_cookie(cli, token)
-                res = cli.post(
-                    "/api/v1/auth/refresh"
-                )
+        with TestClient(app) as cli:
+            set_refresh_cookie(cli, token)
+            res = cli.post(
+                "/api/v1/auth/refresh"
+            )
+        captured = recorder.events
         assert res.status_code == 401
         rejection_logs = [
             ev for ev in captured
@@ -623,7 +664,7 @@ class TestMissingSuccessorFailsClosed:
 
     @pytest.mark.asyncio
     async def test_successor_primary_missing_logs_and_401s(
-        self, session_factory
+        self, session_factory, monkeypatch
     ) -> None:
         """Grace row carries ``successor_jti`` but the successor
         primary row is GONE (the successor was itself rotated past
@@ -649,13 +690,16 @@ class TestMissingSuccessorFailsClosed:
         client._sets[f"auth:session:by_sid:{sid}"].add(old_jti)
         token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
 
+        recorder = _LogRecorder()
+        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
+
         app = _make_app(session_factory)
-        with structlog.testing.capture_logs() as captured:
-            with TestClient(app) as cli:
-                set_refresh_cookie(cli, token)
-                res = cli.post(
-                    "/api/v1/auth/refresh"
-                )
+        with TestClient(app) as cli:
+            set_refresh_cookie(cli, token)
+            res = cli.post(
+                "/api/v1/auth/refresh"
+            )
+        captured = recorder.events
         assert res.status_code == 401
         rejection_logs = [
             ev for ev in captured

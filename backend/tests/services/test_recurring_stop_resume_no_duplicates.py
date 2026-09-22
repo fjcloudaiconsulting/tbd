@@ -71,7 +71,6 @@ import datetime
 from decimal import Decimal
 
 import pytest_asyncio
-import structlog.testing
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -84,6 +83,60 @@ from app.models.transaction import Transaction, TransactionType
 from app.schemas.recurring import RecurringUpdate
 from app.services import recurring_service
 from app.services.recurring_service import Frequency
+
+
+class _Recorder:
+    """Collects structlog events instead of rendering them.
+
+    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
+    processor chain on the GLOBAL structlog config — which ``app.main``
+    already replaced by calling ``setup_logging()`` at import, and which
+    other modules in this suite reconfigure without restoring. So whether a
+    ``capture_logs`` fence sees anything depends entirely on what ran before
+    it: green alone, red in a full or parallel run. Binding a recorder onto
+    the module's own ``logger`` is immune to all of it. Same remedy as
+    ``tests/auth/test_anonymous_audit_bounds``.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def _add(self, level: str, event: str, kw: dict) -> None:
+        self.events.append({"event": event, "log_level": level, **kw})
+
+    async def adebug(self, event, **kw):
+        self._add("debug", event, kw)
+
+    async def ainfo(self, event, **kw):
+        self._add("info", event, kw)
+
+    async def awarning(self, event, **kw):
+        self._add("warning", event, kw)
+
+    async def aerror(self, event, **kw):
+        self._add("error", event, kw)
+
+    def debug(self, event, **kw):
+        self._add("debug", event, kw)
+
+    def info(self, event, **kw):
+        self._add("info", event, kw)
+
+    def warning(self, event, **kw):
+        self._add("warning", event, kw)
+
+    def error(self, event, **kw):
+        self._add("error", event, kw)
+
+    def bind(self, **_kw):
+        return self
+
+
+def _record_logs(monkeypatch) -> _Recorder:
+    """Bind a ``_Recorder`` onto ``recurring_service``'s module-level ``logger``."""
+    recorder = _Recorder()
+    monkeypatch.setattr(recurring_service, "logger", recorder)
+    return recorder
 
 
 @pytest_asyncio.fixture
@@ -444,7 +497,7 @@ async def test_reanchor_target_is_the_orgs_cycle_start_not_the_first_of_the_mont
     )
 
 
-async def test_reanchor_cap_exhaustion_is_not_silent(db_session):
+async def test_reanchor_cap_exhaustion_is_not_silent(db_session, monkeypatch):
     """FENCE — the ``_MAX_FRONTIER_ADVANCE_STEPS`` arm logs (N6).
 
     On exhaustion the loop falls through, the caller commits, and the template
@@ -462,8 +515,8 @@ async def test_reanchor_cap_exhaustion_is_not_silent(db_session):
     )
     await recurring_service.stop_recurring(db_session, seed["org_id"], seed["template_id"])
 
-    with structlog.testing.capture_logs() as logs:
-        await _resume(db_session, seed, at=T1)
+    logs = _record_logs(monkeypatch).events
+    await _resume(db_session, seed, at=T1)
 
     tpl = await _template(db_session, seed["template_id"])
     assert tpl.next_due_date < P_START_AT_T1, (
