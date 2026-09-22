@@ -30,15 +30,17 @@ describe("widget-config control constants", () => {
     }
   });
 
-  it("exposes the ten expected dimension keys in order", () => {
-    // ``currency`` joined in TBD-507, when the transactions source began
-    // publishing it. This list is the CATALOG-COLD fallback and its comment
-    // calls it "transactions-shaped", so it has to follow that catalog.
+  it("exposes the eleven expected dimension keys in order", () => {
+    // ``currency`` joined in TBD-507 and ``account_type`` in TBD-471, as the
+    // transactions source began publishing each. This list is the CATALOG-COLD
+    // fallback and its comment calls it "transactions-shaped", so it has to
+    // follow that catalog.
     expect(DIMENSION_OPTIONS.map((o) => o.value)).toEqual([
       "category",
       "category_master",
       "account",
       "currency",
+      "account_type",
       "tag",
       "txn_type",
       "status",

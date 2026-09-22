@@ -30,7 +30,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.account import Account
+from app.models.account import Account, AccountType
 from app.models.category import Category
 from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
@@ -52,6 +52,7 @@ from app.services.transaction_filters import (
     effective_period_date_expr,
     non_reverted_transaction_filter,
     org_currency_filter,
+    reciprocal_transfer_filter,
     reportable_transaction_filter,
 )
 
@@ -67,6 +68,7 @@ _DIM_KEYS: dict[Dimension, str] = {
     Dimension.CATEGORY_MASTER: "category_master",
     Dimension.ACCOUNT: "account",
     Dimension.CURRENCY: "currency",
+    Dimension.ACCOUNT_TYPE: "account_type",
     Dimension.TAG: "tag",
     Dimension.TXN_TYPE: "txn_type",
     Dimension.STATUS: "status",
@@ -117,6 +119,14 @@ def _dimension_expr(dim: Dimension, dialect_name: str):
         return Account.name
     if dim is Dimension.CURRENCY:
         return _currency_key()
+    if dim is Dimension.ACCOUNT_TYPE:
+        # ⚠ ``AccountType.name``, never ``slug``. ``routers/account_types.py``
+        # never assigns a slug, so every user-created type has ``slug IS NULL``
+        # and a slug-keyed report silently returns 0.00 for them. Same choice
+        # ``reports/sources/accounts.py`` already made; do not diverge.
+        # ⚠ Two same-named types collapse into one bar. That is a pre-existing
+        # property of the accounts source, inherited here for consistency.
+        return AccountType.name
     if dim is Dimension.TAG:
         return Tag.name
     if dim is Dimension.TXN_TYPE:
@@ -305,6 +315,46 @@ def _currency_mode(ast: ReportsQuery) -> str:
     return _PARTITIONED if len(selected) == 1 else _MIXED
 
 
+def _asks_for_transfers(ast: ReportsQuery) -> bool:
+    """Did the caller explicitly ask to SEE transfer legs? (TBD-471)"""
+    return any(
+        f.field is FilterField.TRANSFER and f.value is True for f in ast.filters
+    )
+
+
+def _reportability_base(ast: ReportsQuery):
+    """The ONE base reportability clause for this query.
+
+    By default Reports exclude transfer legs, manual balance adjustments and
+    reverted reconciliation rows, so a transactions report matches Budgets /
+    Forecast / Sankey. ``include_non_reportable`` is the shipped opt-in that
+    re-includes the first two.
+
+    ⚠⚠ ``transfer=true`` MUST ALSO PROMOTE THE BASE, and this is the whole
+    reason this is a named function rather than an ``if`` at the call site.
+    ``reportable_transaction_filter()``'s first term is
+    ``linked_transaction_id IS NULL``; conjoined with a filter that demands a
+    reciprocal link it is UNSATISFIABLE -- zero rows, no error, no warning.
+    That is the same silent-empty defect the dead ``Type = Transfer`` checkbox
+    already ships, and reproducing it while fixing it would be absurd.
+
+    ⚠ The precedent is ``_currency_mode`` above, one ticket old: an EXPLICIT
+    request stands a DEFENSIVE DEFAULT down, decided in one place, from the AST
+    alone. The alternative shapes were both rejected in review -- an inline
+    ``or`` bolted onto the call site (an invisible cross-field coupling nobody
+    reading a saved widget's JSON could find) and a 422 refusing the pair
+    (which refuses the one query this ticket exists to enable; the default
+    exists only to say "unless asked", and ticking "only transfers" IS asking).
+
+    ⚠ It reads BOTH inputs. A refactor that keys the base on the transfer
+    filter alone breaks the shipped ``include_non_reportable`` toggle, which is
+    an independent request; G2 fences that direction.
+    """
+    if ast.include_non_reportable or _asks_for_transfers(ast):
+        return non_reverted_transaction_filter()
+    return reportable_transaction_filter()
+
+
 def _apply_currency_filter(stmt: Select, f: Filter, org_id: int) -> Select:
     """Filter to transactions on accounts denominated in the given currency.
 
@@ -457,8 +507,18 @@ def compile_ast_to_query(
     # every row by the org's account count. ``or`` rather than a second
     # ``.join()`` because joining the same table twice raises at compile time
     # for ACCOUNT + CURRENCY together, which is an ordinary query.
-    if Dimension.ACCOUNT in requested or Dimension.CURRENCY in requested:
+    if (
+        Dimension.ACCOUNT in requested
+        or Dimension.CURRENCY in requested
+        or Dimension.ACCOUNT_TYPE in requested
+    ):
         stmt = stmt.join(Account, Account.id == Transaction.account_id)
+    # ⚠ CHAINED off the Account join, never added as a second independent one:
+    # joining ``accounts`` twice raises at compile time, and ACCOUNT +
+    # ACCOUNT_TYPE together is an ordinary pick (MAX_DIMENSIONS is 2).
+    # INNER is safe -- ``Account.account_type_id`` is NOT NULL.
+    if Dimension.ACCOUNT_TYPE in requested:
+        stmt = stmt.join(AccountType, AccountType.id == Account.account_type_id)
     if Dimension.TAG in requested:
         stmt = stmt.join(
             TransactionTag, TransactionTag.transaction_id == Transaction.id
@@ -478,10 +538,9 @@ def compile_ast_to_query(
     # ``balance_contribution_filter()``'s one-way-link arm (TBD-470).
     # This compiler only ever builds on ``Transaction`` (the transactions
     # source), so the clause is transactions-scoped by construction.
-    if ast.include_non_reportable:
-        stmt = stmt.where(non_reverted_transaction_filter())
-    else:
-        stmt = stmt.where(reportable_transaction_filter())
+    # ⚠ TBD-471: ONE function decides this, and it reads the transfer filter as
+    # well as ``include_non_reportable``. See ``_reportability_base``.
+    stmt = stmt.where(_reportability_base(ast))
 
     # TBD-325 PR 2, as amended by TBD-507. Currency lives only on
     # ``accounts.currency``, so an unscoped ``SUM(amount)`` here adds EUR to USD
@@ -526,6 +585,21 @@ def compile_ast_to_query(
             stmt = _apply_tag_filter(stmt, f, org_id)
         elif f.field is FilterField.CURRENCY:
             stmt = _apply_currency_filter(stmt, f, org_id)
+        elif f.field is FilterField.TRANSFER:
+            # ⚠ RAISE, never fall through to ``eq`` -- the same rule
+            # ``_apply_currency_filter`` states above, and it bites HARDER here.
+            # The catalog publishes ``("eq",)`` so nothing else reaches this
+            # today, but if the tuple is ever widened to ``("eq","in")`` then
+            # ``f.value`` becomes a LIST: truthy, so the clause applies, while
+            # ``_asks_for_transfers`` tests ``is True`` and is False for a list,
+            # so the base does NOT stand down -- giving
+            # ``link IS NULL AND EXISTS(reciprocal)``, unsatisfiable, zero rows,
+            # no error. That is this ticket's own defect class, reintroduced.
+            if f.op is not FilterOp.EQ:
+                raise ValueError(f"transfer: unsupported op {f.op.value!r}")
+            # ``_coerce_filter_scalar`` has already reduced the value to a bool.
+            clause = reciprocal_transfer_filter()
+            stmt = stmt.where(clause if f.value else ~clause)
         else:
             stmt = _apply_scalar_filter(stmt, f)
 

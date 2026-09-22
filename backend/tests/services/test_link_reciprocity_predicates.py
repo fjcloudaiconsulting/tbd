@@ -17,6 +17,21 @@ The fences here:
   fence turns RED if the divergence ever disappears -- a non-strict
   xfail would pass silently and be decoration.
 
+⚠ A THIRD IMPLEMENTATION OF THE RULE EXISTS AND IS **NOT** FENCED HERE.
+TBD-471 added ``transaction_filters.reciprocal_transfer_filter()`` -- the SQL
+twin of ``is_reciprocal_pair``, and the first member of the family that SELECTS
+transfer legs instead of excluding them. It is fenced in
+``tests/services/test_reports_transfer_axis.py`` (F1, compiled uncomposed).
+
+It has **no Python sibling**, so there is no F17-style parity fence for it, and
+that asymmetry is deliberate rather than an oversight: ``is_reciprocal_pair``
+takes two ORM instances a caller already holds, while the SQL clause runs over
+rows nobody has loaded, so a parity harness would have to reimplement one side
+to compare them. ⚠ If a Python sibling is ever written, it needs an F17-style
+parity fence including the self-link cell -- that is the cell where this clause
+diverges from the frozen ``balance_contribution_filter``, and copying that
+function's EXISTS verbatim is the mutant it exists to stop.
+
 No fixture here relies on id ``1``: every transaction is seeded with an
 explicit id in the 7000 range.
 """
