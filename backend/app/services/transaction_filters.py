@@ -1,9 +1,15 @@
-"""Filters and predicates about transfer legs and balance contribution.
+"""Shared SQL predicates and expressions over ``Transaction``.
 
 ⚠ The module used to be described as "transfer-leg EXCLUSION". Since TBD-471 it
 also holds a transfer-leg **inclusion** clause (``reciprocal_transfer_filter``),
-so read the heading as "predicates ABOUT transfer legs" -- some exclude, one
+so read that family as "predicates ABOUT transfer legs" -- some exclude, one
 selects, and two of them do so with deliberately OPPOSITE failure polarities.
+
+⚠ Since TBD-553 the module is not only about transfer legs and balance
+contribution. ``signed_amount_expr`` is an EXPRESSION, not a filter, and is
+about sign direction rather than row membership. It lives here because it is
+shared across a router, two services and a report source, and this module is
+already the common low-level home each of them imports.
 
 Lives in its own module to avoid a circular import with category_rules_service,
 which already imports from transaction_service.
@@ -28,11 +34,11 @@ Excluded from reportable aggregates:
 Future-proofed to grow additional reasons (voided, refunded) without
 renaming call sites.
 """
-from sqlalchemy import and_, exists, func, or_, select, true
+from sqlalchemy import and_, case, exists, func, or_, select, true
 from sqlalchemy.orm import aliased
 
 from app.models.account import Account
-from app.models.transaction import Transaction
+from app.models.transaction import Transaction, TransactionType
 
 
 # L3.2 Wave 2B (PR #247 P1): states whose rows are excluded from
@@ -55,6 +61,27 @@ _bcf_partner = aliased(Transaction)
 # TBD-471. A SEPARATE alias from ``_bcf_partner``: a ``transfer=true`` query
 # carries both clauses, so sharing one alias would collide in the rendered SQL.
 _rtf_partner = aliased(Transaction)
+
+
+def signed_amount_expr():
+    """+``amount`` for INCOME, -``amount`` for EXPENSE (TBD-553).
+
+    ``Transaction.amount`` is an unsigned magnitude; direction lives in
+    ``type``. This CASE existed verbatim three times before this function --
+    ``routers/settings.py`` (inside ``func.sum``), ``cc_statement_service.py``
+    (bare, projected as a column), ``reports/sources/networth.py`` (inside
+    ``func.sum``) -- with identical polarity at every site, so one helper
+    returning the bare expression fits all three unchanged. Unlike the
+    ``reciprocal_transfer_filter`` / ``balance_contribution_filter`` pair,
+    there is no split here: every existing site hands a non-INCOME row
+    ``-amount`` via ``else_``, including transfer legs (which are typed
+    INCOME/EXPENSE by direction; ``TransactionType.TRANSFER`` is unused on
+    legs), so this function pins that ``else_`` behaviour and nothing more.
+    """
+    return case(
+        (Transaction.type == TransactionType.INCOME, Transaction.amount),
+        else_=-Transaction.amount,
+    )
 
 
 def reportable_transaction_filter():

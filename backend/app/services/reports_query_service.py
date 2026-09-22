@@ -54,6 +54,7 @@ from app.services.transaction_filters import (
     org_currency_filter,
     reciprocal_transfer_filter,
     reportable_transaction_filter,
+    signed_amount_expr,
 )
 
 
@@ -448,6 +449,9 @@ def _measure_expr(measure: Measure):
         MeasureField.ID: Transaction.id,
         MeasureField.CATEGORY_ID: Transaction.category_id,
         MeasureField.ACCOUNT_ID: Transaction.account_id,
+        # TBD-553. A col_map ROW, not a branch before the lookup: the entry
+        # exists, so there is no KeyError/500 path to order around.
+        MeasureField.NET_AMOUNT: signed_amount_expr(),
     }
     col = col_map[field]
     if agg is Aggregation.SUM:

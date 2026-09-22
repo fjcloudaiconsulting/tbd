@@ -107,7 +107,7 @@ def get_report_templates() -> list[dict]:
                     "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
                     "config": {
                         "dataset": "transactions",
-                        "measure": _measure("sum"),
+                        "measure": _measure("sum", "net_amount"),
                     },
                 },
                 {
@@ -153,8 +153,9 @@ def get_report_templates() -> list[dict]:
                     "grid": {"x": 6, "y": 2, "w": 6, "h": 4},
                     "config": {
                         "dataset": "transactions",
-                        "measures": [_series("sum", "Net")],
+                        "measures": [_series("sum", "Net", "net_amount")],
                         "dimensions": ["day"],
+                        "sort": {"by": "dimension", "dir": "asc"},
                     },
                 },
             ],
@@ -163,8 +164,13 @@ def get_report_templates() -> list[dict]:
     {
         "key": "cash_flow_trend",
         "name": "Cash flow trend",
+        # ⚠ TBD-553: this sentence describes ``cft-kpi-avg-net``, which is a
+        # 12-month TOTAL, not an average -- ``avg(amount)`` averaged over ROWS
+        # (mean transaction size), never over months, and the compiler has no
+        # divide to express avg-over-months. Saying "average" here would
+        # re-create the exact defect this ticket removed from the "Net" tile.
         "description": (
-            "Average monthly net over the trailing year and net by month."
+            "Net over the trailing year and net by month."
         ),
         "canvas_filters_json": {"date_range": last_12_months},
         "layout_json": {
@@ -173,11 +179,11 @@ def get_report_templates() -> list[dict]:
                 {
                     "id": "cft-kpi-avg-net",
                     "type": "kpi",
-                    "title": "Avg monthly net (12mo)",
+                    "title": "Net (12 mo)",
                     "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
                     "config": {
                         "dataset": "transactions",
-                        "measure": _measure("avg"),
+                        "measure": _measure("sum", "net_amount"),
                     },
                 },
                 {
@@ -187,8 +193,9 @@ def get_report_templates() -> list[dict]:
                     "grid": {"x": 0, "y": 2, "w": 12, "h": 4},
                     "config": {
                         "dataset": "transactions",
-                        "measures": [_series("sum", "Net")],
+                        "measures": [_series("sum", "Net", "net_amount")],
                         "dimensions": ["month"],
+                        "sort": {"by": "dimension", "dir": "asc"},
                     },
                 },
             ],
@@ -364,7 +371,7 @@ def get_report_templates() -> list[dict]:
                     "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
                     "config": {
                         "dataset": "transactions",
-                        "measure": _measure("sum"),
+                        "measure": _measure("sum", "net_amount"),
                     },
                 },
                 {

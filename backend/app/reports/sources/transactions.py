@@ -14,7 +14,7 @@ from app.reports.sources.base import (
     ReportSource, SourceDimension, SourceFilter, SourceMeasure,
     validate_against_catalog,
 )
-from app.schemas.reports_query import ReportsQuery
+from app.schemas.reports_query import Aggregation, MeasureField, ReportsQuery
 from app.services.reports_query_service import execute_query
 
 _DIMENSIONS = [
@@ -35,7 +35,24 @@ _MEASURES = [
     SourceMeasure("sum_amount", "Total amount", "sum", "amount", "currency"),
     SourceMeasure("avg_amount", "Average amount", "avg", "amount", "currency"),
     SourceMeasure("count_rows", "Transaction count", "count", "id", "number"),
+    # TBD-553. ADDITIVE, not a re-signing of ``sum_amount`` -- see
+    # ``signed_amount_expr`` / ``MeasureField.NET_AMOUNT`` for why. Only
+    # ``sum`` is coherent over it; see ``_DECLARED_AGG`` below.
+    SourceMeasure("sum_net_amount", "Net", "sum", "net_amount", "currency"),
 ]
+
+# The declared agg for the one field this source restricts. ⚠ NOT exhaustive
+# over every published (field, agg) pair -- unlike credit_utilization's
+# mapping, that shape is inexpressible here: ``_DECLARED_AGG`` maps
+# field -> ONE Aggregation, and this source publishes BOTH ``sum_amount`` and
+# ``avg_amount`` over ``amount``, so whichever agg were chosen for AMOUNT
+# would 422 the other published measure. ``count(amount)`` / ``avg(id)`` have
+# been unreachable from the editor since TBD-402 and survive only in
+# pre-TBD-402 saved layouts, which ``UNSUPPORTED_MEASURE_KEY`` deliberately
+# renders-and-flags rather than breaks.
+_DECLARED_AGG = {
+    MeasureField.NET_AMOUNT: Aggregation.SUM,
+}
 
 _FILTERS = [
     SourceFilter("date", "Date", ("between", "gte", "lte"), "time"),
@@ -75,6 +92,14 @@ class TransactionsSource:
 
     def validate(self, query: ReportsQuery) -> None:
         validate_against_catalog(self, query)
+
+        declared = _DECLARED_AGG.get(query.measure.field)
+        if declared is not None and query.measure.agg is not declared:
+            raise ValueError(
+                f"source 'transactions' measure "
+                f"{query.measure.field.value!r} must use agg "
+                f"{declared.value!r}, not {query.measure.agg.value!r}"
+            )
 
     async def build_rows(
         self, db: AsyncSession, org_id: int, query: ReportsQuery
