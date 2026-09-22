@@ -19,7 +19,6 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
-import structlog
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
@@ -37,12 +36,48 @@ from app.deps import get_session_factory
 from app.models import Base
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
+from app.routers import auth as auth_module
 from app.routers.auth import router as auth_router
 from app.security import hash_password
 from tests.conftest import issue_test_refresh_token, set_refresh_cookie
 
 
 PASSWORD = "starting-password-1"
+
+
+class _LogRecorder:
+    """Collects structlog events emitted on ``app.routers.auth._LOGGER``.
+
+    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
+    processor chain on the GLOBAL structlog config — which ``app.main``
+    already replaced by calling ``setup_logging()`` at import, and which
+    other modules in this suite reconfigure without restoring. So whether a
+    ``capture_logs`` fence sees anything depends entirely on what ran before
+    it: green alone, red in a full or parallel run. Binding onto the
+    module's own logger is immune to all of it. Same remedy as
+    ``tests/auth/test_anonymous_audit_bounds``.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    def _add(self, level: str, event: str, kw: dict[str, Any]) -> None:
+        self.events.append({"event": event, "log_level": level, **kw})
+
+    def debug(self, event: str, **kw: Any) -> None:
+        self._add("debug", event, kw)
+
+    def info(self, event: str, **kw: Any) -> None:
+        self._add("info", event, kw)
+
+    def warning(self, event: str, **kw: Any) -> None:
+        self._add("warning", event, kw)
+
+    def error(self, event: str, **kw: Any) -> None:
+        self._add("error", event, kw)
+
+    def bind(self, **_kw: Any) -> "_LogRecorder":
+        return self
 
 
 @pytest_asyncio.fixture
@@ -231,23 +266,26 @@ class TestRefreshRejectedLogging:
     ``jti_h`` / ``sid_h`` are 8-char SHA-256 prefixes; raw ``jti``/
     ``sid`` are NEVER logged.
 
-    Uses ``structlog.testing.capture_logs()`` (NOT pytest ``caplog``)
-    because the app's structlog setup uses native structlog renderers
-    rather than the stdlib bridge, so ``caplog.records`` doesn't see
-    our events.
+    Observed by binding ``_LogRecorder`` onto ``auth._LOGGER`` (NOT pytest
+    ``caplog``, which cannot see native structlog renderers, and NOT
+    ``structlog.testing.capture_logs()`` — see ``_LogRecorder``'s docstring
+    for why that one is order-dependent).
     """
 
     @pytest.mark.asyncio
     async def test_invalid_token_logs_reason(
-        self, session_factory
+        self, session_factory, monkeypatch
     ) -> None:
+        recorder = _LogRecorder()
+        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
+
         app = _make_app(session_factory)
-        with structlog.testing.capture_logs() as captured:
-            with TestClient(app) as client:
-                set_refresh_cookie(client, "not.a.jwt")
-                res = client.post(
-                    "/api/v1/auth/refresh"
-                )
+        with TestClient(app) as client:
+            set_refresh_cookie(client, "not.a.jwt")
+            res = client.post(
+                "/api/v1/auth/refresh"
+            )
+        captured = recorder.events
         assert res.status_code == 401
         rejection_logs = [
             ev for ev in captured if ev.get("event") == "auth.refresh.rejected"
@@ -259,7 +297,7 @@ class TestRefreshRejectedLogging:
 
     @pytest.mark.asyncio
     async def test_missing_jti_sid_logs_reason(
-        self, session_factory
+        self, session_factory, monkeypatch
     ) -> None:
         """A refresh JWT without ``jti``/``sid`` (legacy from before
         PR #306) logs ``missing_jti_or_sid``."""
@@ -281,13 +319,16 @@ class TestRefreshRejectedLogging:
             algorithm=app_settings.jwt_algorithm,
         )
 
+        recorder = _LogRecorder()
+        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
+
         app = _make_app(session_factory)
-        with structlog.testing.capture_logs() as captured:
-            with TestClient(app) as client:
-                set_refresh_cookie(client, legacy_token)
-                res = client.post(
-                    "/api/v1/auth/refresh"
-                )
+        with TestClient(app) as client:
+            set_refresh_cookie(client, legacy_token)
+            res = client.post(
+                "/api/v1/auth/refresh"
+            )
+        captured = recorder.events
         assert res.status_code == 401
         rejection_logs = [
             ev for ev in captured
@@ -302,7 +343,7 @@ class TestRefreshRejectedLogging:
 
     @pytest.mark.asyncio
     async def test_log_event_never_contains_raw_jti_or_sid(
-        self, session_factory
+        self, session_factory, monkeypatch
     ) -> None:
         """PII guard: raw jti and sid values must NEVER appear in any
         captured log event. Only the 8-char hash prefix is allowed."""
@@ -317,13 +358,16 @@ class TestRefreshRejectedLogging:
             seed["user_id"], ttl_seconds=3600
         )
 
+        recorder = _LogRecorder()
+        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
+
         app = _make_app(session_factory)
-        with structlog.testing.capture_logs() as captured:
-            with TestClient(app) as client:
-                set_refresh_cookie(client, token)
-                res = client.post(
-                    "/api/v1/auth/refresh"
-                )
+        with TestClient(app) as client:
+            set_refresh_cookie(client, token)
+            res = client.post(
+                "/api/v1/auth/refresh"
+            )
+        captured = recorder.events
         assert res.status_code == 401
 
         # Confirm we hit a redacted-log path.
@@ -356,17 +400,20 @@ class TestRefreshRejectedLogging:
 
     @pytest.mark.asyncio
     async def test_no_refresh_token_logs_reason(
-        self, session_factory
+        self, session_factory, monkeypatch
     ) -> None:
         """Empty cookie header → ``no_refresh_token`` log event. This
         is the diagnostic the 2026-05-19 overnight incident needs:
         when the browser stops sending the refresh cookie, ops can
         distinguish "cookie missing" from "cookie present but
         invalid"."""
+        recorder = _LogRecorder()
+        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
+
         app = _make_app(session_factory)
-        with structlog.testing.capture_logs() as captured:
-            with TestClient(app) as client:
-                res = client.post("/api/v1/auth/refresh")
+        with TestClient(app) as client:
+            res = client.post("/api/v1/auth/refresh")
+        captured = recorder.events
         assert res.status_code == 401
         rejection_logs = [
             ev for ev in captured
@@ -527,12 +574,15 @@ class TestRefreshLuaRotationLogging:
             auth_module, "_rotate_refresh_session", _stub_rotate
         )
 
-        with structlog.testing.capture_logs() as captured:
-            with TestClient(app) as client:
-                set_refresh_cookie(client, token)
-                res = client.post(
-                    "/api/v1/auth/refresh"
-                )
+        recorder = _LogRecorder()
+        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
+
+        with TestClient(app) as client:
+            set_refresh_cookie(client, token)
+            res = client.post(
+                "/api/v1/auth/refresh"
+            )
+        captured = recorder.events
         assert res.status_code == 401
         assert "invalidated" in res.json()["detail"].lower()
 
@@ -588,12 +638,15 @@ class TestRefreshLuaRotationLogging:
             _stub_family_alive,
         )
 
-        with structlog.testing.capture_logs() as captured:
-            with TestClient(app) as client:
-                set_refresh_cookie(client, token)
-                res = client.post(
-                    "/api/v1/auth/refresh"
-                )
+        recorder = _LogRecorder()
+        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
+
+        with TestClient(app) as client:
+            set_refresh_cookie(client, token)
+            res = client.post(
+                "/api/v1/auth/refresh"
+            )
+        captured = recorder.events
         assert res.status_code == 401
 
         rejection_logs = [

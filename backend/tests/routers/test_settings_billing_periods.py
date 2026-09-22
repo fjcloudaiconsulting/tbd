@@ -36,7 +36,7 @@ from unittest import mock
 
 import pytest
 import pytest_asyncio
-import structlog.testing
+import structlog.stdlib
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -58,6 +58,66 @@ from app.models.user import Organization, Role, User
 from app.routers import settings as settings_module
 from app.routers.settings import router as settings_router
 from app.security import hash_password
+
+
+class _Recorder:
+    """Collects structlog events instead of rendering them.
+
+    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
+    processor chain on the GLOBAL structlog config — which ``app.main``
+    already replaced by calling ``setup_logging()`` at import, and which
+    other modules in this suite reconfigure without restoring. So whether a
+    ``capture_logs`` fence sees anything depends entirely on what ran before
+    it: green alone, red in a full or parallel run. Same remedy as
+    ``tests/auth/test_anonymous_audit_bounds``.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def _add(self, level: str, event: str, kw: dict) -> None:
+        self.events.append({"event": event, "log_level": level, **kw})
+
+    async def adebug(self, event, **kw):
+        self._add("debug", event, kw)
+
+    async def ainfo(self, event, **kw):
+        self._add("info", event, kw)
+
+    async def awarning(self, event, **kw):
+        self._add("warning", event, kw)
+
+    async def aerror(self, event, **kw):
+        self._add("error", event, kw)
+
+    def debug(self, event, **kw):
+        self._add("debug", event, kw)
+
+    def info(self, event, **kw):
+        self._add("info", event, kw)
+
+    def warning(self, event, **kw):
+        self._add("warning", event, kw)
+
+    def error(self, event, **kw):
+        self._add("error", event, kw)
+
+    def bind(self, **_kw):
+        return self
+
+
+def _record_logs(monkeypatch) -> _Recorder:
+    """Bind a ``_Recorder`` in place of the logger ``billing_service`` builds.
+
+    ⚠ ``billing_service`` does ``import structlog`` INSIDE each function and
+    calls ``structlog.stdlib.get_logger()`` there, so there is no module
+    attribute to bind onto — the factory is the only handle. Unlike
+    ``capture_logs`` this touches no global structlog *configuration*, so it
+    neither depends on nor leaks test order, and ``monkeypatch`` restores it.
+    """
+    recorder = _Recorder()
+    monkeypatch.setattr(structlog.stdlib, "get_logger", lambda *a, **k: recorder)
+    return recorder
 from app.services import billing_service, budget_service
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
@@ -775,10 +835,10 @@ async def test_clamped_close_audits_the_clamped_and_the_requested_date(
     ids = await _lapsed_roster(session_factory)
     client = TestClient(_make_app(session_factory, ids["owner"]))
 
-    with structlog.testing.capture_logs() as logs:
-        resp = client.post(
-            "/api/v1/settings/billing-period/close?close_date=2026-07-24"
-        )
+    logs = _record_logs(monkeypatch).events
+    resp = client.post(
+        "/api/v1/settings/billing-period/close?close_date=2026-07-24"
+    )
     assert resp.status_code == 200, resp.text
 
     rows = await _audit_rows(session_factory, "org.billing_period.closed")
@@ -1275,11 +1335,11 @@ async def test_ensure_future_periods_logs_the_skip(session_factory, monkeypatch)
         "/api/v1/settings/billing-cycle", json={"billing_cycle_day": 25}
     ).status_code == 200
 
-    with structlog.testing.capture_logs() as logs:
-        async with session_factory() as db:
-            created = await billing_service.ensure_future_periods(
-                db, ids["org"], count=3
-            )
+    logs = _record_logs(monkeypatch).events
+    async with session_factory() as db:
+        created = await billing_service.ensure_future_periods(
+            db, ids["org"], count=3
+        )
 
     assert created == []
     skips = [e for e in logs if e.get("event") == "billing.stub.skipped_overlap"]

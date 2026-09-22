@@ -83,30 +83,48 @@ def test_limiter_uses_redis_storage_when_redis_url_set(monkeypatch):
     )
 
 
-def test_limiter_falls_back_to_memory_when_redis_url_empty(monkeypatch, capsys):
+def test_limiter_falls_back_to_memory_when_redis_url_empty(monkeypatch):
     """When ``settings.redis_url`` is empty (e.g. local dev without
     the compose Redis service), the Limiter keeps the in-memory
     backend and surfaces a warning so the gap is visible in logs.
 
-    structlog writes to stdout via its stdlib bridge, so we sample
-    ``capsys`` (not ``caplog``) to confirm the warning event surfaced.
+    ⚠ The warning is observed by binding a recorder onto the module's own
+    ``logger``, NOT by sampling ``capsys``. Rendered-output sampling made
+    this test order-dependent: ``app.main`` calls ``setup_logging()`` at
+    import, which swaps structlog onto the stdlib bridge with a
+    ``StreamHandler`` holding the ``sys.stdout`` of import time — invisible
+    to ``capsys``, and JSON-rendered rather than ``backend=memory``. It only
+    ever passed because ``tests/test_migrate_script.py`` happens to call
+    ``structlog.reset_defaults()`` and happens to sort immediately before
+    this file. Any run that separates them (``pytest -n``, ``-k``, a rename)
+    turned it red. Same remedy as ``tests/auth/test_anonymous_audit_bounds``.
     """
     monkeypatch.setattr(settings, "redis_url", "")
 
+    warnings: list[tuple[str, dict]] = []
+
+    class _Recorder:
+        def info(self, event, **kw):
+            pass
+
+        def warning(self, event, **kw):
+            warnings.append((event, kw))
+
+    monkeypatch.setattr(rate_limit, "logger", _Recorder())
+
     limiter = rate_limit._build_limiter()
-    captured = capsys.readouterr()
 
     storage = limiter._storage
     assert isinstance(storage, MemoryStorage), (
         f"expected in-memory fallback, got {type(storage).__name__}"
     )
-    # Warning must mention the rate-limit storage event so ops can grep.
-    combined = captured.out + captured.err
-    assert "rate_limit.storage" in combined, (
-        "expected a rate_limit.storage warning when redis_url is empty"
+    # Warning must carry the rate-limit storage event so ops can grep.
+    assert [event for event, _ in warnings] == ["rate_limit.storage"], (
+        f"expected exactly one rate_limit.storage warning, got {warnings!r}"
     )
-    assert "backend=memory" in combined, (
-        "expected the fallback warning to identify backend=memory"
+    assert warnings[0][1]["backend"] == "memory", (
+        f"expected the fallback warning to identify backend=memory, "
+        f"got {warnings[0][1]!r}"
     )
 
 

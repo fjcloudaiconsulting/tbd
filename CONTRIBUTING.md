@@ -468,7 +468,10 @@ Migration files live at `backend/alembic/versions/` and follow sequential number
 Run inside the `backend` container. The dev image installs `requirements-dev.txt` because `INSTALL_DEV=true` is set in `docker-compose.yml`. Production and CI builds keep `INSTALL_DEV=false`.
 
 ```bash
-# Full suite
+# Full suite, in parallel across cores -- this is the one you want
+docker compose exec backend pytest -n 6 --dist loadfile
+
+# Full suite, serial (~6x slower; use when a failure needs clean output)
 docker compose exec backend pytest
 
 # A single module or test
@@ -477,6 +480,23 @@ docker compose exec backend pytest tests/routers/test_auth.py::test_login_happy_
 ```
 
 Do not run `pytest` on the host. Dependencies live in the container.
+
+**Why `-n 6 --dist loadfile`.** The suite is ~4,200 tests with a median of
+0.14s and no hot spot (the fifteen slowest account for 3.6% of the total), so
+the only lever is running them on more than one core. CI already shards across
+six parallel jobs with `pytest-split`; that shards across *machines*, and
+nothing shards across *cores*, so a local run used one of the container's eight
+CPUs and took ~32 minutes.
+
+⚠ **`--dist loadfile` is not optional.** It keeps each file's tests on a single
+worker, preserving within-file order. Some fences here are order-dependent --
+the `capture_logs()` ones are green alone and red in a full run -- and plain
+`--dist load` scatters them across workers, which surfaces as flake rather than
+as a clear failure.
+
+⚠ **CI deliberately does not use `-n`.** The shard count is tuned to the runner
+budget (see the comment above `backend-shard:` in `.github/workflows/test.yml`),
+and `backend/tests/test_ci_shard_config.py` fences it.
 
 If you are working through a parallel agent session, use `-p team-<name>` on every compose call. See [Working in parallel agent sessions](#working-in-parallel-agent-sessions).
 
