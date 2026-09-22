@@ -25,6 +25,8 @@ const TRANSACTIONS_PAIRS: Measure[] = [
   { agg: "sum", field: "amount" },
   { agg: "avg", field: "amount" },
   { agg: "count", field: "id" },
+  // TBD-553. Last in catalog order, so it is last here too.
+  { agg: "sum", field: "net_amount" },
 ];
 
 function makeLine(measures: SeriesConfig[]): LineWidget {
@@ -90,6 +92,7 @@ describe("SingleMeasureEditor", () => {
       "sum_amount",
       "avg_amount",
       "count_rows",
+      "sum_net_amount",
     ]);
   });
 

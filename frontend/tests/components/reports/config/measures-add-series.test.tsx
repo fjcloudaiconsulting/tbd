@@ -119,20 +119,23 @@ describe("R7 — '+ Add series' seeds the next unused catalog pair", () => {
     });
   });
 
-  it("F14: with all three transactions pairs present the button is DISABLED despite MAX_SERIES=5", async () => {
+  it("F14: with all four transactions pairs present the button is DISABLED despite MAX_SERIES=5", async () => {
     renderWithSWR(
       <DataTab
         widget={makeLine("transactions", [
           { measure: { agg: "sum", field: "amount" } },
           { measure: { agg: "avg", field: "amount" } },
           { measure: { agg: "count", field: "id" } },
+          // TBD-553 published a fourth pair. The catalog must be EXHAUSTED
+          // for this fence to mean anything, so every pair has to be here.
+          { measure: { agg: "sum", field: "net_amount" } },
         ])}
         onUpdate={() => {}}
       />,
     );
 
     const btn = await screen.findByTestId("measure-add");
-    // Still RENDERED (3 < MAX_SERIES) but refusing: an agg-rotation
+    // Still RENDERED (4 < MAX_SERIES) but refusing: an agg-rotation
     // fallback would leave it enabled and seed sum(id).
     expect(btn).toBeInTheDocument();
     await waitFor(() => expect(btn).toBeDisabled());
