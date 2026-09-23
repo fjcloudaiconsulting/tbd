@@ -518,6 +518,54 @@ export function buildSeriesQueryAst(
 }
 
 /**
+ * Indices into ``queries``, sorted by a stable serialization of each query
+ * (TBD-431). This is the "canonical order" the SWR key is built from: a pure
+ * REORDER of the same measures produces the same sorted serializations in
+ * the same relative order, so the canonical array — and the key — comes out
+ * byte-identical. Changing, adding or removing a measure changes the
+ * multiset of serializations, so the key still changes, correctly.
+ *
+ * ``Array.prototype.sort`` is stable (guaranteed since ES2019), which is
+ * what keeps duplicate (agg, field) pairs distinguishable: two identical
+ * serializations keep their original relative order, so this is always a
+ * genuine permutation of ``0..queries.length - 1``, never a dedup.
+ */
+export function canonicalizeQueryOrder(queries: ReportsQuery[]): number[] {
+  return queries
+    .map((_, i) => i)
+    .sort((a, b) => {
+      const ka = JSON.stringify(queries[a]);
+      const kb = JSON.stringify(queries[b]);
+      if (ka < kb) return -1;
+      if (ka > kb) return 1;
+      return 0;
+    });
+}
+
+/** The order-independent SWR key material for a set of series queries. */
+export function canonicalSeriesKey(queries: ReportsQuery[]): string {
+  const order = canonicalizeQueryOrder(queries);
+  return JSON.stringify(order.map((i) => queries[i]));
+}
+
+/**
+ * Maps canonical-order fetch results back to display order — the inverse of
+ * ``canonicalizeQueryOrder``. ``order[k]`` is the display index whose query
+ * sits at canonical position ``k``, so ``canonicalResults[k]`` belongs at
+ * ``displayResults[order[k]]``.
+ */
+export function remapCanonicalResults<T>(
+  canonicalResults: T[],
+  order: number[],
+): Array<T | undefined> {
+  const displayResults: Array<T | undefined> = new Array(order.length);
+  order.forEach((displayIdx, canonicalPos) => {
+    displayResults[displayIdx] = canonicalResults[canonicalPos];
+  });
+  return displayResults;
+}
+
+/**
  * Multi-series query hook. Returns one ``data`` entry per series in
  * the widget config, plus a combined loading / error state.
  *
@@ -527,6 +575,12 @@ export function buildSeriesQueryAst(
  * queries in parallel via ``Promise.all``. The cache key includes a
  * serialized list of all per-series ASTs, so editing any series
  * invalidates the combined fetch.
+ *
+ * ⚠ TBD-431: the key and fetch run over the CANONICAL order
+ * (``canonicalizeQueryOrder``), not display order — a reorder-only control
+ * (MeasuresEditor's move buttons) must not refetch identical data. Results
+ * are mapped back to display order via ``remapCanonicalResults`` before
+ * returning.
  */
 export function useSeriesQueries(
   widget: Widget,
@@ -567,10 +621,20 @@ export function useSeriesQueries(
       ),
     [widget, canvasFilters, measures, supportsDate, supportsStatus],
   );
-  const swrKey = ["report-series-query", widget.id, JSON.stringify(queries)];
+  const order = useMemo(() => canonicalizeQueryOrder(queries), [queries]);
+  const canonicalQueries = useMemo(
+    () => order.map((i) => queries[i]),
+    [order, queries],
+  );
+  // ⚠ Build the key THROUGH ``canonicalSeriesKey``, never by inlining the
+  // stringify. Inlining leaves the exported helper fenced but unused, so every
+  // key fence sits off the path the app takes -- reverting this to
+  // ``JSON.stringify(queries)``, the exact defect TBD-431 removes, left all 34
+  // tests green.
+  const swrKey = ["report-series-query", widget.id, canonicalSeriesKey(queries)];
   const { data, error, isLoading } = useSWR<ReportsQueryResponse[]>(
     swrKey,
-    () => Promise.all(queries.map((q) => runQuery(q))),
+    () => Promise.all(canonicalQueries.map((q) => runQuery(q))),
     {
       revalidateOnFocus: false,
       revalidateIfStale: true,
@@ -579,8 +643,9 @@ export function useSeriesQueries(
   );
 
   const series = useMemo(
-    () => data ?? measures.map(() => undefined),
-    [data, measures],
+    () =>
+      data ? remapCanonicalResults(data, order) : measures.map(() => undefined),
+    [data, measures, order],
   );
   const metas = useMemo(() => series.map((r) => r?.meta), [series]);
 

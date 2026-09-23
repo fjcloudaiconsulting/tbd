@@ -41,6 +41,24 @@ function makeWidget(overrides: Partial<TableWidgetType["config"]> = {}): TableWi
 
 describe("TableWidget", () => {
   const runQueryMock = vi.mocked(runQuery);
+
+  /** Response keyed on the query's measure, as the real endpoint behaves. */
+  function byMeasure(q: { measure: { agg: string; field: string } }) {
+    const key = `${q.measure.agg}:${q.measure.field}`;
+    const rowsFor: Record<string, Array<{ category: string; value: number }>> = {
+      "sum:amount": [
+        { category: "Food", value: 200 },
+        { category: "Transport", value: 100 },
+      ],
+      "count:id": [
+        { category: "Food", value: 4 },
+        { category: "Transport", value: 6 },
+      ],
+    };
+    const rows = rowsFor[key];
+    if (!rows) throw new Error(`no fixture for measure ${key}`);
+    return { rows, meta: { row_count: rows.length, truncated: false, query_ms: 1 } };
+  }
   const downloadMock = vi.mocked(downloadCsv);
 
   beforeEach(() => {
@@ -230,21 +248,15 @@ describe("TableWidget", () => {
 
   it("totals each measure column independently (multi-measure)", async () => {
     // Two series queries: sum-of-amount and count-of-id.
-    runQueryMock
-      .mockResolvedValueOnce({
-        rows: [
-          { category: "Food", value: 200 },
-          { category: "Transport", value: 100 },
-        ],
-        meta: { row_count: 2, truncated: false, query_ms: 1 },
-      })
-      .mockResolvedValueOnce({
-        rows: [
-          { category: "Food", value: 4 },
-          { category: "Transport", value: 6 },
-        ],
-        meta: { row_count: 2, truncated: false, query_ms: 1 },
-      });
+    // ⚠ Content-addressed, NOT mockResolvedValueOnce (TBD-431). Sequential
+    // mocks bind a response to CALL ORDER, but ``runQuery(q)`` returns the
+    // response FOR q -- order-independent in production. Since TBD-431 the
+    // hook fetches in canonical order and remaps to display order, so a
+    // positional mock hands the wrong payload to each query. Worse, it
+    // structurally cannot tell "fetched in a different order" apart from
+    // "mapped to the wrong column", which is the one thing these assertions
+    // exist to catch.
+    runQueryMock.mockImplementation(async (q) => byMeasure(q));
 
     renderWithSWR(
       <TableWidget
@@ -330,22 +342,49 @@ describe("TableWidget", () => {
     );
   });
 
+  it("fence reorder-issues-no-new-queries: a pure reorder refetches nothing", async () => {
+    // ⚠ This is the ticket's ACTUAL promise, and nothing else asserts it.
+    // The key fences below/elsewhere test ``canonicalSeriesKey`` in isolation;
+    // this one drives the hook the way the app does, so it also catches the
+    // key being built inline from display order instead of through the helper.
+    runQueryMock.mockImplementation(async (q) => byMeasure(q));
+    const widget = makeWidget({
+      measures: [
+        { measure: { agg: "sum", field: "amount" }, label: "Amount" },
+        { measure: { agg: "count", field: "id" }, label: "Count" },
+      ],
+    });
+    const { rerender } = renderWithSWR(<TableWidget widget={widget} />);
+    await screen.findByText("Amount");
+    const callsAfterFirstRender = runQueryMock.mock.calls.length;
+    expect(callsAfterFirstRender).toBe(2);
+
+    // Same widget id, same measures, opposite order -- a pure permutation.
+    rerender(
+      <TableWidget
+        widget={{
+          ...widget,
+          config: {
+            ...widget.config,
+            measures: [widget.config.measures[1], widget.config.measures[0]],
+          },
+        }}
+      />,
+    );
+    await screen.findByText("Count");
+    expect(runQueryMock.mock.calls.length).toBe(callsAfterFirstRender);
+  });
+
   it("exports one column per measure for a multi-measure table", async () => {
-    runQueryMock
-      .mockResolvedValueOnce({
-        rows: [
-          { category: "Food", value: 200 },
-          { category: "Transport", value: 100 },
-        ],
-        meta: { row_count: 2, truncated: false, query_ms: 1 },
-      })
-      .mockResolvedValueOnce({
-        rows: [
-          { category: "Food", value: 4 },
-          { category: "Transport", value: 6 },
-        ],
-        meta: { row_count: 2, truncated: false, query_ms: 1 },
-      });
+    // ⚠ Content-addressed, NOT mockResolvedValueOnce (TBD-431). Sequential
+    // mocks bind a response to CALL ORDER, but ``runQuery(q)`` returns the
+    // response FOR q -- order-independent in production. Since TBD-431 the
+    // hook fetches in canonical order and remaps to display order, so a
+    // positional mock hands the wrong payload to each query. Worse, it
+    // structurally cannot tell "fetched in a different order" apart from
+    // "mapped to the wrong column", which is the one thing these assertions
+    // exist to catch.
+    runQueryMock.mockImplementation(async (q) => byMeasure(q));
 
     renderWithSWR(
       <TableWidget

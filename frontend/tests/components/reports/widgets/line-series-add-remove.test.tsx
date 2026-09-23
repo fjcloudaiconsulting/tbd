@@ -14,9 +14,12 @@
  * entirely, so differing payloads return byte-identical rows. This fence
  * therefore reads the RENDERED series and the CSV VALUES.
  *
- * ⚠ Reordering is NOT fenced: `MeasuresEditor` offers add and remove only —
- * there is no reorder control anywhere in the app, and adding one is a new
- * interaction flow (a design change). Filed as a follow-up (R14).
+ * ⚠ Reordering is fenced ELSEWHERE, not here: TBD-431 added the up/down
+ * control to `MeasuresEditor`, covered by
+ * `tests/components/reports/config/measure-editor-reorder.test.tsx` (the
+ * control and its focus/announcement behaviour) and
+ * `tests/lib/reports/series-query-order.test.ts` (the order-independent
+ * query key). This file stays scoped to add/remove.
  */
 import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
 
