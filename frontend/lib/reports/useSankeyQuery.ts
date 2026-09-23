@@ -22,9 +22,35 @@ import { runSankeyQuery, type SankeyQueryBody } from "./api";
 import { resolveFilters } from "./resolve";
 import type {
   CanvasFilters,
+  FilterField,
   SankeyResponse,
   SankeyWidget,
 } from "./types";
+
+/**
+ * TBD-552. The fields the Sankey endpoint accepts, as a KEEP-list. Inverted
+ * from a ``txn_type``-only deny-list (see ``buildSankeyBody`` below) so an
+ * unknown future catalog filter (the trap ``currency`` and ``transfer`` each
+ * sprung once, TBD-507 / TBD-471) fails CLOSED — dropped rather than
+ * forwarded to an endpoint whose ``SankeyQuery`` schema is ``extra="forbid"``.
+ * ``txn_type`` is deliberately absent from both this list and the backend's
+ * ``_SANKEY_DENIED_FILTER_FIELDS``: Sankey always aggregates every
+ * transaction type for the income→spending flow, so it is its own
+ * documented case, not a member of either set.
+ *
+ * ⚠ Mirrored on the backend by ``_SANKEY_SUPPORTED_FILTER_FIELDS``
+ * (``sankey_service.py``) and asserted equal, both directions, by
+ * ``backend/tests/test_reports_sankey_frontend_contract.py`` — parsed out
+ * of this file, never grepped.
+ */
+export const SANKEY_SUPPORTED_FILTER_FIELDS: FilterField[] = [
+  "date",
+  "amount",
+  "category_id",
+  "account_id",
+  "status",
+  "tag_name",
+];
 
 export interface UseSankeyQueryResult {
   data: SankeyResponse | undefined;
@@ -91,23 +117,28 @@ export function buildSankeyBody(
 
   // Reuse the shared resolver — handles canvas date cascade, widget date
   // override, canvas status cascade, account_ids, category_ids, txn_type,
-  // amount_range, tag_names. Sankey is always transactions, which
-  // publishes both ``date`` and ``status``, so both cascade here (pass
-  // ``true`` for each). Canvas status SHOULD scope Sankey — it won't 422
-  // and it keeps the cascade consistent — so unlike ``txn_type`` we do
-  // NOT strip it below.
+  // amount_range, tag_names, the transfers axis. Sankey is always
+  // transactions, which publishes both ``date`` and ``status``, so both
+  // cascade here (pass ``true`` for each). Canvas status SHOULD scope
+  // Sankey — it won't 422 and it keeps the cascade consistent.
   //
-  // Strip txn_type afterwards: the Sankey endpoint ignores it (it always
-  // aggregates all transaction types for the income→spending flow), so
-  // sending it would be a silent no-op. Filtering it here keeps the wire
-  // honest and prevents stale user selections from poisoning the SWR key.
+  // TBD-552: keep only the fields the Sankey endpoint accepts
+  // (``SANKEY_SUPPORTED_FILTER_FIELDS``), inverted from a ``txn_type``-only
+  // deny-list. ``txn_type`` is dropped here the same as before (the Sankey
+  // endpoint ignores it — always aggregates every type for the
+  // income→spending flow), but so now is anything the allowlist doesn't
+  // name, which is the whole point: a future catalog field (``currency``,
+  // ``transfer``) is dropped by default instead of silently forwarded to an
+  // ``extra="forbid"`` endpoint.
   const resolvedFilters = resolveFilters(
     canvasFilters,
     widgetFilters,
     true, // transactions always supports date filter
     true, // transactions publishes status → canvas status scopes Sankey
   );
-  const filters = resolvedFilters.filter((f) => f.field !== "txn_type");
+  const filters = resolvedFilters.filter((f) =>
+    (SANKEY_SUPPORTED_FILTER_FIELDS as string[]).includes(f.field),
+  );
 
   const body: SankeyQueryBody = {
     filters,

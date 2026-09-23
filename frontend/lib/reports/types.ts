@@ -75,7 +75,11 @@ export type FilterField =
   | "account_id"
   | "txn_type"
   | "status"
-  | "tag_name";
+  | "tag_name"
+  // TBD-471. Transfer-ness as its own axis, ANDed with txn_type rather than
+  // folded into it as a fourth enum value (see the retired ``"transfer"``
+  // TxnType member below).
+  | "transfer";
 
 // ``relative`` carries a not-yet-resolved relative date token (e.g.
 // ``next_cycle``) to the backend, which resolves it to an absolute
@@ -84,7 +88,14 @@ export type FilterOp = "eq" | "in" | "between" | "gte" | "lte" | "relative";
 
 export type TagMatch = "all" | "any";
 
-export type TxnType = "income" | "expense" | "transfer";
+// TBD-471. ``"transfer"`` retired as a TxnType member: it was a dead
+// affordance (nothing ever writes a transaction of type "transfer";
+// ``transaction_service.py`` raises on the attempt), so a widget filtered to
+// it queried forever-zero rows with no error and no recovery path short of
+// switching source away and back. Transfer-ness is now its own filter axis
+// (``FilterField.transfer`` / ``WidgetFilters.transfers_only``), not a
+// txn_type value.
+export type TxnType = "income" | "expense";
 
 // Settled/Pending transaction status. Mirrors the backend
 // ``FilterField.STATUS`` enum (settled / pending). ``undefined`` on a
@@ -252,6 +263,13 @@ export interface WidgetFilters {
   // undefined = the standard reportable exclusion. Dropped by
   // ``pruneFiltersToSource`` on a switch to a non-transactions source.
   include_non_reportable?: boolean;
+  // TBD-471. "Only transfers" — the third state of the same axis as
+  // ``include_non_reportable``, mutually exclusive with it (see
+  // ``transferMode`` / ``setTransferMode`` in ``resolve.ts``, the single
+  // writer of both keys). Emits ``{field:"transfer",op:"eq",value:true}``.
+  // Transactions-only; dropped by ``pruneFiltersToSource`` on a switch to a
+  // non-transactions source.
+  transfers_only?: boolean;
   tag_names?: string[];
   tag_match?: TagMatch;
 }

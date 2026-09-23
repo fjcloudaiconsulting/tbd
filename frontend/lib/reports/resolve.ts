@@ -27,15 +27,58 @@ import type {
  * stored it as a single string; new reports store an array. Filters out
  * unknown members and returns ``undefined`` when nothing valid remains,
  * so callers treat "no valid types" the same as "no filter".
+ *
+ * TBD-471. ``"transfer"`` is no longer an accepted member (retired from
+ * ``TxnType`` — see ``types.ts``), so this is also the chokepoint that
+ * retires a persisted ``txn_type:"transfer"`` / ``["expense","transfer"]``
+ * on read: it drops silently, exactly like any other unknown value always
+ * has, with no separate self-heal effect required.
  */
 export function asTxnTypeArray(v: unknown): TxnType[] | undefined {
   if (v == null) return undefined;
   const arr = Array.isArray(v) ? v : [v];
   const out = arr.filter(
-    (x): x is TxnType =>
-      x === "income" || x === "expense" || x === "transfer",
+    (x): x is TxnType => x === "income" || x === "expense",
   );
   return out.length > 0 ? out : undefined;
+}
+
+/**
+ * The three mutually-exclusive states of the transfer/non-reportable axis
+ * (TBD-471 RULING 1). ``include_non_reportable`` and ``transfers_only`` are
+ * ONE axis, not two independent booleans — a radio group wearing
+ * checkboxes would let ``{include:true, transfers_only:true}`` persist,
+ * which is unrepresentable here by construction: ``"only"`` wins when a
+ * hand-edited layout sets both.
+ */
+export type TransferMode = "exclude" | "include" | "only";
+
+/** Reads the effective mode off a widget's persisted filters. */
+export function transferMode(filters: WidgetFilters | undefined): TransferMode {
+  if (filters?.transfers_only) return "only";
+  if (filters?.include_non_reportable) return "include";
+  return "exclude";
+}
+
+/**
+ * The ONLY writer of ``include_non_reportable`` / ``transfers_only``.
+ * Selecting a state clears BOTH keys before setting the one the new state
+ * needs — state "exclude" clears both and sets neither, so a switch back to
+ * the default can never leave the other key armed (the bug this fence
+ * exists for: a handler that writes its own key and leaves the other set).
+ * Never emits ``transfer: false`` / ``include_non_reportable: false`` —
+ * "false" is not a no-op under a promoted base, so the axis stays
+ * representable as an absence, never a negative value.
+ */
+export function setTransferMode(
+  filters: WidgetFilters,
+  mode: TransferMode,
+): WidgetFilters {
+  const { include_non_reportable: _include, transfers_only: _only, ...rest } =
+    filters;
+  if (mode === "include") return { ...rest, include_non_reportable: true };
+  if (mode === "only") return { ...rest, transfers_only: true };
+  return rest;
 }
 
 /**
@@ -262,6 +305,16 @@ export function resolveFilters(
     out.push({ field: "txn_type", op: "in", value: txnTypes });
   }
 
+  // TBD-471 state 3 ("Only transfers"). ``eq``, never ``in`` — this is a
+  // scalar boolean predicate on the reciprocal-pair axis, not a multiselect
+  // membership test; the backend's ``FilterField.TRANSFER`` only accepts
+  // ``eq``. State 1 and state 2 emit no filter here (state 2's
+  // ``include_non_reportable`` is a query-mode flag read separately by the
+  // AST builders, not an AST filter primitive).
+  if (widget?.transfers_only) {
+    out.push({ field: "transfer", op: "eq", value: true });
+  }
+
   // Settled/Pending status — cascades from the canvas like the date
   // range: the widget value wins when set, otherwise the canvas value
   // inherits (a widget status can only NARROW the inherited one). Gated
@@ -329,6 +382,11 @@ const FILTER_KEY_TO_SOURCE_FIELD: Record<keyof WidgetFilters, string> = {
   // source publishes) so ``pruneFiltersToSource`` drops it on a switch to
   // accounts/recurring but keeps it on transactions.
   include_non_reportable: "status",
+  // ``transfers_only`` compiles to the real ``transfer`` filter field
+  // (unlike ``include_non_reportable``'s borrowed ``status`` gate), so
+  // ``pruneFiltersToSource`` drops it on a switch away from transactions
+  // through the same membership check as every other real field.
+  transfers_only: "transfer",
   tag_names: "tag_name",
   tag_match: "tag_name",
 };

@@ -351,9 +351,21 @@ def _reportability_base(ast: ReportsQuery):
     filter alone breaks the shipped ``include_non_reportable`` toggle, which is
     an independent request; G2 fences that direction.
     """
-    if ast.include_non_reportable or _asks_for_transfers(ast):
+    if _reportability_base_promoted(ast):
         return non_reverted_transaction_filter()
     return reportable_transaction_filter()
+
+
+def _reportability_base_promoted(ast: ReportsQuery) -> bool:
+    """True when ``_reportability_base`` promoted the default clause.
+
+    Named separately so ``_transfer_notice`` (RULING 3) can key on the exact
+    same predicate rather than re-deriving it — the notice must cover BOTH
+    promotion routes (``include_non_reportable`` and ``transfer=true``), and a
+    second copy of this condition is a second thing that can drift from the
+    first.
+    """
+    return ast.include_non_reportable or _asks_for_transfers(ast)
 
 
 def _apply_currency_filter(stmt: Select, f: Filter, org_id: int) -> Select:
@@ -702,6 +714,51 @@ def _currency_notice(currency_mode: str, currency_scope: dict | None) -> str | N
     return None
 
 
+# TBD-471 RULING 3. Under a promoted reportability base both legs of a
+# transfer pair are selected, so ``sum_amount``/``count_rows`` double the
+# transferred money/count unless something separates the two legs.
+_TRANSFER_NOTICE = (
+    "Shows both sides of every transfer, so totals and counts count each one "
+    "twice. Break down by Account to see the money move."
+)
+
+
+def _legs_separated(ast: ReportsQuery) -> bool:
+    """True when this query cannot double-count a transfer pair.
+
+    Suppressor set: ``{account}`` dimension, ``{txn_type}`` dimension, or an
+    ``account_id`` filter. NOT "account-ish":
+
+    * ``account`` and ``txn_type`` both split every pair's two legs into
+      different buckets/rows — grouping by type is exact because every
+      selected row is one leg of a mutual pair (income XOR expense), so
+      nothing doubles.
+    * ``account_type`` does NOT separate them: ``_link_pair`` enforces one
+      EXPENSE + one INCOME leg and says nothing about account TYPE, so a
+      checking→checking transfer puts both legs in the same bucket.
+    * An ``account_id`` filter keeps only one side of each pair (the other
+      leg lives on a different account), so it separates too.
+    """
+    if Dimension.ACCOUNT in ast.dimensions or Dimension.TXN_TYPE in ast.dimensions:
+        return True
+    return any(f.field is FilterField.ACCOUNT_ID for f in ast.filters)
+
+
+def _transfer_notice(ast: ReportsQuery) -> str | None:
+    """The transfer half of ``meta.warning`` (TBD-471 RULING 3).
+
+    Keyed on the PROMOTED BASE (``_reportability_base_promoted``), not on
+    ``transfer=true`` alone: ``include_non_reportable`` promotes to the same
+    ``non_reverted_transaction_filter()`` and has the identical doubling, so
+    treating the two states differently would have no justification a user
+    could infer. Suppressed whenever ``_legs_separated`` says the grouping
+    already keeps the two sides apart.
+    """
+    if _reportability_base_promoted(ast) and not _legs_separated(ast):
+        return _TRANSFER_NOTICE
+    return None
+
+
 async def execute_query(
     db: AsyncSession,
     ast: ReportsQuery,
@@ -812,6 +869,17 @@ async def execute_query(
         #
         # Three outcomes, not two; see ``_currency_notice`` above for which and
         # why.
-        "warning": _currency_notice(currency_mode, currency_scope),
+        #
+        # ⚠ TBD-471. ``meta.warning`` is ONE slot and two independent hazards
+        # can both be true at once (a multi-currency org running a
+        # transfers-only widget) — COMPOSE by joining non-empty parts, never
+        # clobber. ``f"{a} {b}" if a and b else a`` is the join revision 1
+        # shipped and it silently drops the transfer sentence for every
+        # single-currency org (``_currency_notice`` returns ``None`` there),
+        # which is nearly every real org today.
+        "warning": " ".join(
+            w for w in (_currency_notice(currency_mode, currency_scope), _transfer_notice(ast)) if w
+        )
+        or None,
     }
     return out_rows, meta

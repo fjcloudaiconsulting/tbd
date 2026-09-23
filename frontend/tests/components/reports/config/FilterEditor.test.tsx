@@ -215,41 +215,108 @@ describe("FilterEditor", () => {
     expect(screen.getByTestId("amount-range-filter")).toBeInTheDocument();
   });
 
-  it("offers the 'Include transfers & adjustments' toggle for a transactions widget", async () => {
+  // TBD-471 RULING 1: the old "Include transfers & adjustments" checkbox is
+  // replaced by a single 3-state radio axis (Exclude / Include / Only).
+  it("offers the 3-state Transfers radio group for a transactions widget", async () => {
     render({}, {}, () => {}, "transactions");
     await screen.findByTestId("category-picker");
+    expect(screen.getByText("Transfers")).toBeInTheDocument();
+    expect(screen.getByLabelText("Exclude transfers (default)")).toBeInTheDocument();
     expect(
-      screen.getByLabelText("Include transfers and adjustments"),
+      screen.getByLabelText("Include transfers & adjustments"),
     ).toBeInTheDocument();
+    expect(screen.getByLabelText("Only transfers")).toBeInTheDocument();
   });
 
-  it("hides the 'Include transfers & adjustments' toggle for a non-transactions widget", async () => {
+  it("hides the Transfers radio group for a non-transactions widget — catalog-gated, not dataset-gated", async () => {
     render({}, {}, () => {}, "recurring");
     await screen.findByTestId("category-picker");
+    expect(screen.queryByText("Transfers")).not.toBeInTheDocument();
     expect(
-      screen.queryByLabelText("Include transfers and adjustments"),
+      screen.queryByLabelText("Exclude transfers (default)"),
     ).not.toBeInTheDocument();
   });
 
-  it("sets include_non_reportable=true when the toggle is checked", async () => {
-    const calls: WidgetFilters[] = [];
-    render({}, {}, (next) => calls.push(next), "transactions");
+  it("defaults to 'Exclude transfers (default)' checked when neither key is set", async () => {
+    render({}, {}, () => {}, "transactions");
     await screen.findByTestId("category-picker");
-    fireEvent.click(screen.getByLabelText("Include transfers and adjustments"));
-    expect(calls.at(-1)?.include_non_reportable).toBe(true);
+    expect(screen.getByLabelText("Exclude transfers (default)")).toBeChecked();
   });
 
-  it("clears include_non_reportable to undefined when unchecked", async () => {
+  // fence transfer_mode_three_states_READ
+  it("reads state 'only' when both keys are set — transfers_only wins over include_non_reportable", async () => {
+    render(
+      { include_non_reportable: true, transfers_only: true },
+      {},
+      () => {},
+      "transactions",
+    );
+    await screen.findByTestId("category-picker");
+    expect(screen.getByLabelText("Only transfers")).toBeChecked();
+    expect(
+      screen.getByLabelText("Include transfers & adjustments"),
+    ).not.toBeChecked();
+  });
+
+  // fence transfer_mode_three_states_WRITE — the bug lives here, not in the
+  // read direction: a handler that writes its own key and leaves the other
+  // set would strand the chart on "only" while the control reads "exclude".
+  it("selecting 'Exclude transfers' clears BOTH include_non_reportable and transfers_only", async () => {
     const calls: WidgetFilters[] = [];
     render(
-      { include_non_reportable: true },
+      { include_non_reportable: true, transfers_only: true },
       {},
       (next) => calls.push(next),
       "transactions",
     );
     await screen.findByTestId("category-picker");
-    fireEvent.click(screen.getByLabelText("Include transfers and adjustments"));
+    fireEvent.click(screen.getByLabelText("Exclude transfers (default)"));
     expect(calls.at(-1)?.include_non_reportable).toBeUndefined();
+    expect(calls.at(-1)?.transfers_only).toBeUndefined();
+  });
+
+  it("selecting 'Include transfers & adjustments' sets include_non_reportable and clears transfers_only", async () => {
+    const calls: WidgetFilters[] = [];
+    render({ transfers_only: true }, {}, (next) => calls.push(next), "transactions");
+    await screen.findByTestId("category-picker");
+    fireEvent.click(screen.getByLabelText("Include transfers & adjustments"));
+    expect(calls.at(-1)?.include_non_reportable).toBe(true);
+    expect(calls.at(-1)?.transfers_only).toBeUndefined();
+  });
+
+  it("selecting 'Only transfers' sets transfers_only and clears include_non_reportable", async () => {
+    const calls: WidgetFilters[] = [];
+    render({ include_non_reportable: true }, {}, (next) => calls.push(next), "transactions");
+    await screen.findByTestId("category-picker");
+    fireEvent.click(screen.getByLabelText("Only transfers"));
+    expect(calls.at(-1)?.transfers_only).toBe(true);
+    expect(calls.at(-1)?.include_non_reportable).toBeUndefined();
+  });
+
+  // guard sankey_panel_hides_both_controls — assert CHILD COUNT (not "no
+  // gap", which is unassertable in jsdom): hideTypeControls removes both the
+  // txn_type row and the transfers group as actual DOM nodes.
+  it("guard: hideTypeControls removes both the type row and the transfers group as DOM nodes", async () => {
+    const { rerender } = render({}, {}, () => {}, "transactions");
+    await screen.findByTestId("category-picker");
+    expect(screen.getByText("Transaction type")).toBeInTheDocument();
+    expect(screen.getByText("Transfers")).toBeInTheDocument();
+    const withControls = screen.getByTestId("filter-editor-root").children.length;
+
+    rerender(
+      <FilterEditor
+        filters={{}}
+        canvasFilters={{}}
+        dataset="transactions"
+        hideTypeControls
+        onChange={() => {}}
+      />,
+    );
+    await screen.findByTestId("category-picker");
+    expect(screen.queryByText("Transaction type")).not.toBeInTheDocument();
+    expect(screen.queryByText("Transfers")).not.toBeInTheDocument();
+    const withoutControls = screen.getByTestId("filter-editor-root").children.length;
+    expect(withoutControls).toBe(withControls - 2);
   });
 
   it("sets status on change", async () => {
@@ -268,64 +335,49 @@ describe("FilterEditor", () => {
     expect(calls.at(-1)?.status).toBeUndefined();
   });
 
-  it("offers the Transfer transaction type for a transactions widget", async () => {
-    render({}, {}, () => {}, "transactions");
-    await screen.findByTestId("category-picker");
-    expect(
-      screen.getByLabelText("Widget transaction type Transfer"),
-    ).toBeInTheDocument();
-  });
+  // A persisted ``txn_type`` blob that predates TBD-471 could still hold the
+  // string "transfer" on disk even though ``TxnType`` no longer admits it —
+  // hence the cast, only ever used to model that legacy JSON shape.
+  function withStaleTransfer(values: string[]): WidgetFilters {
+    return { txn_type: values } as unknown as WidgetFilters;
+  }
 
-  it("hides the Transfer transaction type for a recurring widget", async () => {
-    render({}, {}, () => {}, "recurring");
+  // guard no_transfer_choice_on_any_dataset (TBD-471 RULING 2).
+  // ⚠ INVERTED from the pre-TBD-471 version of this test (which asserted
+  // transactions DOES offer Transfer, and recurring self-heals a stale
+  // value). "Transfer" retired from ``TxnType`` entirely — it is no longer
+  // offered on ANY dataset, transactions included, and there is no more
+  // self-heal effect: ``asTxnTypeArray`` drops a stale persisted value
+  // silently at read time, on every dataset, so ``onChange`` never fires
+  // for it.
+  it("never offers Transfer as a transaction-type choice, on any dataset, even with a persisted value", async () => {
+    const txnCalls: WidgetFilters[] = [];
+    render(withStaleTransfer(["transfer"]), {}, (next) => txnCalls.push(next), "transactions");
     await screen.findByTestId("category-picker");
-    expect(
-      screen.getByLabelText("Widget transaction type Income"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Widget transaction type Expense"),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Widget transaction type Income")).toBeInTheDocument();
+    expect(screen.getByLabelText("Widget transaction type Expense")).toBeInTheDocument();
     expect(
       screen.queryByLabelText("Widget transaction type Transfer"),
     ).not.toBeInTheDocument();
+    expect(txnCalls).toHaveLength(0);
   });
 
-  it("self-heals a persisted txn_type=transfer on a recurring widget to 'Any'", async () => {
+  it("silently drops a persisted stale 'transfer' value, keeping the rest, with no onChange call", async () => {
     const calls: WidgetFilters[] = [];
-    // A widget persisted on transactions with txn_type=transfer, later
-    // switched to recurring (where transfer is hidden). The orphan value
-    // must self-correct on mount so the control never shows a phantom
-    // no-selection-with-stale-value state.
-    render({ txn_type: ["transfer"] }, {}, (next) => calls.push(next), "recurring");
-    await screen.findByTestId("category-picker");
-    // The self-heal effect MUST have fired (not vacuously empty) and cleared
-    // the orphan value.
-    expect(calls).toHaveLength(1);
-    expect(calls.at(-1)?.txn_type).toBeUndefined();
-  });
-
-  it("does NOT self-heal a valid txn_type=transfer on a transactions widget", async () => {
-    const calls: WidgetFilters[] = [];
-    render({ txn_type: ["transfer"] }, {}, (next) => calls.push(next), "transactions");
-    await screen.findByTestId("category-picker");
-    // transfer is a valid choice for transactions → no auto-clear fires.
-    expect(calls).toHaveLength(0);
-  });
-
-  it("self-heals by stripping only transfer and KEEPING the rest on a recurring widget", async () => {
-    const calls: WidgetFilters[] = [];
-    // A widget persisted on transactions with [expense, transfer], switched
-    // to recurring (transfer hidden). The strip must drop ONLY transfer and
-    // keep expense — NOT clear the whole filter to undefined.
     render(
-      { txn_type: ["expense", "transfer"] },
+      withStaleTransfer(["expense", "transfer"]),
       {},
       (next) => calls.push(next),
       "recurring",
     );
     await screen.findByTestId("category-picker");
-    expect(calls).toHaveLength(1);
-    expect(calls.at(-1)?.txn_type).toEqual(["expense"]);
+    expect(
+      screen.queryByLabelText("Widget transaction type Transfer"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Widget transaction type Expense")).toBeChecked();
+    // No self-heal effect anymore — asTxnTypeArray already filtered the
+    // stale value out of what's rendered, so there is nothing to write back.
+    expect(calls).toHaveLength(0);
   });
 
   it("reports tag_names + tag_match when a tag chip is selected", async () => {

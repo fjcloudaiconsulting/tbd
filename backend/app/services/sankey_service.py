@@ -253,6 +253,24 @@ _SANKEY_SUPPORTED_FILTER_FIELDS = {
     # TXN_TYPE is excluded: the builder locks it; handled separately below.
 }
 
+# TBD-552. The catalog fields the Sankey endpoint refuses with a 422, named
+# explicitly rather than derived as "everything not in SUPPORTED": deriving it
+# would auto-allow a brand-new catalog field the day it is published, silently
+# misapplying it (e.g. ``currency`` on the bare column) instead of forcing a
+# reviewed decision. ⚠ Read by NO production code — the raise below already
+# fires for anything outside ``_SANKEY_SUPPORTED_FILTER_FIELDS`` ∪ {TXN_TYPE}.
+# This set exists only so the partition fence
+# (``sankey_filter_catalog_partition``) can assert the catalog is fully
+# accounted for: ``catalog ⊆ SUPPORTED ∪ DENIED ∪ {TXN_TYPE}``, disjoint and
+# exhaustive. A red partition can therefore be "fixed" two ways — add a field
+# to SUPPORTED (build the control) or to DENIED (ship the 422) — and only the
+# frontend-contract fence (``sankey_filter_strip_frontend_contract``) closes
+# off the second as a permanent answer.
+_SANKEY_DENIED_FILTER_FIELDS = {
+    FilterField.CURRENCY,
+    FilterField.TRANSFER,
+}
+
 
 def _apply_user_filters(stmt, filters: list[Filter], org_id: int):
     """Apply the caller-supplied SankeyQuery filters to *stmt*.

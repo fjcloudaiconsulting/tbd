@@ -12,7 +12,7 @@
  * widget-only now (the canvas can't hold them), so they NEVER show the
  * override pill — they're plain per-widget controls.
  */
-import { useEffect } from "react";
+import { useId } from "react";
 
 import AccountFilter from "@/components/reports/filters/AccountFilter";
 import AmountRangeFilter from "@/components/reports/filters/AmountRangeFilter";
@@ -22,7 +22,13 @@ import StatusFilter from "@/components/reports/filters/StatusFilter";
 import TagFilter from "@/components/reports/filters/TagFilter";
 import { publishedFilterKeys } from "@/lib/reports/resolve";
 import { useReportSources } from "@/lib/reports/use-report-sources";
-import { asTxnTypeArray, isFieldOverridden } from "@/lib/reports/resolve";
+import {
+  asTxnTypeArray,
+  isFieldOverridden,
+  setTransferMode,
+  transferMode,
+  type TransferMode,
+} from "@/lib/reports/resolve";
 import type {
   CanvasFilters,
   Dataset,
@@ -46,24 +52,23 @@ export default function FilterEditor({
   filters,
   canvasFilters,
   dataset,
-  hideTxnType = false,
+  hideTypeControls = false,
   onChange,
 }: {
   filters: WidgetFilters;
   canvasFilters: CanvasFilters;
-  /**
-   * The widget's data source. ``transfer`` is a transactions-only
-   * concept (``recurring`` is income/expense only, ``accounts`` has no
-   * txn_type), so the Type control only offers Transfer when the
-   * source is ``transactions`` — otherwise the backend 422s the choice.
-   */
   dataset: Dataset;
   /**
-   * When true, hides the transaction-type checkboxes entirely. Used for
-   * widget types where txn_type is a backend no-op (e.g. Sankey), so the
-   * user is not shown a control that has no effect on the chart.
+   * When true, hides the transaction-type checkboxes AND the transfers
+   * radio group entirely. Used for widget types where both are a backend
+   * no-op (Sankey: ``txn_type`` is ignored, and neither
+   * ``include_non_reportable`` nor a ``transfer`` filter is accepted by the
+   * ``extra="forbid"`` Sankey endpoint — TBD-471), so the user is never
+   * shown a control that has no effect on the chart. Named for BOTH
+   * controls now (was ``hideTxnType``, txn_type-only) — one flag, no new
+   * prop.
    */
-  hideTxnType?: boolean;
+  hideTypeControls?: boolean;
   onChange: (next: WidgetFilters) => void;
 }) {
   // TBD-381: SUBTRACTIVE. A control is offered iff the selected source
@@ -83,16 +88,12 @@ export default function FilterEditor({
   const { sources } = useReportSources();
   const published = publishedFilterKeys(sources, dataset);
   const has = (key: keyof WidgetFilters) => published.has(key);
-
-  // ⚠ Still dataset-gated, NOT catalog-gated, and deliberately so:
-  //   * Transfer is an enum VALUE of txn_type. The catalog publishes fields,
-  //     ops and control kinds -- never value domains -- so it cannot express
-  //     "recurring has income/expense but not transfer".
-  //   * include_non_reportable is a query MODE, not a filter field.
-  // Both are known catalog gaps, filed rather than papered over.
-  const allowTransfer = dataset === "transactions";
+  const transferGroupId = useId();
   return (
-    <div className="flex flex-col gap-4 rounded-md border border-border bg-bg p-3">
+    <div
+      data-testid="filter-editor-root"
+      className="flex flex-col gap-4 rounded-md border border-border bg-bg p-3"
+    >
       <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
         Filters (this widget)
       </div>
@@ -155,11 +156,10 @@ export default function FilterEditor({
         </div>
       )}
 
-      {has("txn_type") && !hideTxnType && (
+      {has("txn_type") && !hideTypeControls && (
         <div className="flex flex-col gap-1">
           <TxnTypeCheckboxRow
             value={filters.txn_type}
-            allowTransfer={allowTransfer}
             onChange={(txn_type) => onChange({ ...filters, txn_type })}
           />
         </div>
@@ -206,37 +206,47 @@ export default function FilterEditor({
         </div>
       )}
 
-      {/* "Include transfers & adjustments" is transactions-only. By default
-          reports exclude transfer legs, manual balance adjustments, and
-          reverted (skipped/rejected) reconciliation rows — matching Budgets,
-          Forecast, and the Sankey. This opt-in re-includes transfer legs +
-          manual adjustments; reverted rows stay excluded server-side. */}
-      {allowTransfer && (
-        <label className="flex items-start gap-2 text-xs text-text-secondary">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            aria-label="Include transfers and adjustments"
-            aria-describedby="include-non-reportable-help"
-            checked={!!filters.include_non_reportable}
-            onChange={(e) =>
-              onChange({
-                ...filters,
-                include_non_reportable: e.target.checked || undefined,
-              })
-            }
-          />
-          <span className="flex flex-col gap-0.5">
-            <span>Include transfers &amp; adjustments</span>
-            <span
-              id="include-non-reportable-help"
-              className="text-[11px] text-text-muted"
-            >
-              By default reports leave out transfers and balance adjustments,
-              like Budgets and Forecast do. Turn this on to count them.
-            </span>
-          </span>
-        </label>
+      {/* TBD-471 RULING 1: one 3-state radio axis replaces the old
+          "Include transfers & adjustments" checkbox. Gated on the CATALOG
+          (``has("transfers_only")`` -> does the source publish a
+          ``transfer`` filter field), never on a
+          ``dataset === "transactions"`` hand-gate — that hand-gate is
+          exactly what ``filter-editor-catalog.test.tsx`` exists to kill.
+          ``hideTypeControls`` additionally hides it on Sankey, whose
+          ``extra="forbid"`` endpoint accepts neither key. */}
+      {has("transfers_only") && !hideTypeControls && (
+        <fieldset
+          className="flex flex-col gap-1.5"
+          aria-describedby={`${transferGroupId}-help`}
+        >
+          <legend className="text-xs text-text-secondary">Transfers</legend>
+          <div className="flex flex-col">
+            {(
+              [
+                { value: "exclude", label: "Exclude transfers (default)" },
+                { value: "include", label: "Include transfers & adjustments" },
+                { value: "only", label: "Only transfers" },
+              ] satisfies Array<{ value: TransferMode; label: string }>
+            ).map((c) => (
+              <label
+                key={c.value}
+                className="flex min-h-[24px] items-center gap-2 text-xs text-text-secondary"
+              >
+                <input
+                  type="radio"
+                  name={transferGroupId}
+                  checked={transferMode(filters) === c.value}
+                  onChange={() => onChange(setTransferMode(filters, c.value))}
+                />
+                <span>{c.label}</span>
+              </label>
+            ))}
+          </div>
+          <p id={`${transferGroupId}-help`} className="text-[11px] text-text-muted">
+            Shows both sides of every transfer, so totals and counts count
+            each one twice. Break down by Account to see the money move.
+          </p>
+        </fieldset>
       )}
 
       {/* ⚠ Gated like every other control. This one was MISSED in the first
@@ -264,43 +274,26 @@ export default function FilterEditor({
 
 function TxnTypeCheckboxRow({
   value,
-  allowTransfer,
   onChange,
 }: {
   value: TxnType[] | undefined;
-  allowTransfer: boolean;
   onChange: (next: TxnType[] | undefined) => void;
 }) {
   // ``asTxnTypeArray`` also coerces a legacy single-string value (old
   // saved reports) into an array, so the control renders correctly for
   // both shapes. No "Any" choice — zero checked boxes IS "Any".
+  //
+  // TBD-471: ``transfer`` retired from ``TxnType`` entirely (it is now its
+  // own filter axis — the radio group above), so there is no longer a
+  // conditional third choice and no self-heal effect: ``asTxnTypeArray``
+  // itself is the chokepoint that drops a persisted ``"transfer"`` on
+  // read, for every dataset, the same way it always dropped any other
+  // unknown value.
   const selected = asTxnTypeArray(value) ?? [];
   const choices: Array<{ value: TxnType; label: string }> = [
     { value: "income", label: "Income" },
     { value: "expense", label: "Expense" },
-    // ``transfer`` is a transactions-only concept; omit it for sources
-    // whose ``type`` can't be a transfer (recurring / accounts).
-    ...(allowTransfer
-      ? ([{ value: "transfer", label: "Transfer" }] as const)
-      : []),
   ];
-  // Self-heal: if a persisted ``transfer`` survives on a non-transactions
-  // source (where the Transfer box is hidden), strip it once so the widget
-  // never queries a type the source 422s. Depending on the boolean keeps
-  // the effect from re-firing after the value settles (cleaned value no
-  // longer contains ``transfer`` → condition false → no loop).
-  const hasIllegalTransfer = !allowTransfer && selected.includes("transfer");
-  useEffect(() => {
-    if (hasIllegalTransfer) {
-      const cleaned = selected.filter((t) => t !== "transfer");
-      onChange(cleaned.length > 0 ? cleaned : undefined);
-    }
-    // Depend ONLY on the boolean: it flips true at most once (the
-    // onChange clears transfer → selected loses it → false), so the
-    // effect fires exactly when needed and never re-runs on unrelated
-    // parent re-renders (``onChange`` is a fresh ref each render).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasIllegalTransfer]);
 
   function toggle(t: TxnType) {
     const next = selected.includes(t)
