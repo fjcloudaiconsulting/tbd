@@ -251,7 +251,11 @@ export default function WidgetEditorPopover({
                   filters={widget.config.filters ?? {}}
                   canvasFilters={canvasFilters}
                   dataset={widget.config.dataset}
-                  hideTxnType={widget.type === "sankey"}
+                  // TBD-471: widened from txn_type-only. Sankey's
+                  // ``extra="forbid"`` endpoint ignores txn_type and accepts
+                  // neither ``include_non_reportable`` nor a ``transfer``
+                  // filter, so both control groups are hidden together.
+                  hideTypeControls={widget.type === "sankey"}
                   onChange={setFilters}
                 />
               )}

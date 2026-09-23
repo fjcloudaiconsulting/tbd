@@ -15,7 +15,7 @@ import {
   isMultiSeries,
   isSingleAggLocked,
 } from "@/components/reports/config/controlConstants";
-import { asTxnTypeArray, pruneFiltersToSource } from "@/lib/reports/resolve";
+import { pruneFiltersToSource } from "@/lib/reports/resolve";
 import type {
   AreaConfig,
   BarConfig,
@@ -184,39 +184,20 @@ export function buildWidgetMutations(
     const publishedFilterFields = entry.filters.map((f) => f.field);
 
     /**
-     * Prune the per-widget filters to the new source's published FIELDS,
-     * then normalize any stale enum VALUE that survives the field prune
-     * but is invalid for the new source. ``pruneFiltersToSource`` only
-     * drops fields; it never inspects values. The ``recurring`` source
-     * DOES publish a ``txn_type`` filter, so a stale ``txn_type:"transfer"``
-     * survives a transactions→recurring switch — but ``transfer`` is a
-     * transactions-only concept (recurring is income/expense only) and the
-     * backend ``RecurringSource.validate()`` 422s it. Strip it here so the
-     * widget never silently fails to render. ``txn_type`` is the only
-     * enum-valued filter today, so a targeted strip suffices.
+     * Prune the per-widget filters to the new source's published FIELDS.
+     * ``pruneFiltersToSource`` handles the whole job now: TBD-471 retired
+     * ``"transfer"`` from ``TxnType`` entirely (it's its own filter axis —
+     * ``transfers_only`` — dropped like any other field the new source
+     * doesn't publish, via the same membership check). The old targeted
+     * value-level strip here is gone: ``asTxnTypeArray`` is the one place
+     * that ever filtered a stale ``"transfer"`` value, and it does so
+     * unconditionally for every dataset, so there is nothing left for a
+     * dataset-switch-specific pass to do.
      */
     const finalizeFilters = (
       filters: WidgetFilters | undefined,
-    ): WidgetFilters | undefined => {
-      const pruned = pruneFiltersToSource(filters, publishedFilterFields);
-      if (!pruned) return undefined;
-      if (dataset !== "transactions") {
-        // ``transfer`` is transactions-only; drop just that member from
-        // the multi-select array (keep any income/expense), and drop the
-        // whole key only when nothing valid remains.
-        const kept = asTxnTypeArray(pruned.txn_type)?.filter(
-          (t) => t !== "transfer",
-        );
-        if (kept && kept.length > 0) {
-          return { ...pruned, txn_type: kept };
-        }
-        if (pruned.txn_type !== undefined) {
-          const { txn_type: _drop, ...rest } = pruned;
-          return Object.keys(rest).length > 0 ? rest : undefined;
-        }
-      }
-      return pruned;
-    };
+    ): WidgetFilters | undefined =>
+      pruneFiltersToSource(filters, publishedFilterFields);
     // First valid measure for this source (default after a field-invalid
     // switch). ``entry.measures`` is always non-empty for a real source;
     // guard for the degenerate empty-catalog case so we never write an

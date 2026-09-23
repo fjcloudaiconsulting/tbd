@@ -524,4 +524,40 @@ describe("describeWidgetFilters", () => {
       ),
     ).toBeUndefined();
   });
+
+  // fence transfer_chip_rendered (TBD-471 RULING 3). Was a missing fence:
+  // describe-filters.ts had no chip for state 3 at all, so the canvas reader
+  // could not tell a transfers-only widget from an ordinary one.
+  it("shows a 'Transfers only' chip when transfers_only is on, distinct from 'Incl. transfers'", () => {
+    const only = describeWidgetFilters(
+      bar({ transfers_only: true }),
+      {},
+      NO_LOOKUPS,
+      NOW,
+    );
+    expect(only.find((c) => c.key === "transfers")?.label).toBe("Transfers only");
+
+    const included = describeWidgetFilters(
+      bar({ include_non_reportable: true }),
+      {},
+      NO_LOOKUPS,
+      NOW,
+    );
+    expect(included.find((c) => c.key === "transfers")?.label).toBe(
+      "Incl. transfers",
+    );
+  });
+
+  it("never emits the 'Transfers only' chip on a non-transactions source", () => {
+    const base = bar({ transfers_only: true });
+    const acctWidget = {
+      ...base,
+      config: { ...base.config, dataset: "accounts" as const },
+    };
+    expect(
+      describeWidgetFilters(acctWidget, {}, NO_LOOKUPS, NOW).find(
+        (c) => c.key === "transfers",
+      ),
+    ).toBeUndefined();
+  });
 });

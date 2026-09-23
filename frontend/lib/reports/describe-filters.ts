@@ -162,13 +162,18 @@ export function describeWidgetFilters(
     });
   }
 
-  // ── transfers & adjustments (include_non_reportable) ──────────
-  // The "Include transfers & adjustments" opt-in is a transactions-only
-  // query mode (reports exclude non-reportables by default, #548). Gate the
-  // chip on ``dataset === "transactions"`` exactly like ``useReportQuery``
-  // drops the flag on every other source, so the chip never claims a mode
-  // the widget doesn't actually run. Only shown when the toggle is ON.
-  if (
+  // ── transfers axis (transfers_only / include_non_reportable) ───
+  // Three mutually exclusive states (TBD-471 RULING 1); only two of them
+  // are chip-worthy. Both are transactions-only query modes, gated on
+  // ``dataset === "transactions"`` exactly like ``useReportQuery`` drops
+  // them on every other source, so the chip never claims a mode the widget
+  // doesn't actually run. ``transfers_only`` wins when a hand-edited
+  // layout sets both, matching ``transferMode``'s own precedence — without
+  // this a transfers-only widget was chip-invisible: the canvas reader
+  // (the person this chip exists for) had no way to see it.
+  if (widget.config.dataset === "transactions" && widgetFilters.transfers_only) {
+    chips.push({ key: "transfers", label: "Transfers only" });
+  } else if (
     widget.config.dataset === "transactions" &&
     widgetFilters.include_non_reportable
   ) {

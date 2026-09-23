@@ -304,6 +304,29 @@ describe("useSankeyQuery", () => {
     expect(body).not.toHaveProperty("measure");
   });
 
+  // fence buildSankeyBody_drops_unknown_field (TBD-552). Proves the
+  // INVERSION — a keep-by-allowlist that fails closed on a field it doesn't
+  // name — rather than the old txn_type-only strip. ``transfers_only``
+  // (TBD-471) is exactly the kind of newly-published catalog filter this
+  // trap has sprung on twice before (currency, TBD-507; transfer, TBD-471).
+  it("drops an unsupported filter field (transfers_only) rather than forwarding it", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(MOCK_SANKEY_RESPONSE));
+
+    const widget = makeWidget({ filters: { transfers_only: true } });
+
+    const { result } = renderHook(
+      () => useSankeyQuery(widget, undefined),
+      { wrapper: swrWrapper },
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(body.filters).not.toContainEqual(
+      expect.objectContaining({ field: "transfer" }),
+    );
+  });
+
   it("surfaces error when the fetch fails", async () => {
     fetchMock.mockRejectedValueOnce(new Error("Network error"));
 

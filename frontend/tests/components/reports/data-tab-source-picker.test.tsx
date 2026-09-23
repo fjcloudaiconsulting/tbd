@@ -425,56 +425,14 @@ it("prunes tag_names + date_range but keeps category_ids on switch to recurring"
   });
 });
 
-it("clears a stale txn_type=transfer on switch to recurring (transfer invalid there)", () => {
-  const onUpdate = vi.fn();
-  const widget: BarWidget = {
-    ...makeBar(),
-    config: {
-      ...makeBar().config,
-      filters: {
-        // recurring publishes ``txn_type`` so the FIELD survives the prune,
-        // but ``transfer`` is invalid for recurring (income/expense only) —
-        // the stale VALUE must be stripped or the backend validate() 422s.
-        txn_type: ["transfer"],
-      },
-    },
-  };
-  renderWithSWR(<DataTab widget={widget} onUpdate={onUpdate} />);
-
-  fireEvent.change(screen.getByLabelText("Data source"), {
-    target: { value: "recurring" },
-  });
-
-  const next = onUpdate.mock.calls[0][0] as BarWidget;
-  expect(next.config.dataset).toBe("recurring");
-  // ``txn_type`` was the only filter and its value was invalid → whole
-  // blob drops to undefined (matching pruneFiltersToSource's empty behavior).
-  expect(next.config.filters).toBeUndefined();
-});
-
-it("keeps a valid txn_type but clears transfer on switch to recurring", () => {
-  const onUpdate = vi.fn();
-  const widget: BarWidget = {
-    ...makeBar(),
-    config: {
-      ...makeBar().config,
-      filters: {
-        txn_type: ["transfer"],
-        // survives: recurring publishes ``category_id``.
-        category_ids: [9],
-      },
-    },
-  };
-  renderWithSWR(<DataTab widget={widget} onUpdate={onUpdate} />);
-
-  fireEvent.change(screen.getByLabelText("Data source"), {
-    target: { value: "recurring" },
-  });
-
-  const next = onUpdate.mock.calls[0][0] as BarWidget;
-  // category_ids survives; the invalid transfer txn_type is stripped.
-  expect(next.config.filters).toEqual({ category_ids: [9] });
-});
+// TBD-471: ``"transfer"`` retired from ``TxnType`` entirely — it is no
+// longer a representable value (a compile error, not a runtime one), so
+// the dataset-switch value-strip these two tests pinned is gone too. The
+// chokepoint that used to drop a stale ``transfer`` on THIS path
+// (``useWidgetMutations.ts``'s ``finalizeFilters``) is deleted; the single
+// remaining chokepoint is ``asTxnTypeArray``, read-side, covered by
+// ``resolve.test.ts``'s ``asTxnTypeArray_retires_transfer`` guard and by
+// ``FilterEditor.test.tsx``'s ``no_transfer_choice_on_any_dataset`` guard.
 
 it("keeps a valid txn_type=expense on switch to recurring", () => {
   const onUpdate = vi.fn();

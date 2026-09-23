@@ -4,8 +4,11 @@ import {
   asTxnTypeArray,
   isFieldOverridden,
   pickDateRange,
+  pruneFiltersToSource,
   resolveFilters,
+  setTransferMode,
   sourceSupportsStatusFilter,
+  transferMode,
 } from "@/lib/reports/resolve";
 import type {
   CanvasFilters,
@@ -20,11 +23,140 @@ describe("asTxnTypeArray", () => {
   it("passes a valid array through", () => {
     expect(asTxnTypeArray(["income", "expense"])).toEqual(["income", "expense"]);
   });
+  // ⚠ These two replace the dataset-switch tests deleted from
+  // `data-tab-source-picker.test.tsx`. Those pinned a WRITE-side strip that
+  // no longer exists, and they cannot be rewritten as they were: `"transfer"`
+  // is not a `TxnType` any more, so the literal will not compile. The case
+  // they protected is still REAL, because a `layout_json` persisted before
+  // TBD-471 can carry it and JSON out of the database is not typechecked —
+  // hence the casts. Read-side inertness is now the only thing standing
+  // between such a row and a permanently blank widget, so it is fenced here
+  // rather than described in a comment.
+  it("drops a persisted legacy transfer value (array form)", () => {
+    expect(asTxnTypeArray(["transfer"] as unknown)).toBeUndefined();
+  });
+  it("keeps the valid members of a persisted legacy mixed value", () => {
+    expect(asTxnTypeArray(["expense", "transfer"] as unknown)).toEqual([
+      "expense",
+    ]);
+  });
+  it("drops a persisted legacy transfer value (bare string form)", () => {
+    expect(asTxnTypeArray("transfer" as unknown)).toBeUndefined();
+  });
+
   it("drops unknown members and returns undefined when empty", () => {
     expect(asTxnTypeArray(["bogus"])).toBeUndefined();
     expect(asTxnTypeArray([])).toBeUndefined();
     expect(asTxnTypeArray(undefined)).toBeUndefined();
     expect(asTxnTypeArray(null)).toBeUndefined();
+  });
+
+  // guard asTxnTypeArray_retires_transfer (TBD-471 RULING 2). Migrated from
+  // the deleted component-level self-heal coverage
+  // (FilterEditor.test.tsx:315, pre-TBD-471): "transfer" is no longer a
+  // representable TxnType member, so this is the single chokepoint that
+  // drops a legacy persisted "transfer" value, for every caller, on every
+  // dataset — there is no more effect anywhere that does this at the
+  // component layer.
+  it("drops only 'transfer' from a legacy persisted value, keeping the rest", () => {
+    expect(asTxnTypeArray(["expense", "transfer"])).toEqual(["expense"]);
+    expect(asTxnTypeArray(["transfer"])).toBeUndefined();
+  });
+});
+
+describe("transferMode / setTransferMode (TBD-471 RULING 1)", () => {
+  // fence transfer_mode_three_states_READ
+  it("reads exclude/include/only, with 'only' winning when both keys are set", () => {
+    expect(transferMode({})).toBe("exclude");
+    expect(transferMode({ include_non_reportable: true })).toBe("include");
+    expect(transferMode({ transfers_only: true })).toBe("only");
+    expect(
+      transferMode({ include_non_reportable: true, transfers_only: true }),
+    ).toBe("only");
+  });
+
+  // fence transfer_mode_three_states_WRITE — the bug lives in the write
+  // direction: a handler that sets its own key without clearing the other
+  // leaves the axis in an unrepresentable two-keys-set state.
+  it("clears BOTH keys when set to 'exclude'", () => {
+    const next = setTransferMode(
+      { include_non_reportable: true, transfers_only: true },
+      "exclude",
+    );
+    expect(next.include_non_reportable).toBeUndefined();
+    expect(next.transfers_only).toBeUndefined();
+  });
+
+  it("setting 'include' sets include_non_reportable and clears transfers_only", () => {
+    const next = setTransferMode({ transfers_only: true }, "include");
+    expect(next.include_non_reportable).toBe(true);
+    expect(next.transfers_only).toBeUndefined();
+  });
+
+  it("setting 'only' sets transfers_only and clears include_non_reportable", () => {
+    const next = setTransferMode({ include_non_reportable: true }, "only");
+    expect(next.transfers_only).toBe(true);
+    expect(next.include_non_reportable).toBeUndefined();
+  });
+
+  it("never writes false for either key", () => {
+    const next = setTransferMode({}, "exclude");
+    expect(next).not.toHaveProperty("include_non_reportable");
+    expect(next).not.toHaveProperty("transfers_only");
+  });
+
+  it("preserves other filter keys untouched", () => {
+    const next = setTransferMode(
+      { account_ids: [1, 2], transfers_only: true },
+      "include",
+    );
+    expect(next.account_ids).toEqual([1, 2]);
+  });
+});
+
+describe("resolveFilters transfer axis (TBD-471 RULING 1)", () => {
+  // fence emit_state1_none_state2_include_only
+  it("state 1 (exclude, the default) emits neither key/filter", () => {
+    const out = resolveFilters(undefined, {});
+    expect(out).not.toContainEqual(expect.objectContaining({ field: "transfer" }));
+  });
+
+  it("state 2 (include_non_reportable) emits NO transfer AST filter", () => {
+    const out = resolveFilters(undefined, { include_non_reportable: true });
+    expect(out).not.toContainEqual(expect.objectContaining({ field: "transfer" }));
+  });
+
+  // fence transfer_emitted_as_eq_not_in
+  it("state 3 (transfers_only) emits {field:'transfer', op:'eq', value:true} — eq, not in", () => {
+    const out = resolveFilters(undefined, { transfers_only: true });
+    expect(out).toContainEqual({ field: "transfer", op: "eq", value: true });
+    expect(out.find((f) => f.field === "transfer")?.op).toBe("eq");
+  });
+
+  it("never emits transfer:false", () => {
+    const out = resolveFilters(undefined, { transfers_only: false });
+    expect(out).not.toContainEqual(expect.objectContaining({ field: "transfer" }));
+  });
+});
+
+// fence transfers_only_pruned_on_source_switch — the exact stranding class
+// TBD-471 retires: leaving this unfenced would let a new key reopen it.
+describe("pruneFiltersToSource drops transfers_only on a source switch", () => {
+  it("drops transfers_only when the new source doesn't publish 'transfer' (transactions → accounts)", () => {
+    const pruned = pruneFiltersToSource(
+      { transfers_only: true, account_ids: [1] },
+      ["account_id", "balance"], // accounts' published fields — no "transfer"
+    );
+    expect(pruned?.transfers_only).toBeUndefined();
+    expect(pruned?.account_ids).toEqual([1]);
+  });
+
+  it("keeps transfers_only when the source still publishes 'transfer'", () => {
+    const pruned = pruneFiltersToSource(
+      { transfers_only: true },
+      ["date", "amount", "transfer"],
+    );
+    expect(pruned?.transfers_only).toBe(true);
   });
 });
 
