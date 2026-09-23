@@ -97,13 +97,13 @@ Full pipeline detail (path filters, gating logic, smoke tests, apex deploy) live
 
 PR push (any branch):
 
-- `.github/workflows/test.yml` runs on changes under `backend/**`, `frontend/**`, or `.github/workflows/test.yml`. Backend: `pytest` + compileall syntax smoke. Frontend: lint, design-token check, `vitest`/`jest`, production build.
+- `.github/workflows/test.yml` runs on **every** push, deliberately with no `paths:` filter (TBD-347) — an in-workflow `changes` job diffs the PR instead and skips the backend/frontend shards for an unrelated change, so a docs-only PR still always produces a `Test` run. Backend: `pytest` + compileall syntax smoke. Frontend: lint, design-token check, `vitest`/`jest`, production build.
 - Nothing deploys. Nothing reaches production.
 
 Merge to `main`:
 
-- `.github/workflows/release.yml` runs on changes under `backend/**`, `frontend/**`, `nginx/**`, `.do/**`, or `Dockerfile*`. It runs `semantic-release`. If (and only if) `semantic-release` decides a new release is warranted, the gated `deploy` job pushes `.do/app.yaml` to DO App Platform, then `scripts/smoke-test.sh` asserts the live app serves traffic.
-- `chore:` / `docs:` / `refactor:` commits inside the allowlist still trigger `release.yml`, but `semantic-release` no-ops and the deploy job is skipped.
+- `.github/workflows/release.yml` also runs on **every** push to `main`, deliberately with no `paths:` filter (TBD-424) — the filter only ever deferred `semantic-release`'s own commit-intent analysis and then misattributed the result. It runs `semantic-release`. If (and only if) `semantic-release` decides a new release is warranted, the gated `deploy` job pushes `.do/app.yaml` to DO App Platform, then `scripts/smoke-test.sh` asserts the live app serves traffic.
+- `chore:` / `docs:` / `refactor:` commits still trigger `release.yml`, but `semantic-release` no-ops and the deploy job is skipped.
 - `.github/workflows/apex-deploy.yml` deploys the apex landing site (`thebetterdecision.com`) to AWS S3 + CloudFront on merges that touch the apex path filter. Independent of the DO release pipeline; landing-only commits never fire the DO redeploy.
 
 If you need to force a redeploy of the current production spec without merging a code change, use the manual workflow:
