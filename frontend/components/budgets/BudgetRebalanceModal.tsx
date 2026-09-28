@@ -390,7 +390,7 @@ export default function BudgetRebalanceModal({
               {suggestStatus ? (
                 <div className="mb-4" data-testid="rebalance-empty-state">
                   <p className="text-sm font-medium text-text-primary">
-                    {STATUS_TITLES[suggestStatus]}
+                    {STATUS_TITLES[suggestStatus] ?? "Nothing to rebalance"}
                   </p>
                   {suggestError && <p className="mt-1 text-xs text-text-muted">{suggestError}</p>}
                 </div>
