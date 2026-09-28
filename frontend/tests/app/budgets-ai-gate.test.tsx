@@ -1,5 +1,12 @@
+// TBD-461: the per-budget Transfer control is retired and the Rebalance
+// button is no longer AI-gated. This file used to fence the old 3-state AI
+// gating for "Suggest rebalance"; it now fences the opposite invariant —
+// Rebalance shows for any editable period regardless of AI status, and no
+// Transfer control exists anywhere on the page (a half-removal would leave
+// one but not the other).
+
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import BudgetsPage from "@/app/budgets/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -54,6 +61,10 @@ const USER = {
 };
 
 const PERIOD_OPEN = { id: 1, start_date: "2026-05-01", end_date: null };
+// A genuinely "upcoming" row per `periodStatus`: `end_date === null` alone
+// means "open" (current) regardless of `start_date`, so this must carry a
+// real end_date in the future to land in the "upcoming" branch instead.
+const PERIOD_NEXT = { id: 2, start_date: "2099-01-01", end_date: "2099-01-31" };
 
 const BUDGET = {
   id: 1,
@@ -62,6 +73,14 @@ const BUDGET = {
   amount: "500",
   spent: "200",
   percent_used: 40,
+};
+const BUDGET_2 = {
+  id: 2,
+  category_id: 11,
+  category_name: "Dining",
+  amount: "100",
+  spent: "20",
+  percent_used: 20,
 };
 
 function setupAuth(role: string = "owner") {
@@ -76,11 +95,11 @@ function setupAuth(role: string = "owner") {
   } as never);
 }
 
-function setupApiFetch() {
+function setupApiFetch(periods: unknown[] = [PERIOD_OPEN]) {
   vi.mocked(apiFetch).mockImplementation(async (url: string) => {
     if (url.startsWith("/api/v1/categories")) return [] as never;
-    if (url.startsWith("/api/v1/settings/billing-periods")) return [PERIOD_OPEN] as never;
-    if (url.startsWith("/api/v1/budgets")) return [BUDGET] as never;
+    if (url.startsWith("/api/v1/settings/billing-periods")) return periods as never;
+    if (url.startsWith("/api/v1/budgets")) return [BUDGET, BUDGET_2] as never;
     return null as never;
   });
 }
@@ -91,8 +110,8 @@ beforeEach(() => {
   setupAuth();
 });
 
-describe("Budgets page — AI rebalance button 3-state gating", () => {
-  it("not entitled: renders neither the rebalance button nor Set up AI", async () => {
+describe("Budgets page — Rebalance is no longer AI-gated (TBD-461)", () => {
+  it("AI not entitled: Rebalance still renders, and there is no Transfer control", async () => {
     vi.mocked(useAiStatus).mockReturnValue({
       categorize: { entitled: false, configured: false },
       forecast: { entitled: false, configured: false },
@@ -103,28 +122,13 @@ describe("Budgets page — AI rebalance button 3-state gating", () => {
     render(<BudgetsPage />);
 
     await waitFor(() => {
-      expect(screen.queryByTestId("suggest-rebalance-btn")).toBeNull();
+      expect(screen.getByTestId("rebalance-btn")).toBeInTheDocument();
     });
     expect(screen.queryByText(/set up ai/i)).toBeNull();
+    expect(screen.queryByText("Transfer")).toBeNull();
   });
 
-  it("entitled but not configured: renders Set up AI, no rebalance button", async () => {
-    vi.mocked(useAiStatus).mockReturnValue({
-      categorize: { entitled: false, configured: false },
-      forecast: { entitled: false, configured: false },
-      budget: { entitled: true, configured: false },
-    });
-    setupApiFetch();
-
-    render(<BudgetsPage />);
-
-    await waitFor(() => {
-      expect(screen.getByText(/set up ai/i)).toBeInTheDocument();
-    });
-    expect(screen.queryByTestId("suggest-rebalance-btn")).toBeNull();
-  });
-
-  it("entitled and configured: renders the rebalance button, no Set up AI", async () => {
+  it("AI entitled and configured: Rebalance still renders exactly once, no Set up AI", async () => {
     vi.mocked(useAiStatus).mockReturnValue({
       categorize: { entitled: false, configured: false },
       forecast: { entitled: false, configured: false },
@@ -135,8 +139,58 @@ describe("Budgets page — AI rebalance button 3-state gating", () => {
     render(<BudgetsPage />);
 
     await waitFor(() => {
-      expect(screen.getByTestId("suggest-rebalance-btn")).toBeInTheDocument();
+      expect(screen.getByTestId("rebalance-btn")).toBeInTheDocument();
     });
     expect(screen.queryByText(/set up ai/i)).toBeNull();
+    expect(screen.queryByText("Transfer")).toBeNull();
+  });
+
+  it("renders Rebalance on the next (upcoming) period too", async () => {
+    vi.mocked(useAiStatus).mockReturnValue({
+      categorize: { entitled: false, configured: false },
+      forecast: { entitled: false, configured: false },
+      budget: { entitled: false, configured: false },
+    });
+    setupApiFetch([PERIOD_NEXT]);
+
+    render(<BudgetsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("rebalance-btn")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Transfer")).toBeNull();
+  });
+
+  it("V10: current period + AI entitled and configured — 'Use suggestions' is present in the modal", async () => {
+    vi.mocked(useAiStatus).mockReturnValue({
+      categorize: { entitled: false, configured: false },
+      forecast: { entitled: false, configured: false },
+      budget: { entitled: true, configured: true },
+    });
+    setupApiFetch();
+
+    render(<BudgetsPage />);
+
+    await waitFor(() => expect(screen.getByTestId("rebalance-btn")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("rebalance-btn"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^use suggestions$/i })).toBeInTheDocument(),
+    );
+  });
+
+  it("V10b: current period, AI entitled but NOT configured — 'Use suggestions' is absent", async () => {
+    vi.mocked(useAiStatus).mockReturnValue({
+      categorize: { entitled: false, configured: false },
+      forecast: { entitled: false, configured: false },
+      budget: { entitled: true, configured: false },
+    });
+    setupApiFetch();
+
+    render(<BudgetsPage />);
+
+    await waitFor(() => expect(screen.getByTestId("rebalance-btn")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("rebalance-btn"));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /^use suggestions$/i })).toBeNull();
   });
 });

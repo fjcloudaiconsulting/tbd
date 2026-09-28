@@ -2,8 +2,7 @@
 plus the two snapshot readers.
 
 Spec: ``specs/2026-07-28-open-period-spend-window-design.md`` §5, tests 8-17,
-plus three D6 threading fences and one transfer-side stranded-fallback fence
-added in review (§5 covers neither).
+plus three D6 threading fences added in review (§5 covers neither).
 
 Two rules govern every test in this file.
 
@@ -520,36 +519,6 @@ async def test_update_budget_reads_authoritative_end_over_stale_narrow_snapshot(
 
 
 @pytest.mark.asyncio
-async def test_transfer_budget_computes_both_rows_on_one_window(session_factory):
-    """Test 15 — source and target always share ``source.period_start``, so a
-    single lookup serves both and neither row is unbounded.
-    """
-    seed = await _seed_base(session_factory)
-    org_id = seed["org_id"]
-    await _add_period(session_factory, org_id, _d(-5), None)
-    await _add_period(session_factory, org_id, _d(20), _d(49))
-    src_id = await _add_budget(
-        session_factory, org_id, seed["groceries_id"], _d(-5), amount="400.00"
-    )
-    await _add_budget(
-        session_factory, org_id, seed["dining_id"], _d(-5), amount="200.00"
-    )
-    await _add_expense(session_factory, seed, seed["groceries_id"], "100.00", _d(0))
-    await _add_expense(session_factory, seed, seed["groceries_id"], "999.00", _d(25))
-    await _add_expense(session_factory, seed, seed["dining_id"], "50.00", _d(0))
-    await _add_expense(session_factory, seed, seed["dining_id"], "999.00", _d(25))
-
-    async with session_factory() as db:
-        rows = await budget_service.transfer_budget(
-            db, org_id, src_id, seed["dining_id"], Decimal("50.00")
-        )
-
-    by_cat = {r.category_id: r for r in rows}
-    assert by_cat[seed["groceries_id"]].spent == Decimal("100.00")
-    assert by_cat[seed["dining_id"]].spent == Decimal("50.00")
-
-
-@pytest.mark.asyncio
 async def test_update_budget_on_a_stranded_budget_falls_back_to_the_snapshot(
     session_factory,
 ):
@@ -775,54 +744,3 @@ async def test_forecast_actuals_injected_today_governs_the_window(session_factor
     )
 
 
-# ── Test 16b — transfer_budget's own stranded fallback ─────────────────────
-
-@pytest.mark.asyncio
-async def test_transfer_budget_on_a_stranded_budget_falls_back_to_source_snapshot(
-    session_factory,
-):
-    """The transfer sibling of test 16, which does **not** cover this branch.
-
-    ``update_budget``'s fallback reads ``budget.period_end``;
-    ``transfer_budget``'s reads ``source.period_end`` and serves BOTH rows from
-    that one lookup. Different snapshot, two consumers — so it is not covered
-    transitively, and it is new code on a money path.
-
-    The target budget is given a deliberately DIFFERENT stored snapshot
-    (``_d(-25)``) so the test discriminates: reading the target's own snapshot
-    would drop its ``_d(-20)`` row and report 0. An unbounded fallback would
-    report the ``_d(0)`` rows too.
-    """
-    seed = await _seed_base(session_factory)
-    org_id = seed["org_id"]
-    # A period row exists, but NOT at the budgets' period_start — stranded.
-    await _add_period(session_factory, org_id, _d(-10), None)
-    src_id = await _add_budget(
-        session_factory, org_id, seed["groceries_id"], _d(-40),
-        end=_d(-11), amount="400.00",
-    )
-    await _add_budget(
-        session_factory, org_id, seed["dining_id"], _d(-40),
-        end=_d(-25), amount="200.00",
-    )
-    await _add_expense(session_factory, seed, seed["groceries_id"], "100.00", _d(-30))
-    await _add_expense(session_factory, seed, seed["groceries_id"], "50.00", _d(0))
-    await _add_expense(session_factory, seed, seed["dining_id"], "70.00", _d(-20))
-    await _add_expense(session_factory, seed, seed["dining_id"], "999.00", _d(0))
-
-    async with session_factory() as db:
-        rows = await budget_service.transfer_budget(
-            db, org_id, src_id, seed["dining_id"], Decimal("50.00")
-        )
-
-    by_cat = {r.category_id: r for r in rows}
-    # The transfer itself still happened — the fallback must not 400 or throw.
-    assert by_cat[seed["groceries_id"]].amount == Decimal("350.00")
-    assert by_cat[seed["dining_id"]].amount == Decimal("250.00")
-    assert by_cat[seed["groceries_id"]].spent == Decimal("100.00"), (
-        "bounded by source.period_end (_d(-11)); the _d(0) row is out"
-    )
-    assert by_cat[seed["dining_id"]].spent == Decimal("70.00"), (
-        "the TARGET row is bounded by the SOURCE's snapshot too — its own "
-        "_d(-25) snapshot would have excluded the _d(-20) row"
-    )

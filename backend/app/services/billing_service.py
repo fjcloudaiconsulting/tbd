@@ -476,8 +476,8 @@ async def _find_period_by_start(
     TBD-240 D4. ``scalar_one_or_none`` is safe: ``uq_billing_period_org_start``
     makes ``(org_id, start_date)`` unique.
 
-    Exists as its own function because D4's two callers
-    (``budget_service.update_budget`` / ``transfer_budget``) must NOT use
+    Exists as its own function because D4's caller
+    (``budget_service.update_budget``) must NOT use
     :func:`resolve_period` — that raises ``ValidationError`` when no row
     matches, which would turn a ``PUT /budgets/{id}`` on a budget whose period
     row is missing into a 400 — nor :func:`get_current_period`, which
@@ -910,7 +910,7 @@ async def _apply_close_step(
     #      there on a closed period is a user-visible lie regardless of which
     #      bound the sum used.
     #   2. It is the fallback bound for D4's stranded-budget branch in
-    #      `update_budget` / `transfer_budget` — the one path where the
+    #      `update_budget` — the one path where the
     #      snapshot is still authoritative because no period row was found.
     #
     # ⚠ `new_end` is `resolved`, NEVER the raw `close_date` parameter. That

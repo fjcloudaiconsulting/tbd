@@ -1,13 +1,28 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+// BudgetRebalanceModal — zero-sum free allocation (TBD-461).
+//
+// Free allocation, not a diff review: every budget gets its own slider +
+// text control, any direction, and Apply is enabled only once the net
+// change is exactly zero. "Use suggestions" (AI, entitlement-gated) is a
+// preset that fills the text controls; it never fetches on open and never
+// auto-applies. One POST on Apply, atomic on the server.
 
-import Spinner from "@/components/ui/Spinner";
-import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { btnPrimary, btnSecondary, card, error as errorCls } from "@/lib/styles";
+import { apiFetch, ApiResponseError, extractErrorMessage } from "@/lib/api";
+import HelpTooltip from "@/components/help/HelpTooltip";
+import {
+  btnPrimary,
+  btnSecondary,
+  card,
+  error as errorCls,
+  input as inputCls,
+  warning as warningCls,
+} from "@/lib/styles";
 import { maskMoneyText } from "@/lib/format";
-import { useMoney } from "@/lib/hooks/use-org-currency";
+import { useBalancesHidden, useMoney } from "@/lib/hooks/use-org-currency";
+import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 
 export type RebalanceStatus =
   | "ok"
@@ -30,209 +45,304 @@ export interface RebalanceResponse {
   period_start: string | null;
   suggestions: RebalanceSuggestion[];
   summary: string;
-  // Conservation fields (zero-sum rebalance). Optional so older payloads
-  // still type-check; the meter/banner default to a balanced reading.
-  total_budget?: string | number;
-  total_suggested?: string | number;
   uncovered_overspend?: string | number;
-  is_balanced?: boolean;
 }
+
+// Old modal's friendly empty-state titles (TBD-461 restore), keyed by the
+// non-ok statuses the backend can return. The raw `summary` is still shown
+// underneath, but the headline is never the bare status string.
+const STATUS_TITLES: Record<Exclude<RebalanceStatus, "ok">, string> = {
+  empty_no_budgets: "No budgets yet",
+  empty_no_history: "Not enough history yet",
+  empty_no_surplus: "Nothing to reallocate",
+  llm_unavailable: "AI is unavailable",
+};
 
 interface Budget {
   id: number;
   category_id: number;
+  category_name: string;
   amount: string | number;
+}
+
+interface Row {
+  id: number;
+  category_id: number;
+  category_name: string;
+  baseCents: number;
+  baseText: string;
 }
 
 interface Props {
   open: boolean;
   budgets: Budget[];
-  /** Called after the user clicks Apply and the writes succeed.
-   *  Lets the parent reload its budgets list. */
-  onApplied: () => void;
+  /** Gate for the "Use suggestions" preset (current period + AI entitled/configured). */
+  canSuggest: boolean;
+  /** Called after Apply succeeds, or before re-snapshotting after a 409/404. */
+  onApplied: () => Promise<void>;
   onClose: () => void;
 }
 
-function toNumber(value: string | number): number {
-  return typeof value === "string" ? Number(value) : value;
+const ERROR_INVALID = "Use a number with up to 2 decimals";
+const RECONCILE_MESSAGE =
+  "Budgets changed since you opened this. Reloaded the latest amounts.";
+const RECONCILE_FAILED_MESSAGE =
+  "Could not reload the latest amounts. Close and reopen.";
+
+function centsToText(cents: number): string {
+  return (cents / 100).toFixed(2);
+}
+
+// Numeric(12,2): up to 10 integer digits, up to 2 decimals.
+const MONEY_RE = /^(\d{1,10}(\.\d{0,2})?|\.\d{1,2})$/;
+
+/** Parses a money string into integer cents, or null if invalid. Splits on
+ *  "." rather than multiplying by 100, so "12." -> 1200 and ".5" -> 50 exact
+ *  (floating point multiplication is not trustworthy here). */
+function parseMoney(text: string): number | null {
+  if (!MONEY_RE.test(text)) return null;
+  const [whole, frac = ""] = text.split(".");
+  return Number(whole || "0") * 100 + Number(frac.padEnd(2, "0"));
 }
 
 export default function BudgetRebalanceModal({
   open,
   budgets,
+  canSuggest,
   onApplied,
   onClose,
 }: Props) {
   const money = useMoney();
-  const [loading, setLoading] = useState(false);
-  const [response, setResponse] = useState<RebalanceResponse | null>(null);
-  const [acceptedIds, setAcceptedIds] = useState<Set<number>>(new Set());
-  const [fetchError, setFetchError] = useState<string>("");
-  const [applyError, setApplyError] = useState<string>("");
-  const [applying, setApplying] = useState(false);
-  // Per-row apply state: which suggestions have been written successfully
-  // this apply attempt, and which (if any) failed. Lets the user see
-  // exactly what landed when a mid-loop failure cuts the loop short.
-  const [appliedIds, setAppliedIds] = useState<Set<number>>(new Set());
-  const [failedIds, setFailedIds] = useState<Set<number>>(new Set());
-  const [skippedIds, setSkippedIds] = useState<Set<number>>(new Set());
+  const balancesHidden = useBalancesHidden();
+
+  const [rows, setRows] = useState<Row[]>([]);
+  const [text, setText] = useState<Record<number, string>>({});
+  // Bumped after a 409/404 + a successful `onApplied()` reload, to force a
+  // re-snapshot from whatever `budgets` this render sees. A ref-based "arm
+  // and wait for the next `budgets` prop change" cannot work: if the parent
+  // already committed the reloaded budgets before this code runs (e.g. it
+  // updates state synchronously inside `onApplied`, before the awaited
+  // promise resolves), the `budgets` prop never changes *again* afterward,
+  // so an effect keyed on `[budgets]` never re-fires. A state bump always
+  // forces one more render of this component, which re-reads the current
+  // `budgets` prop regardless of when it last changed.
+  const [resnapshotToken, setResnapshotToken] = useState(0);
+  // Bumped on every open, so an in-flight 409 reload can tell whether the
+  // modal it belongs to is still the one on screen.
+  const openGeneration = useRef(0);
+
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestError, setSuggestError] = useState("");
+  // Non-ok status from the last suggest fetch, rendered via STATUS_TITLES
+  // instead of the raw `summary` string (R4). Cleared alongside suggestError.
+  const [suggestStatus, setSuggestStatus] = useState<Exclude<RebalanceStatus, "ok"> | null>(null);
+  // Set only on an "ok" response (R1/R2): the AI summary + uncovered-overspend
+  // figure, shown above the rows until Reset or a re-snapshot.
+  const [aiSummary, setAiSummary] = useState("");
+  const [uncoveredOverspend, setUncoveredOverspend] = useState(0);
+  // Per-row reasoning text from the last suggestion fetch (R3), keyed by row
+  // id. Rows with no matching suggestion have no entry.
+  const [reasoningById, setReasoningById] = useState<Record<number, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [applyError, setApplyError] = useState("");
+
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Drops everything the last "Use suggestions" fetch put on screen.
+  function clearSuggestion() {
+    setSuggestStatus(null);
+    setAiSummary("");
+    setUncoveredOverspend(0);
+    setReasoningById({});
+  }
+
+  function buildSnapshot(opts: { keepApplyError?: boolean } = {}) {
+    const nextRows: Row[] = budgets.map((b) => {
+      const baseCents = Math.round(Number(b.amount) * 100);
+      return {
+        id: b.id,
+        category_id: b.category_id,
+        category_name: b.category_name,
+        baseCents,
+        baseText: centsToText(baseCents),
+      };
+    });
+    const nextText: Record<number, string> = {};
+    for (const r of nextRows) nextText[r.id] = r.baseText;
+    setRows(nextRows);
+    setText(nextText);
+    // On the reconcile path the "Reloaded the latest amounts" message must
+    // survive the re-snapshot it is reporting on; Reset and opening fresh
+    // still clear it.
+    if (!opts.keepApplyError) setApplyError("");
+    setSuggestError("");
+    clearSuggestion();
+  }
+
+  // Snapshot ONLY on open, never on a `budgets` prop change while open — a
+  // background reload must not add/hide a row or reset a typed value.
+  useEffect(() => {
+    if (!open) return;
+    openGeneration.current += 1;
+    buildSnapshot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- snapshot on open only, deliberately not on every `budgets` change
+  }, [open]);
+
+  // Explicit re-snapshot, used only after a 409/404 has been resolved by the
+  // parent reloading (`onApplied`) with the now-committed amounts. `token`
+  // starting at 0 means "never armed" so this never fires on mount.
+  useEffect(() => {
+    if (resnapshotToken === 0) return;
+    buildSnapshot({ keepApplyError: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuilds from whichever `budgets` this render sees
+  }, [resnapshotToken]);
+
+  useFocusTrap({ active: open, containerRef: dialogRef });
 
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the modal's loading/response/error/selection state each time it opens, before fetching the rebalance
-    setLoading(true);
-    setResponse(null);
-    setFetchError("");
-    setApplyError("");
-    setAcceptedIds(new Set());
-    setAppliedIds(new Set());
-    setFailedIds(new Set());
-    setSkippedIds(new Set());
-    apiFetch<RebalanceResponse>("/api/v1/ai/budget/rebalance", {
-      method: "POST",
-    })
-      .then((res) => {
-        if (cancelled) return;
-        if (res) {
-          setResponse(res);
-          // Accept-by-default: each suggestion is opt-out, mirroring
-          // the diff-review UX. The user can skip individual rows
-          // before clicking Apply.
-          setAcceptedIds(
-            new Set((res.suggestions ?? []).map((s) => s.category_id)),
-          );
-        }
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setFetchError(extractErrorMessage(err));
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
     };
-  }, [open]);
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [open, onClose]);
 
-  const budgetIdByCategory = useMemo(() => {
-    const m = new Map<number, number>();
-    for (const b of budgets) m.set(b.category_id, b.id);
+  const parsedById = useMemo(() => {
+    const m = new Map<number, number | null>();
+    for (const r of rows) m.set(r.id, parseMoney(text[r.id] ?? ""));
     return m;
-  }, [budgets]);
+  }, [rows, text]);
 
-  function toggleRow(categoryId: number) {
-    setAcceptedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(categoryId)) next.delete(categoryId);
-      else next.add(categoryId);
-      return next;
-    });
+  const allValid = rows.length > 0 && rows.every((r) => parsedById.get(r.id) !== null);
+  // Compare parsed cents, not raw text: "12.5" and a base of "12.50" are the
+  // same amount and must not count as a change (or be POSTed).
+  const isRowChanged = (r: Row) => {
+    const p = parsedById.get(r.id);
+    return p !== null && p !== r.baseCents;
+  };
+  const anyChanged = rows.some(isRowChanged);
+  // Display net always resolves (invalid rows contribute zero change), so the
+  // footer amount line never shows NaN while the user is mid-edit.
+  const displayNetCents = rows.reduce((s, r) => {
+    const p = parsedById.get(r.id);
+    return s + ((p ?? r.baseCents) - r.baseCents);
+  }, 0);
+  const netCentsExact = allValid ? displayNetCents : null;
+
+  const applyEnabled =
+    allValid && anyChanged && netCentsExact === 0 && !submitting;
+
+  let statusWord: string;
+  if (!allValid) statusWord = "Fix the highlighted amounts";
+  else if (!anyChanged) statusWord = "No changes yet";
+  else if (netCentsExact === 0) statusWord = "Balanced";
+  else statusWord = `Not balanced: must net to ${money(0)}`;
+
+  function setRowText(id: number, value: string) {
+    setText((prev) => ({ ...prev, [id]: value }));
+  }
+
+  function handleReset() {
+    const next: Record<number, string> = {};
+    for (const r of rows) next[r.id] = r.baseText;
+    setText(next);
+    setApplyError("");
+    setSuggestError("");
+    clearSuggestion();
+  }
+
+  async function handleSuggest() {
+    setSuggestError("");
+    clearSuggestion();
+    setSuggesting(true);
+    try {
+      const res = await apiFetch<RebalanceResponse>("/api/v1/ai/budget/rebalance", {
+        method: "POST",
+      });
+      if (res && res.status === "ok") {
+        // Resolve matches OUTSIDE the updater: React runs updaters at the next
+        // render, so a counter incremented inside one still reads 0 here.
+        const hits = (res.suggestions ?? []).flatMap((s) => {
+          const row = rows.find((r) => r.category_id === s.category_id);
+          return row ? [{ id: row.id, text: Number(s.suggested_amount).toFixed(2), reasoning: s.reasoning }] : [];
+        });
+        setText((prev) => {
+          const next = { ...prev };
+          for (const h of hits) next[h.id] = h.text;
+          return next;
+        });
+        const nextReasoning: Record<number, string> = {};
+        for (const h of hits) if (h.reasoning) nextReasoning[h.id] = h.reasoning;
+        setReasoningById(nextReasoning);
+        setAiSummary(res.summary ?? "");
+        setUncoveredOverspend(Number(res.uncovered_overspend ?? 0));
+        if (hits.length === 0) {
+          setSuggestError(maskMoneyText("No suggestions matched a budget in this period."));
+        }
+      } else if (res) {
+        setSuggestStatus(res.status as Exclude<RebalanceStatus, "ok">);
+        setSuggestError(maskMoneyText(res.summary ?? ""));
+      }
+    } catch (err) {
+      setSuggestError(extractErrorMessage(err));
+    } finally {
+      setSuggesting(false);
+    }
   }
 
   async function handleApply() {
-    if (!response) return;
+    if (!applyEnabled) return;
+    setSubmitting(true);
     setApplyError("");
-    setApplying(true);
-    // Carry forward prior-attempt results so a retry only targets
-    // rows that still need to land — without this, re-clicking Apply
-    // after a partial failure would re-PUT the rows that ALREADY
-    // applied (charging the user's budget twice in spirit, even
-    // though the API call is idempotent).
-    const cumulativeApplied = new Set<number>(appliedIds);
-    const cumulativeFailed = new Set<number>();
-    const cumulativeSkipped = new Set<number>();
-    const pending = response.suggestions.filter(
-      (s) =>
-        acceptedIds.has(s.category_id) && !cumulativeApplied.has(s.category_id),
-    );
-    let firstError: unknown = null;
-    let abortedAtIndex = -1;
-    for (let i = 0; i < pending.length; i++) {
-      const s = pending[i];
-      const budgetId = budgetIdByCategory.get(s.category_id);
-      if (!budgetId) {
-        // The user's budgets prop drifted (a budget was deleted between
-        // open and apply). Surface it instead of silently dropping.
-        cumulativeSkipped.add(s.category_id);
-        continue;
+    const items = rows
+      .filter(isRowChanged)
+      .map((r) => ({
+        budget_id: r.id,
+        expected_amount: r.baseText,
+        amount: centsToText(parsedById.get(r.id) as number),
+      }));
+    try {
+      await apiFetch("/api/v1/budgets/rebalance", {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      });
+    } catch (err) {
+      if (err instanceof ApiResponseError && (err.status === 409 || err.status === 404)) {
+        setApplyError(RECONCILE_MESSAGE);
+        const gen = openGeneration.current;
+        try {
+          await onApplied();
+          // A close/reopen during the reload started a fresh snapshot; a late
+          // bump would overwrite the user's new edits with this stale reload.
+          if (gen === openGeneration.current) setResnapshotToken((t) => t + 1);
+        } catch {
+          setApplyError(RECONCILE_FAILED_MESSAGE);
+        }
+      } else {
+        setApplyError(extractErrorMessage(err));
       }
-      try {
-        await apiFetch(`/api/v1/budgets/${budgetId}`, {
-          method: "PUT",
-          body: JSON.stringify({ amount: toNumber(s.suggested_amount) }),
-        });
-        cumulativeApplied.add(s.category_id);
-      } catch (err) {
-        cumulativeFailed.add(s.category_id);
-        if (firstError === null) firstError = err;
-        abortedAtIndex = i;
-        // Stop on first failure — applying further rows after a
-        // server-side rejection would mask the failure and make it
-        // harder for the user to recover.
-        break;
-      }
+      setSubmitting(false);
+      return;
     }
-    // Anything we didn't even attempt because of the break above
-    // shouldn't keep its checkbox checked — otherwise the next Apply
-    // would happily retry them all. Mark them as 'skipped' so the
-    // user can re-check explicitly if they want to try again.
-    if (abortedAtIndex >= 0) {
-      for (let i = abortedAtIndex + 1; i < pending.length; i++) {
-        cumulativeSkipped.add(pending[i].category_id);
-      }
+    // The POST succeeded: the change is applied regardless of what happens
+    // next. A failing reload (`onApplied`) is a "list may be stale" problem
+    // for the parent, never an Apply failure — close either way.
+    try {
+      await onApplied();
+    } catch {
+      // Parent's reload failed; the write already committed on the server.
     }
-    setAppliedIds(cumulativeApplied);
-    setFailedIds(cumulativeFailed);
-    setSkippedIds(cumulativeSkipped);
-    // Uncheck rows that already applied so the count + sum line and
-    // the Apply-button label reflect only the work still to do.
-    setAcceptedIds((prev) => {
-      const next = new Set(prev);
-      for (const id of cumulativeApplied) next.delete(id);
-      return next;
-    });
-    if (firstError !== null) {
-      setApplyError(extractErrorMessage(firstError));
-    } else if (
-      cumulativeSkipped.size > 0 &&
-      cumulativeApplied.size === appliedIds.size
-    ) {
-      setApplyError(
-        "No budget rows could be applied. Refresh and try again.",
-      );
-    }
-    setApplying(false);
-    // Notify the parent if anything landed THIS attempt.
-    const landedThisAttempt =
-      cumulativeApplied.size > appliedIds.size;
-    if (landedThisAttempt) {
-      onApplied();
-    }
-    // Auto-close only when every accepted row has now landed and
-    // nothing failed/was skipped this attempt.
-    if (
-      cumulativeFailed.size === 0 &&
-      cumulativeSkipped.size === 0 &&
-      pending.every((s) => cumulativeApplied.has(s.category_id))
-    ) {
-      onClose();
-    }
+    setSubmitting(false);
+    onClose();
   }
 
   if (!open) return null;
 
-  const hasOkSuggestions =
-    response?.status === "ok" && (response.suggestions?.length ?? 0) > 0;
-
-  const acceptedCount = acceptedIds.size;
-  const acceptedSum = response
-    ? response.suggestions
-        .filter((s) => acceptedIds.has(s.category_id))
-        .reduce((acc, s) => acc + toNumber(s.delta_amount), 0)
-    : 0;
+  const poolCents = rows.reduce((s, r) => s + r.baseCents, 0);
 
   return (
     <div
@@ -242,245 +352,194 @@ export default function BudgetRebalanceModal({
       aria-labelledby="rebalance-title"
     >
       <div
+        ref={dialogRef}
         className={`${card} relative w-full max-w-3xl max-h-[90vh] overflow-y-auto`}
       >
         <div className="flex items-start justify-between border-b border-border-subtle px-6 py-4">
           <div>
-            <h2
-              id="rebalance-title"
-              className="text-base font-semibold text-text-primary"
-            >
-              AI budget rebalance
+            <h2 id="rebalance-title" className="text-base font-semibold text-text-primary">
+              Rebalance budgets
             </h2>
             <p className="mt-1 text-xs text-text-muted">
-              Suggestions only. Nothing is applied until you click Apply.
+              Move amounts between budgets. The total must stay the same.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-sm text-text-muted hover:text-text-primary"
-            aria-label="Close"
-          >
-            ✕
-          </button>
         </div>
 
         <div className="px-6 py-5">
-          {loading && (
-            <div className="flex justify-center py-12">
-              <Spinner />
+          {balancesHidden ? (
+            <div className="py-10 text-center">
+              <p className="text-sm text-text-primary">Show balances to rebalance.</p>
+              <button
+                type="button"
+                onClick={() => import("@/lib/format").then((m) => m.setBalancesHidden(false))}
+                className={`${btnSecondary} mt-4`}
+              >
+                Show balances
+              </button>
             </div>
-          )}
-
-          {!loading && fetchError && (
-            <div className={`mb-4 ${errorCls}`} role="alert">
-              {fetchError}
-            </div>
-          )}
-
-          {!loading && response && response.status !== "ok" && (
-            <EmptyState status={response.status} message={maskMoneyText(response.summary)} />
-          )}
-
-          {!loading && response && response.status === "ok" && !hasOkSuggestions && (
-            <EmptyState
-              status="ok_no_changes"
-              message={
-                response.summary ||
-                "AI looked at your budgets and didn't recommend any changes."
-              }
-            />
-          )}
-
-          {!loading && response && hasOkSuggestions && (
+          ) : (
             <>
-              {response.summary && (
-                <p className="mb-4 text-sm text-text-secondary">
-                  {maskMoneyText(response.summary)}
+              {suggestStatus ? (
+                <div className="mb-4" data-testid="rebalance-empty-state">
+                  <p className="text-sm font-medium text-text-primary">
+                    {STATUS_TITLES[suggestStatus] ?? "Nothing to rebalance"}
+                  </p>
+                  {suggestError && <p className="mt-1 text-xs text-text-muted">{suggestError}</p>}
+                </div>
+              ) : (
+                suggestError && (
+                  <div className={`mb-4 ${errorCls}`} role="alert">
+                    {suggestError}
+                  </div>
+                )
+              )}
+              {aiSummary && (
+                <p className="mb-4 text-sm text-text-secondary" data-testid="rebalance-summary">
+                  {maskMoneyText(aiSummary)}
                 </p>
               )}
-              {Number(response.uncovered_overspend ?? 0) > 0 && (
-                <div
-                  data-testid="rebalance-uncovered"
-                  className="mb-4 rounded-md bg-warning-dim px-3 py-2 text-xs text-warning"
-                  role="status"
-                >
-                  You&apos;re {money(Number(response.uncovered_overspend))}{" "}
-                  over plan this period. Spending exceeds your total budget, so
-                  not every category could be fully covered.
+              {uncoveredOverspend > 0 && (
+                <div className={`mb-4 ${warningCls}`} data-testid="rebalance-uncovered" role="status">
+                  You&apos;re {money(uncoveredOverspend)} over plan this period. Spending
+                  exceeds your total budget, so not every category could be fully covered.
                 </div>
               )}
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm" data-testid="rebalance-diff-table">
-                  <thead>
-                    <tr className="border-b border-border-subtle text-left">
-                      <th className="py-2 pr-3 text-xs font-medium text-text-muted">
-                        Apply
-                      </th>
-                      <th className="py-2 pr-3 text-xs font-medium text-text-muted">
-                        Category
-                      </th>
-                      <th className="py-2 pr-3 text-right text-xs font-medium text-text-muted">
-                        Current
-                      </th>
-                      <th className="py-2 pr-3 text-right text-xs font-medium text-text-muted">
-                        Suggested
-                      </th>
-                      <th className="py-2 pr-3 text-right text-xs font-medium text-text-muted">
-                        Delta
-                      </th>
-                      <th className="py-2 pr-3 text-xs font-medium text-text-muted">
-                        Reasoning
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {response.suggestions.map((s) => {
-                      const delta = toNumber(s.delta_amount);
-                      const accepted = acceptedIds.has(s.category_id);
-                      const wasApplied = appliedIds.has(s.category_id);
-                      const wasFailed = failedIds.has(s.category_id);
-                      const wasSkipped = skippedIds.has(s.category_id);
-                      const rowStatus = wasApplied
-                        ? "applied"
-                        : wasFailed
-                          ? "failed"
-                          : wasSkipped
-                            ? "skipped"
-                            : null;
-                      return (
-                        <tr
-                          key={s.category_id}
-                          className="border-b border-border-subtle/60 align-top"
-                          data-testid={`rebalance-row-${s.category_id}`}
-                          data-row-status={rowStatus ?? "pending"}
-                        >
-                          <td className="py-2 pr-3">
-                            <input
-                              type="checkbox"
-                              aria-label={`Apply suggestion for ${s.category_name}`}
-                              checked={accepted}
-                              onChange={() => toggleRow(s.category_id)}
-                              disabled={wasApplied}
-                              className="h-4 w-4 accent-accent"
-                            />
-                          </td>
-                          <td className="py-2 pr-3 text-text-primary">
-                            {s.category_name}
-                            {rowStatus && (
-                              <span
-                                className={`ml-2 text-[10px] uppercase tracking-wide ${
-                                  wasApplied
-                                    ? "text-success"
-                                    : wasFailed
-                                      ? "text-danger"
-                                      : "text-text-muted"
-                                }`}
-                                data-testid={`rebalance-row-${s.category_id}-status`}
-                              >
-                                {rowStatus}
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-2 pr-3 text-right tabular-nums text-text-secondary">
-                            {money(toNumber(s.current_amount))}
-                          </td>
-                          <td className="py-2 pr-3 text-right tabular-nums text-text-primary">
-                            {money(toNumber(s.suggested_amount))}
-                          </td>
-                          <td
-                            className={`py-2 pr-3 text-right tabular-nums ${
-                              delta > 0
-                                ? "text-success"
-                                : delta < 0
-                                  ? "text-danger"
-                                  : "text-text-muted"
-                            }`}
-                          >
-                            {delta > 0 ? "+" : ""}
-                            {money(delta)}
-                          </td>
-                          <td className="py-2 pr-3 text-xs text-text-muted">
-                            {maskMoneyText(s.reasoning)}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <div className="space-y-3">
+                {rows.map((row) => {
+                  const rawText = text[row.id] ?? "";
+                  const parsed = parsedById.get(row.id);
+                  const invalid = parsed === null;
+                  const displayCents = parsed ?? row.baseCents;
+                  const deltaCents = displayCents - row.baseCents;
+                  const nameId = `rb-name-${row.id}`;
+                  const amtId = `rb-amt-${row.id}`;
+                  const allocId = `rb-alloc-${row.id}`;
+                  const errId = `rb-err-${row.id}`;
+                  return (
+                    <div
+                      key={row.id}
+                      className="rounded-md border border-border-subtle bg-surface px-4 py-3"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span id={nameId} className="text-sm text-text-primary">
+                          {row.category_name}
+                        </span>
+                        <span className="text-xs tabular-nums text-text-secondary">
+                          {deltaCents >= 0 ? "+" : ""}
+                          {money(deltaCents / 100)}
+                        </span>
+                      </div>
+                      <span id={amtId} className="sr-only">
+                        amount
+                      </span>
+                      <span id={allocId} className="sr-only">
+                        allocation
+                      </span>
+                      <p className="mt-1 text-xs tabular-nums text-text-muted">
+                        {money(row.baseCents / 100)} → {money(displayCents / 100)}
+                      </p>
+                      <input
+                        type="range"
+                        min={0}
+                        max={poolCents / 100}
+                        step={0.01}
+                        value={displayCents / 100}
+                        aria-labelledby={`${nameId} ${allocId}`}
+                        aria-valuetext={money(displayCents / 100)}
+                        onChange={(e) => setRowText(row.id, Number(e.target.value).toFixed(2))}
+                        className="mt-2 min-h-[44px] w-full accent-border-strong sm:min-h-0"
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        aria-labelledby={`${nameId} ${amtId}`}
+                        aria-invalid={invalid ? "true" : undefined}
+                        aria-describedby={invalid ? errId : undefined}
+                        value={rawText}
+                        onChange={(e) => setRowText(row.id, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void handleApply();
+                          }
+                        }}
+                        className={`mt-2 w-full sm:w-32 ${inputCls} ${invalid ? "border-danger" : ""}`}
+                      />
+                      {invalid && (
+                        <p id={errId} className="mt-1 text-xs text-danger">
+                          {ERROR_INVALID}
+                        </p>
+                      )}
+                      {reasoningById[row.id] && (
+                        <p className="mt-1 text-xs text-text-secondary">
+                          {maskMoneyText(reasoningById[row.id])}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              <div
-                data-testid="rebalance-balance-meter"
-                className={`mt-3 rounded-md px-3 py-2 text-xs ${
-                  Math.abs(acceptedSum) < 0.005
-                    ? "bg-surface-raised/40 text-text-muted"
-                    : "bg-warning-dim text-warning"
-                }`}
-              >
-                {acceptedCount} of {response.suggestions.length} changes
-                selected.{" "}
-                {Math.abs(acceptedSum) < 0.005 ? (
-                  <>Net change: {money(0)}. Balanced.</>
-                ) : (
-                  <>
-                    This changes your total budget by{" "}
-                    {acceptedSum > 0 ? "+" : ""}
-                    {money(acceptedSum)}.
-                  </>
-                )}
-              </div>
+
+              {applyError && (
+                <div className={`mt-4 ${errorCls}`} role="alert">
+                  {applyError}
+                </div>
+              )}
             </>
           )}
-
-          {applyError && (
-            <div className={`mt-4 ${errorCls}`} role="alert">
-              {applyError}
-            </div>
-          )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-border-subtle bg-surface-raised/30 px-6 py-3">
-          <button type="button" onClick={onClose} className={btnSecondary}>
-            Cancel
-          </button>
-          {hasOkSuggestions && (
-            <button
-              type="button"
-              onClick={handleApply}
-              disabled={applying || acceptedCount === 0}
-              className={btnPrimary}
-            >
-              {applying ? "Applying..." : `Apply ${acceptedCount} change${acceptedCount === 1 ? "" : "s"}`}
+        <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle bg-surface px-6 py-3">
+          <div>
+            {!balancesHidden && (
+              <>
+                <p className="text-xs text-text-secondary tabular-nums">
+                  Net change {displayNetCents >= 0 ? "+" : ""}
+                  {money(displayNetCents / 100)}
+                </p>
+                <p role="status" className="text-xs text-text-muted">
+                  {statusWord}
+                </p>
+              </>
+            )}
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            {!balancesHidden && canSuggest && (
+              <span className="inline-flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={handleSuggest}
+                  disabled={suggesting}
+                  className={btnSecondary}
+                >
+                  {suggesting ? "Loading..." : "Use suggestions"}
+                </button>
+                <HelpTooltip k="ai.budget" />
+              </span>
+            )}
+            {!balancesHidden && (
+              <button type="button" onClick={handleReset} className={btnSecondary}>
+                Reset
+              </button>
+            )}
+            <button type="button" onClick={onClose} className={btnSecondary}>
+              Cancel
             </button>
-          )}
+            {!balancesHidden && (
+              <button
+                type="button"
+                onClick={handleApply}
+                disabled={!applyEnabled}
+                className={btnPrimary}
+              >
+                Apply
+              </button>
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function EmptyState({
-  status,
-  message,
-}: {
-  status: RebalanceStatus | "ok_no_changes";
-  message: string;
-}) {
-  const title =
-    status === "empty_no_budgets"
-      ? "No budgets yet"
-      : status === "empty_no_history"
-        ? "Not enough history yet"
-        : status === "empty_no_surplus"
-          ? "Nothing to reallocate"
-          : status === "llm_unavailable"
-            ? "AI is unavailable"
-            : "Nothing to rebalance";
-  return (
-    <div className="py-10 text-center" data-testid="rebalance-empty-state">
-      <p className="text-sm font-medium text-text-primary">{title}</p>
-      <p className="mt-2 text-xs text-text-muted">{message}</p>
     </div>
   );
 }

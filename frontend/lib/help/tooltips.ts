@@ -184,9 +184,9 @@ export const HELP_TOOLTIPS = {
   },
   "ai.budget": {
     content:
-      "Asks the AI to propose budget changes across categories from recent spending. You accept or skip each one. Uses your connected AI provider (costs tokens).",
+      "Fills the Rebalance editor with an AI-proposed starting point based on recent spending. You can still edit every amount before applying. Uses your connected AI provider (costs tokens).",
     learnMoreSection: "ai-features",
-    triggerLabel: "What does Suggest rebalance do?",
+    triggerLabel: "What does Use suggestions do?",
   },
 
   // Dashboard
