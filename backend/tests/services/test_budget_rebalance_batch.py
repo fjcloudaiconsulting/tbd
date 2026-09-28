@@ -213,17 +213,16 @@ async def test_fb3_stale_identity_map_conflicts_even_when_payload_nets_to_zero(
 
 @pytest.mark.asyncio
 async def test_fb4_duplicate_budget_id_rejected_at_schema_level():
-    cat_a = 1
-    with pytest.raises(ValueError):
-        from app.schemas.budget import BudgetRebalanceRequest
+    from app.schemas.budget import BudgetRebalanceRequest
 
-        BudgetRebalanceRequest(
-            items=[
-                BudgetRebalanceItem(budget_id=cat_a, expected_amount=Decimal("100.00"), amount=Decimal("110.00")),
-                BudgetRebalanceItem(budget_id=cat_a, expected_amount=Decimal("100.00"), amount=Decimal("110.00")),
-                BudgetRebalanceItem(budget_id=2, expected_amount=Decimal("50.00"), amount=Decimal("30.00")),
-            ]
-        )
+    cat_a = 1
+    items = [
+        BudgetRebalanceItem(budget_id=cat_a, expected_amount=Decimal("100.00"), amount=Decimal("110.00")),
+        BudgetRebalanceItem(budget_id=cat_a, expected_amount=Decimal("100.00"), amount=Decimal("110.00")),
+        BudgetRebalanceItem(budget_id=2, expected_amount=Decimal("50.00"), amount=Decimal("30.00")),
+    ]
+    with pytest.raises(ValueError, match="uplicate"):
+        BudgetRebalanceRequest(items=items)
 
 
 # ── F-B5 fence (cross-org) ────────────────────────────────────────────────────
@@ -325,8 +324,12 @@ async def test_gb10_all_unchanged_payload_is_a_noop_returning_the_period(session
     await _add_period(session_factory, org_id, _d(0))
     cat_a = await _add_category(session_factory, org_id, "A")
     cat_b = await _add_category(session_factory, org_id, "B")
+    cat_c = await _add_category(session_factory, org_id, "C")
     a = await _add_budget(session_factory, org_id, cat_a, _d(0), "100.00")
     b = await _add_budget(session_factory, org_id, cat_b, _d(0), "50.00")
+    # Untouched third budget in the same period: kills a "return only the
+    # locked rows" mutant, since only `a` and `b` are in the payload.
+    c = await _add_budget(session_factory, org_id, cat_c, _d(0), "25.00")
 
     items = [
         BudgetRebalanceItem(budget_id=a, expected_amount=Decimal("100.00"), amount=Decimal("100.00")),
@@ -335,7 +338,8 @@ async def test_gb10_all_unchanged_payload_is_a_noop_returning_the_period(session
     async with session_factory() as db:
         result = await budget_service.rebalance_budgets(db, org_id, items)
 
-    assert len(result) == 2
-    amounts = await _amounts(session_factory, [a, b])
+    assert {r.id for r in result} == {a, b, c}
+    amounts = await _amounts(session_factory, [a, b, c])
     assert amounts[a] == Decimal("100.00")
     assert amounts[b] == Decimal("50.00")
+    assert amounts[c] == Decimal("25.00")

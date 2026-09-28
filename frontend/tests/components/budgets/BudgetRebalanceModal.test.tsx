@@ -5,7 +5,8 @@
 // Rows render from a snapshot taken on open, never from the live `budgets`
 // prop, so a background reload mid-edit cannot silently add/hide a row.
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import type { ComponentProps } from "react";
 
 import BudgetRebalanceModal from "@/components/budgets/BudgetRebalanceModal";
@@ -67,11 +68,29 @@ it("F-F1: sums deltas as integer cents, not floats", async () => {
   expect(screen.getByRole("button", { name: /^apply$/i })).toBeDisabled();
 });
 
-it("F-F2: Apply sends exactly one POST to /budgets/rebalance with expected_amount, no PUTs", async () => {
+it("F-F1b: a float TOTAL compare also fails here (0.30 - 0.10 !== -(0.00 - 0.20) in binary float)", async () => {
+  renderModal({
+    budgets: [
+      { id: 1, category_id: 1, category_name: "A", amount: "0.10" },
+      { id: 2, category_id: 2, category_name: "B", amount: "0.20" },
+    ],
+  });
+  fireEvent.change(amountInput("A"), { target: { value: "0.30" } });
+  fireEvent.change(amountInput("B"), { target: { value: "0.00" } });
+  // +0.20 / -0.20 nets to exactly zero in cents; a float sum of
+  // (0.30 - 0.10) + (0.00 - 0.20) is off by ~2e-17 and would wrongly disable.
+  expect(screen.getByRole("button", { name: /^apply$/i })).toBeEnabled();
+});
+
+it("F-F2: Apply sends exactly one POST to /budgets/rebalance with expected_amount, no PUTs, and no untouched row", async () => {
   vi.mocked(apiFetch).mockResolvedValue([] as never);
   const onApplied = vi.fn().mockResolvedValue(undefined);
   const onClose = vi.fn();
-  renderModal({ onApplied, onClose });
+  renderModal({
+    onApplied,
+    onClose,
+    budgets: [...BUDGETS, { id: 13, category_id: 3, category_name: "Rent", amount: 1000 }],
+  });
 
   fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
   fireEvent.change(amountInput("Groceries"), { target: { value: "100.00" } });
@@ -79,23 +98,34 @@ it("F-F2: Apply sends exactly one POST to /budgets/rebalance with expected_amoun
 
   await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
   expect(apiFetch).toHaveBeenCalledTimes(1);
-  expect(apiFetch).toHaveBeenCalledWith(
-    "/api/v1/budgets/rebalance",
-    expect.objectContaining({
-      method: "POST",
-      body: JSON.stringify({
-        items: [
-          { budget_id: 11, expected_amount: "100.00", amount: "90.00" },
-          { budget_id: 12, expected_amount: "90.00", amount: "100.00" },
-        ],
-      }),
-    }),
-  );
+  const [url, opts] = vi.mocked(apiFetch).mock.calls[0];
+  expect(url).toBe("/api/v1/budgets/rebalance");
+  expect((opts as RequestInit).method).toBe("POST");
+  expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
+    items: [
+      { budget_id: 11, expected_amount: "100.00", amount: "90.00" },
+      { budget_id: 12, expected_amount: "90.00", amount: "100.00" },
+    ],
+  });
   const putCalls = vi.mocked(apiFetch).mock.calls.filter(
     (c) => (c[1] as RequestInit | undefined)?.method === "PUT",
   );
   expect(putCalls).toHaveLength(0);
   expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("C5: POST succeeds but onApplied() rejects — still closes, not shown as an Apply failure", async () => {
+  vi.mocked(apiFetch).mockResolvedValue([] as never);
+  const onApplied = vi.fn().mockRejectedValue(new Error("reload failed"));
+  const onClose = vi.fn();
+  renderModal({ onApplied, onClose });
+
+  fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
+  fireEvent.change(amountInput("Groceries"), { target: { value: "100.00" } });
+  fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
+
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 it("F-F3: slider and text input stay in sync", async () => {
@@ -111,7 +141,7 @@ it("F-F3: slider and text input stay in sync", async () => {
 it("F-F4: no AI call on open; suggestions absent when canSuggest is false; fills only mapped rows on click; surfaces a non-ok status", async () => {
   const { rerender } = renderModal({ canSuggest: false });
   expect(apiFetch).not.toHaveBeenCalled();
-  expect(screen.queryByRole("button", { name: /use suggestions/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: /^use suggestions$/i })).toBeNull();
   // Modal still fully works without suggestions.
   expect(amountInput("Transportation")).toBeInTheDocument();
 
@@ -140,7 +170,7 @@ it("F-F4: no AI call on open; suggestions absent when canSuggest is false; fills
     />,
   );
   expect(apiFetch).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: /use suggestions/i }));
+  fireEvent.click(screen.getByRole("button", { name: /^use suggestions$/i }));
   await waitFor(() => expect(amountInput("Transportation").value).toBe("80.00"));
   // Unmapped row untouched.
   expect(amountInput("Groceries").value).toBe("90.00");
@@ -152,16 +182,147 @@ it("F-F4: no AI call on open; suggestions absent when canSuggest is false; fills
     summary: "Every category is at or over budget.",
     suggestions: [],
   } as never);
-  fireEvent.click(screen.getByRole("button", { name: /use suggestions/i }));
+  fireEvent.click(screen.getByRole("button", { name: /^use suggestions$/i }));
   await waitFor(() =>
     expect(screen.getByText(/every category is at or over budget/i)).toBeInTheDocument(),
   );
 });
 
-it("F-F5: 409 keeps the modal open, awaits onApplied, and rebuilds from fresh props", async () => {
-  const onApplied = vi.fn().mockResolvedValue(undefined);
+it("V1: no AI fetch on a FRESH mount with canSuggest already true (kills fetch-on-open)", async () => {
+  renderModal({ canSuggest: true });
+  // Flush any pending effects/microtasks before asserting silence.
+  await waitFor(() => expect(amountInput("Transportation")).toBeInTheDocument());
+  expect(apiFetch).not.toHaveBeenCalled();
+});
+
+it("V3: 'Use suggestions' fills only mapped rows, preserving a row the user already edited", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({
+    status: "ok",
+    period_start: "2026-06-01",
+    summary: "Shift to groceries",
+    suggestions: [
+      {
+        category_id: 1,
+        category_name: "Transportation",
+        current_amount: 100,
+        suggested_amount: 80,
+        delta_amount: -20,
+        reasoning: "surplus",
+      },
+    ],
+  } as never);
+  renderModal({ canSuggest: true });
+
+  fireEvent.change(amountInput("Groceries"), { target: { value: "95.00" } });
+  fireEvent.click(screen.getByRole("button", { name: /^use suggestions$/i }));
+
+  await waitFor(() => expect(amountInput("Transportation").value).toBe("80.00"));
+  // The preset must not clobber a row the user already typed into.
+  expect(amountInput("Groceries").value).toBe("95.00");
+});
+
+it("C4: an ok response with no suggestion mapped to any row shows an inline note", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({
+    status: "ok",
+    period_start: "2026-06-01",
+    summary: "",
+    suggestions: [
+      {
+        category_id: 999,
+        category_name: "Unrelated",
+        current_amount: 10,
+        suggested_amount: 5,
+        delta_amount: -5,
+        reasoning: "n/a",
+      },
+    ],
+  } as never);
+  renderModal({ canSuggest: true });
+  fireEvent.click(screen.getByRole("button", { name: /^use suggestions$/i }));
+
+  await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+  // Unmapped rows stay at base.
+  expect(amountInput("Transportation").value).toBe("100.00");
+  expect(amountInput("Groceries").value).toBe("90.00");
+});
+
+// A realistic `onApplied` (e.g. the page's `loadBudgets`) commits its reload
+// into the parent's React state as part of the awaited call itself, so by
+// the time `await onApplied()` returns, the `budgets` prop this component
+// sees is ALREADY the reloaded one. This wrapper models that faithfully
+// (rather than a manual `rerender()` after the fact, which models a parent
+// that re-renders on some unrelated later tick and does not fence K1's
+// actual failure mode).
+function renderModalWithCommittingParent(
+  status: 409 | 404,
+  onApplied: (budgets: typeof BUDGETS) => Promise<void> | void = () => {},
+) {
+  const err = new ApiResponseError(status, "Budgets changed since you opened this.", "budget_changed");
+  vi.mocked(apiFetch).mockRejectedValueOnce(err);
   const onClose = vi.fn();
-  const { rerender } = renderModal({ onApplied, onClose });
+  const reloaded = [
+    { id: 11, category_id: 1, category_name: "Transportation", amount: 95 },
+    { id: 12, category_id: 2, category_name: "Groceries", amount: 95 },
+  ];
+
+  function Wrapper() {
+    const [budgets, setBudgets] = useState(BUDGETS);
+    const handleApplied = async () => {
+      // `act` flushes the commit AND runs its passive effects for this
+      // `budgets` change before control returns here — deterministically,
+      // rather than hoping a macrotask wins a scheduling race. This is what
+      // makes a ref armed *after* this point ("wait for the NEXT `budgets`
+      // change") permanently miss it: the only commit that ever changes
+      // `budgets` has already had its effects run, with the ref still false.
+      await act(async () => {
+        setBudgets(reloaded);
+      });
+      return onApplied(reloaded);
+    };
+    return (
+      <BudgetRebalanceModal
+        open
+        budgets={budgets}
+        canSuggest={false}
+        onApplied={handleApplied}
+        onClose={onClose}
+      />
+    );
+  }
+  render(<Wrapper />);
+  return { onClose };
+}
+
+it("F-F5 / K1: a 409 reconciles from the parent's synchronous onApplied commit (no later render), and C1 keeps the reload message visible", async () => {
+  const { onClose } = renderModalWithCommittingParent(409);
+
+  fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
+  fireEvent.change(amountInput("Groceries"), { target: { value: "100.00" } });
+  fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
+
+  await waitFor(() => expect(amountInput("Transportation").value).toBe("95.00"));
+  expect(amountInput("Groceries").value).toBe("95.00");
+  expect(onClose).not.toHaveBeenCalled();
+  // C1: the re-snapshot must not erase the reconcile message it is reporting on.
+  expect(screen.getByText(/reloaded the latest amounts/i)).toBeInTheDocument();
+});
+
+it("F-F5b: 404 is treated the same as 409 (reload + re-snapshot)", async () => {
+  const { onClose } = renderModalWithCommittingParent(404);
+
+  fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
+  fireEvent.change(amountInput("Groceries"), { target: { value: "100.00" } });
+  fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
+
+  await waitFor(() => expect(amountInput("Transportation").value).toBe("95.00"));
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByText(/reloaded the latest amounts/i)).toBeInTheDocument();
+});
+
+it("F-F5c: a rejecting onApplied on the reconcile path shows 'Could not reload'", async () => {
+  const onApplied = vi.fn().mockRejectedValue(new Error("network down"));
+  const onClose = vi.fn();
+  renderModal({ onApplied, onClose });
 
   fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
   fireEvent.change(amountInput("Groceries"), { target: { value: "100.00" } });
@@ -171,27 +332,9 @@ it("F-F5: 409 keeps the modal open, awaits onApplied, and rebuilds from fresh pr
   fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
 
   await waitFor(() =>
-    expect(screen.getByText(/budgets changed since you opened this/i)).toBeInTheDocument(),
+    expect(screen.getByText(/could not reload the latest amounts/i)).toBeInTheDocument(),
   );
   expect(onClose).not.toHaveBeenCalled();
-  expect(onApplied).toHaveBeenCalledTimes(1);
-
-  // Parent re-renders with fresh amounts (as if it reloaded).
-  rerender(
-    <BudgetRebalanceModal
-      open
-      budgets={[
-        { id: 11, category_id: 1, category_name: "Transportation", amount: 95 },
-        { id: 12, category_id: 2, category_name: "Groceries", amount: 95 },
-      ]}
-      canSuggest={false}
-      onApplied={onApplied}
-      onClose={onClose}
-    />,
-  );
-
-  await waitFor(() => expect(amountInput("Transportation").value).toBe("95.00"));
-  expect(amountInput("Groceries").value).toBe("95.00");
 });
 
 it("F-F6: a mid-edit prop change (including an added budget) does not reset typed values or add a row", async () => {
@@ -212,7 +355,7 @@ it("F-F6: a mid-edit prop change (including an added budget) does not reset type
   expect(screen.queryByText("New")).toBeNull();
 });
 
-it("F-F7: parses '12.' and '.5'; rejects '' and '1.005' with an inline error", async () => {
+it("F-F7: parses '12.', '.5' and '12.5'; rejects '' and '1.005' with an inline error", async () => {
   renderModal();
   const txField = amountInput("Transportation");
 
@@ -222,6 +365,14 @@ it("F-F7: parses '12.' and '.5'; rejects '' and '1.005' with an inline error", a
   fireEvent.change(txField, { target: { value: ".5" } });
   expect(sliderInput("Transportation").value).toBe("0.5");
 
+  fireEvent.change(txField, { target: { value: "12.5" } });
+  expect(sliderInput("Transportation").value).toBe("12.5");
+
+  // Groceries set so the net would be exactly zero if "" parsed as 0
+  // (base 100 -> "" and base 90 -> 190 both delta by -100/+100): this makes
+  // `toBeDisabled` below discriminate a missing `allValid` guard, not just a
+  // nonzero net.
+  fireEvent.change(amountInput("Groceries"), { target: { value: "190.00" } });
   fireEvent.change(txField, { target: { value: "" } });
   expect(screen.getByRole("button", { name: /^apply$/i })).toBeDisabled();
   expect(txField).toHaveAttribute("aria-invalid", "true");
@@ -230,6 +381,25 @@ it("F-F7: parses '12.' and '.5'; rejects '' and '1.005' with an inline error", a
   fireEvent.change(txField, { target: { value: "1.005" } });
   expect(screen.getByRole("button", { name: /^apply$/i })).toBeDisabled();
   expect(txField).toHaveAttribute("aria-invalid", "true");
+});
+
+it("C3: an 11-digit whole part is invalid (Numeric(12,2) caps at 10 integer digits)", async () => {
+  renderModal();
+  const txField = amountInput("Transportation");
+  fireEvent.change(txField, { target: { value: "12345678901" } });
+  expect(txField).toHaveAttribute("aria-invalid", "true");
+
+  fireEvent.change(txField, { target: { value: "1234567890" } });
+  expect(txField).not.toHaveAttribute("aria-invalid");
+});
+
+it("C2: comparing cents, not text — '12.5' typed over a '12.50' base is not a change", async () => {
+  renderModal({
+    budgets: [{ id: 1, category_id: 1, category_name: "A", amount: "12.50" }],
+  });
+  fireEvent.change(amountInput("A"), { target: { value: "12.5" } });
+  expect(screen.getByRole("status")).toHaveTextContent("No changes yet");
+  expect(screen.getByRole("button", { name: /^apply$/i })).toBeDisabled();
 });
 
 it("F-F9: hidden balances replace the body with a prompt and leak no digits", async () => {

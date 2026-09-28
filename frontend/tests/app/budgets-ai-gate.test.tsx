@@ -6,7 +6,7 @@
 // one but not the other).
 
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import BudgetsPage from "@/app/budgets/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -61,7 +61,10 @@ const USER = {
 };
 
 const PERIOD_OPEN = { id: 1, start_date: "2026-05-01", end_date: null };
-const PERIOD_NEXT = { id: 2, start_date: "2099-01-01", end_date: null };
+// A genuinely "upcoming" row per `periodStatus`: `end_date === null` alone
+// means "open" (current) regardless of `start_date`, so this must carry a
+// real end_date in the future to land in the "upcoming" branch instead.
+const PERIOD_NEXT = { id: 2, start_date: "2099-01-01", end_date: "2099-01-31" };
 
 const BUDGET = {
   id: 1,
@@ -156,5 +159,38 @@ describe("Budgets page — Rebalance is no longer AI-gated (TBD-461)", () => {
       expect(screen.getByTestId("rebalance-btn")).toBeInTheDocument();
     });
     expect(screen.queryByText("Transfer")).toBeNull();
+  });
+
+  it("V10: current period + AI entitled and configured — 'Use suggestions' is present in the modal", async () => {
+    vi.mocked(useAiStatus).mockReturnValue({
+      categorize: { entitled: false, configured: false },
+      forecast: { entitled: false, configured: false },
+      budget: { entitled: true, configured: true },
+    });
+    setupApiFetch();
+
+    render(<BudgetsPage />);
+
+    await waitFor(() => expect(screen.getByTestId("rebalance-btn")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("rebalance-btn"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^use suggestions$/i })).toBeInTheDocument(),
+    );
+  });
+
+  it("V10b: current period, AI entitled but NOT configured — 'Use suggestions' is absent", async () => {
+    vi.mocked(useAiStatus).mockReturnValue({
+      categorize: { entitled: false, configured: false },
+      forecast: { entitled: false, configured: false },
+      budget: { entitled: true, configured: false },
+    });
+    setupApiFetch();
+
+    render(<BudgetsPage />);
+
+    await waitFor(() => expect(screen.getByTestId("rebalance-btn")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("rebalance-btn"));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /^use suggestions$/i })).toBeNull();
   });
 });

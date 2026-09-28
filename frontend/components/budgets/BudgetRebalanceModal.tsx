@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch, ApiResponseError, extractErrorMessage } from "@/lib/api";
+import HelpTooltip from "@/components/help/HelpTooltip";
 import { btnPrimary, btnSecondary, card, error as errorCls, input as inputCls } from "@/lib/styles";
 import { maskMoneyText } from "@/lib/format";
 import { useBalancesHidden, useMoney } from "@/lib/hooks/use-org-currency";
@@ -78,7 +79,8 @@ function centsToText(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 
-const MONEY_RE = /^(\d+(\.\d{0,2})?|\.\d{1,2})$/;
+// Numeric(12,2): up to 10 integer digits, up to 2 decimals.
+const MONEY_RE = /^(\d{1,10}(\.\d{0,2})?|\.\d{1,2})$/;
 
 /** Parses a money string into integer cents, or null if invalid. Splits on
  *  "." rather than multiplying by 100, so "12." -> 1200 and ".5" -> 50 exact
@@ -101,12 +103,16 @@ export default function BudgetRebalanceModal({
 
   const [rows, setRows] = useState<Row[]>([]);
   const [text, setText] = useState<Record<number, string>>({});
-  // Armed after a 409/404 + a successful `onApplied()` reload. Not a simple
-  // boolean *state* flag: the reload's own state update (in the parent) and
-  // this arm can land in separate renders, so we wait for the NEXT `budgets`
-  // prop to actually change rather than rebuilding from whatever (possibly
-  // still-stale) `budgets` closure this render captured.
-  const pendingResnapshot = useRef(false);
+  // Bumped after a 409/404 + a successful `onApplied()` reload, to force a
+  // re-snapshot from whatever `budgets` this render sees. A ref-based "arm
+  // and wait for the next `budgets` prop change" cannot work: if the parent
+  // already committed the reloaded budgets before this code runs (e.g. it
+  // updates state synchronously inside `onApplied`, before the awaited
+  // promise resolves), the `budgets` prop never changes *again* afterward,
+  // so an effect keyed on `[budgets]` never re-fires. A state bump always
+  // forces one more render of this component, which re-reads the current
+  // `budgets` prop regardless of when it last changed.
+  const [resnapshotToken, setResnapshotToken] = useState(0);
 
   const [suggesting, setSuggesting] = useState(false);
   const [suggestError, setSuggestError] = useState("");
@@ -115,7 +121,7 @@ export default function BudgetRebalanceModal({
 
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  function buildSnapshot() {
+  function buildSnapshot(opts: { keepApplyError?: boolean } = {}) {
     const nextRows: Row[] = budgets.map((b) => {
       const baseCents = Math.round(toNumber(b.amount) * 100);
       return {
@@ -130,7 +136,10 @@ export default function BudgetRebalanceModal({
     for (const r of nextRows) nextText[r.id] = r.baseText;
     setRows(nextRows);
     setText(nextText);
-    setApplyError("");
+    // On the reconcile path the "Reloaded the latest amounts" message must
+    // survive the re-snapshot it is reporting on; Reset and opening fresh
+    // still clear it.
+    if (!opts.keepApplyError) setApplyError("");
     setSuggestError("");
   }
 
@@ -143,14 +152,13 @@ export default function BudgetRebalanceModal({
   }, [open]);
 
   // Explicit re-snapshot, used only after a 409/404 has been resolved by the
-  // parent reloading (`onApplied`) with the now-committed amounts. Fires on
-  // the next `budgets` prop change while armed, then disarms.
+  // parent reloading (`onApplied`) with the now-committed amounts. `token`
+  // starting at 0 means "never armed" so this never fires on mount.
   useEffect(() => {
-    if (!pendingResnapshot.current) return;
-    buildSnapshot();
-    pendingResnapshot.current = false;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuilds from whichever `budgets` just changed
-  }, [budgets]);
+    if (resnapshotToken === 0) return;
+    buildSnapshot({ keepApplyError: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuilds from whichever `budgets` this render sees
+  }, [resnapshotToken]);
 
   useFocusTrap({ active: open, containerRef: dialogRef });
 
@@ -173,7 +181,13 @@ export default function BudgetRebalanceModal({
   }, [rows, text]);
 
   const allValid = rows.length > 0 && rows.every((r) => parsedById.get(r.id) !== null);
-  const anyChanged = rows.some((r) => text[r.id] !== r.baseText);
+  // Compare parsed cents, not raw text: "12.5" and a base of "12.50" are the
+  // same amount and must not count as a change (or be POSTed).
+  const isRowChanged = (r: Row) => {
+    const p = parsedById.get(r.id);
+    return p !== null && p !== r.baseCents;
+  };
+  const anyChanged = rows.some(isRowChanged);
   const netCentsExact = allValid
     ? rows.reduce((s, r) => s + ((parsedById.get(r.id) as number) - r.baseCents), 0)
     : null;
@@ -202,6 +216,7 @@ export default function BudgetRebalanceModal({
     for (const r of rows) next[r.id] = r.baseText;
     setText(next);
     setApplyError("");
+    setSuggestError("");
   }
 
   async function handleSuggest() {
@@ -212,14 +227,21 @@ export default function BudgetRebalanceModal({
         method: "POST",
       });
       if (res && res.status === "ok") {
+        let mapped = 0;
         setText((prev) => {
           const next = { ...prev };
           for (const s of res.suggestions ?? []) {
             const row = rows.find((r) => r.category_id === s.category_id);
-            if (row) next[row.id] = toNumber(s.suggested_amount).toFixed(2);
+            if (row) {
+              next[row.id] = toNumber(s.suggested_amount).toFixed(2);
+              mapped++;
+            }
           }
           return next;
         });
+        if (mapped === 0) {
+          setSuggestError(maskMoneyText("No suggestions matched a budget in this period."));
+        }
       } else if (res) {
         setSuggestError(maskMoneyText(res.summary ?? ""));
       }
@@ -235,7 +257,7 @@ export default function BudgetRebalanceModal({
     setSubmitting(true);
     setApplyError("");
     const items = rows
-      .filter((r) => text[r.id] !== r.baseText)
+      .filter(isRowChanged)
       .map((r) => ({
         budget_id: r.id,
         expected_amount: r.baseText,
@@ -246,23 +268,31 @@ export default function BudgetRebalanceModal({
         method: "POST",
         body: JSON.stringify({ items }),
       });
-      await onApplied();
-      onClose();
     } catch (err) {
       if (err instanceof ApiResponseError && (err.status === 409 || err.status === 404)) {
         setApplyError(RECONCILE_MESSAGE);
         try {
           await onApplied();
-          pendingResnapshot.current = true;
+          setResnapshotToken((t) => t + 1);
         } catch {
           setApplyError(RECONCILE_FAILED_MESSAGE);
         }
       } else {
         setApplyError(extractErrorMessage(err));
       }
-    } finally {
       setSubmitting(false);
+      return;
     }
+    // The POST succeeded: the change is applied regardless of what happens
+    // next. A failing reload (`onApplied`) is a "list may be stale" problem
+    // for the parent, never an Apply failure — close either way.
+    try {
+      await onApplied();
+    } catch {
+      // Parent's reload failed; the write already committed on the server.
+    }
+    setSubmitting(false);
+    onClose();
   }
 
   if (!open) return null;
@@ -353,7 +383,7 @@ export default function BudgetRebalanceModal({
                         aria-labelledby={`${nameId} ${allocId}`}
                         aria-valuetext={money(displayCents / 100)}
                         onChange={(e) => setRowText(row.id, Number(e.target.value).toFixed(2))}
-                        className="mt-2 w-full accent-border-strong"
+                        className="mt-2 min-h-[44px] w-full accent-border-strong sm:min-h-0"
                       />
                       <input
                         type="text"
@@ -401,14 +431,17 @@ export default function BudgetRebalanceModal({
           </div>
           <div className="flex flex-wrap justify-end gap-2">
             {!balancesHidden && canSuggest && (
-              <button
-                type="button"
-                onClick={handleSuggest}
-                disabled={suggesting}
-                className={btnSecondary}
-              >
-                {suggesting ? "Loading..." : "Use suggestions"}
-              </button>
+              <span className="inline-flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={handleSuggest}
+                  disabled={suggesting}
+                  className={btnSecondary}
+                >
+                  {suggesting ? "Loading..." : "Use suggestions"}
+                </button>
+                <HelpTooltip k="ai.budget" />
+              </span>
             )}
             {!balancesHidden && (
               <button type="button" onClick={handleReset} className={btnSecondary}>

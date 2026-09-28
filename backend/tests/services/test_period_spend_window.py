@@ -2,8 +2,7 @@
 plus the two snapshot readers.
 
 Spec: ``specs/2026-07-28-open-period-spend-window-design.md`` §5, tests 8-17,
-plus three D6 threading fences and one transfer-side stranded-fallback fence
-added in review (§5 covers neither).
+plus three D6 threading fences added in review (§5 covers neither).
 
 Two rules govern every test in this file.
 
