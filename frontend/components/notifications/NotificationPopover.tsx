@@ -33,6 +33,7 @@ import { useCallback } from "react";
 import { apiFetch } from "@/lib/api";
 import { maskMoneyText } from "@/lib/format";
 import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
+import { focusInset } from "@/lib/styles";
 import type { Notification, NotificationCategory } from "@/lib/types";
 
 interface Props {
@@ -145,7 +146,7 @@ export default function NotificationPopover({
             <button
               type="button"
               onClick={() => handleRowClick(notif)}
-              className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-raised"
+              className={`flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-raised ${focusInset}`}
             >
               <span
                 aria-hidden="true"

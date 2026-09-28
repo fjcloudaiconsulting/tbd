@@ -4,7 +4,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { forwardRef, useState } from "react";
 import type { InputHTMLAttributes } from "react";
 
-import { input as inputCls } from "@/lib/styles";
+import { focusInset, input as inputCls } from "@/lib/styles";
 
 type Props = Omit<InputHTMLAttributes<HTMLInputElement>, "type">;
 
@@ -46,7 +46,7 @@ const PasswordInput = forwardRef<HTMLInputElement, Props>(function PasswordInput
         aria-pressed={visible}
         title={label}
         tabIndex={0}
-        className="absolute inset-y-0 right-0 flex items-center px-3 text-text-muted hover:text-text-primary rounded-md"
+        className={`absolute inset-y-0 right-0 flex items-center px-3 text-text-muted hover:text-text-primary rounded-md ${focusInset}`}
       >
         <Icon aria-hidden="true" className="h-4 w-4" />
       </button>

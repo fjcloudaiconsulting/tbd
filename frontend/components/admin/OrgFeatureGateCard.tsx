@@ -154,7 +154,7 @@ export default function OrgFeatureGateCard({ orgId }: Props) {
                     <div
                       role="group"
                       aria-label={`${FEATURE_LABELS[gate.feature] ?? gate.feature} per-org override`}
-                      className="inline-flex rounded-md border border-border bg-surface-raised overflow-hidden"
+                      className="inline-flex rounded-md border border-border bg-surface-raised"
                     >
                       {(["on", "off", "inherit"] as TriState[]).map((opt) => (
                         <button
@@ -166,7 +166,9 @@ export default function OrgFeatureGateCard({ orgId }: Props) {
                             if (gate.override !== opt) void handleChange(gate.feature, opt);
                           }}
                           className={[
-                            "px-3 py-1.5 text-xs font-medium capitalize transition-colors",
+                            // No overflow-hidden on the group: it clipped the focus outline
+                            // (TBD-521). The end segments round themselves instead.
+                            "px-3 py-1.5 text-xs font-medium capitalize transition-colors first:rounded-l-md last:rounded-r-md",
                             gate.override === opt
                               ? "bg-accent text-accent-text"
                               : "text-text-secondary hover:bg-surface hover:text-text-primary",
