@@ -15,7 +15,12 @@ from app.models.budget import Budget
 from app.models.category import Category
 from app.models.forecast_plan import ForecastItemType, ForecastPlan
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
-from app.schemas.budget import BudgetCreate, BudgetResponse, BudgetUpdate
+from app.schemas.budget import (
+    BudgetCreate,
+    BudgetRebalanceItem,
+    BudgetResponse,
+    BudgetUpdate,
+)
 from app.services import billing_service, currency_service
 from app.services.billing_service import (
     ensure_future_periods,
@@ -90,8 +95,8 @@ async def _compute_spent(
     # one case — the TRUE ROSTER TAIL, where there is no later period a
     # future-dated settled row could belong to (§2.2).
     #
-    # The two D4 stranded fallbacks are the exception, so the claim is not
-    # universal: `update_budget` / `transfer_budget` pass the stored
+    # The D4 stranded fallback is the exception, so the claim is not
+    # universal: `update_budget` passes the stored
     # `Budget.period_end` snapshot when no period row exists at the budget's
     # `period_start`, and that snapshot is NULL for a budget created while its
     # period was open. On that (production-unreachable) path `None` still
@@ -283,127 +288,59 @@ async def update_budget(
     return _to_response(budget, spent)
 
 
-async def transfer_budget(
-    db: AsyncSession, org_id: int,
-    from_budget_id: int, to_category_id: int, amount: Decimal,
-    *, today: datetime.date | None = None,
+async def rebalance_budgets(
+    db: AsyncSession, org_id: int, items: list[BudgetRebalanceItem],
 ) -> list[BudgetResponse]:
-    """Transfer allocation from one budget to another within the same period.
+    """Atomically move allocation between budgets within one period.
 
-    If the target category has no budget yet, one is created.
-    Returns both the source and target budgets.
+    One transaction, nothing flushed before validation completes (TBD-461):
+
+    1. Lock the rows (ascending id is the lock order) with
+       ``populate_existing=True`` so a stale identity map cannot hide a
+       concurrent change.
+    2. Every id must resolve, scoped to this org.
+    3. The rows must share one period.
+    4. Every row's current amount must match the client's ``expected_amount``.
+    5. The changes must net to exactly zero (Decimal, no tolerance).
+    6. Assign and commit once, then read the whole period back through
+       ``list_budgets`` (one hoisted window, one currency scope).
     """
-    from sqlalchemy.exc import IntegrityError
-
-    # Lock source budget for update to prevent concurrent over-allocation.
-    # populate_existing=True enforces the codebase invariant that every FOR
-    # UPDATE refreshes the ORM identity-map entry with the locked row state.
+    ids = [item.budget_id for item in items]
     result = await db.execute(
         select(Budget)
-        .where(Budget.id == from_budget_id, Budget.org_id == org_id)
+        .where(Budget.id.in_(ids), Budget.org_id == org_id)
+        .order_by(Budget.id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    source = result.scalar_one_or_none()
-    if source is None:
-        raise NotFoundError("Source budget")
+    rows = list(result.scalars().all())
+    if len(rows) != len(ids):
+        raise NotFoundError("Budget")
 
-    if amount > source.amount:
-        raise ValidationError("Transfer amount exceeds source budget")
+    by_id = {row.id: row for row in rows}
+    period_starts = {row.period_start for row in rows}
+    if len(period_starts) != 1:
+        raise ValidationError("All budgets must be in the same period.")
 
-    # Validate target is a master category
-    cat_result = await db.execute(
-        select(Category).where(Category.id == to_category_id, Category.org_id == org_id)
-    )
-    target_cat = cat_result.scalar_one_or_none()
-    if target_cat is None:
-        raise ValidationError("Invalid target category")
-    if target_cat.parent_id is not None:
-        raise ValidationError("Target must be a master category")
-    if target_cat.id == source.category_id:
-        raise ValidationError("Cannot transfer to the same category")
-
-    # Find or create target budget in same period
-    target_result = await db.execute(
-        select(Budget).where(
-            Budget.org_id == org_id,
-            Budget.category_id == to_category_id,
-            Budget.period_start == source.period_start,
-        )
-    )
-    target = target_result.scalar_one_or_none()
-
-    if target is None:
-        target = Budget(
-            org_id=org_id,
-            category_id=to_category_id,
-            amount=amount,
-            period_start=source.period_start,
-            period_end=source.period_end,
-        )
-        db.add(target)
-        try:
-            await db.flush()
-        except IntegrityError:
-            await db.rollback()
-            # Re-lock source and re-fetch target after race. populate_existing
-            # is required: rollback expires attributes but keeps the instance
-            # in the identity map, so the re-lock must actively repopulate.
-            result = await db.execute(
-                select(Budget)
-                .where(Budget.id == from_budget_id, Budget.org_id == org_id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
+    for item in items:
+        row = by_id[item.budget_id]
+        if row.amount != item.expected_amount:
+            raise ConflictError(
+                "Budgets changed since you opened this.", code="budget_changed"
             )
-            source = result.scalar_one()
-            if amount > source.amount:
-                raise ValidationError("Transfer amount exceeds source budget")
-            target_result = await db.execute(
-                select(Budget).where(
-                    Budget.org_id == org_id,
-                    Budget.category_id == to_category_id,
-                    Budget.period_start == source.period_start,
-                )
-            )
-            target = target_result.scalar_one()
-            target.amount += amount
-    else:
-        target.amount += amount
 
-    source.amount -= amount
+    if sum(item.amount for item in items) != sum(
+        item.expected_amount for item in items
+    ):
+        raise ValidationError("Changes must net to zero.")
+
+    for item in items:
+        by_id[item.budget_id].amount = item.amount
 
     await db.commit()
-    await db.refresh(source, ["category"])
-    await db.refresh(target, ["category"])
 
-    # TBD-240 D4, same rewrite as `update_budget` and for the same reason: the
-    # old `get_current_period(...).end_date` was unconditionally None, leaving
-    # `POST /budgets/transfer` unbounded for the current period.
-    #
-    # ONE lookup serves both rows: `target` is created at, or found by,
-    # `source.period_start` (see the find-or-create above), so source and
-    # target always share the window. The stranded fallback is
-    # `source.period_end`, matching what this line read before.
-    period = await billing_service._find_period_by_start(
-        db, org_id, source.period_start
-    )
-    end = (
-        await period_spend_window_end(db, org_id, period, today=today)
-        if period is not None
-        else source.period_end
-    )
-
-    # ONE resolution serves both rows, exactly like the ``end`` lookup above.
-    currency_scope = await currency_service.resolve_currency_scope(db, org_id=org_id)
-
-    source_spent = await _compute_spent(
-        db, org_id, source.category_id, source.period_start, end, currency_scope
-    )
-    target_spent = await _compute_spent(
-        db, org_id, target.category_id, target.period_start, end, currency_scope
-    )
-
-    return [_to_response(source, source_spent), _to_response(target, target_spent)]
+    (period_start,) = period_starts
+    return await list_budgets(db, org_id, period_start=period_start)
 
 
 async def delete_budget(db: AsyncSession, org_id: int, budget_id: int) -> None:

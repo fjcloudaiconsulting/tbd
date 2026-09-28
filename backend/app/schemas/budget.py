@@ -2,7 +2,7 @@ import datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class BudgetCreate(BaseModel):
@@ -14,10 +14,21 @@ class BudgetUpdate(BaseModel):
     amount: Optional[Decimal] = Field(default=None, gt=0)
 
 
-class BudgetTransfer(BaseModel):
-    from_budget_id: int
-    to_category_id: int
-    amount: Decimal = Field(gt=0)
+class BudgetRebalanceItem(BaseModel):
+    budget_id: int
+    expected_amount: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+    amount: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+
+
+class BudgetRebalanceRequest(BaseModel):
+    items: list[BudgetRebalanceItem] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _no_duplicate_budget_ids(self) -> "BudgetRebalanceRequest":
+        ids = [item.budget_id for item in self.items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Duplicate budget_id in items")
+        return self
 
 
 class CopyBudgetsRequest(BaseModel):

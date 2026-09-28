@@ -8,8 +8,8 @@ from app.deps import get_current_user
 from app.models.user import User
 from app.schemas.budget import (
     BudgetCreate,
+    BudgetRebalanceRequest,
     BudgetResponse,
-    BudgetTransfer,
     BudgetUpdate,
     CopyBudgetsRequest,
 )
@@ -128,18 +128,13 @@ async def draft_next_period(
     )
 
 
-@router.post("/transfer", response_model=list[BudgetResponse])
-async def transfer_budget(
-    body: BudgetTransfer,
+@router.post("/rebalance", response_model=list[BudgetResponse])
+async def rebalance_budgets(
+    body: BudgetRebalanceRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await svc.transfer_budget(
-        db, current_user.org_id,
-        from_budget_id=body.from_budget_id,
-        to_category_id=body.to_category_id,
-        amount=body.amount,
-    )
+    return await svc.rebalance_budgets(db, current_user.org_id, body.items)
 
 
 @router.delete("/{budget_id}", status_code=204)
