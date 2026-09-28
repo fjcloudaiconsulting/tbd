@@ -447,6 +447,121 @@ it("G-F11: the status region changes text only on a state flip; Escape closes", 
   expect(onClose).toHaveBeenCalledTimes(1);
 });
 
+it("R1: renders the AI summary in a quiet panel above rows after suggestions load", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({
+    status: "ok",
+    period_start: "2026-06-01",
+    summary: "Shift 7373.37 to groceries",
+    suggestions: [
+      {
+        category_id: 1,
+        category_name: "Transportation",
+        current_amount: 100,
+        suggested_amount: 80,
+        delta_amount: -20,
+        reasoning: "surplus",
+      },
+    ],
+  } as never);
+  renderModal({ canSuggest: true });
+  fireEvent.click(screen.getByRole("button", { name: /^use suggestions$/i }));
+
+  const summary = await screen.findByTestId("rebalance-summary");
+  expect(summary).toHaveTextContent("Shift 7373.37 to groceries");
+
+  // Masked when balances are hidden.
+  act(() => setBalancesHidden(true));
+  expect(screen.queryByTestId("rebalance-summary")).toBeNull(); // body hidden entirely
+  act(() => setBalancesHidden(false));
+});
+
+it("R2: shows the old uncovered-overspend banner exactly when uncovered_overspend > 0", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({
+    status: "ok",
+    period_start: "2026-06-01",
+    summary: "",
+    uncovered_overspend: 30,
+    suggestions: [
+      {
+        category_id: 1,
+        category_name: "Transportation",
+        current_amount: 100,
+        suggested_amount: 80,
+        delta_amount: -20,
+        reasoning: "surplus",
+      },
+    ],
+  } as never);
+  renderModal({ canSuggest: true });
+  fireEvent.click(screen.getByRole("button", { name: /^use suggestions$/i }));
+
+  const banner = await screen.findByTestId("rebalance-uncovered");
+  expect(banner).toHaveTextContent(/over plan/i);
+
+  // Reset the mock to uncovered_overspend: 0 and re-fetch: banner must go away.
+  vi.mocked(apiFetch).mockResolvedValue({
+    status: "ok",
+    period_start: "2026-06-01",
+    summary: "",
+    uncovered_overspend: 0,
+    suggestions: [
+      {
+        category_id: 1,
+        category_name: "Transportation",
+        current_amount: 100,
+        suggested_amount: 80,
+        delta_amount: -20,
+        reasoning: "surplus",
+      },
+    ],
+  } as never);
+  fireEvent.click(screen.getByRole("button", { name: /^use suggestions$/i }));
+  await waitFor(() => expect(screen.queryByTestId("rebalance-uncovered")).toBeNull());
+});
+
+it("R3: shows each row's reasoning under it, and clears it on Reset and on re-snapshot", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({
+    status: "ok",
+    period_start: "2026-06-01",
+    summary: "",
+    suggestions: [
+      {
+        category_id: 1,
+        category_name: "Transportation",
+        current_amount: 100,
+        suggested_amount: 80,
+        delta_amount: -20,
+        reasoning: "Freeing 7373.37 of projected surplus",
+      },
+    ],
+  } as never);
+  renderModal({ canSuggest: true });
+  fireEvent.click(screen.getByRole("button", { name: /^use suggestions$/i }));
+
+  await screen.findByText("Freeing 7373.37 of projected surplus");
+  // Row without a suggestion (Groceries) shows nothing extra.
+  expect(screen.queryByText(/n\/a/i)).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: /^reset$/i }));
+  expect(screen.queryByText("Freeing 7373.37 of projected surplus")).toBeNull();
+});
+
+it("R4: uses the friendly empty-state mapping instead of a raw status string, and rows stay usable", async () => {
+  vi.mocked(apiFetch).mockResolvedValue({
+    status: "llm_unavailable",
+    period_start: "2026-06-01",
+    summary: "raw backend detail nobody should read verbatim",
+    suggestions: [],
+  } as never);
+  renderModal({ canSuggest: true });
+  fireEvent.click(screen.getByRole("button", { name: /^use suggestions$/i }));
+
+  await waitFor(() => expect(screen.getByText(/ai is unavailable/i)).toBeInTheDocument());
+  expect(screen.getByText(/raw backend detail nobody should read verbatim/i)).toBeInTheDocument();
+  // Rows stay usable: the user can still allocate by hand.
+  expect(amountInput("Transportation")).toBeEnabled();
+});
+
 it("F-F5d: a close and reopen while the 409 reload is in flight keeps the new session's edits", async () => {
   let release!: () => void;
   const pending = new Promise<void>((resolve) => {

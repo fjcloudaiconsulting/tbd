@@ -12,7 +12,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch, ApiResponseError, extractErrorMessage } from "@/lib/api";
 import HelpTooltip from "@/components/help/HelpTooltip";
-import { btnPrimary, btnSecondary, card, error as errorCls, input as inputCls } from "@/lib/styles";
+import {
+  btnPrimary,
+  btnSecondary,
+  card,
+  error as errorCls,
+  input as inputCls,
+  warning as warningCls,
+} from "@/lib/styles";
 import { maskMoneyText } from "@/lib/format";
 import { useBalancesHidden, useMoney } from "@/lib/hooks/use-org-currency";
 import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
@@ -38,7 +45,18 @@ export interface RebalanceResponse {
   period_start: string | null;
   suggestions: RebalanceSuggestion[];
   summary: string;
+  uncovered_overspend?: string | number;
 }
+
+// Old modal's friendly empty-state titles (TBD-461 restore), keyed by the
+// non-ok statuses the backend can return. The raw `summary` is still shown
+// underneath, but the headline is never the bare status string.
+const STATUS_TITLES: Record<Exclude<RebalanceStatus, "ok">, string> = {
+  empty_no_budgets: "No budgets yet",
+  empty_no_history: "Not enough history yet",
+  empty_no_surplus: "Nothing to reallocate",
+  llm_unavailable: "AI is unavailable",
+};
 
 interface Budget {
   id: number;
@@ -119,6 +137,16 @@ export default function BudgetRebalanceModal({
 
   const [suggesting, setSuggesting] = useState(false);
   const [suggestError, setSuggestError] = useState("");
+  // Non-ok status from the last suggest fetch, rendered via STATUS_TITLES
+  // instead of the raw `summary` string (R4). Cleared alongside suggestError.
+  const [suggestStatus, setSuggestStatus] = useState<Exclude<RebalanceStatus, "ok"> | null>(null);
+  // Set only on an "ok" response (R1/R2): the AI summary + uncovered-overspend
+  // figure, shown above the rows until Reset or a re-snapshot.
+  const [aiSummary, setAiSummary] = useState("");
+  const [uncoveredOverspend, setUncoveredOverspend] = useState(0);
+  // Per-row reasoning text from the last suggestion fetch (R3), keyed by row
+  // id. Rows with no matching suggestion have no entry.
+  const [reasoningById, setReasoningById] = useState<Record<number, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [applyError, setApplyError] = useState("");
 
@@ -144,6 +172,10 @@ export default function BudgetRebalanceModal({
     // still clear it.
     if (!opts.keepApplyError) setApplyError("");
     setSuggestError("");
+    setSuggestStatus(null);
+    setAiSummary("");
+    setUncoveredOverspend(0);
+    setReasoningById({});
   }
 
   // Snapshot ONLY on open, never on a `budgets` prop change while open — a
@@ -221,10 +253,18 @@ export default function BudgetRebalanceModal({
     setText(next);
     setApplyError("");
     setSuggestError("");
+    setSuggestStatus(null);
+    setAiSummary("");
+    setUncoveredOverspend(0);
+    setReasoningById({});
   }
 
   async function handleSuggest() {
     setSuggestError("");
+    setSuggestStatus(null);
+    setAiSummary("");
+    setUncoveredOverspend(0);
+    setReasoningById({});
     setSuggesting(true);
     try {
       const res = await apiFetch<RebalanceResponse>("/api/v1/ai/budget/rebalance", {
@@ -235,17 +275,23 @@ export default function BudgetRebalanceModal({
         // render, so a counter incremented inside one still reads 0 here.
         const hits = (res.suggestions ?? []).flatMap((s) => {
           const row = rows.find((r) => r.category_id === s.category_id);
-          return row ? [{ id: row.id, text: toNumber(s.suggested_amount).toFixed(2) }] : [];
+          return row ? [{ id: row.id, text: toNumber(s.suggested_amount).toFixed(2), reasoning: s.reasoning }] : [];
         });
         setText((prev) => {
           const next = { ...prev };
           for (const h of hits) next[h.id] = h.text;
           return next;
         });
+        const nextReasoning: Record<number, string> = {};
+        for (const h of hits) if (h.reasoning) nextReasoning[h.id] = h.reasoning;
+        setReasoningById(nextReasoning);
+        setAiSummary(res.summary ?? "");
+        setUncoveredOverspend(Number(res.uncovered_overspend ?? 0));
         if (hits.length === 0) {
           setSuggestError(maskMoneyText("No suggestions matched a budget in this period."));
         }
       } else if (res) {
+        setSuggestStatus(res.status as Exclude<RebalanceStatus, "ok">);
         setSuggestError(maskMoneyText(res.summary ?? ""));
       }
     } catch (err) {
@@ -341,9 +387,29 @@ export default function BudgetRebalanceModal({
             </div>
           ) : (
             <>
-              {suggestError && (
-                <div className={`mb-4 ${errorCls}`} role="alert">
-                  {suggestError}
+              {suggestStatus ? (
+                <div className="mb-4" data-testid="rebalance-empty-state">
+                  <p className="text-sm font-medium text-text-primary">
+                    {STATUS_TITLES[suggestStatus]}
+                  </p>
+                  {suggestError && <p className="mt-1 text-xs text-text-muted">{suggestError}</p>}
+                </div>
+              ) : (
+                suggestError && (
+                  <div className={`mb-4 ${errorCls}`} role="alert">
+                    {suggestError}
+                  </div>
+                )
+              )}
+              {aiSummary && (
+                <p className="mb-4 text-sm text-text-secondary" data-testid="rebalance-summary">
+                  {maskMoneyText(aiSummary)}
+                </p>
+              )}
+              {uncoveredOverspend > 0 && (
+                <div className={`mb-4 ${warningCls}`} data-testid="rebalance-uncovered" role="status">
+                  You&apos;re {money(uncoveredOverspend)} over plan this period. Spending
+                  exceeds your total budget, so not every category could be fully covered.
                 </div>
               )}
               <div className="space-y-3">
@@ -405,6 +471,11 @@ export default function BudgetRebalanceModal({
                       {invalid && (
                         <p id={errId} className="mt-1 text-xs text-danger">
                           {ERROR_INVALID}
+                        </p>
+                      )}
+                      {reasoningById[row.id] && (
+                        <p className="mt-1 text-xs text-text-secondary">
+                          {maskMoneyText(reasoningById[row.id])}
                         </p>
                       )}
                     </div>
