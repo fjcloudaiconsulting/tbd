@@ -17,7 +17,7 @@ import {
 } from "recharts";
 
 
-import { chartColor } from "@/lib/chart-colors";
+import { budgetBarFill, chartColor } from "@/lib/chart-colors";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import { resolveBudgetSeries } from "@/lib/reports/chart-series-tooltip";
@@ -37,8 +37,8 @@ export default function BudgetOverviewChart({
   onBarClick,
 }: {
   budgetChartData: BudgetOverviewDatum[];
-  // Index-aligned per-row color driver (percent_used) + a stable key.
-  cellMeta: Array<{ category_id: number; percent_used: number }>;
+  // Index-aligned per-row color drivers + a stable key.
+  cellMeta: Array<{ category_id: number; percent_used: number; over_budget: boolean }>;
   onBarClick: (categoryId: number | undefined) => void;
 }) {
   const money = useMoney();
@@ -65,7 +65,7 @@ export default function BudgetOverviewChart({
           {cellMeta.map((b) => (
             <Cell
               key={b.category_id}
-              fill={b.percent_used > 100 ? chartColor.over : b.percent_used > 80 ? chartColor.watch : chartColor.spent}
+              fill={budgetBarFill(b)}
             />
           ))}
         </Bar>

@@ -498,7 +498,7 @@ export default function BudgetsPage() {
             </div>
             <div className="divide-y divide-border-subtle">
               {budgets.map((b) => {
-                const overBudget = b.percent_used > 100;
+                const overBudget = b.over_budget;
                 return (
                   <div key={b.id} className="px-6 py-3">
                     {editingId === b.id && isEditable ? (

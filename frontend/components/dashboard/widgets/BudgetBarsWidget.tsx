@@ -23,7 +23,7 @@ import {
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
 
 import { card, cardHeader, cardTitle } from "@/lib/styles";
-import { chartColor } from "@/lib/chart-colors";
+import { budgetBarFill, chartColor } from "@/lib/chart-colors";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import { resolveBudgetSeries } from "@/lib/reports/chart-series-tooltip";
 import { useMoney } from "@/lib/hooks/use-org-currency";
@@ -82,7 +82,7 @@ export default function BudgetBarsWidget() {
                 }}
               >
                 {dashBudgets.map((b) => (
-                  <Cell key={b.category_id} fill={b.percent_used > 100 ? chartColor.over : b.percent_used > 80 ? chartColor.watch : chartColor.spent} />
+                  <Cell key={b.category_id} fill={budgetBarFill(b)} />
                 ))}
               </Bar>
               <Bar dataKey="remaining" stackId="a" fill={chartColor.remaining} radius={[0, 4, 4, 0]} animationDuration={220} />

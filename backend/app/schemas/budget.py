@@ -44,6 +44,7 @@ class BudgetResponse(BaseModel):
     spent: Decimal = Decimal("0.00")
     remaining: Decimal = Decimal("0.00")
     percent_used: float = 0.0
+    over_budget: bool = False
     period_start: datetime.date
     period_end: Optional[datetime.date] = None
 
