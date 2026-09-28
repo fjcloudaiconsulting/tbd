@@ -274,6 +274,8 @@ export interface Budget {
   spent: number;
   remaining: number;
   percent_used: number;
+  // TBD-556: explicit, since percent_used is 0 for a 0-amount budget.
+  over_budget: boolean;
   period_start: string;
   period_end: string;
 }

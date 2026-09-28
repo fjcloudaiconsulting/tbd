@@ -22,6 +22,13 @@ export const chartColor = {
   axisTick: "var(--color-text-secondary)",
 } as const;
 
+// Fill for a budget's spent bar. Keyed on `over_budget`, not
+// `percent_used > 100`: percent_used is 0 for a 0-amount budget (TBD-556).
+export function budgetBarFill(b: { percent_used: number; over_budget: boolean }): string {
+  if (b.over_budget) return chartColor.over;
+  return b.percent_used > 80 ? chartColor.watch : chartColor.spent;
+}
+
 // Categorical multi-series palette for report widgets (W3 visual refresh).
 // Single source of truth — every widget imports CHART_SERIES rather than
 // maintaining its own local array. Palette expanded to 8 tokens as part of

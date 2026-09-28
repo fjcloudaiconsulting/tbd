@@ -110,6 +110,8 @@ async def _compute_spent(
 
 def _to_response(budget: Budget, spent: Decimal) -> BudgetResponse:
     remaining = budget.amount - spent
+    # TBD-556: percent_used is undefined at amount 0, so "over" cannot be
+    # derived from it. over_budget is the explicit signal every surface reads.
     pct = float(spent / budget.amount * 100) if budget.amount > 0 else 0.0
     return BudgetResponse(
         id=budget.id,
@@ -119,6 +121,7 @@ def _to_response(budget: Budget, spent: Decimal) -> BudgetResponse:
         spent=spent,
         remaining=remaining,
         percent_used=round(pct, 1),
+        over_budget=spent > budget.amount,
         period_start=budget.period_start,
         period_end=budget.period_end,
     )

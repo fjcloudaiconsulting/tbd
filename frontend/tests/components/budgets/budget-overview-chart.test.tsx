@@ -69,8 +69,8 @@ const DATA: BudgetOverviewDatum[] = [
 ];
 
 const CELL_META = [
-  { category_id: 1, percent_used: 60 },
-  { category_id: 2, percent_used: 117 },
+  { category_id: 1, percent_used: 60, over_budget: false },
+  { category_id: 2, percent_used: 117, over_budget: true },
 ];
 
 /**

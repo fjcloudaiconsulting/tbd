@@ -22,7 +22,7 @@ import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 
 
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
-import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
+import { budgetBarFill, chartColor, CHART_SERIES } from "@/lib/chart-colors";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import {
   resolveBudgetSeries,
@@ -836,6 +836,7 @@ function LegacyDashboard() {
         spent: Number(b.spent),
         remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
         pct: b.percent_used,
+        over_budget: b.over_budget,
       })),
     [dashBudgets],
   );
@@ -1412,7 +1413,7 @@ function LegacyDashboard() {
                         }}
                       >
                         {dashBudgets.map((b) => (
-                          <Cell key={b.category_id} fill={b.percent_used > 100 ? chartColor.over : b.percent_used > 80 ? chartColor.watch : chartColor.spent} />
+                          <Cell key={b.category_id} fill={budgetBarFill(b)} />
                         ))}
                       </Bar>
                       <Bar dataKey="remaining" stackId="a" fill={chartColor.remaining} radius={[0, 4, 4, 0]} animationDuration={220} />

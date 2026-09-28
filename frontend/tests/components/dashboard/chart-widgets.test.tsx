@@ -281,6 +281,7 @@ const MOCK_BUDGET = {
   spent: 300,
   remaining: 200,
   percent_used: 60,
+  over_budget: false,
   period_start: "2026-06-01",
   period_end: "2026-06-30",
 };

@@ -58,6 +58,18 @@ describe("resolveBudgetSeries", () => {
     ).toBe(chartColor.over);
   });
 
+  it("paints a 0-amount budget with spend as over, although pct is 0 (TBD-556)", () => {
+    // FENCE: the dashboard datum carries pct = percent_used = 0 at amount 0,
+    // so a pct-only check paints the swatch as ordinary spend next to a red bar.
+    expect(
+      resolveBudgetSeries({
+        dataKey: "spent",
+        value: 25,
+        payload: { pct: 0, over_budget: true },
+      })?.color,
+    ).toBe(chartColor.over);
+  });
+
   it("derives the tier from over/spent/remaining when pct is absent (budgets-page datum)", () => {
     expect(
       resolveBudgetSeries({

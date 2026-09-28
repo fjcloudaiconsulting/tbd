@@ -57,6 +57,8 @@ mysql_data/
 # (the public repo carries no agent context). Content lives in
 # ~/.claude/projects/-Users-flamarion-src-tbd/CLAUDE.md
 CLAUDE.local.md
+# Root CLAUDE.md is written by the claude-mem-lite plugin; same rule as above.
+/CLAUDE.md
 
 # Local test fixtures and scratch
 mock/
