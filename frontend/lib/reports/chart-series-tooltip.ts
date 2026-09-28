@@ -70,8 +70,10 @@ export function resolveBudgetSeries(
  */
 function budgetPercentUsed(payload: SeriesTooltipEntry["payload"]): number {
   const row = payload as
-    | { pct?: number; spent?: number; remaining?: number; over?: number }
+    | { pct?: number; over_budget?: boolean; spent?: number; remaining?: number; over?: number }
     | undefined;
+  // TBD-556: pct is 0 for a 0-amount budget, so over-ness is explicit.
+  if (row?.over_budget) return 101;
   if (row?.pct != null) return Number(row.pct);
   if (Number(row?.over) > 0) return 101;
   const spent = Number(row?.spent ?? 0);

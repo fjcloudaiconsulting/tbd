@@ -836,6 +836,7 @@ function LegacyDashboard() {
         spent: Number(b.spent),
         remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
         pct: b.percent_used,
+        over_budget: b.over_budget,
       })),
     [dashBudgets],
   );
