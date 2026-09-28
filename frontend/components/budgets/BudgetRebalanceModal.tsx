@@ -89,10 +89,6 @@ const RECONCILE_MESSAGE =
 const RECONCILE_FAILED_MESSAGE =
   "Could not reload the latest amounts. Close and reopen.";
 
-function toNumber(value: string | number): number {
-  return typeof value === "string" ? Number(value) : value;
-}
-
 function centsToText(cents: number): string {
   return (cents / 100).toFixed(2);
 }
@@ -106,7 +102,7 @@ const MONEY_RE = /^(\d{1,10}(\.\d{0,2})?|\.\d{1,2})$/;
 function parseMoney(text: string): number | null {
   if (!MONEY_RE.test(text)) return null;
   const [whole, frac = ""] = text.split(".");
-  return Number(whole || "0") * 100 + Number(frac.padEnd(2, "0").slice(0, 2));
+  return Number(whole || "0") * 100 + Number(frac.padEnd(2, "0"));
 }
 
 export default function BudgetRebalanceModal({
@@ -152,9 +148,17 @@ export default function BudgetRebalanceModal({
 
   const dialogRef = useRef<HTMLDivElement>(null);
 
+  // Drops everything the last "Use suggestions" fetch put on screen.
+  function clearSuggestion() {
+    setSuggestStatus(null);
+    setAiSummary("");
+    setUncoveredOverspend(0);
+    setReasoningById({});
+  }
+
   function buildSnapshot(opts: { keepApplyError?: boolean } = {}) {
     const nextRows: Row[] = budgets.map((b) => {
-      const baseCents = Math.round(toNumber(b.amount) * 100);
+      const baseCents = Math.round(Number(b.amount) * 100);
       return {
         id: b.id,
         category_id: b.category_id,
@@ -172,10 +176,7 @@ export default function BudgetRebalanceModal({
     // still clear it.
     if (!opts.keepApplyError) setApplyError("");
     setSuggestError("");
-    setSuggestStatus(null);
-    setAiSummary("");
-    setUncoveredOverspend(0);
-    setReasoningById({});
+    clearSuggestion();
   }
 
   // Snapshot ONLY on open, never on a `budgets` prop change while open — a
@@ -224,15 +225,13 @@ export default function BudgetRebalanceModal({
     return p !== null && p !== r.baseCents;
   };
   const anyChanged = rows.some(isRowChanged);
-  const netCentsExact = allValid
-    ? rows.reduce((s, r) => s + ((parsedById.get(r.id) as number) - r.baseCents), 0)
-    : null;
   // Display net always resolves (invalid rows contribute zero change), so the
   // footer amount line never shows NaN while the user is mid-edit.
   const displayNetCents = rows.reduce((s, r) => {
     const p = parsedById.get(r.id);
     return s + ((p ?? r.baseCents) - r.baseCents);
   }, 0);
+  const netCentsExact = allValid ? displayNetCents : null;
 
   const applyEnabled =
     allValid && anyChanged && netCentsExact === 0 && !submitting;
@@ -253,18 +252,12 @@ export default function BudgetRebalanceModal({
     setText(next);
     setApplyError("");
     setSuggestError("");
-    setSuggestStatus(null);
-    setAiSummary("");
-    setUncoveredOverspend(0);
-    setReasoningById({});
+    clearSuggestion();
   }
 
   async function handleSuggest() {
     setSuggestError("");
-    setSuggestStatus(null);
-    setAiSummary("");
-    setUncoveredOverspend(0);
-    setReasoningById({});
+    clearSuggestion();
     setSuggesting(true);
     try {
       const res = await apiFetch<RebalanceResponse>("/api/v1/ai/budget/rebalance", {
@@ -275,7 +268,7 @@ export default function BudgetRebalanceModal({
         // render, so a counter incremented inside one still reads 0 here.
         const hits = (res.suggestions ?? []).flatMap((s) => {
           const row = rows.find((r) => r.category_id === s.category_id);
-          return row ? [{ id: row.id, text: toNumber(s.suggested_amount).toFixed(2), reasoning: s.reasoning }] : [];
+          return row ? [{ id: row.id, text: Number(s.suggested_amount).toFixed(2), reasoning: s.reasoning }] : [];
         });
         setText((prev) => {
           const next = { ...prev };
