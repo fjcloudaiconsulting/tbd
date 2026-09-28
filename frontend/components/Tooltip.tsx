@@ -360,7 +360,7 @@ export default function Tooltip({
         type="button"
         aria-label={triggerLabel}
         data-testid="tooltip-trigger"
-        className={`inline-flex min-h-[24px] min-w-[24px] items-center justify-center rounded-full text-text-muted hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 ${className}`}
+        className={`inline-flex min-h-[24px] min-w-[24px] items-center justify-center rounded-full text-text-muted hover:text-accent ${className}`}
       >
         <svg
           aria-hidden="true"
@@ -423,7 +423,7 @@ export default function Tooltip({
                     rel="noopener noreferrer"
                     data-testid="tooltip-learn-more"
                     data-section={learnMoreSection}
-                    className="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover"
                   >
                     {learnMoreLabel}
                     <span aria-hidden="true">&rarr;</span>

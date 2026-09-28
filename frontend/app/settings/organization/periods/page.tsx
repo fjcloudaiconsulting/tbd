@@ -95,7 +95,7 @@ const TIER_BADGE: Record<Tier, string> = {
 // A brass focus ring on every pressable surface (docs/design/DESIGN.md, the
 // Pressable-Surfaces Rule). `btnLink` carries colour only.
 const FOCUSABLE =
-  "rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
+  "rounded-sm";
 
 function MarkerChip({ copy }: { copy: MarkerCopy }) {
   const Icon = TIER_ICON[copy.tier];

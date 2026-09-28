@@ -46,7 +46,7 @@ const PasswordInput = forwardRef<HTMLInputElement, Props>(function PasswordInput
         aria-pressed={visible}
         title={label}
         tabIndex={0}
-        className="absolute inset-y-0 right-0 flex items-center px-3 text-text-muted hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 rounded-md"
+        className="absolute inset-y-0 right-0 flex items-center px-3 text-text-muted hover:text-text-primary rounded-md"
       >
         <Icon aria-hidden="true" className="h-4 w-4" />
       </button>

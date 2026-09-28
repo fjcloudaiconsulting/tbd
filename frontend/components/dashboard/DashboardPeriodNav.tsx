@@ -51,7 +51,7 @@ export default function DashboardPeriodNav() {
           aria-label="Previous period"
           disabled={isOldest}
           onClick={() => setPeriodIdx(periodIdx + 1)}
-          className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+          className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30"
         >
           <svg
             className="h-4 w-4"
@@ -81,7 +81,7 @@ export default function DashboardPeriodNav() {
           aria-label="Next period"
           disabled={isNewest}
           onClick={() => setPeriodIdx(periodIdx - 1)}
-          className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+          className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30"
         >
           <svg
             className="h-4 w-4"
@@ -112,7 +112,7 @@ export default function DashboardPeriodNav() {
             type="button"
             data-testid="period-nav-today-btn"
             onClick={jumpToCurrentPeriod}
-            className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+            className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised"
           >
             Today
           </button>

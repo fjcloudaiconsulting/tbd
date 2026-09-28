@@ -57,7 +57,7 @@ export default function Pagination({
             id={selectId}
             value={pageSize}
             onChange={(e) => onPageSizeChange(Number(e.target.value))}
-            className="rounded border border-border bg-surface px-2 py-1 text-xs text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+            className="rounded border border-border bg-surface px-2 py-1 text-xs text-text"
           >
             {pageSizeOptions.map((n) => (
               <option key={n} value={n}>
@@ -83,7 +83,7 @@ export default function Pagination({
             aria-label="Previous page"
             disabled={isFirst}
             onClick={() => onPageChange(page - 1)}
-            className="inline-flex items-center justify-center rounded border border-border px-2.5 py-1 text-xs hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 min-h-[32px]"
+            className="inline-flex items-center justify-center rounded border border-border px-2.5 py-1 text-xs hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40 min-h-[32px]"
           >
             Previous
           </button>
@@ -92,7 +92,7 @@ export default function Pagination({
             aria-label="Next page"
             disabled={isLast}
             onClick={() => onPageChange(page + 1)}
-            className="inline-flex items-center justify-center rounded border border-border px-2.5 py-1 text-xs hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 min-h-[32px]"
+            className="inline-flex items-center justify-center rounded border border-border px-2.5 py-1 text-xs hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40 min-h-[32px]"
           >
             Next
           </button>

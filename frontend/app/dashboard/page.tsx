@@ -961,7 +961,7 @@ function LegacyDashboard() {
             type="button"
             onClick={() => setResetBanner(false)}
             aria-label="Dismiss"
-            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-lg leading-none text-text-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-lg leading-none text-text-secondary hover:text-text-primary"
           >
             ×
           </button>
@@ -1003,18 +1003,18 @@ function LegacyDashboard() {
           <TourAnchor id="dashboard.period-nav" as="child">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilterId(null); }} disabled={periodIdx >= periods.length - 1} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30" aria-label="Previous period">
+              <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilterId(null); }} disabled={periodIdx >= periods.length - 1} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
               </button>
               <span className="text-sm font-medium text-text-primary">
                 {monthFrom}{monthTo ? ` – ${monthTo}` : ""}
               </span>
-              <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilterId(null); }} disabled={periodIdx <= 0} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30" aria-label="Next period">
+              <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilterId(null); }} disabled={periodIdx <= 0} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
               </button>
               {isCurrentSelectedPeriod && <span className="ml-1 rounded bg-success-dim px-2 py-0.5 text-[10px] font-semibold text-success">CURRENT</span>}
               {!isCurrentSelectedPeriod && (
-                <button onClick={() => { const idx = selectCurrentPeriodIndex(periods); if (idx >= 0) { setPeriodIdx(idx); setChartFilterId(null); } }} className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">Today</button>
+                <button onClick={() => { const idx = selectCurrentPeriodIndex(periods); if (idx >= 0) { setPeriodIdx(idx); setChartFilterId(null); } }} className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised">Today</button>
               )}
             </div>
             <Link href="/transactions" className="text-xs text-text-secondary underline underline-offset-2 hover:text-text-primary">View All Transactions</Link>
@@ -1144,7 +1144,7 @@ function LegacyDashboard() {
             <div className={`${card} p-5`} data-testid="spending-donut">
               <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
               {chartFilter !== null && (
-                <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">
+                <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised">
                   {/* The fallback is reachable: a category can be filtered from
                       the Budget or Forecast bars with no rollup row, no budget
                       and no forecast item to name it. Plain language, not
@@ -1246,7 +1246,7 @@ function LegacyDashboard() {
                         <button
                           type="button"
                           onClick={() => toggleSpendingSort("name")}
-                          className="inline-flex items-center gap-1 text-left min-h-[32px] hover:text-text-primary rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                          className="inline-flex items-center gap-1 text-left min-h-[32px] hover:text-text-primary rounded-sm"
                           aria-label="Sort by category"
                         >
                           <span>Category</span>
@@ -1280,7 +1280,7 @@ function LegacyDashboard() {
                         <button
                           type="button"
                           onClick={() => toggleSpendingSort("percent")}
-                          className="inline-flex items-center gap-1 justify-end min-h-[32px] hover:text-text-primary rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                          className="inline-flex items-center gap-1 justify-end min-h-[32px] hover:text-text-primary rounded-sm"
                           aria-label="Sort by percent of total"
                         >
                           <span>%</span>
@@ -1314,7 +1314,7 @@ function LegacyDashboard() {
                         <button
                           type="button"
                           onClick={() => toggleSpendingSort("amount")}
-                          className="inline-flex items-center gap-1 justify-end min-h-[32px] hover:text-text-primary rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                          className="inline-flex items-center gap-1 justify-end min-h-[32px] hover:text-text-primary rounded-sm"
                           aria-label="Sort by amount"
                         >
                           <span>Amount</span>
@@ -1541,7 +1541,7 @@ function LegacyDashboard() {
                           ? `Transactions sorted by ${col.label.toLowerCase()}, ${dashSortDir === "asc" ? "ascending" : "descending"}. Activate to reverse.`
                           : `Sort transactions by ${col.label.toLowerCase()}`
                       }
-                      className={`${col.span} ${col.align} min-h-[32px] rounded-sm hover:text-text-primary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30`}
+                      className={`${col.span} ${col.align} min-h-[32px] rounded-sm hover:text-text-primary transition-colors`}
                     >
                       {col.label}{active ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}
                     </button>
@@ -1594,7 +1594,7 @@ function LegacyDashboard() {
                     }}
                     aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
                     aria-pressed={tx.status === "settled"}
-                    className="inline-flex min-h-[44px] items-center rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                    className="inline-flex min-h-[44px] items-center rounded"
                   >
                     {/* Outer button carries the WCAG 2.5.8 touch target;
                         inner span matches /transactions' pill visual. */}

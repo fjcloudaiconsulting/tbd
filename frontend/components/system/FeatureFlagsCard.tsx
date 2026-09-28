@@ -141,7 +141,7 @@ export default function FeatureFlagsCard() {
                             if (current !== opt) void handleChange(flag.feature, opt);
                           }}
                           className={[
-                            "px-3 py-1.5 text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30",
+                            "px-3 py-1.5 text-xs font-medium capitalize transition-colors",
                             current === opt
                               ? "bg-accent text-accent-text"
                               : "text-text-secondary hover:bg-surface hover:text-text-primary",

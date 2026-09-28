@@ -406,7 +406,7 @@ function AdminSubscriptionsPageContent() {
                     setStatusFilter(s.value);
                   }}
                   aria-pressed={active}
-                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 ${
+                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                     active
                       ? "border-accent bg-accent-dim text-accent"
                       : "border-border text-text-secondary hover:border-accent hover:text-accent"
@@ -429,7 +429,7 @@ function AdminSubscriptionsPageContent() {
                   setPlanFilter(null);
                 }}
                 aria-pressed={planFilter === null}
-                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 ${
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                   planFilter === null
                     ? "border-accent bg-accent-dim text-accent"
                     : "border-border text-text-secondary hover:border-accent hover:text-accent"
@@ -446,7 +446,7 @@ function AdminSubscriptionsPageContent() {
                     setPlanFilter(p.slug);
                   }}
                   aria-pressed={planFilter === p.slug}
-                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 ${
+                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                     planFilter === p.slug
                       ? "border-accent bg-accent-dim text-accent"
                       : "border-border text-text-secondary hover:border-accent hover:text-accent"

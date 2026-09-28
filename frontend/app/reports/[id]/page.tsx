@@ -495,7 +495,7 @@ export default function ReportEditorPage({ params }: PageProps) {
               aria-label="Report title"
               placeholder="Report title"
               data-testid="report-editor-title"
-              className="rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-semibold text-text-primary hover:border-border focus:border-border focus:bg-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+              className="rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-semibold text-text-primary hover:border-border focus:border-border focus:bg-bg"
             />
           ) : (
             <span className="text-sm font-semibold text-text-primary">
