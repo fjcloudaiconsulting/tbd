@@ -719,11 +719,13 @@ export default async function DocsPage() {
               and see the estimated cost before confirming. The result is a preview you can
               revert; it does not change your saved data.
             </p>
-            <h3>Suggest rebalance (Budgets)</h3>
+            <h3>Rebalance (Budgets)</h3>
             <p>
-              On the current period, &#34;Suggest rebalance&#34; asks the AI to propose budget changes
-              across categories based on recent spending. You accept or skip each suggestion;
-              nothing changes until you apply it.
+              &#34;Rebalance&#34; opens a free allocation editor: move amounts between any budgets in
+              the period, in any direction. Apply is only enabled once the net change is exactly
+              zero, so the total budget never shifts by accident. On the current period, &#34;Use
+              suggestions&#34; fills in an AI-proposed starting point you can still edit before
+              applying.
             </p>
           </section>
 

@@ -1,198 +1,275 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+// BudgetRebalanceModal — zero-sum free-allocation rebalance (TBD-461).
+//
+// The modal lets the user move amounts freely between budgets; Apply is
+// enabled only once every row parses and the net change is exactly zero.
+// Rows render from a snapshot taken on open, never from the live `budgets`
+// prop, so a background reload mid-edit cannot silently add/hide a row.
 
-import BudgetRebalanceModal, {
-  type RebalanceResponse,
-} from "@/components/budgets/BudgetRebalanceModal";
-import { apiFetch } from "@/lib/api";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ComponentProps } from "react";
+
+import BudgetRebalanceModal from "@/components/budgets/BudgetRebalanceModal";
+import { apiFetch, ApiResponseError } from "@/lib/api";
+import { setBalancesHidden } from "@/lib/format";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
   return { ...actual, apiFetch: vi.fn() };
 });
 
-const apiFetchMock = vi.mocked(apiFetch);
-
-const budgets = [
-  { id: 10, category_id: 1, amount: 400 },
-  { id: 11, category_id: 2, amount: 200 },
+const BUDGETS = [
+  { id: 11, category_id: 1, category_name: "Transportation", amount: 100 },
+  { id: 12, category_id: 2, category_name: "Groceries", amount: 90 },
 ];
 
-const okResponse: RebalanceResponse = {
-  status: "ok",
-  period_start: "2026-05-01",
-  summary: "Move money from dining to groceries.",
-  suggestions: [
-    {
-      category_id: 1,
-      category_name: "Groceries",
-      current_amount: 400,
-      suggested_amount: 450,
-      delta_amount: 50,
-      reasoning: "You consistently overspend on groceries.",
-    },
-    {
-      category_id: 2,
-      category_name: "Dining",
-      current_amount: 200,
-      suggested_amount: 150,
-      delta_amount: -50,
-      reasoning: "You under-spend here every month.",
-    },
-  ],
-};
+function renderModal(props: Partial<ComponentProps<typeof BudgetRebalanceModal>> = {}) {
+  return render(
+    <BudgetRebalanceModal
+      open
+      budgets={BUDGETS}
+      canSuggest={false}
+      onApplied={vi.fn().mockResolvedValue(undefined)}
+      onClose={vi.fn()}
+      {...props}
+    />,
+  );
+}
 
-describe("BudgetRebalanceModal", () => {
-  beforeEach(() => {
-    apiFetchMock.mockReset();
+function amountInput(name: string) {
+  return screen.getByRole("textbox", { name: `${name} amount` }) as HTMLInputElement;
+}
+
+function sliderInput(name: string) {
+  return screen.getByRole("slider", { name: `${name} allocation` }) as HTMLInputElement;
+}
+
+beforeEach(() => {
+  vi.mocked(apiFetch).mockReset();
+  setBalancesHidden(false);
+});
+
+it("F-F1: sums deltas as integer cents, not floats", async () => {
+  renderModal({
+    budgets: [
+      { id: 1, category_id: 1, category_name: "A", amount: "0.10" },
+      { id: 2, category_id: 2, category_name: "B", amount: "0.20" },
+      { id: 3, category_id: 3, category_name: "C", amount: "0.30" },
+    ],
   });
+  fireEvent.change(amountInput("A"), { target: { value: "0.20" } });
+  fireEvent.change(amountInput("B"), { target: { value: "0.40" } });
+  fireEvent.change(amountInput("C"), { target: { value: "0.00" } });
+  // +0.10 / +0.20 / -0.30 nets to zero.
+  expect(screen.getByRole("button", { name: /^apply$/i })).toBeEnabled();
 
-  it("does not render when open=false", () => {
-    render(
-      <BudgetRebalanceModal
-        open={false}
-        budgets={budgets}
-        onApplied={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    );
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  });
+  // Leave a +0.01 residue: no longer balanced.
+  fireEvent.change(amountInput("C"), { target: { value: "0.01" } });
+  expect(screen.getByRole("button", { name: /^apply$/i })).toBeDisabled();
+});
 
-  it("renders the diff table on ok response", async () => {
-    apiFetchMock.mockResolvedValueOnce(okResponse);
-    render(
-      <BudgetRebalanceModal
-        open
-        budgets={budgets}
-        onApplied={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    );
+it("F-F2: Apply sends exactly one POST to /budgets/rebalance with expected_amount, no PUTs", async () => {
+  vi.mocked(apiFetch).mockResolvedValue([] as never);
+  const onApplied = vi.fn().mockResolvedValue(undefined);
+  const onClose = vi.fn();
+  renderModal({ onApplied, onClose });
 
-    await waitFor(() =>
-      expect(screen.getByTestId("rebalance-diff-table")).toBeInTheDocument(),
-    );
-    expect(screen.getByText("Groceries")).toBeInTheDocument();
-    expect(screen.getByText("Dining")).toBeInTheDocument();
-    // Suggestion only — nothing was applied. The endpoint that was
-    // called must be the rebalance endpoint, never a PUT.
-    expect(apiFetchMock).toHaveBeenCalledTimes(1);
-    expect(apiFetchMock).toHaveBeenCalledWith(
-      "/api/v1/ai/budget/rebalance",
-      expect.objectContaining({ method: "POST" }),
-    );
-  });
+  fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
+  fireEvent.change(amountInput("Groceries"), { target: { value: "100.00" } });
+  fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
 
-  it("renders empty state for llm_unavailable without crashing", async () => {
-    apiFetchMock.mockResolvedValueOnce({
-      status: "llm_unavailable",
-      period_start: "2026-05-01",
-      summary: "AI is unavailable.",
-      suggestions: [],
-    } satisfies RebalanceResponse);
+  await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+  expect(apiFetch).toHaveBeenCalledWith(
+    "/api/v1/budgets/rebalance",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        items: [
+          { budget_id: 11, expected_amount: "100.00", amount: "90.00" },
+          { budget_id: 12, expected_amount: "90.00", amount: "100.00" },
+        ],
+      }),
+    }),
+  );
+  const putCalls = vi.mocked(apiFetch).mock.calls.filter(
+    (c) => (c[1] as RequestInit | undefined)?.method === "PUT",
+  );
+  expect(putCalls).toHaveLength(0);
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
 
-    render(
-      <BudgetRebalanceModal
-        open
-        budgets={budgets}
-        onApplied={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    );
+it("F-F3: slider and text input stay in sync", async () => {
+  renderModal();
+  const slider = sliderInput("Transportation");
+  fireEvent.change(slider, { target: { value: "75" } });
+  expect(amountInput("Transportation").value).toBe("75.00");
 
-    await waitFor(() =>
-      expect(screen.getByTestId("rebalance-empty-state")).toBeInTheDocument(),
-    );
-    expect(screen.queryByTestId("rebalance-diff-table")).not.toBeInTheDocument();
-    // Apply button must not render in an empty state.
-    expect(
-      screen.queryByRole("button", { name: /Apply/i }),
-    ).not.toBeInTheDocument();
-  });
+  fireEvent.change(amountInput("Transportation"), { target: { value: "60" } });
+  expect(slider.value).toBe("60");
+});
 
-  it("applies only accepted rows via PUT /budgets/{id}", async () => {
-    apiFetchMock
-      .mockResolvedValueOnce(okResponse) // initial fetch
-      .mockResolvedValue({}); // PUT writes
-    const onApplied = vi.fn();
-    const onClose = vi.fn();
+it("F-F4: no AI call on open; suggestions absent when canSuggest is false; fills only mapped rows on click; surfaces a non-ok status", async () => {
+  const { rerender } = renderModal({ canSuggest: false });
+  expect(apiFetch).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: /use suggestions/i })).toBeNull();
+  // Modal still fully works without suggestions.
+  expect(amountInput("Transportation")).toBeInTheDocument();
 
-    render(
-      <BudgetRebalanceModal
-        open
-        budgets={budgets}
-        onApplied={onApplied}
-        onClose={onClose}
-      />,
-    );
+  vi.mocked(apiFetch).mockResolvedValue({
+    status: "ok",
+    period_start: "2026-06-01",
+    summary: "Shift to groceries",
+    suggestions: [
+      {
+        category_id: 1,
+        category_name: "Transportation",
+        current_amount: 100,
+        suggested_amount: 80,
+        delta_amount: -20,
+        reasoning: "surplus",
+      },
+    ],
+  } as never);
+  rerender(
+    <BudgetRebalanceModal
+      open
+      budgets={BUDGETS}
+      canSuggest
+      onApplied={vi.fn().mockResolvedValue(undefined)}
+      onClose={vi.fn()}
+    />,
+  );
+  expect(apiFetch).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: /use suggestions/i }));
+  await waitFor(() => expect(amountInput("Transportation").value).toBe("80.00"));
+  // Unmapped row untouched.
+  expect(amountInput("Groceries").value).toBe("90.00");
 
-    await waitFor(() =>
-      expect(screen.getByTestId("rebalance-diff-table")).toBeInTheDocument(),
-    );
+  vi.mocked(apiFetch).mockReset();
+  vi.mocked(apiFetch).mockResolvedValue({
+    status: "empty_no_surplus",
+    period_start: "2026-06-01",
+    summary: "Every category is at or over budget.",
+    suggestions: [],
+  } as never);
+  fireEvent.click(screen.getByRole("button", { name: /use suggestions/i }));
+  await waitFor(() =>
+    expect(screen.getByText(/every category is at or over budget/i)).toBeInTheDocument(),
+  );
+});
 
-    // Skip the Dining row (uncheck its checkbox).
-    const diningCheckbox = screen.getByLabelText(
-      /Apply suggestion for Dining/i,
-    ) as HTMLInputElement;
-    expect(diningCheckbox.checked).toBe(true);
-    await act(async () => {
-      fireEvent.click(diningCheckbox);
-    });
-    expect(diningCheckbox.checked).toBe(false);
+it("F-F5: 409 keeps the modal open, awaits onApplied, and rebuilds from fresh props", async () => {
+  const onApplied = vi.fn().mockResolvedValue(undefined);
+  const onClose = vi.fn();
+  const { rerender } = renderModal({ onApplied, onClose });
 
-    // Click Apply.
-    const applyBtn = screen.getByRole("button", { name: /Apply 1 change/i });
-    await act(async () => {
-      fireEvent.click(applyBtn);
-    });
+  fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
+  fireEvent.change(amountInput("Groceries"), { target: { value: "100.00" } });
 
-    await waitFor(() => expect(onApplied).toHaveBeenCalled());
-    expect(onClose).toHaveBeenCalled();
+  const err = new ApiResponseError(409, "Budgets changed since you opened this.", "budget_changed");
+  vi.mocked(apiFetch).mockRejectedValueOnce(err);
+  fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
 
-    // First call is the rebalance fetch; subsequent calls are PUTs.
-    // We accepted Groceries (category_id=1) which maps to budget id 10,
-    // and skipped Dining. Therefore exactly one PUT must fire, to /10.
-    const putCalls = apiFetchMock.mock.calls.filter((c) => {
-      const init = c[1] as RequestInit | undefined;
-      return init?.method === "PUT";
-    });
-    expect(putCalls).toHaveLength(1);
-    expect(putCalls[0][0]).toBe("/api/v1/budgets/10");
-    expect(putCalls[0][1]).toMatchObject({
-      method: "PUT",
-      body: JSON.stringify({ amount: 450 }),
-    });
-  });
+  await waitFor(() =>
+    expect(screen.getByText(/budgets changed since you opened this/i)).toBeInTheDocument(),
+  );
+  expect(onClose).not.toHaveBeenCalled();
+  expect(onApplied).toHaveBeenCalledTimes(1);
 
-  it("does not call any PUT when the user clicks Cancel", async () => {
-    apiFetchMock.mockResolvedValueOnce(okResponse);
-    const onApplied = vi.fn();
-    const onClose = vi.fn();
+  // Parent re-renders with fresh amounts (as if it reloaded).
+  rerender(
+    <BudgetRebalanceModal
+      open
+      budgets={[
+        { id: 11, category_id: 1, category_name: "Transportation", amount: 95 },
+        { id: 12, category_id: 2, category_name: "Groceries", amount: 95 },
+      ]}
+      canSuggest={false}
+      onApplied={onApplied}
+      onClose={onClose}
+    />,
+  );
 
-    render(
-      <BudgetRebalanceModal
-        open
-        budgets={budgets}
-        onApplied={onApplied}
-        onClose={onClose}
-      />,
-    );
+  await waitFor(() => expect(amountInput("Transportation").value).toBe("95.00"));
+  expect(amountInput("Groceries").value).toBe("95.00");
+});
 
-    await waitFor(() =>
-      expect(screen.getByTestId("rebalance-diff-table")).toBeInTheDocument(),
-    );
+it("F-F6: a mid-edit prop change (including an added budget) does not reset typed values or add a row", async () => {
+  const { rerender } = renderModal();
+  fireEvent.change(amountInput("Transportation"), { target: { value: "77.00" } });
 
-    const cancel = screen.getByRole("button", { name: /Cancel/i });
-    await act(async () => {
-      fireEvent.click(cancel);
-    });
+  rerender(
+    <BudgetRebalanceModal
+      open
+      budgets={[...BUDGETS, { id: 13, category_id: 3, category_name: "New", amount: 5 }]}
+      canSuggest={false}
+      onApplied={vi.fn().mockResolvedValue(undefined)}
+      onClose={vi.fn()}
+    />,
+  );
 
-    expect(onClose).toHaveBeenCalled();
-    expect(onApplied).not.toHaveBeenCalled();
-    const putCalls = apiFetchMock.mock.calls.filter((c) => {
-      const init = c[1] as RequestInit | undefined;
-      return init?.method === "PUT";
-    });
-    expect(putCalls).toHaveLength(0);
-  });
+  expect(amountInput("Transportation").value).toBe("77.00");
+  expect(screen.queryByText("New")).toBeNull();
+});
+
+it("F-F7: parses '12.' and '.5'; rejects '' and '1.005' with an inline error", async () => {
+  renderModal();
+  const txField = amountInput("Transportation");
+
+  fireEvent.change(txField, { target: { value: "12." } });
+  expect(sliderInput("Transportation").value).toBe("12");
+
+  fireEvent.change(txField, { target: { value: ".5" } });
+  expect(sliderInput("Transportation").value).toBe("0.5");
+
+  fireEvent.change(txField, { target: { value: "" } });
+  expect(screen.getByRole("button", { name: /^apply$/i })).toBeDisabled();
+  expect(txField).toHaveAttribute("aria-invalid", "true");
+  expect(screen.getAllByText(/use a number with up to 2 decimals/i).length).toBeGreaterThan(0);
+
+  fireEvent.change(txField, { target: { value: "1.005" } });
+  expect(screen.getByRole("button", { name: /^apply$/i })).toBeDisabled();
+  expect(txField).toHaveAttribute("aria-invalid", "true");
+});
+
+it("F-F9: hidden balances replace the body with a prompt and leak no digits", async () => {
+  setBalancesHidden(true);
+  renderModal();
+  expect(screen.getByText("Show balances to rebalance.")).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: /amount/i })).toBeNull();
+  expect(screen.queryByRole("slider")).toBeNull();
+  expect(document.body.textContent).not.toMatch(/\d/);
+  expect(screen.getByRole("button", { name: /cancel/i })).toBeEnabled();
+
+  fireEvent.click(screen.getByRole("button", { name: /show balances/i }));
+  await waitFor(() => expect(amountInput("Transportation")).toBeInTheDocument());
+  setBalancesHidden(false);
+});
+
+it("F-F10: slider and text input each carry the category's own accessible name", async () => {
+  renderModal();
+  expect(sliderInput("Groceries")).toBeInTheDocument();
+  expect(amountInput("Groceries")).toBeInTheDocument();
+});
+
+it("G-F11: the status region changes text only on a state flip; Escape closes", async () => {
+  const onClose = vi.fn();
+  renderModal({ onClose });
+  const status = screen.getByRole("status");
+  expect(status).toHaveTextContent("No changes yet");
+
+  fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
+  expect(status).toHaveTextContent(/not balanced/i);
+  const textAfterFirst = status.textContent;
+
+  // Drag across two different non-zero nets: still "not balanced", same text.
+  fireEvent.change(amountInput("Transportation"), { target: { value: "80.00" } });
+  expect(status.textContent).toBe(textAfterFirst);
+
+  fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
+  fireEvent.change(amountInput("Groceries"), { target: { value: "100.00" } });
+  expect(status).toHaveTextContent(/^balanced$/i);
+
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(onClose).toHaveBeenCalledTimes(1);
 });

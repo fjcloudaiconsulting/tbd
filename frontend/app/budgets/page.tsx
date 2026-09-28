@@ -37,7 +37,6 @@ const BudgetOverviewChart = dynamic(() => import("./BudgetOverviewChart"), {
   ),
 });
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
-import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
 import BudgetRebalanceModal from "@/components/budgets/BudgetRebalanceModal";
 import BudgetDraftModal from "@/components/budgets/BudgetDraftModal";
 import { useMoney } from "@/lib/hooks/use-org-currency";
@@ -74,22 +73,18 @@ export default function BudgetsPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editAmount, setEditAmount] = useState("");
 
-  // Transfer
-  const [transferringId, setTransferringId] = useState<number | null>(null);
-  const [transferCategoryId, setTransferCategoryId] = useState<number | "">("");
-  const [transferAmount, setTransferAmount] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
-  // LAI.3 — Smart Budget Rebalance. The modal lazy-fetches when opened
-  // and never auto-applies; user accept/skip per row, then Apply
-  // writes via existing PUT /budgets/{id}.
+  // TBD-461 — Zero-sum rebalance. Free allocation across every budget in
+  // the period; Apply posts one atomic request only when the net change is
+  // exactly zero. "Use suggestions" (gated by canSuggest below) is a preset
+  // for it, not a separate flow.
   const [rebalanceOpen, setRebalanceOpen] = useState(false);
   // Next-period AI draft (projection-only; applies by CREATING budgets).
   const [draftOpen, setDraftOpen] = useState(false);
 
   const ai = useAiStatus();
   const budgetAi = ai?.budget;
-  const role = user?.role ?? null;
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
@@ -102,6 +97,9 @@ export default function BudgetsPage() {
   const isNextPeriod = _budgetStatus === "upcoming";
   // Current + next are editable; past (closed) periods are read-only.
   const isEditable = isCurrentPeriod || isNextPeriod;
+  // "Use suggestions" preset in the Rebalance modal is current-period-only
+  // (AI rebalance reads the open period's spend) and entitlement-gated.
+  const canSuggestRebalance = isCurrentPeriod && !!budgetAi?.entitled && !!budgetAi?.configured;
 
   const loadRefs = useCallback(async () => {
     // Materialize the immediate next-period stub so it can be budgeted.
@@ -204,10 +202,9 @@ export default function BudgetsPage() {
   // form/state so they can't submit against a read-only period.
   useEffect(() => {
     if (!isEditable) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- drop open form/edit/transfer/delete state when the selected period becomes read-only
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- drop open form/edit/delete state when the selected period becomes read-only
       setShowForm(false);
       setEditingId(null);
-      setTransferringId(null);
       setConfirmDeleteId(null);
     }
   }, [isEditable]);
@@ -288,24 +285,6 @@ export default function BudgetsPage() {
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
-  async function handleTransfer(fromId: number) {
-    setError("");
-    try {
-      await apiFetch("/api/v1/budgets/transfer", {
-        method: "POST",
-        body: JSON.stringify({
-          from_budget_id: fromId,
-          to_category_id: transferCategoryId,
-          amount: transferAmount,
-        }),
-      });
-      setTransferringId(null);
-      setTransferCategoryId("");
-      setTransferAmount("");
-      await loadBudgets();
-    } catch (err) { setError(extractErrorMessage(err)); }
-  }
-
   const totalBudget = budgets.reduce((s, b) => s + Number(b.amount), 0);
   const totalSpent = budgets.reduce((s, b) => s + Number(b.spent), 0);
 
@@ -355,24 +334,14 @@ export default function BudgetsPage() {
               From Forecast
             </button>
           )}
-          {isCurrentPeriod && budgets.length > 0 && budgetAi?.entitled && (
-            budgetAi.configured ? (
-              <span className="inline-flex items-center gap-1">
-                <button
-                  onClick={() => setRebalanceOpen(true)}
-                  className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
-                  data-testid="suggest-rebalance-btn"
-                >
-                  Suggest rebalance
-                </button>
-                <HelpTooltip k="ai.budget" />
-              </span>
-            ) : (
-              <SetUpAiCta
-                role={role}
-                className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
-              />
-            )
+          {isEditable && budgets.length >= 2 && (
+            <button
+              onClick={() => setRebalanceOpen(true)}
+              className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
+              data-testid="rebalance-btn"
+            >
+              Rebalance
+            </button>
           )}
           {isEditable && availableCategories.length > 0 && (
             <button onClick={() => setShowForm(!showForm)} className={`${btnPrimary} sm:min-h-0`}>
@@ -530,7 +499,6 @@ export default function BudgetsPage() {
             <div className="divide-y divide-border-subtle">
               {budgets.map((b) => {
                 const overBudget = b.percent_used > 100;
-                const transferTargets = masterCategories.filter((c) => c.id !== b.category_id);
                 return (
                   <div key={b.id} className="px-6 py-3">
                     {editingId === b.id && isEditable ? (
@@ -562,28 +530,12 @@ export default function BudgetsPage() {
                             </span>
                             {isEditable && (
                               <div className="flex flex-wrap gap-2 ml-auto md:ml-0">
-                                <button onClick={() => { setTransferringId(transferringId === b.id ? null : b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Transfer</button>
                                 <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>
                                 <button onClick={() => setConfirmDeleteId(b.id)} className="min-h-[44px] text-xs text-text-muted hover:text-danger md:min-h-0">Remove</button>
                               </div>
                             )}
                           </div>
                         </div>
-                        {transferringId === b.id && isEditable && (
-                          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-                            <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`w-full min-w-0 sm:flex-1 sm:basis-40 ${input}`}>
-                              <option value="">Select target category</option>
-                              {transferTargets.map((c) => <option key={c.id} value={c.id}>{c.name}{budgetedCatIds.has(c.id) ? " (has budget)" : ""}</option>)}
-                            </select>
-                            <input type="number" step="0.01" min="0.01" max={Number(b.amount)} placeholder="Amount" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)}
-                              className={`w-full sm:w-28 ${input}`}
-                              onKeyDown={(e) => { if (e.key === "Enter" && transferCategoryId && transferAmount) handleTransfer(b.id); if (e.key === "Escape") setTransferringId(null); }} />
-                            <div className="flex flex-wrap gap-2">
-                              <button onClick={() => handleTransfer(b.id)} disabled={!transferCategoryId || !transferAmount} className="min-h-[44px] text-xs text-accent hover:text-accent-hover disabled:opacity-50 sm:min-h-0">Transfer</button>
-                              <button onClick={() => setTransferringId(null)} className="min-h-[44px] text-xs text-text-muted hover:text-text-secondary sm:min-h-0">Cancel</button>
-                            </div>
-                          </div>
-                        )}
                       </>
                     )}
                   </div>
@@ -653,11 +605,11 @@ export default function BudgetsPage() {
         budgets={budgets.map((b) => ({
           id: b.id,
           category_id: b.category_id,
+          category_name: b.category_name,
           amount: b.amount,
         }))}
-        onApplied={() => {
-          void loadBudgets();
-        }}
+        canSuggest={canSuggestRebalance}
+        onApplied={() => loadBudgets()}
         onClose={() => setRebalanceOpen(false)}
       />
       <BudgetDraftModal
