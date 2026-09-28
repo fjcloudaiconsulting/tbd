@@ -167,8 +167,8 @@ export default function OrgFeatureGateCard({ orgId }: Props) {
                           }}
                           className={[
                             // No overflow-hidden on the group: it clipped the focus outline
-                            // (TBD-521). The end segments round themselves instead.
-                            "px-3 py-1.5 text-xs font-medium capitalize transition-colors first:rounded-l-md last:rounded-r-md",
+                            // (TBD-521). The end segments round themselves, at the border's 5px inner radius.
+                            "px-3 py-1.5 text-xs font-medium capitalize transition-colors first:rounded-l-[5px] last:rounded-r-[5px]",
                             gate.override === opt
                               ? "bg-accent text-accent-text"
                               : "text-text-secondary hover:bg-surface hover:text-text-primary",
