@@ -8,7 +8,6 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
@@ -26,7 +25,7 @@ from app.models.settings import OrgSetting
 from app.models.user import Organization, Role, User
 from app.routers.budgets import router as budgets_router
 from app.security import hash_password
-from app.services.exceptions import ConflictError, ValidationError
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.feature_gate import Feature, org_preference_key
 
 
@@ -120,20 +119,10 @@ def _make_app(factory, user_id: int) -> FastAPI:
     app.dependency_overrides[get_current_user] = override_user
     app.include_router(budgets_router)
 
-    # This minimal app doesn't get main.py's exception handlers for free;
-    # register the ones the rebalance service can raise so a ConflictError
-    # or ValidationError round-trips as the real 409/400, not an unhandled
-    # exception through TestClient.
-    @app.exception_handler(ValidationError)
-    async def _validation_handler(request, exc: ValidationError):
-        return JSONResponse(status_code=400, content={"detail": exc.detail})
-
-    @app.exception_handler(ConflictError)
-    async def _conflict_handler(request, exc: ConflictError):
-        content = {"detail": exc.detail}
-        if getattr(exc, "code", None):
-            content["code"] = exc.code
-        return JSONResponse(status_code=409, content=content)
+    # This minimal app doesn't get main.py's exception handlers for free.
+    # Reuse the real ones rather than a copy that could drift.
+    for exc_class in (NotFoundError, ValidationError, ConflictError):
+        app.add_exception_handler(exc_class, full_app.exception_handlers[exc_class])
 
     return app
 

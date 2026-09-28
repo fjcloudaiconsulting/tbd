@@ -219,6 +219,8 @@ it("V3: 'Use suggestions' fills only mapped rows, preserving a row the user alre
   await waitFor(() => expect(amountInput("Transportation").value).toBe("80.00"));
   // The preset must not clobber a row the user already typed into.
   expect(amountInput("Groceries").value).toBe("95.00");
+  // A preset that DID match must not also claim that nothing matched.
+  expect(screen.queryByText(/no suggestions matched/i)).toBeNull();
 });
 
 it("C4: an ok response with no suggestion mapped to any row shows an inline note", async () => {
@@ -240,19 +242,20 @@ it("C4: an ok response with no suggestion mapped to any row shows an inline note
   renderModal({ canSuggest: true });
   fireEvent.click(screen.getByRole("button", { name: /^use suggestions$/i }));
 
-  await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText(/no suggestions matched a budget in this period/i)).toBeInTheDocument(),
+  );
   // Unmapped rows stay at base.
   expect(amountInput("Transportation").value).toBe("100.00");
   expect(amountInput("Groceries").value).toBe("90.00");
 });
 
-// A realistic `onApplied` (e.g. the page's `loadBudgets`) commits its reload
-// into the parent's React state as part of the awaited call itself, so by
-// the time `await onApplied()` returns, the `budgets` prop this component
-// sees is ALREADY the reloaded one. This wrapper models that faithfully
-// (rather than a manual `rerender()` after the fact, which models a parent
-// that re-renders on some unrelated later tick and does not fence K1's
-// actual failure mode).
+// A WORST-CASE parent: it commits the reloaded `budgets` (and flushes that
+// commit's effects) before `onApplied` resolves, then never renders again.
+// The real page's `loadBudgets` only queues `setBudgets`, so production is
+// usually kinder than this; the modal must be correct under both orderings,
+// and only this one separates a "wait for the next `budgets` change" ref from
+// the state token.
 function renderModalWithCommittingParent(
   status: 409 | 404,
   onApplied: (budgets: typeof BUDGETS) => Promise<void> | void = () => {},
@@ -442,4 +445,34 @@ it("G-F11: the status region changes text only on a state flip; Escape closes", 
 
   fireEvent.keyDown(document, { key: "Escape" });
   expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("F-F5d: a close and reopen while the 409 reload is in flight keeps the new session's edits", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.mocked(apiFetch).mockRejectedValueOnce(
+    new ApiResponseError(409, "Budgets changed since you opened this.", "budget_changed"),
+  );
+  const props = { budgets: BUDGETS, canSuggest: false, onApplied: () => pending, onClose: () => {} };
+  const { rerender } = render(<BudgetRebalanceModal open {...props} />);
+
+  fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
+  fireEvent.change(amountInput("Groceries"), { target: { value: "100.00" } });
+  fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
+  await waitFor(() => expect(screen.getByText(/reloaded the latest amounts/i)).toBeInTheDocument());
+
+  rerender(<BudgetRebalanceModal open={false} {...props} />);
+  rerender(<BudgetRebalanceModal open {...props} />);
+  fireEvent.change(amountInput("Transportation"), { target: { value: "70.00" } });
+
+  await act(async () => {
+    release();
+    await pending;
+  });
+
+  // The stale reload must not re-snapshot over the fresh session.
+  expect(amountInput("Transportation").value).toBe("70.00");
+  expect(screen.queryByText(/reloaded the latest amounts/i)).toBeNull();
 });

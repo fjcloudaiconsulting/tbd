@@ -113,6 +113,9 @@ export default function BudgetRebalanceModal({
   // forces one more render of this component, which re-reads the current
   // `budgets` prop regardless of when it last changed.
   const [resnapshotToken, setResnapshotToken] = useState(0);
+  // Bumped on every open, so an in-flight 409 reload can tell whether the
+  // modal it belongs to is still the one on screen.
+  const openGeneration = useRef(0);
 
   const [suggesting, setSuggesting] = useState(false);
   const [suggestError, setSuggestError] = useState("");
@@ -147,6 +150,7 @@ export default function BudgetRebalanceModal({
   // background reload must not add/hide a row or reset a typed value.
   useEffect(() => {
     if (!open) return;
+    openGeneration.current += 1;
     buildSnapshot();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- snapshot on open only, deliberately not on every `budgets` change
   }, [open]);
@@ -227,19 +231,18 @@ export default function BudgetRebalanceModal({
         method: "POST",
       });
       if (res && res.status === "ok") {
-        let mapped = 0;
+        // Resolve matches OUTSIDE the updater: React runs updaters at the next
+        // render, so a counter incremented inside one still reads 0 here.
+        const hits = (res.suggestions ?? []).flatMap((s) => {
+          const row = rows.find((r) => r.category_id === s.category_id);
+          return row ? [{ id: row.id, text: toNumber(s.suggested_amount).toFixed(2) }] : [];
+        });
         setText((prev) => {
           const next = { ...prev };
-          for (const s of res.suggestions ?? []) {
-            const row = rows.find((r) => r.category_id === s.category_id);
-            if (row) {
-              next[row.id] = toNumber(s.suggested_amount).toFixed(2);
-              mapped++;
-            }
-          }
+          for (const h of hits) next[h.id] = h.text;
           return next;
         });
-        if (mapped === 0) {
+        if (hits.length === 0) {
           setSuggestError(maskMoneyText("No suggestions matched a budget in this period."));
         }
       } else if (res) {
@@ -271,9 +274,12 @@ export default function BudgetRebalanceModal({
     } catch (err) {
       if (err instanceof ApiResponseError && (err.status === 409 || err.status === 404)) {
         setApplyError(RECONCILE_MESSAGE);
+        const gen = openGeneration.current;
         try {
           await onApplied();
-          setResnapshotToken((t) => t + 1);
+          // A close/reopen during the reload started a fresh snapshot; a late
+          // bump would overwrite the user's new edits with this stale reload.
+          if (gen === openGeneration.current) setResnapshotToken((t) => t + 1);
         } catch {
           setApplyError(RECONCILE_FAILED_MESSAGE);
         }
