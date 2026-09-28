@@ -459,6 +459,12 @@ export default function BudgetRebalanceModal({
                         aria-describedby={invalid ? errId : undefined}
                         value={rawText}
                         onChange={(e) => setRowText(row.id, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void handleApply();
+                          }
+                        }}
                         className={`mt-2 w-full sm:w-32 ${inputCls} ${invalid ? "border-danger" : ""}`}
                       />
                       {invalid && (

@@ -591,3 +591,18 @@ it("F-F5d: a close and reopen while the 409 reload is in flight keeps the new se
   expect(amountInput("Transportation").value).toBe("70.00");
   expect(screen.queryByText(/reloaded the latest amounts/i)).toBeNull();
 });
+
+it("Enter in an amount field applies a balanced change, and does nothing while unbalanced (ticket DoD: Enter submits)", async () => {
+  vi.mocked(apiFetch).mockResolvedValue([] as never);
+  renderModal();
+
+  fireEvent.change(amountInput("Transportation"), { target: { value: "90.00" } });
+  fireEvent.keyDown(amountInput("Transportation"), { key: "Enter" });
+  expect(apiFetch).not.toHaveBeenCalled();
+
+  fireEvent.change(amountInput("Groceries"), { target: { value: "100.00" } });
+  fireEvent.keyDown(amountInput("Groceries"), { key: "Enter" });
+  await waitFor(() =>
+    expect(apiFetch).toHaveBeenCalledWith("/api/v1/budgets/rebalance", expect.objectContaining({ method: "POST" })),
+  );
+});
