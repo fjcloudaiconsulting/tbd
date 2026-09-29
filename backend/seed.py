@@ -27,7 +27,7 @@ import httpx
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import text
 
-from app.database import async_session
+from app.database import async_session, engine
 
 BASE = "http://localhost:8000"
 
@@ -390,6 +390,33 @@ def billing_period_outcome(r: httpx.Response) -> str:
     return "created"
 
 
+#: ``recurring_service.validate_frontier``'s refusal. Fenced against the real
+#: message by ``tests/test_seed_recurring_contract.py``, so a reword fails there.
+FRONTIER_REFUSAL = "the start of the current billing cycle"
+
+
+def recurring_outcome(r: httpx.Response) -> str:
+    """Interpret a ``POST /api/v1/recurring`` response (TBD-573).
+
+    The server refuses a ``next_due_date`` before the start of the CURRENT
+    billing cycle, which it derives from the wall clock. The seed derives the
+    date from the anchor and ``main`` must not read the clock, so with a pinned
+    past anchor that refusal is unavoidable: report it as ``skipped``. Any other
+    non-2xx is contract drift and raises, like ``billing_period_outcome``.
+    """
+    if r.status_code == 400:
+        try:
+            detail = r.json().get("detail")
+        except ValueError:
+            detail = None
+        if isinstance(detail, str) and FRONTIER_REFUSAL in detail:
+            return "skipped"
+    if not r.is_success:
+        print(f"   FAILED recurring: {r.status_code} {r.text}")
+    r.raise_for_status()
+    return "created"
+
+
 async def prepare_org(c: httpx.AsyncClient, headers: dict, *, assume_yes: bool,
                       interactive: bool, ask=input) -> None:
     """Make the org safe to seed, or exit without writing anything.
@@ -485,6 +512,10 @@ async def ensure_verified(username: str) -> None:
         # rule to read the code.
         changed = result.rowcount
         await db.commit()
+    # Close the pool on the loop that opened it. Otherwise aiomysql's connection
+    # finalisers run after asyncio.run() has closed the loop and print an
+    # "Event loop is closed" traceback over the seed's output (TBD-573).
+    await engine.dispose()
     # `changed` is the MATCHED count, not the modified count: SQLAlchemy's MySQL
     # dialect connects with CLIENT_FOUND_ROWS, so a no-op rewrite of a row that
     # is already 1 still reports 1 — measured, and identical to SQLite. So this
@@ -682,15 +713,20 @@ async def main(assume_yes: bool = False):
             {"acct": "ING Checking", "cat": "health_insurance", "desc": "Zilveren Kruis", "amount": "135.00", "freq": "monthly", "day": 1, "auto": True},
         ]
         next_month = anchor.replace(day=1) + relativedelta(months=1)
+        rec_outcomes = []
         for rd in rec_defs:
             if rd["cat"] in cats:
-                await c.post("/api/v1/recurring", headers=headers, json={
+                r = await c.post("/api/v1/recurring", headers=headers, json={
                     "account_id": accounts[rd["acct"]], "category_id": cats[rd["cat"]],
                     "description": rd["desc"], "amount": rd["amount"], "type": "expense",
                     "frequency": rd["freq"], "next_due_date": next_month.replace(day=min(rd["day"], 28)).isoformat(),
                     "auto_settle": rd["auto"],
                 })
-        print(f"   Created {len(rec_defs)} recurring templates")
+                rec_outcomes.append(recurring_outcome(r))
+        print(f"   Created {rec_outcomes.count('created')} recurring templates")
+        if "skipped" in rec_outcomes:
+            print(f"   Skipped {rec_outcomes.count('skipped')}: the anchor is before the current "
+                  "billing cycle, and the server refuses a next due date in a past cycle")
 
         # Budgets — create for all periods (historical + current)
         print("\n7. Creating budgets...")
