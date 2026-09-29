@@ -134,7 +134,7 @@ SEED_EMAIL=alice@example.com SEED_ORG="Alice LLC" \
 ./pfv seed                                       # custom user
 ```
 
-The seed script logs in as the user, registering them first if they do not exist, and then creates data through the API. If the user's org already has data (any account or billing period), it asks before **replacing** it, through the same audited `POST /api/v1/orgs/data/reset` the Settings page uses. Answer anything but `y`/`yes` and nothing changes. It never adds a second dataset on top of the first (TBD-398). Without a terminal, pass `--yes` to replace (`./pfv seed --yes`); otherwise it exits non-zero without writing.
+The seed script logs in as the user, registering them first if they do not exist, and then creates data through the API. If the user's org already has data (any account or billing period), it asks before **replacing** it, through the same audited `POST /api/v1/orgs/data/reset` the Settings page uses. The reset deletes **all** of the org's data (transactions, accounts, budgets, categories, rules, tags, imports), not only what the seed created. Answer anything but `y`/`yes` and it exits non-zero with no data changed. It never adds a second dataset on top of the first (TBD-398). Without a terminal, pass `--yes` to replace (`./pfv seed --yes`); otherwise it exits non-zero with no data changed. An org with neither accounts nor billing periods counts as empty and is seeded as is, so custom categories or tags created there are kept.
 
 ### Determinism (TBD-345)
 

@@ -62,7 +62,7 @@ def _never_asked(_prompt):
 async def test_clean_org_seeds_without_asking_or_resetting():
     c, calls = _client()
     async with c:
-        assert await seed.prepare_org(c, {}, assume_yes=False, interactive=True, ask=_never_asked)
+        await seed.prepare_org(c, {}, assume_yes=False, interactive=True, ask=_never_asked)
     assert _resets(calls) == []
 
 
@@ -77,11 +77,10 @@ async def test_dirty_org_confirmed_is_reset_with_the_real_org_name(accounts, per
     c, calls = _client(accounts=accounts, periods=periods)
     prompts = []
     async with c:
-        ok = await seed.prepare_org(
+        await seed.prepare_org(
             c, {"Authorization": "Bearer t"}, assume_yes=False, interactive=True,
             ask=lambda p: prompts.append(p) or "y",
         )
-    assert ok is True
     assert len(prompts) == 1 and ORG in prompts[0]
     (reset,) = _resets(calls)
     # kills: building the phrase from SEED_ORG instead of the live org name
@@ -89,14 +88,22 @@ async def test_dirty_org_confirmed_is_reset_with_the_real_org_name(accounts, per
     assert reset.headers["Authorization"] == "Bearer t"
 
 
-# fence — kills: treating anything but an explicit yes as consent.
+def _eof(_prompt):
+    raise EOFError
+
+
+# fence — kills: treating anything but an explicit yes as consent, and a
+# decline that returns normally (main would then seed on top: the append).
 @pytest.mark.asyncio
-@pytest.mark.parametrize("answer", ["", "n", "no", "nope", "Y es"])
-async def test_dirty_org_declined_changes_nothing(answer):
+@pytest.mark.parametrize("ask", [
+    lambda _p: "", lambda _p: "n", lambda _p: "no", lambda _p: "nope", lambda _p: "Y es", _eof,
+])
+async def test_dirty_org_declined_exits_without_resetting(ask):
     c, calls = _client(accounts=[{"id": 1}])
     async with c:
-        ok = await seed.prepare_org(c, {}, assume_yes=False, interactive=True, ask=lambda _p: answer)
-    assert ok is False
+        with pytest.raises(SystemExit) as exc:
+            await seed.prepare_org(c, {}, assume_yes=False, interactive=True, ask=ask)
+    assert exc.value.code  # non-zero: a wrapper can tell "declined" from "seeded"
     assert _resets(calls) == []
 
 
@@ -105,7 +112,7 @@ async def test_dirty_org_declined_changes_nothing(answer):
 async def test_yes_answers_are_accepted(answer):
     c, calls = _client(accounts=[{"id": 1}])
     async with c:
-        assert await seed.prepare_org(c, {}, assume_yes=False, interactive=True, ask=lambda _p: answer)
+        await seed.prepare_org(c, {}, assume_yes=False, interactive=True, ask=lambda _p: answer)
     assert len(_resets(calls)) == 1
 
 
@@ -114,7 +121,7 @@ async def test_yes_answers_are_accepted(answer):
 async def test_assume_yes_replaces_without_asking():
     c, calls = _client(accounts=[{"id": 1}])
     async with c:
-        assert await seed.prepare_org(c, {}, assume_yes=True, interactive=False, ask=_never_asked)
+        await seed.prepare_org(c, {}, assume_yes=True, interactive=False, ask=_never_asked)
     assert len(_resets(calls)) == 1
 
 
@@ -154,23 +161,25 @@ async def test_failed_dirty_probe_raises(failing):
             await seed.prepare_org(c, {}, assume_yes=True, interactive=False, ask=_never_asked)
 
 
-# fence — the on-switch. Kills: prepare_org defined and tested but not called,
-# or called AFTER the first write, or its answer ignored.
-def test_main_prepares_the_org_before_the_first_write():
+# fence — the on-switch. Kills: prepare_org defined and tested but never
+# called, called AFTER the first write, or called with consent hardcoded
+# (assume_yes=True / interactive=True wipes a dirty org with no prompt).
+def test_main_prepares_the_org_before_the_first_write_with_live_consent():
     tree = ast.parse(SEED_PY.read_text(encoding="utf-8"))
     main_fn = next(
         fn for fn in tree.body if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "main"
     )
-    prepare_line = None
-    for node in ast.walk(main_fn):
-        if (isinstance(node, ast.If) and isinstance(node.test, ast.UnaryOp)
-                and isinstance(node.test.op, ast.Not)
-                and isinstance(node.test.operand, ast.Await)
-                and isinstance(node.test.operand.value, ast.Call)
-                and getattr(node.test.operand.value.func, "id", None) == "prepare_org"
-                and any(isinstance(s, ast.Return) for s in node.body)):
-            prepare_line = node.lineno
-    assert prepare_line, "main() must `if not await prepare_org(...): return`"
+    calls = [
+        node.value for node in ast.walk(main_fn)
+        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
+        and getattr(node.value.func, "id", None) == "prepare_org"
+    ]
+    assert len(calls) == 1, "main() must await prepare_org exactly once"
+    (call,) = calls
+    kw = {k.arg: ast.unparse(k.value) for k in call.keywords}
+    assert kw.get("assume_yes") == "assume_yes", kw
+    assert kw.get("interactive") == "sys.stdin.isatty()", kw
+    assert [a.arg for a in main_fn.args.args] == ["assume_yes"]
 
     writes = [
         node.lineno for node in ast.walk(main_fn)
@@ -179,7 +188,19 @@ def test_main_prepares_the_org_before_the_first_write():
         and node.args and isinstance(node.args[0], (ast.Constant, ast.JoinedStr))
         and "/auth/" not in ast.unparse(node.args[0])
     ]
-    assert writes and prepare_line < min(writes), (
-        f"prepare_org (line {prepare_line}) must run before the first data write "
+    assert writes and call.lineno < min(writes), (
+        f"prepare_org (line {call.lineno}) must run before the first data write "
         f"(line {min(writes)})"
     )
+
+
+# fence — kills: --yes never reaching main (argparse dropped or unwired).
+def test_yes_flag_is_wired_into_main():
+    src = SEED_PY.read_text(encoding="utf-8")
+    guard = next(
+        n for n in ast.parse(src).body
+        if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)
+    )
+    body = ast.unparse(guard)
+    assert "add_argument('--yes'" in body, body
+    assert "main(assume_yes=parser.parse_args().yes)" in body, body

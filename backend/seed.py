@@ -391,8 +391,8 @@ def billing_period_outcome(r: httpx.Response) -> str:
 
 
 async def prepare_org(c: httpx.AsyncClient, headers: dict, *, assume_yes: bool,
-                      interactive: bool, ask=input) -> bool:
-    """Make the org safe to seed: True to go ahead, False when the user declined.
+                      interactive: bool, ask=input) -> None:
+    """Make the org safe to seed, or exit without writing anything.
 
     TBD-398 (operator ruling 2026-09-29): a re-run REPLACES the org's data after
     confirmation. It never appends a second dataset and never refuses.
@@ -408,7 +408,7 @@ async def prepare_org(c: httpx.AsyncClient, headers: dict, *, assume_yes: bool,
     periods = await c.get("/api/v1/settings/billing-periods", headers=headers)
     periods.raise_for_status()
     if not accounts.json() and not periods.json():
-        return True
+        return
 
     me = await c.get("/api/v1/auth/me", headers=headers)
     me.raise_for_status()
@@ -419,10 +419,13 @@ async def prepare_org(c: httpx.AsyncClient, headers: dict, *, assume_yes: bool,
                 f"Org {org_name!r} already has data and there is no terminal to "
                 "confirm replacing it. Re-run with --yes to replace it. Nothing was changed."
             )
-        answer = ask(f"   Org {org_name!r} already has data. Replace it with the seed dataset? [y/N] ")
+        try:
+            answer = ask(f"   Org {org_name!r} already has data. Replace it? This DELETES ALL of "
+                         "its transactions, accounts, budgets, categories, rules, tags and imports. [y/N] ")
+        except EOFError:
+            answer = ""
         if answer.strip().lower() not in {"y", "yes"}:
-            print("   Left the existing data untouched.")
-            return False
+            raise SystemExit("Left the existing data untouched; nothing was seeded.")
 
     r = await c.post("/api/v1/orgs/data/reset", headers=headers,
                      json={"confirm_phrase": f"RESET {org_name}"})
@@ -430,7 +433,6 @@ async def prepare_org(c: httpx.AsyncClient, headers: dict, *, assume_yes: bool,
         print(f"   Reset FAILED: {r.status_code} {r.text}")
     r.raise_for_status()
     print(f"   Replaced the existing data in {org_name!r}")
-    return True
 
 
 async def ensure_verified(username: str) -> None:
@@ -540,9 +542,7 @@ async def main(assume_yes: bool = False):
         headers = {"Authorization": f"Bearer {token}"}
         print(f"   Logged in as {USER['username']}")
 
-        if not await prepare_org(c, headers, assume_yes=assume_yes,
-                                 interactive=sys.stdin.isatty()):
-            return
+        await prepare_org(c, headers, assume_yes=assume_yes, interactive=sys.stdin.isatty())
 
         # Account types
         r = await c.get("/api/v1/account-types", headers=headers)
