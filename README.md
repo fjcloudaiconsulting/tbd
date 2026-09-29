@@ -47,7 +47,7 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 ```bash
 git clone https://github.com/fjcloudaiconsulting/tbd.git && cd tbd
 cp .env.example .env
-./pfv start
+./tbd start
 ```
 
 Open [http://localhost](http://localhost). The first user to register becomes the superadmin.
@@ -55,7 +55,7 @@ Open [http://localhost](http://localhost). The first user to register becomes th
 **Seed mock data** (optional):
 
 ```bash
-./pfv seed          # creates demo / demo1234 user with 100+ transactions
+./tbd seed          # creates demo / demo1234 user with 100+ transactions
 ```
 
 Full first-PR walkthrough (under 30 minutes from clone to push): [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -118,17 +118,17 @@ For the full pipeline mechanics, see [DEPLOYMENT.md](docs/operations/DEPLOYMENT.
 ## CLI
 
 ```bash
-./pfv start             # build and start all services
-./pfv stop              # stop all services
-./pfv restart           # restart without rebuild
-./pfv rebuild           # force rebuild (no cache)
-./pfv reset             # destroy all data and start fresh
-./pfv migrate           # run pending migrations (refuses off main without PFV_MIGRATE_OK_OFF_MAIN=1)
-./pfv logs [service]    # view logs (backend, frontend, nginx, mysql, redis)
-./pfv status            # container status
-./pfv shell [service]   # shell into a container (default: backend)
-./pfv seed              # populate with mock data
-./pfv prod              # build and start in production mode
+./tbd start             # build and start all services
+./tbd stop              # stop all services
+./tbd restart           # restart without rebuild
+./tbd rebuild           # force rebuild (no cache)
+./tbd reset             # destroy all data and start fresh
+./tbd migrate           # run pending migrations (refuses off main without PFV_MIGRATE_OK_OFF_MAIN=1)
+./tbd logs [service]    # view logs (backend, frontend, nginx, mysql, redis)
+./tbd status            # container status
+./tbd shell [service]   # shell into a container (default: backend)
+./tbd seed              # populate with mock data
+./tbd prod              # build and start in production mode
 ```
 
 ## API

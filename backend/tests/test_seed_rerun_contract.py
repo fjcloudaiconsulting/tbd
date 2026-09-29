@@ -1,4 +1,4 @@
-"""TBD-398: ``./pfv seed`` against an org that already has data REPLACES it,
+"""TBD-398: ``./tbd seed`` against an org that already has data REPLACES it,
 after confirmation. It never appends a second dataset and never refuses.
 
 Operator ruling, 2026-09-29. "Dirty" is any account or any billing period:

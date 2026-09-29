@@ -158,7 +158,7 @@ def test_seed_checks_status_on_billing_period_posts():
             f"seed.py line {call.lineno}: POST {BILLING_PERIOD_PATH} does not "
             "hand its response to `raise_for_status()` or to a seed.py helper "
             "that ends in one. Without that a 4xx is swallowed and "
-            "`./pfv seed` prints 'Seed complete!' over a demo org with no "
+            "`./tbd seed` prints 'Seed complete!' over a demo org with no "
             "billing periods."
         )
 
@@ -166,7 +166,7 @@ def test_seed_checks_status_on_billing_period_posts():
 def test_seed_tolerates_duplicate_billing_period_conflict():
     """The status check must not be a bare ``raise_for_status()``.
 
-    ``./pfv seed`` is re-runnable by contract and its period start dates are
+    ``./tbd seed`` is re-runnable by contract and its period start dates are
     deterministic, so a same-day second run gets 409 ``billing_period_exists``
     on every POST. A bare ``raise_for_status()`` turns that into an
     ``httpx.HTTPStatusError`` out of ``main()`` and steps 6+ (recurring,
@@ -185,7 +185,7 @@ def test_seed_tolerates_duplicate_billing_period_conflict():
     assert tolerant, (
         "seed.py has no helper that both calls `raise_for_status()` and names "
         "the `billing_period_exists` conflict code. Without one, a repeat "
-        "`./pfv seed` on the same day aborts at step 5."
+        "`./tbd seed` on the same day aborts at step 5."
     )
 
     helper_names = {fn.name for fn in tolerant}
@@ -229,7 +229,7 @@ def _response(status: int, payload: dict | None = None) -> httpx.Response:
     ],
 )
 def test_billing_period_outcome_absorbs_both_conflict_codes(code, expected):
-    """`./pfv seed` is re-runnable by contract.
+    """`./tbd seed` is re-runnable by contract.
 
     Seed's dates are deterministic for a given `today`, but `today` moves:
     a re-run on a later day shifts the whole window, so a period that was

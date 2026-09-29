@@ -154,9 +154,9 @@ while IFS= read -r f; do
       backend=true
       ;;
     # ── Everything else -- repo root, .github/, scripts/, infra/,
-    # nginx/, docker-compose*.yml, pfv -- is unclassified and therefore
+    # nginx/, docker-compose*.yml, tbd -- is unclassified and therefore
     # EVERYTHING. Backend tests assert on several of these (.do/app.yaml,
-    # .github/workflows/*, scripts/ci/*, pfv), and an unknown new top-level
+    # .github/workflows/*, scripts/ci/*, tbd), and an unknown new top-level
     # path must never be silently inert.
     *)
       backend=true

@@ -3,7 +3,7 @@
 Covers two layers of `_run_migrations()` behavior:
 
   1. Branch guard: refuses to run when the host checkout is off main
-     unless `PFV_MIGRATE_OK_OFF_MAIN=1` is set. Mirrors `./pfv migrate`.
+     unless `PFV_MIGRATE_OK_OFF_MAIN=1` is set. Mirrors `./tbd migrate`.
   2. Logging breadcrumb: emits `migrate.dev.target` /
      `migrate.dev.no_op` with current + head revisions and branch so the
      next alembic drift incident has a structured pointer.

@@ -12,7 +12,7 @@ to scan and insert. This migration lifts the backfill into a one-shot
 data step, executed exactly once by the standard
 ``alembic upgrade head`` path that already runs on deploy (App
 Platform PRE_DEPLOY job, K8s init container, ``docker-compose.prod
-.yml migrate`` service, ``./pfv migrate``).
+.yml migrate`` service, ``./tbd migrate``).
 
 What it does:
   1. Reads the default plan slug + trial duration from the same env

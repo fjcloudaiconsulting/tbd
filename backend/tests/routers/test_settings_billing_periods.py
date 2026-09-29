@@ -477,7 +477,7 @@ async def test_create_period_adjacent_window_is_allowed(session_factory, start, 
 async def test_create_period_duplicate_start_still_wins_over_overlap(session_factory):
     """The exact-start check keeps its first position.
 
-    A same-day `./pfv seed` re-run posts start dates that already exist and
+    A same-day `./tbd seed` re-run posts start dates that already exist and
     branches on `billing_period_exists`; if the containment check ran first
     it would answer `billing_period_overlap` for the same rows and the seed
     helper's older branch would stop absorbing it.
@@ -555,7 +555,7 @@ async def test_create_period_rejects_swallowing_an_open_rows_start(session_facto
     candidate's window is fully known. An open row whose start falls inside
     [candidate.start, candidate_end] is therefore a PROVABLE overlap. An
     earlier revision skipped open rows entirely and let this land: repeated
-    `./pfv seed` runs produced closed rows that swallowed an open row's
+    `./tbd seed` runs produced closed rows that swallowed an open row's
     start.
     """
     ids = await _seed(session_factory)
@@ -988,7 +988,7 @@ async def test_update_billing_cycle_writes_audit_row(session_factory, monkeypatc
 async def test_update_billing_cycle_leaves_no_gap_on_the_seed_shape(
     session_factory, monkeypatch
 ):
-    """Case 3 — ``./pfv seed``'s own dataset, on the branch that used to
+    """Case 3 — ``./tbd seed``'s own dataset, on the branch that used to
     orphan a day.
 
     ``seed.py`` posts three closed periods and one open one, then PUTs cycle
