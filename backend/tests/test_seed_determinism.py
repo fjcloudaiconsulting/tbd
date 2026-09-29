@@ -536,7 +536,9 @@ def test_seed_writes_nothing_to_the_database_out_of_band():
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for node in ast.walk(fn):
-            uses_session = isinstance(node, ast.Name) and node.id == "async_session"
+            # `engine` too since TBD-573 imported it for dispose(): an
+            # `engine.begin()` write would otherwise pass unseen.
+            uses_session = isinstance(node, ast.Name) and node.id in {"async_session", "engine"}
             uses_text = (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)

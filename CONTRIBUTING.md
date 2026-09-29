@@ -146,7 +146,7 @@ SEED_ANCHOR_DATE=2026-03-17 SEED_RANDOM_SEED=42 ./tbd seed
 
 `SEED_ANCHOR_DATE` defaults to today; `SEED_RANDOM_SEED` defaults to a fixed constant, so two runs on the same day already agree. Both **raise** on a malformed value rather than silently falling back, because a caller that believes it pinned an anchor while actually running on the wall clock is the exact defect the knobs exist to remove.
 
-A re-run reproduces the dataset by replacing the org's data first, as described above. That also rules out the second open billing period a changed-anchor re-run used to leave behind.
+A re-run reproduces the dataset by replacing the org's data first, as described above. One exception to "identical": recurring templates. The server refuses a next due date before the current billing cycle, which it takes from the real date, so a pinned anchor far enough in the past prints `Skipped N` for them. That is expected, not a failure. That also rules out the second open billing period a changed-anchor re-run used to leave behind.
 
 Two dataset regimes are worth knowing when reading seeded data. Both are fully deterministic once the anchor is pinned; the split is a documented property, not a defect:
 
