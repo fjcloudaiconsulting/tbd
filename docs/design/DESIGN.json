@@ -11,7 +11,7 @@
       "border":          { "role": "neutral", "displayName": "Hairline",        "canonical": "oklch(30% 0.05 257)", "tonalRamp": ["#0e1a2c","#122a4a","#1a3560","#234070","#2c4b80","#365690","#406ba1","#4d7eb6"] },
       "text-primary":    { "role": "neutral", "displayName": "Paper White",     "canonical": "oklch(92% 0.01 257)", "tonalRamp": ["#3d4f68","#5a6a82","#7a8da6","#9ba8bd","#bfcad6","#d6dde6","#E6EAF0","#f4f6f9"] },
       "text-secondary":  { "role": "neutral", "displayName": "Mist",            "canonical": "oklch(70% 0.02 250)" },
-      "text-muted":      { "role": "neutral", "displayName": "Fog",             "canonical": "oklch(48% 0.03 250)" },
+      "text-muted":      { "role": "neutral", "displayName": "Fog",             "canonical": "oklch(69.2% 0.035 258)" },
       "accent":          { "role": "primary", "displayName": "Brass Tally",     "canonical": "oklch(74% 0.13 80)",  "tonalRamp": ["#3d2f12","#5e481b","#7a5d24","#946f2c","#B88A2E","#c89a3b","#D4A64A","#e3bb73"] },
       "accent-hover":    { "role": "primary", "displayName": "Aged Brass",      "canonical": "oklch(63% 0.12 75)" },
       "accent-text":     { "role": "primary", "displayName": "Brass Ink",       "canonical": "oklch(20% 0.04 257)" },
@@ -87,7 +87,7 @@
       "refersTo": "input",
       "description": "Form field inset into a card. The brass focus ring doubles as the AA-required focus indicator.",
       "html": "<div><label class=\"ds-label\">Account name</label><input class=\"ds-input\" placeholder=\"e.g. ING Joint Account\" /></div>",
-      "css": ".ds-input { width: 100%; background: #122a4a; color: #E6EAF0; padding: 8px 12px; border: 1px solid #1a3560; border-radius: 8px; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.875rem; transition: border-color 0.15s ease, box-shadow 0.15s ease; } .ds-input::placeholder { color: #5a6a82; } .ds-input:focus { outline: none; border-color: #D4A64A; box-shadow: 0 0 0 2px rgba(212, 166, 74, 0.3); } .ds-label { display: block; margin-bottom: 6px; color: #5a6a82; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }"
+      "css": ".ds-input { width: 100%; background: #122a4a; color: #E6EAF0; padding: 8px 12px; border: 1px solid #1a3560; border-radius: 8px; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.875rem; transition: border-color 0.15s ease, box-shadow 0.15s ease; } .ds-input::placeholder { color: #8f9db2; } .ds-input:focus { outline: none; border-color: #D4A64A; box-shadow: 0 0 0 2px rgba(212, 166, 74, 0.3); } .ds-label { display: block; margin-bottom: 6px; color: #8f9db2; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }"
     },
     {
       "name": "Card",
@@ -95,7 +95,7 @@
       "refersTo": "card",
       "description": "The default container. Flat at rest, bordered, no shadow. Surface tone alone provides hierarchy.",
       "html": "<article class=\"ds-card\"><header class=\"ds-card-header\"><span class=\"ds-card-title\">May Forecast</span></header><div class=\"ds-card-body\"><div class=\"ds-amount\">€9,931.04</div><div class=\"ds-meta\">Projected end of month</div></div></article>",
-      "css": ".ds-card { background: #0B1F3A; color: #E6EAF0; border: 1px solid #1a3560; border-radius: 12px; overflow: hidden; } .ds-card-header { padding: 16px 24px; border-bottom: 1px solid #1a3560; } .ds-card-title { color: #5a6a82; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.75rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; } .ds-card-body { padding: 16px 24px; } .ds-amount { font-family: 'Outfit', system-ui, sans-serif; font-size: 2rem; font-weight: 500; color: #E6EAF0; line-height: 1.1; } .ds-meta { margin-top: 4px; color: #9ba8bd; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.75rem; }"
+      "css": ".ds-card { background: #0B1F3A; color: #E6EAF0; border: 1px solid #1a3560; border-radius: 12px; overflow: hidden; } .ds-card-header { padding: 16px 24px; border-bottom: 1px solid #1a3560; } .ds-card-title { color: #8f9db2; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.75rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; } .ds-card-body { padding: 16px 24px; } .ds-amount { font-family: 'Outfit', system-ui, sans-serif; font-size: 2rem; font-weight: 500; color: #E6EAF0; line-height: 1.1; } .ds-meta { margin-top: 4px; color: #9ba8bd; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.75rem; }"
     },
     {
       "name": "Sidebar Item (Active)",
