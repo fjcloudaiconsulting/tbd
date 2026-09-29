@@ -37,7 +37,7 @@ export default function SpendingDonutWidget() {
     <div className={`${card} p-5`} data-testid="spending-donut">
       <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
       {chartFilter !== null && (
-        <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">
+        <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised">
           {/* The fallback is reachable: a category can be filtered from the
               Budget or Forecast bars with no rollup row, no budget and no
               forecast item to name it. Plain language, not "selected category"
@@ -139,7 +139,7 @@ export default function SpendingDonutWidget() {
                 <button
                   type="button"
                   onClick={() => toggleSpendingSort("name")}
-                  className="inline-flex items-center gap-1 text-left min-h-[32px] hover:text-text-primary rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                  className="inline-flex items-center gap-1 text-left min-h-[32px] hover:text-text-primary rounded-sm"
                   aria-label="Sort by category"
                 >
                   <span>Category</span>
@@ -173,7 +173,7 @@ export default function SpendingDonutWidget() {
                 <button
                   type="button"
                   onClick={() => toggleSpendingSort("percent")}
-                  className="inline-flex items-center gap-1 justify-end min-h-[32px] hover:text-text-primary rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                  className="inline-flex items-center gap-1 justify-end min-h-[32px] hover:text-text-primary rounded-sm"
                   aria-label="Sort by percent of total"
                 >
                   <span>%</span>
@@ -207,7 +207,7 @@ export default function SpendingDonutWidget() {
                 <button
                   type="button"
                   onClick={() => toggleSpendingSort("amount")}
-                  className="inline-flex items-center gap-1 justify-end min-h-[32px] hover:text-text-primary rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                  className="inline-flex items-center gap-1 justify-end min-h-[32px] hover:text-text-primary rounded-sm"
                   aria-label="Sort by amount"
                 >
                   <span>Amount</span>

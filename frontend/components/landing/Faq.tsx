@@ -38,7 +38,7 @@ export default function Faq() {
                 pseudo-class (native <details[open]> state). No JS. */}
             <details className="group">
               <summary
-                className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-xl px-5 py-4 text-left text-sm font-medium text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 lg:text-base"
+                className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-xl px-5 py-4 text-left text-sm font-medium text-text-primary lg:text-base"
               >
                 <span>{item.q}</span>
                 <ChevronGlyph />

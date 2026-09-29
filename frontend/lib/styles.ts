@@ -46,18 +46,18 @@ export const btnPrimary =
 // `button-secondary` spec. The canvas/toolbar variant below is identical but
 // compact.
 export const btnSecondary =
-  "rounded-md border border-border-strong bg-surface px-4 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
+  "rounded-md border border-border-strong bg-surface px-4 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised";
 
 // Compact secondary button for canvas/editor toolbars (same contrast as
 // btnSecondary, smaller padding so several fit a toolbar row).
 export const btnCanvas =
-  "rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text-primary transition-colors hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60";
+  "rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text-primary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60";
 
 // Active/engaged variant of btnCanvas — the Customize/Edit "Done" toggle while
 // editing. Keeps the surface fill (stays visible) but swaps to the brass
 // accent border + text to signal the active edit mode.
 export const btnCanvasActive =
-  "rounded-md border border-accent bg-surface px-3 py-1.5 text-sm text-accent transition-colors hover:bg-accent/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
+  "rounded-md border border-accent bg-surface px-3 py-1.5 text-sm text-accent transition-colors hover:bg-accent/10";
 
 export const btnDanger =
   "text-xs text-text-muted hover:text-danger";

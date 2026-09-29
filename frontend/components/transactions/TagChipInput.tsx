@@ -389,7 +389,7 @@ export default function TagChipInput({
               // from the input reaches the last chip's × in reverse —
               // matching the Gmail / GitHub label-picker convention
               // the operator called out.
-              className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded text-text-muted hover:text-danger focus:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+              className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded text-text-muted hover:text-danger"
             >
               <span aria-hidden="true">&times;</span>
             </button>

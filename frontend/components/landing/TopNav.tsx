@@ -16,7 +16,7 @@ export default function TopNav() {
     >
       <Link
         href="/"
-        className="rounded-sm hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className="rounded-sm hover:opacity-80"
         aria-label="The Better Decision, home"
       >
         {/* sm:hidden compact mark on phones, full lockup from sm up so

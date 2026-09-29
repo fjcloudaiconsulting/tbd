@@ -7,7 +7,7 @@ exports[`<TopNav /> > snapshot stays stable across theme runs > topnav-dark 1`] 
 >
   <a
     aria-label="The Better Decision, home"
-    class="rounded-sm hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    class="rounded-sm hover:opacity-80"
     href="/"
   >
     <span
@@ -139,7 +139,7 @@ exports[`<TopNav /> > snapshot stays stable across theme runs > topnav-light 1`]
 >
   <a
     aria-label="The Better Decision, home"
-    class="rounded-sm hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    class="rounded-sm hover:opacity-80"
     href="/"
   >
     <span

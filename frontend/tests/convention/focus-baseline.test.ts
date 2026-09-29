@@ -325,9 +325,15 @@ const SUPPRESSOR = /(^|:)outline-(none|hidden|0)$/;
  *  focus state uses Brass Tally. Accepting `focus:bg-surface-raised` would
  *  bless three call sites that believe a background shift is a focus
  *  indicator; measured, surface -> surface-raised is 1.15:1 on dark and
- *  ~1.03:1 on light. It looks like an indicator to the author and is not one. */
+ *  ~1.03:1 on light. It looks like an indicator to the author and is not one.
+ *
+ *  ⚠ OPAQUE brass only (TBD-521). A width (`ring-2`) names no colour, and an
+ *  alpha suffix (`ring-accent/30`) measured 1.47-2.21:1 against every
+ *  background it sits on, failing WCAG 1.4.11's 3:1. Both used to pass here,
+ *  so the translucent ring shipped as the only indicator on every secondary
+ *  button. The `$` anchor is what rejects the `/NN` suffix. */
 const REPLACEMENT =
-  /^(focus|focus-visible|focus-within|group-focus|group-focus-visible):(ring-(2|\[?\d)|ring-accent|ring-focus|outline-accent|outline-focus|border-accent|shadow-)/;
+  /^(focus|focus-visible|focus-within|group-focus|group-focus-visible):((ring-accent|ring-focus|outline-accent|outline-focus|border-accent)$|shadow-)/;
 
 /** Programmatic focus targets that are not interactive controls. Strict
  *  equality below: a stale entry fails, so this cannot rot upward.
@@ -541,8 +547,9 @@ describe("TBD-319: anti-vacuity", () => {
       '// Catalog of /admin/* pages. Never write focus:outline-none here.',
       '/* focus:outline-none in a block comment */',
       'const doc = "the class focus:outline-none disables it";',
-      'export const ok = "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";',
+      'export const ok = "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent";',
       'export const bad = "focus:outline-none text-sm";',
+      'export const faint = "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";',
     ].join("\n");
     const sf = ts.createSourceFile("hostile.tsx", hostile, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     const strings: string[] = [];
@@ -562,6 +569,10 @@ describe("TBD-319: anti-vacuity", () => {
     expect(strings).not.toContain(" focus:outline-none in a block comment ");
     expect(offending).toContain("focus:outline-none text-sm");
     expect(offending).not.toContain(
+      "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+    );
+    // TBD-521: a translucent ring is not a replacement.
+    expect(offending).toContain(
       "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30",
     );
   });
