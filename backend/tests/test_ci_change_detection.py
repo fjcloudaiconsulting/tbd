@@ -318,6 +318,25 @@ def test_another_infra_markdown_file_is_still_prose(tmp_path):
 
 
 @needs_git
+def test_the_design_doc_is_a_frontend_change_despite_being_markdown(tmp_path):
+    """TBD-482: `frontend/tests/convention/design-md-tokens.test.ts` PARSES
+    `docs/design/DESIGN.md` and fails when its colours drift from globals.css.
+    Classified as prose, a docs-only PR that drifts it skips the frontend
+    suite and the fence never runs on the edit it exists to catch."""
+    repo, base = _repo(tmp_path, {"docs/design/DESIGN.md": "design v2\n"})
+    out = _detect(repo, tmp_path, base=base)
+    assert out == {"backend": "false", "frontend": "true", "migrations": "false"}
+
+
+@needs_git
+def test_other_docs_markdown_is_still_prose(tmp_path):
+    """The exception is scoped to ONE file: nothing reads the other docs."""
+    repo, base = _repo(tmp_path, {"docs/product/PRODUCT.md": "product v2\n"})
+    out = _detect(repo, tmp_path, base=base)
+    assert out == {"backend": "false", "frontend": "false", "migrations": "false"}
+
+
+@needs_git
 def test_a_nested_markdown_file_is_still_prose(tmp_path):
     """`backend/README.md` must not run the backend suite: the inert patterns
     are checked BEFORE the area prefixes, on purpose."""
