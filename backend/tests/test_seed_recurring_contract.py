@@ -88,11 +88,20 @@ def test_main_classifies_every_recurring_post():
         and n.args[0].value == "/api/v1/recurring"
     ]
     assert len(posts) == 1
+    # The name the POST's response is bound to, then: is THAT name classified?
+    # Kills recurring_outcome(<some other response>) as well as no call at all.
+    bound = {
+        t.id for n in ast.walk(main_fn) if isinstance(n, ast.Assign)
+        and isinstance(n.value, ast.Await) and n.value.value is posts[0]
+        for t in n.targets if isinstance(t, ast.Name)
+    }
+    assert bound, "the recurring POST's response is not bound to a name"
     classified = [
         n for n in ast.walk(main_fn)
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "recurring_outcome"
+        and n.args and isinstance(n.args[0], ast.Name) and n.args[0].id in bound
     ]
-    assert classified, "main() posts recurring templates without classifying the response"
+    assert classified, "main() posts recurring templates without classifying that response"
 
 
 # fence — kills: the old `Created {len(rec_defs)}` line, and any other count of
@@ -104,6 +113,14 @@ def test_main_reports_only_created_templates_as_created():
     ]
     assert len(lines) == 1, [ast.unparse(n) for n in lines]
     counted = [v.value for v in lines[0].values if isinstance(v, ast.FormattedValue)]
-    assert [ast.unparse(v) for v in counted] == ["rec_outcomes.count('created')"], (
-        f"line {lines[0].lineno}: the printed count must be the created outcomes"
+    assert len(counted) == 1 and _is_count_of_created(counted[0]), (
+        f"line {lines[0].lineno}: the printed count must be <outcomes>.count('created')"
+    )
+
+
+def _is_count_of_created(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "count"
+        and len(node.args) == 1 and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "created"
     )

@@ -395,7 +395,7 @@ def billing_period_outcome(r: httpx.Response) -> str:
 FRONTIER_REFUSAL = "the start of the current billing cycle"
 
 
-def recurring_outcome(r: httpx.Response) -> str:
+def recurring_outcome(r: httpx.Response, desc: str = "") -> str:
     """Interpret a ``POST /api/v1/recurring`` response (TBD-573).
 
     The server refuses a ``next_due_date`` before the start of the CURRENT
@@ -412,7 +412,7 @@ def recurring_outcome(r: httpx.Response) -> str:
         if isinstance(detail, str) and FRONTIER_REFUSAL in detail:
             return "skipped"
     if not r.is_success:
-        print(f"   FAILED recurring: {r.status_code} {r.text}")
+        print(f"   FAILED recurring {desc!r}: {r.status_code} {r.text}")
     r.raise_for_status()
     return "created"
 
@@ -722,7 +722,7 @@ async def main(assume_yes: bool = False):
                     "frequency": rd["freq"], "next_due_date": next_month.replace(day=min(rd["day"], 28)).isoformat(),
                     "auto_settle": rd["auto"],
                 })
-                rec_outcomes.append(recurring_outcome(r))
+                rec_outcomes.append(recurring_outcome(r, rd["desc"]))
         print(f"   Created {rec_outcomes.count('created')} recurring templates")
         if "skipped" in rec_outcomes:
             print(f"   Skipped {rec_outcomes.count('skipped')}: the anchor is before the current "
