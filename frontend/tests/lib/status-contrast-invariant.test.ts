@@ -21,7 +21,7 @@
  *     and hover-fill.
  *
  *  2. No bypass: a second test bans any NEW `bg-<status>/<opacity>` ad-hoc
- *     tint in `app/` or `components/` (outside a `hover:` fill), which is
+ *     tint (opacity 30 or less) in `app/` or `components/` (outside a `hover:` fill), which is
  *     exactly the pattern TBD-483 migrated onto the checked primitives. A
  *     call site that reintroduced one would sit outside everything (1)
  *     measures.
@@ -217,7 +217,10 @@ describe.each(THEMES)("%s theme", (theme) => {
 // ─── no ad-hoc bypass ──────────────────────────────────────────────────
 
 const SCAN_ROOTS = ["app", "components"].map((d) => path.join(FRONTEND_ROOT, d));
-const AD_HOC_TINT_RE = new RegExp(`(^|:)bg-(${STATUS_RE})/\\d+`);
+// A TINT is a low-alpha wash that text sits on (<= 30%). A high-alpha
+// status fill (e.g. the landing hero's decorative `/80` bars) carries no
+// text and is not what this fence measures, so it is not banned.
+const AD_HOC_TINT_RE = new RegExp(`(^|:)bg-(${STATUS_RE})/([0-9]|[12][0-9]|30)$`);
 
 function walk(dir: string): string[] {
   const out: string[] = [];
