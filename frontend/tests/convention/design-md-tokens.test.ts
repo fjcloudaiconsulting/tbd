@@ -8,11 +8,13 @@
  * corroboration. This fails rather than regenerates: a red here means read the
  * diff and decide which side is right.
  *
- * Two assertions, because the doc holds colour in two places:
+ * Three assertions, because the doc holds colour in two places:
  *   1. every frontmatter `colors:` entry equals the dark tier (`:root`)
  *      `--theme-*` token of the same name (`chart-N` is `--theme-cat-N`);
- *   2. the prose quotes no hex at all, so a light-theme value (or any other)
- *      cannot drift there. Prose names tokens; values live in globals.css.
+ *   2. every `:root` colour token has a frontmatter entry (the reverse);
+ *   3. the prose quotes no colour literal at all, so a light-theme value (or
+ *      any other) cannot drift there. Prose names tokens; values live in
+ *      globals.css.
  *
  * ⚠ The doc lives outside frontend/, so docker-compose mounts `docs/design`
  * into the container, and CI's change detection classifies a DESIGN.md edit
@@ -29,9 +31,13 @@ const GLOBALS = path.join(FRONTEND_ROOT, "app", "globals.css");
 const DESIGN_MD = path.resolve(FRONTEND_ROOT, "..", "docs", "design", "DESIGN.md");
 
 // Any quoted colour value: 6/8-digit hex, 3/4-digit hex that contains a
-// letter (so PR references like `#378` stay legal), or a colour function.
+// letter, or a CSS colour function (any case). ⚠ All-digit short hex (`#000`,
+// `#999`) is deliberately NOT matched, so PR references like `#378` stay
+// legal; black and greys are the likeliest short literals, so prefer the
+// token name in prose. A hex-letter word before `-` or `)` (`#add-x`) would
+// match; nothing in the doc does that today.
 const COLOUR_LITERAL =
-  /#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?\b|#(?=[0-9a-fA-F]{0,3}[a-fA-F])[0-9a-fA-F]{3,4}\b|\b(?:rgba?|hsla?|oklch)\(/g;
+  /#[0-9a-f]{6}(?:[0-9a-f]{2})?\b|#(?=[0-9a-f]{0,3}[a-f])[0-9a-f]{3,4}\b|\b(?:rgba?|hsla?|hwb|oklab|oklch|lab|lch|color)\(/gi;
 
 /** `:root` tokens that are not colours, so they have no frontmatter entry. */
 const NON_COLOUR_TOKENS = new Set(["card-shadow"]);
@@ -52,6 +58,7 @@ function docColors(): Record<string, string> {
   if (start < 0) throw new Error("frontmatter has no colors: block");
   const out: Record<string, string> = {};
   for (const line of lines.slice(start + 1)) {
+    if (line.trim() === "" || /^\s*#/.test(line)) continue; // blank / YAML comment
     if (!line.startsWith("  ")) break; // next top-level key
     const m = /^ {2}([a-z0-9-]+):\s*"([^"]+)"/.exec(line);
     // Fail loud on any entry this scan cannot read (single quotes, an
@@ -128,7 +135,7 @@ describe("TBD-482: DESIGN.md colour values match globals.css", () => {
       .flatMap((line, i) => (line.match(COLOUR_LITERAL) ?? []).map((h) => `body line ${i + 1}: ${h}`));
     expect(
       hexes,
-      "DESIGN.md prose must name tokens, not quote values: a quoted hex drifts " +
+      "DESIGN.md prose must name tokens, not quote values: a quoted colour drifts " +
         "silently when globals.css changes. Values live in globals.css.",
     ).toEqual([]);
   });
