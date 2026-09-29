@@ -20,11 +20,22 @@
  *     just its own tint), and checks each solid "-text" ink against its fill
  *     and hover-fill.
  *
- *  2. No bypass: a second test bans any NEW `bg-<status>/<opacity>` ad-hoc
- *     tint (opacity 30 or less) in `app/` or `components/` (outside a `hover:` fill), which is
- *     exactly the pattern TBD-483 migrated onto the checked primitives. A
- *     call site that reintroduced one would sit outside everything (1)
- *     measures.
+ *  2. No bypass: a second test bans any NEW static `bg-<status>/<opacity>`
+ *     ad-hoc tint (opacity <= 30%, including the Tailwind important modifier
+ *     in either position — `!bg-danger/10` or `bg-danger/10!` — and an
+ *     arbitrary-value alpha like `bg-danger/[0.08]`) in `app/`, `components/`
+ *     or `lib/`. This is exactly the pattern TBD-483 migrated onto the
+ *     checked primitives; a call site that reintroduced one would sit
+ *     outside everything (1) measures.
+ *
+ *  3. State tints: a *stateful* tint (`hover:`, `group-hover:`, `focus:`,
+ *     `focus-visible:`, `active:` prefixing `bg-<status>/<alpha>`) is exempt
+ *     from (2) — it is a legitimate transient-state fill, not the ad-hoc
+ *     pattern being banned — but it is not exempt from being CORRECT: every
+ *     distinct (status, alpha) state tint found anywhere in the scan, paired
+ *     with a same-status `text-<status>` ink on the same element, is
+ *     measured exactly like (1)'s tints: >= 4.5:1 composited over every host,
+ *     in both themes.
  *
  * Hosts checked: `surface`, `surface-raised`, `bg`. `surface-overlay` is
  * deliberately excluded — no status ink or status tint is ever rendered on
@@ -140,6 +151,14 @@ function tintOnHost(theme: Theme, status: Status, host: Host): Vec3 {
   return compositeOver(tint, hostRgb(theme, host));
 }
 
+/** A `bg-<status>/<alphaPct>` state tint (the status ink at `alphaPct`%
+ * opacity, e.g. Tailwind's `bg-danger/10`) composited over a host. Distinct
+ * from `tintOnHost`, which reads the theme's own `-dim` token: an ad-hoc
+ * alpha utility does not go through that token at all. */
+function stateTintOnHost(theme: Theme, status: Status, alphaPct: number, host: Host): Vec3 {
+  return compositeOver({ rgb: inkRgb(theme, status), alpha: alphaPct / 100 }, hostRgb(theme, host));
+}
+
 function fillRgb(theme: Theme, status: Status, hover: boolean): Vec3 {
   return hexToRgb(tokenValue(theme, hover ? `${status}-hover` : status));
 }
@@ -151,6 +170,19 @@ describe("contrast maths reference vectors", () => {
     expect(contrast(hexToRgb("#000000"), hexToRgb("#ffffff"))).toBeCloseTo(21.0, 1);
     expect(contrast(hexToRgb("#777777"), hexToRgb("#ffffff"))).toBeCloseTo(4.48, 2);
   });
+
+  it("parseColor and compositeOver match a known composite", () => {
+    // rgba(255, 0, 0, 0.5) over #ffffff -> #ff8080 ([255, 128, 128]).
+    const red50 = parseColor("rgba(255, 0, 0, 0.5)");
+    expect(red50.alpha).toBeCloseTo(0.5, 5);
+    const composited = compositeOver(red50, hexToRgb("#ffffff"));
+    expect(composited.map((c) => Math.round(c * 255))).toEqual([255, 128, 128]);
+
+    // #rrggbb has alpha 1 and round-trips exactly.
+    const solid = parseColor("#336699");
+    expect(solid.alpha).toBe(1);
+    expect(solid.rgb.map((c) => Math.round(c * 255))).toEqual([0x33, 0x66, 0x99]);
+  });
 });
 
 // ─── anti-vacuity ────────────────────────────────────────────────────────
@@ -161,6 +193,13 @@ describe("derived pair population", () => {
     expect(pairs.length).toBeGreaterThan(0);
     expect(pairs.some((p) => p.source === "badgeError")).toBe(true);
     expect(pairs.some((p) => p.source === "error")).toBe(true);
+  });
+
+  it("every status in STATUSES appears as a derived ink-on-tint pair", () => {
+    const pairs = deriveInkOnTintPairs();
+    for (const status of STATUSES) {
+      expect(pairs.some((p) => p.tint === status), `${status} missing from derived tint pairs`).toBe(true);
+    }
   });
 });
 
@@ -214,13 +253,43 @@ describe.each(THEMES)("%s theme", (theme) => {
 });
 
 
-// ─── no ad-hoc bypass ──────────────────────────────────────────────────
+// ─── no ad-hoc bypass, and measuring the state tints that ARE allowed ────
 
-const SCAN_ROOTS = ["app", "components"].map((d) => path.join(FRONTEND_ROOT, d));
-// A TINT is a low-alpha wash that text sits on (<= 30%). A high-alpha
-// status fill (e.g. the landing hero's decorative `/80` bars) carries no
-// text and is not what this fence measures, so it is not banned.
-const AD_HOC_TINT_RE = new RegExp(`(^|:)bg-(${STATUS_RE})/([0-9]|[12][0-9]|30)$`);
+const SCAN_ROOTS = ["app", "components", "lib"].map((d) => path.join(FRONTEND_ROOT, d));
+
+/** Variants that make a tint a transient STATE fill rather than a static
+ * ad-hoc one. `focus-visible` must precede `focus` in the alternation so it
+ * is tried first — the engine backtracks past a bare `focus` match that
+ * fails to find the immediately-following `:`, but only if there is a
+ * longer alternative left to try. */
+const STATE_PREFIXES = ["hover", "group-hover", "focus-visible", "focus", "active"] as const;
+const STATE_PREFIX_RE = new RegExp(`^(${STATE_PREFIXES.join("|")}):`);
+
+/** `bg-<status>/<alpha>`, alpha as a percent integer (`/10`) or an
+ * arbitrary-value fraction (`/[0.08]`, 0..1). Matched against a token with
+ * its variant prefix already stripped. */
+const TINT_TOKEN_RE = new RegExp(`^bg-(${STATUS_RE})/(?:(\\d+)|\\[(0?\\.\\d+|1(?:\\.0+)?)\\])$`);
+
+interface TintToken {
+  status: Status;
+  alphaPct: number;
+  state: string | null;
+}
+
+/** Parses one whitespace-split class token into a status tint, or null if it
+ * isn't one. Handles Tailwind's important modifier in BOTH positions —
+ * v3's `!bg-danger/10` and v4's `bg-danger/10!` (and either position after a
+ * state prefix) — by stripping every `!`: the character has no other use in
+ * these tokens. */
+function parseTintToken(rawToken: string): TintToken | null {
+  const core = rawToken.replace(/!/g, "");
+  const stateMatch = STATE_PREFIX_RE.exec(core);
+  const rest = stateMatch ? core.slice(stateMatch[0].length) : core;
+  const m = TINT_TOKEN_RE.exec(rest);
+  if (!m) return null;
+  const alphaPct = m[2] !== undefined ? Number(m[2]) : Number(m[3]) * 100;
+  return { status: m[1] as Status, alphaPct, state: stateMatch ? stateMatch[1] : null };
+}
 
 function walk(dir: string): string[] {
   const out: string[] = [];
@@ -256,21 +325,91 @@ function classStrings(file: string): { text: string; line: number }[] {
   return out;
 }
 
+/** Every scanned file, computed once: shared by the population guard and by
+ * every scan below so a >50-file walk isn't repeated per test. */
+const SCANNED_FILES = SCAN_ROOTS.flatMap(walk);
+
 describe("no ad-hoc status tint bypasses the checked primitives", () => {
-  it("app/ and components/ hold no bare bg-<status>/<n>, outside hover:", () => {
+  it("the scan actually walked the tree (population guard)", () => {
+    // An empty or broken walk would make the ban below pass vacuously.
+    expect(SCANNED_FILES.length).toBeGreaterThan(50);
+    expect(
+      SCANNED_FILES.some((f) => path.relative(FRONTEND_ROOT, f) === "lib/styles.ts"),
+    ).toBe(true);
+  });
+
+  it("app/, components/ and lib/ hold no static bg-<status>/<alpha> <= 30%, outside a state prefix", () => {
     const failures: string[] = [];
-    for (const root of SCAN_ROOTS) {
-      // ponytail: walking + TS-parsing every app/components file is slow
-      // under CI/container CPU contention (measured >5s cold); this is the
-      // full-tree scan focus-baseline.test.ts also does, at its own timeout.
-      for (const file of walk(root)) {
-        for (const { text, line } of classStrings(file)) {
-          for (const token of text.split(/\s+/).filter(Boolean)) {
-            if (/^hover:/.test(token)) continue;
-            if (AD_HOC_TINT_RE.test(token)) {
-              failures.push(`${path.relative(FRONTEND_ROOT, file)}:${line} ${token}`);
-            }
+    // ponytail: walking + TS-parsing every app/components/lib file is slow
+    // under CI/container CPU contention (measured >5s cold); this is the
+    // full-tree scan focus-baseline.test.ts also does, at its own timeout.
+    for (const file of SCANNED_FILES) {
+      for (const { text, line } of classStrings(file)) {
+        for (const token of text.split(/\s+/).filter(Boolean)) {
+          const parsed = parseTintToken(token);
+          if (!parsed) continue;
+          if (parsed.state) continue; // a state tint: exempt here, measured below
+          if (parsed.alphaPct <= 30) {
+            failures.push(`${path.relative(FRONTEND_ROOT, file)}:${line} ${token}`);
           }
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  }, 20000);
+});
+
+// ─── state tints (hover:/focus:/... bg-<status>/N + text-<status>) ──────
+
+interface StateTintPair {
+  status: Status;
+  alphaPct: number;
+  sources: string[];
+}
+
+/** Every distinct (status, alphaPct) state tint in the scan that is paired,
+ * on the same class string, with a plain `text-<same status>` ink — i.e.
+ * the ink that will actually sit on that tint. An unpaired state tint (a
+ * fill with no status text on it) has nothing to measure. */
+function deriveStateTintPairs(): StateTintPair[] {
+  const byKey = new Map<string, StateTintPair>();
+  for (const file of SCANNED_FILES) {
+    for (const { text, line } of classStrings(file)) {
+      const inks = new Set(matchesOf(INK_RE, text));
+      for (const token of text.split(/\s+/).filter(Boolean)) {
+        const parsed = parseTintToken(token);
+        if (!parsed || !parsed.state || !inks.has(parsed.status)) continue;
+        const key = `${parsed.status}:${parsed.alphaPct}`;
+        const source = `${path.relative(FRONTEND_ROOT, file)}:${line}`;
+        const existing = byKey.get(key);
+        if (existing) existing.sources.push(source);
+        else byKey.set(key, { status: parsed.status, alphaPct: parsed.alphaPct, sources: [source] });
+      }
+    }
+  }
+  return [...byKey.values()];
+}
+
+describe("state tint population", () => {
+  it("finds at least one (status, alpha) state tint, including danger at 10%", () => {
+    const pairs = deriveStateTintPairs();
+    expect(pairs.length).toBeGreaterThan(0);
+    expect(pairs.some((p) => p.status === "danger" && p.alphaPct === 10)).toBe(true);
+  });
+});
+
+describe.each(THEMES)("%s theme: state tints", (theme) => {
+  it("every (status, alpha) state tint is >= 4.5:1 composited over every host", () => {
+    const pairs = deriveStateTintPairs();
+    const failures: string[] = [];
+    for (const { status, alphaPct, sources } of pairs) {
+      for (const host of HOSTS) {
+        const cr = contrast(inkRgb(theme, status), stateTintOnHost(theme, status, alphaPct, host));
+        if (cr < CONTRAST_MIN) {
+          failures.push(
+            `text-${status} on bg-${status}/${alphaPct} (state) over ${host} = ${cr.toFixed(2)}:1 ` +
+              `(${sources.length} site(s), e.g. ${sources[0]})`,
+          );
         }
       }
     }
