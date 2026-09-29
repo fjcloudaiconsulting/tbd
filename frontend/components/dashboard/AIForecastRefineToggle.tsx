@@ -24,6 +24,8 @@ const FALLBACK_REASON_COPY: Record<string, string> = {
   ai_native_not_available: "The built-in AI provider is not available yet.",
   insufficient_history: "Not enough history yet to analyze.",
   history_build_failed: "Could not load your history, showing your baseline.",
+  forecast_window_not_monthly:
+    "This billing period is longer than a month. Close it to use AI refinement.",
 };
 
 function fallbackReasonLabel(reason: string | null): string {
