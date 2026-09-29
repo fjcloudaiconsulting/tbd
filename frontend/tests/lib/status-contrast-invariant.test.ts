@@ -266,7 +266,8 @@ const SCAN_ROOTS = ["app", "components", "lib"].map((d) => path.join(FRONTEND_RO
  * (`dark:`), and data/aria variants (`data-[x]:`, `aria-selected:`) — those
  * are static contexts, not transient states, so a tint gated only by one of
  * them is banned like any other static tint. */
-const STATE_VARIANT_RE = /^(hover|group-hover(?:\/[\w-]+)?|peer-hover|focus|focus-visible|focus-within|active)$/;
+const STATE_VARIANT_RE =
+  /^(?:(?:(?:group|peer)-)?(?:hover|focus|focus-visible|focus-within|active)(?:\/[\w-]+)?|\[&:(?:hover|focus|focus-visible|focus-within|active)\])$/;
 
 /** `bg-<status>/<alpha-spec>` — the alpha spec is parsed separately (below)
  * so an unparseable form (a CSS var) can be distinguished from "not a tint
@@ -313,15 +314,18 @@ function splitVariants(token: string): string[] {
 const stripBang = (segment: string): string => segment.replace(/^!/, "").replace(/!$/, "");
 
 type TintParse =
-  | { kind: "state"; status: Status; alphaPct: number }
+  // A tint this fence can measure: a STATE fill (any alpha) or a static fill
+  // above 30%. Measured whenever its own status ink sits on it.
+  | { kind: "tint"; status: Status; alphaPct: number; state: boolean }
   | { kind: "banned"; status: Status; alphaPct: number | null; reason: string }
-  | null; // not a `bg-<status>/<alpha>` utility at all, or a >30% decorative fill
+  | null; // not a `bg-<status>/<alpha>` utility at all
 
 /** Parses one whitespace-split class token into a tint verdict. FAILS
- * CLOSED: any `bg-<status>/<alpha>` at <= 30% opacity is BANNED unless the
- * variant stack contains a real state variant (STATE_VARIANT_RE), and any
- * alpha spec this parser cannot read as a number is banned outright,
- * regardless of variants — an unmeasurable tint is never "not applicable". */
+ * CLOSED: an alpha spec this parser cannot read is banned outright; a static
+ * (no state variant) tint at <= 30% is banned, because static tints must use
+ * the checked primitives. Everything else that parses is a measurable tint:
+ * a state fill at ANY alpha, or a static fill above 30%. The alpha cut-off
+ * decides only what is banned, never what is measured (TBD-483 r3). */
 function parseTintToken(rawToken: string): TintParse {
   const segments = splitVariants(rawToken).map(stripBang);
   const utility = segments[segments.length - 1];
@@ -339,9 +343,8 @@ function parseTintToken(rawToken: string): TintParse {
       reason: `alpha spec ${JSON.stringify(alphaSpec)} is not a measurable percent or arbitrary fraction/percent (e.g. a CSS var) — cannot be measured, so not allowed`,
     };
   }
-  if (alphaPct > 30) return null; // decorative fill, out of the scope this fence measures
-  const hasState = variants.some((v) => STATE_VARIANT_RE.test(v));
-  if (hasState) return { kind: "state", status, alphaPct };
+  const state = variants.some((v) => STATE_VARIANT_RE.test(v));
+  if (state || alphaPct > 30) return { kind: "tint", status, alphaPct, state };
   return {
     kind: "banned",
     status,
@@ -366,15 +369,27 @@ describe("parseTintToken", () => {
     ["data-[x]:bg-danger/10", { kind: "banned", status: "danger", alphaPct: 10, reason: expect.any(String) as unknown as string }],
     ["aria-selected:bg-danger/10", { kind: "banned", status: "danger", alphaPct: 10, reason: expect.any(String) as unknown as string }],
     // a real state variant anywhere in the stack -> measured
-    ["hover:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
-    ["dark:hover:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
-    ["sm:hover:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
-    ["hover:md:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
-    ["focus-within:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
-    ["peer-hover:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
-    ["group-hover/row:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
-    // > 30% is a decorative fill, out of scope either way
-    ["hover:bg-danger/80", null],
+    ["hover:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    ["dark:hover:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    ["sm:hover:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    ["hover:md:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    ["focus-within:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    ["peer-hover:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    ["peer-hover/name:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    ["group-hover/row:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    ["group-focus:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    ["[&:hover]:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    // a `:` inside brackets is not a split point, so the hover still counts
+    ["supports-[a:b]:hover:bg-danger/10", { kind: "tint", status: "danger", alphaPct: 10, state: true }],
+    // a state fill above 30% is still measured (r3: the cut-off never hides a pair)
+    ["hover:bg-danger/80", { kind: "tint", status: "danger", alphaPct: 80, state: true }],
+    // the 30/31 boundary on a static tint: banned at 30, measured at 31
+    ["bg-danger/30", { kind: "banned", status: "danger", alphaPct: 30, reason: expect.any(String) as unknown as string }],
+    ["bg-danger/31", { kind: "tint", status: "danger", alphaPct: 31, state: false }],
+    ["bg-danger/40", { kind: "tint", status: "danger", alphaPct: 40, state: false }],
+    ["bg-danger/[.08]", { kind: "banned", status: "danger", alphaPct: 8, reason: expect.any(String) as unknown as string }],
+    ["bg-danger/[1]", { kind: "tint", status: "danger", alphaPct: 100, state: false }],
+    ["bg-danger/10/", { kind: "banned", status: "danger", alphaPct: null, reason: expect.any(String) as unknown as string }],
     // not a bg-<status>/<alpha> utility at all
     ["hover:text-danger", null],
   ];
@@ -457,10 +472,10 @@ interface StateTintPair {
   sources: string[];
 }
 
-/** Every distinct (status, alphaPct) state tint in the scan that is paired,
- * on the same class string, with a plain `text-<same status>` ink — i.e.
- * the ink that will actually sit on that tint. An unpaired state tint (a
- * fill with no status text on it) has nothing to measure. */
+/** Every distinct (status, alphaPct) measurable tint in the scan (a state
+ * fill at any alpha, or a static fill above 30%) that is paired, on the same
+ * class string, with a plain `text-<same status>` ink, i.e. the ink that
+ * will actually sit on that tint. An unpaired tint has nothing to measure. */
 function deriveStateTintPairs(): StateTintPair[] {
   const byKey = new Map<string, StateTintPair>();
   for (const file of SCANNED_FILES) {
@@ -468,7 +483,7 @@ function deriveStateTintPairs(): StateTintPair[] {
       const inks = new Set(matchesOf(INK_RE, text));
       for (const token of text.split(/\s+/).filter(Boolean)) {
         const parsed = parseTintToken(token);
-        if (!parsed || parsed.kind !== "state" || !inks.has(parsed.status)) continue;
+        if (!parsed || parsed.kind !== "tint" || !inks.has(parsed.status)) continue;
         const key = `${parsed.status}:${parsed.alphaPct}`;
         const source = `${path.relative(FRONTEND_ROOT, file)}:${line}`;
         const existing = byKey.get(key);
