@@ -134,7 +134,7 @@ SEED_EMAIL=alice@example.com SEED_ORG="Alice LLC" \
 ./pfv seed                                       # custom user
 ```
 
-The seed script logs in as the user, registering them first if they do not exist, and then creates data through the API. If the user already exists, it adds data to their org.
+The seed script logs in as the user, registering them first if they do not exist, and then creates data through the API. If the user's org already has data (any account or billing period), it asks before **replacing** it, through the same audited `POST /api/v1/orgs/data/reset` the Settings page uses. Answer anything but `y`/`yes` and nothing changes. It never adds a second dataset on top of the first (TBD-398). Without a terminal, pass `--yes` to replace (`./pfv seed --yes`); otherwise it exits non-zero without writing.
 
 ### Determinism (TBD-345)
 
@@ -146,7 +146,7 @@ SEED_ANCHOR_DATE=2026-03-17 SEED_RANDOM_SEED=42 ./pfv seed
 
 `SEED_ANCHOR_DATE` defaults to today; `SEED_RANDOM_SEED` defaults to a fixed constant, so two runs on the same day already agree. Both **raise** on a malformed value rather than silently falling back, because a caller that believes it pinned an anchor while actually running on the wall clock is the exact defect the knobs exist to remove.
 
-⚠ **Deterministic is not idempotent.** Re-running against an already-seeded org **appends** a second dataset: `POST /api/v1/accounts` has no duplicate-name check, so five more accounts and another set of transactions are created. A re-run at a *different* anchor additionally leaves a **second open billing period** — the containment check cannot reject an existing open row that starts earlier than the one being posted, so that POST answers `created` rather than any 409. Run `./pfv reset` first if you want exactly the dataset described here.
+A re-run reproduces the dataset by replacing the org's data first, as described above. That also rules out the second open billing period a changed-anchor re-run used to leave behind.
 
 Two dataset regimes are worth knowing when reading seeded data. Both are fully deterministic once the anchor is pinned; the split is a documented property, not a defect:
 
