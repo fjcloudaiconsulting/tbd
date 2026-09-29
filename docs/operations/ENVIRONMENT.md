@@ -8,7 +8,7 @@ be removed or renamed without notice.
 
 Anyone deploying, operating, or running pfv locally:
 
-- Local developers (`docker compose` + `./pfv`)
+- Local developers (`docker compose` + `./tbd`)
 - CI maintainers (GitHub Actions secrets, smoke tests)
 - Production operators (DigitalOcean App Platform, `doctl apps update`)
 
@@ -35,7 +35,7 @@ Minimum to bring up the stack with `docker compose up`:
 cp .env.example .env
 # Open .env and set JWT_SECRET_KEY to a real 32+ char secret:
 #   python -c "import secrets; print(secrets.token_urlsafe(64))"
-./pfv start
+./tbd start
 ```
 
 The rest of `.env.example` is pre-populated with safe local-dev defaults.
@@ -122,7 +122,7 @@ the env-var name (uppercased).
 | `EXPORT_MAX_ROWS` | no | `2000000` | `.env` (optional) | unset | inherit default | no | Pre-flight `COUNT(*)` ceiling across every table the export registry includes (TBD-222). Above it `scripts/export_org.py` refuses and points the operator at the `privacy@` email channel. | Default 2 000 000. A refusal is safe: no partial artifact is produced. |
 | `EXPORT_MAX_BYTES` | no | `1073741824` | `.env` (optional) | unset | inherit default | no | Cumulative encoded-output ceiling for one export, checked incrementally and aborted the moment it is crossed. A row count does NOT bound bytes (`transactions.description` is free text; several columns are unbounded JSON), and bytes is what exhausts a 512 MB single-instance box. | Default 1 GiB. On abort with `--out` the `.part` file is UNLINKED, so nothing is left at or beside the destination; with `--stdout` the bytes already redirected are trailer-less and fail verification by design. |
 | `PFV_RUNTIME` | yes for prod | unset | unset | unset | `.do/app.yaml` (`app_platform`) | no | Tells `rate_limit.get_client_ip` to read `do-connecting-ip` unconditionally. | `audit_events.ip_address` records the DO ingress IP, not the user's IP. |
-| `PFV_MIGRATE_OK_OFF_MAIN` | no | unset | shell / `.env` only when needed | unset | unset | no | Escape hatch for the lifespan + `./pfv migrate` branch guard. Allows migrations from a non-`main` checkout. | Without it, lifespan and `./pfv migrate` refuse to run on a feature branch. |
+| `PFV_MIGRATE_OK_OFF_MAIN` | no | unset | shell / `.env` only when needed | unset | unset | no | Escape hatch for the lifespan + `./tbd migrate` branch guard. Allows migrations from a non-`main` checkout. | Without it, lifespan and `./tbd migrate` refuse to run on a feature branch. |
 
 #### Backend MySQL container (local dev only)
 
@@ -141,7 +141,7 @@ Production MySQL runs on the `<data-droplet>` droplet; credentials live in
 `DATABASE_URL` (SECRET) and not in any per-mysql-container env. See
 `infra/MIGRATION.md`.
 
-#### Backend seed helpers (`./pfv seed`)
+#### Backend seed helpers (`./tbd seed`)
 
 Only consumed by `backend/seed.py`. Optional; defaults give the `demo /
 demo1234` user documented in CONTRIBUTING.md.
@@ -196,9 +196,9 @@ deploy contract.
 | Variable | Component | What it does | Reference |
 |---|---|---|---|
 | `PFV_RUNTIME=app_platform` | backend | `get_client_ip` uses `do-connecting-ip` unconditionally so `audit_events.ip_address` records the real user IP, not the DO ingress peer. | PR #233, `project_audit_log_client_ip_bug.md` |
-| `PFV_MIGRATE_OK_OFF_MAIN=1` | backend (lifespan + `./pfv migrate`) | Escape hatch for the branch guard that refuses to run migrations from a non-`main` checkout. Off-by-default. | `pfv` CLI, `backend/app/main.py` |
-| `PFV_DEPDRIFT_SKIP=1` | `./pfv` CLI | Skips the host-vs-container `package-lock.json` SHA check on `./pfv start`. | `pfv` CLI line 48, PR #249 |
-| `PFV_DEPDRIFT_HOST_HASH`, `PFV_DEPDRIFT_CONTAINER_HASH` | `./pfv` CLI (tests only) | Test seam for the drift guard. Not for human use. | `pfv` CLI |
+| `PFV_MIGRATE_OK_OFF_MAIN=1` | backend (lifespan + `./tbd migrate`) | Escape hatch for the branch guard that refuses to run migrations from a non-`main` checkout. Off-by-default. | `tbd` CLI, `backend/app/main.py` |
+| `PFV_DEPDRIFT_SKIP=1` | `./tbd` CLI | Skips the host-vs-container `package-lock.json` SHA check on `./tbd start`. | `tbd` CLI line 48, PR #249 |
+| `PFV_DEPDRIFT_HOST_HASH`, `PFV_DEPDRIFT_CONTAINER_HASH` | `./tbd` CLI (tests only) | Test seam for the drift guard. Not for human use. | `tbd` CLI |
 | `NEXT_PUBLIC_GOOGLE_SSO_ENABLED=true` | frontend (build time) | Shows the "Sign in with Google" button on `/login`, `/register`, and step-up flows. Hidden otherwise. | PR #229 |
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | backend | SQLAlchemy engine pool sizing. Defaults safe for single-replica; override when scaling HPA so `replicas * (pool_size + max_overflow)` stays under the managed-DB connection cap. | PR #251 (K8S-3) |
 | `COOKIE_SECURE` | backend | When `true`, cookies are flagged `Secure` and browsers refuse to send them over HTTP. Must be `false` for local-dev HTTP and `true` for prod HTTPS. | `backend/app/config.py` |
@@ -260,7 +260,7 @@ These are committed as plaintext in `.do/app.yaml`:
    - Leave Google blank unless you have real OAuth credentials.
    - `NEXT_PUBLIC_GOOGLE_SSO_ENABLED=false` unless you do (otherwise the
      button errors out on click).
-3. `./pfv start`
+3. `./tbd start`
 4. `docker compose` reads `.env` via `env_file: .env` on the backend
    service. The frontend service gets `BACKEND_INTERNAL_URL` and
    `NEXT_PUBLIC_API_URL` inline from `docker-compose.yml`.
@@ -389,7 +389,7 @@ migrate PRE_DEPLOY job also needs this variable bound (PR #202).
 
 ### "Lifespan refuses to migrate on a feature branch"
 
-Symptom: `./pfv start` boots the backend, but lifespan logs
+Symptom: `./tbd start` boots the backend, but lifespan logs
 `migrate.skipped reason=non_main_branch`. Cause: branch guard. Fix:
 switch to `main` for migrations, or set `PFV_MIGRATE_OK_OFF_MAIN=1` in
 `.env` if you genuinely need to run lifespan migrations from the branch.

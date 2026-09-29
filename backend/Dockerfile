@@ -24,7 +24,7 @@ ENV PYTHONPATH=/app
 # Force unbuffered stdout/stderr so log lines reach the docker log driver
 # (and the App Platform log capture) immediately. Without this, Python
 # block-buffers stdout when not attached to a TTY, which makes
-# `./pfv logs -f` and the prod log stream appear to "stop" while the
+# `./tbd logs -f` and the prod log stream appear to "stop" while the
 # buffer fills before flushing.
 ENV PYTHONUNBUFFERED=1
 

@@ -61,7 +61,7 @@ BASE_TREE = {
     "docker-compose.yml": "services: {}\n",
     ".github/workflows/test.yml": "name: Test\n",
     "scripts/ci/await-test-run.sh": "true\n",
-    "pfv": "#!/bin/sh\n",
+    "tbd": "#!/bin/sh\n",
 }
 
 
@@ -259,13 +259,13 @@ def test_a_frontend_source_a_backend_fence_reads_is_a_backend_change_too(
         ".github/workflows/test.yml",
         "scripts/ci/await-test-run.sh",
         "docker-compose.yml",
-        "pfv",
+        "tbd",
     ],
 )
 def test_an_unclassified_path_runs_everything(path, tmp_path):
     """⚠ The default branch must be EVERYTHING, not nothing. Backend tests
     assert on several repo-root paths (`.do/app.yaml`, `.github/workflows/*`,
-    `scripts/ci/*`, `pfv`), and a new top-level path nobody thought about must
+    `scripts/ci/*`, `tbd`), and a new top-level path nobody thought about must
     never be silently inert."""
     repo, base = _repo(tmp_path, {path: "changed\n"})
     out = _detect(repo, tmp_path, base=base)

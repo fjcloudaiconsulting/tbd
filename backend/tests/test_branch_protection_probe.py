@@ -1509,11 +1509,11 @@ def test_f16_nothing_in_the_repo_writes_the_posture_file():
     }
     for label, found in parts.items():
         assert found, f"the {label} corpus is EMPTY, so this fence searched nothing"
-    # ⚠ `pfv` is NOT mounted into the backend container, so it is OPTIONAL rather
+    # ⚠ `tbd` is NOT mounted into the backend container, so it is OPTIONAL rather
     # than asserted -- an unconditional assert here is a false RED in the one
     # environment the documented local command has to work in, and a false red is
     # what gets a fence weakened rather than obeyed.
-    parts["pfv (optional)"] = [p for p in [root / "pfv"] if p.is_file()]
+    parts["tbd (optional)"] = [p for p in [root / "tbd"] if p.is_file()]
     for required in ("check-branch-protection.sh", "probe-branch-protection.sh",
                      "normalize_protection.py", "notify-protection-drift.sh",
                      "branch-protection-probe.yml",

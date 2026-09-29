@@ -1,6 +1,6 @@
-"""TBD-345: ``./pfv seed`` must produce the dataset it claims to produce.
+"""TBD-345: ``./tbd seed`` must produce the dataset it claims to produce.
 
-``./pfv seed`` was documented as "a repeatable local dataset". It was
+``./tbd seed`` was documented as "a repeatable local dataset". It was
 not: ``random`` was imported and never seeded, and every date derived from
 ``date.today()``, so the geometry changed with the day of the month.
 
@@ -553,10 +553,10 @@ def test_seed_writes_nothing_to_the_database_out_of_band():
 
 
 def test_every_seed_env_var_shares_the_prefix():
-    """KILLS: ``os.getenv("ANCHOR_DATE")`` — a name the ``pfv`` passthrough drops.
+    """KILLS: ``os.getenv("ANCHOR_DATE")`` — a name the ``tbd`` passthrough drops.
 
     ``cmd_seed`` forwards every ``SEED_*`` var generically. A var named outside
-    that prefix is silently invisible to the documented ``./pfv seed`` path,
+    that prefix is silently invisible to the documented ``./tbd seed`` path,
     which is the exact failure this ticket's own new variables would otherwise
     have shipped with.
     """
@@ -598,10 +598,10 @@ def test_every_seed_env_var_shares_the_prefix():
         "does not cover before trusting this guard."
     )
     bad = [n for n in names if not n.startswith("SEED_")]
-    assert not bad, f"env vars outside the SEED_ prefix are dropped by ./pfv seed: {bad}"
+    assert not bad, f"env vars outside the SEED_ prefix are dropped by ./tbd seed: {bad}"
 
 
-def test_pfv_forwards_seed_vars_generically():
+def test_tbd_forwards_seed_vars_generically():
     """The PATH the prefix rule depends on, not just the item.
 
     ``test_every_seed_env_var_shares_the_prefix`` is only meaningful because
@@ -610,25 +610,25 @@ def test_pfv_forwards_seed_vars_generically():
     command-line path again — with that test still green. This asserts the
     mechanism exists.
 
-    KILLS: reverting ``pfv``'s passthrough to an explicit list.
+    KILLS: reverting ``tbd``'s passthrough to an explicit list.
     """
     # Two locations, deliberately. On a bare CI runner the whole repo is
-    # checked out and `pfv` sits at the repo root, two levels above this file.
+    # checked out and `tbd` sits at the repo root, two levels above this file.
     # Inside the backend container only /app exists, so the repo-root script is
     # bind-mounted separately — the same both-paths shape
     # test_await_test_run_gate.py uses for the CI gate script.
     candidates = [
-        Path(__file__).resolve().parents[2] / "pfv",   # bare checkout / CI
-        Path("/app/repo-pfv"),                          # backend container
+        Path(__file__).resolve().parents[2] / "tbd",   # bare checkout / CI
+        Path("/app/repo-tbd"),                          # backend container
     ]
     found = [p for p in candidates if p.exists()]
     assert found, (
-        f"`pfv` not found at any of {[str(c) for c in candidates]}. It must be "
+        f"`tbd` not found at any of {[str(c) for c in candidates]}. It must be "
         "reachable for this guard to mean anything; do not weaken this to a skip."
     )
-    pfv = found[0].read_text(encoding="utf-8")
-    start = pfv.index("cmd_seed()")
-    body = pfv[start:pfv.index("\n}", start)]
+    tbd = found[0].read_text(encoding="utf-8")
+    start = tbd.index("cmd_seed()")
+    body = tbd[start:tbd.index("\n}", start)]
     assert "SEED_" in body and ("env |" in body or "environ" in body), (
         "cmd_seed no longer sweeps the environment for SEED_* generically; a "
         "new SEED_* var would be dropped before it reaches seed.py"

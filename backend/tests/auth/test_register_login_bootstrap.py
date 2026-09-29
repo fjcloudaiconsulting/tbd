@@ -561,7 +561,7 @@ async def test_f6_guard_ensure_verified_seed_helper(session_factory, monkeypatch
 
     ⚠ THIS DOES NOT FENCE THE REAL DEFECT. `backend/seed.py` is an httpx
     script driven against a live server; its only honest verification is a
-    human running `./pfv seed` on a fresh stack and then running it a second
+    human running `./tbd seed` on a fresh stack and then running it a second
     time. This test pins the helper in isolation and nothing about the script's
     control flow.
 

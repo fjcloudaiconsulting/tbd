@@ -133,7 +133,7 @@ def _resolve_git_branch() -> str:
 
 def _migrate_off_main_override_set() -> bool:
     """True when the operator has opted in to lifespan migrations from
-    a non-main checkout. Mirrors the CLI guard in `./pfv migrate`. Same
+    a non-main checkout. Mirrors the CLI guard in `./tbd migrate`. Same
     env var name on purpose so a single export covers both surfaces.
     """
     return os.environ.get("PFV_MIGRATE_OK_OFF_MAIN", "").strip() == "1"
@@ -146,7 +146,7 @@ async def _run_migrations() -> None:
     Refuses to run when the host checkout is on a non-main branch unless
     `PFV_MIGRATE_OK_OFF_MAIN=1` is set. A migrate from a feature branch
     can leave alembic_version pointing at a revision that only exists on
-    that branch, which then breaks the next `./pfv start` on main until
+    that branch, which then breaks the next `./tbd start` on main until
     the version row is hand-patched. Same drift class the 2026-05-09
     incident demonstrated. Detached HEAD / unreadable HEAD also refuses
     (fail closed). See
@@ -267,7 +267,7 @@ async def lifespan(app: FastAPI):
     # PRE_DEPLOY job in .do/app.yaml) so they don't gate uvicorn's
     # port-bind. Dev runs them inline because the dev orchestrator
     # (docker-compose) has no PRE_DEPLOY equivalent. The alternative is a
-    # manual `./pfv migrate` after every rebuild.
+    # manual `./tbd migrate` after every rebuild.
     if app_settings.app_env != "production":
         await _run_migrations()
     # NOTE: subscription backfill used to run here on every boot. It now

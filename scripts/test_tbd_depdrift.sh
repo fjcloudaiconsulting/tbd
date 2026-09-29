@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Test harness for `check_frontend_dep_drift` in `./pfv`.
+# Test harness for `check_frontend_dep_drift` in `./tbd`.
 #
-# We can't `source` the full pfv script (the bottom `case` dispatches
+# We can't `source` the full tbd script (the bottom `case` dispatches
 # on $1). Instead, we extract the function block and source that.
 #
 # Run from the repo root:
-#   bash scripts/test_pfv_depdrift.sh
+#   bash scripts/test_tbd_depdrift.sh
 #
 # Exit code 0 on success, non-zero on assertion failure.
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PFV_SCRIPT="$REPO_ROOT/pfv"
+PFV_SCRIPT="$REPO_ROOT/tbd"
 
 if [[ ! -f "$PFV_SCRIPT" ]]; then
   echo "FAIL: $PFV_SCRIPT not found"
@@ -22,7 +22,7 @@ fi
 # Extract `check_frontend_dep_drift` (and only that function) by reading
 # from its opening line through its closing `}` at column 1. The function
 # is self-contained, no helpers needed.
-tmp_fn="$(mktemp -t pfv_depdrift.XXXXXX.sh)"
+tmp_fn="$(mktemp -t tbd_depdrift.XXXXXX.sh)"
 trap 'rm -f "$tmp_fn"' EXIT
 
 awk '
@@ -72,7 +72,7 @@ assert_warning_matches() {
 # The function reads `frontend/package-lock.json` from $PWD. Run the
 # tests from a tempdir that has an empty placeholder lockfile so the
 # host-hash path is exercised when overrides are NOT set.
-work_dir="$(mktemp -d -t pfv_depdrift_work.XXXXXX)"
+work_dir="$(mktemp -d -t tbd_depdrift_work.XXXXXX)"
 trap 'rm -rf "$work_dir"; rm -f "$tmp_fn"' EXIT
 mkdir -p "$work_dir/frontend"
 echo "{}" > "$work_dir/frontend/package-lock.json"

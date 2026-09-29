@@ -28,7 +28,7 @@ python -c "import secrets; print(secrets.token_urlsafe(64))"
 # Paste that value into JWT_SECRET_KEY in .env
 
 # 3. Start the dev stack (MySQL + Redis + backend + frontend + nginx)
-./pfv start
+./tbd start
 
 # 4. Open the app
 open http://localhost
@@ -39,7 +39,7 @@ The first user to register becomes the org owner and superadmin. No seed data re
 Want a realistic dataset (5 accounts, 100+ transactions, recurring templates, budgets)?
 
 ```bash
-./pfv seed                 # creates demo / demo1234
+./tbd seed                 # creates demo / demo1234
 ```
 
 For a custom user, set `SEED_*` env vars before the command. See [Seeding mock data](#seeding-mock-data) below.
@@ -53,8 +53,8 @@ flowchart TD
     A[Made a change] --> B{What did you touch?}
     B -->|backend/**| C[docker compose exec backend pytest]
     B -->|frontend/**| D[docker compose exec frontend npm test<br/>docker compose exec frontend npx tsc --noEmit]
-    B -->|backend/alembic/versions/**| E[Restart backend so lifespan applies the migration<br/>./pfv restart]
-    B -->|nginx/** or .do/**| F[./pfv prod for a local prod-shaped run<br/>Smoke endpoints by hand]
+    B -->|backend/alembic/versions/**| E[Restart backend so lifespan applies the migration<br/>./tbd restart]
+    B -->|nginx/** or .do/**| F[./tbd prod for a local prod-shaped run<br/>Smoke endpoints by hand]
     B -->|docs only| G[No tests required.<br/>Use chore: or docs: prefix so semantic-release skips deploy.]
     C --> H[Commit with Conventional Commits prefix]
     D --> H
@@ -116,32 +116,32 @@ gh workflow run deploy.yml --ref main
 
 ## Working in parallel agent sessions
 
-If you dispatch Claude Code agents (or any parallel-process helpers) against this repo, never let them run backend tests or migrations against the default `pfv` Docker Compose project. They will write to your local MySQL volume. Use an isolated compose project name on every command:
+If you dispatch Claude Code agents (or any parallel-process helpers) against this repo, never let them run backend tests or migrations against the default `tbd` Docker Compose project (compose names it after the checkout directory). They will write to your local MySQL volume. Use an isolated compose project name on every command:
 
 ```bash
 docker compose -p team-<unique-name> up -d backend mysql redis
 docker compose -p team-<unique-name> exec backend pytest tests/...
 ```
 
-A single command that omits `-p team-<name>` falls back to the default `pfv` project and contaminates the user's stack. `./pfv migrate` has no `-p` flag and always targets the default project, so agents must not invoke it either.
+A single command that omits `-p team-<name>` falls back to the default project (`tbd` in the main checkout) and contaminates the user's stack. `./tbd migrate` has no `-p` flag and always targets the default project, so agents must not invoke it either.
 
 ## Seeding mock data
 
 ```bash
-./pfv seed                                       # default demo user
+./tbd seed                                       # default demo user
 SEED_USERNAME=alice SEED_PASSWORD=alice1234 \
 SEED_EMAIL=alice@example.com SEED_ORG="Alice LLC" \
-./pfv seed                                       # custom user
+./tbd seed                                       # custom user
 ```
 
-The seed script logs in as the user, registering them first if they do not exist, and then creates data through the API. If the user's org already has data (any account or billing period), it asks before **replacing** it, through the same audited `POST /api/v1/orgs/data/reset` the Settings page uses. The reset deletes **all** of the org's data (including transactions, accounts, recurring templates, budgets, billing periods, plans, categories, rules, tags and imports), not only what the seed created. Answer anything but `y`/`yes` and it exits non-zero with no data changed. It never adds a second dataset on top of the first (TBD-398). Without a terminal, pass `--yes` to replace (`./pfv seed --yes`); otherwise it exits non-zero with no data changed. An org with neither accounts nor billing periods counts as empty and is seeded as is, so custom categories or tags created there are kept.
+The seed script logs in as the user, registering them first if they do not exist, and then creates data through the API. If the user's org already has data (any account or billing period), it asks before **replacing** it, through the same audited `POST /api/v1/orgs/data/reset` the Settings page uses. The reset deletes **all** of the org's data (including transactions, accounts, recurring templates, budgets, billing periods, plans, categories, rules, tags and imports), not only what the seed created. Answer anything but `y`/`yes` and it exits non-zero with no data changed. It never adds a second dataset on top of the first (TBD-398). Without a terminal, pass `--yes` to replace (`./tbd seed --yes`); otherwise it exits non-zero with no data changed. An org with neither accounts nor billing periods counts as empty and is seeded as is, so custom categories or tags created there are kept.
 
 ### Determinism (TBD-345)
 
 The dataset is **deterministic for a given anchor date and RNG seed, on a fresh database**:
 
 ```bash
-SEED_ANCHOR_DATE=2026-03-17 SEED_RANDOM_SEED=42 ./pfv seed
+SEED_ANCHOR_DATE=2026-03-17 SEED_RANDOM_SEED=42 ./tbd seed
 ```
 
 `SEED_ANCHOR_DATE` defaults to today; `SEED_RANDOM_SEED` defaults to a fixed constant, so two runs on the same day already agree. Both **raise** on a malformed value rather than silently falling back, because a caller that believes it pinned an anchor while actually running on the wall clock is the exact defect the knobs exist to remove.
@@ -174,17 +174,17 @@ Before each login attempt the script marks that user's email verified with a dir
 
 | Command | Description |
 |---------|-------------|
-| `./pfv start` | Build and start all dev services |
-| `./pfv stop` | Stop all services |
-| `./pfv restart` | Restart without rebuild |
-| `./pfv rebuild` | Force rebuild (no cache) and start |
-| `./pfv reset` | Destroy all data, rotate JWT secret, start fresh |
-| `./pfv prod` | Build and start a local prod-shaped stack |
-| `./pfv migrate` | Run pending DB migrations (local only) |
-| `./pfv logs [svc]` | Tail logs (`backend`, `frontend`, `nginx`, `mysql`, `redis`) |
-| `./pfv status` | Container status |
-| `./pfv shell [svc]` | Shell into a service (default: `backend`) |
-| `./pfv seed` | Populate with mock data |
+| `./tbd start` | Build and start all dev services |
+| `./tbd stop` | Stop all services |
+| `./tbd restart` | Restart without rebuild |
+| `./tbd rebuild` | Force rebuild (no cache) and start |
+| `./tbd reset` | Destroy all data, rotate JWT secret, start fresh |
+| `./tbd prod` | Build and start a local prod-shaped stack |
+| `./tbd migrate` | Run pending DB migrations (local only) |
+| `./tbd logs [svc]` | Tail logs (`backend`, `frontend`, `nginx`, `mysql`, `redis`) |
+| `./tbd status` | Container status |
+| `./tbd shell [svc]` | Shell into a service (default: `backend`) |
+| `./tbd seed` | Populate with mock data |
 
 ## Architecture
 
@@ -442,8 +442,8 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 Three execution paths, picked by environment:
 
-- **Local dev (`./pfv start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override).
-- **Local prod simulation (`./pfv prod`):** a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` (no lifespan migration).
+- **Local dev (`./tbd start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override).
+- **Local prod simulation (`./tbd prod`):** a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` (no lifespan migration).
 - **Production (DO App Platform):** a dedicated `PRE_DEPLOY` job runs the wrapper before any backend replica starts. Secrets (especially `DATABASE_URL`) must be configured against the `migrate` job in the DO console; App Platform does not auto-inherit secrets across components.
 
 The wrapper at `backend/scripts/migrate.py` does not replace alembic, it drives it. It runs `alembic upgrade <revision>` one revision at a time and emits structured JSON events around each step (grep `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`). Exit code matches alembic's, so a `PRE_DEPLOY` failure blocks the deploy.
@@ -453,7 +453,7 @@ The wrapper at `backend/scripts/migrate.py` does not replace alembic, it drives 
 docker compose exec backend alembic revision -m "description"
 
 # Apply pending migrations (local dev only)
-./pfv migrate
+./tbd migrate
 
 # Check the current revision
 docker compose exec backend alembic current
@@ -557,28 +557,28 @@ All API routes are prefixed with `/api/v1/`. Each resource has its own router un
 ### Backend will not start
 
 ```bash
-./pfv logs backend
+./tbd logs backend
 ```
 
 Common causes:
 
-- MySQL not ready. Wait for the healthcheck, then `./pfv restart`.
+- MySQL not ready. Wait for the healthcheck, then `./tbd restart`.
 - Missing env var. Diff `.env` against `.env.example`.
 - `JWT_SECRET_KEY` still at the placeholder or shorter than 32 chars. The config validator refuses to boot.
-- Migration error. Run `./pfv migrate`. If the error mentions branch guard, set `PFV_MIGRATE_OK_OFF_MAIN=1` for this session or move to `main`.
+- Migration error. Run `./tbd migrate`. If the error mentions branch guard, set `PFV_MIGRATE_OK_OFF_MAIN=1` for this session or move to `main`.
 
 ### Frontend build fails
 
 ```bash
 cd frontend && npx tsc --noEmit       # surface TS errors
-./pfv rebuild                          # rebuild from scratch
+./tbd rebuild                          # rebuild from scratch
 ```
 
 ### Database issues (local dev)
 
 ```bash
 docker compose exec mysql mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"
-./pfv reset                            # destroys all data, rotates JWT secret
+./tbd reset                            # destroys all data, rotates JWT secret
 ```
 
 ### MFA locked out (local dev)

@@ -1,14 +1,14 @@
 """Seed script — populate the system with realistic mock data for testing.
 
 Run with: docker compose exec backend python seed.py
-Or via: ./pfv seed
+Or via: ./tbd seed
 
 Generates 3 past months + current month of data relative to an anchor date,
 which defaults to today.
 
 Deterministic for a given anchor and RNG seed, on a FRESH database:
 
-    SEED_ANCHOR_DATE=2026-03-17 SEED_RANDOM_SEED=42 ./pfv seed
+    SEED_ANCHOR_DATE=2026-03-17 SEED_RANDOM_SEED=42 ./tbd seed
 
 Re-running against an org that already has data asks, then REPLACES it
 (``--yes`` skips the question; it is required without a terminal). It never
@@ -96,7 +96,7 @@ def resolve_anchor(raw: str | None = None) -> date:
     also make the ``is_current`` branch in ``plan_transactions`` structurally
     dead — no generated month would ever be the real current month, so the
     credit-card ``pending`` state would never be demoed at all. The knob exists
-    for reproducibility; the default exists so that ``./pfv seed`` gives the
+    for reproducibility; the default exists so that ``./tbd seed`` gives the
     person running it a working app.
 
     ⚠ A malformed value RAISES rather than falling back to today. A silent
@@ -320,7 +320,7 @@ def _raise_loudly(r: httpx.Response, item: dict) -> None:
 def billing_period_outcome(r: httpx.Response) -> str:
     """Interpret a ``POST /api/v1/settings/billing-period`` response.
 
-    ``./pfv seed`` is documented as a repeatable dataset, and the period dates below are deterministic for a given
+    ``./tbd seed`` is documented as a repeatable dataset, and the period dates below are deterministic for a given
     ``anchor``, so a re-run at the same anchor posts start dates that
     already exist.
     TBD-232 gave that endpoint a duplicate-start pre-flight that answers
@@ -353,7 +353,7 @@ def billing_period_outcome(r: httpx.Response) -> str:
     * anchor moved 3+ months → the new windows miss the old ones entirely,
       so there is no 409 at all and every POST answers ``created``.
 
-    Raising on ``overlaps`` would abort ``./pfv seed`` at step 5, before
+    Raising on ``overlaps`` would abort ``./tbd seed`` at step 5, before
     recurring, budgets, forecast plans and reports — which is why it is
     absorbed unconditionally rather than being made conditional on whether
     the anchor was pinned. A pinned anchor does make the overlap branch
@@ -445,7 +445,7 @@ async def ensure_verified(username: str) -> None:
     ``/register`` verify the FIRST user on an empty ``users`` table, which
     covers the common case, but not the two this script still hits:
 
-    * A machine that has already run ``./pfv seed`` once, from before that
+    * A machine that has already run ``./tbd seed`` once, from before that
       fix, is WEDGED — the demo user exists and is unverified, so login 403s,
       register 409s, and the script dies at its ``!= 201`` guard.
     * ``SEED_USERNAME=alice`` (CONTRIBUTING, "Seeding mock data") registers a
@@ -502,7 +502,7 @@ async def main(assume_yes: bool = False):
     rng = resolve_rng()
 
     async with httpx.AsyncClient(base_url=BASE, timeout=30) as c:
-        print("=== PFV2 Seed Script ===\n")
+        print("=== TBD Seed Script ===\n")
         # Print BOTH knobs: reproducing a run needs the seed as well as the
         # anchor, and the default seed is otherwise only discoverable by
         # reading DEFAULT_RANDOM_SEED.
@@ -514,7 +514,7 @@ async def main(assume_yes: bool = False):
         # Auth
         print("1. Authenticating...")
         # TBD-344, call 1 of 2 — MUST precede the first login. A machine that
-        # already ran ./pfv seed before the register fix has the demo user
+        # already ran ./tbd seed before the register fix has the demo user
         # sitting unverified: login 403s, the register below 409s, and the
         # `!= 201` guard returns before any data is seeded. Anything placed
         # after that return is dead code on exactly the machines that need it.

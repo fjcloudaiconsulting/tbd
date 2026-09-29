@@ -1,13 +1,13 @@
 services:
   mysql:
     # TBD-360. WARNING: ONE-WAY DOOR ON YOUR LOCAL DATA.
-    # The first `./pfv start` on this image performs an in-place data-dictionary
+    # The first `./tbd start` on this image performs an in-place data-dictionary
     # upgrade of the existing `mysql_data` volume. MySQL supports 8.0 -> 8.4
     # in place; the REVERSE DOES NOT EXIST. So after starting once here,
     # checking back out to a branch pinned at mysql:8.0 leaves a mysqld that
-    # refuses to start, and the only repair is `./pfv reset` - which destroys
+    # refuses to start, and the only repair is `./tbd reset` - which destroys
     # every local database AND rotates JWT_SECRET_KEY.
-    # If you need to move between this branch and an 8.0 branch, `./pfv reset`
+    # If you need to move between this branch and an 8.0 branch, `./tbd reset`
     # on the way back, or keep the branches in separate worktrees with separate
     # `-p` compose projects so they never share this volume.
     image: mysql:8.4
@@ -60,7 +60,7 @@ services:
       - ./backend/tests:/app/tests
       # TBD-345: seed.py sits at the backend root, so no directory mount above
       # covers it and it reaches the image only via `COPY . .`. Without this
-      # line `./pfv seed` runs the copy baked at image-build time, and — worse
+      # line `./tbd seed` runs the copy baked at image-build time, and — worse
       # — tests/test_seed_*.py read that same stale copy through BOTH
       # `import seed` (PYTHONPATH=/app) and
       # `Path(__file__).resolve().parents[1] / "seed.py"`, so a source-level
@@ -139,11 +139,11 @@ services:
       # obeyed.
       - ./README.md:/app/README.md:ro
       # TBD-345: read-only mount so test_seed_determinism.py can assert that
-      # `pfv`'s cmd_seed still forwards SEED_* generically. Without it that
+      # `tbd`'s cmd_seed still forwards SEED_* generically. Without it that
       # guard is green on a bare CI checkout (where the repo root is present)
       # and errors in the container — the inverse of the usual staleness trap.
       # Distinct mount point because /app is the backend dir, not the repo root.
-      - ./pfv:/app/repo-pfv:ro
+      - ./tbd:/app/repo-tbd:ro
       # Read-only mount so test_period_status_frontend_contract.py can READ
       # the cross-language period-status fixture that lives on the frontend
       # side. Without it that whole module is red in every container while

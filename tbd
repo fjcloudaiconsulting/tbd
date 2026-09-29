@@ -11,7 +11,7 @@ fi
 
 usage() {
   cat <<EOF
-Usage: ./pfv <command> [options]
+Usage: ./tbd <command> [options]
 
 Commands:
   start        Build and start all services (development)
@@ -68,7 +68,7 @@ check_frontend_dep_drift() {
     command -v docker >/dev/null 2>&1 || return 0
     # Only probe when the frontend container is actually up; if it
     # isn't running we have nothing to compare against and we don't
-    # want to pay the docker round-trip on every ./pfv invocation.
+    # want to pay the docker round-trip on every ./tbd invocation.
     local fe_id
     fe_id="$(docker compose ps -q frontend 2>/dev/null || true)"
     [[ -n "$fe_id" ]] || return 0
@@ -83,7 +83,7 @@ container's installed lockfile. Frontend tests, type-check, and build
 may behave inconsistently until the container is rebuilt.
 
 Fix with either:
-  ./pfv rebuild
+  ./tbd rebuild
   docker compose exec frontend npm ci
 
 (Set PFV_DEPDRIFT_SKIP=1 to silence this check.)
@@ -92,7 +92,7 @@ EOF
 }
 
 cmd_start() {
-  echo "Starting PFV2 stack..."
+  echo "Starting TBD stack..."
   docker compose up --build -d
   echo ""
   echo "Ready (migrations run automatically on backend startup):"
@@ -121,7 +121,7 @@ cmd_rebuild() {
 }
 
 cmd_prod() {
-  echo "Starting PFV2 in PRODUCTION mode..."
+  echo "Starting TBD in PRODUCTION mode..."
   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
   echo ""
   echo "Ready (production mode — standalone frontend, no reload):"
@@ -153,21 +153,21 @@ cmd_migrate() {
   # Guard: refuse to run migrations from a non-main checkout unless the
   # operator opts in via PFV_MIGRATE_OK_OFF_MAIN=1. A migration run from a
   # feature branch can leave alembic_version pointing at a revision that
-  # only exists on that branch, which then breaks `./pfv start` on main
+  # only exists on that branch, which then breaks `./tbd start` on main
   # until the version row is hand-patched. See
-  # ~/.claude/projects/-Users-fjorge-src-pfv/memory/reference_shared_mysql_volume_trap.md
+  # the local memory note reference_shared_mysql_volume_trap.md
   # for the 2026-05-09 incident this guard prevents.
   local branch
   branch="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
   if [[ "$branch" != "main" && "${PFV_MIGRATE_OK_OFF_MAIN:-}" != "1" ]]; then
     cat >&2 <<EOF
-WARNING: ./pfv migrate is about to run migrations against the local dev DB
+WARNING: ./tbd migrate is about to run migrations against the local dev DB
 while the repo is on branch '${branch}'. Migrations from feature branches
 can leave alembic_version pointing at revisions that do not exist on main,
-breaking ./pfv start until repaired (see reference_shared_mysql_volume_trap.md).
+breaking ./tbd start until repaired (see reference_shared_mysql_volume_trap.md).
 
 If you intend to migrate from this branch, re-run with:
-  PFV_MIGRATE_OK_OFF_MAIN=1 ./pfv migrate
+  PFV_MIGRATE_OK_OFF_MAIN=1 ./tbd migrate
 
 Aborting.
 EOF
@@ -210,7 +210,7 @@ cmd_seed() {
   # `docker compose exec` does NOT inherit the caller's environment, so a var
   # reaches seed.py only if it is passed with -e. The previous form enumerated
   # six names, which meant any NEW SEED_* var was silently dropped on the
-  # command-line path: `SEED_ANCHOR_DATE=2027-03-15 ./pfv seed` would run and
+  # command-line path: `SEED_ANCHOR_DATE=2027-03-15 ./tbd seed` would run and
   # cheerfully ignore the anchor. (Values set in .env had a second route in via
   # `env_file: .env`, which is why the gap could sit here unnoticed.)
   #
@@ -223,7 +223,7 @@ cmd_seed() {
     env_args+=(-e "$name")
   done < <(env | sed -n 's/^\(SEED_[A-Za-z0-9_]*\)=.*/\1/p' | sort)
   # bash 3.2 (still /bin/bash on macOS) treats "${arr[@]}" on an EMPTY array as
-  # an unbound variable under `set -u`, which is the default `./pfv seed` path.
+  # an unbound variable under `set -u`, which is the default `./tbd seed` path.
   docker compose exec ${env_args[@]+"${env_args[@]}"} backend python seed.py "$@"
 }
 

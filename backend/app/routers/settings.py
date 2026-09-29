@@ -903,7 +903,7 @@ async def create_period(
         )
 
     # Containment (TBD-239 §3). The exact-start check above is deliberately
-    # first: `./pfv seed` re-runs post start dates that already exist and
+    # first: `./tbd seed` re-runs post start dates that already exist and
     # `seed.billing_period_outcome` reads the code, so those rows must keep
     # answering `billing_period_exists`.
     #
@@ -918,7 +918,7 @@ async def create_period(
     #   PROVABLE overlap and is rejected. Only the unprovable part (whether
     #   the open row extends past the candidate) is waved through. An
     #   earlier revision skipped open rows entirely and let that provable
-    #   case land: repeated `./pfv seed` runs produced closed rows that
+    #   case land: repeated `./tbd seed` runs produced closed rows that
     #   swallowed an open row's start.
     # * The CANDIDATE is checked on its `start_date` alone when it carries no
     #   `end_date` (`BillingPeriodCreate.end_date` is optional and
