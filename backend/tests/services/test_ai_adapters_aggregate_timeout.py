@@ -255,6 +255,7 @@ async def test_anthropic_validate_aggregate_timeout(monkeypatch):
     )
     assert isinstance(result, ValidateResult)
     assert result.ok is False
+    assert result.error == "Network error: TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -277,8 +278,9 @@ async def test_anthropic_chat_aggregate_timeout(monkeypatch):
     async def call():
         await adapter.chat(model="claude-haiku-4-5", messages=[{"role": "user", "content": "hi"}])
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(monkeypatch, anthropic_mod, "CHAT_TIMEOUT_S", _anthropic_chat_ok, call)
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -307,10 +309,11 @@ async def test_anthropic_chat_structured_aggregate_timeout(monkeypatch):
             schema=SCHEMA,
         )
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(
             monkeypatch, anthropic_mod, "CHAT_TIMEOUT_S", _anthropic_structured_ok, call
         )
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -341,10 +344,11 @@ async def test_anthropic_function_call_aggregate_timeout(monkeypatch):
             tools=TOOLS_OPENAI,
         )
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(
             monkeypatch, anthropic_mod, "CHAT_TIMEOUT_S", _anthropic_function_call_ok, call
         )
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -378,6 +382,7 @@ async def test_openai_validate_aggregate_timeout(monkeypatch):
         monkeypatch, openai_mod, "VALIDATE_TIMEOUT_S", _openai_models_ok, call
     )
     assert result.ok is False
+    assert result.error == "Network error: TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -400,8 +405,9 @@ async def test_openai_chat_aggregate_timeout(monkeypatch):
     async def call():
         await adapter.chat(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(monkeypatch, openai_mod, "CHAT_TIMEOUT_S", _openai_chat_ok, call)
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -424,8 +430,9 @@ async def test_openai_embed_aggregate_timeout(monkeypatch):
     async def call():
         await adapter.embed(texts=["hello"])
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(monkeypatch, openai_mod, "EMBED_TIMEOUT_S", _openai_embed_ok, call)
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -450,8 +457,9 @@ async def test_openai_chat_structured_aggregate_timeout(monkeypatch):
             schema=SCHEMA,
         )
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(monkeypatch, openai_mod, "CHAT_TIMEOUT_S", _openai_chat_ok, call)
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -480,8 +488,9 @@ async def test_openai_function_call_aggregate_timeout(monkeypatch):
             tools=TOOLS_OPENAI,
         )
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(monkeypatch, openai_mod, "CHAT_TIMEOUT_S", _openai_chat_ok, call)
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -517,6 +526,7 @@ async def test_openai_compatible_validate_aggregate_timeout(monkeypatch):
         call,
     )
     assert result.ok is False
+    assert result.error == "Network error: TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -543,10 +553,11 @@ async def test_openai_compatible_chat_aggregate_timeout(monkeypatch):
     async def call():
         await adapter.chat(model="any-model", messages=[{"role": "user", "content": "hi"}])
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(
             monkeypatch, openai_compatible_mod, "CHAT_TIMEOUT_S", _openai_compat_chat_ok, call
         )
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -571,10 +582,11 @@ async def test_openai_compatible_embed_aggregate_timeout(monkeypatch):
     async def call():
         await adapter.embed(texts=["x"], model="my-embed-model")
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(
             monkeypatch, openai_compatible_mod, "EMBED_TIMEOUT_S", _openai_compat_embed_ok, call
         )
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -601,10 +613,11 @@ async def test_openai_compatible_chat_structured_aggregate_timeout(monkeypatch):
             schema=SCHEMA,
         )
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(
             monkeypatch, openai_compatible_mod, "CHAT_TIMEOUT_S", _openai_compat_chat_ok, call
         )
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -635,10 +648,11 @@ async def test_openai_compatible_function_call_aggregate_timeout(monkeypatch):
             tools=TOOLS_OPENAI,
         )
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(
             monkeypatch, openai_compatible_mod, "CHAT_TIMEOUT_S", _openai_compat_chat_ok, call
         )
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -672,6 +686,7 @@ async def test_ollama_validate_aggregate_timeout(monkeypatch):
         monkeypatch, ollama_mod, "VALIDATE_TIMEOUT_S", _ollama_tags_ok, call
     )
     assert result.ok is False
+    assert result.error == "Network error: TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -694,8 +709,9 @@ async def test_ollama_chat_aggregate_timeout(monkeypatch):
     async def call():
         await adapter.chat(model="llama3:8b", messages=[{"role": "user", "content": "hi"}])
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(monkeypatch, ollama_mod, "CHAT_TIMEOUT_S", _ollama_chat_ok, call)
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -718,8 +734,9 @@ async def test_ollama_embed_aggregate_timeout(monkeypatch):
     async def call():
         await adapter.embed(texts=["a"], model="nomic-embed-text")
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(monkeypatch, ollama_mod, "EMBED_TIMEOUT_S", _ollama_embed_ok, call)
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -744,8 +761,9 @@ async def test_ollama_chat_structured_aggregate_timeout(monkeypatch):
             schema=SCHEMA,
         )
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(monkeypatch, ollama_mod, "CHAT_TIMEOUT_S", _ollama_chat_ok, call)
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -774,10 +792,11 @@ async def test_ollama_function_call_aggregate_timeout(monkeypatch):
             tools=TOOLS_OPENAI,
         )
 
-    with pytest.raises(AIProviderError):
+    with pytest.raises(AIProviderError) as exc_info:
         await _run_timed(
             monkeypatch, ollama_mod, "CHAT_TIMEOUT_S", _ollama_function_call_ok, call
         )
+    assert exc_info.value.code == "network_TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -795,3 +814,18 @@ async def test_ollama_function_call_control(monkeypatch):
         monkeypatch, ollama_mod, "CHAT_TIMEOUT_S", _ollama_function_call_ok, call
     )
     assert result.tool_calls
+
+
+@pytest.mark.asyncio
+async def test_ollama_embed_deadline_spans_the_whole_batch(monkeypatch):
+    """ollama embeds one text per POST, so the bound must be ONE deadline
+    across the batch. Three texts at 0.04s each fit a 0.05s per-request
+    bound (0.12s total) but not a 0.05s batch deadline."""
+    adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
+    monkeypatch.setattr(ollama_mod, "EMBED_TIMEOUT_S", 0.05)
+    _install_transport(monkeypatch, await _slow_handler(0.04, _ollama_embed_ok))
+    start = time.monotonic()
+    with pytest.raises(AIProviderError) as exc_info:
+        await adapter.embed(texts=["a", "b", "c"], model="nomic-embed-text")
+    assert exc_info.value.code == "network_TimeoutError"
+    assert time.monotonic() - start < 0.1

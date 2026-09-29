@@ -91,7 +91,7 @@ class OpenAICompatibleAdapter:
         try:
             async with guarded_async_client(timeout=VALIDATE_TIMEOUT_S) as client:
                 # ``TimeoutError`` is caught alongside httpx's own timeout
-                # classes on every network site in this file (TBD-329):
+                # classes on every non-stream network site in this file (TBD-329):
                 # httpx applies ``timeout=`` PER PHASE, so a drip-feed
                 # response can stay "alive" forever; ``asyncio.timeout``
                 # supplies the missing aggregate bound and raises a BARE
