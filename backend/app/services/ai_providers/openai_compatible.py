@@ -18,6 +18,7 @@ data — see the PR1 sanitization contract.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import AsyncIterator, Optional
 
@@ -89,12 +90,21 @@ class OpenAICompatibleAdapter:
         url = f"{self.base_url}/v1/models"
         try:
             async with guarded_async_client(timeout=VALIDATE_TIMEOUT_S) as client:
-                resp = await client.get(url, headers=headers)
+                # ``TimeoutError`` is caught alongside httpx's own timeout
+                # classes on every network site in this file (TBD-329):
+                # httpx applies ``timeout=`` PER PHASE, so a drip-feed
+                # response can stay "alive" forever; ``asyncio.timeout``
+                # supplies the missing aggregate bound and raises a BARE
+                # builtin ``TimeoutError``, which derives from neither
+                # ``httpx.HTTPError`` nor ``httpx.TimeoutException`` (same
+                # finding as ``captcha.py``, TBD-328).
+                async with asyncio.timeout(VALIDATE_TIMEOUT_S):
+                    resp = await client.get(url, headers=headers)
         except BlockedAddressError:
             return ValidateResult(
                 ok=False, error=BLOCKED_ADDRESS_VALIDATION_ERROR
             )
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             # NEVER ``str(exc)`` — exception reprs from httpx can include
             # the URL (with embedded creds) or other request context.
             return ValidateResult(
@@ -142,10 +152,11 @@ class OpenAICompatibleAdapter:
         url = f"{self.base_url}/v1/chat/completions"
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
-                resp = await client.post(
-                    url, headers=self._headers(), json=body
-                )
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                async with asyncio.timeout(CHAT_TIMEOUT_S):
+                    resp = await client.post(
+                        url, headers=self._headers(), json=body
+                    )
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
@@ -189,10 +200,11 @@ class OpenAICompatibleAdapter:
         url = f"{self.base_url}/v1/embeddings"
         try:
             async with guarded_async_client(timeout=EMBED_TIMEOUT_S) as client:
-                resp = await client.post(
-                    url, headers=self._headers(), json=body
-                )
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                async with asyncio.timeout(EMBED_TIMEOUT_S):
+                    resp = await client.post(
+                        url, headers=self._headers(), json=body
+                    )
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
@@ -252,10 +264,11 @@ class OpenAICompatibleAdapter:
         url = f"{self.base_url}/v1/chat/completions"
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
-                resp = await client.post(
-                    url, headers=self._headers(), json=body
-                )
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                async with asyncio.timeout(CHAT_TIMEOUT_S):
+                    resp = await client.post(
+                        url, headers=self._headers(), json=body
+                    )
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
@@ -304,10 +317,11 @@ class OpenAICompatibleAdapter:
         url = f"{self.base_url}/v1/chat/completions"
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
-                resp = await client.post(
-                    url, headers=self._headers(), json=body
-                )
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                async with asyncio.timeout(CHAT_TIMEOUT_S):
+                    resp = await client.post(
+                        url, headers=self._headers(), json=body
+                    )
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None

@@ -16,6 +16,7 @@ PR3:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import AsyncIterator, Optional
 
@@ -104,12 +105,21 @@ class OllamaAdapter:
         url = f"{self.base_url}/api/tags"
         try:
             async with self._client(timeout=VALIDATE_TIMEOUT_S) as client:
-                resp = await client.get(url, headers=headers)
+                # ``TimeoutError`` is caught alongside httpx's own timeout
+                # classes on every network site in this file (TBD-329):
+                # httpx applies ``timeout=`` PER PHASE, so a drip-feed
+                # response can stay "alive" forever; ``asyncio.timeout``
+                # supplies the missing aggregate bound and raises a BARE
+                # builtin ``TimeoutError``, which derives from neither
+                # ``httpx.HTTPError`` nor ``httpx.TimeoutException`` (same
+                # finding as ``captcha.py``, TBD-328).
+                async with asyncio.timeout(VALIDATE_TIMEOUT_S):
+                    resp = await client.get(url, headers=headers)
         except BlockedAddressError:
             return ValidateResult(
                 ok=False, error=BLOCKED_ADDRESS_VALIDATION_ERROR
             )
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             return ValidateResult(
                 ok=False, error=f"Network error: {type(exc).__name__}"
             )
@@ -169,8 +179,9 @@ class OllamaAdapter:
         url = f"{self.base_url}/api/chat"
         try:
             async with self._client(timeout=CHAT_TIMEOUT_S) as client:
-                resp = await client.post(url, headers=headers, json=body)
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                async with asyncio.timeout(CHAT_TIMEOUT_S):
+                    resp = await client.post(url, headers=headers, json=body)
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
@@ -218,12 +229,20 @@ class OllamaAdapter:
         actual_model = model
         try:
             async with self._client(timeout=EMBED_TIMEOUT_S) as client:
+                # This method fires one sequential request PER input
+                # text, so a relative ``asyncio.timeout`` per request
+                # would permit their sum. Use ONE absolute deadline
+                # (``asyncio.timeout_at``), computed once before the
+                # first request, so the whole batch shares a single
+                # aggregate bound (TBD-329).
+                deadline = asyncio.get_running_loop().time() + EMBED_TIMEOUT_S
                 for text in texts:
-                    resp = await client.post(
-                        url,
-                        headers=headers,
-                        json={"model": model, "prompt": text},
-                    )
+                    async with asyncio.timeout_at(deadline):
+                        resp = await client.post(
+                            url,
+                            headers=headers,
+                            json={"model": model, "prompt": text},
+                        )
                     if resp.status_code != 200:
                         raise AIProviderError(
                             code=f"provider_status_{resp.status_code}",
@@ -244,7 +263,7 @@ class OllamaAdapter:
                     actual_model = payload.get("model", model) or model
         except AIProviderError:
             raise
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
@@ -290,8 +309,9 @@ class OllamaAdapter:
         url = f"{self.base_url}/api/chat"
         try:
             async with self._client(timeout=CHAT_TIMEOUT_S) as client:
-                resp = await client.post(url, headers=headers, json=body)
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                async with asyncio.timeout(CHAT_TIMEOUT_S):
+                    resp = await client.post(url, headers=headers, json=body)
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
@@ -356,8 +376,9 @@ class OllamaAdapter:
         url = f"{self.base_url}/api/chat"
         try:
             async with self._client(timeout=CHAT_TIMEOUT_S) as client:
-                resp = await client.post(url, headers=headers, json=body)
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                async with asyncio.timeout(CHAT_TIMEOUT_S):
+                    resp = await client.post(url, headers=headers, json=body)
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
