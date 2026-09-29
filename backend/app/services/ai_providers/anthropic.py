@@ -15,6 +15,7 @@ PR3:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import AsyncIterator, Optional
 
@@ -97,8 +98,17 @@ class AnthropicAdapter:
         }
         try:
             async with httpx.AsyncClient(timeout=VALIDATE_TIMEOUT_S) as client:
-                resp = await client.get(MODELS_URL, headers=headers)
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                # ``TimeoutError`` is caught alongside httpx's own timeout
+                # classes on every non-stream network site in this file (TBD-329):
+                # httpx applies ``timeout=`` PER PHASE, so a drip-feed
+                # response can stay "alive" forever; ``asyncio.timeout``
+                # supplies the missing aggregate bound and raises a BARE
+                # builtin ``TimeoutError``, which derives from neither
+                # ``httpx.HTTPError`` nor ``httpx.TimeoutException`` (same
+                # finding as ``captcha.py``, TBD-328).
+                async with asyncio.timeout(VALIDATE_TIMEOUT_S):
+                    resp = await client.get(MODELS_URL, headers=headers)
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             return ValidateResult(
                 ok=False, error=f"Network error: {type(exc).__name__}"
             )
@@ -151,10 +161,11 @@ class AnthropicAdapter:
 
         try:
             async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
-                resp = await client.post(
-                    MESSAGES_URL, headers=headers, json=body
-                )
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                async with asyncio.timeout(CHAT_TIMEOUT_S):
+                    resp = await client.post(
+                        MESSAGES_URL, headers=headers, json=body
+                    )
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
@@ -240,10 +251,11 @@ class AnthropicAdapter:
             body["system"] = "\n\n".join(system_parts)
         try:
             async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
-                resp = await client.post(
-                    MESSAGES_URL, headers=headers, json=body
-                )
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                async with asyncio.timeout(CHAT_TIMEOUT_S):
+                    resp = await client.post(
+                        MESSAGES_URL, headers=headers, json=body
+                    )
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
@@ -310,10 +322,11 @@ class AnthropicAdapter:
             body["system"] = "\n\n".join(system_parts)
         try:
             async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
-                resp = await client.post(
-                    MESSAGES_URL, headers=headers, json=body
-                )
-        except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                async with asyncio.timeout(CHAT_TIMEOUT_S):
+                    resp = await client.post(
+                        MESSAGES_URL, headers=headers, json=body
+                    )
+        except (httpx.HTTPError, httpx.TimeoutException, TimeoutError) as exc:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
