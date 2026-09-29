@@ -28,7 +28,13 @@ const FRONTEND_ROOT = path.resolve(__dirname, "..", "..");
 const GLOBALS = path.join(FRONTEND_ROOT, "app", "globals.css");
 const DESIGN_MD = path.resolve(FRONTEND_ROOT, "..", "docs", "design", "DESIGN.md");
 
-const HEX = /#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?\b/g;
+// Any quoted colour value: 6/8-digit hex, 3/4-digit hex that contains a
+// letter (so PR references like `#378` stay legal), or a colour function.
+const COLOUR_LITERAL =
+  /#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?\b|#(?=[0-9a-fA-F]{0,3}[a-fA-F])[0-9a-fA-F]{3,4}\b|\b(?:rgba?|hsla?|oklch)\(/g;
+
+/** `:root` tokens that are not colours, so they have no frontmatter entry. */
+const NON_COLOUR_TOKENS = new Set(["card-shadow"]);
 
 function splitDoc(): { frontmatter: string; body: string } {
   const text = readFileSync(DESIGN_MD, "utf8");
@@ -48,7 +54,11 @@ function docColors(): Record<string, string> {
   for (const line of lines.slice(start + 1)) {
     if (!line.startsWith("  ")) break; // next top-level key
     const m = /^ {2}([a-z0-9-]+):\s*"([^"]+)"/.exec(line);
-    if (m) out[m[1]] = m[2];
+    // Fail loud on any entry this scan cannot read (single quotes, an
+    // unquoted `#...` that YAML reads as a comment), so an entry can never
+    // drop out of the comparison silently.
+    if (!m) throw new Error(`unparsable colors entry in DESIGN.md: ${line.trim()}`);
+    out[m[1]] = m[2];
   }
   return out;
 }
@@ -104,10 +114,18 @@ describe("TBD-482: DESIGN.md colour values match globals.css", () => {
     ).toEqual([]);
   });
 
-  it("the prose quotes no hex value (it names tokens instead)", () => {
+  it("every dark-tier colour token has a frontmatter entry", () => {
+    const documented = new Set(Object.keys(docColors()).map(tokenFor));
+    const missing = Object.keys(rootTokens()).filter(
+      (t) => !documented.has(t) && !NON_COLOUR_TOKENS.has(t),
+    );
+    expect(missing, "globals.css :root colour tokens missing from DESIGN.md frontmatter").toEqual([]);
+  });
+
+  it("the prose quotes no colour value (it names tokens instead)", () => {
     const hexes = splitDoc()
       .body.split("\n")
-      .flatMap((line, i) => (line.match(HEX) ?? []).map((h) => `body line ${i + 1}: ${h}`));
+      .flatMap((line, i) => (line.match(COLOUR_LITERAL) ?? []).map((h) => `body line ${i + 1}: ${h}`));
     expect(
       hexes,
       "DESIGN.md prose must name tokens, not quote values: a quoted hex drifts " +

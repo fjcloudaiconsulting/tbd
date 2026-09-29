@@ -8,6 +8,7 @@ colors:
   surface-overlay: "#163157"
   border: "#1a3560"
   border-subtle: "#122a4a"
+  border-strong: "#5a7099"
   text-primary: "#E6EAF0"
   text-secondary: "#9ba8bd"
   text-muted: "#8f9db2"
@@ -261,7 +262,7 @@ Shadows exist in the system but are reserved for **state**: a dropdown opening, 
 - **Dropdown / Popover** (`shadow-lg`): Floating menus that detach from a surface. Default for `<Menu>` and `<Combobox>` portals.
 - **Modal** (`shadow-xl` or `shadow-2xl`): Modal dialogs only. Always paired with a backdrop overlay (`bg-scrim`).
 - **Toast / Notification** (`shadow-sm`): Lightweight floating notifications.
-- **Tour Card** (`shadow-card`, a named theme token: `0 18px 48px rgba(0,0,0,0.45)` dark / `0 18px 48px rgba(11,31,58,0.18)` light): The floating product-tour card. The only shadow that theme-switches, because it must stay legible over both a dark and a light page.
+- **Tour Card** (`shadow-card`, a named theme token backed by `--theme-card-shadow`; values in `globals.css`): The floating product-tour card. The only shadow that theme-switches, because it must stay legible over both a dark and a light page.
 
 ### Named Rules
 
@@ -315,7 +316,7 @@ Badges are the inline status chips; banners are the full-width block messages. B
 
 ### Navigation (Sidebar)
 
-- **Background:** Sidebar Navy (`sidebar-bg`) — the deepest navy in the system, even in light theme. The chrome carries the brand.
+- **Background:** Sidebar Navy (`sidebar-bg`, themed but navy in both tiers) — the deepest navy in the system, even in light theme. The chrome carries the brand.
 - **Item rest:** Sidebar Text (`sidebar-text`), no background. Disabled/secondary glyphs use Sidebar Muted (`sidebar-muted`).
 - **Item hover:** Sidebar Hover (`sidebar-hover`, Brass Tally 6%-alpha background), text shifts to Sidebar Text Bright (`sidebar-text-bright`).
 - **Item active:** Sidebar Active Background (`sidebar-active-bg`, Brass Tally 12%-alpha), text = Brass Tally (`sidebar-active-text`). The accent indicates the user's current location.

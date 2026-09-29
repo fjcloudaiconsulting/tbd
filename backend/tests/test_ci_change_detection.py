@@ -308,6 +308,16 @@ def test_the_migration_runbook_is_a_backend_change_despite_being_markdown(tmp_pa
 
 
 @needs_git
+def test_another_infra_markdown_file_is_still_prose(tmp_path):
+    """The exception above is scoped to ONE file, not to `infra/*.md`. No test
+    reads the others, and widening it would run the backend suite for every
+    infra note."""
+    repo, base = _repo(tmp_path, {"infra/NOTES.md": "notes\n"})
+    out = _detect(repo, tmp_path, base=base)
+    assert out == {"backend": "false", "frontend": "false", "migrations": "false"}
+
+
+@needs_git
 def test_the_design_doc_is_a_frontend_change_despite_being_markdown(tmp_path):
     """TBD-482: `frontend/tests/convention/design-md-tokens.test.ts` PARSES
     `docs/design/DESIGN.md` and fails when its colours drift from globals.css.
@@ -322,16 +332,6 @@ def test_the_design_doc_is_a_frontend_change_despite_being_markdown(tmp_path):
 def test_other_docs_markdown_is_still_prose(tmp_path):
     """The exception is scoped to ONE file: nothing reads the other docs."""
     repo, base = _repo(tmp_path, {"docs/product/PRODUCT.md": "product v2\n"})
-    out = _detect(repo, tmp_path, base=base)
-    assert out == {"backend": "false", "frontend": "false", "migrations": "false"}
-
-
-@needs_git
-def test_another_infra_markdown_file_is_still_prose(tmp_path):
-    """The exception above is scoped to ONE file, not to `infra/*.md`. No test
-    reads the others, and widening it would run the backend suite for every
-    infra note."""
-    repo, base = _repo(tmp_path, {"infra/NOTES.md": "notes\n"})
     out = _detect(repo, tmp_path, base=base)
     assert out == {"backend": "false", "frontend": "false", "migrations": "false"}
 
