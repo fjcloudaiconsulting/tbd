@@ -155,7 +155,7 @@ cmd_migrate() {
   # feature branch can leave alembic_version pointing at a revision that
   # only exists on that branch, which then breaks `./tbd start` on main
   # until the version row is hand-patched. See
-  # ~/.claude/projects/-Users-fjorge-src-pfv/memory/reference_shared_mysql_volume_trap.md
+  # the local memory note reference_shared_mysql_volume_trap.md
   # for the 2026-05-09 incident this guard prevents.
   local branch
   branch="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"

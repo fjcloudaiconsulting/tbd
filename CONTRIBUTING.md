@@ -116,14 +116,14 @@ gh workflow run deploy.yml --ref main
 
 ## Working in parallel agent sessions
 
-If you dispatch Claude Code agents (or any parallel-process helpers) against this repo, never let them run backend tests or migrations against the default `tbd` Docker Compose project. They will write to your local MySQL volume. Use an isolated compose project name on every command:
+If you dispatch Claude Code agents (or any parallel-process helpers) against this repo, never let them run backend tests or migrations against the default `tbd` Docker Compose project (compose names it after the checkout directory). They will write to your local MySQL volume. Use an isolated compose project name on every command:
 
 ```bash
 docker compose -p team-<unique-name> up -d backend mysql redis
 docker compose -p team-<unique-name> exec backend pytest tests/...
 ```
 
-A single command that omits `-p team-<name>` falls back to the default `tbd` project and contaminates the user's stack. `./tbd migrate` has no `-p` flag and always targets the default project, so agents must not invoke it either.
+A single command that omits `-p team-<name>` falls back to the default project (`tbd` in the main checkout) and contaminates the user's stack. `./tbd migrate` has no `-p` flag and always targets the default project, so agents must not invoke it either.
 
 ## Seeding mock data
 
