@@ -24,7 +24,7 @@ Commands:
   logs [svc]   View logs (optional: backend, frontend, nginx, mysql, redis)
   status       Show container status
   shell [svc]  Open a shell in a service (default: backend)
-  seed         Populate with mock data (demo user + 3 months of transactions)
+  seed [--yes] Populate with mock data; asks before replacing existing data
 
 EOF
 }
@@ -224,7 +224,7 @@ cmd_seed() {
   done < <(env | sed -n 's/^\(SEED_[A-Za-z0-9_]*\)=.*/\1/p' | sort)
   # bash 3.2 (still /bin/bash on macOS) treats "${arr[@]}" on an EMPTY array as
   # an unbound variable under `set -u`, which is the default `./pfv seed` path.
-  docker compose exec ${env_args[@]+"${env_args[@]}"} backend python seed.py
+  docker compose exec ${env_args[@]+"${env_args[@]}"} backend python seed.py "$@"
 }
 
 case "${1:-}" in
@@ -238,6 +238,6 @@ case "${1:-}" in
   logs)     shift; cmd_logs "$@" ;;
   status)   cmd_status ;;
   shell)    shift; cmd_shell "$@" ;;
-  seed)     cmd_seed ;;
+  seed)     shift; cmd_seed "$@" ;;
   *)        usage ;;
 esac

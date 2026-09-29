@@ -10,14 +10,16 @@ Deterministic for a given anchor and RNG seed, on a FRESH database:
 
     SEED_ANCHOR_DATE=2026-03-17 SEED_RANDOM_SEED=42 ./pfv seed
 
-⚠ Deterministic is not idempotent — re-running against an already-seeded org
-APPENDS a second dataset. Run ``./pfv reset`` first. See the determinism
-block below.
+Re-running against an org that already has data asks, then REPLACES it
+(``--yes`` skips the question; it is required without a terminal). It never
+appends a second dataset (TBD-398).
 """
 
+import argparse
 import asyncio
 import os
 import random
+import sys
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -50,13 +52,9 @@ USER = {
 # "Repeatable" now means, precisely: **for a given anchor date and a given
 # RNG seed, on a FRESH database, the dataset is identical.**
 #
-# ⚠ It does NOT mean idempotent. ``POST /api/v1/accounts`` has no
-# duplicate-name check, so re-running against an already-seeded org APPENDS
-# a second set of accounts and a second set of transactions. Run
-# ``./pfv reset`` first if you want the dataset this script describes.
-# Making the seed idempotent needs a product ruling (append / replace /
-# refuse-when-dirty, the last being what ``demo_seed_service`` already
-# answers with 409 ``org_has_data``) and is tracked separately.
+# A re-run is made safe by REPLACING, not by being idempotent: ``POST
+# /api/v1/accounts`` has no duplicate-name check, so ``prepare_org`` resets a
+# dirty org (after confirmation) before anything is posted. TBD-398.
 
 DEFAULT_RANDOM_SEED = 20260101
 
@@ -369,8 +367,10 @@ def billing_period_outcome(r: httpx.Response) -> str:
     an existing open row whose ``start_date >= body.start_date`` — so no
     conflict fires and a SECOND open row is created, reported here as
     ``created``. That is the shape ``billing_service`` calls ``duplicate_open``
-    and warns about at ``get_current_period``. The fix is a clean database
-    (``./pfv reset``) before re-seeding, not a more tolerant helper here.
+    and warns about at ``get_current_period``. Since TBD-398 ``prepare_org``
+    resets any org holding a billing period before this runs, so on the seed's
+    own path every POST here answers ``created``; the absorption stays for a
+    period created concurrently mid-run.
 
     Every OTHER non-2xx still raises. That is the contract-drift guard the
     endpoint needs: TBD-232 also moved it from query params to a Pydantic
@@ -388,6 +388,53 @@ def billing_period_outcome(r: httpx.Response) -> str:
             return "overlaps"
     r.raise_for_status()
     return "created"
+
+
+async def prepare_org(c: httpx.AsyncClient, headers: dict, *, assume_yes: bool,
+                      interactive: bool, ask=input) -> None:
+    """Make the org safe to seed, or exit without writing anything.
+
+    TBD-398 (operator ruling 2026-09-29): a re-run REPLACES the org's data after
+    confirmation. It never appends a second dataset and never refuses.
+
+    Dirty is any account or any billing period. Accounts alone is not enough: a
+    lone open period (``get_current_period`` auto-creates one on first use) is
+    what lets the open-period POST below land a second ``end_date IS NULL`` row.
+    Replacing goes through ``POST /api/v1/orgs/data/reset``, the audited, locked
+    path the UI uses, so a re-seed always starts from zero periods.
+    """
+    accounts = await c.get("/api/v1/accounts", headers=headers)
+    accounts.raise_for_status()
+    periods = await c.get("/api/v1/settings/billing-periods", headers=headers)
+    periods.raise_for_status()
+    if not accounts.json() and not periods.json():
+        return
+
+    me = await c.get("/api/v1/auth/me", headers=headers)
+    me.raise_for_status()
+    org_name = me.json()["org_name"]
+    if not assume_yes:
+        if not interactive:
+            raise SystemExit(
+                f"Org {org_name!r} already has data and there is no terminal to "
+                "confirm replacing it. Re-run with --yes to replace it. Nothing was seeded."
+            )
+        try:
+            answer = ask(f"   Org {org_name!r} already has data. Replace it? This DELETES ALL of "
+                         "its data, including transactions, accounts, recurring templates, "
+                         "budgets, billing periods, plans, categories, rules, tags and "
+                         "imports. [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in {"y", "yes"}:
+            raise SystemExit("Left the existing data untouched; nothing was seeded.")
+
+    r = await c.post("/api/v1/orgs/data/reset", headers=headers,
+                     json={"confirm_phrase": f"RESET {org_name}"})
+    if not r.is_success:
+        print(f"   Reset FAILED: {r.status_code} {r.text}")
+    r.raise_for_status()
+    print(f"   Replaced the existing data in {org_name!r}")
 
 
 async def ensure_verified(username: str) -> None:
@@ -447,7 +494,7 @@ async def ensure_verified(username: str) -> None:
         print(f"   Marked {username}'s email verified")
 
 
-async def main():
+async def main(assume_yes: bool = False):
     # Resolved ONCE, before anything is posted, so the whole run shares one
     # anchor and one RNG stream. Both raise on a malformed value rather than
     # falling back, so a caller can never believe it pinned one and be wrong.
@@ -496,6 +543,8 @@ async def main():
         token = r.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
         print(f"   Logged in as {USER['username']}")
+
+        await prepare_org(c, headers, assume_yes=assume_yes, interactive=sys.stdin.isatty())
 
         # Account types
         r = await c.get("/api/v1/account-types", headers=headers)
@@ -671,4 +720,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Seed a local dataset.")
+    parser.add_argument("--yes", action="store_true",
+                        help="replace an org that already has data without asking")
+    asyncio.run(main(assume_yes=parser.parse_args().yes))

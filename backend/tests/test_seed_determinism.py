@@ -548,7 +548,7 @@ def test_seed_writes_nothing_to_the_database_out_of_band():
     assert offenders == {"ensure_verified"}, (
         f"out-of-band database access outside ensure_verified: "
         f"{sorted(offenders - {'ensure_verified'})}. Seed DATA must go through "
-        "the API; a clean slate is `./pfv reset`, not a wipe inside seed.py."
+        "the API; a clean slate is prepare_org's API reset, not a wipe inside seed.py."
     )
 
 
