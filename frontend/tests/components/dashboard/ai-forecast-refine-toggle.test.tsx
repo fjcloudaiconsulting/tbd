@@ -405,7 +405,7 @@ describe("AIForecastRefineToggle - fallback handling", () => {
     );
     const reasonText = screen.getByTestId("ai-fallback-reason").textContent ?? "";
     expect(reasonText).toContain(
-      "This billing period is longer than a month. Close it to use AI refinement.",
+      "AI refinement works on periods of about a month. This billing period is longer.",
     );
     expect(reasonText).not.toContain("forecast_window_not_monthly");
   });

@@ -465,7 +465,7 @@ async def test_refine_refuses_non_monthly_window(
 
 
 @pytest.mark.asyncio
-async def test_estimate_refuses_non_monthly_window(
+async def test_estimate_refine_refuses_non_monthly_window(
     monkeypatch, db_session: AsyncSession, seeded_org: Organization
 ):
     """F2: estimate_refine on the same 91-day baseline refuses too, proving

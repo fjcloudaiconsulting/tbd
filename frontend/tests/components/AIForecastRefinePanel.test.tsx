@@ -113,7 +113,7 @@ describe("AIForecastRefinePanel", () => {
     );
     expect(
       screen.getByText(
-        "This billing period is longer than a month. Close it to use AI refinement.",
+        "AI refinement works on periods of about a month. This billing period is longer.",
       ),
     ).toBeInTheDocument();
   });

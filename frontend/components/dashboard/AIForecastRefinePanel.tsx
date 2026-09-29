@@ -22,7 +22,7 @@ const REASON_COPY: Record<string, string> = {
   insufficient_history: "Not enough transaction history yet to analyze.",
   estimate_failed: "Something went wrong estimating the cost. Try again.",
   forecast_window_not_monthly:
-    "This billing period is longer than a month. Close it to use AI refinement.",
+    "AI refinement works on periods of about a month. This billing period is longer.",
 };
 
 export interface AIForecastRefinePanelProps {
