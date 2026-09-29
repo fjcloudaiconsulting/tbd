@@ -417,11 +417,13 @@ async def prepare_org(c: httpx.AsyncClient, headers: dict, *, assume_yes: bool,
         if not interactive:
             raise SystemExit(
                 f"Org {org_name!r} already has data and there is no terminal to "
-                "confirm replacing it. Re-run with --yes to replace it. Nothing was changed."
+                "confirm replacing it. Re-run with --yes to replace it. Nothing was seeded."
             )
         try:
             answer = ask(f"   Org {org_name!r} already has data. Replace it? This DELETES ALL of "
-                         "its transactions, accounts, budgets, categories, rules, tags and imports. [y/N] ")
+                         "its data, including transactions, accounts, recurring templates, "
+                         "budgets, billing periods, plans, categories, rules, tags and "
+                         "imports. [y/N] ")
         except EOFError:
             answer = ""
         if answer.strip().lower() not in {"y", "yes"}:

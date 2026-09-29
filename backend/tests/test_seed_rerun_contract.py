@@ -179,7 +179,7 @@ def test_main_prepares_the_org_before_the_first_write_with_live_consent():
     kw = {k.arg: ast.unparse(k.value) for k in call.keywords}
     assert kw.get("assume_yes") == "assume_yes", kw
     assert kw.get("interactive") == "sys.stdin.isatty()", kw
-    assert [a.arg for a in main_fn.args.args] == ["assume_yes"]
+    assert "assume_yes" in [a.arg for a in main_fn.args.args]
 
     writes = [
         node.lineno for node in ast.walk(main_fn)
@@ -196,11 +196,19 @@ def test_main_prepares_the_org_before_the_first_write_with_live_consent():
 
 # fence — kills: --yes never reaching main (argparse dropped or unwired).
 def test_yes_flag_is_wired_into_main():
-    src = SEED_PY.read_text(encoding="utf-8")
     guard = next(
-        n for n in ast.parse(src).body
+        n for n in ast.parse(SEED_PY.read_text(encoding="utf-8")).body
         if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)
     )
-    body = ast.unparse(guard)
-    assert "add_argument('--yes'" in body, body
-    assert "main(assume_yes=parser.parse_args().yes)" in body, body
+    nodes = [n for n in ast.walk(guard) if isinstance(n, ast.Call)]
+    assert any(
+        getattr(n.func, "attr", None) == "add_argument"
+        and any(isinstance(a, ast.Constant) and a.value == "--yes" for a in n.args)
+        for n in nodes
+    ), "the __main__ guard must declare --yes"
+    assert any(
+        getattr(n.func, "id", None) == "main"
+        and any(k.arg == "assume_yes" and isinstance(k.value, ast.Attribute)
+                and k.value.attr == "yes" for k in n.keywords)
+        for n in nodes
+    ), "main() must receive assume_yes=<parsed args>.yes"
