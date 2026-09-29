@@ -257,39 +257,132 @@ describe.each(THEMES)("%s theme", (theme) => {
 
 const SCAN_ROOTS = ["app", "components", "lib"].map((d) => path.join(FRONTEND_ROOT, d));
 
-/** Variants that make a tint a transient STATE fill rather than a static
- * ad-hoc one. `focus-visible` must precede `focus` in the alternation so it
- * is tried first — the engine backtracks past a bare `focus` match that
- * fails to find the immediately-following `:`, but only if there is a
- * longer alternative left to try. */
-const STATE_PREFIXES = ["hover", "group-hover", "focus-visible", "focus", "active"] as const;
-const STATE_PREFIX_RE = new RegExp(`^(${STATE_PREFIXES.join("|")}):`);
+/** Variants under which a low-alpha status tint is a legitimate transient
+ * STATE fill rather than the static ad-hoc pattern being banned. Matched as
+ * a WHOLE variant segment (`^...$`), so `focus` cannot accidentally match a
+ * `focus-visible` segment — the anchors make alternation order irrelevant.
+ * `group-hover` carries an optional Tailwind named-group suffix
+ * (`group-hover/row`). Explicitly NOT here: responsive (`md:`), theme
+ * (`dark:`), and data/aria variants (`data-[x]:`, `aria-selected:`) — those
+ * are static contexts, not transient states, so a tint gated only by one of
+ * them is banned like any other static tint. */
+const STATE_VARIANT_RE = /^(hover|group-hover(?:\/[\w-]+)?|peer-hover|focus|focus-visible|focus-within|active)$/;
 
-/** `bg-<status>/<alpha>`, alpha as a percent integer (`/10`) or an
- * arbitrary-value fraction (`/[0.08]`, 0..1). Matched against a token with
- * its variant prefix already stripped. */
-const TINT_TOKEN_RE = new RegExp(`^bg-(${STATUS_RE})/(?:(\\d+)|\\[(0?\\.\\d+|1(?:\\.0+)?)\\])$`);
+/** `bg-<status>/<alpha-spec>` — the alpha spec is parsed separately (below)
+ * so an unparseable form (a CSS var) can be distinguished from "not a tint
+ * at all". Matched against the LAST `:`-split segment of a token (the
+ * utility), after `!` has been stripped from that segment. */
+const TINT_UTILITY_RE = new RegExp(`^bg-(${STATUS_RE})/(.+)$`);
 
-interface TintToken {
-  status: Status;
-  alphaPct: number;
-  state: string | null;
+/** Parses a Tailwind opacity spec into a 0-100 percent, or null if the form
+ * cannot be measured (e.g. a CSS custom property): `10` (percent int),
+ * `[0.08]`/`[.08]` (arbitrary fraction 0..1), `[8%]` (v4 arbitrary percent).
+ * Anything else — `(--x)`, `[--x]`, any other CSS-var reference — is
+ * deliberately NOT parsed: its rendered alpha is unknown, so it fails
+ * closed rather than silently passing as "not a tint". */
+function parseAlphaSpec(spec: string): number | null {
+  if (/^\d+(?:\.\d+)?$/.test(spec)) return Number(spec);
+  let m = /^\[\s*(0?\.\d+|1(?:\.0+)?)\s*\]$/.exec(spec);
+  if (m) return Number(m[1]) * 100;
+  m = /^\[\s*(\d+(?:\.\d+)?)%\s*\]$/.exec(spec);
+  if (m) return Number(m[1]);
+  return null;
 }
 
-/** Parses one whitespace-split class token into a status tint, or null if it
- * isn't one. Handles Tailwind's important modifier in BOTH positions —
- * v3's `!bg-danger/10` and v4's `bg-danger/10!` (and either position after a
- * state prefix) — by stripping every `!`: the character has no other use in
- * these tokens. */
-function parseTintToken(rawToken: string): TintToken | null {
-  const core = rawToken.replace(/!/g, "");
-  const stateMatch = STATE_PREFIX_RE.exec(core);
-  const rest = stateMatch ? core.slice(stateMatch[0].length) : core;
-  const m = TINT_TOKEN_RE.exec(rest);
+/** Splits a class token on `:`, treating a `:` inside `[...]` as NOT a
+ * split point (an arbitrary value like `data-[foo:bar]` must stay one
+ * segment). The last segment is the utility; the rest are variants, in
+ * order, outermost first. */
+function splitVariants(token: string): string[] {
+  const segments: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < token.length; i++) {
+    const c = token[i];
+    if (c === "[") depth++;
+    else if (c === "]") depth = Math.max(0, depth - 1);
+    else if (c === ":" && depth === 0) {
+      segments.push(token.slice(start, i));
+      start = i + 1;
+    }
+  }
+  segments.push(token.slice(start));
+  return segments;
+}
+
+const stripBang = (segment: string): string => segment.replace(/^!/, "").replace(/!$/, "");
+
+type TintParse =
+  | { kind: "state"; status: Status; alphaPct: number }
+  | { kind: "banned"; status: Status; alphaPct: number | null; reason: string }
+  | null; // not a `bg-<status>/<alpha>` utility at all, or a >30% decorative fill
+
+/** Parses one whitespace-split class token into a tint verdict. FAILS
+ * CLOSED: any `bg-<status>/<alpha>` at <= 30% opacity is BANNED unless the
+ * variant stack contains a real state variant (STATE_VARIANT_RE), and any
+ * alpha spec this parser cannot read as a number is banned outright,
+ * regardless of variants — an unmeasurable tint is never "not applicable". */
+function parseTintToken(rawToken: string): TintParse {
+  const segments = splitVariants(rawToken).map(stripBang);
+  const utility = segments[segments.length - 1];
+  const variants = segments.slice(0, -1);
+  const m = TINT_UTILITY_RE.exec(utility);
   if (!m) return null;
-  const alphaPct = m[2] !== undefined ? Number(m[2]) : Number(m[3]) * 100;
-  return { status: m[1] as Status, alphaPct, state: stateMatch ? stateMatch[1] : null };
+  const status = m[1] as Status;
+  const alphaSpec = m[2];
+  const alphaPct = parseAlphaSpec(alphaSpec);
+  if (alphaPct === null) {
+    return {
+      kind: "banned",
+      status,
+      alphaPct: null,
+      reason: `alpha spec ${JSON.stringify(alphaSpec)} is not a measurable percent or arbitrary fraction/percent (e.g. a CSS var) — cannot be measured, so not allowed`,
+    };
+  }
+  if (alphaPct > 30) return null; // decorative fill, out of the scope this fence measures
+  const hasState = variants.some((v) => STATE_VARIANT_RE.test(v));
+  if (hasState) return { kind: "state", status, alphaPct };
+  return {
+    kind: "banned",
+    status,
+    alphaPct,
+    reason: `${alphaPct}% tint with no state variant (variants: ${variants.length ? variants.join(":") : "none"})`,
+  };
 }
+
+describe("parseTintToken", () => {
+  const CASES: Array<[string, TintParse]> = [
+    // plain, no variant -> banned
+    ["bg-danger/10", { kind: "banned", status: "danger", alphaPct: 10, reason: expect.any(String) as unknown as string }],
+    ["!bg-danger/10", { kind: "banned", status: "danger", alphaPct: 10, reason: expect.any(String) as unknown as string }],
+    ["bg-danger/10!", { kind: "banned", status: "danger", alphaPct: 10, reason: expect.any(String) as unknown as string }],
+    ["bg-danger/[0.08]", { kind: "banned", status: "danger", alphaPct: 8, reason: expect.any(String) as unknown as string }],
+    ["bg-danger/[8%]", { kind: "banned", status: "danger", alphaPct: 8, reason: expect.any(String) as unknown as string }],
+    // unmeasurable alpha spec -> banned regardless of variants
+    ["bg-danger/(--x)", { kind: "banned", status: "danger", alphaPct: null, reason: expect.any(String) as unknown as string }],
+    // responsive/theme/data/aria variants are NOT state -> banned
+    ["md:bg-danger/10", { kind: "banned", status: "danger", alphaPct: 10, reason: expect.any(String) as unknown as string }],
+    ["dark:bg-danger/10", { kind: "banned", status: "danger", alphaPct: 10, reason: expect.any(String) as unknown as string }],
+    ["data-[x]:bg-danger/10", { kind: "banned", status: "danger", alphaPct: 10, reason: expect.any(String) as unknown as string }],
+    ["aria-selected:bg-danger/10", { kind: "banned", status: "danger", alphaPct: 10, reason: expect.any(String) as unknown as string }],
+    // a real state variant anywhere in the stack -> measured
+    ["hover:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
+    ["dark:hover:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
+    ["sm:hover:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
+    ["hover:md:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
+    ["focus-within:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
+    ["peer-hover:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
+    ["group-hover/row:bg-danger/10", { kind: "state", status: "danger", alphaPct: 10 }],
+    // > 30% is a decorative fill, out of scope either way
+    ["hover:bg-danger/80", null],
+    // not a bg-<status>/<alpha> utility at all
+    ["hover:text-danger", null],
+  ];
+
+  it.each(CASES)("%s", (token, want) => {
+    expect(parseTintToken(token)).toEqual(want);
+  });
+});
 
 function walk(dir: string): string[] {
   const out: string[] = [];
@@ -338,7 +431,7 @@ describe("no ad-hoc status tint bypasses the checked primitives", () => {
     ).toBe(true);
   });
 
-  it("app/, components/ and lib/ hold no static bg-<status>/<alpha> <= 30%, outside a state prefix", () => {
+  it("app/, components/ and lib/ hold no static bg-<status>/<alpha> <= 30%, outside a state variant", () => {
     const failures: string[] = [];
     // ponytail: walking + TS-parsing every app/components/lib file is slow
     // under CI/container CPU contention (measured >5s cold); this is the
@@ -347,11 +440,8 @@ describe("no ad-hoc status tint bypasses the checked primitives", () => {
       for (const { text, line } of classStrings(file)) {
         for (const token of text.split(/\s+/).filter(Boolean)) {
           const parsed = parseTintToken(token);
-          if (!parsed) continue;
-          if (parsed.state) continue; // a state tint: exempt here, measured below
-          if (parsed.alphaPct <= 30) {
-            failures.push(`${path.relative(FRONTEND_ROOT, file)}:${line} ${token}`);
-          }
+          if (!parsed || parsed.kind !== "banned") continue;
+          failures.push(`${path.relative(FRONTEND_ROOT, file)}:${line} ${token} (${parsed.reason})`);
         }
       }
     }
@@ -378,7 +468,7 @@ function deriveStateTintPairs(): StateTintPair[] {
       const inks = new Set(matchesOf(INK_RE, text));
       for (const token of text.split(/\s+/).filter(Boolean)) {
         const parsed = parseTintToken(token);
-        if (!parsed || !parsed.state || !inks.has(parsed.status)) continue;
+        if (!parsed || parsed.kind !== "state" || !inks.has(parsed.status)) continue;
         const key = `${parsed.status}:${parsed.alphaPct}`;
         const source = `${path.relative(FRONTEND_ROOT, file)}:${line}`;
         const existing = byKey.get(key);
