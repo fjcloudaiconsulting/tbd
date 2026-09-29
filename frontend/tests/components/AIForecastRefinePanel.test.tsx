@@ -95,4 +95,26 @@ describe("AIForecastRefinePanel", () => {
     // cost/token line must NOT be shown
     expect(screen.queryByText(/tokens/)).toBeNull();
   });
+
+  it("shows forecast_window_not_monthly reason copy (TBD-261)", async () => {
+    mockedFetch.mockResolvedValue({
+      est_prompt_tokens: 0,
+      est_output_tokens: 0,
+      est_cost_cents: 0,
+      duration_band: "~20-40s",
+      can_proceed: false,
+      reason: "forecast_window_not_monthly",
+    });
+
+    render(<AIForecastRefinePanel onApplied={() => {}} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /confirm/i })).toBeDisabled(),
+    );
+    expect(
+      screen.getByText(
+        "AI refinement works on periods of about a month. This billing period is longer.",
+      ),
+    ).toBeInTheDocument();
+  });
 });

@@ -91,6 +91,22 @@ ROUTING_KEY = "smart_forecast"
 # Categories with zero spend in the window are omitted.
 HISTORY_MONTHS = 12
 
+# Refinement assumes a baseline window that is roughly a calendar month (the
+# system prompt literally says "baseline monthly forecast" and the LLM's
+# multipliers are trained on that framing). A lapsed open period floored at
+# today, or a manually closed long period, can span many months -- applying
+# monthly seasonality multipliers to a multi-month total is meaningless. We
+# refuse deterministically before any dispatch rather than send a misleading
+# window.
+MAX_REFINE_WINDOW_DAYS = 35
+
+
+def _window_days(baseline: dict) -> int:
+    """Inclusive day count of the baseline forecast window."""
+    start = datetime.date.fromisoformat(baseline["period_start"])
+    end = datetime.date.fromisoformat(baseline["period_end"])
+    return (end - start).days + 1
+
 
 # JSON schema passed to call_llm_structured. We keep this in sync with
 # the Pydantic model. The dispatcher's structured-output retry check
@@ -515,6 +531,11 @@ async def refine_forecast(
         db, org_id, period_start=period_start
     )
 
+    if _window_days(baseline) > MAX_REFINE_WINDOW_DAYS:
+        return _baseline_response(
+            baseline=baseline, fallback_reason="forecast_window_not_monthly"
+        )
+
     # Build the history + index for the prompt. The history window
     # ends STRICTLY before period_start so the forecast period's own
     # actuals don't leak into the seasonality signal.
@@ -734,6 +755,17 @@ async def estimate_refine(
     baseline = await forecast_service.compute_forecast(
         db, org_id, period_start=period_start
     )
+
+    if _window_days(baseline) > MAX_REFINE_WINDOW_DAYS:
+        return ForecastRefineEstimate(
+            est_prompt_tokens=0,
+            est_output_tokens=0,
+            est_cost_cents=0,
+            duration_band=_duration_band(scope),
+            can_proceed=False,
+            reason="forecast_window_not_monthly",
+        )
+
     p_start = datetime.date.fromisoformat(baseline["period_start"])
     history = await _build_category_history(
         db,

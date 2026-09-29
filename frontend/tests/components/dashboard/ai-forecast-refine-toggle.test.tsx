@@ -367,6 +367,49 @@ describe("AIForecastRefineToggle - fallback handling", () => {
     expect(reasonText).not.toContain("ai_routing_not_configured");
   });
 
+  it("shows forecast_window_not_monthly reason copy (TBD-261)", async () => {
+    mockedFetch
+      .mockResolvedValueOnce(estimateFixture())
+      .mockResolvedValueOnce(
+        refinedFixture({
+          refined_forecast_expense: "100.00",
+          provenance: {
+            ai_applied: false,
+            fallback_reason: "forecast_window_not_monthly",
+            model: null,
+            confidence: null,
+            summary: null,
+            notes: [],
+          },
+          categories: [
+            {
+              category_id: 1,
+              category_name: "Groceries",
+              baseline_forecast: "100.00",
+              multiplier: 1.0,
+              refined_forecast: "100.00",
+            },
+          ],
+          anomalies: [],
+        }),
+      );
+
+    render(<AIForecastRefineToggle periodStart="2026-05-01" />);
+    fireEvent.click(screen.getByTestId("ai-forecast-refine-toggle"));
+
+    const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-fallback-badge")).toBeInTheDocument(),
+    );
+    const reasonText = screen.getByTestId("ai-fallback-reason").textContent ?? "";
+    expect(reasonText).toContain(
+      "AI refinement works on periods of about a month. This billing period is longer.",
+    );
+    expect(reasonText).not.toContain("forecast_window_not_monthly");
+  });
+
   it("hides itself entirely when the estimate call returns a 403 (feature gate closed)", async () => {
     mockedFetch.mockRejectedValue(
       new ApiResponseError(403, "feature_not_enabled", "feature_not_enabled"),

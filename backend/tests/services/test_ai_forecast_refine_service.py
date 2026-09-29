@@ -402,3 +402,231 @@ async def test_estimate_refine_ample_budget_allows(
     assert est.can_proceed is True
     assert est.reason is None
     assert est.est_cost_cents == 80
+
+
+# ---------- TBD-261: refuse a non-monthly baseline window --------------
+#
+# Refinement's system prompt tells the LLM it is looking at a "baseline
+# monthly forecast" and applies dimensionless multipliers on top of it.
+# A lapsed open period (floored at today) or a manually closed long
+# period can span many months; applying monthly seasonality multipliers
+# to that total is meaningless. The guard must fire deterministically,
+# before any history build or LLM dispatch.
+
+_LONG_BASELINE = {
+    **_FAKE_BASELINE,
+    "period_start": "2026-03-01",
+    "period_end": "2026-05-30",  # 91 inclusive days
+}
+
+
+def _make_baseline(period_start: str, period_end: str) -> dict:
+    return {**_FAKE_BASELINE, "period_start": period_start, "period_end": period_end}
+
+
+@pytest.mark.asyncio
+async def test_refine_refuses_non_monthly_window(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """F1: a 91-day baseline window refuses before touching history or
+    dispatch, and the refined response equals the baseline.
+    """
+    history_calls = {"n": 0}
+    dispatch_calls = {"n": 0}
+
+    async def fake_compute_forecast(db, org_id, period_start=None):
+        return _LONG_BASELINE
+
+    async def fake_build_history(*a, **k):
+        history_calls["n"] += 1
+        return _FAKE_HISTORY
+
+    async def fake_structured(*a, **k):
+        dispatch_calls["n"] += 1
+        raise AssertionError("dispatch must not be called")
+
+    monkeypatch.setattr(svc.forecast_service, "compute_forecast", fake_compute_forecast)
+    monkeypatch.setattr(svc, "_build_category_history", fake_build_history)
+    monkeypatch.setattr(ai_dispatch, "call_llm_structured", fake_structured)
+
+    resp = await svc.refine_forecast(
+        db_session,
+        org_id=seeded_org.id,
+        scope=Scope.TOP_20,
+        timeframe_months=6,
+    )
+
+    assert resp.provenance.ai_applied is False
+    assert resp.provenance.fallback_reason == "forecast_window_not_monthly"
+    assert resp.refined_forecast_expense == resp.baseline_forecast_expense
+    assert resp.refined_forecast_income == resp.baseline_forecast_income
+    assert history_calls["n"] == 0
+    assert dispatch_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_estimate_refine_refuses_non_monthly_window(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """F2: estimate_refine on the same 91-day baseline refuses too, proving
+    the guard isn't wired into only one of the two entry points.
+    """
+    async def fake_compute_forecast(db, org_id, period_start=None):
+        return _LONG_BASELINE
+
+    async def fake_build_history(*a, **k):
+        raise AssertionError("history must not be built")
+
+    async def fake_structured(*a, **k):
+        raise AssertionError("dispatch must not be called")
+
+    monkeypatch.setattr(svc.forecast_service, "compute_forecast", fake_compute_forecast)
+    monkeypatch.setattr(svc, "_build_category_history", fake_build_history)
+    monkeypatch.setattr(ai_dispatch, "call_llm_structured", fake_structured)
+
+    est = await svc.estimate_refine(
+        db_session,
+        org_id=seeded_org.id,
+        period_start=None,
+        timeframe_months=6,
+        scope=Scope.TOP_20,
+    )
+
+    assert est.can_proceed is False
+    assert est.reason == "forecast_window_not_monthly"
+
+
+@pytest.mark.asyncio
+async def test_refine_window_boundary_35_dispatches_36_refuses(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """F3: a 35-day (inclusive) window is still monthly-ish and dispatches;
+    36 days refuses. Kills exclusive day-count and off-by-one mutants.
+    """
+    from app.schemas.ai_forecast import AIForecastAdjustments
+    from app.services.ai_providers.base import StructuredResponse
+
+    baselines = {
+        35: _make_baseline("2026-01-01", "2026-02-04"),
+        36: _make_baseline("2026-01-01", "2026-02-05"),
+    }
+    results: dict[int, bool] = {}
+
+    for days, baseline in baselines.items():
+        dispatch_calls = {"n": 0}
+
+        async def fake_compute_forecast(db, org_id, period_start=None, _b=baseline):
+            return _b
+
+        async def fake_build_history(*a, **k):
+            return _FAKE_HISTORY
+
+        async def fake_category_index(db, *, org_id):
+            return {1: "Rent", 2: "Food"}
+
+        async def fake_structured(
+            db, *, org_id, feature_key, messages, response_schema, max_tokens=None,
+            _dc=dispatch_calls,
+        ):
+            _dc["n"] += 1
+            parsed = AIForecastAdjustments(
+                seasonal=[], anomalies=[], confidence=0.5, summary="ok"
+            ).model_dump()
+            return svc.ai_dispatch.StructuredDispatchResult(
+                response=StructuredResponse(
+                    parsed=parsed,
+                    raw_text="{}",
+                    prompt_tokens=10,
+                    completion_tokens=10,
+                    model="gpt-4o-mini",
+                    retries_used=0,
+                ),
+                ledger_id=1,
+            )
+
+        monkeypatch.setattr(
+            svc.forecast_service, "compute_forecast", fake_compute_forecast
+        )
+        monkeypatch.setattr(svc, "_build_category_history", fake_build_history)
+        monkeypatch.setattr(svc, "_category_index", fake_category_index)
+        monkeypatch.setattr(ai_dispatch, "call_llm_structured", fake_structured)
+
+        resp = await svc.refine_forecast(
+            db_session,
+            org_id=seeded_org.id,
+            scope=Scope.TOP_20,
+            timeframe_months=6,
+        )
+        results[days] = dispatch_calls["n"] > 0
+        if days == 36:
+            assert resp.provenance.fallback_reason == "forecast_window_not_monthly"
+
+    assert results[35] is True
+    assert results[36] is False
+
+
+@pytest.mark.asyncio
+async def test_refine_35_day_prompt_payload_is_unmodified(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """F4: in the 35-day (dispatching) case, the prompt payload's
+    baseline_forecast period_start/period_end and forecast_expense match
+    the baseline exactly, and the system prompt still says "baseline
+    monthly forecast". Kills silent re-windowing/normalising of the
+    payload.
+    """
+    from app.schemas.ai_forecast import AIForecastAdjustments
+    from app.services.ai_providers.base import StructuredResponse
+
+    baseline = _make_baseline("2026-01-01", "2026-02-04")
+    captured: dict = {}
+
+    async def fake_compute_forecast(db, org_id, period_start=None):
+        return baseline
+
+    async def fake_build_history(*a, **k):
+        return _FAKE_HISTORY
+
+    async def fake_category_index(db, *, org_id):
+        return {1: "Rent", 2: "Food"}
+
+    async def fake_structured(
+        db, *, org_id, feature_key, messages, response_schema, max_tokens=None
+    ):
+        captured["messages"] = messages
+        parsed = AIForecastAdjustments(
+            seasonal=[], anomalies=[], confidence=0.5, summary="ok"
+        ).model_dump()
+        return svc.ai_dispatch.StructuredDispatchResult(
+            response=StructuredResponse(
+                parsed=parsed,
+                raw_text="{}",
+                prompt_tokens=10,
+                completion_tokens=10,
+                model="gpt-4o-mini",
+                retries_used=0,
+            ),
+            ledger_id=1,
+        )
+
+    monkeypatch.setattr(svc.forecast_service, "compute_forecast", fake_compute_forecast)
+    monkeypatch.setattr(svc, "_build_category_history", fake_build_history)
+    monkeypatch.setattr(svc, "_category_index", fake_category_index)
+    monkeypatch.setattr(ai_dispatch, "call_llm_structured", fake_structured)
+
+    await svc.refine_forecast(
+        db_session,
+        org_id=seeded_org.id,
+        scope=Scope.TOP_20,
+        timeframe_months=6,
+    )
+
+    messages = captured["messages"]
+    system_msg = next(m for m in messages if m["role"] == "system")
+    user_msg = next(m for m in messages if m["role"] == "user")
+    payload = __import__("json").loads(user_msg["content"])
+
+    assert payload["baseline_forecast"]["period_start"] == baseline["period_start"]
+    assert payload["baseline_forecast"]["period_end"] == baseline["period_end"]
+    assert payload["baseline_forecast"]["forecast_expense"] == baseline["forecast_expense"]
+    assert "baseline monthly forecast" in system_msg["content"]

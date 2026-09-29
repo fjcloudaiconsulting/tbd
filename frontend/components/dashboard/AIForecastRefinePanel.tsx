@@ -21,6 +21,8 @@ const REASON_COPY: Record<string, string> = {
     "Configure an AI provider in Settings to use this feature.",
   insufficient_history: "Not enough transaction history yet to analyze.",
   estimate_failed: "Something went wrong estimating the cost. Try again.",
+  forecast_window_not_monthly:
+    "AI refinement works on periods of about a month. This billing period is longer.",
 };
 
 export interface AIForecastRefinePanelProps {
