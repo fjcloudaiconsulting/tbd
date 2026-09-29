@@ -15,10 +15,10 @@
       "accent":          { "role": "primary", "displayName": "Brass Tally",     "canonical": "oklch(74% 0.13 80)",  "tonalRamp": ["#3d2f12","#5e481b","#7a5d24","#946f2c","#B88A2E","#c89a3b","#D4A64A","#e3bb73"] },
       "accent-hover":    { "role": "primary", "displayName": "Aged Brass",      "canonical": "oklch(63% 0.12 75)" },
       "accent-text":     { "role": "primary", "displayName": "Brass Ink",       "canonical": "oklch(20% 0.04 257)" },
-      "danger":          { "role": "status",  "displayName": "Overdue Coral",   "canonical": "oklch(70% 0.18 22)" },
+      "danger":          { "role": "status",  "displayName": "Overdue Coral",   "canonical": "oklch(73.6% 0.148 21)" },
       "danger-hover":    { "role": "status",  "displayName": "Overdue Coral Deep", "canonical": "oklch(64% 0.21 25)" },
       "success":         { "role": "status",  "displayName": "Settled Green",   "canonical": "oklch(78% 0.20 145)" },
-      "info":            { "role": "status",  "displayName": "Reference Blue",  "canonical": "oklch(70% 0.10 230)" },
+      "info":            { "role": "status",  "displayName": "Reference Blue",  "canonical": "oklch(72.4% 0.092 236)" },
       "warning":         { "role": "status",  "displayName": "Warning Amber",   "canonical": "oklch(76% 0.16 70)" },
       "warning-hover":   { "role": "status",  "displayName": "Warning Amber Deep", "canonical": "oklch(69% 0.17 65)" },
       "scrim":           { "role": "neutral", "displayName": "Tour Scrim",      "canonical": "oklch(11% 0.02 257 / 0.55)" },
@@ -79,7 +79,7 @@
       "refersTo": "button-danger-solid",
       "description": "The committed destructive action inside a confirm dialog. Overdue Coral fill; distinct from the quiet inline-text btnDanger.",
       "html": "<button class=\"ds-btn-danger\">Delete account</button>",
-      "css": ".ds-btn-danger { background: #f87171; color: #0B1F3A; padding: 8px 16px; border: none; border-radius: 8px; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background-color 0.15s ease; } .ds-btn-danger:hover { background: #ef4444; } .ds-btn-danger:focus-visible { outline: 2px solid #D4A64A; outline-offset: 2px; } .ds-btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }"
+      "css": ".ds-btn-danger { background: #f98080; color: #0B1F3A; padding: 8px 16px; border: none; border-radius: 8px; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background-color 0.15s ease; } .ds-btn-danger:hover { background: #f15252; } .ds-btn-danger:focus-visible { outline: 2px solid #D4A64A; outline-offset: 2px; } .ds-btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }"
     },
     {
       "name": "Input",

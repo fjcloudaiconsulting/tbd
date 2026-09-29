@@ -1054,7 +1054,7 @@ export default function ForecastPlansClient({
             <span
               className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
                 isActive
-                  ? "bg-success/15 text-success"
+                  ? "bg-success-dim text-success"
                   : "bg-accent/15 text-accent"
               }`}
             >

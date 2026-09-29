@@ -433,7 +433,7 @@ export default function OnboardingPageBody() {
               </select>
             </div>
             {error ? (
-              <div className="mb-4 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+              <div className="mb-4 rounded-md border border-danger/40 bg-danger-dim px-3 py-2 text-sm text-danger">
                 {error}
               </div>
             ) : null}
@@ -480,7 +480,7 @@ export default function OnboardingPageBody() {
               </div>
             ) : null}
             {error ? (
-              <div className="mb-4 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+              <div className="mb-4 rounded-md border border-danger/40 bg-danger-dim px-3 py-2 text-sm text-danger">
                 {error}
               </div>
             ) : null}
@@ -517,7 +517,7 @@ export default function OnboardingPageBody() {
               will use most. Skippable at any point.
             </p>
             {error ? (
-              <div className="mb-4 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+              <div className="mb-4 rounded-md border border-danger/40 bg-danger-dim px-3 py-2 text-sm text-danger">
                 {error}
               </div>
             ) : null}

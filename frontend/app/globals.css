@@ -4,7 +4,7 @@
    Primary: Dark Navy #0B1F3A
    Accent:  Gold #D4A64A
    Text:    Off-White #E6EAF0
-   Info:    Secondary Blue #5FA8D3
+   Info:    Secondary Blue #6aafd8
    Hover:   Dark Gold #B88A2E
    Default: light theme (TBD-429). The dark tokens stay on :root and the
    light tokens on [data-theme="light"]; the pre-paint script in
@@ -44,14 +44,14 @@
      below already redefines. */
   --theme-focus: var(--theme-accent);
 
-  --theme-danger: #f87171;
-  --theme-danger-hover: #ef4444;
-  --theme-danger-dim: rgba(248, 113, 113, 0.12);
+  --theme-danger: #f98080;
+  --theme-danger-hover: #f15252;
+  --theme-danger-dim: rgba(249, 128, 128, 0.12);
   --theme-danger-text: #0B1F3A;
   --theme-success: #4ade80;
   --theme-success-dim: rgba(74, 222, 128, 0.12);
-  --theme-info: #5FA8D3;
-  --theme-info-dim: rgba(95, 168, 211, 0.12);
+  --theme-info: #6aafd8;
+  --theme-info-dim: rgba(106, 175, 216, 0.12);
   --theme-warning: #f59e0b;
   --theme-warning-hover: #d97706;
   --theme-warning-dim: rgba(245, 158, 11, 0.16);
@@ -114,17 +114,17 @@
   --theme-accent-dim: rgba(184, 138, 46, 0.08);
   --theme-accent-text: #ffffff;
 
-  --theme-danger: #dc2626;
-  --theme-danger-hover: #b91c1c;
-  --theme-danger-dim: rgba(220, 38, 38, 0.06);
+  --theme-danger: #b91c1c;
+  --theme-danger-hover: #991b1b;
+  --theme-danger-dim: rgba(185, 28, 28, 0.06);
   --theme-danger-text: #ffffff;
-  --theme-success: #16a34a;
-  --theme-success-dim: rgba(22, 163, 74, 0.06);
-  --theme-info: #2d7db3;
-  --theme-info-dim: rgba(45, 125, 179, 0.08);
-  --theme-warning: #b45309;
-  --theme-warning-hover: #92400e;
-  --theme-warning-dim: rgba(180, 83, 9, 0.10);
+  --theme-success: #166534;
+  --theme-success-dim: rgba(22, 101, 52, 0.06);
+  --theme-info: #23689a;
+  --theme-info-dim: rgba(35, 104, 154, 0.08);
+  --theme-warning: #92400e;
+  --theme-warning-hover: #78350f;
+  --theme-warning-dim: rgba(146, 64, 14, 0.10);
   --theme-warning-text: #ffffff;
 
   --theme-sidebar-bg: #0B1F3A;

@@ -83,7 +83,7 @@ where the visitor's theme is unknown.
 | `--color-text-secondary` | `#9ba8bd` | `#3d5070` | Supporting copy |
 | `--color-text-muted` | `#8f9db2` | `#5d6a7e` | Labels, helper text |
 | `--color-accent` | `#D4A64A` | `#8a6a1f` | Primary CTAs, focus rings |
-| `--color-info` | `#5FA8D3` | `#2d7db3` | Informational chips |
+| `--color-info` | `#6aafd8` | `#23689a` | Informational chips |
 
 **Brand surface constants** — `frontend/lib/brand.ts`. These do NOT
 theme-switch. They live in a dedicated module (separate from
