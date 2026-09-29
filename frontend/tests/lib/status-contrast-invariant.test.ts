@@ -512,7 +512,7 @@ describe.each(THEMES)("%s theme: state tints", (theme) => {
         const cr = contrast(inkRgb(theme, status), stateTintOnHost(theme, status, alphaPct, host));
         if (cr < CONTRAST_MIN) {
           failures.push(
-            `text-${status} on bg-${status}/${alphaPct} (state) over ${host} = ${cr.toFixed(2)}:1 ` +
+            `text-${status} on bg-${status}/${alphaPct} over ${host} = ${cr.toFixed(2)}:1 ` +
               `(${sources.length} site(s), e.g. ${sources[0]})`,
           );
         }
