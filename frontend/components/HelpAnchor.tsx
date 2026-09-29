@@ -43,7 +43,7 @@ type HelpAnchorProps = {
 // Shared visual + a11y classes. Held constant across variants so the
 // `?` icon reads the same wherever it appears; only positioning shifts.
 const BASE_CLASSES =
-  "inline-flex min-h-[44px] min-w-[44px] md:min-h-7 md:min-w-7 items-center justify-center rounded-full text-text-muted hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
+  "inline-flex min-h-[44px] min-w-[44px] md:min-h-7 md:min-w-7 items-center justify-center rounded-full text-text-muted hover:text-accent";
 
 const VARIANT_CLASSES: Record<HelpAnchorVariant, string> = {
   // `self-start` overrides any items-center on the parent flex row, so

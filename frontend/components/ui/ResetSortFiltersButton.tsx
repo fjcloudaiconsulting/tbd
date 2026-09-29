@@ -31,7 +31,7 @@ export default function ResetSortFiltersButton({
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised min-h-[44px] sm:min-h-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 ${className}`}
+      className={`inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised min-h-[44px] sm:min-h-0 ${className}`}
       aria-label={label}
       data-testid="reset-sort-filters"
     >

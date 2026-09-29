@@ -85,7 +85,7 @@ function HelpIcon({ label, text }: { label: string; text: string }) {
       role="img"
       aria-label={`${label} explained: ${text}`}
       title={text + DOCS_HINT}
-      className="ml-1 cursor-help rounded-sm text-text-muted/70 hover:text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+      className="ml-1 cursor-help rounded-sm text-text-muted/70 hover:text-text-secondary"
     >
       (?)
     </span>

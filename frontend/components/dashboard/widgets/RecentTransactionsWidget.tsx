@@ -119,7 +119,7 @@ export default function RecentTransactionsWidget() {
                     ? `Transactions sorted by ${col.label.toLowerCase()}, ${dashSortDir === "asc" ? "ascending" : "descending"}. Activate to reverse.`
                     : `Sort transactions by ${col.label.toLowerCase()}`
                 }
-                className={`${col.span} ${col.align} min-h-[32px] rounded-sm hover:text-text-primary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30`}
+                className={`${col.span} ${col.align} min-h-[32px] rounded-sm hover:text-text-primary transition-colors`}
               >
                 {col.label}{active ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}
               </button>
@@ -128,7 +128,7 @@ export default function RecentTransactionsWidget() {
         </div>
       </div>
       <div
-        className="min-h-0 flex-1 overflow-y-auto divide-y divide-border-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+        className="min-h-0 flex-1 overflow-y-auto divide-y divide-border-subtle"
         tabIndex={0}
         aria-label="Recent transactions list"
       >
@@ -163,7 +163,7 @@ export default function RecentTransactionsWidget() {
               }}
               aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
               aria-pressed={tx.status === "settled"}
-              className="inline-flex min-h-[44px] items-center rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+              className="inline-flex min-h-[44px] items-center rounded"
             >
               {/* Outer button carries the WCAG 2.5.8 touch target;
                   inner span matches /transactions' pill visual. */}

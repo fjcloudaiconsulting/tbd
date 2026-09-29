@@ -207,7 +207,7 @@ export default function AppShellAddTransactionCta() {
               type="button"
               onClick={() => setWarning("")}
               aria-label="Dismiss warning"
-              className="text-warning hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+              className="text-warning hover:text-text-primary"
             >
               <span aria-hidden="true">&times;</span>
             </button>

@@ -46,7 +46,7 @@ export default function SortableHeader({
       <button
         type="button"
         onClick={() => onSort(field)}
-        className="inline-flex items-center gap-1 hover:text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 rounded"
+        className="inline-flex items-center gap-1 hover:text-text rounded"
       >
         {label}
         {indicator !== null && (

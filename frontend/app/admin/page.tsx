@@ -171,7 +171,7 @@ function HubTile({ tile }: { tile: AdminTile }) {
       // shared accent token; reduced-motion users get an instant
       // transition because transition-colors is property-scoped (no
       // transforms or opacity fades).
-      className={`${card} group relative block p-5 transition-colors hover:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30`}
+      className={`${card} group relative block p-5 transition-colors hover:border-accent`}
     >
       <div className="flex items-start gap-3">
         <span
@@ -465,7 +465,7 @@ export default function AdminDashboardPage() {
                   <h2 className={cardTitle}>Recent activity</h2>
                   <Link
                     href="/admin/audit"
-                    className="text-xs text-text-muted hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                    className="text-xs text-text-muted hover:text-accent"
                   >
                     View all
                   </Link>

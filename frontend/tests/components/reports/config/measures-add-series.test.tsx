@@ -170,8 +170,9 @@ describe("R7 — '+ Add series' seeds the next unused catalog pair", () => {
       />,
     );
     const btn = await screen.findByTestId("measure-add");
-    expect(btn.className).toContain("focus-visible:ring-2");
-    expect(btn.className).toContain("focus-visible:ring-accent/30");
+    // TBD-521: the focus state is the global brass outline, so the button
+    // must not suppress it (a translucent ring used to replace it).
+    expect(btn.className).not.toMatch(/(^|\s|:)outline-(none|hidden|0)(\s|$)/);
     expect(btn.className).toContain("disabled:cursor-not-allowed");
     expect(btn.className).toContain("disabled:opacity-60");
   });

@@ -267,7 +267,7 @@ export default function MeasuresEditor({
             // Tally focus state on anything pressable; this button shipped
             // with `hover:` only. Disabled treatment reuses the shipped
             // primitive from lib/styles.ts.
-            className="rounded-md border border-dashed border-border px-2 py-1 text-xs text-text-secondary transition hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-md border border-dashed border-border px-2 py-1 text-xs text-text-secondary transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-60"
           >
             + Add {widget.type === "table" ? "column" : "series"}
           </button>

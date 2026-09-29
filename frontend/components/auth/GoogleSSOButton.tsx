@@ -100,8 +100,6 @@ export default function GoogleSSOButton({
     "inline-flex w-full min-h-[44px] items-center justify-center gap-3 " +
     "rounded-md px-4 py-2.5 text-sm font-medium " +
     "transition-colors " +
-    "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 " +
-    "focus-visible:ring-offset-2 focus-visible:ring-offset-bg " +
     "disabled:cursor-not-allowed disabled:opacity-60";
 
   return (

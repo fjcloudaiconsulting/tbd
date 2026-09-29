@@ -115,7 +115,7 @@ export default function VsPageLayout({
           {faq.map((item) => (
             <li key={item.q} className="rounded-xl border border-border bg-surface">
               <details className="group">
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-xl px-5 py-4 text-left text-sm font-medium text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-xl px-5 py-4 text-left text-sm font-medium text-text-primary">
                   <span>{item.q}</span>
                   <ChevronGlyph />
                 </summary>
