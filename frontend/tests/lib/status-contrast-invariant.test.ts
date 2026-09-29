@@ -495,16 +495,16 @@ function deriveStateTintPairs(): StateTintPair[] {
   return [...byKey.values()];
 }
 
-describe("state tint population", () => {
-  it("finds at least one (status, alpha) state tint, including danger at 10%", () => {
+describe("paired tint population", () => {
+  it("finds at least one (status, alpha) paired tint, including danger at 10%", () => {
     const pairs = deriveStateTintPairs();
     expect(pairs.length).toBeGreaterThan(0);
     expect(pairs.some((p) => p.status === "danger" && p.alphaPct === 10)).toBe(true);
   });
 });
 
-describe.each(THEMES)("%s theme: state tints", (theme) => {
-  it("every (status, alpha) state tint is >= 4.5:1 composited over every host", () => {
+describe.each(THEMES)("%s theme: paired tints (state fills, and static fills above 30%%)", (theme) => {
+  it("every (status, alpha) paired tint is >= 4.5:1 composited over every host", () => {
     const pairs = deriveStateTintPairs();
     const failures: string[] = [];
     for (const { status, alphaPct, sources } of pairs) {
