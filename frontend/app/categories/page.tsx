@@ -455,7 +455,7 @@ export default function CategoriesPage() {
 
       {restoreSuccess !== null && (
         <div
-          className="mb-6 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success"
+          className="mb-6 rounded-md border border-success/30 bg-success-dim p-4 text-sm text-success"
           role="status"
           data-testid="restore-recommended-success"
         >

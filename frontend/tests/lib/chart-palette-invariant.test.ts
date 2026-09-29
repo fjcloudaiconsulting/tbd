@@ -23,6 +23,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import postcss from "postcss";
+import { hexToRgb, contrast, block as readBlock, type Vec3 } from "./color-test-utils";
 
 const CONTRAST_MIN = 3;
 const CVD_DE_MIN = 5;
@@ -32,7 +33,6 @@ const HUE_FAMILY_MAX_DEG = 20;
 const GLOBALS = path.resolve(__dirname, "..", "..", "app", "globals.css");
 const sheet = postcss.parse(readFileSync(GLOBALS, "utf8"), { from: GLOBALS });
 
-type Vec3 = [number, number, number];
 type Mat3 = [Vec3, Vec3, Vec3];
 
 // ─── colour maths ────────────────────────────────────────────────────────
@@ -48,12 +48,6 @@ const mul = (m: Mat3, v: Vec3): Vec3 => [
   m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
   m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
 ];
-
-function hexToRgb(hex: string): Vec3 {
-  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
-  if (!m) throw new Error(`not a #rrggbb colour: ${JSON.stringify(hex)}`);
-  return [1, 2, 3].map((i) => parseInt(m[i], 16) / 255) as Vec3;
-}
 
 // Linear-sRGB dichromacy matrices, generated from the daltonlens package
 // (Simulator_Vienot1999 / Simulator_Brettel1997, default LMS model).
@@ -193,15 +187,6 @@ function ciede2000(l1: Vec3, l2: Vec3): number {
   );
 }
 
-function contrast(a: Vec3, b: Vec3): number {
-  const Y = (c: Vec3) => {
-    const [r, g, bl] = c.map(lin);
-    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
-  };
-  const [hi, lo] = [Y(a), Y(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
-
 function oklchHue(rgb: Vec3): number {
   const [r, g, b] = rgb.map(lin);
   const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
@@ -219,15 +204,7 @@ const MEASURED_TOKEN = /^--theme-(cat-\d+|surface|border-strong|success|danger|w
 type Theme = keyof typeof BLOCKS;
 
 function block(selector: string): Map<string, string> {
-  const rules = (sheet.nodes ?? []).filter(
-    (n): n is postcss.Rule => n.type === "rule" && n.selector === selector,
-  );
-  expect(rules, `exactly one top-level ${selector} block`).toHaveLength(1);
-  const props = new Map<string, string>();
-  rules[0].walkDecls((d) => {
-    if (d.prop.startsWith("--")) props.set(d.prop, d.value.trim());
-  });
-  return props;
+  return readBlock(sheet, selector);
 }
 
 function tokens(theme: Theme) {

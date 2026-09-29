@@ -84,7 +84,7 @@ export default function RecentTransactionsWidget() {
       {toggleError && (
         <div
           role="alert"
-          className="mx-5 mb-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"
+          className="mx-5 mb-2 rounded-md border border-danger/30 bg-danger-dim px-3 py-2 text-xs text-danger"
         >
           {toggleError}
         </div>

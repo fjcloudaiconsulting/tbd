@@ -314,7 +314,7 @@ export default function CustomDashboard() {
         <div
           role="alert"
           data-testid="custom-dashboard-error"
-          className="rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger"
+          className="rounded-md border border-danger/30 bg-danger-dim px-4 py-3 text-sm text-danger"
         >
           {loadError}
         </div>
@@ -428,7 +428,7 @@ export default function CustomDashboard() {
           {saveError && (
             <div
               role="alert"
-              className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger"
+              className="mb-4 rounded-md border border-danger/30 bg-danger-dim px-4 py-3 text-sm text-danger"
             >
               {saveError}
             </div>

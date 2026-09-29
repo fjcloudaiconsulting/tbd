@@ -339,8 +339,8 @@ function AdminAuditPageContent() {
                       <span
                         className={
                           row.outcome === "success"
-                            ? "rounded-full bg-success/10 px-2 py-0.5 text-xs font-semibold uppercase tracking-wider text-success"
-                            : "rounded-full bg-danger/10 px-2 py-0.5 text-xs font-semibold uppercase tracking-wider text-danger"
+                            ? "rounded-full bg-success-dim px-2 py-0.5 text-xs font-semibold uppercase tracking-wider text-success"
+                            : "rounded-full bg-danger-dim px-2 py-0.5 text-xs font-semibold uppercase tracking-wider text-danger"
                         }
                       >
                         {row.outcome}

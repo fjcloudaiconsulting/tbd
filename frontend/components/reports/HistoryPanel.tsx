@@ -97,7 +97,7 @@ export default function HistoryPanel({
         {error && (
           <p
             role="alert"
-            className="mt-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger"
+            className="mt-4 rounded-md border border-danger/30 bg-danger-dim px-3 py-2 text-sm text-danger"
           >
             {error}
           </p>

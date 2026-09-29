@@ -286,7 +286,7 @@ export default function ReportDraftPage() {
         {saveError && (
           <div
             role="alert"
-            className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-sm text-danger"
+            className="border-b border-danger/30 bg-danger-dim px-4 py-2 text-sm text-danger"
           >
             {saveError}
           </div>
