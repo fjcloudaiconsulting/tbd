@@ -17,14 +17,14 @@ colors:
   accent-hover: "#B88A2E"
   accent-dim: "#D4A64A1F"
   accent-text: "#0B1F3A"
-  danger: "#f87171"
-  danger-hover: "#ef4444"
-  danger-dim: "#F871711F"
+  danger: "#f98080"
+  danger-hover: "#f15252"
+  danger-dim: "#F980801F"
   danger-text: "#0B1F3A"
   success: "#4ade80"
   success-dim: "#4ADE801F"
-  info: "#5FA8D3"
-  info-dim: "#5FA8D31F"
+  info: "#6aafd8"
+  info-dim: "#6AAFD81F"
   warning: "#f59e0b"
   warning-hover: "#d97706"
   warning-dim: "#F59E0B29"
@@ -303,11 +303,11 @@ The component primitives live in `frontend/lib/styles.ts` as exported Tailwind u
 
 ### Badges & Status Banners
 
-Badges are the inline status chips; banners are the full-width block messages. Both pair a tint background with the matching status text color, and both must carry a label or icon — never color alone.
+Badges are the inline status chips; banners are the full-width block messages. Both pair a tint background with the matching status text color, and both must carry a label or icon — never color alone. Each status ink clears 4.5:1 on its own tint composited over `surface`, `surface-raised` and `bg`, in both themes; `frontend/tests/lib/status-contrast-invariant.test.ts` derives those pairs from `lib/styles.ts` and fails otherwise. A new status tint goes through a primitive: a static ad-hoc `bg-<status>/N` at 30% or less is banned by the same test.
 
 - **Badges** (`badgeBase` + variant): `inline-flex`, `gap-1`, `rounded` (4px), padding `2px 8px`, `text-xs font-medium`. Variants are a tint-plus-text pair: `badgeSuccess` (Settled Green on green-dim), `badgeWarning` (Warning Amber on amber-dim), `badgeError` (Overdue Coral on coral-dim), `badgeInfo` (Reference Blue on blue-dim), `badgeNeutral` (Mist on Raised Navy). Used for row-level status (Pago/Aberto, settled/pending, planned/actual).
-- **Error banner** (`error`): Background = Overdue Coral 12%-alpha (`bg-danger-dim`), text = Overdue Coral, `rounded-md`, padding `px-4 py-3`, `text-sm`.
-- **Success banner** (`success`): Background = Settled Green 12%-alpha, text = Settled Green, otherwise identical shape to Error.
+- **Error banner** (`error`): Background = Overdue Coral low-alpha tint (`bg-danger-dim`; 12% dark, 6% light), text = Overdue Coral, `rounded-md`, padding `px-4 py-3`, `text-sm`.
+- **Success banner** (`success`): Background = Settled Green low-alpha tint (`bg-success-dim`; 12% dark, 6% light), text = Settled Green, otherwise identical shape to Error.
 - **Info / Trial banner:** Reference Blue or Brass Tally on a dim tint, depending on tone (advisory vs urgent).
 
 ### Sticky Action Bar
