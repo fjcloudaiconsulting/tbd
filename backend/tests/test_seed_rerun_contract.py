@@ -139,11 +139,15 @@ async def test_failed_reset_raises_instead_of_seeding():
             await seed.prepare_org(c, {}, assume_yes=True, interactive=False, ask=_never_asked)
 
 
-# fence — kills: a dirty check that trusts an error body as "empty".
+# fence — kills: an unchecked probe. The failing probe answers an empty list,
+# so a missing status check reads it as "clean" and seeds on top of the data.
 @pytest.mark.asyncio
-async def test_failed_dirty_probe_raises():
-    def handler(_req):
-        return httpx.Response(500, json={"detail": "boom"})
+@pytest.mark.parametrize("failing", ["/api/v1/accounts", "/api/v1/settings/billing-periods"])
+async def test_failed_dirty_probe_raises(failing):
+    def handler(req):
+        if req.url.path == failing:
+            return httpx.Response(500, json=[])
+        return httpx.Response(200, json=[])
 
     async with httpx.AsyncClient(base_url="http://seed.test", transport=httpx.MockTransport(handler)) as c:
         with pytest.raises(httpx.HTTPStatusError):
