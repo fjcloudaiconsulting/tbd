@@ -10,7 +10,7 @@ colors:
   border-subtle: "#122a4a"
   text-primary: "#E6EAF0"
   text-secondary: "#9ba8bd"
-  text-muted: "#5a6a82"
+  text-muted: "#8f9db2"
   accent: "#D4A64A"
   focus: "#D4A64A"   # focus indicator; aliases accent, re-pointed on navy chrome
   accent-hover: "#B88A2E"
@@ -40,7 +40,7 @@ colors:
   sidebar-bg: "#06101e"
   sidebar-text: "#7a8da6"
   sidebar-text-bright: "#E6EAF0"
-  sidebar-muted: "#3d4f68"
+  sidebar-muted: "#788ba4"
   sidebar-hover: "#D4A64A0F"
   sidebar-active-bg: "#D4A64A1F"
   sidebar-active-text: "#D4A64A"
@@ -166,42 +166,44 @@ What this system explicitly rejects: the bank-app idiom (heavy navy-and-white co
 
 A muted financial palette with one warm accent. Deep navies do the work of containment and hierarchy; brass appears only where the eye should land. Every color is a CSS custom property: the `--theme-*` layer holds the raw values per theme, and `@theme` exposes them as `--color-*` so Tailwind utilities (`bg-surface`, `text-text-primary`) resolve through the live theme.
 
+**Values live in `frontend/app/globals.css`; this document owns roles and rules.** The frontmatter hexes mirror the dark tier (`:root`) and are fenced against it by `frontend/tests/convention/design-md-tokens.test.ts`, which fails rather than regenerates. The light tier's values exist only in `globals.css`. Prose below names tokens and never quotes a hex, because a quoted value drifts silently: this document once recorded a `text-muted` the runtime had abandoned for failing WCAG 1.4.3, and two independent readers measured the same wrong contrast from it.
+
 ### Primary
 
-- **Brass Tally** (`#D4A64A` dark / `#B88A2E` light): The single warm accent. Reserved for primary CTAs, the active item in a list or sidebar, and the focus ring. In a typical screen it should appear in *one* place, two at most. The hover state shifts to **Aged Brass** (`#B88A2E` dark / `#9a7425` light) and the dim state to its 12%-alpha tint (`accent-dim`) for subtle emphasis like selection backgrounds. On dark, brass ink (`accent-text`) is Ledger Navy; on light it flips to white for AA contrast on the brass fill.
+- **Brass Tally** (`accent`): The single warm accent. Reserved for primary CTAs, the active item in a list or sidebar, and the focus ring. In a typical screen it should appear in *one* place, two at most. The hover state shifts to **Aged Brass** (`accent-hover`) and the dim state to its 12%-alpha tint (`accent-dim`) for subtle emphasis like selection backgrounds. On dark, brass ink (`accent-text`) is Ledger Navy; on light it flips to white for AA contrast on the brass fill.
 
 ### Neutral (Dark Theme)
 
-- **Night Navy** (`#070d18`): The deepest layer; the page background and the sidebar context.
-- **Ledger Navy** (`#0B1F3A`): Surface color for cards, panels, and modals. The brand's anchor color.
-- **Raised Navy** (`#122a4a`): One step up from `Ledger Navy`; for inputs, hovered rows, and stand-out content within a surface.
-- **Overlay Navy** (`#163157`): Two steps up; for elements floating above a surface (dropdowns, tooltips, popovers).
-- **Hairline** (`#1a3560`): Borders and dividers. Always 1px. Never a colored stripe.
-- **Hairline Subtle** (`#122a4a`): Same role, lower contrast. For internal divisions inside an already-bordered surface.
-- **Paper White** (`#E6EAF0`): Primary text. Optical contrast against `Ledger Navy`.
-- **Mist** (`#9ba8bd`): Secondary text — captions, helper copy, table headers.
-- **Fog** (`#5a6a82`): Muted text — placeholders, disabled labels, decorative metadata.
+- **Night Navy** (`bg`): The deepest layer; the page background and the sidebar context.
+- **Ledger Navy** (`surface`): Surface color for cards, panels, and modals. The brand's anchor color.
+- **Raised Navy** (`surface-raised`): One step up from `Ledger Navy`; for inputs, hovered rows, and stand-out content within a surface.
+- **Overlay Navy** (`surface-overlay`): Two steps up; for elements floating above a surface (dropdowns, tooltips, popovers).
+- **Hairline** (`border`): Borders and dividers. Always 1px. Never a colored stripe.
+- **Hairline Subtle** (`border-subtle`): Same role, lower contrast. For internal divisions inside an already-bordered surface.
+- **Paper White** (`text-primary`): Primary text. Optical contrast against `Ledger Navy`.
+- **Mist** (`text-secondary`): Secondary text — captions, helper copy, table headers.
+- **Fog** (`text-muted`): Muted text — placeholders, disabled labels, decorative metadata.
 
 ### Neutral (Light Theme, Default)
 
 The light theme inverts the surface roles but keeps the *sidebar always navy* — a deliberate choice. The product chrome stays calm regardless of theme, while the data canvas adapts.
 
-- **Page** (`#f0f2f5`): Light theme page background.
-- **Surface White** (`#ffffff`): Cards and panels.
-- **Surface Cool** (`#f7f8fa`): Raised surfaces and hovered rows.
-- **Surface Pearl** (`#f0f2f5`): Overlays.
-- **Hairline Light** (`#dde1e8`) / **Hairline Subtle Light** (`#e8ebf0`): Borders.
-- Text ramp: **Ledger Navy** (`#0B1F3A`) → **Slate** (`#3d5070`) → **Stone** (`#8895a8`).
-- The accent shifts to **Aged Brass** (`#B88A2E`) for AA contrast on white.
+- **Page** (`bg`): Light theme page background.
+- **Surface White** (`surface`): Cards and panels.
+- **Surface Cool** (`surface-raised`): Raised surfaces and hovered rows.
+- **Surface Pearl** (`surface-overlay`): Overlays.
+- **Hairline Light** (`border`) / **Hairline Subtle Light** (`border-subtle`): Borders.
+- Text ramp: **Ledger Navy** (`text-primary`) → **Slate** (`text-secondary`) → **Stone** (`text-muted`).
+- The light tier re-derives `accent` (and `accent-hover`) darker for AA contrast on white; the values are in `globals.css`.
 
 ### Status
 
 Every status color carries a `-dim` low-alpha sibling for backgrounds (banners, badges) and, where actionable, a `-hover` and a `-text` companion for solid buttons.
 
-- **Overdue Coral** (`#f87171` dark / `#dc2626` light): Errors, overdrafts, pending-past-due. Solid destructive buttons use it as a fill with `danger-hover` (`#ef4444` dark / `#b91c1c` light) and `danger-text` (Ledger Navy dark / white light).
-- **Settled Green** (`#4ade80` dark / `#16a34a` light): Successful operations, settled status, positive forecasts.
-- **Reference Blue** (`#5FA8D3` dark / `#2d7db3` light): Informational tone, neutral notices, link emphasis when context is non-action.
-- **Warning Amber** (`#f59e0b` dark / `#b45309` light): Caution states that are not yet errors — partial-success notices, "review needed" banners, the warning button. Hover `warning-hover` (`#d97706` dark / `#92400e` light), fill text `warning-text` (Ledger Navy dark / white light), tint `warning-dim` (16% dark / 10% light). This is a *full theme token*; it replaced the old raw-`amber-500` exception that *The No Off-Token Rule* used to carve out.
+- **Overdue Coral** (`danger`): Errors, overdrafts, pending-past-due. Solid destructive buttons use it as a fill with `danger-hover` and `danger-text` (Ledger Navy dark / white light).
+- **Settled Green** (`success`): Successful operations, settled status, positive forecasts.
+- **Reference Blue** (`info`): Informational tone, neutral notices, link emphasis when context is non-action.
+- **Warning Amber** (`warning`): Caution states that are not yet errors — partial-success notices, "review needed" banners, the warning button. Hover `warning-hover`, fill text `warning-text` (Ledger Navy dark / white light), tint `warning-dim` (16% dark / 10% light). This is a *full theme token*; it replaced the old raw-`amber-500` exception that *The No Off-Token Rule* used to carve out.
 
 ### Data Visualization
 
@@ -222,7 +224,7 @@ The categorical chart palette is an 8-hue scale (`chart-1..8`) with light and da
 
 **The No Off-Token Rule.** Status, accent, danger, success, info, warning, surface, border — every color used in the app must come from the theme tokens in `globals.css`. Raw Tailwind palette colors (`amber-500`, `slate-700`, `gray-*`) are forbidden, and there are no surviving exceptions: the former `btnWarning`/`amber-500` violation was retired when the `warning` token family landed. `frontend/scripts/check-design-tokens.sh` enforces this at CI time.
 
-**The Brand-Surface Lock Rule.** A small set of surfaces — the landing hero, the OG/social image, the email header, the OS app icon — must hold one navy/brass identity in *every* theme and every rendering context (server-side image generator, email client, OS chrome). These deliberately bypass the theme tokens, because theme is not a meaningful concept in a screenshot or an email. Their literals live in `frontend/lib/brand.ts` (`BRAND_INK` `#0B1F3A`, `BRAND_BRASS` `#D4A64A`, …), allow-listed in the token check. Brand surfaces never theme-switch; app surfaces always do. Do not add hex literals anywhere else — bring them to `brand.ts`.
+**The Brand-Surface Lock Rule.** A small set of surfaces — the landing hero, the OG/social image, the email header, the OS app icon — must hold one navy/brass identity in *every* theme and every rendering context (server-side image generator, email client, OS chrome). These deliberately bypass the theme tokens, because theme is not a meaningful concept in a screenshot or an email. Their literals live in `frontend/lib/brand.ts` (`BRAND_INK`, `BRAND_BRASS`, …), allow-listed in the token check. Brand surfaces never theme-switch; app surfaces always do. Do not add hex literals anywhere else — bring them to `brand.ts`.
 
 ## 3. Typography
 
@@ -274,27 +276,27 @@ The component primitives live in `frontend/lib/styles.ts` as exported Tailwind u
 ### Buttons
 
 - **Shape:** `rounded-md` (8px radius). Full-width on mobile, content-width on desktop.
-- **Primary** (`btnPrimary`): Brass Tally (`#D4A64A`) background, Ledger Navy (`#0B1F3A`) text, `text-sm font-medium`, padding `8px 16px`. Hover shifts to Aged Brass (`#B88A2E`). Disabled = 50% opacity. Carries a baked-in `min-h-[44px]` touch-target floor; callers that want it collapsed on larger viewports add `sm:min-h-0`. The primary action on any view; one per primary region.
-- **Secondary** (`btnSecondary`): Transparent background, Hairline (`#1a3560`) border, Paper White (`#E6EAF0`) text, same shape and padding as primary. Hover lightens the background to Raised Navy (`#122a4a`). The cancel/escape pair to a primary.
-- **Danger (solid)** (`btnDangerSolid`): Overdue Coral (`#f87171`) fill, `danger-text` label, hover to `danger-hover` (`#ef4444`), disabled 50% opacity. The committed destructive action inside a confirm dialog ("Delete account"). Distinct from `btnDanger`, which is the quiet inline-text destructive affordance.
-- **Warning** (`btnWarning`): Warning Amber (`#f59e0b`) fill, `warning-text` label, hover to `warning-hover` (`#d97706`). Now fully token-driven (it previously used raw `amber-500`); no longer an exception to *The No Off-Token Rule*.
+- **Primary** (`btnPrimary`): Brass Tally (`accent`) background, `accent-text` text, `text-sm font-medium`, padding `8px 16px`. Hover shifts to Aged Brass (`accent-hover`). Disabled = 50% opacity. Carries a baked-in `min-h-[44px]` touch-target floor; callers that want it collapsed on larger viewports add `sm:min-h-0`. The primary action on any view; one per primary region.
+- **Secondary** (`btnSecondary`): `surface` background, `border-strong` border, Paper White (`text-primary`) text, same shape and padding as primary. Hover lightens the background to Raised Navy (`surface-raised`). The cancel/escape pair to a primary.
+- **Danger (solid)** (`btnDangerSolid`): Overdue Coral (`danger`) fill, `danger-text` label, hover to `danger-hover`, disabled 50% opacity. The committed destructive action inside a confirm dialog ("Delete account"). Distinct from `btnDanger`, which is the quiet inline-text destructive affordance.
+- **Warning** (`btnWarning`): Warning Amber (`warning`) fill, `warning-text` label, hover to `warning-hover`. Now fully token-driven (it previously used raw `amber-500`); no longer an exception to *The No Off-Token Rule*.
 - **Link / Ghost** (`btnLink`, `btnDanger`): Text-only treatments at `text-xs` (`btnLink` → brass on hover, `btnDanger` → coral on hover), used for inline actions in dense layouts (table rows, footer affordances).
 - **Hit-target rule:** `btnPrimary` bakes in `min-h-[44px]`. Apply the same floor to any other button that is the primary affordance and whose parent is touch-likely.
 
 ### Cards
 
 - **Shape:** `rounded-lg` (12px radius). Larger radius than buttons; cards are containers, buttons are actions.
-- **Background:** Ledger Navy (`#0B1F3A`) on dark, white on light.
-- **Border:** Hairline (`#1a3560`) on dark, Hairline Light (`#dde1e8`) on light. 1px, always full perimeter. Never a colored side-stripe.
+- **Background:** `surface` (Ledger Navy on dark, white on light).
+- **Border:** `border` (Hairline on dark, Hairline Light on light). 1px, always full perimeter. Never a colored side-stripe.
 - **Header:** `cardHeader` — `border-b` plus internal padding `px-6 py-4`.
-- **Title:** `cardTitle` — uppercase, `text-xs`, `tracking-wider`, Fog (`#5a6a82`). The system's signal that "this is a metadata label, the content below is the value."
+- **Title:** `cardTitle` — uppercase, `text-xs`, `tracking-wider`, Fog (`text-muted`). The system's signal that "this is a metadata label, the content below is the value."
 - **Shadow:** None at rest. See *The State-Only Shadow Rule.*
 
 ### Inputs
 
 - **Shape:** `rounded-md` (8px), full-width.
-- **Background:** Raised Navy (`#122a4a`) — one step lighter than the card it sits in. Inputs feel slightly inset.
-- **Border:** Hairline at rest. On focus, the border shifts to Brass Tally (`#D4A64A`) and a 30%-alpha brass ring appears (`focus-visible:ring-2 focus-visible:ring-accent/30`). The accent doubles as the focus indicator.
+- **Background:** Raised Navy (`surface-raised`) — one step lighter than the card it sits in. Inputs feel slightly inset.
+- **Border:** Hairline at rest. On focus, the border shifts to Brass Tally (`accent`) and a 30%-alpha brass ring appears (`focus-visible:ring-2 focus-visible:ring-accent/30`). The accent doubles as the focus indicator.
 - **Placeholder:** Fog (`text-text-muted`).
 - **Label:** Always paired. Uppercase `Outfit 600`, `text-xs`, `tracking-[0.08em]`, color Fog. Sits 6px above the input (`mb-1.5`).
 
@@ -313,9 +315,9 @@ Badges are the inline status chips; banners are the full-width block messages. B
 
 ### Navigation (Sidebar)
 
-- **Background:** Sidebar Navy (`#06101e` dark / `#0B1F3A` light) — the deepest navy in the system, even in light theme. The chrome carries the brand.
-- **Item rest:** Sidebar Text (`#7a8da6`), no background. Disabled/secondary glyphs use Sidebar Muted (`#3d4f68`).
-- **Item hover:** Sidebar Hover (`sidebar-hover`, Brass Tally 6%-alpha background), text shifts to Sidebar Text Bright (`#E6EAF0`).
+- **Background:** Sidebar Navy (`sidebar-bg`) — the deepest navy in the system, even in light theme. The chrome carries the brand.
+- **Item rest:** Sidebar Text (`sidebar-text`), no background. Disabled/secondary glyphs use Sidebar Muted (`sidebar-muted`).
+- **Item hover:** Sidebar Hover (`sidebar-hover`, Brass Tally 6%-alpha background), text shifts to Sidebar Text Bright (`sidebar-text-bright`).
 - **Item active:** Sidebar Active Background (`sidebar-active-bg`, Brass Tally 12%-alpha), text = Brass Tally (`sidebar-active-text`). The accent indicates the user's current location.
 - **Divider / frame:** Sidebar Border (`sidebar-border`, Brass Tally 8%-alpha) for the few hairlines inside the navy chrome.
 - **Icon style:** Heroicons outline, 18×18, stroke-width 1.5. Inherits `currentColor` from the active state, so the active item's icon goes brass alongside its label.
