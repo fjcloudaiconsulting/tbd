@@ -81,8 +81,8 @@ where the visitor's theme is unknown.
 | `--color-surface-raised` | `#122a4a` | `#f7f8fa` | Inputs, hover surfaces |
 | `--color-text-primary` | `#E6EAF0` | `#0B1F3A` | Body text |
 | `--color-text-secondary` | `#9ba8bd` | `#3d5070` | Supporting copy |
-| `--color-text-muted` | `#5a6a82` | `#8895a8` | Labels, helper text |
-| `--color-accent` | `#D4A64A` | `#B88A2E` | Primary CTAs, focus rings |
+| `--color-text-muted` | `#8f9db2` | `#5d6a7e` | Labels, helper text |
+| `--color-accent` | `#D4A64A` | `#8a6a1f` | Primary CTAs, focus rings |
 | `--color-info` | `#5FA8D3` | `#2d7db3` | Informational chips |
 
 **Brand surface constants** — `frontend/lib/brand.ts`. These do NOT

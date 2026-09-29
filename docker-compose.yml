@@ -189,6 +189,9 @@ services:
       - ./frontend/lib:/app/lib
       - ./frontend/public:/app/public
       - ./frontend/tests:/app/tests
+      # TBD-482: tests/convention/design-md-tokens.test.ts reads DESIGN.md
+      # from ../docs/design, which is outside the image. Read-only on purpose.
+      - ./docs/design:/docs/design:ro
       # next.config.ts is COPYed into the image at build time; without
       # this explicit mount, edits require `docker compose up --build`
       # to take effect.

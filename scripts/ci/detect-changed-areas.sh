@@ -99,6 +99,13 @@ while IFS= read -r f; do
     infra/MIGRATION.md)
       backend=true
       ;;
+    # ── Same class, frontend side (TBD-482):
+    # `frontend/tests/convention/design-md-tokens.test.ts` PARSES DESIGN.md and
+    # fails when its colours drift from globals.css. As prose, a docs-only PR
+    # that drifts it would skip the frontend suite and merge green.
+    docs/design/DESIGN.md)
+      frontend=true
+      ;;
     # ── Inert: prose. Nothing in either test suite reads these files, and
     # they are matched FIRST so `backend/NOTES.md` counts as prose rather
     # than as a backend change.
