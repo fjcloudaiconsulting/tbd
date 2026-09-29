@@ -52,7 +52,10 @@ TOOLS_OPENAI = [
         },
     }
 ]
-DEADLINE = 0.5  # generous ceiling well under the 1.0s handler sleep
+# Wide margins on purpose: the timed window also covers building the httpx
+# client (SSL context), which is slow on a cold or loaded worker. An unbounded
+# call takes the full 3.0s sleep, so 1.5s still separates right from wrong.
+DEADLINE = 1.5
 
 
 def _install_transport(monkeypatch, handler):
@@ -224,7 +227,7 @@ def _openai_compat_embed_ok(_request):
 
 async def _run_timed(monkeypatch, module, timeout_attr, response_factory, call):
     monkeypatch.setattr(module, timeout_attr, 0.05)
-    handler = await _slow_handler(1.0, response_factory)
+    handler = await _slow_handler(3.0, response_factory)
     _install_transport(monkeypatch, handler)
     start = time.monotonic()
     result = await call()
@@ -819,13 +822,14 @@ async def test_ollama_function_call_control(monkeypatch):
 @pytest.mark.asyncio
 async def test_ollama_embed_deadline_spans_the_whole_batch(monkeypatch):
     """ollama embeds one text per POST, so the bound must be ONE deadline
-    across the batch. Three texts at 0.04s each fit a 0.05s per-request
-    bound (0.12s total) but not a 0.05s batch deadline."""
+    across the batch. Three texts at 0.4s each fit a 0.5s per-request
+    bound, so a per-request deadline SUCCEEDS (no error raised), while a
+    0.5s batch deadline trips on the second text."""
     adapter = OllamaAdapter(base_url="http://10.0.0.10:11434", api_key="x")
-    monkeypatch.setattr(ollama_mod, "EMBED_TIMEOUT_S", 0.05)
-    _install_transport(monkeypatch, await _slow_handler(0.04, _ollama_embed_ok))
+    monkeypatch.setattr(ollama_mod, "EMBED_TIMEOUT_S", 0.5)
+    _install_transport(monkeypatch, await _slow_handler(0.4, _ollama_embed_ok))
     start = time.monotonic()
     with pytest.raises(AIProviderError) as exc_info:
         await adapter.embed(texts=["a", "b", "c"], model="nomic-embed-text")
     assert exc_info.value.code == "network_TimeoutError"
-    assert time.monotonic() - start < 0.1
+    assert time.monotonic() - start < DEADLINE
