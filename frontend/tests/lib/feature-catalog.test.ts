@@ -33,8 +33,8 @@ describe("feature-catalog drift guard", () => {
     const inModules = Object.values(FEATURE_MODULES).flat();
     expect([...inModules].sort()).toEqual([...catalog.keys].sort());
     expect(Object.keys(METER_MODULES).filter((m) => catalog.keys.includes(m))).toEqual([]);
-    for (const module of Object.values(METER_MODULES)) {
-      expect(FEATURE_MODULES).toHaveProperty(module);
+    for (const mod of Object.values(METER_MODULES)) {
+      expect(FEATURE_MODULES).toHaveProperty(mod);
     }
   });
 });
