@@ -15,8 +15,9 @@ queries are answered in one index seek via the composite indexes
 defined in migration 059.
 
 ``expires_at`` is service-honoured: a row with ``expires_at <= now()``
-is treated as absent. Cache invalidation TTL (60 s) bounds the worst-
-case staleness window without forcing a separate sweeper job.
+is treated as absent. Rows are read per request by
+``app.rate_limit_overrides.load_rate_limit_overrides`` (no cache), so a
+change takes effect on the caller's next request.
 """
 from __future__ import annotations
 

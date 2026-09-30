@@ -58,6 +58,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.user import User
 from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.services import audit_service
 from app.services.demo_seed_service import (
     DemoSeedAlreadyApplied,
@@ -88,8 +89,8 @@ def _request_id() -> Optional[str]:
     return structlog.contextvars.get_contextvars().get("request_id")
 
 
-@router.post("/complete", response_model=OnboardingCompleteResponse)
-@limiter.limit("10/hour")
+@router.post("/complete", response_model=OnboardingCompleteResponse, dependencies=[Depends(load_rate_limit_overrides)])
+@limiter.limit(dynamic_limit("onboarding.complete", "10/hour"))
 async def complete_onboarding(
     request: Request,
     current_user: User = Depends(get_current_user),
@@ -114,8 +115,8 @@ async def complete_onboarding(
     return OnboardingCompleteResponse(onboarded_at=now.isoformat())
 
 
-@router.post("/seed-demo", response_model=SeedDemoResponse)
-@limiter.limit("3/hour")
+@router.post("/seed-demo", response_model=SeedDemoResponse, dependencies=[Depends(load_rate_limit_overrides)])
+@limiter.limit(dynamic_limit("onboarding.seed_demo", "3/hour"))
 async def seed_demo(
     request: Request,
     empty_org_only: bool = True,
@@ -194,8 +195,8 @@ async def seed_demo(
     )
 
 
-@router.post("/restart-tour", response_model=RestartTourResponse)
-@limiter.limit("10/hour")
+@router.post("/restart-tour", response_model=RestartTourResponse, dependencies=[Depends(load_rate_limit_overrides)])
+@limiter.limit(dynamic_limit("onboarding.restart_tour", "10/hour"))
 async def restart_tour(
     request: Request,
     current_user: User = Depends(get_current_user),

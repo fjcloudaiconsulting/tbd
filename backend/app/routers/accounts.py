@@ -13,6 +13,7 @@ from app.models.account import Account, AccountType
 from app.models.transaction import Transaction
 from app.models.user import Organization, Role, User
 from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.account import (
     AccountCreate,
     AccountResponse,
@@ -795,7 +796,7 @@ async def delete_account(
     await db.commit()
 
 
-@router.post("/{account_id}/adjust-balance", response_model=BalanceAdjustmentResponse)
+@router.post("/{account_id}/adjust-balance", response_model=BalanceAdjustmentResponse, dependencies=[Depends(load_rate_limit_overrides)])
 # TBD-441: `shared_limit`, not `limit`. slowapi buckets a plain `limit` on
 # the CONCRETE request path, so `{account_id}` gave every account its own
 # private 20/hour budget and bounded nothing across the org. This route writes
@@ -814,7 +815,7 @@ async def delete_account(
 # right trade anyway, because a per-account bucket bounds nothing against the
 # abuse this limit exists to stop. If it bites in practice, raise the number;
 # do not go back to a plain `limit`.
-@limiter.shared_limit("20/hour", scope="accounts.adjust_balance")
+@limiter.shared_limit(dynamic_limit("accounts.adjust_balance", "20/hour"), scope="accounts.adjust_balance")
 async def adjust_balance(
     account_id: int,
     request: Request,

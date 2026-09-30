@@ -1,21 +1,8 @@
-"""Integration tests: ``dynamic_limit`` bridge to the override
-resolver.
+"""Unit tests for ``app.rate_limit_overrides``: the limit-string
+formatter and the zero-arg provider returned by ``dynamic_limit``.
 
-The bridge has two halves:
-
-1. ``parse_default_limit`` / ``format_limit`` round-trip parser.
-2. The runtime callable returned by ``dynamic_limit(endpoint, default)``,
-   which consults the resolver (with the DB + cache) and returns the
-   per-request limit string.
-
-This file pins the parser shape (cheap; pure function) and an
-import-time-error assertion (an unparseable default crashes early,
-not at first request). The full request-path integration that
-demonstrates a tighter override hitting 429 before the global default
-is covered by the router test for the create endpoint plus the
-service test for the resolver; wiring both into a live limiter inside
-an in-memory sqlite app would require a running Redis (the limiter's
-storage backend) and is left for a manual verify pass.
+The request-path fences (override actually enforced by the limiter) live in
+``test_rate_limit_overrides_wiring.py``.
 """
 from __future__ import annotations
 
@@ -24,37 +11,7 @@ import pytest
 from app.rate_limit_overrides import (
     dynamic_limit,
     format_limit,
-    parse_default_limit,
 )
-
-
-def test_parse_default_limit_word_forms():
-    assert parse_default_limit("20/minute") == (20, 60)
-    assert parse_default_limit("5/hour") == (5, 3600)
-    assert parse_default_limit("3/day") == (3, 86400)
-    assert parse_default_limit("100/second") == (100, 1)
-    # Whitespace tolerated.
-    assert parse_default_limit("  10 / minute  ") == (10, 60)
-    # Case tolerated.
-    assert parse_default_limit("10/Minute") == (10, 60)
-
-
-def test_parse_default_limit_numeric_period():
-    assert parse_default_limit("30/45") == (30, 45)
-
-
-def test_parse_default_limit_rejects_bogus():
-    with pytest.raises(ValueError):
-        parse_default_limit("nonsense")
-    with pytest.raises(ValueError):
-        parse_default_limit("20/forever")
-    with pytest.raises(ValueError):
-        parse_default_limit("20/")
-
-
-def test_format_round_trip():
-    assert parse_default_limit(format_limit(42, 60)) == (42, 60)
-    assert parse_default_limit(format_limit(5, 3600)) == (5, 3600)
 
 
 def test_dynamic_limit_validates_default_at_construction():
@@ -65,18 +22,39 @@ def test_dynamic_limit_validates_default_at_construction():
         dynamic_limit("auth.login", "20/forever")
 
 
-def test_dynamic_limit_returns_callable_that_falls_through_to_default():
-    """No request identity available -> resolver returns ``None`` ->
-    callable returns the default.
-    """
-    fn = dynamic_limit("auth.login", "20/minute")
+def _provider_in_ctx(value, pattern="auth.resend_verification", default="3/hour"):
+    import contextvars
 
-    class _FakeReq:
-        class state:
-            pass
+    from app.rate_limit_overrides import _overrides_cv
 
-        headers: dict = {}
+    def run():
+        if value is not None:
+            _overrides_cv.set(value)
+        return dynamic_limit(pattern, default)()
 
-    # The fake request has no auth header and no state user/org; the
-    # resolver path short-circuits to the default.
-    assert fn(_FakeReq()) == "20/minute"
+    return contextvars.copy_context().run(run)
+
+
+def test_f8_provider_empty_context_returns_default():
+    assert _provider_in_ctx(None) == "3/hour"
+    assert _provider_in_ctx({"other.pattern": "1/minute"}) == "3/hour"
+
+
+def test_f8_provider_returns_override_for_its_pattern():
+    assert _provider_in_ctx({"auth.resend_verification": "9/minute"}) == "9/minute"
+
+
+@pytest.mark.parametrize(
+    "bad", ["nonsense", "2/45", "0/minute", "", "-1/minute"]
+)
+def test_f8_provider_unparseable_or_zero_override_falls_back_never_raises(bad):
+    assert _provider_in_ctx({"auth.resend_verification": bad}) == "3/hour"
+
+
+def test_format_limit_output_is_always_parseable_by_limits():
+    from limits import parse_many
+
+    for period in (1, 45, 60, 90, 3600, 7200, 86400, 172800):
+        (item,) = parse_many(format_limit(7, period))
+        assert item.amount == 7
+        assert item.get_expiry() == period

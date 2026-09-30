@@ -66,14 +66,6 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
         await engine.dispose()
 
 
-@pytest.fixture(autouse=True)
-def stub_redis(monkeypatch):
-    """No-op Redis for the router path so cache calls don't trip."""
-    import app.redis_client as rc
-
-    monkeypatch.setattr(rc, "get_client", lambda: None)
-
-
 def _make_app(session_factory, current_user_resolver):
     app = FastAPI()
 

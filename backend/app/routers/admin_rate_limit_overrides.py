@@ -85,8 +85,9 @@ async def get_endpoint_catalogue(
     both surfaces but only allow selection from the overridable list:
 
     * ``overridable`` — patterns the schema validator accepts on
-      create / update. These are post-auth routes where the resolver
-      can resolve a user/org identity and apply the override.
+      create / update. These are post-auth routes where
+      ``load_rate_limit_overrides`` reads the caller's rows and the
+      limiter applies them.
     * ``pre_auth_informational`` — patterns whose decorator runs
       before auth, surfaced here so operators can see the full
       decorator surface and learn why they cannot create overrides
