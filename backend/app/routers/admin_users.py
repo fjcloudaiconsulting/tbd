@@ -88,6 +88,7 @@ from app.deps import get_session_factory
 from app.models.notification import NotificationCategory
 from app.models.user import Organization, User
 from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.admin_users import (
     AdminEmailChangeRequest,
     AdminEmailChangeResponse,
@@ -700,9 +701,9 @@ async def _record_email_change_failure(
     "/{user_id}/email-change",
     response_model=AdminEmailChangeResponse,
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
-@limiter.shared_limit("10/hour", scope="admin_users.email_change")
+@limiter.shared_limit(dynamic_limit("admin_users.email_change", "10/hour"), scope="admin_users.email_change")
 async def trigger_email_change(
     user_id: int,
     request: Request,
@@ -1011,9 +1012,9 @@ async def trigger_email_change(
     "/{user_id}/pending-email",
     response_model=AdminPendingEmailCancelResponse,
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
-@limiter.shared_limit("10/hour", scope="admin_users.pending_email_cancel")
+@limiter.shared_limit(dynamic_limit("admin_users.pending_email_cancel", "10/hour"), scope="admin_users.pending_email_cancel")
 async def cancel_admin_pending_email(
     user_id: int,
     request: Request,

@@ -18,6 +18,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.user import Organization, Role, User
 from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.services import audit_service
 from app.routers.auth import _clear_legacy_refresh_cookie, _issue_refresh_session
 from app.schemas.auth import TokenResponse
@@ -297,7 +298,7 @@ async def list_members(
 @router.delete(
     "/members/{user_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
 # Bounds audit_events growth now that every refusal writes a row. The cheapest
 # trigger needs no target row and no org state — an org admin looping
@@ -314,7 +315,7 @@ async def list_members(
 #
 # NOTE the sibling `@limiter.limit("30/minute")` on `preview_invitation` above
 # is CORRECT as a plain `limit`: its path carries no parameter.
-@limiter.shared_limit("30/minute", scope="org_members.remove_member")
+@limiter.shared_limit(dynamic_limit("org_members.remove_member", "30/minute"), scope="org_members.remove_member")
 async def remove_member(
     user_id: int,
     request: Request,

@@ -30,6 +30,7 @@ from app.deps import get_session_factory
 from app.models.notification import NotificationCategory
 from app.models.user import Organization, User
 from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.orgs import OrgRenameRequest, OrgResponse
 from app.services import audit_service, notification_service, org_service
 from app.services.notification_templates import org_renamed as _tpl_org_renamed
@@ -47,7 +48,7 @@ def _request_id() -> str | None:
 @router.patch(
     "/{org_id}/rename",
     response_model=OrgResponse,
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
 # TBD-441: `shared_limit`, not `limit`.
 #
@@ -65,7 +66,7 @@ def _request_id() -> str | None:
 # `get_current_user`, `require_interactive_session` and `require_org_owner`
 # before reaching that 403. That is unbounded enumeration and an unbounded
 # CPU sink on the auth stack, bounded by nothing. One shared bucket bounds it.
-@limiter.shared_limit("10/hour", scope="orgs.rename")
+@limiter.shared_limit(dynamic_limit("orgs.rename", "10/hour"), scope="orgs.rename")
 async def rename_org_endpoint(
     org_id: int,
     body: OrgRenameRequest,

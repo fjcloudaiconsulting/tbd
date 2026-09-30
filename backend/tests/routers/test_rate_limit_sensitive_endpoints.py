@@ -395,9 +395,9 @@ async def test_sso_stepup_initiate_rate_limited(session_factory, monkeypatch):
 
     with TestClient(app) as client:
         for i in range(10):
-            res = client.post("/api/v1/auth/sso-stepup/initiate", json={})
+            res = client.post("/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"})
             assert res.status_code == 200, f"call {i + 1}: {res.text}"
 
-        throttled = client.post("/api/v1/auth/sso-stepup/initiate", json={})
+        throttled = client.post("/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"})
 
     assert throttled.status_code == 429

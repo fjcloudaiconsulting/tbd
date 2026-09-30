@@ -36,8 +36,8 @@ per-user overrides ACTUALLY take effect at request time. These are
 the only strings the schema layer accepts for create / update.
 ``PRE_AUTH_ENDPOINT_PATTERNS`` lists patterns whose decorator site
 runs BEFORE the request has an authenticated identity (no Bearer JWT,
-or only a cookie / one-time token). The override resolver short-
-circuits on those routes, so overrides for them would be no-op rows.
+or only a cookie / one-time token). Those routes keep static
+limits and never load overrides, so overrides for them would be no-op rows.
 They are exposed via the catalogue endpoint so the admin UI can show
 the full surface (and explain why those routes are not overridable),
 but the schema validator rejects them with a typed 422 to prevent
@@ -88,11 +88,6 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # TBD-346. Post-auth: the route is interactive-session gated, so its
     # decorator runs with an identity behind it.
     #
-    # ⚠ Listed for TRUTHFULNESS, not tunability. This catalogue does not
-    # currently make anything adjustable: ``rate_limit_overrides.dynamic_limit``
-    # has no call sites anywhere under ``app/`` and every router decorator is a
-    # static string, so every stored override row is a no-op at request time.
-    # Do not describe this entry as making the limit adjustable.
     "auth.sso_stepup_initiate",
     # feedback router
     "feedback.submit",
@@ -118,8 +113,8 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
 
 
 # Patterns whose decorator site runs BEFORE the request has an
-# authenticated identity. The override resolver always falls back to
-# the static default for these. Exposed via the catalogue endpoint
+# authenticated identity. These routes keep static limits and never
+# load overrides. Exposed via the catalogue endpoint
 # (so the admin UI can render an informational list) but NOT accepted
 # by the schema validator: overrides for these would create no-op
 # rows that confuse operators. Tune via the slowapi decorator in code.

@@ -37,7 +37,7 @@ class MintTokenRequest(BaseModel):
         ge=1,
     )
     current_password: Optional[str] = None
-    stepup_token: Optional[str] = None
+    stepup_token: Optional[str] = Field(default=None, max_length=128)
     mfa_code: Optional[str] = None
 
     @field_validator("expires_in_days")

@@ -181,7 +181,7 @@ async def test_initial_password_with_valid_stepup_token_succeeds(session_factory
     user_id = await _seed_user(
         session_factory,
         password_set=False,
-        stepup_token=token,
+        stepup_token=f"password_set:{token}",
         stepup_expires_at=datetime.now(timezone.utc) + timedelta(minutes=4),
     )
     app = _make_app(session_factory, user_id)
@@ -211,7 +211,7 @@ async def test_initial_password_rejects_expired_stepup_token(session_factory):
     user_id = await _seed_user(
         session_factory,
         password_set=False,
-        stepup_token=token,
+        stepup_token=f"password_set:{token}",
         stepup_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
     )
     app = _make_app(session_factory, user_id)
@@ -238,7 +238,7 @@ async def test_initial_password_rejects_replay_of_consumed_stepup_token(session_
     user_id = await _seed_user(
         session_factory,
         password_set=False,
-        stepup_token=token,
+        stepup_token=f"password_set:{token}",
         stepup_expires_at=datetime.now(timezone.utc) + timedelta(minutes=4),
     )
     app = _make_app(session_factory, user_id)
@@ -267,7 +267,7 @@ async def test_initial_password_updates_password_changed_at_and_sessions_invalid
     user_id = await _seed_user(
         session_factory,
         password_set=False,
-        stepup_token=token,
+        stepup_token=f"password_set:{token}",
         stepup_expires_at=datetime.now(timezone.utc) + timedelta(minutes=4),
     )
     before = datetime.now(timezone.utc)
@@ -301,7 +301,7 @@ async def test_initial_password_path_rejected_after_first_set(session_factory):
     user_id = await _seed_user(
         session_factory,
         password_set=False,
-        stepup_token=token,
+        stepup_token=f"password_set:{token}",
         stepup_expires_at=datetime.now(timezone.utc) + timedelta(minutes=4),
     )
     app = _make_app(session_factory, user_id)
@@ -355,7 +355,7 @@ async def test_email_change_accepts_valid_stepup_token(session_factory):
     user_id = await _seed_user(
         session_factory,
         password_set=False,
-        stepup_token=token,
+        stepup_token=f"email_change:{token}",
         stepup_expires_at=datetime.now(timezone.utc) + timedelta(minutes=4),
     )
     app = _make_app(session_factory, user_id)
@@ -400,7 +400,7 @@ async def test_email_change_rejects_expired_stepup_token(session_factory):
     user_id = await _seed_user(
         session_factory,
         password_set=False,
-        stepup_token=token,
+        stepup_token=f"email_change:{token}",
         # 1 second in the past.
         stepup_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
     )
@@ -443,7 +443,7 @@ async def test_email_change_keeps_stepup_token_when_target_email_taken(session_f
             is_active=True,
             email_verified=True,
             password_set=False,
-            stepup_token=token,
+            stepup_token=f"email_change:{token}",
             stepup_token_expires_at=expires_at,
         )
         bob = User(
@@ -475,7 +475,7 @@ async def test_email_change_keeps_stepup_token_when_target_email_taken(session_f
         assert user.email == "alice@acme.io"
         # Token must still be there for a retry — failed validation
         # cannot consume the step-up proof.
-        assert user.stepup_token == token
+        assert user.stepup_token == f"email_change:{token}"
         assert user.stepup_token_expires_at is not None
 
 
@@ -489,7 +489,7 @@ async def test_email_change_rejects_replay_of_consumed_stepup_token(session_fact
     user_id = await _seed_user(
         session_factory,
         password_set=False,
-        stepup_token=token,
+        stepup_token=f"email_change:{token}",
         stepup_expires_at=datetime.now(timezone.utc) + timedelta(minutes=4),
     )
     app = _make_app(session_factory, user_id)

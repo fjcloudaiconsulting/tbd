@@ -127,7 +127,7 @@ describe("Security page — Set a Password / Change Password gate", () => {
     });
   });
 
-  it("clicking 'Verify with Google' POSTs initiate with return_to=security", async () => {
+  it("clicking 'Verify with Google' POSTs initiate with action=password_set", async () => {
     mockUser(false);
     vi.mocked(apiFetch).mockResolvedValueOnce({
       redirect_url: "https://accounts.google.com/o/oauth2/v2/auth?state=stepup",
@@ -147,7 +147,7 @@ describe("Security page — Set a Password / Change Password gate", () => {
         "/api/v1/auth/sso-stepup/initiate",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ return_to: "security" }),
+          body: JSON.stringify({ action: "password_set" }),
         }),
       );
     });
