@@ -23,6 +23,7 @@ from app.models.agent_pending_action import (
 )
 from app.models.user import User
 from app.rate_limit import limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 
 router = APIRouter(
     prefix="/api/v1/agent/actions",
@@ -63,8 +64,8 @@ async def _decide(fn, db: AsyncSession, user: User, action_id: str) -> dict[str,
         raise _http(exc) from None
 
 
-@router.post("/{action_id}/confirm")
-@limiter.shared_limit("30/minute", scope="agent.confirm")
+@router.post("/{action_id}/confirm", dependencies=[Depends(load_rate_limit_overrides)])
+@limiter.shared_limit(dynamic_limit("agent.confirm", "30/minute"), scope="agent.confirm")
 async def confirm(
     request: Request,
     action_id: str,
@@ -74,8 +75,8 @@ async def confirm(
     return await _decide(registry.confirm_action, db, user, action_id)
 
 
-@router.post("/{action_id}/cancel")
-@limiter.shared_limit("30/minute", scope="agent.cancel")
+@router.post("/{action_id}/cancel", dependencies=[Depends(load_rate_limit_overrides)])
+@limiter.shared_limit(dynamic_limit("agent.cancel", "30/minute"), scope="agent.cancel")
 async def cancel(
     request: Request,
     action_id: str,
