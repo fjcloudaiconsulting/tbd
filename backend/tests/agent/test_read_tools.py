@@ -42,6 +42,7 @@ PERIOD_TOOLS = ("budgets_list", "spending_by_category", "forecast_get")
 TODAY = datetime.date.today()
 P_START = TODAY.replace(day=1)
 B_START = P_START - datetime.timedelta(days=40)  # a date only org B has a period at
+C_START = (P_START - datetime.timedelta(days=1)).replace(day=1)  # org A's closed period
 
 
 def _args(name: str) -> dict:
@@ -72,7 +73,9 @@ async def factory():
         await engine.dispose()
 
 
-async def _org(db, tag: str, *, entitled: bool = True, periods: bool = True) -> dict:
+async def _org(
+    db, tag: str, *, entitled: bool = True, periods: bool = True, amount: str = "12.50",
+) -> dict:
     """One org whose every user-writable string carries ``MARK``."""
     org = Organization(name=f"{tag} {MARK}", billing_cycle_day=1, primary_currency="EUR")
     db.add(org)
@@ -100,7 +103,7 @@ async def _org(db, tag: str, *, entitled: bool = True, periods: bool = True) -> 
     await db.flush()
     tx = Transaction(
         org_id=org.id, account_id=acct.id, category_id=sub.id,
-        description=f"Coffee {tag} {MARK}", amount=Decimal("12.50"),
+        description=f"Coffee {tag} {MARK}", amount=Decimal(amount),
         type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
         date=P_START, settled_date=P_START,
     )
@@ -162,6 +165,37 @@ async def test_invoke_runs_all_six_reads_for_an_entitled_user(factory):
         assert out[name]["period_start"] == str(P_START), name
 
 
+async def test_explicit_period_start_returns_that_period(factory):
+    """FENCE. A CLOSED earlier period asked for by ``period_start`` is the one
+    answered, not the open one. Wrong implementation: resolving the start and
+    then calling the service with ``period_start=None`` (or dropping it), which
+    answers with the open period's budgets and spend under the requested label."""
+    async with factory() as db:
+        a = await _org(db, "A")
+        db.add(BillingPeriod(org_id=a["org"].id, start_date=C_START,
+                             end_date=P_START - datetime.timedelta(days=1)))
+        other = Category(org_id=a["org"].id, name="Rent", type=CategoryType.EXPENSE)
+        db.add(other)
+        await db.flush()
+        db.add(Budget(org_id=a["org"].id, category_id=other.id, amount=Decimal("55.00"),
+                      period_start=C_START))
+        db.add(Transaction(
+            org_id=a["org"].id, account_id=a["acct"].id, category_id=other.id,
+            description="Rent", amount=Decimal("3.00"), type=TransactionType.EXPENSE,
+            status=TransactionStatus.SETTLED, date=C_START, settled_date=C_START,
+        ))
+        await db.commit()
+    arg = {"period_start": str(C_START)}
+    budgets = (await _call(factory, a["user"], "budgets_list", arg))["data"]
+    assert [(b["category_id"], b["spent"]) for b in budgets["budgets"]] == [(other.id, "3.00")]
+    spend = (await _call(factory, a["user"], "spending_by_category", arg))["data"]
+    assert [(c["category_id"], c["executed"]) for c in spend["categories"]] == [(other.id, "3.00")]
+    forecast = (await _call(factory, a["user"], "forecast_get", arg))["data"]
+    assert forecast["executed_expense"] == "3.00"
+    for out in (budgets, spend, forecast):
+        assert out["period_start"] == str(C_START)
+
+
 async def test_fr3_other_orgs_ids_and_periods_return_nothing_of_theirs(factory):
     """FENCE F-R3. As org A with org B's account, category and period ids.
     Wrong implementation: a tool calling a service without ``ctx.org_id``
@@ -169,7 +203,17 @@ async def test_fr3_other_orgs_ids_and_periods_return_nothing_of_theirs(factory):
     by B (control), so an empty result is the org scope, not an empty fixture."""
     async with factory() as db:
         a = await _org(db, "A")
-        b = await _org(db, "B")
+        b = await _org(db, "B", amount="7.25")  # B's row sits inside A's window too
+    # A's aggregates with B's rows present: only A's 12.50 counts.
+    budgets = (await _call(factory, a["user"], "budgets_list"))["data"]["budgets"]
+    assert [(x["category_id"], x["spent"]) for x in budgets] == [(a["master"].id, "12.50")]
+    spend = (await _call(factory, a["user"], "spending_by_category"))["data"]
+    assert [c["category_id"] for c in spend["categories"]] == [a["sub"].id]
+    assert spend["executed_expense"] == "12.50"
+    assert (await _call(factory, a["user"], "forecast_get"))["data"]["executed_expense"] == "12.50"
+    own = (await _call(factory, a["user"], "transactions_search"))["data"]
+    assert [r["id"] for r in own["items"]] == [a["tx"].id]
+
     foreign = {
         **_args("transactions_search"),
         "account_id": [b["acct"].id], "category_id": [b["master"].id],
@@ -204,6 +248,9 @@ async def test_fr7_reads_write_nothing(factory, seeded):
     open period would have hidden the bug in."""
     async with factory() as db:
         a = await _org(db, "A", periods=seeded)
+        # Another org WITH an open period: a lookup that forgot ``org_id``
+        # would find it and answer instead of ``no_open_period``.
+        await _org(db, "B")
     before = await _row_counts(factory)
     for tool in all_tools():
         if tool.name in PERIOD_TOOLS and not seeded:

@@ -235,8 +235,11 @@ def test_fr4_args_reject_everything_the_route_rejects(tool):
     route = _live_routes()[tool.mirrors_route]
     query = {f.alias: f for f in route.dependant.query_params}
     shared = [n for n in tool.args.model_fields if n in query]
-    if tool.args.model_fields:
-        assert shared, f"{tool.name} shares no argument with its route; the fence is vacuous"
+    # Every argument must be one the route validates, or it escapes this
+    # fence silently (a field renamed away from the route's query name).
+    assert shared == list(tool.args.model_fields), (
+        f"{tool.name}: args {set(tool.args.model_fields) - set(shared)} are not route query params"
+    )
     base = _valid_base(tool)
     tool.args.model_validate(base)  # the base itself is valid
     checked = 0
@@ -273,7 +276,10 @@ def test_fr4_tightened_limits_hold():
 
 # ── F-R5 ──────────────────────────────────────────────────────────────────
 
-_EGRESS = re.compile(r"(^|\.)(httpx|requests|aiohttp|urllib3?|socket|smtplib|ai_providers|egress_guard|\w*mail\w*|notification\w*)(\.|$)")
+_EGRESS = re.compile(
+    r"(^|\.)(https?|httpx|requests|aiohttp|urllib3?|socket|ssl|ftplib|\w*smtplib|boto3|botocore"
+    r"|stripe|ai_providers|ai_dispatch|egress_guard|\w*mail\w*|notification\w*)(\.|$)"
+)
 
 
 def _imported_modules(path: pathlib.Path) -> set[str]:
@@ -289,7 +295,7 @@ def _imported_modules(path: pathlib.Path) -> set[str]:
 
 
 def _agent_tool_modules() -> list[pathlib.Path]:
-    return sorted(p for p in (APP_DIR / "agent").rglob("*.py") if p.name != "__init__.py")
+    return sorted((APP_DIR / "agent").rglob("*.py"))
 
 
 def test_fr5_no_tool_module_imports_an_egress_path():
@@ -308,6 +314,7 @@ def test_fr5_no_tool_module_imports_an_egress_path():
 @pytest.mark.parametrize("mod", [
     "httpx", "app.services.email_service", "app.services.notification_service",
     "app.services.ai_providers.egress_guard", "app.services.mailgun_webhook",
+    "http.client", "aiosmtplib", "app.services.ai_dispatch", "ssl",
 ])
 def test_fr5_detector_matches_each_egress_shape(mod):
     assert _EGRESS.search(mod)
@@ -389,6 +396,13 @@ _NEVER = [
     ("POST", "/api/v1/oauth/token"),
     ("GET", "/api/v1/transactions/export"),
     ("POST", "/api/v1/reports/{report_id}/share"),
+    ("POST", "/api/v1/ai/budget/rebalance"),
+    ("POST", "/api/v1/feedback"),
+    ("PUT", "/api/v1/scheduler/settings"),
+    ("PUT", "/api/v1/settings/manual-balance-adjustment"),
+    ("POST", "/api/v1/webhooks/mailgun"),
+    ("GET", "/api/v1/public/founder-count"),
+    ("POST", "/api/v1/security/csp-report"),
 ]
 
 
@@ -489,6 +503,8 @@ async def test_invoke_refuses_without_the_agent_entitlement(monkeypatch, scratch
     ("mcp", "agent:read", "read", True),
     ("mcp", "agent:read", "sensitive", False),
     ("mcp", "agent:write", "read", True),
+    ("mcp", "agent:write", "sensitive", "unsupported"),
+    ("in_app", None, "write", "unsupported"),
 ])
 async def test_principal_scope_gate(entitled, scratch_tool, channel, scope, risk, ok):
     """GUARD. ``agent:read`` reaches read tools only; MCP needs an agent scope;
@@ -498,12 +514,27 @@ async def test_principal_scope_gate(entitled, scratch_tool, channel, scope, risk
     route = ("GET", "/api/v1/accounts") if risk == "read" else ("PUT", "/api/v1/budgets/{budget_id}")
     scratch_tool(_spec(name="scoped_tool", risk=risk, mirrors_route=route, **hooks))
     call = invoke(None, _user(Role.OWNER), "scoped_tool", {}, channel=channel, scope=scope)
-    if ok:
+    if ok == "unsupported":
+        with pytest.raises(ToolError) as exc:
+            await call
+        assert exc.value.code == "unsupported"
+    elif ok:
         assert await call == {"data": {"ok": True}}
     else:
         with pytest.raises(ToolError) as exc:
             await call
         assert exc.value.code == "scope_denied"
+
+
+async def test_unexpected_tool_failure_is_an_opaque_error(entitled, scratch_tool):
+    """GUARD. A service exception never reaches the model as SQL or a trace."""
+    async def _boom(ctx, args):
+        raise RuntimeError("SELECT secret FROM users")
+
+    scratch_tool(_spec(name="boom_tool", run=_boom))
+    with pytest.raises(ToolError) as exc:
+        await invoke(None, _user(Role.OWNER), "boom_tool", {}, channel="in_app")
+    assert (exc.value.code, exc.value.detail) == ("internal_error", "the tool failed")
 
 
 # ── F-R10 unit ────────────────────────────────────────────────────────────

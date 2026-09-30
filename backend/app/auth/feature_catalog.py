@@ -2,8 +2,11 @@
 
 The catalog invariant is "actively gated OR reserved by a locked
 near-term roadmap dependency." `ai.autocategorize` qualifies via LAI.1.
-Adding a key is a one-line edit here + a one-line edit in
-frontend/lib/feature-catalog.ts; the drift-guard test pins parity.
+Adding a key means: the Literal and PlanFeatures here, a FEATURE_MODULES
+entry, FEATURE_LABELS / FeatureKey / PlanFeatures in the frontend, the
+system plans page defaults, AI_FEATURE_MAP for an AI key, and a regenerated
+frontend/tests/fixtures/feature-catalog.json (scripts/regen_feature_catalog_fixture.py).
+tests/test_feature_catalog_frontend_contract.py pins the parity.
 """
 from __future__ import annotations
 
@@ -24,7 +27,7 @@ ALL_FEATURE_KEYS: frozenset[str] = frozenset(get_args(FeatureKey))
 
 # TBD-559: a MODULE is what the operator sells: catalog metadata grouping
 # feature keys and usage meters. Every key and every meter sits in exactly one
-# module (fenced in tests/auth/test_feature_modules.py, mirrored in
+# module (fenced in tests/test_feature_catalog_frontend_contract.py, mirrored in
 # frontend/lib/feature-catalog.ts through the generated fixture). Storage stays
 # per key, so a plan can grant part of a module.
 FEATURE_MODULES: dict[str, tuple[str, ...]] = {

@@ -65,14 +65,14 @@ class TransactionSearchArgs(_Args):
             "'exact': only rows whose own category is the given id."
         ),
     )
-    account_id: list[int] | None = None
-    category_id: list[int] | None = None
+    account_id: list[int] | None = Field(default=None, max_length=MAX_PAGE)
+    category_id: list[int] | None = Field(default=None, max_length=MAX_PAGE)
     type: Literal["income", "expense"] | None = None
     status: Literal["settled", "pending"] | None = None
     search: str | None = Field(default=None, max_length=200)
     reportable: bool = False
     limit: int = Field(default=MAX_PAGE, ge=1, le=MAX_PAGE)
-    offset: int = Field(default=0, ge=0)
+    offset: int = Field(default=0, ge=0, le=10_000)
 
     @model_validator(mode="after")
     def _bounded_range(self) -> TransactionSearchArgs:
@@ -86,7 +86,13 @@ class TransactionSearchArgs(_Args):
 async def _resolve_period_start(
     ctx: ToolContext, requested: datetime.date | None
 ) -> datetime.date:
-    """The start of an EXISTING period, found without writing anything."""
+    """The start of an EXISTING period, found without writing anything.
+
+    The services look the period up again by this start. That second read is
+    in the same transaction, so on MySQL's REPEATABLE READ it sees the same
+    snapshot and cannot miss the row this one found; a miss there is what
+    would reach the auto-create fallback.
+    """
     if requested is not None:
         if await billing_service._find_period_by_start(ctx.db, ctx.org_id, requested) is None:
             raise ToolError("period_not_found", str(requested))

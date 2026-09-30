@@ -60,20 +60,30 @@ AGENT_SCOPES = frozenset({"agent:read", "agent:write", "agent:auto"})
 # subscription and billing. Matched against the mirrored route's path.
 _NEVER_EXPOSE_PREFIXES: tuple[str, ...] = (
     "/api/v1/admin",            # platform surface
+    "/api/v1/ai",               # AI features: provider egress and spend
     "/api/v1/agent/tokens",     # agent tokens
     "/api/v1/auth",             # login, password, MFA, email
+    "/api/v1/feedback",         # sends mail
     "/api/v1/oauth",            # MCP authorization
     "/api/v1/orgs",             # members, invitations, roles, rename, wipe
     "/api/v1/plans",            # subscription plans
+    "/api/v1/public",           # unauthenticated surfaces
+    "/api/v1/scheduler",        # org scheduler settings
+    "/api/v1/security",         # CSP report sink
     "/api/v1/settings/ai-providers",  # AI credentials, routing, caps, consent
     "/api/v1/subscriptions",    # billing
     "/api/v1/system",           # REST API tokens
     "/api/v1/users",            # email, password, profile
+    "/api/v1/webhooks",         # provider callbacks
 )
 # ``/api/v1/settings`` itself and ``/{key}`` hold ``feature.``/``orgpref.``
-# keys; ``/features/{feature}`` writes the product-area switches.
+# keys; ``/features/{feature}`` writes the product-area switches; the manual
+# balance adjustment switch is an org toggle of the same kind.
 _NEVER_EXPOSE_EXACT: frozenset[str] = frozenset(
-    {"/api/v1/settings", "/api/v1/settings/{key}", "/api/v1/settings/features/{feature}"}
+    {
+        "/api/v1/settings", "/api/v1/settings/{key}", "/api/v1/settings/features/{feature}",
+        "/api/v1/settings/manual-balance-adjustment",
+    }
 )
 # Any route with one of these path segments, wherever it is mounted.
 _NEVER_EXPOSE_SEGMENTS: frozenset[str] = frozenset(
@@ -235,6 +245,25 @@ async def invoke(
     ``None`` in-app (a browser session has full tool access subject to the
     other gates). Raises :class:`ToolError` on any refusal.
     """
+    try:
+        data = await _gate_and_run(db, user, name, raw_args, channel, scope, api_token_id)
+    except ToolError as exc:
+        await logger.ainfo(
+            "agent.tool.invoked", tool=name, channel=channel, org_id=user.org_id,
+            user_id=user.id, outcome=exc.code,
+        )
+        raise
+    await logger.ainfo(
+        "agent.tool.invoked", tool=name, channel=channel, org_id=user.org_id, user_id=user.id,
+        outcome="ok",
+    )
+    return {"data": wrap_untrusted(data)}
+
+
+async def _gate_and_run(
+    db: AsyncSession, user: User, name: str, raw_args: dict[str, Any] | None,
+    channel: Channel, scope: str | None, api_token_id: int | None,
+) -> Any:
     spec = _TOOLS.get(name)
     if spec is None:
         raise ToolError("unknown_tool", name)
@@ -277,13 +306,14 @@ async def invoke(
 
     ctx = ToolContext(db=db, user=user, org_id=org_id, channel=channel, api_token_id=api_token_id)
     try:
-        data = await spec.run(ctx, args)
+        return await spec.run(ctx, args)
+    except ToolError:
+        raise
     except NotFoundError as exc:
         raise ToolError("not_found", str(exc)) from None
     except ValidationError as exc:
         raise ToolError("invalid_arguments", str(exc)) from None
-    await logger.ainfo(
-        "agent.tool.invoked", tool=name, channel=channel, org_id=org_id, user_id=user.id,
-        outcome="ok",
-    )
-    return {"data": wrap_untrusted(data)}
+    except Exception:
+        # Never hand SQL or internals to a model or a harness.
+        await logger.aexception("agent.tool.failed", tool=name, org_id=org_id)
+        raise ToolError("internal_error", "the tool failed") from None

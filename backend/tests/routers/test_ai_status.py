@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.routers.ai_status import router as ai_status_router
+from app.schemas.ai_status import AIStatusResponse
 from app.services import ai_status_service
 
 
@@ -28,6 +29,25 @@ async def test_get_ai_feature_status_shape(monkeypatch):
     assert out["categorize"] == {"entitled": True, "configured": False}
     assert out["forecast"] == {"entitled": True, "configured": True}
     assert out["budget"] == {"entitled": False, "configured": False}
+    # TBD-559: ai.agent routes through "chat"; absent from the features map -> not entitled.
+    assert out["agent"] == {"entitled": False, "configured": False}
+
+
+@pytest.mark.asyncio
+async def test_agent_entry_uses_the_chat_routing(monkeypatch):
+    async def fake_features(db, org_id):
+        return {"ai.agent": True}
+
+    async def fake_routing(db, *, org_id, feature_name):
+        return (1, "m") if feature_name == "chat" else None
+
+    monkeypatch.setattr(ai_status_service.feature_service, "get_features", fake_features)
+    monkeypatch.setattr(
+        ai_status_service.ai_routing_service, "get_routing_for_feature", fake_routing
+    )
+    out = await ai_status_service.get_ai_feature_status(None, org_id=1)
+    assert out["agent"] == {"entitled": True, "configured": True}
+    AIStatusResponse.model_validate(out)
 
 
 def test_endpoint_requires_auth():
