@@ -58,6 +58,14 @@ def _spec(**over) -> ToolSpec:
     return ToolSpec(**base)
 
 
+@pytest.fixture(autouse=True)
+def _no_leaked_fixture_tool():
+    """A refusal test whose mutant lets ``fixture_tool`` register must not
+    turn every later test into a "duplicate name" failure."""
+    yield
+    registry._TOOLS.pop("fixture_tool", None)
+
+
 @pytest.fixture
 def scratch_tool():
     """Register tools for one test and remove them afterwards."""
