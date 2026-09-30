@@ -251,7 +251,7 @@ def test_every_mapped_pattern_is_in_the_catalogue():
 
 def test_pre_auth_and_overridable_stay_disjoint():
     """A pattern in both sets would be accepted by the schema validator AND
-    short-circuited by the override resolver — a knob that saves and no-ops.
+    ignored at request time (pre-auth routes keep static limits) — a knob that saves and no-ops.
     """
     overlap = OVERRIDABLE_ENDPOINT_PATTERNS & PRE_AUTH_ENDPOINT_PATTERNS
     assert overlap == frozenset(), overlap

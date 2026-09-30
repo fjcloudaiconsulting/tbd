@@ -20,12 +20,13 @@ Architect-locked invariants enforced here:
   * ``endpoint_pattern_unknown`` — the string is not in any catalogue
     set (typo, route doesn't exist). Echoes the overridable list back.
   * ``endpoint_pattern_pre_auth_non_overridable`` — the string IS a
-    known pattern but it is pre-auth, where the resolver short-
-    circuits to the static default. Overrides on those rows would
+    known pattern but it is pre-auth, where the route keeps a
+    static limit and never loads overrides. Overrides on those rows would
     be no-ops, so we reject at the schema layer rather than letting
     operators create silent dead config.
 - ``expires_at``, when sent, must be strictly in the future. A row
-  with ``expires_at`` in the past is treated as inert by the resolver
+  with ``expires_at`` in the past is filtered out by
+  ``load_rate_limit_overrides``
   but creating one in the past is rejected here so the admin UI
   surfaces it as a user error, not a silent no-op.
 """
@@ -61,8 +62,8 @@ def _validate_endpoint_pattern(value: str) -> str:
 
     Two failure modes:
 
-    * Pre-auth pattern — known to the catalogue but the resolver
-      short-circuits at request time, so an override row would be a
+    * Pre-auth pattern — known to the catalogue but the route keeps a
+      static limit and never loads overrides, so an override row would be a
       no-op. Caller sees ``ERR_CODE_PRE_AUTH``.
     * Unknown pattern — not in any catalogue set (typo or stale).
       Caller sees ``ERR_CODE_UNKNOWN`` plus the full overridable

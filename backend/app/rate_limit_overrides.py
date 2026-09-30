@@ -27,6 +27,7 @@ amount).
 """
 import contextvars
 import re
+import types
 from datetime import datetime, timezone
 from typing import Callable, Mapping
 
@@ -44,7 +45,7 @@ from app.models.user import User
 logger = structlog.stdlib.get_logger()
 
 _overrides_cv: contextvars.ContextVar[Mapping[str, str]] = contextvars.ContextVar(
-    "rate_limit_overrides", default={}
+    "rate_limit_overrides", default=types.MappingProxyType({})
 )
 
 

@@ -6,6 +6,7 @@ first 429, so each fence pins an exact number that differs from the static
 default (5/hour on ``users.update_profile``).
 """
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -61,8 +62,17 @@ async def factory():
     await eng.dispose()
 
 
+_filler = {"n": 0}
+
+
 async def _org(f, name: str) -> Organization:
+    """Org ids run ahead of user ids (each call adds a filler org), so a loader
+    that swaps user_id / org_id can never match by coincidence."""
     async with f() as s:
+        for _ in range(3):
+            _filler["n"] += 1
+            s.add(Organization(name=f"filler{_filler['n']}", billing_cycle_day=1))
+        await s.flush()
         o = Organization(name=name, billing_cycle_day=1)
         s.add(o)
         await s.commit()
@@ -135,6 +145,7 @@ def _allowed(headers: dict, *, cap: int = 12, method: str = "put", url: str = "/
 async def test_f1_user_override_is_enforced(factory):
     org = await _org(factory, "a")
     u = await _user(factory, org, "u1")
+    assert u.id != org.id
     await _row(factory, user=u, max_requests=2)
     assert _allowed(_jwt(u)) == 2
 
@@ -207,12 +218,28 @@ async def test_f4_org_row_applies_to_org_members(factory):
     assert _allowed(_jwt(u)) == 3
 
 
+async def test_f4_user_beats_org_when_user_value_is_smaller(factory):
+    org = await _org(factory, "a")
+    u = await _user(factory, org, "u1")
+    await _row(factory, user=u, max_requests=3)
+    await _row(factory, org=org, max_requests=7)
+    assert _allowed(_jwt(u)) == 3
+
+
 async def test_f4_newest_user_row_wins(factory):
     org = await _org(factory, "a")
     u = await _user(factory, org, "u1")
     await _row(factory, user=u, max_requests=2)
     await _row(factory, user=u, max_requests=7)
     assert _allowed(_jwt(u)) == 7
+
+
+async def test_f4_newest_user_row_wins_when_it_is_the_smaller(factory):
+    org = await _org(factory, "a")
+    u = await _user(factory, org, "u1")
+    await _row(factory, user=u, max_requests=7)
+    await _row(factory, user=u, max_requests=2)
+    assert _allowed(_jwt(u)) == 2
 
 
 async def test_f4_expired_row_is_ignored_future_row_applies(factory):
@@ -231,6 +258,11 @@ async def test_f4_another_orgs_and_users_rows_have_no_effect(factory):
     b = await _user(factory, org_b, "ub")
     await _row(factory, org=org_b, max_requests=2)
     await _row(factory, user=b, max_requests=2)
+    # Ids that collide with the tested identity across the two columns: a row
+    # for org_id == a.id and one for user_id == org_a.id (neither is a's).
+    assert a.id != org_a.id
+    await _row(factory, org=SimpleNamespace(id=a.id), max_requests=2)
+    await _row(factory, user=SimpleNamespace(id=org_a.id), max_requests=2)
     assert _allowed(_jwt(a)) == DEFAULT
 
 
