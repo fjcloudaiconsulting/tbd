@@ -1217,7 +1217,7 @@ async def test_feature_routing_wins_over_default(
     adapter = _make_adapter()
     captured = {}
 
-    def _capture_factory(provider, *, api_key, bearer_token=None, base_url=None):
+    def _capture_factory(provider, *, api_key, bearer_token=None, base_url=None, base_url_is_api_root=None):
         captured["api_key"] = api_key
         return adapter
 
