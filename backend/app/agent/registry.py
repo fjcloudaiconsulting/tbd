@@ -303,6 +303,10 @@ async def invoke(
             user_id=user_id, outcome=exc.code,
         )
         exc.data = wrap_untrusted(exc.data)
+        # A refused preview may hold a row lock (FOR UPDATE); never keep it
+        # open while the caller's session lives on across model rounds.
+        if db is not None:
+            await db.rollback()
         raise
     except Exception:
         # Gates and tools alike: never hand SQL or internals to a model or a

@@ -306,3 +306,16 @@ async def test_fr10_bank_text_reaches_the_model_only_wrapped(factory, w):
     done = await _confirm(factory, a["member"], stale.data["action_id"])
     for out in (staged, stale.data, done):
         assert not [s for s in _bare(out) if mark in s.upper()], out
+
+
+async def test_a_refused_preview_leaves_no_open_transaction(factory, w):
+    """FENCE. The preview reads FOR UPDATE; a refusal must not leave that row
+    lock held in the caller's session. Wrong implementation: ``invoke``
+    re-raising a ToolError without rolling back."""
+    a = w["A"]
+    async with factory() as db:
+        user = await db.get(User, a["member"])
+        await _refused(registry.invoke(
+            db, user, TOOL, {"transaction_id": a["tx"], "category_id": a["c1"]}, channel="in_app",
+        ))
+        assert not db.in_transaction()
