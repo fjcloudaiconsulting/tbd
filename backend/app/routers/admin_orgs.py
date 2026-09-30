@@ -26,7 +26,7 @@ import structlog
 
 from app.auth.feature_catalog import ALL_FEATURE_KEYS, ALL_METER_KEYS, METER_MODULES
 from app.auth.pat import require_interactive_session
-from app.auth.permissions import require_permission
+from app.auth.permissions import require_permission, require_superadmin_for_platform_meter
 from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -765,18 +765,6 @@ def _validate_meter(meter: str) -> None:
         )
 
 
-def _require_superadmin_for_platform_meter(meter: str, user: User) -> None:
-    """Platform meters spend platform money.
-
-    ponytail: explicit superadmin guard instead of a permission, because no
-    user-to-platform-role link exists yet. Before L4.8 grants ``orgs.manage``
-    beyond superadmin, add a ``platform_ai.manage`` permission (or a per-org
-    maximum) and let it REPLACE this guard.
-    """
-    if meter.startswith("platform_ai.") and not user.is_superadmin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-
-
 async def _limit_override_to_response(row: OrgLimitOverride, db: AsyncSession) -> dict:
     email = None
     if row.set_by is not None:
@@ -820,7 +808,7 @@ async def set_limit_override(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     _validate_meter(meter)
-    _require_superadmin_for_platform_meter(meter, user)
+    require_superadmin_for_platform_meter(meter, user)
     if body.limit_value is None and meter.startswith("platform_ai."):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -912,7 +900,7 @@ async def revoke_limit_override(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     _validate_meter(meter)
-    _require_superadmin_for_platform_meter(meter, user)
+    require_superadmin_for_platform_meter(meter, user)
     target_org_name = await _target_org_name(db, org_id)
     actor_id, actor_email = user.id, user.email
 

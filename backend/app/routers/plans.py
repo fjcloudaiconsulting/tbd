@@ -3,15 +3,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.feature_catalog import ALL_METER_KEYS, PlanUsageLimits
 from app.auth.pat import require_interactive_session
-from app.auth.permissions import require_permission
+from app.auth.permissions import require_permission, require_superadmin_for_platform_meter
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.subscription import Plan, Subscription
-from app.auth.feature_catalog import ALL_METER_KEYS, PlanUsageLimits
 from app.models.user import User
 from app.rate_limit import get_client_ip
-from app.routers.admin_orgs import _require_superadmin_for_platform_meter
 from app.schemas.common import ListEnvelope
 from app.schemas.subscription import PlanCreate, PlanDuplicateRequest, PlanResponse, PlanUpdate
 from app.services import audit_service
@@ -50,7 +49,7 @@ def _guard_platform_limits(user: User, new: dict, old: dict) -> None:
     """Platform meters spend platform money: only a superadmin may change one."""
     for meter in ALL_METER_KEYS:
         if new[meter] != old[meter]:
-            _require_superadmin_for_platform_meter(meter, user)
+            require_superadmin_for_platform_meter(meter, user)
 
 
 def _bad_request(exc: ValidationError) -> HTTPException:

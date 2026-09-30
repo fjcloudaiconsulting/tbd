@@ -76,7 +76,15 @@ def _barrier_on_counter_writes(factory, barrier: asyncio.Barrier) -> None:
 
     def hook(conn, cursor, statement, parameters, context, executemany):
         head = statement.lstrip().upper()
-        if "usage_counters" in statement and head.startswith(("UPDATE", "INSERT")):
+        # The idempotent upsert is not the counting write: hold the first
+        # UPDATE (or a plain INSERT) so a read-then-write mutant that keeps
+        # the upsert still reads before the barrier.
+        if (
+            "usage_counters" in statement
+            and head.startswith(("UPDATE", "INSERT"))
+            and "ON CONFLICT" not in head
+            and "ON DUPLICATE KEY" not in head
+        ):
             key = id(conn.connection.dbapi_connection)
             if key not in held:
                 held.add(key)
