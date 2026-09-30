@@ -51,8 +51,18 @@ interface ProviderOption {
   availability: "available" | "not_yet_available";
 }
 
+// A host reached through an existing adapter with a fixed base URL
+// (OpenRouter and Gemini through openai_compatible).
+interface ProviderPreset {
+  key: string;
+  label: string;
+  provider: Provider;
+  base_url: string;
+}
+
 interface ProviderOptionsResponse {
   providers: ProviderOption[];
+  presets?: ProviderPreset[];
   ai_native_enabled: boolean;
 }
 
@@ -122,6 +132,10 @@ const ROUTABLE_FEATURES: { key: string; label: string }[] = [
 ];
 
 const NEEDS_BASE_URL: Provider[] = ["ollama", "openai_compatible"];
+const BASE_URL_PLACEHOLDERS: Partial<Record<Provider, string>> = {
+  ollama: "http://192.168.1.10:11434",
+  openai_compatible: "https://api.example.com/v1",
+};
 const ALLOWS_BEARER: Provider[] = ["ollama"];
 
 // Backend-whitelisted sort keys for /api/v1/settings/ai-providers. Limited
@@ -142,6 +156,7 @@ export default function AiProvidersPage() {
       allowedSortFields: CREDENTIAL_SORT_FIELDS,
     });
   const [providerOptions, setProviderOptions] = useState<ProviderOption[]>([]);
+  const [providerPresets, setProviderPresets] = useState<ProviderPreset[]>([]);
   const [routing, setRouting] = useState<RoutingBundle | null>(null);
   const [caps, setCaps] = useState<CapsBundle | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -189,6 +204,7 @@ export default function AiProvidersPage() {
         Array.isArray(optsRes.value.providers)
       ) {
         setProviderOptions(optsRes.value.providers);
+        setProviderPresets(optsRes.value.presets ?? []);
       }
       if (
         routingRes.status === "fulfilled" &&
@@ -417,6 +433,7 @@ export default function AiProvidersPage() {
       {showModal && (
         <AddCredentialModal
           providerOptions={providerOptions}
+          providerPresets={providerPresets}
           onClose={() => setShowModal(false)}
           onCreated={async () => {
             setShowModal(false);
@@ -431,16 +448,20 @@ export default function AiProvidersPage() {
 
 interface AddCredentialModalProps {
   providerOptions: ProviderOption[];
+  providerPresets: ProviderPreset[];
   onClose: () => void;
   onCreated: () => Promise<void>;
 }
 
 function AddCredentialModal({
   providerOptions,
+  providerPresets,
   onClose,
   onCreated,
 }: AddCredentialModalProps) {
-  const [provider, setProvider] = useState<Provider>("openai");
+  // The select's value: a provider key, or a preset key that maps onto
+  // a provider plus a prefilled base URL.
+  const [choice, setChoice] = useState<string>("openai");
   const [apiKey, setApiKey] = useState("");
   const [bearerToken, setBearerToken] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -448,7 +469,23 @@ function AddCredentialModal({
   const [submitting, setSubmitting] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
 
+  const preset = providerPresets.find((p) => p.key === choice);
+  const provider: Provider = preset ? preset.provider : (choice as Provider);
   const needsBaseUrl = NEEDS_BASE_URL.includes(provider);
+
+  function handleChoice(next: string) {
+    const nextPreset = providerPresets.find((p) => p.key === next);
+    // Replace the base URL only while it is empty or an untouched preset
+    // value, so a typed URL survives and a preset URL never leaks into
+    // another provider.
+    if (
+      !baseUrl.trim() ||
+      providerPresets.some((p) => p.base_url === baseUrl)
+    ) {
+      setBaseUrl(nextPreset?.base_url ?? "");
+    }
+    setChoice(next);
+  }
   const allowsBearer = ALLOWS_BEARER.includes(provider);
   const apiKeyOptional = provider === "ollama";
 
@@ -510,8 +547,8 @@ function AddCredentialModal({
             <select
               id="ai-provider"
               className={input}
-              value={provider}
-              onChange={(e) => setProvider(e.target.value as Provider)}
+              value={choice}
+              onChange={(e) => handleChoice(e.target.value)}
               disabled={submitting}
             >
               {options.map((opt) => (
@@ -526,6 +563,11 @@ function AddCredentialModal({
                     : ""}
                 </option>
               ))}
+              {providerPresets.map((p) => (
+                <option key={p.key} value={p.key}>
+                  {p.label}
+                </option>
+              ))}
             </select>
             {provider === "native" && (
               <p className="mt-1 text-xs text-text-muted">
@@ -533,7 +575,7 @@ function AddCredentialModal({
                 AI_NATIVE_ENABLED).
               </p>
             )}
-            {PROVIDER_DOC_LINKS[provider] && (
+            {!preset && PROVIDER_DOC_LINKS[provider] && (
               <a
                 href={PROVIDER_DOC_LINKS[provider]!.href}
                 target="_blank"
@@ -606,9 +648,15 @@ function AddCredentialModal({
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
                 disabled={submitting}
-                placeholder="https://example.com"
+                placeholder={BASE_URL_PLACEHOLDERS[provider]}
                 required
               />
+              {provider === "openai_compatible" && (
+                <p className="mt-1 text-xs text-text-muted">
+                  Use the provider&apos;s API base URL including its version, for
+                  example /v1.
+                </p>
+              )}
             </div>
           )}
           {errorText && <div className={errorCls}>{errorText}</div>}

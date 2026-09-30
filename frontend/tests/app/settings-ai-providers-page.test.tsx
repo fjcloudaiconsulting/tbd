@@ -389,6 +389,93 @@ describe("AiProvidersPage", () => {
     expect(nativeOption?.textContent).toMatch(/coming soon/i);
   });
 
+  it("posts an openai_compatible credential with the preset base URL", async () => {
+    const posted: unknown[] = [];
+    vi.mocked(apiFetch).mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url.endsWith("/api/v1/settings/ai-providers") &&
+          init?.method === "POST"
+        ) {
+          posted.push(JSON.parse(String(init.body)));
+          return fixtureCredential as never;
+        }
+        if (isCredentialsListGet(url)) {
+          return credentialsEnvelope([]) as never;
+        }
+        if (url.endsWith("/options")) {
+          return {
+            providers: [
+              { key: "openai", label: "OpenAI", availability: "available" },
+              { key: "ollama", label: "Ollama", availability: "available" },
+              {
+                key: "openai_compatible",
+                label: "OpenAI-compatible",
+                availability: "available",
+              },
+            ],
+            presets: [
+              {
+                key: "openrouter",
+                label: "OpenRouter",
+                provider: "openai_compatible",
+                base_url: "https://openrouter.ai/api/v1",
+              },
+            ],
+            ai_native_enabled: false,
+          } as never;
+        }
+        if (url.endsWith("/routing") || url.endsWith("/caps")) {
+          return { default: null, features: [] } as never;
+        }
+        return undefined as never;
+      },
+    );
+
+    render(<AiProvidersPage />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/No credentials configured yet/i),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Add credential/i }));
+    const dialog = screen.getByRole("dialog", { name: /Add AI credential/i });
+    const select = within(dialog).getByLabelText(
+      /^Provider$/i,
+    ) as HTMLSelectElement;
+    await waitFor(() =>
+      expect(
+        Array.from(select.options).some((o) => o.value === "openrouter"),
+      ).toBe(true),
+    );
+
+    // Leaving a preset for another provider clears its untouched URL.
+    fireEvent.change(select, { target: { value: "openrouter" } });
+    fireEvent.change(select, { target: { value: "ollama" } });
+    expect(
+      (within(dialog).getByLabelText(/^Base URL$/i) as HTMLInputElement).value,
+    ).toBe("");
+
+    fireEvent.change(select, { target: { value: "openrouter" } });
+    expect(select.value).toBe("openrouter");
+    expect(
+      (within(dialog).getByLabelText(/^Base URL$/i) as HTMLInputElement).value,
+    ).toBe("https://openrouter.ai/api/v1");
+    fireEvent.change(within(dialog).getByLabelText(/^API key$/i), {
+      target: { value: "sk-or-test-key-abcd" },
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /^Add credential$/i }),
+    );
+
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toEqual({
+      provider: "openai_compatible",
+      api_key: "sk-or-test-key-abcd",
+      base_url: "https://openrouter.ai/api/v1",
+    });
+  });
+
   it("renders the caps section even when no caps are set", async () => {
     mockAuxiliaryEndpoints([]);
 
