@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
 from app.auth.pat import require_interactive_session
+from app.auth.stepup import STEPUP_ACTIONS, issue_stepup
 from app.deps import get_current_user, get_current_user_optional, get_session_factory
 from app.services.feature_gate import Feature, resolve_features
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
@@ -4177,34 +4178,18 @@ async def google_callback(
     return resp
 
 
-# ── SSO Step-Up (L1.7) ──────────────────────────────────────────────────────
+# ── SSO Step-Up (L1.7, scoped to one action since TBD-390) ────────────────
 #
 # SSO users without a password (`password_set=False`) cannot satisfy the
-# email-change re-auth gate the password branch enforces. Rather than
-# silently swap email on the session (which would convert any session
-# compromise to permanent account takeover, since email is the recovery
-# channel), we require a fresh round-trip through Google: the user clicks
-# "Verify with Google", we redirect them to Google's consent screen, and
-# the callback writes a 5-minute single-use token onto their `users` row.
-# The PUT /users/me handler then accepts that token in place of
-# `current_password` for the email-change branch.
+# re-auth gates the password branch enforces. Rather than trust the session
+# alone (a session compromise would become permanent account takeover), we
+# require a fresh round-trip through Google: the frontend initiates with the
+# ACTION it needs (`app.auth.stepup.STEPUP_ACTIONS`), Google consents, and the
+# callback writes a 5-minute single-use proof for that one action onto the
+# `users` row. Only that action's consumer accepts it (`app.auth.stepup`).
 #
 # Cookie path is scoped to /api/v1/auth/sso-stepup so it never collides
 # with the main Google login `oauth_state` cookie at /api/v1/auth/google.
-
-STEPUP_TOKEN_TTL_SECONDS = 5 * 60
-
-
-# Allowlist of pages the step-up callback may redirect back to. We
-# encode the chosen target into `state` (and validate it on the way
-# back) so the Google round-trip cannot be twisted into an open
-# redirect. New entries here must remain same-origin first-party
-# settings paths.
-_STEPUP_RETURN_TARGETS: dict[str, str] = {
-    "settings": "/settings",
-    "security": "/settings/security",
-}
-_STEPUP_DEFAULT_TARGET = "settings"
 
 
 @router.post(
@@ -4237,27 +4222,28 @@ _STEPUP_DEFAULT_TARGET = "settings"
 async def sso_stepup_initiate(
     request: Request,
     response: Response,
-    body: StepUpInitiateRequest | None = None,
+    body: StepUpInitiateRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """Begin a Google step-up flow for the signed-in user.
+    """Begin a Google step-up flow for the signed-in user, for ONE action.
 
     Returns the Google consent URL the frontend should navigate to.
     The state cookie embeds the `current_user.id` so the callback can
     verify the same user finished the round-trip and reject any state
-    coming back to a different session. State also encodes the chosen
-    return target (validated against an allowlist) so the callback can
-    redirect to either /settings (email change) or /settings/security
-    (first-time password set) without a query-string open redirect.
+    coming back to a different session. State also encodes the action
+    (an exact `STEPUP_ACTIONS` key, else 422), which fixes both the proof's
+    scope and the page the callback returns to: no open redirect.
     """
     _validate_google_config()
 
-    return_key = (body.return_to if body else None) or _STEPUP_DEFAULT_TARGET
-    if return_key not in _STEPUP_RETURN_TARGETS:
-        return_key = _STEPUP_DEFAULT_TARGET
+    if body.action not in STEPUP_ACTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unknown step-up action",
+        )
 
     nonce = secrets.token_urlsafe(32)
-    state = f"stepup:{current_user.id}:{nonce}:{return_key}"
+    state = f"stepup:{current_user.id}:{nonce}:{body.action}"
     response.set_cookie(
         key="oauth_state",
         value=state,
@@ -4293,7 +4279,7 @@ async def sso_stepup_callback(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
     oauth_state: str | None = Cookie(default=None),
 ):
-    """Finalize a Google step-up. Issues a 5-minute single-use token.
+    """Finalize a Google step-up. Issues a 5-minute single-use proof.
 
     Browser-driven redirect from Google: no Authorization header is
     present, so this endpoint cannot use `get_current_user`. Identity
@@ -4301,15 +4287,16 @@ async def sso_stepup_callback(
     (same pattern as the SSO login `google_callback`):
 
       - state cookie matches the URL `state` (CSRF)
-      - state is shaped `stepup:{user_id}:{nonce}`; `user_id` is the
-        target user (looked up directly from the DB)
+      - state is shaped `stepup:{user_id}:{nonce}:{action}`; `user_id` is
+        the target user (looked up directly from the DB) and `action` must
+        be a `STEPUP_ACTIONS` key
       - the Google account that completed the consent has the same
         verified email as that user (no swapping accounts at the
         consent screen)
 
-    On success, writes a random 32-byte token + 5min expiry onto the
-    `users` row and redirects back to /settings with the token in the
-    URL fragment. Like the SSO login flow, fragments stay client-side
+    On success, writes a proof scoped to `action` + 5min expiry onto the
+    `users` row (``issue_stepup``) and redirects to the action's page with
+    the bare token in the URL fragment. Like the SSO login flow, fragments stay client-side
     (not sent to servers, not in access logs).
 
     ``code`` and ``state`` are typed Optional so the user-cancelled
@@ -4320,14 +4307,14 @@ async def sso_stepup_callback(
     # is operator misconfiguration, not user-recoverable. Keep as a 501.
     _validate_google_config()
 
-    # Pre-parse the return target so we can redirect to the right page
-    # even when state itself is broken. Falls back to the default
-    # /settings landing when the shape doesn't parse.
+    # Pre-parse the action's page so we can redirect to the right page
+    # even when state itself is broken. Falls back to /settings when the
+    # shape doesn't parse or slot 3 is not an action.
     def _resolve_return_path(raw_state: str | None) -> str:
         parts = (raw_state or "").split(":")
-        if len(parts) == 4 and parts[3] in _STEPUP_RETURN_TARGETS:
-            return _STEPUP_RETURN_TARGETS[parts[3]]
-        return _STEPUP_RETURN_TARGETS[_STEPUP_DEFAULT_TARGET]
+        if len(parts) == 4:
+            return STEPUP_ACTIONS.get(parts[3], "/settings")
+        return "/settings"
 
     # TBD-353: one state check, consulted by every audit write below.
     # Branch order unchanged; only the writes are conditioned.
@@ -4454,9 +4441,9 @@ async def sso_stepup_callback(
     # State binds the redemption to a specific user_id chosen at
     # initiate time. Without an Authorization header here, the state
     # cookie + state string round trip is the identity proof. The
-    # 4-part shape carries the return-target chosen at initiate so the
-    # callback redirects to the correct settings page (validated
-    # against `_STEPUP_RETURN_TARGETS` to prevent open redirect).
+    # 4-part shape carries the action chosen at initiate, which scopes the
+    # proof and picks the return page (validated against `STEPUP_ACTIONS`,
+    # so no open redirect and no pre-TBD-390 return key is honoured).
     #
     # ⚠ Every failure below carries ``audit=False`` for the same reason the
     # mismatch above does, and leaving them auditing would have left the
@@ -4469,7 +4456,7 @@ async def sso_stepup_callback(
     # cheaper write primitive than the one the ticket names.
     #
     # Nothing legitimate is lost: ``sso_stepup_initiate`` always mints a
-    # well-formed 4-part ``stepup:{user_id}:{nonce}:{return_key}``, so a
+    # well-formed 4-part ``stepup:{user_id}:{nonce}:{action}``, so a
     # shape failure cannot originate from a real flow. The missing-user
     # branch is suppressed for a second reason -- it is the user-id
     # enumeration probe, and auditing it would manufacture exactly the
@@ -4490,8 +4477,8 @@ async def sso_stepup_callback(
         state_user_id = int(parts[1])
     except ValueError:
         return await _stepup_failure("state", audit=False)
-    return_key = parts[3]
-    if return_key not in _STEPUP_RETURN_TARGETS:
+    action = parts[3]
+    if action not in STEPUP_ACTIONS:
         return await _stepup_failure("state", audit=False)
 
     user = await db.get(User, state_user_id)
@@ -4612,16 +4599,28 @@ async def sso_stepup_callback(
         # swap the email by consenting on their own Google account.
         return await _stepup_failure("email_mismatch", actor_email=google_email or user.email)
 
-    token = secrets.token_urlsafe(32)
-    user.stepup_token = token
-    user.stepup_token_expires_at = datetime.now(timezone.utc) + timedelta(
-        seconds=STEPUP_TOKEN_TTL_SECONDS
-    )
+    actor_user_id = user.id
+    actor_email = user.email
+    token = issue_stepup(user, action)
     await db.commit()
 
-    return_path = _STEPUP_RETURN_TARGETS[return_key]
+    # After the commit: a success row for a proof that never landed would lie.
+    # Detail carries the action only, never the token.
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="auth.google.sso_stepup.callback.succeeded",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=None,
+        target_org_name=None,
+        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"action": action},
+    )
+
     resp = RedirectResponse(
-        url=f"{app_settings.app_url}{return_path}#stepup_token={token}",
+        url=f"{app_settings.app_url}{STEPUP_ACTIONS[action]}#stepup_token={token}",
         status_code=302,
     )
     resp.delete_cookie("oauth_state", path="/api/v1/auth/sso-stepup")

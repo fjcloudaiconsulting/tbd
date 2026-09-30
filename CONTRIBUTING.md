@@ -258,7 +258,7 @@ Google-SSO users have `password_set=False` until they explicitly set a password.
 
 - **First password set** requires a Google **step-up** verification. The user re-authenticates with the same Google account, the backend issues a 5-minute single-use step-up token, and only then accepts the password write.
 - **Reset password via email token** (the standard `/forgot-password` then `/reset-password` flow) flips `password_set=True` on success.
-- **Step-up callbacks** redirect through a server-side allowlist of `return_to` keys. Arbitrary URLs are rejected with `400 Malformed step-up state`.
+- **Step-up proofs are scoped to one action** (`email_change`, `password_set`, `pat_mint`; `STEPUP_ACTIONS` in `backend/app/auth/stepup.py`). Initiate requires a known `action` (422 otherwise), the callback returns to that action's fixed page, and only the consumer for that action accepts the proof. A state carrying anything else fails as `sso_stepup_error=state`.
 - **Email change** also takes the step-up path and flips `password_set` back to `False` if the new email belongs to a different identity.
 
 ### MFA

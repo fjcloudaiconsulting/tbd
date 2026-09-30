@@ -168,9 +168,7 @@ class MfaRegenerateRequest(BaseModel):
 
 
 class StepUpInitiateRequest(BaseModel):
-    # Short tag chosen by the frontend ("settings" for email change,
-    # "security" for first-time password set). Validated against the
-    # allowlist in routers/auth.py; anything else falls back to the
-    # default settings page rather than 4xx so an old client never
-    # breaks.
-    return_to: str | None = Field(default=None, max_length=32)
+    # The one action the proof will authorize (TBD-390). Must be an exact
+    # key of ``app.auth.stepup.STEPUP_ACTIONS``; routers/auth.py 422s
+    # anything else. Required: there is no default action.
+    action: str = Field(max_length=32)

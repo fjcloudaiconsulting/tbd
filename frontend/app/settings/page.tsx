@@ -113,7 +113,7 @@ export default function SettingsProfilePage() {
     try {
       const data = await apiFetch<{ redirect_url: string }>(
         "/api/v1/auth/sso-stepup/initiate",
-        { method: "POST" },
+        { method: "POST", body: JSON.stringify({ action: "email_change" }) },
       );
       // Full navigation, not router.push — Google must own the next page.
       window.location.href = data.redirect_url;

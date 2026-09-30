@@ -283,7 +283,7 @@ async def test_mint_sso_consumes_stepup_token(factory):
     uid = await _seed_superadmin(
         factory,
         password_set=False,
-        stepup_token=token,
+        stepup_token=f"pat_mint:{token}",
         stepup_expires_at=_naive_now() + timedelta(minutes=5),
     )
     jwt = await _jwt_for(factory, uid)
@@ -311,7 +311,7 @@ async def test_mint_sso_rejects_expired_stepup_token(factory):
     uid = await _seed_superadmin(
         factory,
         password_set=False,
-        stepup_token=token,
+        stepup_token=f"pat_mint:{token}",
         stepup_expires_at=_naive_now() - timedelta(seconds=1),
     )
     jwt = await _jwt_for(factory, uid)
@@ -407,6 +407,34 @@ async def test_mint_mfa_rejects_wrong_code(factory, _mfa_key):
             headers=_jwt_h(jwt),
         )
     assert r.status_code == 401
+
+
+async def test_mint_failed_mfa_does_not_burn_the_sso_proof(factory, _mfa_key):
+    """The SSO proof is spent only after MFA passes, so a wrong TOTP leaves
+    it on the row for the retry (TBD-390 G1)."""
+    from app.services.mfa_service import encrypt_secret
+
+    secret = pyotp.random_base32()
+    token = "sso-mfa-token-value"
+    uid = await _seed_superadmin(
+        factory,
+        password_set=False,
+        mfa_enabled=True,
+        mfa_secret=encrypt_secret(secret),
+        stepup_token=f"pat_mint:{token}",
+        stepup_expires_at=_naive_now() + timedelta(minutes=5),
+    )
+    jwt = await _jwt_for(factory, uid)
+    body = {"name": "cron", "scope": "write", "expires_in_days": 30, "stepup_token": token}
+    with _make_client(factory) as client:
+        r = client.post(BASE, json={**body, "mfa_code": "000000"}, headers=_jwt_h(jwt))
+        assert r.status_code == 401
+        async with factory() as s:
+            assert (await s.get(User, uid)).stepup_token == f"pat_mint:{token}"
+        ok = client.post(
+            BASE, json={**body, "mfa_code": pyotp.TOTP(secret).now()}, headers=_jwt_h(jwt)
+        )
+    assert ok.status_code == 201, ok.text
 
 
 async def test_mint_no_mfa_operator_not_asked(factory):

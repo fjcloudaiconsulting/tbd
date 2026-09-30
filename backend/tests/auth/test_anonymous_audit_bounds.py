@@ -846,13 +846,13 @@ STEPUP_PAYLOAD_BRANCHES = [
     # on /settings/security — which is what makes the Location assertion
     # discriminating rather than four copies of the same string.
     pytest.param(
-        "stepup:notanint:nonce:security", "/settings/security", id="user_id_not_int"
+        "stepup:notanint:nonce:password_set", "/settings/security", id="user_id_not_int"
     ),
-    # return_key not in _STEPUP_RETURN_TARGETS — falls back to the default.
-    pytest.param("stepup:1:nonce:bogus_key", "/settings", id="unknown_return_key"),
+    # action not in STEPUP_ACTIONS — falls back to the default.
+    pytest.param("stepup:1:nonce:bogus_key", "/settings", id="unknown_action"),
     # user is None. A user IS seeded (id 1), so 999999 exercises the lookup
     # miss rather than an empty table.
-    pytest.param("stepup:999999:nonce:settings", "/settings", id="missing_user"),
+    pytest.param("stepup:999999:nonce:email_change", "/settings", id="missing_user"),
 ]
 
 
@@ -912,7 +912,7 @@ async def test_f6_control_matching_state_reaches_the_exchange(
     ``invalid_state_payload`` NOT logged.
     """
     seeded = await _seed_user(session_factory)
-    state = f"stepup:{seeded['user_id']}:nonce:settings"
+    state = f"stepup:{seeded['user_id']}:nonce:email_change"
     recorder = _LogRecorder()
     monkeypatch.setattr(auth_module, "_LOGGER", recorder)
 

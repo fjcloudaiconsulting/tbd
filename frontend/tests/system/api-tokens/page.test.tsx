@@ -117,6 +117,23 @@ describe("/system/api-tokens page", () => {
     expect(screen.getByTestId("api-token-row-1")).toBeInTheDocument();
   });
 
+  it("strips the step-up fragment and sso_stepup_error param from the URL on mount (TBD-390)", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/system/api-tokens?sso_stepup_error=state&keep=1#stepup_token=secret-proof",
+    );
+    try {
+      renderWithSWR(<SystemApiTokensPage />);
+      await screen.findByText("broadcast cron");
+      expect(window.location.hash).toBe("");
+      expect(window.location.search).toBe("?keep=1");
+      expect(window.location.href).not.toContain("secret-proof");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
   it("states plainly that PATs survive password change and session invalidation", async () => {
     renderWithSWR(<SystemApiTokensPage />);
     const security = await screen.findByTestId("api-token-security-copy");
