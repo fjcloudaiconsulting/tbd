@@ -340,7 +340,7 @@ async def list_agent_for_org(db: AsyncSession, org_id: int) -> list[tuple[ApiTok
         .where(User.org_id == org_id, ApiToken.scope.in_(AGENT_SCOPE_RANK))
         .order_by(ApiToken.created_at.desc(), ApiToken.id.desc())
     )
-    return [(t, u) for t, u in result.all()]
+    return list(result.tuples())
 
 
 async def get_org_agent(
@@ -356,8 +356,7 @@ async def get_org_agent(
             ApiToken.scope.in_(AGENT_SCOPE_RANK),
         )
     )
-    found = result.first()
-    return None if found is None else (found[0], found[1])
+    return result.tuples().first()
 
 
 async def revoke_all_agent(db: AsyncSession, user: User) -> int:

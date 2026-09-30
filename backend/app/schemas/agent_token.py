@@ -68,12 +68,3 @@ class OrgAgentTokenOut(AgentTokenOut):
     owner_user_id: int
     owner_email: str
 
-
-class AgentTokenMintResponse(BaseModel):
-    token: str
-    id: int
-    name: str
-    prefix: str
-    scope: str
-    created_at: datetime
-    expires_at: datetime

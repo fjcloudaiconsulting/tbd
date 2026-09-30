@@ -39,11 +39,11 @@ from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.routers.api_tokens import _step_up_401, _verify_step_up
 from app.schemas.agent_token import (
     AgentTokenMintRequest,
-    AgentTokenMintResponse,
     AgentTokenOut,
     AgentTokenScopeUpdate,
     OrgAgentTokenOut,
 )
+from app.schemas.api_token import MintTokenResponse
 from app.schemas.common import ListEnvelope
 from app.security import token_cutoff
 from app.services import api_token_service as svc
@@ -109,7 +109,7 @@ async def _audit(
 
 @router.post(
     "",
-    response_model=AgentTokenMintResponse,
+    response_model=MintTokenResponse,
     status_code=status.HTTP_201_CREATED,
     dependencies=[
         Depends(require_feature(AGENT_FEATURE_KEY)),
@@ -185,7 +185,7 @@ async def mint_agent_token(
     await logger.ainfo("agent_token.created", api_token_id=row.id, scope=row.scope)
 
     response.headers["Cache-Control"] = "no-store"
-    return AgentTokenMintResponse(
+    return MintTokenResponse(
         token=plaintext, id=row.id, name=row.name, prefix=row.token_prefix,
         scope=row.scope, created_at=row.created_at, expires_at=row.expires_at,
     )
