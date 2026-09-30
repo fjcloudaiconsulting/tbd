@@ -469,7 +469,8 @@ async def _sweep_expired(
             divergence = True
             deleted_count = affected
             await logger.awarning(
-                "admin.feature_override.sweep.lock_delete_mismatch",
+                f"admin.{model.__tablename__.removeprefix('org_').removesuffix('s')}"
+                ".sweep.lock_delete_mismatch",
                 table=model.__tablename__,
                 locked_count=len(ids),
                 deleted_count=affected,
@@ -929,6 +930,7 @@ async def revoke_limit_override(
         "meter": meter,
         "old_period": existing.period,
         "old_limit_value": existing.limit_value,
+        "old_expires_at": existing.expires_at.isoformat() if existing.expires_at else None,
     }
     await db.delete(existing)
     await db.commit()

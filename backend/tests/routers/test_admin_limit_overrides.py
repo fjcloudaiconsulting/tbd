@@ -256,7 +256,9 @@ async def test_put_concurrent_change_is_409(session_factory, path, body, exc):
 async def test_delete_removes_row_and_audits(session_factory):
     seed = await _seed(session_factory)
     with TestClient(_app(session_factory)) as c:
-        c.put(_url(seed["target_id"], "mcp.calls"), json={"period": "day", "limit_value": 5})
+        exp = (utcnow_naive() + timedelta(days=3)).replace(microsecond=0)
+        c.put(_url(seed["target_id"], "mcp.calls"),
+              json={"period": "day", "limit_value": 5, "expires_at": exp.isoformat()})
         assert c.delete(_url(seed["target_id"], "mcp.calls")).status_code == 204
         assert c.delete(_url(seed["target_id"], "mcp.calls")).status_code == 404
         assert c.delete(_url(seed["target_id"], "nope")).status_code == 400
@@ -265,6 +267,7 @@ async def test_delete_removes_row_and_audits(session_factory):
         assert (await db.execute(select(OrgLimitOverride))).first() is None
     rows = await _audit(session_factory, "admin.limit_override.deleted")
     assert len(rows) == 1 and rows[0].detail["old_limit_value"] == 5
+    assert rows[0].detail["old_expires_at"] == exp.isoformat()
 
 
 # ── platform-guard ─────────────────────────────────────────────────────────
@@ -383,3 +386,36 @@ async def test_feature_state_has_limits_rows(session_factory):
     feats = {row["key"]: row for row in body["features"]}
     assert feats["ai.budget"]["override"]["is_expired"] is True
     assert feats["ai.budget"]["effective"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model,event_name", [
+    (OrgLimitOverride, "admin.limit_override.sweep.lock_delete_mismatch"),
+    (OrgFeatureOverride, "admin.feature_override.sweep.lock_delete_mismatch"),
+])
+async def test_sweep_mismatch_warning_is_named_after_the_table(model, event_name, monkeypatch):
+    """The mismatch warning names its own table's event, not the feature one."""
+    from types import SimpleNamespace
+
+    from app.routers import admin_orgs
+
+    row = SimpleNamespace(id=1, org_id=1, meter="m", feature_key="f", expires_at=None)
+    results = iter([
+        SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [row])),
+        SimpleNamespace(rowcount=0),
+    ])
+
+    class _Db:
+        async def execute(self, _stmt):
+            return next(results)
+
+    seen: list[str] = []
+
+    async def _warn(name, **_kw):
+        seen.append(name)
+
+    monkeypatch.setattr(admin_orgs.logger, "awarning", _warn)
+    key = model.meter if model is OrgLimitOverride else model.feature_key
+    await admin_orgs._sweep_expired(
+        _Db(), model, key, "counts", utcnow_naive(), lambda r: {key.key: "x"})
+    assert seen == [event_name]
