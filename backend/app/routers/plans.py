@@ -8,8 +8,10 @@ from app.auth.permissions import require_permission
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.subscription import Plan, Subscription
+from app.auth.feature_catalog import ALL_METER_KEYS, PlanUsageLimits
 from app.models.user import User
 from app.rate_limit import get_client_ip
+from app.routers.admin_orgs import _require_superadmin_for_platform_meter
 from app.schemas.common import ListEnvelope
 from app.schemas.subscription import PlanCreate, PlanDuplicateRequest, PlanResponse, PlanUpdate
 from app.services import audit_service
@@ -18,6 +20,7 @@ from app.services.list_query import resolve_order_by
 from app.services.plan_service import canonicalize_features, canonicalize_usage_limits
 
 router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
+logger = structlog.stdlib.get_logger()
 
 
 def _request_id() -> str | None:
@@ -28,6 +31,7 @@ async def _audit_plan(
     session_factory, request: Request, *, event_type: str, actor_id: int,
     actor_email: str, detail: dict,
 ) -> None:
+    await logger.ainfo(event_type, actor_user_id=actor_id, actor_email=actor_email, **detail)
     await audit_service.record_audit_event(
         session_factory,
         event_type=event_type,
@@ -40,6 +44,13 @@ async def _audit_plan(
         outcome="success",
         detail=detail,
     )
+
+
+def _guard_platform_limits(user: User, new: dict, old: dict) -> None:
+    """Platform meters spend platform money: only a superadmin may change one."""
+    for meter in ALL_METER_KEYS:
+        if new[meter] != old[meter]:
+            _require_superadmin_for_platform_meter(meter, user)
 
 
 def _bad_request(exc: ValidationError) -> HTTPException:
@@ -171,6 +182,7 @@ async def create_plan(
         payload["usage_limits"] = canonicalize_usage_limits(payload["usage_limits"])
     except ValidationError as exc:
         raise _bad_request(exc) from exc
+    _guard_platform_limits(user, payload["usage_limits"], PlanUsageLimits().model_dump(by_alias=True))
     plan = Plan(**payload)
     db.add(plan)
     await db.commit()
@@ -232,6 +244,10 @@ async def update_plan(
             )
     except ValidationError as exc:
         raise _bad_request(exc) from exc
+    if "usage_limits" in update_data:
+        _guard_platform_limits(
+            user, update_data["usage_limits"], canonicalize_usage_limits({}, plan.usage_limits or {})
+        )
 
     # Snapshot old values of the changed fields before setattr mutates them.
     old = {f: getattr(plan, f) for f in update_data}
@@ -255,13 +271,17 @@ async def update_plan(
 @router.delete(
     "/{plan_id}",
     status_code=204,
-    dependencies=[Depends(require_permission("plans.manage"))],
+    dependencies=[Depends(require_interactive_session)],
 )
 async def delete_plan(
     plan_id: int,
+    request: Request,
+    user: User = Depends(require_permission("plans.manage")),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Soft-delete (deactivate) a plan. Requires plans.manage. Cannot delete if orgs are on it."""
+    actor_id, actor_email = user.id, user.email
     result = await db.execute(select(Plan).where(Plan.id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
@@ -279,7 +299,13 @@ async def delete_plan(
         )
 
     plan.is_active = False
+    slug = plan.slug
     await db.commit()
+    await _audit_plan(
+        session_factory, request, event_type="admin.plan.deactivated",
+        actor_id=actor_id, actor_email=actor_email,
+        detail={"plan_id": plan_id, "slug": slug},
+    )
 
 
 @router.post(
@@ -313,6 +339,7 @@ async def duplicate_plan(
         usage_limits = canonicalize_usage_limits(src.usage_limits or {})
     except ValidationError as exc:
         raise _bad_request(exc) from exc
+    _guard_platform_limits(user, usage_limits, PlanUsageLimits().model_dump(by_alias=True))
     clone = Plan(
         name=body.name,
         slug=body.slug,

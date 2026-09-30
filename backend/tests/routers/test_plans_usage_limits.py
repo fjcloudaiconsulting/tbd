@@ -70,10 +70,11 @@ async def _seed(factory, usage_limits=None) -> int:
         return plan.id
 
 
-def _app(factory):
+def _app(factory, superadmin=True):
     async def resolve(sf):
         async with sf() as db:
-            return (await db.execute(select(User))).scalar_one()
+            return (await db.execute(
+                select(User).where(User.is_superadmin.is_(superadmin)))).scalar_one()
     return make_test_app(factory, routers=plans_router, current_user=resolve,
                          override_session_factory=True)
 
@@ -226,3 +227,61 @@ async def test_get_plan_canonicalizes_a_legacy_empty_object(session_factory):
     pid = await _seed(session_factory, {})
     with TestClient(_app(session_factory)) as c:
         assert c.get(f"/api/v1/plans/{pid}").json()["usage_limits"] == DEFAULTS
+
+
+# ── platform-meter guard ───────────────────────────────────────────────────
+
+DEFAULTS_PLATFORM = {k: v for k, v in DEFAULTS.items() if k.startswith("platform_ai.")}
+PLATFORM = {"platform_ai.cents": {"period": "month", "limit": 100}}
+
+
+async def _plain_user(factory):
+    async with factory() as db:
+        org = (await db.execute(select(Organization))).scalar_one()
+        db.add(User(org_id=org.id, username="plain", email="plain@platform.io",
+                    password_hash=hash_password("pw-1234567"), role=Role.OWNER,
+                    is_superadmin=False, is_active=True, email_verified=True))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_platform_limits_are_superadmin_only_on_plan_writes(session_factory, monkeypatch):
+    """Widening plans.manage must not silently grant platform spend: a
+    non-superadmin may not CHANGE a platform_ai.* limit on create, update or
+    duplicate, but may leave it alone."""
+    pid = await _seed(session_factory)
+    await _plain_user(session_factory)
+    monkeypatch.setattr("app.auth.permissions.has_permission", lambda u, p: True)
+    with TestClient(_app(session_factory, superadmin=False)) as c:
+        assert c.post("/api/v1/plans", json=_new("x", usage_limits=PLATFORM)).status_code == 403
+        assert c.put(f"/api/v1/plans/{pid}", json={"usage_limits": PLATFORM}).status_code == 403
+        assert c.post("/api/v1/plans", json=_new("ok", usage_limits={
+            "mcp.calls": {"period": "day", "limit": 5}, **DEFAULTS_PLATFORM})).status_code == 201
+        assert c.put(f"/api/v1/plans/{pid}", json={"usage_limits": {
+            "mcp.calls": {"period": "day", "limit": 7}, **DEFAULTS_PLATFORM}}).status_code == 200
+        assert c.put(f"/api/v1/plans/{pid}", json={"name": "Renamed"}).status_code == 200
+    async with session_factory() as db:
+        assert (await db.execute(select(Plan).where(Plan.slug == "x"))).first() is None
+    # A platform-spending source cannot be cloned by a non-superadmin.
+    with TestClient(_app(session_factory)) as c:
+        src = c.post("/api/v1/plans", json=_new("rich", usage_limits=PLATFORM)).json()["id"]
+    with TestClient(_app(session_factory, superadmin=False)) as c:
+        assert c.post(f"/api/v1/plans/{src}/duplicate",
+                      json={"name": "C", "slug": "c"}).status_code == 403
+    with TestClient(_app(session_factory)) as c:
+        assert c.post(f"/api/v1/plans/{src}/duplicate",
+                      json={"name": "C", "slug": "c"}).status_code == 201
+        assert c.put(f"/api/v1/plans/{pid}", json={"usage_limits": PLATFORM}).status_code == 200
+
+
+# ── deactivate ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_deactivate_is_audited(session_factory):
+    pid = await _seed(session_factory)
+    with TestClient(_app(session_factory)) as c:
+        assert c.delete(f"/api/v1/plans/{pid}").status_code == 204
+    rows = await _audit(session_factory, "admin.plan.deactivated")
+    assert len(rows) == 1 and rows[0].detail == {"plan_id": pid, "slug": "pro"}
+    assert (await _plan(session_factory, "pro")).is_active is False

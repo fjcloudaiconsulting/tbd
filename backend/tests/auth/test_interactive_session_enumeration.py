@@ -127,6 +127,7 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/plans"),                       # create_plan
     ("PUT", "/api/v1/plans/1"),                      # update_plan
     ("POST", "/api/v1/plans/1/duplicate"),           # duplicate_plan
+    ("DELETE", "/api/v1/plans/1"),                   # delete_plan (deactivate)
     ("POST", "/api/v1/admin/broadcasts/1/send"),     # send_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/resume"),   # resume_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/dry-run"),  # dry_run_broadcast (sends real email)
