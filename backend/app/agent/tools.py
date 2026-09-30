@@ -323,6 +323,14 @@ def _rule_token(ctx: ToolContext, tx: Transaction) -> str:
     return normalize_description(tx.description)
 
 
+async def _rule_category(ctx: ToolContext, token: str) -> int | None:
+    return await ctx.db.scalar(
+        select(CategoryRule.category_id)
+        .where(CategoryRule.org_id == ctx.org_id, CategoryRule.normalized_token == token)
+        .execution_options(populate_existing=True)
+    )
+
+
 async def _set_category_preview(ctx: ToolContext, args: SetCategoryArgs) -> Preview:
     tx = await _load_editable(ctx, args.transaction_id)
     if tx.category_id == args.category_id:
@@ -339,13 +347,9 @@ async def _set_category_preview(ctx: ToolContext, args: SetCategoryArgs) -> Prev
     warnings = []
     token = _rule_token(ctx, tx)
     if token:
-        rule_category = await ctx.db.scalar(
-            select(CategoryRule.category_id)
-            .where(CategoryRule.org_id == ctx.org_id, CategoryRule.normalized_token == token)
-            .execution_options(populate_existing=True)
-        )
         changes.append(Change(
-            "category_rules", {"untrusted": token}, "category_id", rule_category, args.category_id,
+            "category_rules", {"untrusted": token}, "category_id",
+            await _rule_category(ctx, token), args.category_id,
         ))
         warnings.append(
             "Also updates the organization's categorization rule for this description, "
@@ -376,11 +380,7 @@ async def _set_category_execute(ctx: ToolContext, args: SetCategoryArgs) -> dict
     result = transaction_service.to_response(out).model_dump(mode="json")
     # ``update_transaction`` swallows a failed rule write: report whether the
     # rule now maps to the target (True too if it already did and the write failed).
-    result["rule_learned"] = bool(token) and await ctx.db.scalar(
-        select(CategoryRule.category_id)
-        .where(CategoryRule.org_id == ctx.org_id, CategoryRule.normalized_token == token)
-        .execution_options(populate_existing=True)
-    ) == args.category_id
+    result["rule_learned"] = bool(token) and await _rule_category(ctx, token) == args.category_id
     return result
 
 
