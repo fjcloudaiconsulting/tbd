@@ -829,8 +829,16 @@ _WRITE_CASES = {
 }
 
 # A derived row is disclosed by its natural key, not its surrogate id: the
-# rule's change id is the normalized token (so a description edit goes stale).
-_NATURAL_KEY = {"category_rules": ("normalized_token",)}
+# rule's change id is the normalized token (so a description edit goes stale),
+# wrapped as untrusted. Keyed with the org so a write to another org's rule
+# is never counted as disclosed.
+_NATURAL_KEY = {"category_rules": ("org_id", "normalized_token")}
+
+
+def _disclosed_key(org_id, change) -> tuple:
+    if change["entity"] in _NATURAL_KEY:
+        return (org_id, change["id"]["untrusted"])
+    return (change["id"],)
 
 
 def test_fa3_every_write_tool_has_a_case():
@@ -857,7 +865,7 @@ async def test_fa3_rows_written_are_a_subset_of_the_disclosed_changes(factory, w
     a = w["A"]
     args = _WRITE_CASES[tool](a)
     out = await _invoke(factory, a["member"], tool, args)
-    disclosed = {(c["entity"], (c["id"],)) for c in out["changes"]}
+    disclosed = {(c["entity"], _disclosed_key(a["org"], c)) for c in out["changes"]}
     assert disclosed
     before = await _snapshot(factory)
     await _confirm(factory, a["member"], out["action_id"])

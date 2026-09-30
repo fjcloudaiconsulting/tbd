@@ -276,22 +276,28 @@ register(ToolSpec(
 # ``update_transaction`` also writes rows this preview could not list: the
 # category is mirrored onto a transfer partner, and onto the recurring template
 # plus every pending sibling. v1 refuses any row with a link or a series, at
-# preview, at confirm's re-preview, and once more under the row lock in
-# execute (the re-preview and the execute are two transactions).
+# preview, at confirm's re-preview, and again in execute.
+#
+# The preview reads the row FOR UPDATE: in ``confirm`` nothing commits between
+# the re-preview and the execute, so the row it fingerprinted (description,
+# category, links) is the row ``update_transaction`` writes. Ceiling: the rule
+# row is read unlocked, so a concurrent import re-learning the same token in
+# that window makes the disclosed ``before`` stale (most-recent-wins anyway).
 #
 # The one derived write it may do is the org's category rule for the row's
 # normalized description, listed with the token as its id: editing the
-# description changes the token, so the confirm re-preview goes stale. An
+# description changes the token, so the confirm re-preview goes stale. The
+# token is bank or user text, so the id is wrapped as untrusted. An
 # ``agent:auto`` principal learns no rule and lists none (``ctx.auto``).
 
 
-async def _load_editable(ctx: ToolContext, transaction_id: int, *, lock: bool) -> Transaction:
-    q = (
+async def _load_editable(ctx: ToolContext, transaction_id: int) -> Transaction:
+    tx = await ctx.db.scalar(
         select(Transaction)
         .where(Transaction.id == transaction_id, Transaction.org_id == ctx.org_id)
+        .with_for_update()
         .execution_options(populate_existing=True)
     )
-    tx = await ctx.db.scalar(q.with_for_update() if lock else q)
     if tx is None:
         raise NotFoundError("Transaction")
     if tx.recurring_id is not None:
@@ -318,7 +324,7 @@ def _rule_token(ctx: ToolContext, tx: Transaction) -> str:
 
 
 async def _set_category_preview(ctx: ToolContext, args: SetCategoryArgs) -> Preview:
-    tx = await _load_editable(ctx, args.transaction_id, lock=False)
+    tx = await _load_editable(ctx, args.transaction_id)
     if tx.category_id == args.category_id:
         raise ToolError("no_change", "the transaction already has this category")
     await transaction_service.validate_category_for_type(
@@ -338,7 +344,9 @@ async def _set_category_preview(ctx: ToolContext, args: SetCategoryArgs) -> Prev
             .where(CategoryRule.org_id == ctx.org_id, CategoryRule.normalized_token == token)
             .execution_options(populate_existing=True)
         )
-        changes.append(Change("category_rules", token, "category_id", rule_category, args.category_id))
+        changes.append(Change(
+            "category_rules", {"untrusted": token}, "category_id", rule_category, args.category_id,
+        ))
         warnings.append(
             "Also updates the organization's categorization rule for this description, "
             "which categorizes future imports."
@@ -359,14 +367,15 @@ async def _set_category_preview(ctx: ToolContext, args: SetCategoryArgs) -> Prev
 
 
 async def _set_category_execute(ctx: ToolContext, args: SetCategoryArgs) -> dict:
-    tx = await _load_editable(ctx, args.transaction_id, lock=True)
+    tx = await _load_editable(ctx, args.transaction_id)
     token = _rule_token(ctx, tx)
     out = await transaction_service.update_transaction(
         ctx.db, ctx.org_id, args.transaction_id,
         TransactionUpdate(category_id=args.category_id), learn=not ctx.auto,
     )
     result = transaction_service.to_response(out).model_dump(mode="json")
-    # ``update_transaction`` swallows a failed rule write; report what landed.
+    # ``update_transaction`` swallows a failed rule write: report whether the
+    # rule now maps to the target (True too if it already did and the write failed).
     result["rule_learned"] = bool(token) and await ctx.db.scalar(
         select(CategoryRule.category_id)
         .where(CategoryRule.org_id == ctx.org_id, CategoryRule.normalized_token == token)
