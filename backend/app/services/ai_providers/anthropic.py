@@ -71,7 +71,7 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
     """Translate the neutral tool transcript into Anthropic blocks.
 
     An assistant turn with ``tool_calls`` becomes a text block (only when
-    the text is non-empty; Anthropic rejects empty text blocks) plus one
+    the text is not blank; Anthropic rejects whitespace-only text blocks) plus one
     ``tool_use`` block per call. A run of ``tool`` messages becomes ONE
     user message of ``tool_result`` blocks, and a plain user message
     right after that run is folded into it after the results: Anthropic
@@ -97,7 +97,8 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
         if role == "user" and open_results is not None:
             content = m.get("content")
             if isinstance(content, str):
-                open_results.append({"type": "text", "text": content})
+                if content.strip():
+                    open_results.append({"type": "text", "text": content})
             elif isinstance(content, list):
                 open_results.extend(content)
             open_results = None
@@ -105,8 +106,9 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
         open_results = None
         if role == "assistant" and m.get("tool_calls"):
             blocks: list[dict] = []
-            if m.get("content"):
-                blocks.append({"type": "text", "text": m["content"]})
+            text = m.get("content")
+            if isinstance(text, str) and text.strip():
+                blocks.append({"type": "text", "text": text})
             blocks.extend(
                 {
                     "type": "tool_use",

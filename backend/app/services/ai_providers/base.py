@@ -110,9 +110,14 @@ class FunctionCallResponse:
     Multi-round transcript (provider-neutral, accepted by every
     ``function_call`` except Ollama's): append
     ``{"role": "assistant", "content": resp.content, "tool_calls":
-    resp.tool_calls}`` and then one ``{"role": "tool", "tool_call_id":
-    <id>, "content": <str>}`` per call. Each adapter translates these
-    into its provider's native shape.
+    resp.tool_calls}`` and then exactly one ``{"role": "tool",
+    "tool_call_id": <id>, "content": <str>}`` per call, error text
+    included, before the next non-tool message (providers reject a call
+    left without a result). The caller builds and validates the
+    transcript; adapters assume every call carries its id. Each
+    adapter translates these into its provider's native shape. Only
+    ``function_call`` with a non-empty ``tools`` list translates them;
+    ``chat`` and ``stream`` do not.
     """
 
     tool_calls: list[dict]
@@ -216,22 +221,30 @@ def synthesize_tool_call_id() -> str:
 def parse_openai_tool_calls(message: dict) -> list[dict]:
     """Neutral tool calls from an OpenAI-shape assistant ``message``.
 
-    Arguments arrive as a JSON string; anything that does not parse to
-    an object becomes ``{}`` so every call satisfies the dict contract.
+    Arguments arrive as a JSON string (some servers send the object
+    itself); anything that is not an object becomes ``{}`` so every call
+    satisfies the dict contract. A missing or repeated id is replaced by
+    a synthesized one: results are keyed by id, so ids must be unique.
     """
     tool_calls: list[dict] = []
+    seen: set[str] = set()
     for call in message.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            raise TypeError("tool call is not an object")
         fn = call.get("function") or {}
-        try:
-            args = json.loads(fn.get("arguments") or "{}")
-        except (TypeError, ValueError):
-            args = {}
+        args = fn.get("arguments")
+        if not isinstance(args, dict):
+            try:
+                args = json.loads(args or "{}")
+            except (TypeError, ValueError):
+                args = {}
         call_id = call.get("id")
+        if not (isinstance(call_id, str) and call_id) or call_id in seen:
+            call_id = synthesize_tool_call_id()
+        seen.add(call_id)
         tool_calls.append(
             {
-                "id": call_id
-                if isinstance(call_id, str) and call_id
-                else synthesize_tool_call_id(),
+                "id": call_id,
                 "name": fn.get("name") or "",
                 "arguments": args if isinstance(args, dict) else {},
             }
@@ -250,7 +263,7 @@ def to_openai_messages(messages: list[dict]) -> list[dict]:
         if m.get("role") == "assistant" and m.get("tool_calls"):
             m = {
                 **m,
-                # Some compat servers reject "" next to tool_calls.
+                # null is the documented value next to tool_calls.
                 "content": m.get("content") or None,
                 "tool_calls": [
                     {

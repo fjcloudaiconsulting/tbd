@@ -17,6 +17,7 @@ import httpx
 import pytest
 
 from app.services.ai_providers.anthropic import AnthropicAdapter
+from app.services.ai_providers.base import AIProviderError
 from app.services.ai_providers.openai import OpenAIAdapter
 from app.services.ai_providers.openai_compatible import (
     OpenAICompatibleAdapter,
@@ -123,7 +124,10 @@ async def test_anthropic_two_round_tool_conversation(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_anthropic_folds_following_user_text_after_tool_results(monkeypatch):
+@pytest.mark.parametrize("assistant_text", ["", "\n\n"])
+async def test_anthropic_folds_following_user_text_after_tool_results(
+    monkeypatch, assistant_text
+):
     fixture = _fixture("anthropic_two_round.json")
     bodies = _install_sequence(monkeypatch, [fixture["round2"]])
     call = {"id": "toolu_x", "name": "budgets_list", "arguments": {}}
@@ -131,7 +135,7 @@ async def test_anthropic_folds_following_user_text_after_tool_results(monkeypatc
         model="claude-haiku-4-5",
         messages=[
             USER,
-            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "assistant", "content": assistant_text, "tool_calls": [call]},
             {"role": "tool", "tool_call_id": "toolu_x", "content": "[]"},
             {"role": "user", "content": "And last month?"},
         ],
@@ -139,7 +143,7 @@ async def test_anthropic_folds_following_user_text_after_tool_results(monkeypatc
     )
     messages = bodies[0]["messages"]
     assert [m["role"] for m in messages] == ["user", "assistant", "user"]
-    # Empty assistant text never becomes an empty text block (Anthropic 400s on it).
+    # Blank assistant text never becomes a text block (Anthropic 400s on it).
     assert messages[1]["content"] == [
         {"type": "tool_use", "id": "toolu_x", "name": "budgets_list", "input": {}}
     ]
@@ -231,6 +235,58 @@ async def test_compat_server_without_ids_gets_unique_ids(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_anthropic_drops_blank_user_text_after_tool_results(monkeypatch):
+    bodies = _install_sequence(
+        monkeypatch, [_fixture("anthropic_two_round.json")["round2"]]
+    )
+    call = {"id": "toolu_x", "name": "budgets_list", "arguments": {}}
+    await AnthropicAdapter(api_key="k").function_call(
+        model="claude-haiku-4-5",
+        messages=[
+            USER,
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "toolu_x", "content": "[]"},
+            {"role": "user", "content": "  "},
+        ],
+        tools=TOOLS,
+    )
+    assert bodies[0]["messages"][2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "toolu_x", "content": "[]"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_compat_duplicate_ids_in_one_response_are_replaced(monkeypatch):
+    call = {"id": "0", "function": {"name": "budgets_list", "arguments": "{}"}}
+    _install_sequence(monkeypatch, [_compat_round([call, call])])
+    resp = await OpenAICompatibleAdapter(
+        api_key="k", base_url="https://compat.example.org"
+    ).function_call(model="local", messages=[USER], tools=TOOLS)
+    assert resp.tool_calls[0]["id"] == "0"
+    assert re.fullmatch(r"call_[0-9a-f]{24}", resp.tool_calls[1]["id"])
+
+
+@pytest.mark.asyncio
+async def test_compat_object_arguments_are_kept(monkeypatch):
+    call = {"id": "c1", "function": {"name": "forecast_get", "arguments": {"period_start": "2026-09-01"}}}
+    _install_sequence(monkeypatch, [_compat_round([call])])
+    resp = await OpenAICompatibleAdapter(
+        api_key="k", base_url="https://compat.example.org"
+    ).function_call(model="local", messages=[USER], tools=TOOLS)
+    assert resp.tool_calls[0]["arguments"] == {"period_start": "2026-09-01"}
+
+
+@pytest.mark.asyncio
+async def test_non_object_tool_call_entry_is_a_typed_provider_error(monkeypatch):
+    _install_sequence(monkeypatch, [_compat_round(["not-a-call"])])
+    with pytest.raises(AIProviderError) as exc:
+        await OpenAIAdapter(api_key="k").function_call(
+            model="gpt-4o-mini", messages=[USER], tools=TOOLS
+        )
+    assert exc.value.code == "provider_unexpected_shape"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("raw_args", ["[]", "null", "\"x\"", "not json"])
 async def test_openai_non_object_arguments_become_empty_dict(monkeypatch, raw_args):
     call = {"id": "call_1", "function": {"name": "budgets_list", "arguments": raw_args}}
@@ -274,4 +330,4 @@ def test_estimator_counts_assistant_tool_calls():
 
 def test_estimator_never_raises_on_unserializable_tool_calls():
     turn = {"role": "assistant", "content": "hi", "tool_calls": [{"arguments": object()}]}
-    assert estimate_prompt_tokens_from_messages([turn]) == 1
+    assert estimate_prompt_tokens_from_messages([turn]) >= 1

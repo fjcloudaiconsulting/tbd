@@ -18,8 +18,8 @@
           "refusal": null,
           "reasoning": null,
           "tool_calls": [
-            {"index": 0, "id": "toolu_vrtx_01Lk8Pq3Rz6WmYt2Xn9Bc4Df", "type": "function", "function": {"name": "budgets_list", "arguments": "{}"}},
-            {"index": 1, "id": "toolu_vrtx_01Hs5Tg7Jw2Vq8Nm4Ky1Ze6Ra", "type": "function", "function": {"name": "forecast_get", "arguments": "{\"period_start\": \"2026-09-01\"}"}}
+            {"index": 0, "id": "toolu_01Lk8Pq3Rz6WmYt2Xn9Bc4Df", "type": "function", "function": {"name": "budgets_list", "arguments": "{}"}},
+            {"index": 1, "id": "toolu_01Hs5Tg7Jw2Vq8Nm4Ky1Ze6Ra", "type": "function", "function": {"name": "forecast_get", "arguments": "{\"period_start\": \"2026-09-01\"}"}}
           ]
         }
       }
