@@ -194,15 +194,21 @@ async def test_anthropic_keeps_each_round_results_after_its_own_tool_use(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_anthropic_unsafe_or_repeated_ids_are_replaced(monkeypatch):
+@pytest.mark.parametrize(
+    ("wire_ids", "kept_first"),
+    [(["toolu_dup", "toolu_dup"], True), (["x" * 65, "toolu_ok"], False)],
+)
+async def test_anthropic_unsafe_or_repeated_ids_are_replaced(
+    monkeypatch, wire_ids, kept_first
+):
     round1 = _fixture("anthropic_two_round.json")["round1"]
-    round1["content"][1]["id"] = "x" * 65
-    round1["content"][2]["id"] = round1["content"][1]["id"]
+    round1["content"][1]["id"], round1["content"][2]["id"] = wire_ids
     _install_sequence(monkeypatch, [round1])
     resp = await AnthropicAdapter(api_key="k").function_call(
         model="claude-haiku-4-5", messages=[USER], tools=TOOLS
     )
     ids = [c["id"] for c in resp.tool_calls]
+    assert (ids[0] == wire_ids[0]) is kept_first
     assert all(len(i) <= 64 for i in ids) and len(set(ids)) == 2
 
 
