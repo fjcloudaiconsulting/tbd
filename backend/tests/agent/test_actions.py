@@ -902,6 +902,8 @@ async def test_auto_re_preview_reads_fresh_data(factory, w, engine):
     finally:
         registry._TOOLS["budgets_update_amount"] = spec
     assert err.code == "preview_stale"
+    # The auto path's error data reaches the model through invoke: wrapped there.
+    assert err.data["context"]["category_name"] == {"untrusted": "Food A"}
     assert (await _amount(factory, a["b1"])) == Decimal("111.00")
 
 
