@@ -1,0 +1,46 @@
+{
+  "_source": "Gemini OpenAI-compatible wire format (base https://generativelanguage.googleapis.com/v1beta/openai): POST .../chat/completions with tools, the streamed variant with stream_options.include_usage, and GET .../models. Authored from Google's documented OpenAI-compatibility shape; no live call. Unverified against a live key: the exact tool-call id format and whether /chat/completions accepts the models/-prefixed ids that /models returns.",
+  "round1": {
+    "id": "Xk3hZq2rB9-8yQfP1sKd",
+    "object": "chat.completion",
+    "created": 1759260000,
+    "model": "gemini-2.5-flash",
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "tool_calls",
+        "message": {
+          "role": "assistant",
+          "tool_calls": [
+            {"id": "function-call-6135581947412258291", "type": "function", "function": {"name": "budgets_list", "arguments": "{}"}},
+            {"id": "function-call-6135581947412258292", "type": "function", "function": {"name": "forecast_get", "arguments": "{\"period_start\":\"2026-09-01\"}"}}
+          ]
+        }
+      }
+    ],
+    "usage": {"prompt_tokens": 412, "completion_tokens": 38, "total_tokens": 450}
+  },
+  "round2": {
+    "id": "Yl4iAr3sC0-9zRgQ2tLe",
+    "object": "chat.completion",
+    "created": 1759260002,
+    "model": "gemini-2.5-flash",
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "stop",
+        "message": {"role": "assistant", "content": "Groceries is at 80% of its budget and the forecast ends the month positive."}
+      }
+    ],
+    "usage": {"prompt_tokens": 560, "completion_tokens": 21, "total_tokens": 581}
+  },
+  "stream_sse": "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\",\"role\":\"assistant\"},\"index\":0}],\"created\":1759260004,\"id\":\"Zm5jBs4tD1\",\"model\":\"gemini-2.5-flash\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"index\":0}],\"created\":1759260004,\"id\":\"Zm5jBs4tD1\",\"model\":\"gemini-2.5-flash\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":2,\"prompt_tokens\":5,\"total_tokens\":7}}\n\ndata: [DONE]\n\n",
+  "models": {
+    "object": "list",
+    "data": [
+      {"id": "models/gemini-2.5-flash", "object": "model", "owned_by": "google"},
+      {"id": "models/gemini-2.5-pro", "object": "model", "owned_by": "google"},
+      {"id": "models/text-embedding-004", "object": "model", "owned_by": "google"}
+    ]
+  }
+}

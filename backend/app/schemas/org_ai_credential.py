@@ -76,6 +76,10 @@ def _validate_base_url(value: str) -> str:
         raise ValueError("base_url must use http or https scheme")
     if not parsed.hostname:
         raise ValueError("base_url must include a hostname")
+    # Endpoints are appended by plain string concat (TBD-590), so a query or
+    # fragment would swallow them. New writes only; stored rows untouched.
+    if "?" in value or "#" in value:
+        raise ValueError("base_url must not include a query string or fragment")
     _reject_metadata_or_unsafe(parsed.hostname)
     return value
 
@@ -122,6 +126,14 @@ class OrgAICredentialCreate(BaseModel):
             parsed = urlparse(self.base_url)
             if parsed.hostname:
                 _reject_private_or_loopback(parsed.hostname)
+        # Userinfo would be echoed back in every credential listing. Ollama
+        # keeps it: URL userinfo is its only Basic-auth path (reverse proxy).
+        if (
+            self.provider == AiProvider.OPENAI_COMPATIBLE
+            and self.base_url
+            and "@" in (urlparse(self.base_url).netloc or "")
+        ):
+            raise ValueError("base_url must not include a username or password")
         if self.provider != AiProvider.OLLAMA and self.bearer_token:
             raise ValueError(
                 "bearer_token is only valid for the ollama provider"

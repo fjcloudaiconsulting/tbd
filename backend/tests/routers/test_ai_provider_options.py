@@ -133,6 +133,21 @@ async def test_options_endpoint_lists_five_providers_native_not_yet(
     }
     assert keys["native"]["availability"] == "not_yet_available"
     assert keys["openai"]["availability"] == "available"
+    # TBD-590: OpenRouter and Gemini are openai_compatible presets.
+    assert body["presets"] == [
+        {
+            "key": "openrouter",
+            "label": "OpenRouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "openai_compatible",
+        },
+        {
+            "key": "gemini",
+            "label": "Google Gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "provider": "openai_compatible",
+        },
+    ]
 
 
 async def test_options_returns_not_yet_available_for_native_when_flag_true(

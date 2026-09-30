@@ -260,7 +260,11 @@ async def test_openai_two_round_tool_conversation(monkeypatch):
 async def test_openrouter_two_round_tool_conversation(monkeypatch):
     fixture = _fixture("openrouter_two_round.json")
     first, second, bodies = await _two_rounds(
-        OpenAICompatibleAdapter(api_key="sk-or-test", base_url="https://openrouter.ai/api"),
+        OpenAICompatibleAdapter(
+            api_key="sk-or-test",
+            base_url="https://openrouter.ai/api/v1",
+            base_url_is_api_root=True,
+        ),
         "anthropic/claude-haiku-4.5",
         monkeypatch,
         fixture,
@@ -268,6 +272,26 @@ async def test_openrouter_two_round_tool_conversation(monkeypatch):
     # OpenRouter's passed-through upstream ids are kept, never replaced.
     assert first.tool_calls == _expected_openai_calls(fixture)
     _assert_openai_round_two(bodies[1], first)
+    assert second.content == fixture["round2"]["choices"][0]["message"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_gemini_two_round_tool_conversation(monkeypatch):
+    fixture = _fixture("gemini_openai_compat.json")
+    first, second, bodies = await _two_rounds(
+        OpenAICompatibleAdapter(
+            api_key="gm-test",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            base_url_is_api_root=True,
+        ),
+        "gemini-2.5-flash",
+        monkeypatch,
+        fixture,
+    )
+    # Gemini's own call ids are kept and round 2 answers each by its id.
+    assert first.tool_calls == _expected_openai_calls(fixture)
+    _assert_openai_round_two(bodies[1], first)
+    assert second.tool_calls == []
     assert second.content == fixture["round2"]["choices"][0]["message"]["content"]
 
 

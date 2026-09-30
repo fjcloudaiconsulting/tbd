@@ -381,6 +381,7 @@ def get_adapter(
     api_key: str,
     bearer_token: Optional[str] = None,
     base_url: Optional[str] = None,
+    base_url_is_api_root: Optional[bool] = None,
 ) -> ValidateCapable:
     """Return a ValidateCapable adapter for ``provider``.
 
@@ -409,7 +410,17 @@ def get_adapter(
         )
         if not base_url:
             raise ValueError("base_url required for openai_compatible provider")
-        return OpenAICompatibleAdapter(api_key=api_key, base_url=base_url)
+        # No default: a caller that forgets the row's flag must fail loud,
+        # never fall back to the legacy /v1 root silently (TBD-590).
+        if base_url_is_api_root is None:
+            raise ValueError(
+                "base_url_is_api_root required for openai_compatible provider"
+            )
+        return OpenAICompatibleAdapter(
+            api_key=api_key,
+            base_url=base_url,
+            base_url_is_api_root=base_url_is_api_root,
+        )
     if provider == AiProvider.NATIVE:
         # The credential service refuses creation for native earlier
         # (PR1 has no native backend), so this branch is dead code for
