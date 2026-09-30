@@ -182,7 +182,7 @@ def test_get_adapter_passes_the_flag(flag):
     [
         ("https://h", True, 404, UNVERSIONED_ROOT_404_ERROR),
         # A version-like host is not a version path.
-        ("https://v1.api.example.com", True, 404, UNVERSIONED_ROOT_404_ERROR),
+        ("https://v1", True, 404, UNVERSIONED_ROOT_404_ERROR),
         ("https://h/v1", True, 404, "Provider rejected the request (404)"),
         ("https://h/v1beta/openai", True, 404, "Provider rejected the request (404)"),
         # Legacy rows keep today's message.
