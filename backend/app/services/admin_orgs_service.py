@@ -26,6 +26,7 @@ from app.models.org_ai_credential import OrgAICredential
 from app.models.report import Report
 from app.models.budget import Budget
 from app.models.feature_override import OrgFeatureOverride
+from app.models.limit_override import OrgLimitOverride
 from app.models.forecast_plan import ForecastPlan
 from app.models.invitation import Invitation
 from app.models.settings import OrgSetting
@@ -408,6 +409,13 @@ async def delete_org_cascade(
     counts["org_feature_overrides"] = (
         await db.execute(
             delete(OrgFeatureOverride).where(OrgFeatureOverride.org_id == org_id)
+        )
+    ).rowcount or 0
+
+    # TBD-585: per-org usage-limit overrides, same reasoning as above.
+    counts["org_limit_overrides"] = (
+        await db.execute(
+            delete(OrgLimitOverride).where(OrgLimitOverride.org_id == org_id)
         )
     ).rowcount or 0
 

@@ -128,8 +128,8 @@ def test_table_count_is_what_the_spec_measured():
     drift (44 → 49 → "37 files" → 35). Not a correctness gate — legs 1 and 2
     are — but a loud signal when the surface moves.
     """
-    assert len(Base.metadata.tables) == 50
-    assert len(EXPORT_DISPOSITION) == 50
+    assert len(Base.metadata.tables) == 52
+    assert len(EXPORT_DISPOSITION) == 52
 
 
 # ══ Fixtures for the data-path legs ═══════════════════════════════════════
@@ -505,6 +505,15 @@ async def _seed_org(db: AsyncSession, *, marker: str) -> dict:
         )
     )
 
+    # usage_counters — org-scoped meter row (TBD-585).
+    from app.models.usage_counter import UsageCounter
+    db.add(
+        UsageCounter(
+            org_id=oid, meter="mcp.calls", period="month",
+            period_start=datetime.date(2026, 1, 1), value=1,
+        )
+    )
+
     # audit_events — scoped by target_org_id ONLY.
     db.add(
         AuditEvent(
@@ -810,7 +819,7 @@ def test_tag_dictionary_contributors_is_excluded():
     assert not EXPORT_DISPOSITION["tag_dictionary_contributors"].included
 
 
-# ⚠ The 13 tables §5 ruled OUT of a data-subject export. Held as a literal on
+# ⚠ The 14 tables §5 ruled OUT of a data-subject export (TBD-585 added org_limit_overrides: operator configuration, like org_feature_overrides). Held as a literal on
 # purpose: this is the ruling, restated independently of the registry.
 RULED_EXCLUDED: frozenset[str] = frozenset(
     {
@@ -820,6 +829,7 @@ RULED_EXCLUDED: frozenset[str] = frozenset(
         "merchant_dictionary",
         "org_data_reset_locks",
         "org_feature_overrides",
+        "org_limit_overrides",
         "plans",
         "rate_limit_overrides",
         "role_permissions",
@@ -831,7 +841,7 @@ RULED_EXCLUDED: frozenset[str] = frozenset(
 )
 
 
-def test_the_excluded_set_is_exactly_the_ruled_thirteen():
+def test_the_excluded_set_is_exactly_the_ruled_fourteen():
     """⚠ A DIRECT disclosure fence on the Exclude side.
 
     Flipping a table from Exclude to Include reddened only *incidentally*
@@ -853,7 +863,7 @@ def test_the_excluded_set_is_exactly_the_ruled_thirteen():
         f"is a disclosure decision and needs a §5 ruling, not just an edit."
     )
     assert included_tables() == set(Base.metadata.tables) - RULED_EXCLUDED, (
-        "every table that is not one of the ruled 13 must be INCLUDED — a new "
+        "every table that is not one of the ruled 14 must be INCLUDED — a new "
         "table is neither ruled in nor ruled out until §5 says so."
     )
 

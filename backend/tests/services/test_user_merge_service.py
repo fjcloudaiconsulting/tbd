@@ -18,6 +18,7 @@ from sqlalchemy.pool import StaticPool
 from app.models import Base
 from app.models.audit_event import AuditEvent, AuditOutcome
 from app.models.feature_override import OrgFeatureOverride
+from app.models.limit_override import OrgLimitOverride
 from app.models.invitation import Invitation
 from app.models.org_data_reset_lock import OrgDataResetLock
 from app.models.tag import Tag
@@ -254,6 +255,30 @@ async def test_merge_reassigns_invitations_and_overrides(session_factory) -> Non
 
         assert counts["invitations"] == 1
         assert counts["org_feature_overrides"] == 1
+
+
+@pytest.mark.asyncio
+async def test_merge_reassigns_limit_override_attribution(session_factory) -> None:
+    """guard: an org_limit_overrides.set_by must follow the merge, not be
+    nulled by the source user's delete (SET NULL)."""
+    async with session_factory() as db:
+        org = await _seed_org(db)
+        source = await _seed_user(db, org_id=org.id, username="s", email="s@x.io")
+        target = await _seed_user(db, org_id=org.id, username="t", email="t@x.io")
+        db.add(OrgLimitOverride(
+            org_id=org.id, meter="mcp.calls", period="day", limit_value=5, set_by=source.id,
+        ))
+        await db.commit()
+        source_id, target_id = source.id, target.id
+
+        counts = await user_merge_service.merge_users(
+            db, source_user_id=source_id, target_user_id=target_id
+        )
+        await db.commit()
+
+        assert counts["org_limit_overrides"] == 1
+        set_by = await db.scalar(select(OrgLimitOverride.set_by))
+        assert set_by == target_id
 
 
 @pytest.mark.asyncio

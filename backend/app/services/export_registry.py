@@ -43,7 +43,7 @@ from typing import Union
 # Bumped whenever a disposition, a scope, or a redact set changes. Recorded
 # in the export header and in the ``org.data.exported`` audit row so an
 # artifact handed to a data subject can be tied to the rules that built it.
-REGISTRY_VERSION = 2
+REGISTRY_VERSION = 3
 
 
 # ── Scoping ────────────────────────────────────────────────────────────────
@@ -306,6 +306,9 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
         "operator/runtime lease; lease_token is a live capability, not data"
     ),
     "org_feature_overrides": Exclude("operator configuration about the org, not the org's data"),
+    "org_limit_overrides": Exclude(
+        "operator configuration about the org, not the org's data"
+    ),
     "org_settings": Include(OrgColumn(), "settings the subject chose"),
     "organizations": Include(OrgColumn("id"), "the org record itself"),
     "plans": Exclude("platform-global price list"),
@@ -338,6 +341,7 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
         Via("transactions", "transaction_id"), "tag links on the subject's transactions"
     ),
     "transactions": Include(OrgColumn(), "the subject's transactions"),
+    "usage_counters": Include(OrgColumn(), "the org's metered usage per period"),
     "user_dismissed_announcements": Include(
         Via("users", "user_id"), "announcements the subject dismissed"
     ),

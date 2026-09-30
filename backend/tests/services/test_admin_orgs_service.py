@@ -26,6 +26,7 @@ from app.models.budget import Budget
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.feature_override import OrgFeatureOverride
+from app.models.limit_override import OrgLimitOverride
 from app.models.merchant_dictionary import MerchantDictionaryEntry
 from app.models.forecast_plan import (
     ForecastItemType,
@@ -211,7 +212,10 @@ async def _seed_full_org(factory, *, name: str = "Acme") -> dict:
             value=False,
             set_by=owner.id,
         )
-        db.add_all([plan_item, invite, rule, override])
+        limit_override = OrgLimitOverride(
+            org_id=org.id, meter="mcp.calls", period="day", limit_value=5, set_by=owner.id,
+        )
+        db.add_all([plan_item, invite, rule, override, limit_override])
         await db.commit()
 
         return {"org_id": org.id, "owner_id": owner.id}
@@ -253,12 +257,14 @@ async def test_delete_org_cascade_removes_all_children_and_keeps_other_org(
     assert result["categories"] == 2  # master + sub
     assert result["category_rules"] == 1
     assert result["org_feature_overrides"] == 1
+    assert result["org_limit_overrides"] == 1
     # Order isn't asserted — just that every table reports.
     expected_tables = {
         "transactions", "forecast_plan_items", "budgets", "invitations",
         "recurring_transactions", "forecast_plans", "billing_periods",
         "accounts", "account_types", "category_rules", "categories",
-        "settings", "org_feature_overrides", "users", "subscriptions",
+        "settings", "org_feature_overrides", "org_limit_overrides", "users",
+        "subscriptions",
         "organizations",
     }
     assert expected_tables <= set(result.keys())
@@ -273,6 +279,7 @@ async def test_delete_org_cascade_removes_all_children_and_keeps_other_org(
         assert await _count(db, Invitation, org_id=target["org_id"]) == 0
         assert await _count(db, CategoryRule, org_id=target["org_id"]) == 0
         assert await _count(db, OrgFeatureOverride, org_id=target["org_id"]) == 0
+        assert await _count(db, OrgLimitOverride, org_id=target["org_id"]) == 0
         # Sibling org survives intact.
         assert await _count(db, Organization, id=keep["org_id"]) == 1
         assert await _count(db, User, org_id=keep["org_id"]) == 2
@@ -280,6 +287,7 @@ async def test_delete_org_cascade_removes_all_children_and_keeps_other_org(
         assert await _count(db, Category, org_id=keep["org_id"]) == 2
         assert await _count(db, CategoryRule, org_id=keep["org_id"]) == 1
         assert await _count(db, OrgFeatureOverride, org_id=keep["org_id"]) == 1
+        assert await _count(db, OrgLimitOverride, org_id=keep["org_id"]) == 1
         # merchant_dictionary is shared (no org_id) — must NOT be touched.
         from sqlalchemy import func
         md_count = await db.scalar(
