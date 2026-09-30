@@ -276,7 +276,7 @@ async def revoke_org_agent_token(
     row, owner_id = (found[0], found[1].id) if found else (None, None)
     return await _revoke(
         db, session_factory, request, actor, row,
-        {"by_org_admin": True, "owner_user_id": owner_id},
+        {"by_admin": True, "owner_user_id": owner_id},
     )
 
 

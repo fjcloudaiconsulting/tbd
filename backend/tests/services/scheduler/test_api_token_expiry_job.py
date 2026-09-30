@@ -436,3 +436,32 @@ async def test_f_s1_reminder_copy_and_link_follow_the_scope(
     assert n.body.startswith(f'Your {noun} "ci-token" expires')
     assert n.link_url == link
     assert sent_email_links == [link]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("death", ["cutoff", "inactive"])
+async def test_dead_agent_tokens_get_no_reminder(session_factory, superadmin, sent_emails, death):
+    """FENCE (TBD-578 review). Wrong implementation: the sweep reminding
+    "rotate it" for an agent token that no longer authenticates. A REST PAT
+    under the same cutoff still gets its reminder (PATs ignore the cutoff)."""
+    await _enable_flag(session_factory)
+    agent = await _mk_token(
+        session_factory, owner_id=superadmin, scope="agent:write",
+        expires_at=NOW + datetime.timedelta(days=14),
+    )
+    pat = await _mk_token(
+        session_factory, owner_id=superadmin, scope="write", prefix="pat_bbbbbbbbbb",
+        expires_at=NOW + datetime.timedelta(days=14),
+    )
+    async with session_factory() as db:
+        owner = await db.get(User, superadmin)
+        if death == "cutoff":
+            owner.sessions_invalidated_at = datetime.datetime.now(timezone.utc).replace(
+                tzinfo=None) + datetime.timedelta(minutes=1)
+        else:
+            owner.is_active = False
+        await db.commit()
+    await job.run_api_token_expiry_reminders(session_factory, now=NOW)
+    assert await _stage(session_factory, agent) == 0
+    assert await _stage(session_factory, pat) == 1
+    assert len(sent_emails) == 1

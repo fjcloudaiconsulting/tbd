@@ -593,9 +593,12 @@ async def test_f10_success_clears_both_fields(factory, action):
 APP_ROOT = Path(app_pkg.__file__).resolve().parent
 NAMES = {"stepup_token", "stepup_token_expires_at"}
 OWNER = {"auth/stepup.py", "models/user.py"}
-# main.py: ``stepup_token`` is a NAME in the 422 redaction set (TBD-578), a
-# request-body key, never the column; attribute access there is still caught.
-CONSTANT_OK = OWNER | {"services/export_registry.py", "main.py"}
+CONSTANT_OK = OWNER | {"services/export_registry.py"}
+# main.py: ``stepup_token`` is a string in the 422 redaction set (TBD-578), a
+# request-body key, never the column. Only bare string constants are exempt
+# there; attribute access, ``stepup_token=`` keywords and text() SQL are
+# still caught.
+STRING_OK = {"main.py"}
 
 
 def _violations(rel: str, tree: ast.AST) -> list[str]:
@@ -609,7 +612,10 @@ def _violations(rel: str, tree: ast.AST) -> list[str]:
                 out.append(f"{where} .{node.attr}")
         elif isinstance(node, ast.keyword) and node.arg in NAMES and not constant_ok:
             out.append(f"{where} {node.arg}=")
-        elif isinstance(node, ast.Constant) and node.value in NAMES and not constant_ok:
+        elif (
+            isinstance(node, ast.Constant) and node.value in NAMES
+            and not constant_ok and rel not in STRING_OK
+        ):
             out.append(f"{where} {node.value!r}")
         elif isinstance(node, ast.Call) and rel not in OWNER:
             fn = node.func

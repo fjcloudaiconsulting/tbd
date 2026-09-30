@@ -355,11 +355,14 @@ async def test_f_t6_org_admin_is_bounded_by_org(factory, client):
     other = await _user(factory, b, "o")
     mine = await _tok(factory, member)
     theirs = await _tok(factory, other)
+    # The member signed out everywhere after minting: the org view must judge
+    # the token by the OWNER's cutoff, not the admin's.
+    await _set_cutoff(factory, member, "sessions_invalidated_at", _naive_now().replace(microsecond=0))
     h = await _jwt(factory, admin)
     r = await client.get(f"{BASE}/org", headers=h)
     assert r.status_code == 200
     items = r.json()["items"]
-    assert [i["owner_user_id"] for i in items] == [member]
+    assert [(i["owner_user_id"], i["status"]) for i in items] == [(member, "invalidated")]
     tid = (await _row(factory, theirs)).id
     r = await client.delete(f"{BASE}/org/{tid}", headers=h)
     assert r.status_code == 404
@@ -368,6 +371,9 @@ async def test_f_t6_org_admin_is_bounded_by_org(factory, client):
     r = await client.delete(f"{BASE}/org/{mid}", headers=h)
     assert r.status_code == 200
     assert (await _row(factory, mine)).revoked_at is not None
+    [audit] = await _audits(factory, "agent_token.revoked")
+    assert (audit.actor_user_id, audit.target_org_id) == (admin, a)
+    assert (audit.detail["by_admin"], audit.detail["owner_user_id"]) == (True, member)
     r = await client.get(f"{BASE}/org", headers=await _jwt(factory, member))
     assert r.status_code == 403
 
@@ -408,6 +414,18 @@ async def test_f_a6_patch_never_goes_up(factory, client, start, target):
     r = await client.patch(f"{BASE}/{tid}", json={"scope": target}, headers=await _jwt(factory, uid))
     assert (r.status_code, r.json()["detail"]["code"]) == (422, "scope_not_downward")
     assert (await _row(factory, tok)).scope == start
+
+
+@pytest.mark.parametrize("dead", ["revoked", "expired"])
+async def test_patch_on_a_dead_token_is_404(factory, client, dead):
+    """FENCE. Wrong implementation: PATCH without the live-status check."""
+    org = await _org(factory, "A")
+    uid = await _user(factory, org, "m")
+    tok = await _tok(factory, uid, "agent:auto", **{dead: True})
+    tid = (await _row(factory, tok)).id
+    r = await client.patch(f"{BASE}/{tid}", json={"scope": "agent:read"}, headers=await _jwt(factory, uid))
+    assert r.status_code == 404
+    assert (await _row(factory, tok)).scope == "agent:auto"
 
 
 async def test_f_a6_downgrade_is_effective_on_the_next_call(factory, client):
@@ -487,19 +505,24 @@ async def test_m2_only_mint_is_gated_on_ai_agent(factory, client):
 # ── M3: per-user mint bucket ────────────────────────────────────────────────
 
 
-async def test_m3_per_user_bucket_counts_failed_step_ups(factory, client):
-    """FENCE M3. Wrong implementation: the bucket after the step-up (failed
-    proofs would never count). The IP limiter is reset per call so its own
-    10/hour cannot produce the 429."""
+async def test_m3_per_user_bucket_counts_failed_step_ups(factory, client, monkeypatch):
+    """FENCE M3. Wrong implementations: the bucket after the step-up (failed
+    proofs never count); a bucket keyed on the client IP (each call below
+    comes from a new IP, as a grinder rotating IPs would); one global key
+    (the second user would be refused too). Every call has its own IP, so
+    the slowapi IP limit can never produce the 429."""
+    monkeypatch.setenv("PFV_RUNTIME", "app_platform")  # trust do-connecting-ip
     org = await _org(factory, "A")
     h = await _jwt(factory, await _user(factory, org, "m"))
-    for _ in range(10):
-        limiter.reset()
-        r = await client.post(BASE, json=_mint_body(current_password="wrong"), headers=h)
+    other = await _jwt(factory, await _user(factory, org, "o"))
+    for i in range(10):
+        r = await client.post(BASE, json=_mint_body(current_password="wrong"),
+                              headers={**h, "do-connecting-ip": f"198.51.100.{i}"})
         assert r.status_code == 401, r.text
-    limiter.reset()
-    r = await client.post(BASE, json=_mint_body(), headers=h)
+    r = await client.post(BASE, json=_mint_body(), headers={**h, "do-connecting-ip": "198.51.100.99"})
     assert (r.status_code, r.json()["detail"]["code"]) == (429, "mint_rate_limited")
+    r = await client.post(BASE, json=_mint_body(), headers={**other, "do-connecting-ip": "198.51.100.98"})
+    assert r.status_code == 201, r.text
 
 
 async def test_m3_bucket_fails_closed(factory, client, monkeypatch):
@@ -547,6 +570,11 @@ async def test_m4_mint_success_audit_and_auto_copy(factory, client):
         n = (await s.execute(select(Notification))).scalars().one()
     assert "auto-mode" in n.title.lower() and token not in n.body
     assert n.link_url == "/settings/agent-tokens"
+    email = notification_service.send_notification_email
+    email.assert_awaited_once()
+    assert "auto-mode" in email.await_args.kwargs["title"].lower()
+    assert email.await_args.kwargs["link_url"] == "/settings/agent-tokens"
+    assert token not in str(email.await_args)
     user, row = await _auth(factory, token)
     assert (user.id, row.scope) == (uid, "agent:auto")
 

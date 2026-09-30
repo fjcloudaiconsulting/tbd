@@ -39,6 +39,7 @@ from app.models.api_token import ApiToken
 from app.models.notification import NotificationCategory
 from app.models.system_setting import SystemSetting
 from app.models.user import User
+from app.security import token_cutoff
 from app.services.email_service import send_notification_email
 from app.services.notification_service import dispatch_notification
 
@@ -188,6 +189,12 @@ async def _process_token(session_factory, token_id: int, now: datetime.datetime)
             owner = await db.get(User, token.created_by_user_id)
             if owner is None:
                 # FK says non-null but the row is gone — treat as null-owner.
+                return False
+            if token.scope.startswith("agent:") and (
+                not owner.is_active or _aware(token.created_at) <= token_cutoff(owner)
+            ):
+                # A dead agent token (owner deactivated, or killed by a sign
+                # out everywhere / password change) needs no "rotate it".
                 return False
 
             noun, link_url = _noun_and_link(token.scope)

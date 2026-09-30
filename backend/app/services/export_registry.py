@@ -192,13 +192,12 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
     # TBD-578 the table holds two kinds of credential: superadmin REST PATs
     # (``/api/v1/system/api-tokens``) and agent access tokens that any member
     # mints for their own AI tool (``/api/v1/agent/tokens``). Neither kind is
-    # org data: rows have no org_id, ``token_hash`` is a live capability, and
-    # an owner already lists their own tokens' metadata (name, scope, dates,
-    # last use) through the agent tokens API, so excluding the table withholds
-    # nothing the subject cannot see.
+    # org data: rows have no org_id and ``token_hash`` is a live capability.
+    # Say only what is true for both kinds today; a claim about where owners
+    # list their tokens waits for that page to exist.
     "api_tokens": Exclude(
         "access credentials with no org_id; token_hash is a live capability, "
-        "and each owner lists their own tokens in agent token settings"
+        "not org data"
     ),
     # ⚠ Scope is target_org_id ONLY. NEVER add an actor_user_id disjunct: a
     # superadmin's admin.* actions against OTHER tenants carry their
