@@ -216,6 +216,30 @@ async def test_happy_path_writes_ledger_row(
     assert rows[0].est_cost_cents >= 1  # nonzero from pricing table
 
 
+@pytest.mark.asyncio
+async def test_fq6_byok_dispatch_never_touches_the_platform_meters(
+    db: AsyncSession, org: Organization, admin_user, credential, default_routing
+):
+    """GUARD F-Q6 (TBD-585; vacuous until the platform-funded path, 586). The
+    org has no plan, so its platform meters are limited to 0. A dispatch on
+    the org's OWN key still succeeds, writes an ``org_key`` ledger row and no
+    usage counter. Wrong implementation: a platform meter admitted on every
+    dispatch (this org would be refused)."""
+    from app.models.usage_counter import UsageCounter
+    from app.services.feature_service import get_entitlements
+
+    ent = await get_entitlements(db, org.id)
+    assert ent.limits["platform_ai.tokens"].limit == 0 == ent.limits["platform_ai.cents"].limit
+    with patch("app.services.ai_dispatch.get_adapter", return_value=_make_adapter()):
+        await call_llm(
+            db, org_id=org.id, feature_key="chat",
+            request_payload={"messages": [{"role": "user", "content": "hi"}]},
+        )
+    (row,) = (await db.execute(select(AIUsageLedger))).scalars().all()
+    assert row.success is True and row.billing_source == "org_key"
+    assert (await db.execute(select(UsageCounter))).scalars().all() == []
+
+
 # ---------- no routing ------------------------------------------------
 
 

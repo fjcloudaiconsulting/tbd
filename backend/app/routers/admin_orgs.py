@@ -776,7 +776,7 @@ async def get_feature_state(
     if org is None:
         raise HTTPException(status_code=404, detail="Organization not found")
 
-    plan_features = await feature_service._fetch_plan_features(db, org_id)
+    plan_features = (await feature_service.get_entitlements(db, org_id)).plan_features
 
     plan_row = await db.execute(
         select(Plan.id, Plan.name, Plan.slug)
