@@ -148,6 +148,9 @@ async def test_api_root_row_appends_only_the_endpoint(monkeypatch, preset):
 
 
 def test_presets_are_the_documented_api_roots():
+    # A preset key equal to a provider key would shadow that provider's
+    # option in the form's select.
+    assert not set(PRESET) & {p.value for p in AiProvider}
     assert PRESET == {
         "openrouter": "https://openrouter.ai/api/v1",
         "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -219,6 +222,7 @@ def test_create_refuses_query_fragment_and_userinfo(base_url):
         )
 
 
+# Guard: the flag is server-written only; extra="forbid" keeps it out.
 def test_create_refuses_a_client_supplied_flag():
     with pytest.raises(ValidationError):
         OrgAICredentialCreate(
@@ -329,8 +333,8 @@ async def test_legacy_row_rotate_and_validate_keep_the_v1_root(
         org = Organization(name="Acme", billing_cycle_day=1)
         db.add(org)
         await db.commit()
-        # A row as it exists before TBD-590: the column is not set, so the
-        # server default applies.
+        # A row as it exists before TBD-590: the flag is not set and reads
+        # False (migration 083's default is fenced by the migration test).
         row = OrgAICredential(
             org_id=org.id,
             provider=AiProvider.OPENAI_COMPATIBLE,

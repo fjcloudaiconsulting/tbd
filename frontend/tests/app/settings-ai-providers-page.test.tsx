@@ -449,12 +449,24 @@ describe("AiProvidersPage", () => {
       ).toBe(true),
     );
 
-    // Leaving a preset for another provider clears its untouched URL.
-    fireEvent.change(select, { target: { value: "openrouter" } });
+    const baseUrlInput = () =>
+      within(dialog).getByLabelText(/^Base URL$/i) as HTMLInputElement;
+
+    // A typed URL survives a switch between plain providers.
+    fireEvent.change(select, { target: { value: "openai_compatible" } });
+    fireEvent.change(baseUrlInput(), {
+      target: { value: "https://my.host/v1" },
+    });
     fireEvent.change(select, { target: { value: "ollama" } });
-    expect(
-      (within(dialog).getByLabelText(/^Base URL$/i) as HTMLInputElement).value,
-    ).toBe("");
+    expect(baseUrlInput().value).toBe("https://my.host/v1");
+
+    // Picking a preset takes its URL, even over a typed one.
+    fireEvent.change(select, { target: { value: "openrouter" } });
+    expect(baseUrlInput().value).toBe("https://openrouter.ai/api/v1");
+
+    // Leaving a preset for another provider clears its untouched URL.
+    fireEvent.change(select, { target: { value: "ollama" } });
+    expect(baseUrlInput().value).toBe("");
 
     fireEvent.change(select, { target: { value: "openrouter" } });
     expect(select.value).toBe("openrouter");

@@ -475,14 +475,13 @@ function AddCredentialModal({
 
   function handleChoice(next: string) {
     const nextPreset = providerPresets.find((p) => p.key === next);
-    // Replace the base URL only while it is empty or an untouched preset
-    // value, so a typed URL survives and a preset URL never leaks into
-    // another provider.
-    if (
-      !baseUrl.trim() ||
-      providerPresets.some((p) => p.base_url === baseUrl)
-    ) {
-      setBaseUrl(nextPreset?.base_url ?? "");
+    // Picking a preset always takes its URL. Leaving one clears the URL
+    // only while it is still an untouched preset value, so a typed URL
+    // survives and a preset URL never leaks into another provider.
+    if (nextPreset) {
+      setBaseUrl(nextPreset.base_url);
+    } else if (providerPresets.some((p) => p.base_url === baseUrl)) {
+      setBaseUrl("");
     }
     setChoice(next);
   }
