@@ -270,9 +270,11 @@ def test_fr4_tightened_limits_hold():
     date range <= 366 days."""
     Args = registry.get_tool("transactions_search").args
     base = {"date_from": "2026-01-01", "date_to": "2026-01-31", "category_match": "exact"}
-    Args.model_validate({**base, "limit": 50})
-    with pytest.raises(PydanticValidationError):
-        Args.model_validate({**base, "limit": 51})
+    Args.model_validate({**base, "limit": 50, "account_id": list(range(50)), "offset": 10_000})
+    for bad in ({"limit": 51}, {"account_id": list(range(51))},
+                {"category_id": list(range(51))}, {"offset": 10_001}):
+        with pytest.raises(PydanticValidationError):
+            Args.model_validate({**base, **bad})
     Args.model_validate({**base, "date_from": "2025-01-01", "date_to": "2026-01-01"})  # 366 days
     with pytest.raises(PydanticValidationError):
         Args.model_validate({**base, "date_from": "2025-01-01", "date_to": "2026-01-02"})
@@ -543,6 +545,17 @@ async def test_unexpected_tool_failure_is_an_opaque_error(entitled, scratch_tool
     with pytest.raises(ToolError) as exc:
         await invoke(None, _user(Role.OWNER), "boom_tool", {}, channel="in_app")
     assert (exc.value.code, exc.value.detail) == ("internal_error", "the tool failed")
+
+
+async def test_a_gate_failure_is_an_opaque_error_too(monkeypatch, scratch_tool):
+    async def _db_down(db, org_id, key):
+        raise RuntimeError("Lost connection to MySQL server")
+
+    monkeypatch.setattr(registry.feature_service, "has_feature", _db_down)
+    scratch_tool(_spec(name="member_tool"))
+    with pytest.raises(ToolError) as exc:
+        await invoke(None, _user(Role.OWNER), "member_tool", {}, channel="in_app")
+    assert exc.value.code == "internal_error"
 
 
 # ── F-R10 unit ────────────────────────────────────────────────────────────

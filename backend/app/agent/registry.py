@@ -244,6 +244,14 @@ async def invoke(
             user_id=user.id, outcome=exc.code,
         )
         raise
+    except Exception:
+        # Gates and tools alike: never hand SQL or internals to a model or a
+        # harness. Roll back so the caller's session stays usable for the
+        # next call in the same turn (nothing here writes, so nothing is lost).
+        await logger.aexception("agent.tool.failed", tool=name, channel=channel, org_id=user.org_id)
+        if db is not None:
+            await db.rollback()
+        raise ToolError("internal_error", "the tool failed") from None
     await logger.ainfo(
         "agent.tool.invoked", tool=name, channel=channel, org_id=user.org_id, user_id=user.id,
         outcome="ok",
@@ -298,13 +306,7 @@ async def _gate_and_run(
     ctx = ToolContext(db=db, user=user, org_id=org_id, channel=channel, api_token_id=api_token_id)
     try:
         return await spec.run(ctx, args)
-    except ToolError:
-        raise
     except NotFoundError as exc:
         raise ToolError("not_found", str(exc)) from None
     except ValidationError as exc:
         raise ToolError("invalid_arguments", str(exc)) from None
-    except Exception:
-        # Never hand SQL or internals to a model or a harness.
-        await logger.aexception("agent.tool.failed", tool=name, org_id=org_id)
-        raise ToolError("internal_error", "the tool failed") from None
