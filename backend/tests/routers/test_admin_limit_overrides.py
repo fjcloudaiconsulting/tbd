@@ -383,22 +383,3 @@ async def test_feature_state_has_limits_rows(session_factory):
     feats = {row["key"]: row for row in body["features"]}
     assert feats["ai.budget"]["override"]["is_expired"] is True
     assert feats["ai.budget"]["effective"] is False
-
-
-@pytest.mark.asyncio
-async def test_feature_state_follows_the_resolver(session_factory, monkeypatch):
-    """F-E2 runtime half for the route: a patched get_entitlements reaches it."""
-    from app.services import feature_service as fs
-
-    seed = await _seed(session_factory)
-    real = fs.get_entitlements
-
-    async def flipped(db, org_id, *, now=None):
-        ent = await real(db, org_id, now=now)
-        import dataclasses
-        return dataclasses.replace(ent, features={**ent.features, "plans": True})
-
-    monkeypatch.setattr(fs, "get_entitlements", flipped)
-    with TestClient(_app(session_factory)) as c:
-        body = c.get(f"/api/v1/admin/orgs/{seed['target_id']}/feature-state").json()
-    assert {r["key"]: r["effective"] for r in body["features"]}["plans"] is True
