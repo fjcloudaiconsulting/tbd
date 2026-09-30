@@ -25,12 +25,14 @@ class PlanLimitReached(Exception):
     """The org used up ``meter`` for this period. Mapped to HTTP 402 in
     ``app.main`` and to ``ToolError("plan_limit_reached")`` in the registry."""
 
-    def __init__(self, meter: str, limit: int | None, period: str, resets_at: datetime) -> None:
+    def __init__(
+        self, meter: str, limit: int | None, period: str, resets_at: datetime | None
+    ) -> None:
         super().__init__(f"plan limit reached: {meter}")
         self.meter = meter
         self.limit = limit
         self.period = period
-        self.resets_at = resets_at
+        self.resets_at = resets_at  # None: a 0 limit never resets
 
 
 def period_start(period: str, now: datetime) -> date:
@@ -112,4 +114,7 @@ async def admit(
     if not await _try_increment(
         db, org_id, meter, lim.period, period_start(lim.period, now), n, lim.limit
     ):
-        raise PlanLimitReached(meter, lim.limit, lim.period, resets_at(lim.period, now))
+        # A 0 limit never resets (only a plan or override change reopens it).
+        raise PlanLimitReached(
+            meter, lim.limit, lim.period, None if lim.limit == 0 else resets_at(lim.period, now)
+        )

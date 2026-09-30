@@ -207,14 +207,23 @@ async def test_fq11_plan_json_without_the_meter_admits_on_defaults(factory, stor
     assert await _counters(factory, org) == {("mcp.calls", "month", date(2026, 9, 1)): 1}
 
 
-async def test_limit_zero_refuses_with_the_reset_time(factory):
+async def test_limit_zero_refuses_and_never_resets(factory):
     org = await _org(factory, _mcp("day", 0))
     async with factory() as db:
         with pytest.raises(PlanLimitReached) as exc:
             await admit(db, org, "mcp.calls", now=NOW)
     e = exc.value
     assert (e.meter, e.limit, e.period) == ("mcp.calls", 0, "day")
-    assert e.resets_at == datetime(2026, 10, 1, tzinfo=timezone.utc)
+    assert e.resets_at is None  # a 0 limit never resets; a real limit does (below)
+
+
+async def test_limit_reached_resets_at_the_next_boundary(factory):
+    org = await _org(factory, _mcp("day", 1))
+    async with factory() as db:
+        await admit(db, org, "mcp.calls", now=NOW)
+        with pytest.raises(PlanLimitReached) as exc:
+            await admit(db, org, "mcp.calls", now=NOW)
+    assert exc.value.resets_at == datetime(2026, 10, 1, tzinfo=timezone.utc)
 
 
 def test_period_boundaries():
@@ -244,3 +253,13 @@ async def test_402_the_real_app_handler_maps_plan_limit_reached():
         "code": "plan_limit_reached", "meter": "mcp.calls", "limit": 5, "period": "day",
         "resets_at": "2026-10-01T00:00:00+00:00",
     }}
+
+
+async def test_402_handler_carries_null_resets_at_for_a_zero_limit():
+    import json
+
+    from app.main import app
+
+    resp = await app.exception_handlers[PlanLimitReached](
+        None, PlanLimitReached("mcp.calls", 0, "day", None))
+    assert json.loads(resp.body)["detail"]["resets_at"] is None

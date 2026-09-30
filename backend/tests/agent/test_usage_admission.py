@@ -213,3 +213,11 @@ async def test_402_mcp_refusal_on_invoke_confirm_and_cancel(factory, w):
     async with factory() as db:
         row = await db.get(AgentPendingAction, staged["action_id"])
         assert row.status.value == "pending"
+
+
+async def test_402_mcp_zero_limit_carries_null_resets_at(factory, w):
+    """A 0 limit never resets: the ToolError data says so (`resets_at: null`)."""
+    await _limit(factory, w, 0)
+    err = await _refused(_invoke(factory, w, "accounts_list", {}, **_mcp(w)))
+    assert err.code == "plan_limit_reached"
+    assert err.data == {"meter": "mcp.calls", "limit": 0, "period": "month", "resets_at": None}

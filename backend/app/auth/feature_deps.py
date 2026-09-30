@@ -12,7 +12,7 @@ from collections.abc import Callable
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.feature_catalog import ALL_FEATURE_KEYS, FeatureKey
+from app.auth.feature_catalog import ALL_FEATURE_KEYS, ALL_METER_KEYS, FeatureKey
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
@@ -66,6 +66,8 @@ def require_meter_open(key: FeatureKey, meter: str) -> Callable:
     Pair it with ``require_feature(key)``, which checks the key itself."""
     if key not in ALL_FEATURE_KEYS:
         raise UnknownFeatureKey(key)
+    if meter not in ALL_METER_KEYS:
+        raise ValueError(f"unknown meter {meter!r}")
 
     async def _dep(
         db: AsyncSession = Depends(get_db),

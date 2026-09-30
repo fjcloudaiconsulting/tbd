@@ -29,9 +29,9 @@ from app.rate_limit import limiter
 from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_broadcasts, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, agent, agent_tokens, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, api_tokens, auth, budgets, categories, cc_cycle_payments, dashboard, feedback, forecast, forecast_plans, import_router, notifications, onboarding, org_data, org_members, orgs, plans, public_stats, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users, webhooks
 from app.routers import scheduler as scheduler_router
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
-from app.services.usage_service import PlanLimitReached
 from app.services.import_ofx_service import init_ofx_executor, shutdown_ofx_executor
 from app.services.scheduler.loop import scheduler_loop
+from app.services.usage_service import PlanLimitReached
 
 # Setup JSON logging early so uvicorn's loggers are captured
 setup_logging()
@@ -394,7 +394,7 @@ async def plan_limit_handler(request, exc: PlanLimitReached):
             "meter": exc.meter,
             "limit": exc.limit,
             "period": exc.period,
-            "resets_at": exc.resets_at.isoformat(),
+            "resets_at": exc.resets_at.isoformat() if exc.resets_at else None,
         }},
     )
 

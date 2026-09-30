@@ -139,7 +139,7 @@ def _limit_error(exc: usage_service.PlanLimitReached) -> ToolError:
         f"{exc.meter} limit reached for this {exc.period}",
         data={
             "meter": exc.meter, "limit": exc.limit, "period": exc.period,
-            "resets_at": exc.resets_at.isoformat(),
+            "resets_at": exc.resets_at.isoformat() if exc.resets_at else None,
         },
     )
 
