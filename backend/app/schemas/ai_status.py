@@ -10,3 +10,4 @@ class AIStatusResponse(BaseModel):
     categorize: AIFeatureState
     forecast: AIFeatureState
     budget: AIFeatureState
+    agent: AIFeatureState

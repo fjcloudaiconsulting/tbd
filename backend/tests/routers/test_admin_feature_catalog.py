@@ -119,6 +119,7 @@ async def test_catalog_returns_sorted_keys(session_factory):
     assert res.status_code == 200
     assert res.json() == {
         "keys": [
+            "ai.agent",
             "ai.autocategorize",
             "ai.budget",
             "ai.forecast",

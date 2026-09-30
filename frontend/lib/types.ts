@@ -509,13 +509,15 @@ export type FeatureKey =
   | "ai.budget"
   | "ai.forecast"
   | "ai.smart_plan"
-  | "ai.autocategorize";
+  | "ai.autocategorize"
+  | "ai.agent";
 
 export interface PlanFeatures {
   "ai.budget": boolean;
   "ai.forecast": boolean;
   "ai.smart_plan": boolean;
   "ai.autocategorize": boolean;
+  "ai.agent": boolean;
 }
 
 // Notification preferences — mirrors the backend

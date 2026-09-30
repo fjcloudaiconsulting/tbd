@@ -7,13 +7,14 @@ from app.services.plan_service import canonicalize_features
 
 
 def test_canonicalize_partial_merges_with_existing():
-    existing = {"ai.budget": True, "ai.forecast": False, "ai.smart_plan": False, "ai.autocategorize": False}
+    existing = {"ai.budget": True, "ai.forecast": False, "ai.smart_plan": False, "ai.autocategorize": False, "ai.agent": False}
     out = canonicalize_features({"ai.forecast": True}, existing=existing)
     assert out == {
         "ai.budget": True,
         "ai.forecast": True,
         "ai.smart_plan": False,
         "ai.autocategorize": False,
+        "ai.agent": False,
     }
 
 

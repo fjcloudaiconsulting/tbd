@@ -107,6 +107,7 @@ async def test_default_false_when_no_subscription(session_factory):
             "ai.forecast": False,
             "ai.smart_plan": False,
             "ai.autocategorize": False,
+            "ai.agent": False,
         }
 
 
