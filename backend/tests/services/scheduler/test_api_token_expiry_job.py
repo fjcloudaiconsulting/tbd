@@ -104,13 +104,14 @@ async def _mk_token(
     reminder_stage: int = 0,
     revoked_at: datetime.datetime | None = None,
     prefix: str = "pat_aaaaaaaaaa",
+    scope: str = "read",
 ) -> int:
     async with session_factory() as db:
         tok = ApiToken(
             token_hash=prefix + "hash",
             token_prefix=prefix,
             name="ci-token",
-            scope="read",
+            scope=scope,
             created_by_user_id=owner_id,
             created_by_email="root@test.io",
             expires_at=expires_at.replace(tzinfo=None),  # stored naive-UTC
@@ -406,3 +407,32 @@ async def test_flag_off_is_noop(session_factory, superadmin, sent_emails):
     assert await _stage(session_factory, tid) == 0
     assert len(sent_emails) == 0
     assert await _inapp_count(session_factory) == 0
+
+
+# ── F-S1 (TBD-578): agent tokens get agent copy and the agent page ─────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope,noun,link", [
+    ("agent:read", "agent access token", "/settings/agent-tokens"),
+    ("agent:write", "agent access token", "/settings/agent-tokens"),
+    ("agent:auto", "auto-mode agent token", "/settings/agent-tokens"),
+    ("write", "API token", "/system/api-tokens"),
+])
+async def test_f_s1_reminder_copy_and_link_follow_the_scope(
+    session_factory, superadmin, sent_email_links, scope, noun, link
+):
+    """GUARD F-S1. Any user can own an agent token now, so its reminder must
+    not send them to the superadmin page or call it an API token; a REST PAT
+    reminder is unchanged."""
+    await _enable_flag(session_factory)
+    await _mk_token(
+        session_factory, owner_id=superadmin, scope=scope,
+        expires_at=NOW + datetime.timedelta(days=14),
+    )
+    await job.run_api_token_expiry_reminders(session_factory, now=NOW)
+    n = await _last_notification(session_factory)
+    assert n.title == f"An {noun} expires in about 14 days"
+    assert n.body.startswith(f'Your {noun} "ci-token" expires')
+    assert n.link_url == link
+    assert sent_email_links == [link]

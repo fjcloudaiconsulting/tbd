@@ -179,20 +179,26 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
         "org-scoped, no third-party surface",
     ),
     # A parked or decided agent preview. ``api_token_id`` is redacted for the
-    # same reason as on ``audit_events`` below: it names an operator-side
-    # credential in a table the subject cannot see.
+    # same reason as on ``audit_events`` below: it points into ``api_tokens``,
+    # which this export excludes, so it joins to nothing the subject receives;
+    # ``user_id`` already says who acted.
     "agent_pending_actions": Include(
         OrgColumn(), "agent write previews and their outcomes for the subject's org",
         redact=frozenset({"api_token_id"}),
     ),
     "announcements": Exclude("platform-global operator content, identical for every org"),
     # ⚠ Reason strings SHIP to the data subject in the header's ``excluded``
-    # block, so a wrong one is a statement made to a third party. PATs are
-    # not user-scoped: every route on ``/api/v1/api-tokens`` is gated by
-    # ``require_superadmin`` AND ``require_interactive_session``.
+    # block, so a wrong one is a statement made to a third party. Since
+    # TBD-578 the table holds two kinds of credential: superadmin REST PATs
+    # (``/api/v1/system/api-tokens``) and agent access tokens that any member
+    # mints for their own AI tool (``/api/v1/agent/tokens``). Neither kind is
+    # org data: rows have no org_id, ``token_hash`` is a live capability, and
+    # an owner already lists their own tokens' metadata (name, scope, dates,
+    # last use) through the agent tokens API, so excluding the table withholds
+    # nothing the subject cannot see.
     "api_tokens": Exclude(
-        "superadmin-only platform credential with no org_id; token_hash is a "
-        "live capability, not org data"
+        "access credentials with no org_id; token_hash is a live capability, "
+        "and each owner lists their own tokens in agent token settings"
     ),
     # ⚠ Scope is target_org_id ONLY. NEVER add an actor_user_id disjunct: a
     # superadmin's admin.* actions against OTHER tenants carry their
@@ -223,16 +229,20 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
         # ``actor_user_id`` IS exported and joins to the exported ``users``
         # rows, which carry ``email``.
         #
-        # ⚠ api_token_id (added by TBD-188, PR #635) is dropped for the SAME
-        # reason as ``actor_email`` — NOT because a token id is secret. It is
-        # not: ``models/api_token.py`` states ``token_hash`` is the stored
-        # credential and ``token_prefix`` is "a short, non-secret slice".
-        # PATs are superadmin-only platform credentials, and ``api_tokens`` is
-        # EXCLUDED from this export as "superadmin-only platform credential
-        # with no org_id". So an ``api_token_id`` on an audit row identifies
-        # WHICH OPERATOR TOKEN acted on this tenant, and points into a table
-        # the subject cannot see. Contrast ``actor_user_id``, which IS
-        # exported precisely because it joins to the exported ``users`` rows.
+        # ⚠ api_token_id (added by TBD-188, PR #635) is dropped, and NOT
+        # because a token id is secret. It is not: ``models/api_token.py``
+        # states ``token_hash`` is the stored credential and ``token_prefix``
+        # is "a short, non-secret slice". Two reasons, one per token kind
+        # (TBD-578 added agent tokens to the same table):
+        # - a superadmin REST PAT acting on this tenant: the id identifies
+        #   WHICH OPERATOR TOKEN acted, the same third-party reasoning that
+        #   drops ``actor_email``;
+        # - a member's own agent token: the id adds nothing, because
+        #   ``api_tokens`` is excluded from this export, so it joins to no
+        #   exported row, while ``actor_user_id`` already names the member.
+        # The column is static (no per-row hook), so it goes for both.
+        # Contrast ``actor_user_id``, which IS exported precisely because it
+        # joins to the exported ``users`` rows.
         #
         # This column arrived from ``main`` after this branch was cut. The
         # column-drift fence caught it in CI and forced an explicit decision

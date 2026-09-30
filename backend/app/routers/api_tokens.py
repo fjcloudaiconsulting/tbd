@@ -80,8 +80,12 @@ def _step_up_401() -> HTTPException:
     )
 
 
-def _verify_step_up(user: User, body: MintTokenRequest) -> bool:
+def _verify_step_up(user: User, body: MintTokenRequest, action: str) -> bool:
     """Validate the mint step-up proofs against the LIVE user row (spec §8).
+
+    ``action`` is the step-up action the SSO proof must have been issued for
+    (``pat_mint`` here, ``agent_token_mint`` for agent tokens): a proof for
+    one credential can never mint the other.
 
     Returns ``True`` when an SSO step-up proof was validated (the caller must
     spend it with ``consume_stepup`` before minting), ``False`` otherwise. Raises a
@@ -99,7 +103,7 @@ def _verify_step_up(user: User, body: MintTokenRequest) -> bool:
         ):
             raise _step_up_401()
     else:
-        if not stepup_valid(user, body.stepup_token, "pat_mint"):
+        if not stepup_valid(user, body.stepup_token, action):
             raise _step_up_401()
         sso_proof = True
 
@@ -159,7 +163,7 @@ async def mint_token(
     # live-but-hijacked session trying to plant a backdoor token), so it is
     # audited before we reject.
     try:
-        sso_proof = _verify_step_up(current_user, body)
+        sso_proof = _verify_step_up(current_user, body, "pat_mint")
         # Spend the SSO proof now that every proof (MFA included) has passed,
         # so a failed MFA never burns it and it can't be replayed (SEC F4).
         # A lost race is the same audited 401. After False the session is

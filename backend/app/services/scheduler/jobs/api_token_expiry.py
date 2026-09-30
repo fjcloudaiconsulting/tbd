@@ -8,6 +8,10 @@ from ``run_one_tick`` under the same ``scheduler:tick:lock`` Redis lock (so a
 single replica runs it per tick), and is gated on a *global* ``SystemSetting``
 flag (``api_token_expiry_reminders_enabled``, value ``"on"``).
 
+Agent access tokens (TBD-578) share the table and the sweep: any active user
+can own one, so their reminders name them as agent tokens (auto-mode for
+``agent:auto``) and link to the agent tokens page, never the superadmin page.
+
 Behavior: a daily scan of non-revoked, non-fully-reminded tokens with a
 non-null owner. Each token advances through three reminder stages as it
 approaches expiry:
@@ -43,6 +47,7 @@ logger = structlog.get_logger(__name__)
 FLAG_KEY = "api_token_expiry_reminders_enabled"
 EVENT_TYPE = "api_token.expiry_reminder"
 LINK_URL = "/system/api-tokens"
+AGENT_LINK_URL = "/settings/agent-tokens"
 FULLY_REMINDED_STAGE = 3
 
 # Days-remaining threshold that unlocks each *next* stage. A token at stage
@@ -64,7 +69,18 @@ def _parse_flag(value: str | None) -> bool:
     return value.strip().lower() == "on"
 
 
-def _reminder_copy(days_remaining: float, next_stage: int, token_name: str) -> tuple[str, str]:
+def _noun_and_link(scope: str) -> tuple[str, str]:
+    """What to call the token in copy, and where the reminder links."""
+    if scope == "agent:auto":
+        return "auto-mode agent token", AGENT_LINK_URL
+    if scope.startswith("agent:"):
+        return "agent access token", AGENT_LINK_URL
+    return "API token", LINK_URL
+
+
+def _reminder_copy(
+    days_remaining: float, next_stage: int, token_name: str, noun: str = "API token"
+) -> tuple[str, str]:
     """Return (title, body) for a fired reminder. No em-dashes (copy rule).
 
     ``days_remaining`` is the token's actual (possibly fractional) time to
@@ -77,15 +93,15 @@ def _reminder_copy(days_remaining: float, next_stage: int, token_name: str) -> t
         if days_remaining > 0:
             # Threshold crossed (stage 3 fires at <= 0 days) but the clock
             # hasn't ticked past expiry yet this run.
-            title = "An API token expires today"
+            title = f"An {noun} expires today"
             body = (
-                f'Your API token "{token_name}" expires today. Rotate it now '
+                f'Your {noun} "{token_name}" expires today. Rotate it now '
                 "to avoid an interruption to any automation that uses it."
             )
         else:
-            title = "An API token has expired"
+            title = f"An {noun} has expired"
             body = (
-                f'Your API token "{token_name}" has expired and can no longer '
+                f'Your {noun} "{token_name}" has expired and can no longer '
                 "be used. Create a new token if you still need programmatic "
                 "access."
             )
@@ -102,9 +118,9 @@ def _reminder_copy(days_remaining: float, next_stage: int, token_name: str) -> t
     else:
         window = f"{whole_days} days"
 
-    title = f"An API token expires in about {window}"
+    title = f"An {noun} expires in about {window}"
     body = (
-        f'Your API token "{token_name}" expires in about {window}. Rotate '
+        f'Your {noun} "{token_name}" expires in about {window}. Rotate '
         "it before then to avoid an interruption to any automation that "
         "uses it."
     )
@@ -174,10 +190,12 @@ async def _process_token(session_factory, token_id: int, now: datetime.datetime)
                 # FK says non-null but the row is gone — treat as null-owner.
                 return False
 
+            noun, link_url = _noun_and_link(token.scope)
             title, body = _reminder_copy(
                 days_remaining=days_remaining,
                 next_stage=next_stage,
                 token_name=token.name,
+                noun=noun,
             )
             owner_email = owner.email
 
@@ -190,7 +208,7 @@ async def _process_token(session_factory, token_id: int, now: datetime.datetime)
                 event_type=EVENT_TYPE,
                 title=title,
                 body=body,
-                link_url=LINK_URL,
+                link_url=link_url,
             )
             token.reminder_stage = next_stage
             await db.commit()
@@ -207,7 +225,7 @@ async def _process_token(session_factory, token_id: int, now: datetime.datetime)
     # send failure can never roll the stage back into a re-notify loop.
     try:
         await send_notification_email(
-            owner_email, title=title, body=body, link_url=LINK_URL
+            owner_email, title=title, body=body, link_url=link_url
         )
     except Exception as exc:  # noqa: BLE001 — email never fails the sweep
         await logger.awarning(

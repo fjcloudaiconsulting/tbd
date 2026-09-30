@@ -151,6 +151,37 @@ def api_token_created(*, name: str, prefix: str) -> tuple[str, str, Optional[str
     return (title, body, "/system/api-tokens")
 
 
+AGENT_TOKENS_PAGE = "/settings/agent-tokens"
+
+
+def agent_token_created(
+    *, name: str, prefix: str, scope: str
+) -> tuple[str, str, Optional[str]]:
+    """Copy for ``agent_token.created`` (security category), TBD-578.
+
+    Self-target, force-on, email + in-app, like ``api_token_created``. An
+    ``agent:auto`` token says "auto-mode" and what that means, because it can
+    change data without a confirm step: an unexpected one is the alert that
+    matters most.
+    """
+    if scope == "agent:auto":
+        title = "Auto-mode agent token created"
+        body = (
+            f'A new auto-mode agent token "{name}" ({prefix}...) was created on '
+            "your account. An AI tool using it can make changes to your data "
+            "without asking you to confirm each one. If you did not create "
+            "this, revoke it immediately from the agent tokens page."
+        )
+    else:
+        title = "Agent access token created"
+        body = (
+            f'A new agent access token "{name}" ({prefix}...) was created on '
+            "your account. If you did not create this, revoke it immediately "
+            "from the agent tokens page."
+        )
+    return (title, body, AGENT_TOKENS_PAGE)
+
+
 def user_email_change_requested(
     *, pending_email: str
 ) -> tuple[str, str, Optional[str]]:

@@ -25,6 +25,9 @@ STEPUP_ACTIONS: dict[str, str] = {
     "email_change": "/settings",
     "password_set": "/settings/security",
     "pat_mint": "/system/api-tokens",
+    # TBD-578. Own action, never ``pat_mint``: a proof issued for the agent
+    # token must not mint the superadmin credential, nor the reverse.
+    "agent_token_mint": "/settings/agent-tokens",
 }
 
 
