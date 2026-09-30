@@ -1,0 +1,42 @@
+{
+  "_source": "OpenAI Chat Completions wire format (POST /v1/chat/completions) with two parallel tool_calls then a final answer. Authored from the documented response shape; no live call.",
+  "round1": {
+    "id": "chatcmpl-AkX3pQ9mL2vN8rT1",
+    "object": "chat.completion",
+    "created": 1759240000,
+    "model": "gpt-4o-mini-2024-07-18",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "refusal": null,
+          "annotations": [],
+          "tool_calls": [
+            {"id": "call_Xq3v8LmN2pR7tY1wK9sD4fG6", "type": "function", "function": {"name": "budgets_list", "arguments": "{}"}},
+            {"id": "call_Bn5c2ZkQ8wE1rT7yU3iO0pA9", "type": "function", "function": {"name": "forecast_get", "arguments": "{\"period_start\": \"2026-09-01\"}"}}
+          ]
+        },
+        "logprobs": null,
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": {"prompt_tokens": 480, "completion_tokens": 52, "total_tokens": 532}
+  },
+  "round2": {
+    "id": "chatcmpl-AkX3qR0nM3wO9sU2",
+    "object": "chat.completion",
+    "created": 1759240002,
+    "model": "gpt-4o-mini-2024-07-18",
+    "choices": [
+      {
+        "index": 0,
+        "message": {"role": "assistant", "content": "Groceries is at 80% of its budget and the forecast ends the month positive.", "refusal": null, "annotations": []},
+        "logprobs": null,
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {"prompt_tokens": 610, "completion_tokens": 21, "total_tokens": 631}
+  }
+}

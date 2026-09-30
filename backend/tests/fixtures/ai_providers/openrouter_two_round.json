@@ -1,0 +1,46 @@
+{
+  "_source": "OpenRouter OpenAI-compatible wire format (POST https://openrouter.ai/api/v1/chat/completions) routed to an Anthropic model: upstream tool-call ids are passed through in tool_calls[].id, each call carries an index, and the response adds provider and native_finish_reason. Authored from the documented response shape; no live call.",
+  "round1": {
+    "id": "gen-1759240100-Qm7xR2vT9kLp4NwZ8sYb",
+    "provider": "Anthropic",
+    "model": "anthropic/claude-haiku-4.5",
+    "object": "chat.completion",
+    "created": 1759240100,
+    "choices": [
+      {
+        "logprobs": null,
+        "finish_reason": "tool_calls",
+        "native_finish_reason": "tool_use",
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "",
+          "refusal": null,
+          "reasoning": null,
+          "tool_calls": [
+            {"index": 0, "id": "toolu_01Lk8Pq3Rz6WmYt2Xn9Bc4Df", "type": "function", "function": {"name": "budgets_list", "arguments": "{}"}},
+            {"index": 1, "id": "toolu_01Hs5Tg7Jw2Vq8Nm4Ky1Ze6Ra", "type": "function", "function": {"name": "forecast_get", "arguments": "{\"period_start\": \"2026-09-01\"}"}}
+          ]
+        }
+      }
+    ],
+    "usage": {"prompt_tokens": 530, "completion_tokens": 91, "total_tokens": 621}
+  },
+  "round2": {
+    "id": "gen-1759240103-Vd2kW8nQ5rTx1LmZ7pYc",
+    "provider": "Anthropic",
+    "model": "anthropic/claude-haiku-4.5",
+    "object": "chat.completion",
+    "created": 1759240103,
+    "choices": [
+      {
+        "logprobs": null,
+        "finish_reason": "stop",
+        "native_finish_reason": "end_turn",
+        "index": 0,
+        "message": {"role": "assistant", "content": "Groceries is at 80% of its budget and the forecast ends the month positive.", "refusal": null, "reasoning": null}
+      }
+    ],
+    "usage": {"prompt_tokens": 705, "completion_tokens": 25, "total_tokens": 730}
+  }
+}

@@ -12,6 +12,7 @@ projection runs on the hot dispatch path and must degrade, never crash.
 """
 from __future__ import annotations
 
+import json
 import math
 
 from app.services.ai_pricing import MODEL_PRICING
@@ -74,6 +75,14 @@ def estimate_prompt_tokens_from_messages(messages: list[dict]) -> int:
                 if isinstance(text, str):
                     total_chars += len(text)
         # Any other content type (None, int, dict, ...) contributes 0.
+        # Assistant tool-call turns carry their arguments outside
+        # ``content`` (often empty), and the provider bills them.
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            try:
+                total_chars += len(json.dumps(tool_calls))
+            except (TypeError, ValueError):
+                pass
     return math.ceil(total_chars / _PROMPT_CHARS_PER_TOKEN)
 
 
