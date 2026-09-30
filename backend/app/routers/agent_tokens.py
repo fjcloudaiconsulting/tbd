@@ -6,8 +6,9 @@ They reuse ``api_tokens``; REST refuses these scopes (``app.auth.pat``), so
 the only consumer is the MCP front door (``app.agent.auth``).
 
 Every route is interactive-only (``require_interactive_session`` FIRST): a
-token can never mint, widen or list tokens. Only mint needs ``ai.agent`` (and a non-zero ``mcp.calls`` limit); a
-user whose org lost it must still be able to see and revoke tokens.
+token can never mint, widen or list tokens. Only mint needs ``ai.agent`` (and
+a non-zero ``mcp.calls`` limit); a user whose org lost it must still be able
+to see and revoke tokens.
 
 Mint = the PAT mint's step-up (own ``agent_token_mint`` action), an IP limit,
 a per-user daily bucket counted BEFORE the step-up (so proofs cannot be
