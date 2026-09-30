@@ -323,16 +323,17 @@ class OpenAIAdapter:
             )
         try:
             payload = resp.json()
-        except ValueError:
+        except (ValueError, RecursionError):
             raise AIProviderError(code="provider_invalid_json") from None
         try:
             message = payload["choices"][0]["message"]
             tool_calls = parse_openai_tool_calls(message)
-            content = message.get("content") or ""
+            content = message.get("content")
+            content = content if isinstance(content, str) else ""
             usage = payload.get("usage", {}) or {}
             prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
             completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        except (KeyError, IndexError, TypeError):
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError, OverflowError):
             raise AIProviderError(code="provider_unexpected_shape") from None
         return FunctionCallResponse(
             tool_calls=tool_calls,

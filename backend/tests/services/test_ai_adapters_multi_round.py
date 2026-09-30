@@ -431,3 +431,74 @@ def test_estimator_counts_assistant_tool_calls():
 def test_estimator_never_raises_on_unserializable_tool_calls():
     turn = {"role": "assistant", "content": "hi", "tool_calls": [{"arguments": object()}]}
     assert estimate_prompt_tokens_from_messages([turn]) >= 1
+
+
+# ---------- Hostile bodies and replayed blank answers ------------------
+
+
+def _raw_sequence(monkeypatch, raw: bytes) -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=raw))
+    original = httpx.AsyncClient.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        kwargs["transport"] = transport
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", _patched_init)
+
+
+def _adapters():
+    return [
+        (AnthropicAdapter(api_key="k"), "claude-haiku-4-5"),
+        (OpenAIAdapter(api_key="k"), "gpt-4o-mini"),
+        (OpenAICompatibleAdapter(api_key="k", base_url="https://c.example.org"), "m"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"[" * 100_000 + b"]" * 100_000,
+        b'{"choices":[{"message":{"content":"x"}}],"content":[],"usage":{"prompt_tokens":"abc","input_tokens":"abc"}}',
+        b'{"choices":[{"message":{"content":"x"}}],"content":[],"usage":{"prompt_tokens":Infinity,"input_tokens":Infinity}}',
+        b'{"choices":[{"message":{"content":"x"}}],"content":[],"usage":[1]}',
+        b"[1, 2]",
+    ],
+    ids=["deep-nesting", "non-numeric-usage", "infinite-usage", "list-usage", "list-payload"],
+)
+async def test_hostile_bodies_end_in_a_typed_provider_error(monkeypatch, raw):
+    _raw_sequence(monkeypatch, raw)
+    for adapter, model in _adapters():
+        with pytest.raises(AIProviderError):
+            await adapter.function_call(model=model, messages=[USER], tools=TOOLS)
+
+
+@pytest.mark.asyncio
+async def test_upstream_id_format_with_dots_and_colons_is_kept(monkeypatch):
+    call = {"id": "functions.budgets_list:0", "function": {"name": "budgets_list", "arguments": "{}"}}
+    _install_sequence(monkeypatch, [_compat_round([call])])
+    resp = await OpenAICompatibleAdapter(
+        api_key="k", base_url="https://compat.example.org"
+    ).function_call(model="local", messages=[USER], tools=TOOLS)
+    assert resp.tool_calls[0]["id"] == "functions.budgets_list:0"
+
+
+@pytest.mark.asyncio
+async def test_replayed_blank_answer_is_valid_for_each_provider(monkeypatch):
+    blank = {"role": "assistant", "content": None, "tool_calls": []}
+    bodies = _install_sequence(
+        monkeypatch,
+        [
+            _fixture("anthropic_two_round.json")["round2"],
+            _fixture("openai_two_round.json")["round2"],
+        ],
+    )
+    await AnthropicAdapter(api_key="k").function_call(
+        model="claude-haiku-4-5", messages=[USER, blank, USER], tools=TOOLS
+    )
+    await OpenAIAdapter(api_key="k").function_call(
+        model="gpt-4o-mini", messages=[USER, blank, USER], tools=TOOLS
+    )
+    assert [m["role"] for m in bodies[0]["messages"]] == ["user", "user"]
+    assert bodies[1]["messages"][1] == {"role": "assistant", "content": ""}

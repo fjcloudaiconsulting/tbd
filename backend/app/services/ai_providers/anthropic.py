@@ -73,7 +73,8 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
     An assistant turn with ``tool_calls`` becomes a text block, only when
     the text is not blank (Anthropic rejects whitespace-only text), plus
     one ``tool_use`` block per call; an empty ``tool_calls`` key is
-    dropped (Anthropic rejects unknown keys). A run of ``tool`` messages becomes ONE
+    dropped (Anthropic rejects unknown keys), and so is the whole turn
+    when its text is empty. A run of ``tool`` messages becomes ONE
     user message of ``tool_result`` blocks, and a plain user message
     right after that run is folded into it after the results: Anthropic
     wants every result in the user turn that follows the ``tool_use``
@@ -106,7 +107,9 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
             continue
         open_results = None
         if role == "assistant" and "tool_calls" in m and not m["tool_calls"]:
-            out.append({k: v for k, v in m.items() if k != "tool_calls"})
+            # A blank answer is dropped: Anthropic rejects empty assistant turns.
+            if m.get("content"):
+                out.append({k: v for k, v in m.items() if k != "tool_calls"})
             continue
         if role == "assistant" and m.get("tool_calls"):
             blocks: list[dict] = []
@@ -400,7 +403,7 @@ class AnthropicAdapter:
             )
         try:
             payload = resp.json()
-        except ValueError:
+        except (ValueError, RecursionError):
             raise AIProviderError(code="provider_invalid_json") from None
         try:
             blocks = payload.get("content", []) or []
@@ -424,7 +427,7 @@ class AnthropicAdapter:
             usage = payload.get("usage", {}) or {}
             prompt_tokens = int(usage.get("input_tokens", 0) or 0)
             completion_tokens = int(usage.get("output_tokens", 0) or 0)
-        except (KeyError, TypeError):
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError, OverflowError):
             raise AIProviderError(code="provider_unexpected_shape") from None
         return FunctionCallResponse(
             tool_calls=tool_calls,

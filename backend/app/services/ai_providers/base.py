@@ -215,25 +215,22 @@ class CapabilityNotSupported(Exception):
         self.capability = capability
 
 
-_SAFE_TOOL_CALL_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
-
-
-def synthesize_tool_call_id() -> str:
-    """Call id for a provider that returned none; unique across rounds."""
-    return f"call_{uuid.uuid4().hex[:24]}"
+# Printable ASCII without spaces: keeps upstream formats such as
+# ``functions.name:0`` while refusing oversized or control-laden ids.
+_SAFE_TOOL_CALL_ID = re.compile(r"[\x21-\x7e]{1,64}")
 
 
 def tool_call_id(raw: object, seen: set[str]) -> str:
-    """The provider's call id, or a synthesized one when it is missing,
-    repeated within the response, over 64 chars or outside
-    ``[A-Za-z0-9_-]`` (results are keyed by id, and every later round
-    echoes it back). Records the returned id in ``seen``."""
+    """The provider's call id, or a synthesized one (unique across
+    rounds) when it is missing, repeated within the response, or not 1
+    to 64 printable non-space ASCII chars: results are keyed by id, and
+    every later round echoes it back. Records the returned id in ``seen``."""
     if (
         not isinstance(raw, str)
         or not _SAFE_TOOL_CALL_ID.fullmatch(raw)
         or raw in seen
     ):
-        raw = synthesize_tool_call_id()
+        raw = f"call_{uuid.uuid4().hex[:24]}"
     seen.add(raw)
     return raw
 
@@ -281,7 +278,9 @@ def to_openai_messages(messages: list[dict]) -> list[dict]:
     for m in messages:
         if m.get("role") == "assistant" and "tool_calls" in m:
             if not m["tool_calls"]:
+                # OpenAI requires content on an assistant turn without calls.
                 m = {k: v for k, v in m.items() if k != "tool_calls"}
+                m["content"] = m.get("content") or ""
             else:
                 m = {
                     **m,
