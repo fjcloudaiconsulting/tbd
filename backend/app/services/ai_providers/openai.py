@@ -20,6 +20,8 @@ from app.services.ai_providers.base import (
     StreamChunk,
     TokenUsage,
     ValidateResult,
+    parse_openai_tool_calls,
+    to_openai_messages,
 )
 
 
@@ -299,7 +301,11 @@ class OpenAIAdapter:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        body: dict = {"model": model, "messages": messages, "tools": tools}
+        body: dict = {
+            "model": model,
+            "messages": to_openai_messages(messages),
+            "tools": tools,
+        }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
         try:
@@ -321,21 +327,7 @@ class OpenAIAdapter:
             raise AIProviderError(code="provider_invalid_json") from None
         try:
             message = payload["choices"][0]["message"]
-            raw_tool_calls = message.get("tool_calls") or []
-            tool_calls: list[dict] = []
-            for call in raw_tool_calls:
-                fn = call.get("function") or {}
-                args_text = fn.get("arguments") or "{}"
-                try:
-                    parsed_args = json.loads(args_text)
-                except (TypeError, ValueError):
-                    parsed_args = {}
-                tool_calls.append(
-                    {
-                        "name": fn.get("name") or "",
-                        "arguments": parsed_args,
-                    }
-                )
+            tool_calls = parse_openai_tool_calls(message)
             content = message.get("content") or ""
             usage = payload.get("usage", {}) or {}
             prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)

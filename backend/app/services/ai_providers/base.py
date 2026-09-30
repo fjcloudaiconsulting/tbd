@@ -28,6 +28,8 @@ capability, including the PR3 ones, until PR4 wires a real backend.
 """
 from __future__ import annotations
 
+import json
+import uuid
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional, Protocol, runtime_checkable
 
@@ -99,10 +101,18 @@ class FunctionCallResponse:
     """Provider-neutral function-call response.
 
     ``tool_calls`` is the structured list of tool invocations the model
-    requested. Each entry has ``name`` (the tool name) and
-    ``arguments`` (a dict — already JSON-parsed). ``content`` is any
-    free-text the model emitted alongside the tool call (typically
+    requested. Each entry has ``id`` (the provider's call id, or a
+    synthesized one when the provider sent none), ``name`` (the tool
+    name) and ``arguments`` (a dict, already JSON-parsed). ``content`` is
+    any free-text the model emitted alongside the tool call (typically
     empty when a tool was invoked).
+
+    Multi-round transcript (provider-neutral, accepted by every
+    ``function_call`` except Ollama's): append
+    ``{"role": "assistant", "content": resp.content, "tool_calls":
+    resp.tool_calls}`` and then one ``{"role": "tool", "tool_call_id":
+    <id>, "content": <str>}`` per call. Each adapter translates these
+    into its provider's native shape.
     """
 
     tool_calls: list[dict]
@@ -196,6 +206,66 @@ class CapabilityNotSupported(Exception):
         super().__init__(f"{capability} not supported by model {model!r}")
         self.model = model
         self.capability = capability
+
+
+def synthesize_tool_call_id() -> str:
+    """Call id for a provider that returned none; unique across rounds."""
+    return f"call_{uuid.uuid4().hex[:24]}"
+
+
+def parse_openai_tool_calls(message: dict) -> list[dict]:
+    """Neutral tool calls from an OpenAI-shape assistant ``message``.
+
+    Arguments arrive as a JSON string; anything that does not parse to
+    an object becomes ``{}`` so every call satisfies the dict contract.
+    """
+    tool_calls: list[dict] = []
+    for call in message.get("tool_calls") or []:
+        fn = call.get("function") or {}
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (TypeError, ValueError):
+            args = {}
+        call_id = call.get("id")
+        tool_calls.append(
+            {
+                "id": call_id
+                if isinstance(call_id, str) and call_id
+                else synthesize_tool_call_id(),
+                "name": fn.get("name") or "",
+                "arguments": args if isinstance(args, dict) else {},
+            }
+        )
+    return tool_calls
+
+
+def to_openai_messages(messages: list[dict]) -> list[dict]:
+    """Translate neutral assistant tool-call turns to OpenAI wire shape.
+
+    ``tool`` messages are already OpenAI shape; every other message
+    passes through unchanged.
+    """
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            m = {
+                **m,
+                # Some compat servers reject "" next to tool_calls.
+                "content": m.get("content") or None,
+                "tool_calls": [
+                    {
+                        "id": c["id"],
+                        "type": "function",
+                        "function": {
+                            "name": c["name"],
+                            "arguments": json.dumps(c.get("arguments") or {}),
+                        },
+                    }
+                    for c in m["tool_calls"]
+                ],
+            }
+        out.append(m)
+    return out
 
 
 @runtime_checkable
