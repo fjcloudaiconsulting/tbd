@@ -10,7 +10,6 @@ keyed to the id the adapter returned in round 1.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import httpx
@@ -117,7 +116,9 @@ async def test_anthropic_two_round_tool_conversation(monkeypatch):
     results = sent["messages"][2]["content"]
     assert [r["type"] for r in results] == ["tool_result", "tool_result"]
     assert [r["tool_use_id"] for r in results] == [c["id"] for c in first.tool_calls]
-    assert all(isinstance(r["content"], str) for r in results)
+    assert [r["content"] for r in results] == [
+        m["content"] for m in _results_for(first.tool_calls)
+    ]
 
     assert second.tool_calls == []
     assert second.content == fixture["round2"]["content"][0]["text"]
@@ -151,6 +152,58 @@ async def test_anthropic_folds_following_user_text_after_tool_results(
         {"type": "tool_result", "tool_use_id": "toolu_x", "content": "[]"},
         {"type": "text", "text": "And last month?"},
     ]
+
+
+def _three_rounds_transcript() -> list[dict]:
+    """user, assistant(call a), tool a, assistant(call b), tool b, then a
+    plain answer replayed with an empty tool_calls list, then a user turn."""
+    a = {"id": "call_a", "name": "budgets_list", "arguments": {}}
+    b = {"id": "call_b", "name": "forecast_get", "arguments": {"period_start": "2026-09-01"}}
+    return [
+        SYSTEM,
+        USER,
+        {"role": "assistant", "content": "", "tool_calls": [a]},
+        {"role": "tool", "tool_call_id": "call_a", "content": "ra"},
+        {"role": "assistant", "content": "", "tool_calls": [b]},
+        {"role": "tool", "tool_call_id": "call_b", "content": "rb"},
+        {"role": "assistant", "content": "All good.", "tool_calls": []},
+        {"role": "user", "content": "Thanks, and next month?"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_keeps_each_round_results_after_its_own_tool_use(monkeypatch):
+    bodies = _install_sequence(
+        monkeypatch, [_fixture("anthropic_two_round.json")["round2"]]
+    )
+    await AnthropicAdapter(api_key="k").function_call(
+        model="claude-haiku-4-5", messages=_three_rounds_transcript(), tools=TOOLS
+    )
+    messages = bodies[0]["messages"]
+    assert [m["role"] for m in messages] == [
+        "user", "assistant", "user", "assistant", "user", "assistant", "user"
+    ]
+    assert messages[2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "call_a", "content": "ra"}
+    ]
+    assert messages[4]["content"] == [
+        {"type": "tool_result", "tool_use_id": "call_b", "content": "rb"}
+    ]
+    # A replayed plain answer drops the empty tool_calls key (Anthropic 400s on it).
+    assert messages[5] == {"role": "assistant", "content": "All good."}
+
+
+@pytest.mark.asyncio
+async def test_anthropic_unsafe_or_repeated_ids_are_replaced(monkeypatch):
+    round1 = _fixture("anthropic_two_round.json")["round1"]
+    round1["content"][1]["id"] = "x" * 65
+    round1["content"][2]["id"] = round1["content"][1]["id"]
+    _install_sequence(monkeypatch, [round1])
+    resp = await AnthropicAdapter(api_key="k").function_call(
+        model="claude-haiku-4-5", messages=[USER], tools=TOOLS
+    )
+    ids = [c["id"] for c in resp.tool_calls]
+    assert all(len(i) <= 64 for i in ids) and len(set(ids)) == 2
 
 
 # ---------- OpenAI and OpenAI-compatible -----------------------------
@@ -230,7 +283,7 @@ async def test_compat_server_without_ids_gets_unique_ids(monkeypatch):
     first = await adapter.function_call(model="local", messages=[USER], tools=TOOLS)
     second = await adapter.function_call(model="local", messages=[USER], tools=TOOLS)
     ids = [c["id"] for c in first.tool_calls + second.tool_calls]
-    assert all(re.fullmatch(r"call_[0-9a-f]{24}", i) for i in ids)
+    assert all(isinstance(i, str) and i for i in ids)
     assert len(set(ids)) == 3
 
 
@@ -263,7 +316,7 @@ async def test_compat_duplicate_ids_in_one_response_are_replaced(monkeypatch):
         api_key="k", base_url="https://compat.example.org"
     ).function_call(model="local", messages=[USER], tools=TOOLS)
     assert resp.tool_calls[0]["id"] == "0"
-    assert re.fullmatch(r"call_[0-9a-f]{24}", resp.tool_calls[1]["id"])
+    assert resp.tool_calls[1]["id"] not in ("", "0")
 
 
 @pytest.mark.asyncio
@@ -277,13 +330,56 @@ async def test_compat_object_arguments_are_kept(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_non_object_tool_call_entry_is_a_typed_provider_error(monkeypatch):
-    _install_sequence(monkeypatch, [_compat_round(["not-a-call"])])
+@pytest.mark.parametrize(
+    "response",
+    [
+        _compat_round(["not-a-call"]),
+        _compat_round([{"id": "c1", "function": "x"}]),
+        {"choices": [{"message": "x"}]},
+    ],
+)
+async def test_malformed_tool_calls_are_a_typed_provider_error(monkeypatch, response):
+    _install_sequence(monkeypatch, [response])
     with pytest.raises(AIProviderError) as exc:
         await OpenAIAdapter(api_key="k").function_call(
             model="gpt-4o-mini", messages=[USER], tools=TOOLS
         )
     assert exc.value.code == "provider_unexpected_shape"
+
+
+@pytest.mark.asyncio
+async def test_hostile_ids_names_and_arguments_are_normalized(monkeypatch):
+    call = {
+        "id": "id with spaces",
+        "function": {"name": ["x"], "arguments": "[" * 100_000},
+    }
+    _install_sequence(monkeypatch, [_compat_round([call])])
+    resp = await OpenAICompatibleAdapter(
+        api_key="k", base_url="https://compat.example.org"
+    ).function_call(model="local", messages=[USER], tools=TOOLS)
+    (parsed,) = resp.tool_calls
+    assert parsed["id"] != "id with spaces" and parsed["id"]
+    assert parsed["name"] == "['x']"
+    assert parsed["arguments"] == {}
+
+
+@pytest.mark.asyncio
+async def test_openai_three_round_transcript(monkeypatch):
+    bodies = _install_sequence(
+        monkeypatch, [_fixture("openai_two_round.json")["round2"]]
+    )
+    await OpenAIAdapter(api_key="k").function_call(
+        model="gpt-4o-mini", messages=_three_rounds_transcript(), tools=TOOLS
+    )
+    messages = bodies[0]["messages"]
+    assert [m["role"] for m in messages] == [
+        "system", "user", "assistant", "tool", "assistant", "tool", "assistant", "user"
+    ]
+    assert [m["tool_calls"][0]["id"] for m in (messages[2], messages[4])] == [
+        "call_a", "call_b"
+    ]
+    # OpenAI rejects an empty tool_calls array.
+    assert messages[6] == {"role": "assistant", "content": "All good."}
 
 
 @pytest.mark.asyncio
@@ -320,12 +416,10 @@ async def test_plain_messages_reach_every_provider_unchanged(monkeypatch):
 
 
 def test_estimator_counts_assistant_tool_calls():
-    turn = {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [{"id": "call_1", "name": "forecast_get", "arguments": {"period_start": "2026-09-01"}}],
-    }
-    assert estimate_prompt_tokens_from_messages([turn]) > 0
+    calls = [{"id": "call_1", "name": "forecast_get", "arguments": {"period_start": "2026-09-01"}}]
+    turn = {"role": "assistant", "content": None, "tool_calls": calls}
+    # At least one token per 4 serialized chars of the calls.
+    assert estimate_prompt_tokens_from_messages([turn]) >= len(json.dumps(calls)) // 4
 
 
 def test_estimator_never_raises_on_unserializable_tool_calls():

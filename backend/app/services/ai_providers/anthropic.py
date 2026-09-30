@@ -29,7 +29,7 @@ from app.services.ai_providers.base import (
     StreamChunk,
     TokenUsage,
     ValidateResult,
-    synthesize_tool_call_id,
+    tool_call_id,
 )
 
 
@@ -70,9 +70,10 @@ def _split_system(messages: list[dict]) -> tuple[list[str], list[dict]]:
 def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
     """Translate the neutral tool transcript into Anthropic blocks.
 
-    An assistant turn with ``tool_calls`` becomes a text block (only when
-    the text is not blank; Anthropic rejects whitespace-only text blocks) plus one
-    ``tool_use`` block per call. A run of ``tool`` messages becomes ONE
+    An assistant turn with ``tool_calls`` becomes a text block, only when
+    the text is not blank (Anthropic rejects whitespace-only text), plus
+    one ``tool_use`` block per call; an empty ``tool_calls`` key is
+    dropped (Anthropic rejects unknown keys). A run of ``tool`` messages becomes ONE
     user message of ``tool_result`` blocks, and a plain user message
     right after that run is folded into it after the results: Anthropic
     wants every result in the user turn that follows the ``tool_use``
@@ -104,6 +105,9 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
             open_results = None
             continue
         open_results = None
+        if role == "assistant" and "tool_calls" in m and not m["tool_calls"]:
+            out.append({k: v for k, v in m.items() if k != "tool_calls"})
+            continue
         if role == "assistant" and m.get("tool_calls"):
             blocks: list[dict] = []
             text = m.get("content")
@@ -401,18 +405,16 @@ class AnthropicAdapter:
         try:
             blocks = payload.get("content", []) or []
             tool_calls: list[dict] = []
+            seen_ids: set[str] = set()
             text_parts: list[str] = []
             for b in blocks:
                 if not isinstance(b, dict):
                     continue
                 if b.get("type") == "tool_use":
                     inp = b.get("input")
-                    call_id = b.get("id")
                     tool_calls.append(
                         {
-                            "id": call_id
-                            if isinstance(call_id, str) and call_id
-                            else synthesize_tool_call_id(),
+                            "id": tool_call_id(b.get("id"), seen_ids),
                             "name": str(b.get("name") or ""),
                             "arguments": inp if isinstance(inp, dict) else {},
                         }

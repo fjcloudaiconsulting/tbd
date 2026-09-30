@@ -29,6 +29,7 @@ capability, including the PR3 ones, until PR4 wires a real backend.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional, Protocol, runtime_checkable
@@ -102,7 +103,8 @@ class FunctionCallResponse:
 
     ``tool_calls`` is the structured list of tool invocations the model
     requested. Each entry has ``id`` (the provider's call id, or a
-    synthesized one when the provider sent none), ``name`` (the tool
+    synthesized one when the provider's is unusable; Ollama entries
+    carry no id), ``name`` (the tool
     name) and ``arguments`` (a dict, already JSON-parsed). ``content`` is
     any free-text the model emitted alongside the tool call (typically
     empty when a tool was invoked).
@@ -213,9 +215,27 @@ class CapabilityNotSupported(Exception):
         self.capability = capability
 
 
+_SAFE_TOOL_CALL_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
 def synthesize_tool_call_id() -> str:
     """Call id for a provider that returned none; unique across rounds."""
     return f"call_{uuid.uuid4().hex[:24]}"
+
+
+def tool_call_id(raw: object, seen: set[str]) -> str:
+    """The provider's call id, or a synthesized one when it is missing,
+    repeated within the response, over 64 chars or outside
+    ``[A-Za-z0-9_-]`` (results are keyed by id, and every later round
+    echoes it back). Records the returned id in ``seen``."""
+    if (
+        not isinstance(raw, str)
+        or not _SAFE_TOOL_CALL_ID.fullmatch(raw)
+        or raw in seen
+    ):
+        raw = synthesize_tool_call_id()
+    seen.add(raw)
+    return raw
 
 
 def parse_openai_tool_calls(message: dict) -> list[dict]:
@@ -223,29 +243,27 @@ def parse_openai_tool_calls(message: dict) -> list[dict]:
 
     Arguments arrive as a JSON string (some servers send the object
     itself); anything that is not an object becomes ``{}`` so every call
-    satisfies the dict contract. A missing or repeated id is replaced by
-    a synthesized one: results are keyed by id, so ids must be unique.
+    satisfies the dict contract. A wrongly shaped message or call raises
+    ``TypeError``, which the adapters map to ``provider_unexpected_shape``.
     """
+    if not isinstance(message, dict):
+        raise TypeError("message is not an object")
     tool_calls: list[dict] = []
     seen: set[str] = set()
     for call in message.get("tool_calls") or []:
-        if not isinstance(call, dict):
+        fn = call.get("function") if isinstance(call, dict) else None
+        if not isinstance(fn, dict):
             raise TypeError("tool call is not an object")
-        fn = call.get("function") or {}
         args = fn.get("arguments")
         if not isinstance(args, dict):
             try:
                 args = json.loads(args or "{}")
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, RecursionError):
                 args = {}
-        call_id = call.get("id")
-        if not (isinstance(call_id, str) and call_id) or call_id in seen:
-            call_id = synthesize_tool_call_id()
-        seen.add(call_id)
         tool_calls.append(
             {
-                "id": call_id,
-                "name": fn.get("name") or "",
+                "id": tool_call_id(call.get("id"), seen),
+                "name": str(fn.get("name") or ""),
                 "arguments": args if isinstance(args, dict) else {},
             }
         )
@@ -255,28 +273,32 @@ def parse_openai_tool_calls(message: dict) -> list[dict]:
 def to_openai_messages(messages: list[dict]) -> list[dict]:
     """Translate neutral assistant tool-call turns to OpenAI wire shape.
 
-    ``tool`` messages are already OpenAI shape; every other message
-    passes through unchanged.
+    An empty ``tool_calls`` (a round that ended in a plain answer) is
+    dropped, since OpenAI rejects an empty array. ``tool`` messages are
+    already OpenAI shape; every other message passes through unchanged.
     """
     out: list[dict] = []
     for m in messages:
-        if m.get("role") == "assistant" and m.get("tool_calls"):
-            m = {
-                **m,
-                # null is the documented value next to tool_calls.
-                "content": m.get("content") or None,
-                "tool_calls": [
-                    {
-                        "id": c["id"],
-                        "type": "function",
-                        "function": {
-                            "name": c["name"],
-                            "arguments": json.dumps(c.get("arguments") or {}),
-                        },
-                    }
-                    for c in m["tool_calls"]
-                ],
-            }
+        if m.get("role") == "assistant" and "tool_calls" in m:
+            if not m["tool_calls"]:
+                m = {k: v for k, v in m.items() if k != "tool_calls"}
+            else:
+                m = {
+                    **m,
+                    # null is the documented value next to tool_calls.
+                    "content": m.get("content") or None,
+                    "tool_calls": [
+                        {
+                            "id": c["id"],
+                            "type": "function",
+                            "function": {
+                                "name": c["name"],
+                                "arguments": json.dumps(c.get("arguments") or {}),
+                            },
+                        }
+                        for c in m["tool_calls"]
+                    ],
+                }
         out.append(m)
     return out
 
