@@ -43,7 +43,7 @@ from typing import Union
 # Bumped whenever a disposition, a scope, or a redact set changes. Recorded
 # in the export header and in the ``org.data.exported`` audit row so an
 # artifact handed to a data subject can be tied to the rules that built it.
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
 
 
 # ── Scoping ────────────────────────────────────────────────────────────────

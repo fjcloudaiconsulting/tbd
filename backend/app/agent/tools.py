@@ -222,6 +222,7 @@ async def _budgets_update_amount_preview(ctx: ToolContext, args: BudgetAmountArg
         select(Budget, Category.name)
         .join(Category, Category.id == Budget.category_id)
         .where(Budget.id == args.budget_id, Budget.org_id == ctx.org_id)
+        .execution_options(populate_existing=True)
     )).first()
     if found is None:
         raise NotFoundError("Budget")

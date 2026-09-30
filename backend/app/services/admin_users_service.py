@@ -249,7 +249,8 @@ async def delete_user(
 
     # Finally, the user row itself. SET NULL FKs (audit_events,
     # feedback, tags, feature_overrides) and the CASCADE FK
-    # (org_data_reset_lock) all run as part of the same statement.
+    # (org_data_reset_lock, agent_pending_actions: ephemeral 10 minute
+    # previews, dropped on purpose) all run as part of the same statement.
     await db.execute(delete(User).where(User.id == target_user_id))
 
     await logger.ainfo(

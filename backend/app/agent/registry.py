@@ -163,7 +163,10 @@ class Change:
 class Preview:
     """What a write tool says it will do. ``summary`` never embeds a
     user-writable string (it is not wrapped): user text goes in ``context``
-    under a key in :data:`UNTRUSTED_KEYS`."""
+    under a key in :data:`UNTRUSTED_KEYS`.
+
+    A ``preview`` hook must read fresh (``populate_existing``): the auto path
+    re-previews in the same session, whose identity map may hold a stale row."""
 
     summary: str
     changes: list[Change]
@@ -295,6 +298,7 @@ async def invoke(
             "agent.tool.invoked", tool=name, channel=channel, org_id=org_id,
             user_id=user_id, outcome=exc.code,
         )
+        exc.data = wrap_untrusted(exc.data)
         raise
     except Exception:
         # Gates and tools alike: never hand SQL or internals to a model or a
@@ -384,6 +388,7 @@ async def _decide(
             f"agent.action.{which}", channel=channel, org_id=org_id, user_id=user_id,
             outcome=exc.code,
         )
+        exc.data = wrap_untrusted(exc.data)
         raise
     except Exception:
         # Everything after the claim is handled inside the engine; this is a

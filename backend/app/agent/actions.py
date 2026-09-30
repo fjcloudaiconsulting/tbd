@@ -39,7 +39,7 @@ from app import redis_client
 from app._time import utcnow_naive
 from app.agent import registry
 from app.agent.registry import (
-    AGENT_SCOPES, Preview, ToolContext, ToolError, ToolSpec, wrap_untrusted,
+    AGENT_SCOPES, Preview, ToolContext, ToolError, ToolSpec,
 )
 from app.models.agent_pending_action import (
     ActionChannel, ActionMode, ActionRisk, ActionStatus, AgentPendingAction as Action,
@@ -53,8 +53,8 @@ MAX_ARGS_BYTES = 4 * 1024
 MAX_PREVIEW_BYTES = 16 * 1024
 MINUTE, HOUR, DAY = 60, 3600, 86_400
 
-# Live (pending, unexpired) rows: per principal, per user, per org.
-MAX_LIVE_PRINCIPAL, MAX_LIVE_USER, MAX_LIVE_ORG = 10, 10, 50
+# Live (pending, unexpired) rows: per user, per org.
+MAX_LIVE_USER, MAX_LIVE_ORG = 10, 50
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -71,13 +71,13 @@ def _principal(ctx: ToolContext, user_id: int) -> str:
     return f"tok:{ctx.api_token_id}" if ctx.channel == "mcp" else f"usr:{user_id}"
 
 
-def _scope_gate(ctx: ToolContext, scope: str | None) -> None:
+def _scope_gate(ctx: ToolContext, scope: str | None, *, decide: frozenset[str] = AGENT_SCOPES) -> None:
     """Confirm and cancel need a well-formed principal. Whether the token's
     scope still covers the STORED tool is gate 5, re-run after the claim."""
     if ctx.channel == "in_app":
         ok = scope is None
     elif ctx.channel == "mcp":
-        ok = scope in AGENT_SCOPES and ctx.api_token_id is not None
+        ok = scope in decide and ctx.api_token_id is not None
     else:
         ok = False
     if not ok:
@@ -167,15 +167,11 @@ async def _check_ceiling(ctx: ToolContext, user_id: int) -> None:
         Action.expires_at > now,
     )
     db = ctx.db
+    # No separate per-principal ceiling: a principal's rows are a subset of its
+    # user's and both limits are 10, so it could never fire first.
     if await db.scalar(live) >= MAX_LIVE_ORG:
         raise ToolError("too_many_pending_actions", "cancel or confirm pending actions first")
     if await db.scalar(live.where(Action.user_id == user_id)) >= MAX_LIVE_USER:
-        raise ToolError("too_many_pending_actions", "cancel or confirm pending actions first")
-    mine = live.where(
-        Action.user_id == user_id, Action.channel == ActionChannel(ctx.channel),
-        Action.api_token_id.is_not_distinct_from(ctx.api_token_id),
-    )
-    if await db.scalar(mine) >= MAX_LIVE_PRINCIPAL:
         raise ToolError("too_many_pending_actions", "cancel or confirm pending actions first")
 
 
@@ -250,7 +246,7 @@ async def _explain_miss(ctx: ToolContext, user_id: int, action_id: str) -> None:
 
 
 async def cancel(ctx: ToolContext, action_id: str, *, scope: str | None) -> dict:
-    _scope_gate(ctx, scope)
+    _scope_gate(ctx, scope, decide=frozenset({"agent:write", "agent:auto"}))
     user_id = ctx.user.id
     now = utcnow_naive()
     res = await ctx.db.execute(
@@ -299,6 +295,9 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
     finished = False
 
     async def finish() -> None:
+        # Known ceiling: if execute committed and THIS commit then fails, the row
+        # reads failed/internal although the domain write happened (the audit row
+        # and result are lost; the REST route it mirrors is last-write-wins).
         # Status, the one audit row and any fresh preview commit together.
         await db.execute(
             update(Action).where(Action.id == action_id, Action.status == ActionStatus.EXECUTING)
@@ -342,7 +341,7 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
                 status, error_code = ActionStatus.STALE, "preview_stale"
                 raised = ToolError(
                     "preview_stale", "the data changed since the preview",
-                    data=wrap_untrusted(_staged(fresh)),
+                    data=_staged(fresh),
                 )
             else:
                 out = await registry.call_mapped(spec.execute, ctx, args)

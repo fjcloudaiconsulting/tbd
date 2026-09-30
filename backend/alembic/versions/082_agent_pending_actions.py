@@ -48,8 +48,7 @@ def upgrade() -> None:
             "risk", sa.Enum("write", "sensitive", name="agent_action_risk"), nullable=False
         ),
         sa.Column(
-            "mode", sa.Enum("confirm", "auto", name="agent_action_mode"),
-            nullable=False, server_default="confirm",
+            "mode", sa.Enum("confirm", "auto", name="agent_action_mode"), nullable=False,
         ),
         sa.Column("args_json", sa.JSON(), nullable=False),
         sa.Column("args_sha256", sa.CHAR(64), nullable=False),

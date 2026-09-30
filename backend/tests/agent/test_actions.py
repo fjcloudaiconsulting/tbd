@@ -848,3 +848,102 @@ async def test_fa3_rows_written_are_a_subset_of_the_disclosed_changes(factory, w
     undisclosed = {x for x in touched if x[0] not in _BOOKKEEPING} - disclosed
     assert not undisclosed, undisclosed
     assert disclosed <= touched, "a disclosed change was not written"
+
+
+# ── review round 1 ────────────────────────────────────────────────────────
+
+async def test_fp4_a_null_token_mcp_row_is_not_an_in_app_row(factory, w):
+    """FENCE F-P4 (channel clause). An MCP row whose token was SET NULL looks
+    like an in-app row on the token column alone; only ``channel`` keeps the
+    in-app user from confirming or cancelling it."""
+    a = w["A"]
+    out = await _stage(factory, w, api_token_id=a["t1"], **MCP)
+    async with factory() as db:
+        await db.execute(update(AgentPendingAction).values(api_token_id=None))
+        await db.commit()
+    assert (await _refused(_confirm(factory, a["member"], out["action_id"]))).code == "action_not_found"
+    assert (await _refused(_cancel(factory, a["member"], out["action_id"]))).code == "action_not_found"
+    assert (await _row(factory, out["action_id"])).status.value == "pending"
+
+
+async def test_fp12_mcp_per_user_daily_preview_bucket(factory, w):
+    """FENCE F-P12. Wrong implementation: no per-USER daily bucket over MCP
+    (a user with several tokens escapes the 200/day)."""
+    a = w["A"]
+    _fake()._kv[_k(f"agent:usr:{a['member']}:preview:day")] = 200
+    err = await _refused(_stage(factory, w, api_token_id=a["t1"], **MCP))
+    assert err.code == "preview_rate_limited"
+
+
+async def test_auto_re_preview_reads_fresh_data(factory, w, engine):
+    """FENCE (auto drift). Wrong implementation: the preview query serving the
+    session's cached Budget, so a change made between stage and confirm in the
+    auto path (same session) is invisible."""
+    a = w["A"]
+    spec = registry._TOOLS["budgets_update_amount"]
+    real, n, keep = spec.preview, [], []
+
+    async def preview_then_drift(ctx, args):
+        out = await real(ctx, args)
+        if not n:
+            n.append(1)
+            # Anything holding the Budget keeps it in the session's identity
+            # map (it is weakly referenced otherwise).
+            keep.append(await ctx.db.get(Budget, a["b1"]))
+            other = async_sessionmaker(engine, expire_on_commit=False)
+            async with other() as db:
+                await db.execute(update(Budget).where(Budget.id == a["b1"]).values(amount=Decimal("111.00")))
+                await db.commit()
+        return out
+
+    registry._TOOLS["budgets_update_amount"] = ToolSpec(**{**spec.__dict__, "preview": preview_then_drift})
+    try:
+        err = await _refused(_stage(factory, w, api_token_id=a["t1"], **AUTO))
+    finally:
+        registry._TOOLS["budgets_update_amount"] = spec
+    assert err.code == "preview_stale"
+    assert (await _amount(factory, a["b1"])) == Decimal("111.00")
+
+
+async def test_finish_commit_failure_still_leaves_one_failed_row_and_one_audit(factory, w, scratch):
+    """GUARD. The status commit fails once: the ``finally`` recovery moves the
+    row out of ``executing`` and writes exactly one audit row."""
+    a = w["A"]
+    scratch()
+    out = await _invoke(factory, a["member"], "scratch_write", {"budget_id": a["b1"]})
+    async with factory() as db:
+        u = await db.get(User, a["member"])
+        real, n = db.commit, []
+
+        async def flaky():
+            n.append(1)
+            if len(n) == 2:  # 1 = the claim, 2 = the status commit
+                raise RuntimeError("connection lost")
+            return await real()
+
+        db.commit = flaky
+        err = await _refused(registry.confirm_action(
+            db, u, out["action_id"], channel="in_app", scope=None, api_token_id=None))
+    assert err.code == "internal"
+    row = await _row(factory, out["action_id"])
+    assert (row.status.value, row.error_code) == ("failed", "internal")
+    assert [x.outcome.value for x in await _audits(factory)] == ["failure"]
+
+
+async def test_cancel_over_mcp_needs_write_scope(factory, w):
+    a = w["A"]
+    out = await _stage(factory, w, api_token_id=a["t1"], **MCP)
+    err = await _refused(_cancel(factory, a["member"], out["action_id"], api_token_id=a["t1"],
+                                 channel="mcp", scope="agent:read"))
+    assert err.code == "scope_denied"
+    assert (await _row(factory, out["action_id"])).status.value == "pending"
+    await _cancel(factory, a["member"], out["action_id"], api_token_id=a["t1"],
+                  channel="mcp", scope="agent:auto")
+
+
+async def test_error_data_is_wrapped_untrusted(factory, w):
+    a = w["A"]
+    out = await _stage(factory, w)
+    await _confirm(factory, a["member"], out["action_id"])
+    err = await _refused(_confirm(factory, a["member"], out["action_id"]))
+    assert err.data["result"]["category_name"] == {"untrusted": "Food A"}
