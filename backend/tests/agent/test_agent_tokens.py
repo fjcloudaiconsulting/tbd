@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+import structlog
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from slowapi import _rate_limit_exceeded_handler
@@ -266,6 +267,7 @@ async def test_f_t2_mint_stamps_created_at_whole_seconds(factory):
 
 
 async def test_f_t3_every_rejection_is_the_same_401(factory):
+    structlog.contextvars.clear_contextvars()
     """FENCE F-T3. Wrong implementations: per-reason bodies (an oracle); the
     owner's ``is_active`` not re-read (inactive cell authenticates); a REST
     PAT accepted as an agent credential (rest cell authenticates)."""
@@ -295,6 +297,11 @@ async def test_f_t3_every_rejection_is_the_same_401(factory):
         e = ei.value
         seen.add((e.status_code, e.detail, tuple(sorted((e.headers or {}).items()))))
     assert seen == {(401, "Invalid or expired token", (("WWW-Authenticate", "Bearer"),))}
+    # Known-but-dead tokens are audited with the token in the ACTOR column:
+    # the bind precedes the rejection branches (the pat.py rule).
+    rejected = await _audits(factory, "api_token.auth_rejected")
+    assert sorted(a.detail["reason"] for a in rejected) == ["expired", "revoked"]
+    assert all(a.api_token_id == a.detail["api_token_id"] for a in rejected)
     user, _ = await _auth(factory, ok)
     assert user.id == uid
 
