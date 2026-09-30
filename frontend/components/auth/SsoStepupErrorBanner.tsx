@@ -4,10 +4,11 @@ import { btnPrimary, btnSecondary, error as errorCls } from "@/lib/styles";
 
 /**
  * Renders the friendly banner that surfaces when /api/v1/auth/sso-stepup/callback
- * redirects back with `?sso_stepup_error=<code>`. Used on both `/settings`
+ * redirects back with `?sso_stepup_error=<code>`. Used on `/settings`
  * (email change flow) and `/settings/security` (first-time password set
  * flow), since the callback routes by the `action` slot the initiate
- * call encoded into state.
+ * call encoded into state. (`pat_mint` failures land on
+ * `/system/api-tokens`, which only strips the param; no banner there.)
  *
  * Pages own:
  *   - the per-code copy map (`copyByCode`), so wording can stay

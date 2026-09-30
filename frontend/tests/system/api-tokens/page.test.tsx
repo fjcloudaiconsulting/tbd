@@ -123,12 +123,15 @@ describe("/system/api-tokens page", () => {
       "",
       "/system/api-tokens?sso_stepup_error=state&keep=1#stepup_token=secret-proof",
     );
-    renderWithSWR(<SystemApiTokensPage />);
-    await screen.findByText("broadcast cron");
-    expect(window.location.hash).toBe("");
-    expect(window.location.search).toBe("?keep=1");
-    expect(window.location.href).not.toContain("secret-proof");
-    window.history.replaceState(null, "", "/");
+    try {
+      renderWithSWR(<SystemApiTokensPage />);
+      await screen.findByText("broadcast cron");
+      expect(window.location.hash).toBe("");
+      expect(window.location.search).toBe("?keep=1");
+      expect(window.location.href).not.toContain("secret-proof");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
   });
 
   it("states plainly that PATs survive password change and session invalidation", async () => {

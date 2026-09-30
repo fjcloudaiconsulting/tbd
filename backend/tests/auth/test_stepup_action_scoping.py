@@ -252,7 +252,10 @@ def test_every_action_has_exactly_one_consumer():
 )
 async def test_f1_grid_only_the_issued_action_accepts_the_proof(factory, issued, consumer):
     """Kills: action-agnostic compare; one consumer left unconverted; a
-    wrong-action attempt burning the token."""
+    wrong-action attempt that burns AND commits the token. (A burn that is
+    only flushed is rolled back by the handler's raise, so a
+    consume-before-validate mutant is caught here only where a failure path
+    commits: pat_mint's audit on the shared test connection.)"""
     uid = await _seed(factory)
     tok = await _issue(factory, uid, issued)
     before = await _row(factory, uid)
@@ -537,10 +540,9 @@ async def test_f9_d1_consume_with_a_stale_row_fails_and_releases(factory):
 
     stored, expires = await _row(factory, uid)
     assert stored is None and expires is not None  # as the other session left it
-    async with factory() as c:
-        await c.execute(update(User).where(User.id == uid).values(first_name="after"))
-        await c.commit()
-    assert (await _user(factory, uid)).first_name == "after"
+    # No second-session "lock released" write here: under the test StaticPool
+    # every session shares one connection, so it could not go red. The
+    # ``in_transaction()`` assert above is the D1 fence.
 
 
 async def test_consume_live_row_control(factory):

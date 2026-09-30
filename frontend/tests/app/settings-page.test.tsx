@@ -119,26 +119,28 @@ describe("Settings page — email change step-up token state hygiene", () => {
       value: { ...originalLocation, href: "", hash: "" },
     });
 
-    render(<SettingsProfilePage />);
-    fireEvent.change(screen.getByLabelText(/^Email$/i), {
-      target: { value: "new@acme.io" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /Verify with Google/i }));
+    try {
+      render(<SettingsProfilePage />);
+      fireEvent.change(screen.getByLabelText(/^Email$/i), {
+        target: { value: "new@acme.io" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Verify with Google/i }));
 
-    await waitFor(() => {
-      expect(apiFetch).toHaveBeenCalledWith(
-        "/api/v1/auth/sso-stepup/initiate",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({ action: "email_change" }),
-        }),
-      );
-    });
-
-    Object.defineProperty(window, "location", {
-      writable: true,
-      value: originalLocation,
-    });
+      await waitFor(() => {
+        expect(apiFetch).toHaveBeenCalledWith(
+          "/api/v1/auth/sso-stepup/initiate",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({ action: "email_change" }),
+          }),
+        );
+      });
+    } finally {
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: originalLocation,
+      });
+    }
   });
 
   it("renders the SSO step-up error banner when ?sso_stepup_error=state is on the URL", () => {
