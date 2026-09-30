@@ -186,7 +186,7 @@ async def propose(ctx: ToolContext, spec: ToolSpec, args: Any, *, scope: str | N
         raise ToolError("scope_denied", "agent token required")
     # Auto is keyed on channel AND scope AND risk: no JWT principal reaches it
     # and a sensitive tool never does.
-    auto = ctx.channel == "mcp" and scope == "agent:auto" and spec.risk == "write"
+    auto = ctx.auto and spec.risk == "write"
     p = _principal(ctx, user_id)
 
     if auto:  # BEFORE staging: an exhausted budget never degrades to a preview

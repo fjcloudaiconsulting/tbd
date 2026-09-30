@@ -545,11 +545,15 @@ async def _propagate_fields_to_series(
 
 
 async def update_transaction(
-    db: AsyncSession, org_id: int, transaction_id: int, body: TransactionUpdate
+    db: AsyncSession, org_id: int, transaction_id: int, body: TransactionUpdate,
+    *, learn: bool = True,
 ) -> Transaction:
     """F2 policy: per-leg edits on linked rows under invariant guards. Amount
     mirrors atomically. Type and linked_transaction_id immutable on linked rows.
     See spec §5.3 (`~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-03-transfers-between-accounts-design.md`).
+
+    ``learn=False`` skips the category-rule upsert: an agent in auto mode must
+    not write a derived row it cannot undo (TBD-580).
     """
     # 1. Pre-read to discover partner (unlocked) and lock both in sorted ID order
     preview = await db.scalar(
@@ -890,7 +894,8 @@ async def update_transaction(
     # Wrapped in is_reportable_transaction(tx) — flips from previous "transfers
     # raise ConflictError above" assumption now that linked rows are editable.
     if (
-        is_reportable_transaction(tx)
+        learn
+        and is_reportable_transaction(tx)
         and body.category_id is not None
         and body.category_id != old_category_id
     ):

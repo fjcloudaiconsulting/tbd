@@ -141,6 +141,10 @@ class ToolContext:
     org_id: int
     channel: Channel
     api_token_id: int | None
+    # The principal is an ``agent:auto`` token: a write it runs is never
+    # confirmed by a person, so a tool must write no derived row (a learned
+    # rule) and its preview must not list one.
+    auto: bool = False
 
 
 @dataclass(frozen=True)
@@ -344,6 +348,10 @@ async def check_gates(
         raise ToolError("scope_denied", f"unknown channel {channel!r}")
 
 
+def _is_auto(channel: str, scope: str | None) -> bool:
+    return channel == "mcp" and scope == "agent:auto"
+
+
 async def _gate_and_run(
     db: AsyncSession, user: User, name: str, raw_args: dict[str, Any] | None,
     channel: Channel, scope: str | None, api_token_id: int | None,
@@ -364,7 +372,8 @@ async def _gate_and_run(
     await check_gates(db, user, spec, channel, scope)
 
     ctx = ToolContext(
-        db=db, user=user, org_id=user.org_id, channel=channel, api_token_id=api_token_id
+        db=db, user=user, org_id=user.org_id, channel=channel, api_token_id=api_token_id,
+        auto=_is_auto(channel, scope),
     )
     if spec.risk == "read":
         return await call_mapped(spec.run, ctx, args)
@@ -380,7 +389,10 @@ async def _decide(
     from app.agent import actions  # deferred: actions imports this module
 
     org_id, user_id = user.org_id, user.id
-    ctx = ToolContext(db=db, user=user, org_id=org_id, channel=channel, api_token_id=api_token_id)
+    ctx = ToolContext(
+        db=db, user=user, org_id=org_id, channel=channel, api_token_id=api_token_id,
+        auto=_is_auto(channel, scope),
+    )
     try:
         data = await getattr(actions, which)(ctx, action_id, scope=scope)
     except ToolError as exc:

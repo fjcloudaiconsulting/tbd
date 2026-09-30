@@ -34,6 +34,7 @@ from app.models.budget import Budget
 from app.models.category import CategoryType
 from app.models.feature_override import OrgFeatureOverride
 from app.models.settings import OrgSetting
+from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Role, User
 from app.security import hash_password
 from app.services import budget_service
@@ -124,8 +125,22 @@ async def w(factory):
             b2 = Budget(org_id=org.id, category_id=master2.id, amount=Decimal("50.00"),
                         period_start=P_START)
             db.add_all([b1, b2, OrgFeatureOverride(org_id=org.id, feature_key="ai.agent", value=True)])
+            at = AccountType(org_id=org.id, name="Checking", slug=f"chk{tag}", is_system=False)
+            db.add(at)
             await db.flush()
-            out[tag] = {"org": org.id, "member": member.id, "b1": b1.id, "b2": b2.id}
+            acct = Account(org_id=org.id, name=f"Main {tag}", account_type_id=at.id,
+                           balance=Decimal("1000.00"), currency="EUR", is_default=True)
+            db.add(acct)
+            await db.flush()
+            tx = Transaction(
+                org_id=org.id, account_id=acct.id, category_id=master.id,
+                description="SPOTIFY PREMIUM", amount=Decimal("9.99"),
+                type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED, date=P_START, settled_date=P_START,
+            )
+            db.add(tx)
+            await db.flush()
+            out[tag] = {"org": org.id, "member": member.id, "b1": b1.id, "b2": b2.id,
+                        "c1": master.id, "c2": master2.id, "acct": acct.id, "tx": tx.id}
         a = out["A"]
         admin = _user(a["org"], "adminA", Role.ADMIN)
         other = _user(a["org"], "otherA", Role.MEMBER)
@@ -809,7 +824,13 @@ _BOOKKEEPING = {
 
 _WRITE_CASES = {
     "budgets_update_amount": lambda a: {"budget_id": a["b1"], "amount": "120.00"},
+    # A reportable row on the confirm path: the category rule upsert is disclosed.
+    "transactions_set_category": lambda a: {"transaction_id": a["tx"], "category_id": a["c2"]},
 }
+
+# A derived row is disclosed by its natural key, not its surrogate id: the
+# rule's change id is the normalized token (so a description edit goes stale).
+_NATURAL_KEY = {"category_rules": ("normalized_token",)}
 
 
 def test_fa3_every_write_tool_has_a_case():
@@ -822,9 +843,10 @@ async def _snapshot(f) -> dict[str, dict]:
     out = {}
     async with f() as db:
         for t in Base.metadata.sorted_tables:
-            pk = list(t.primary_key.columns.keys())
+            pk = list(_NATURAL_KEY.get(t.name) or t.primary_key.columns.keys())
             rows = (await db.execute(select(t))).all()
-            out[t.name] = {tuple(r._mapping[c] for c in pk): tuple(r) for r in rows}
+            out[t.name] = {tuple(r._mapping[c] for c in pk): dict(r._mapping) for r in rows}
+            assert len(out[t.name]) == len(rows), f"{t.name}: key {pk} is not unique here"
     return out
 
 
@@ -848,6 +870,48 @@ async def test_fa3_rows_written_are_a_subset_of_the_disclosed_changes(factory, w
     undisclosed = {x for x in touched if x[0] not in _BOOKKEEPING} - disclosed
     assert not undisclosed, undisclosed
     assert disclosed <= touched, "a disclosed change was not written"
+
+
+# ── F-A4 ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("auto", [False, True], ids=["confirm", "auto"])
+@pytest.mark.parametrize("tool", sorted(_WRITE_CASES))
+async def test_fa4_the_inverse_built_from_before_restores_the_entity(factory, w, tool, auto):
+    """FENCE F-A4. Apply, then apply the inverse built from the preview's
+    ``before``: the primary entity equals the original. In auto mode every
+    other table (the derived ``category_rules`` included) is byte-identical.
+    Wrong implementations: a non-invertible tool declared ``write``; auto
+    ``transactions_set_category`` still learning a rule."""
+    a = w["A"]
+    kw = {"api_token_id": a["t1"], **AUTO} if auto else {}
+
+    async def apply(args):
+        out = await _invoke(factory, a["member"], tool, args, **kw)
+        if not auto:
+            out = await _confirm(factory, a["member"], out["action_id"])
+        assert out["status"] == "done"
+        return out
+
+    args = _WRITE_CASES[tool](a)
+    start = await _snapshot(factory)
+    out = await apply(args)
+    [primary] = [c for c in out["changes"] if c["entity"] not in _NATURAL_KEY]
+    assert primary["before"] != primary["after"]
+    if tool == "transactions_set_category":
+        assert len(out["changes"]) == (1 if auto else 2)
+    await apply({**args, primary["field"]: primary["before"]})
+    end = await _snapshot(factory)
+
+    def entity(snap):
+        row = dict(snap[primary["entity"]][(primary["id"],)])
+        row.pop("updated_at", None)
+        return row
+
+    assert entity(end) == entity(start)
+    if auto:
+        for table in start:
+            if table not in _BOOKKEEPING and table != primary["entity"]:
+                assert end[table] == start[table], table
 
 
 # ── review round 1 ────────────────────────────────────────────────────────
