@@ -124,6 +124,7 @@ async def test_catalog_returns_sorted_keys(session_factory):
             "ai.budget",
             "ai.forecast",
             "ai.smart_plan",
+            "plans",
         ]
     }
 
