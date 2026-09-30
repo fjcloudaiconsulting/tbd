@@ -26,7 +26,6 @@ override starts a fresh counter (the ``limits`` storage key embeds the
 amount).
 """
 import contextvars
-import re
 import types
 from datetime import datetime, timezone
 from typing import Callable, Mapping
@@ -47,57 +46,6 @@ logger = structlog.stdlib.get_logger()
 _overrides_cv: contextvars.ContextVar[Mapping[str, str]] = contextvars.ContextVar(
     "rate_limit_overrides", default=types.MappingProxyType({})
 )
-
-
-# Slowapi accepts these period words. Mapped to seconds so the
-# numeric override format ("max/period_s") can be round-tripped back
-# into a slowapi-style string the limiter understands.
-_PERIOD_WORDS_TO_SECONDS: dict[str, int] = {
-    "second": 1,
-    "seconds": 1,
-    "minute": 60,
-    "minutes": 60,
-    "hour": 3600,
-    "hours": 3600,
-    "day": 86400,
-    "days": 86400,
-}
-
-
-_LIMIT_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)?\s*([a-zA-Z]+)?\s*$")
-
-
-def parse_default_limit(value: str) -> tuple[int, int]:
-    """Parse a slowapi-style limit string into ``(max, period_s)``.
-
-    Accepted shapes:
-    - ``"20/minute"``  -> ``(20, 60)``
-    - ``"5/hour"``     -> ``(5, 3600)``
-    - ``"30/45s"``     -> ``(30, 45)`` (rare; slowapi also accepts ``"30/45 second"``)
-    - ``"30/45"``      -> ``(30, 45)``
-
-    Raises ``ValueError`` on an unparseable string. The function is
-    deliberately permissive on whitespace and case to match slowapi's
-    own parser.
-    """
-    m = _LIMIT_RE.match(value)
-    if not m:
-        raise ValueError(f"unparseable limit string: {value!r}")
-    max_requests = int(m.group(1))
-    explicit_seconds = m.group(2)
-    word = (m.group(3) or "").lower()
-    if explicit_seconds and word:
-        raise ValueError(f"limit cannot mix explicit seconds and word: {value!r}")
-    if explicit_seconds is not None:
-        period_seconds = int(explicit_seconds)
-    elif word:
-        seconds = _PERIOD_WORDS_TO_SECONDS.get(word)
-        if seconds is None:
-            raise ValueError(f"unknown period word: {word!r} in {value!r}")
-        period_seconds = seconds
-    else:
-        raise ValueError(f"limit missing period: {value!r}")
-    return max_requests, period_seconds
 
 
 def format_limit(max_requests: int, period_seconds: int) -> str:

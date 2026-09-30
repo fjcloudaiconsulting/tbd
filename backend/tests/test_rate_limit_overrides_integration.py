@@ -1,4 +1,4 @@
-"""Unit tests for ``app.rate_limit_overrides``: the limit-string parser /
+"""Unit tests for ``app.rate_limit_overrides``: the limit-string
 formatter and the zero-arg provider returned by ``dynamic_limit``.
 
 The request-path fences (override actually enforced by the limiter) live in
@@ -11,37 +11,7 @@ import pytest
 from app.rate_limit_overrides import (
     dynamic_limit,
     format_limit,
-    parse_default_limit,
 )
-
-
-def test_parse_default_limit_word_forms():
-    assert parse_default_limit("20/minute") == (20, 60)
-    assert parse_default_limit("5/hour") == (5, 3600)
-    assert parse_default_limit("3/day") == (3, 86400)
-    assert parse_default_limit("100/second") == (100, 1)
-    # Whitespace tolerated.
-    assert parse_default_limit("  10 / minute  ") == (10, 60)
-    # Case tolerated.
-    assert parse_default_limit("10/Minute") == (10, 60)
-
-
-def test_parse_default_limit_numeric_period():
-    assert parse_default_limit("30/45") == (30, 45)
-
-
-def test_parse_default_limit_rejects_bogus():
-    with pytest.raises(ValueError):
-        parse_default_limit("nonsense")
-    with pytest.raises(ValueError):
-        parse_default_limit("20/forever")
-    with pytest.raises(ValueError):
-        parse_default_limit("20/")
-
-
-def test_format_round_trip():
-    assert parse_default_limit(format_limit(42, 60)) == (42, 60)
-    assert parse_default_limit(format_limit(5, 3600)) == (5, 3600)
 
 
 def test_dynamic_limit_validates_default_at_construction():

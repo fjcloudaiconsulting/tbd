@@ -7,6 +7,7 @@ default (5/hour on ``users.update_profile``).
 """
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -62,16 +63,12 @@ async def factory():
     await eng.dispose()
 
 
-_filler = {"n": 0}
-
-
 async def _org(f, name: str) -> Organization:
     """Org ids run ahead of user ids (each call adds a filler org), so a loader
     that swaps user_id / org_id can never match by coincidence."""
     async with f() as s:
         for _ in range(3):
-            _filler["n"] += 1
-            s.add(Organization(name=f"filler{_filler['n']}", billing_cycle_day=1))
+            s.add(Organization(name=f"filler-{uuid4().hex[:8]}", billing_cycle_day=1))
         await s.flush()
         o = Organization(name=name, billing_cycle_day=1)
         s.add(o)
@@ -261,8 +258,13 @@ async def test_f4_another_orgs_and_users_rows_have_no_effect(factory):
     # Ids that collide with the tested identity across the two columns: a row
     # for org_id == a.id and one for user_id == org_a.id (neither is a's).
     assert a.id != org_a.id
-    await _row(factory, org=SimpleNamespace(id=a.id), max_requests=2)
-    await _row(factory, user=SimpleNamespace(id=org_a.id), max_requests=2)
+    # Both colliding ids must be REAL rows: FKs are enforced on some runs.
+    collide = await _user(factory, org_b, "c0")
+    while collide.id < org_a.id:
+        collide = await _user(factory, org_b, f"c{collide.id}")
+    assert collide.id == org_a.id
+    await _row(factory, org=SimpleNamespace(id=a.id), max_requests=2)  # a filler org
+    await _row(factory, user=collide, max_requests=2)
     assert _allowed(_jwt(a)) == DEFAULT
 
 
