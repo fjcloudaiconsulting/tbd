@@ -502,3 +502,15 @@ async def test_replayed_blank_answer_is_valid_for_each_provider(monkeypatch):
     )
     assert [m["role"] for m in bodies[0]["messages"]] == ["user", "user"]
     assert bodies[1]["messages"][1] == {"role": "assistant", "content": ""}
+
+
+@pytest.mark.asyncio
+async def test_non_string_content_becomes_empty(monkeypatch):
+    reply = {"choices": [{"message": {"content": [{"x": 1}]}}], "usage": {}}
+    _install_sequence(monkeypatch, [reply, reply])
+    for adapter in (
+        OpenAIAdapter(api_key="k"),
+        OpenAICompatibleAdapter(api_key="k", base_url="https://c.example.org"),
+    ):
+        resp = await adapter.function_call(model="m", messages=[USER], tools=TOOLS)
+        assert resp.content == ""

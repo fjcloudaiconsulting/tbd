@@ -241,16 +241,13 @@ def parse_openai_tool_calls(message: dict) -> list[dict]:
     Arguments arrive as a JSON string (some servers send the object
     itself); anything that is not an object becomes ``{}`` so every call
     satisfies the dict contract. A wrongly shaped message or call raises
-    ``TypeError``, which the adapters map to ``provider_unexpected_shape``.
+    ``AttributeError``, which the adapters map to
+    ``provider_unexpected_shape``.
     """
-    if not isinstance(message, dict):
-        raise TypeError("message is not an object")
     tool_calls: list[dict] = []
     seen: set[str] = set()
     for call in message.get("tool_calls") or []:
-        fn = call.get("function") if isinstance(call, dict) else None
-        if not isinstance(fn, dict):
-            raise TypeError("tool call is not an object")
+        fn = call.get("function") or {}
         args = fn.get("arguments")
         if not isinstance(args, dict):
             try:
