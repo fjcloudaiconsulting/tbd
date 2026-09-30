@@ -6,7 +6,7 @@ They reuse ``api_tokens``; REST refuses these scopes (``app.auth.pat``), so
 the only consumer is the MCP front door (``app.agent.auth``).
 
 Every route is interactive-only (``require_interactive_session`` FIRST): a
-token can never mint, widen or list tokens. Only mint needs ``ai.agent``; a
+token can never mint, widen or list tokens. Only mint needs ``ai.agent`` (and a non-zero ``mcp.calls`` limit); a
 user whose org lost it must still be able to see and revoke tokens.
 
 Mint = the PAT mint's step-up (own ``agent_token_mint`` action), an IP limit,
@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent import actions
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
-from app.auth.feature_deps import require_feature
+from app.auth.feature_deps import require_feature, require_meter_open
 from app.auth.org_permissions import require_org_admin
 from app.auth.pat import require_interactive_session
 from app.auth.stepup import consume_stepup
@@ -113,6 +113,8 @@ async def _audit(
     status_code=status.HTTP_201_CREATED,
     dependencies=[
         Depends(require_feature(AGENT_FEATURE_KEY)),
+        # TBD-585: a token is useless when the org's mcp.calls limit is 0.
+        Depends(require_meter_open(AGENT_FEATURE_KEY, "mcp.calls")),
         Depends(load_rate_limit_overrides),
     ],
 )

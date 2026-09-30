@@ -57,3 +57,25 @@ def require_feature(key: FeatureKey) -> Callable:
         return features
 
     return _dep
+
+
+def require_meter_open(key: FeatureKey, meter: str) -> Callable:
+    """Dependency factory for a surface gated on a feature key AND a usage
+    meter (TBD-558 A2.1): the surface is closed when the org's effective limit
+    for ``meter`` is 0. Same 403 shape as ``require_feature``, plus the meter.
+    Pair it with ``require_feature(key)``, which checks the key itself."""
+    if key not in ALL_FEATURE_KEYS:
+        raise UnknownFeatureKey(key)
+
+    async def _dep(
+        db: AsyncSession = Depends(get_db),
+        user: User = Depends(get_current_user),
+    ) -> None:
+        ent = await feature_service.get_entitlements(db, user.org_id)
+        if ent.limits[meter].limit == 0:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "feature_not_enabled", "feature_key": key, "meter": meter},
+            )
+
+    return _dep
