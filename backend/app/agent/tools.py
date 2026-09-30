@@ -1,4 +1,4 @@
-"""The v1 read tools (TBD-559).
+"""The v1 agent tools: six reads (TBD-559) and ``budgets_update_amount`` (TBD-577).
 
 Each tool is a thin adapter over the code its mirrored REST route runs, scoped
 by ``ctx``. ``accounts_list`` and ``categories_list`` call the route handlers
@@ -17,14 +17,18 @@ No module here may cause network egress (fenced by
 from __future__ import annotations
 
 import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import select
 
-from app.agent.registry import ToolContext, ToolError, ToolSpec, register
+from app.agent.registry import Change, Preview, ToolContext, ToolError, ToolSpec, register
+from app.models import Budget, Category, Organization
 from app.models.user import Role
 from app.routers.accounts import list_accounts
 from app.routers.categories import list_categories
+from app.schemas.budget import BudgetUpdate
 from app.schemas.forecast import ForecastResponse
 from app.schemas.transaction import SpendingByCategoryResponse
 from app.services import (
@@ -35,6 +39,7 @@ from app.services import (
     spending_service,
     transaction_service,
 )
+from app.services.exceptions import NotFoundError
 from app.services.feature_gate import Feature
 
 MAX_SEARCH_DAYS = 366
@@ -54,6 +59,13 @@ class PeriodArgs(_Args):
         default=None,
         description="Start date of a billing period; omit for the current open period.",
     )
+
+
+class BudgetAmountArgs(_Args):
+    # Mirrors ``PUT /budgets/{budget_id}`` (``BudgetUpdate.amount``: gt=0) and
+    # is stricter where the column is (Numeric(12, 2)): fenced by F-R4.
+    budget_id: int
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
 
 
 class TransactionSearchArgs(_Args):
@@ -198,4 +210,51 @@ register(ToolSpec(
     min_role=Role.MEMBER, mirrors_route=("GET", "/api/v1/forecast"),
     description="Forecast income, expense and net for a billing period (default: the open period).",
     run=_forecast_get,
+))
+
+
+def _money(value: Decimal) -> str:
+    return f"{value:.2f}"
+
+
+async def _budgets_update_amount_preview(ctx: ToolContext, args: BudgetAmountArgs) -> Preview:
+    found = (await ctx.db.execute(
+        select(Budget, Category.name)
+        .join(Category, Category.id == Budget.category_id)
+        .where(Budget.id == args.budget_id, Budget.org_id == ctx.org_id)
+    )).first()
+    if found is None:
+        raise NotFoundError("Budget")
+    budget, category_name = found
+    if budget.amount == args.amount:
+        raise ToolError("no_change", "the budget already has this amount")
+    org = await ctx.db.get(Organization, ctx.org_id)
+    currency = org.primary_currency or (
+        await currency_service.resolve_currency_scope(ctx.db, org_id=ctx.org_id)
+    ).get("currency")
+    before, after = _money(budget.amount), _money(args.amount)
+    return Preview(
+        summary=f"Change the amount of budget {budget.id} from {before} to {after}"
+        + (f" {currency}" if currency else ""),
+        changes=[Change("budgets", budget.id, "amount", before, after, currency)],
+        context={"category_name": category_name, "period_start": budget.period_start.isoformat()},
+    )
+
+
+async def _budgets_update_amount_execute(ctx: ToolContext, args: BudgetAmountArgs) -> dict:
+    out = await budget_service.update_budget(
+        ctx.db, ctx.org_id, args.budget_id, BudgetUpdate(amount=args.amount)
+    )
+    return out.model_dump(mode="json")
+
+
+register(ToolSpec(
+    name="budgets_update_amount", risk="write", args=BudgetAmountArgs,
+    product_area=Feature.BUDGETS, min_role=Role.MEMBER,
+    mirrors_route=("PUT", "/api/v1/budgets/{budget_id}"),
+    description=(
+        "Change the amount of one existing budget. Returns a preview to confirm; "
+        "nothing changes until it is confirmed."
+    ),
+    preview=_budgets_update_amount_preview, execute=_budgets_update_amount_execute,
 ))

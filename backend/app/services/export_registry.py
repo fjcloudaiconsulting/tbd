@@ -178,6 +178,13 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
         # wrong reason in the registry documents a falsehood.
         "org-scoped, no third-party surface",
     ),
+    # A parked or decided agent preview. ``api_token_id`` is redacted for the
+    # same reason as on ``audit_events`` below: it names an operator-side
+    # credential in a table the subject cannot see.
+    "agent_pending_actions": Include(
+        OrgColumn(), "agent write previews and their outcomes for the subject's org",
+        redact=frozenset({"api_token_id"}),
+    ),
     "announcements": Exclude("platform-global operator content, identical for every org"),
     # ⚠ Reason strings SHIP to the data subject in the header's ``excluded``
     # block, so a wrong one is a statement made to a third party. PATs are

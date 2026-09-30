@@ -77,6 +77,10 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # operators share an IP.
     "admin_users.email_change",
     "admin_users.pending_email_cancel",
+    # agent router (TBD-577). ``shared_limit`` because both routes carry
+    # ``{action_id}``: a plain ``limit`` would bucket per concrete path.
+    "agent.cancel",
+    "agent.confirm",
     # api-tokens router (superadmin PAT mint)
     "api_tokens.mint",
     # auth router (post-auth resend, requires get_current_user)

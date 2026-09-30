@@ -81,12 +81,14 @@ def scratch_tool():
         registry._TOOLS.pop(name, None)
 
 
-def test_registry_ships_the_six_v1_reads():
+def test_registry_ships_the_six_v1_reads_and_the_first_write():
     assert sorted(t.name for t in TOOLS) == sorted([
         "accounts_list", "categories_list", "budgets_list",
         "transactions_search", "spending_by_category", "forecast_get",
+        "budgets_update_amount",
     ])
-    assert {t.risk for t in TOOLS} == {"read"}
+    assert {t.name for t in TOOLS if t.risk != "read"} == {"budgets_update_amount"}
+    assert {t.risk for t in TOOLS} == {"read", "write"}
 
 
 # ── F-R1 ──────────────────────────────────────────────────────────────────
@@ -229,34 +231,62 @@ def _valid_base(tool) -> dict:
     """A payload the tool accepts, so each vector is the only thing wrong."""
     if tool.name == "transactions_search":
         return {"date_from": "2026-01-01", "date_to": "2026-01-31", "category_match": "exact"}
+    if tool.name == "budgets_update_amount":
+        return {"budget_id": 1, "amount": "10.00"}
     return {}
+
+
+def _route_params(route) -> dict[str, object]:
+    """name -> query/path ModelField, or the body MODEL class that owns it."""
+    out: dict[str, object] = {}
+    for f in route.dependant.query_params + route.dependant.path_params:
+        out[f.alias] = f
+    for f in route.dependant.body_params:
+        model = f.field_info.annotation
+        for n in getattr(model, "model_fields", {}):
+            out[n] = model
+    return out
+
+
+def _route_rejects(route, name: str, v: str) -> bool:
+    """Whether the ROUTE's own validation (the code REST runs) rejects ``v``
+    for param ``name``: query and path through FastAPI, body through the
+    request model."""
+    target = _route_params(route)[name]
+    if isinstance(target, type):  # a body model
+        try:
+            target.model_validate({name: v})
+        except PydanticValidationError as exc:
+            return any(e["loc"] and e["loc"][0] == name for e in exc.errors())
+        return False
+    received = QueryParams({name: v}) if target in route.dependant.query_params else {name: v}
+    _, errors = request_params_to_args([target], received)
+    return bool(errors)
 
 
 @pytest.mark.parametrize("tool", TOOLS, ids=lambda t: t.name)
 def test_fr4_args_reject_everything_the_route_rejects(tool):
     """FENCE F-R4 (validators). For every arg the tool shares with its
-    mirrored route's query, every vector the ROUTE's own validator rejects
-    (FastAPI's ``request_params_to_args``, the code REST runs) the tool's args
-    model rejects too. Wrong implementation: an args model redeclaring a field
-    without the route's constraint (``limit: int`` without ``le``,
-    ``category_match: str``)."""
+    mirrored route (query, PATH and BODY-model fields), every vector the
+    ROUTE's own validator rejects the tool's args model rejects too. Wrong
+    implementation: an args model redeclaring a field without the route's
+    constraint (``limit: int`` without ``le``, ``category_match: str``,
+    ``amount: Decimal`` without ``gt=0``)."""
     route = _live_routes()[tool.mirrors_route]
-    query = {f.alias: f for f in route.dependant.query_params}
-    shared = [n for n in tool.args.model_fields if n in query]
+    params = _route_params(route)
+    shared = [n for n in tool.args.model_fields if n in params]
     # Every argument must be one the route validates, or it escapes this
-    # fence silently (a field renamed away from the route's query name).
+    # fence silently (a field renamed away from the route's name).
     assert shared == list(tool.args.model_fields), (
-        f"{tool.name}: args {set(tool.args.model_fields) - set(shared)} are not route query params"
+        f"{tool.name}: args {set(tool.args.model_fields) - set(shared)} are not route params"
     )
     base = _valid_base(tool)
     tool.args.model_validate(base)  # the base itself is valid
     checked = 0
     for name in shared:
-        field = query[name]
         is_list = "list" in str(tool.args.model_fields[name].annotation)
         for v in _VECTORS:
-            _, errors = request_params_to_args([field], QueryParams({field.alias: v}))
-            if not errors:
+            if not _route_rejects(route, name, v):
                 continue
             checked += 1
             with pytest.raises(PydanticValidationError):
@@ -386,6 +416,9 @@ def test_fr6_a_complete_write_tool_registers(scratch_tool):
 _NEVER = [
     ("GET", "/api/v1/system/api-tokens"),
     ("POST", "/api/v1/agent/tokens"),
+    ("POST", "/api/v1/agent/actions/{action_id}/confirm"),
+    ("POST", "/api/v1/agent/actions/{action_id}/cancel"),
+    ("GET", "/api/v1/agent/actions"),
     ("GET", "/api/v1/settings/ai-providers"),
     ("PUT", "/api/v1/settings/ai-providers/routing/default"),
     ("PUT", "/api/v1/settings/ai-providers/caps/default"),
@@ -513,21 +546,27 @@ async def test_invoke_refuses_without_the_agent_entitlement(monkeypatch, scratch
     ("mcp", "agent:read", "read", True),
     ("mcp", "agent:read", "sensitive", False),
     ("mcp", "agent:write", "read", True),
-    ("mcp", "agent:write", "sensitive", "unsupported"),
-    ("in_app", None, "write", "unsupported"),
+    ("mcp", "agent:write", "sensitive", "staged"),
+    ("mcp", "agent:auto", "sensitive", "staged"),
+    ("in_app", None, "write", "staged"),
+    ("in_app", None, "sensitive", "staged"),
 ])
-async def test_principal_scope_gate(entitled, scratch_tool, channel, scope, risk, ok):
+async def test_principal_scope_gate(entitled, scratch_tool, monkeypatch, channel, scope, risk, ok):
     """GUARD. ``agent:read`` reaches read tools only; MCP needs an agent scope;
-    in-app carries none. Write tools cannot execute from ``invoke`` yet, so an
-    allowed write reports ``unsupported``, never runs."""
+    in-app carries none. A write the gates admit is handed to the preview
+    engine (stubbed here) and never runs from ``invoke``."""
+    from app.agent import actions
+
+    async def _propose(ctx, spec, args, *, scope):
+        return {"staged": spec.name}
+
+    monkeypatch.setattr(actions, "propose", _propose)
     hooks = dict(run=_run) if risk == "read" else dict(run=None, preview=_noop, execute=_noop)
     route = ("GET", "/api/v1/accounts") if risk == "read" else ("PUT", "/api/v1/budgets/{budget_id}")
     scratch_tool(_spec(name="scoped_tool", risk=risk, mirrors_route=route, **hooks))
     call = invoke(None, _user(Role.OWNER), "scoped_tool", {}, channel=channel, scope=scope)
-    if ok == "unsupported":
-        with pytest.raises(ToolError) as exc:
-            await call
-        assert exc.value.code == "unsupported"
+    if ok == "staged":
+        assert await call == {"data": {"staged": "scoped_tool"}}
     elif ok:
         assert await call == {"data": {"ok": True}}
     else:

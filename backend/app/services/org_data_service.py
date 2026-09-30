@@ -24,6 +24,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account, AccountType
+from app.models.agent_pending_action import AgentPendingAction
 from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category
@@ -116,6 +117,11 @@ async def wipe_org_data(
     counts: dict[str, int] = {}
 
     # Order matters: delete children before parents.
+    counts["agent_pending_actions"] = (
+        await db.execute(
+            delete(AgentPendingAction).where(AgentPendingAction.org_id == org_id)
+        )
+    ).rowcount or 0
     counts["transactions"] = (
         await db.execute(delete(Transaction).where(Transaction.org_id == org_id))
     ).rowcount or 0
@@ -288,6 +294,9 @@ async def reset_org_data(
     """
     counts: dict[str, int] = {}
 
+    counts["agent_pending_actions"] = await _batch_delete_by_pk(
+        db, AgentPendingAction, org_id, "agent_pending_actions", batch_size
+    )
     counts["transactions"] = await _batch_delete_by_pk(
         db, Transaction, org_id, "transactions", batch_size
     )

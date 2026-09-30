@@ -6,6 +6,7 @@ PRAGMA foreign_keys=ON so SQLite enforces FKs the way MySQL would.
 from __future__ import annotations
 
 import datetime
+import secrets
 from app._time import utcnow_naive
 from decimal import Decimal
 
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.models import Base
+from app.models.agent_pending_action import AgentPendingAction
 from app.models.account import Account, AccountType
 from app.models.billing import BillingPeriod
 from app.models.budget import Budget
@@ -255,6 +257,14 @@ async def _seed_full_org(factory, *, name: str = "Acme") -> dict:
             dictionary_tag_id=dict_tag.id,
             contributor_org_id=org.id,
         ))
+        # F-P9: an agent preview parked for the owner.
+        now = utcnow_naive()
+        db.add(AgentPendingAction(
+            id=secrets.token_hex(16), org_id=org.id, user_id=owner.id, channel="in_app",
+            tool="budgets_update_amount", risk="write", mode="confirm", args_json={},
+            args_sha256="0" * 64, fingerprint="0" * 64, preview_json={}, status="pending",
+            created_at=now, expires_at=now + datetime.timedelta(minutes=10),
+        ))
         await db.commit()
 
         return {"org_id": org.id, "owner_id": owner.id}
@@ -283,7 +293,7 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
         "recurring_transactions", "forecast_plans", "billing_periods",
         "import_batches", "accounts", "account_types", "category_rules",
         "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
-        "cc_cycle_payments",
+        "cc_cycle_payments", "agent_pending_actions",
     }
     assert set(counts.keys()) == expected_keys
     for key, n in counts.items():
@@ -299,7 +309,7 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
     async with session_factory() as db:
         for model in (Transaction, ForecastPlanItem, Budget, RecurringTransaction,
                       ForecastPlan, BillingPeriod, ImportBatch, Account, AccountType,
-                      CategoryRule, Category, Tag):
+                      CategoryRule, Category, Tag, AgentPendingAction):
             assert await _count(db, model, org_id=seeded["org_id"]) == 0, (
                 f"{model.__name__} not wiped"
             )
@@ -422,7 +432,7 @@ async def test_reset_returns_counts_and_wipes_data(session_factory):
         "recurring_transactions", "forecast_plans", "billing_periods",
         "import_batches", "accounts", "account_types", "category_rules",
         "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
-        "cc_cycle_payments",
+        "cc_cycle_payments", "agent_pending_actions",
         "seeded_account_types", "seeded_categories",
     }
     assert set(counts.keys()) == expected_keys
