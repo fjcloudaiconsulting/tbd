@@ -18,7 +18,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.auth.feature_catalog import PlanUsageLimits
 from app.models.base import Base
+
+
+def _default_usage_limits() -> dict:
+    return PlanUsageLimits().model_dump(by_alias=True)
 
 
 class SubscriptionStatus(str, enum.Enum):
@@ -57,6 +62,10 @@ class Plan(Base):
     retention_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     features: Mapped[dict] = mapped_column(
         JSON, nullable=False, default=dict
+    )
+    # TBD-585: canonical PlanUsageLimits dump; read through the model.
+    usage_limits: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=_default_usage_limits
     )
 
     created_at: Mapped[datetime] = mapped_column(

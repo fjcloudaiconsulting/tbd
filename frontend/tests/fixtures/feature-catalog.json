@@ -4,7 +4,8 @@
     "ai.autocategorize",
     "ai.budget",
     "ai.forecast",
-    "ai.smart_plan"
+    "ai.smart_plan",
+    "plans"
   ],
   "meters": {
     "assistant.turns": "ai",
@@ -19,6 +20,9 @@
       "ai.budget",
       "ai.forecast",
       "ai.smart_plan"
+    ],
+    "plans": [
+      "plans"
     ]
   }
 }

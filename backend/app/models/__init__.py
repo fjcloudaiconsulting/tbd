@@ -15,6 +15,8 @@ from app.models.invitation import Invitation
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.merchant_dictionary import MerchantDictionaryEntry
 from app.models.feature_override import OrgFeatureOverride  # noqa: F401
+from app.models.limit_override import OrgLimitOverride  # noqa: F401
+from app.models.usage_counter import UsageCounter  # noqa: F401
 from app.models.org_data_reset_lock import OrgDataResetLock  # noqa: F401
 from app.models.audit_event import AuditEvent, AuditOutcome  # noqa: F401
 from app.models.agent_pending_action import AgentPendingAction  # noqa: F401
@@ -100,6 +102,8 @@ __all__ = [
     "RuleSource",
     "MerchantDictionaryEntry",
     "OrgFeatureOverride",
+    "OrgLimitOverride",
+    "UsageCounter",
     "OrgDataResetLock",
     "AuditEvent",
     "AuditOutcome",

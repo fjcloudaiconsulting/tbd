@@ -84,7 +84,14 @@ import pathlib
 
 import pytest
 
-from app.auth.feature_catalog import ALL_FEATURE_KEYS, FEATURE_MODULES, METER_MODULES
+from app.auth.feature_catalog import (
+    ALL_FEATURE_KEYS,
+    ALL_METER_KEYS,
+    FEATURE_MODULES,
+    METER_MODULES,
+    PlanFeatures,
+    PlanUsageLimits,
+)
 
 #: ⚠ Run this on the HOST, from the repo root. The fixture directory is
 #: mounted read-only into the backend container, so an in-container run
@@ -223,3 +230,25 @@ def test_every_key_and_meter_is_in_exactly_one_module() -> None:
         "each feature key must appear in exactly one FEATURE_MODULES entry"
     )
     assert set(METER_MODULES.values()) <= set(FEATURE_MODULES)
+
+
+def test_plans_is_a_key_in_its_own_module() -> None:
+    """FENCE F-E3 (TBD-585, backend half). ``plans`` is a catalog key, a
+    PlanFeatures field defaulting off, and the whole ``plans`` module.
+    Wrong implementation: a key without a module (the exactly-one-module
+    check above catches a key in no module only if the key exists at all)."""
+    assert "plans" in ALL_FEATURE_KEYS
+    assert FEATURE_MODULES["plans"] == ("plans",)
+    assert PlanFeatures().model_dump(by_alias=True)["plans"] is False
+
+
+def test_meters_line_up_and_share_no_name_with_a_key() -> None:
+    """FENCE F-E3 (TBD-585). The MeterKey literal, METER_MODULES and the
+    PlanUsageLimits aliases name the same meters, and no meter shares a name
+    with a feature key or a module (an override row's key is unambiguous).
+    Wrong implementation: a meter added to one list only (the resolver would
+    drop or refuse it)."""
+    aliases = {f.alias for f in PlanUsageLimits.model_fields.values()}
+    assert aliases == set(METER_MODULES) == set(ALL_METER_KEYS)
+    assert not ALL_METER_KEYS & ALL_FEATURE_KEYS
+    assert not ALL_METER_KEYS & set(FEATURE_MODULES)
