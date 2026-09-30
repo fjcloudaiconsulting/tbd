@@ -21,6 +21,7 @@ from app.models.audit_event import AuditEvent
 from app.models.feature_override import OrgFeatureOverride
 from app.models.limit_override import OrgLimitOverride
 from app.models.user import Organization, Role, User
+from app.rate_limit import limiter
 from app.routers.admin_orgs import router as admin_orgs_router
 from app.schemas.feature_override import FeatureOverrideUpsert
 from app.schemas.limit_override import LimitOverrideUpsert
@@ -28,6 +29,14 @@ from app.security import hash_password
 from tests.factories import make_test_app
 
 BIG = 2**53 - 1
+
+
+@pytest.fixture(autouse=True)
+def _fresh_limiter():
+    # The 60/hour shared bucket lives in Redis and outlasts a test.
+    limiter.reset()
+    yield
+    limiter.reset()
 
 
 @pytest_asyncio.fixture

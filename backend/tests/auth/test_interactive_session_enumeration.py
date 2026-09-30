@@ -48,6 +48,7 @@ from tests.factories import make_test_app
 from app.routers.admin_broadcasts import router as admin_broadcasts_router
 from app.routers.admin_features import router as admin_features_router
 from app.routers.admin_orgs import router as admin_orgs_router
+from app.routers.plans import router as plans_router
 from app.routers.admin_roles import router as admin_roles_router
 from app.routers.admin_users import router as admin_users_router
 from app.routers.agent_tokens import router as agent_tokens_router
@@ -122,6 +123,10 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/admin/orgs/feature-overrides/sweep-expired"),  # sweep (override sweep)
     ("PUT", "/api/v1/admin/orgs/1/limit-overrides/mcp.calls"),     # set_limit_override
     ("DELETE", "/api/v1/admin/orgs/1/limit-overrides/mcp.calls"),  # revoke_limit_override
+    # TBD-585. Plan writes carry platform money (usage_limits) and are audited.
+    ("POST", "/api/v1/plans"),                       # create_plan
+    ("PUT", "/api/v1/plans/1"),                      # update_plan
+    ("POST", "/api/v1/plans/1/duplicate"),           # duplicate_plan
     ("POST", "/api/v1/admin/broadcasts/1/send"),     # send_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/resume"),   # resume_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/dry-run"),  # dry_run_broadcast (sends real email)
@@ -201,6 +206,7 @@ def app(factory):
             org_data_router,
             orgs_router,
             org_members_router,
+            plans_router,
         ],
         override_session_factory=True,
     )

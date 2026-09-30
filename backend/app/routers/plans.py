@@ -1,19 +1,49 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.pat import require_interactive_session
 from app.auth.permissions import require_permission
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.subscription import Plan, Subscription
 from app.models.user import User
+from app.rate_limit import get_client_ip
 from app.schemas.common import ListEnvelope
 from app.schemas.subscription import PlanCreate, PlanDuplicateRequest, PlanResponse, PlanUpdate
+from app.services import audit_service
 from app.services.exceptions import ValidationError
 from app.services.list_query import resolve_order_by
-from app.services.plan_service import canonicalize_features
+from app.services.plan_service import canonicalize_features, canonicalize_usage_limits
 
 router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
+
+
+def _request_id() -> str | None:
+    return structlog.contextvars.get_contextvars().get("request_id")
+
+
+async def _audit_plan(
+    session_factory, request: Request, *, event_type: str, actor_id: int,
+    actor_email: str, detail: dict,
+) -> None:
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type=event_type,
+        actor_user_id=actor_id,
+        actor_email=actor_email,
+        target_org_id=None,
+        target_org_name=None,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=detail,
+    )
+
+
+def _bad_request(exc: ValidationError) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail)
 
 
 # Closed sort whitelist for the system/plans admin table. Keys are the
@@ -114,41 +144,63 @@ async def get_plan(
     }
 
 
+# Plan writes are interactive-only (no PAT): they carry platform money now
+# (usage_limits) and are audited.
 @router.post(
     "",
     response_model=PlanResponse,
     status_code=201,
-    dependencies=[Depends(require_permission("plans.manage"))],
+    dependencies=[Depends(require_interactive_session)],
 )
 async def create_plan(
     body: PlanCreate,
+    request: Request,
+    user: User = Depends(require_permission("plans.manage")),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Create a new plan. Requires plans.manage."""
+    actor_id, actor_email = user.id, user.email
     existing = await db.execute(select(Plan).where(Plan.slug == body.slug))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Plan slug already exists")
 
     payload = body.model_dump()
-    payload["features"] = canonicalize_features(payload.get("features") or {})
+    try:
+        payload["features"] = canonicalize_features(payload.get("features") or {})
+        payload["usage_limits"] = canonicalize_usage_limits(payload["usage_limits"])
+    except ValidationError as exc:
+        raise _bad_request(exc) from exc
     plan = Plan(**payload)
     db.add(plan)
     await db.commit()
     await db.refresh(plan)
+    await _audit_plan(
+        session_factory, request, event_type="admin.plan.created",
+        actor_id=actor_id, actor_email=actor_email,
+        detail={
+            "plan_id": plan.id, "slug": plan.slug,
+            "features": plan.features, "usage_limits": plan.usage_limits,
+        },
+    )
     return plan
 
 
 @router.put(
     "/{plan_id}",
     response_model=PlanResponse,
-    dependencies=[Depends(require_permission("plans.manage"))],
+    dependencies=[Depends(require_interactive_session)],
 )
 async def update_plan(
     plan_id: int,
     body: PlanUpdate,
+    request: Request,
+    user: User = Depends(require_permission("plans.manage")),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Update a plan. Requires plans.manage."""
+    actor_id, actor_email = user.id, user.email
     result = await db.execute(select(Plan).where(Plan.id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
@@ -169,16 +221,34 @@ async def update_plan(
                 detail=f"Cannot deactivate plan — {org_count} organization(s) are currently on it",
             )
 
-    if "features" in update_data:
-        update_data["features"] = canonicalize_features(
-            update_data["features"] or {}, existing=plan.features
-        )
+    try:
+        if "features" in update_data:
+            update_data["features"] = canonicalize_features(
+                update_data["features"] or {}, existing=plan.features
+            )
+        if "usage_limits" in update_data:
+            update_data["usage_limits"] = canonicalize_usage_limits(
+                update_data["usage_limits"], existing=plan.usage_limits
+            )
+    except ValidationError as exc:
+        raise _bad_request(exc) from exc
 
+    # Snapshot old values of the changed fields before setattr mutates them.
+    old = {f: getattr(plan, f) for f in update_data}
+    changed = [f for f, v in update_data.items() if old[f] != v]
     for field, value in update_data.items():
         setattr(plan, field, value)
 
     await db.commit()
     await db.refresh(plan)
+    detail: dict = {"plan_id": plan.id, "slug": plan.slug, "changed_fields": changed}
+    for f in ("features", "usage_limits"):
+        if f in changed:
+            detail[f"old_{f}"], detail[f"new_{f}"] = old[f], update_data[f]
+    await _audit_plan(
+        session_factory, request, event_type="admin.plan.updated",
+        actor_id=actor_id, actor_email=actor_email, detail=detail,
+    )
     return plan
 
 
@@ -216,14 +286,18 @@ async def delete_plan(
     "/{plan_id}/duplicate",
     response_model=PlanResponse,
     status_code=201,
-    dependencies=[Depends(require_permission("plans.manage"))],
+    dependencies=[Depends(require_interactive_session)],
 )
 async def duplicate_plan(
     plan_id: int,
     body: PlanDuplicateRequest,
+    request: Request,
+    user: User = Depends(require_permission("plans.manage")),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Clone a plan with is_custom=True. Reject 409 on slug conflict."""
+    actor_id, actor_email = user.id, user.email
     src = (await db.execute(select(Plan).where(Plan.id == plan_id))).scalar_one_or_none()
     if src is None:
         raise HTTPException(status_code=404, detail="Plan not found")
@@ -232,6 +306,13 @@ async def duplicate_plan(
     if slug_taken is not None:
         raise HTTPException(status_code=409, detail="Plan slug already exists")
 
+    try:
+        # Re-canonicalize so the clone always has the full closed sets
+        # even if the source somehow drifted.
+        features = canonicalize_features(src.features or {})
+        usage_limits = canonicalize_usage_limits(src.usage_limits or {})
+    except ValidationError as exc:
+        raise _bad_request(exc) from exc
     clone = Plan(
         name=body.name,
         slug=body.slug,
@@ -243,11 +324,18 @@ async def duplicate_plan(
         price_yearly=src.price_yearly,
         max_users=src.max_users,
         retention_days=src.retention_days,
-        # Re-canonicalize so the clone always has the full closed-set keys
-        # even if the source somehow drifted.
-        features=canonicalize_features(src.features or {}),
+        features=features,
+        usage_limits=usage_limits,
     )
     db.add(clone)
     await db.commit()
     await db.refresh(clone)
+    await _audit_plan(
+        session_factory, request, event_type="admin.plan.duplicated",
+        actor_id=actor_id, actor_email=actor_email,
+        detail={
+            "plan_id": clone.id, "slug": clone.slug, "source_plan_id": plan_id,
+            "features": features, "usage_limits": usage_limits,
+        },
+    )
     return clone
