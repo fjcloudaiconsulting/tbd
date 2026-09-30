@@ -348,7 +348,15 @@ class OpenAICompatibleAdapter:
             usage = payload.get("usage", {}) or {}
             prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
             completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        except (KeyError, IndexError, TypeError, ValueError, AttributeError, OverflowError):
+        except (
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            OverflowError,
+            RecursionError,
+        ):
             raise AIProviderError(code="provider_unexpected_shape") from None
         return FunctionCallResponse(
             tool_calls=tool_calls,

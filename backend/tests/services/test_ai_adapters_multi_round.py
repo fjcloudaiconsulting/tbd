@@ -485,8 +485,9 @@ async def test_upstream_id_format_with_dots_and_colons_is_kept(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_replayed_blank_answer_is_valid_for_each_provider(monkeypatch):
-    blank = {"role": "assistant", "content": None, "tool_calls": []}
+@pytest.mark.parametrize("blank_text", [None, "", "\n\n"])
+async def test_replayed_blank_answer_is_valid_for_each_provider(monkeypatch, blank_text):
+    blank = {"role": "assistant", "content": blank_text, "tool_calls": []}
     bodies = _install_sequence(
         monkeypatch,
         [
@@ -501,7 +502,7 @@ async def test_replayed_blank_answer_is_valid_for_each_provider(monkeypatch):
         model="gpt-4o-mini", messages=[USER, blank, USER], tools=TOOLS
     )
     assert [m["role"] for m in bodies[0]["messages"]] == ["user", "user"]
-    assert bodies[1]["messages"][1] == {"role": "assistant", "content": ""}
+    assert bodies[1]["messages"][1] == {"role": "assistant", "content": blank_text or ""}
 
 
 @pytest.mark.asyncio

@@ -108,7 +108,8 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
         open_results = None
         if role == "assistant" and "tool_calls" in m and not m["tool_calls"]:
             # A blank answer is dropped: Anthropic rejects empty assistant turns.
-            if m.get("content"):
+            text = m.get("content")
+            if text.strip() if isinstance(text, str) else text:
                 out.append({k: v for k, v in m.items() if k != "tool_calls"})
             continue
         if role == "assistant" and m.get("tool_calls"):
@@ -427,7 +428,15 @@ class AnthropicAdapter:
             usage = payload.get("usage", {}) or {}
             prompt_tokens = int(usage.get("input_tokens", 0) or 0)
             completion_tokens = int(usage.get("output_tokens", 0) or 0)
-        except (KeyError, IndexError, TypeError, ValueError, AttributeError, OverflowError):
+        except (
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            OverflowError,
+            RecursionError,
+        ):
             raise AIProviderError(code="provider_unexpected_shape") from None
         return FunctionCallResponse(
             tool_calls=tool_calls,
