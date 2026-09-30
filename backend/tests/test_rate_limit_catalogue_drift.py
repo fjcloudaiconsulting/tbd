@@ -67,6 +67,8 @@ ROUTERS_DIR = Path(__file__).resolve().parents[1] / "app" / "routers"
 # shows up in this file's diff and therefore in review.
 DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ("accounts", "adjust_balance"): ("accounts.adjust_balance", "20/hour"),
+    ("admin_orgs", "set_limit_override"): ("admin_orgs.limit_override_set", "60/hour"),
+    ("admin_orgs", "revoke_limit_override"): ("admin_orgs.limit_override_delete", "60/hour"),
     ("admin_users", "trigger_email_change"): ("admin_users.email_change", "10/hour"),
     ("admin_users", "cancel_admin_pending_email"): (
         "admin_users.pending_email_cancel",
@@ -341,6 +343,8 @@ def _path_param_routes_with_limits() -> dict[str, dict]:
 # only catches the walk collapsing entirely.
 _KNOWN_PATH_PARAM_LIMITED: frozenset = frozenset({
     "app.routers.accounts.adjust_balance",
+    "app.routers.admin_orgs.set_limit_override",
+    "app.routers.admin_orgs.revoke_limit_override",
     "app.routers.admin_users.trigger_email_change",
     "app.routers.admin_users.cancel_admin_pending_email",
     "app.routers.org_members.remove_member",

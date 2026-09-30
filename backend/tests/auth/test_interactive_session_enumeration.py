@@ -120,6 +120,8 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("PUT", "/api/v1/admin/orgs/1/feature-overrides/reports"),   # set_feature_override
     ("DELETE", "/api/v1/admin/orgs/1/feature-overrides/reports"),  # revoke_feature_override
     ("POST", "/api/v1/admin/orgs/feature-overrides/sweep-expired"),  # sweep (override sweep)
+    ("PUT", "/api/v1/admin/orgs/1/limit-overrides/mcp.calls"),     # set_limit_override
+    ("DELETE", "/api/v1/admin/orgs/1/limit-overrides/mcp.calls"),  # revoke_limit_override
     ("POST", "/api/v1/admin/broadcasts/1/send"),     # send_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/resume"),   # resume_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/dry-run"),  # dry_run_broadcast (sends real email)

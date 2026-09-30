@@ -242,6 +242,16 @@ PLATFORM_GATED_ROUTES: tuple[tuple[str, str, frozenset[str]], ...] = (
         frozenset({"perm:orgs.manage"}),
     ),
     ("GET", "/api/v1/admin/orgs/{org_id}/feature-state", frozenset({"perm:orgs.view"})),
+    (
+        "DELETE",
+        "/api/v1/admin/orgs/{org_id}/limit-overrides/{meter}",
+        frozenset({"perm:orgs.manage"}),
+    ),
+    (
+        "PUT",
+        "/api/v1/admin/orgs/{org_id}/limit-overrides/{meter}",
+        frozenset({"perm:orgs.manage"}),
+    ),
     ("GET", "/api/v1/admin/orgs/{org_id}/members", frozenset({"perm:orgs.view"})),
     # ⚠ Leg 3 must NOT pick this as the orgs.manage representative: it turns a
     # "target is superadmin" ConflictError into a 403, so a superadmin caller
@@ -334,7 +344,7 @@ PLATFORM_GATED_ROUTES: tuple[tuple[str, str, frozenset[str]], ...] = (
     ("DELETE", "/api/v1/system/api-tokens/{token_id}", frozenset({"superadmin:api_tokens"})),
 )
 
-EXPECTED_ROUTE_COUNT = 62
+EXPECTED_ROUTE_COUNT = 64
 
 # Routes under /api/v1/admin/ deliberately exempt from carrying a platform gate.
 # EMPTY, and it must stay that way without an explicit security review. An entry

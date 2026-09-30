@@ -20,20 +20,23 @@ from app._time import utcnow_naive
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import structlog
 
-from app.auth.feature_catalog import ALL_FEATURE_KEYS
+from app.auth.feature_catalog import ALL_FEATURE_KEYS, ALL_METER_KEYS, METER_MODULES
 from app.auth.pat import require_interactive_session
 from app.auth.permissions import require_permission
 from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.feature_override import OrgFeatureOverride
+from app.models.limit_override import OrgLimitOverride
 from app.models.notification import NotificationCategory
 from app.models.subscription import Plan, Subscription, SubscriptionStatus
 from app.models.user import Organization, Role, User
-from app.rate_limit import get_client_ip
+from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.admin_orgs import (
     AdminMemberResponse,
     AdminMemberUpdateRequest,
@@ -42,6 +45,7 @@ from app.schemas.admin_orgs import (
 )
 from app.schemas.feature_override import FeatureOverrideUpsert, OrgFeatureOverrideResponse
 from app.schemas.feature_state import FeatureStateResponse
+from app.schemas.limit_override import LimitOverrideUpsert, OrgLimitOverrideResponse
 from app.services import (
     admin_org_members_service,
     admin_orgs_service,
@@ -428,6 +432,73 @@ async def _override_to_response(row: OrgFeatureOverride, db: AsyncSession) -> di
     }
 
 
+async def _sweep_expired(
+    db: AsyncSession, model, key_col, counts_field: str, cutoff: datetime, snapshot,
+) -> tuple[int, dict]:
+    """Lock-then-delete-by-id every expired row of ``model``; return
+    ``(deleted_count, audit_detail)``. Does not commit.
+
+    Lock-then-delete-by-id (not SELECT-then-DELETE-by-predicate) so the audit
+    summary describes rows this sweep actually removed: with FOR UPDATE on
+    InnoDB a second sweep blocks until the first commits, then locks zero
+    rows, and the counts come from the DELETE rowcount. On a rowcount mismatch
+    (no row locks, e.g. SQLite) the detail records counts only and omits
+    per-row identity: without ``DELETE ... RETURNING`` (unsupported on MySQL)
+    we cannot tell which locked rows our DELETE removed, so we do not guess.
+    """
+    locked_rows = (
+        await db.execute(
+            select(model)
+            .where(model.expires_at.is_not(None))
+            .where(model.expires_at <= cutoff)
+            .order_by(model.org_id, key_col)
+            .with_for_update()
+        )
+    ).scalars().all()
+    # Snapshot BEFORE the delete; expire-on-commit would invalidate attributes.
+    snaps = {row.id: snapshot(row) for row in locked_rows}
+    ids = list(snaps)
+
+    deleted_count = len(ids)
+    divergence = False
+    if ids:
+        affected = (await db.execute(delete(model).where(model.id.in_(ids)))).rowcount
+        # ``None``/-1 on a dialect that does not report affected rows is
+        # treated as all-locked-deleted; FOR UPDATE held the rows in InnoDB.
+        if affected is not None and affected != len(ids):
+            divergence = True
+            deleted_count = affected
+            await logger.awarning(
+                "admin.feature_override.sweep.lock_delete_mismatch",
+                table=model.__tablename__,
+                locked_count=len(ids),
+                deleted_count=affected,
+            )
+
+    if divergence:
+        return deleted_count, {
+            "deleted_count": deleted_count,
+            "locked_count": len(ids),
+            "divergence": True,
+            "divergence_reason": "concurrent_modification",
+            "note": (
+                "Exact row identities could not be determined under "
+                f"concurrent sweep activity. deleted_count is authoritative; "
+                f"{counts_field} and entries are omitted."
+            ),
+        }
+    counts: dict[str, int] = {}
+    for snap in snaps.values():
+        k = snap[key_col.key]
+        counts[k] = counts.get(k, 0) + 1
+    return deleted_count, {
+        "deleted_count": deleted_count,
+        "entries": list(snaps.values())[:_SWEEP_AUDIT_ENTRY_CAP],
+        "truncated_count": max(0, deleted_count - _SWEEP_AUDIT_ENTRY_CAP),
+        counts_field: counts,
+    }
+
+
 @router.post(
     "/feature-overrides/sweep-expired",
     dependencies=[Depends(require_interactive_session)],
@@ -457,113 +528,29 @@ async def sweep_expired_feature_overrides(
     concurrent actor removed, so we refuse to guess.
     """
     cutoff = utcnow_naive()
-    # Lock-then-delete-by-id so the audit summary describes rows this
-    # sweep actually removed, not rows it merely observed.
-    #
-    # The previous SELECT-then-DELETE-by-predicate pattern was racy:
-    # two overlapping sweeps could each snapshot the same expired rows
-    # (predicate-equal), the first DELETE removed them, and the second
-    # DELETE matched nothing yet still audited
-    # ``deleted_count = len(snapshot)`` plus per-row entries for rows
-    # it never touched. With FOR UPDATE on InnoDB the second sweep
-    # blocks until the first commits, then locks zero rows; with
-    # DELETE-by-id and rowcount-driven counts, even a non-locking
-    # dialect (e.g. tests on SQLite) can't drift out of sync because
-    # the audit numbers come from the actual rows removed.
-    locked_rows = (
-        await db.execute(
-            select(OrgFeatureOverride)
-            .where(OrgFeatureOverride.expires_at.is_not(None))
-            .where(OrgFeatureOverride.expires_at <= cutoff)
-            .order_by(OrgFeatureOverride.org_id, OrgFeatureOverride.feature_key)
-            .with_for_update()
-        )
-    ).scalars().all()
-
-    # Snapshot identity for the audit detail BEFORE the delete; after
-    # commit the in-memory rows are detached and SQLAlchemy's
-    # expire-on-commit would invalidate attribute access.
-    locked_by_id = {
-        row.id: {
-            "org_id": row.org_id,
-            "feature_key": row.feature_key,
-            "value": row.value,
-            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
-        }
-        for row in locked_rows
-    }
-    locked_ids = list(locked_by_id.keys())
-
-    deleted_count = 0
-    divergence = False
-    if locked_ids:
-        delete_result = await db.execute(
-            delete(OrgFeatureOverride).where(OrgFeatureOverride.id.in_(locked_ids))
-        )
-        affected = delete_result.rowcount
-        if affected is None or affected == len(locked_ids):
-            # Happy path on every locking dialect we care about.
-            # ``rowcount`` of -1/None on a dialect that doesn't report
-            # affected rows is treated as the all-locked-deleted case;
-            # FOR UPDATE held the rows in InnoDB so this is safe.
-            deleted_count = len(locked_ids)
-        else:
-            # Divergence: rowcount disagrees with the locked snapshot.
-            # On MySQL InnoDB with SELECT FOR UPDATE this branch
-            # should never fire in practice; it's a defensive
-            # fallback for environments without row locks (e.g., the
-            # SQLite test database) and protects audit detail from
-            # claiming false row identities.
-            #
-            # We refuse to guess which of the locked rows our DELETE
-            # actually removed: without ``DELETE ... RETURNING``
-            # (which MySQL does not support) the answer is
-            # unknowable. ``deleted_count`` (the rowcount) is
-            # authoritative; ``entries`` and ``counts_by_feature``
-            # are deliberately omitted from the audit detail.
-            divergence = True
-            deleted_count = affected
-            await logger.awarning(
-                "admin.feature_override.sweep.lock_delete_mismatch",
-                locked_count=len(locked_ids),
-                deleted_count=affected,
-            )
-
-    # Audit detail. Happy path: bounded per-row entries +
-    # counts_by_feature for ops spot-checks. Divergence path:
-    # counts only, with an explicit flag and note so a future reader
-    # of the audit table can tell why per-row identity is missing.
-    detail: dict[str, object]
-    if divergence:
-        detail = {
-            "deleted_count": deleted_count,
-            "locked_count": len(locked_ids),
-            "divergence": True,
-            "divergence_reason": "concurrent_modification",
-            "note": (
-                "Exact row identities could not be determined under "
-                "concurrent sweep activity. deleted_count is "
-                "authoritative; counts_by_feature and entries are "
-                "omitted."
-            ),
-        }
-    else:
-        counts_by_feature: dict[str, int] = {}
-        entries: list[dict] = []
-        for row_id in locked_ids:
-            snap = locked_by_id[row_id]
-            counts_by_feature[snap["feature_key"]] = (
-                counts_by_feature.get(snap["feature_key"], 0) + 1
-            )
-            if len(entries) < _SWEEP_AUDIT_ENTRY_CAP:
-                entries.append(snap)
-        truncated_count = max(0, deleted_count - _SWEEP_AUDIT_ENTRY_CAP)
-        detail = {
-            "deleted_count": deleted_count,
-            "entries": entries,
-            "truncated_count": truncated_count,
-            "counts_by_feature": counts_by_feature,
-        }
+    # One ``now``, one commit, features first (the existing lock order), then
+    # limits. Two audit rows: the feature row keeps its shape, the limit row is
+    # keyed ``counts_by_meter``.
+    feature_deleted, feature_detail = await _sweep_expired(
+        db, OrgFeatureOverride, OrgFeatureOverride.feature_key, "counts_by_feature", cutoff,
+        lambda r: {
+            "org_id": r.org_id,
+            "feature_key": r.feature_key,
+            "value": r.value,
+            "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+        },
+    )
+    limit_deleted, limit_detail = await _sweep_expired(
+        db, OrgLimitOverride, OrgLimitOverride.meter, "counts_by_meter", cutoff,
+        lambda r: {
+            "org_id": r.org_id,
+            "meter": r.meter,
+            "period": r.period,
+            "limit_value": r.limit_value,
+            "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+        },
+    )
+    deleted_count = feature_deleted + limit_deleted
 
     await db.commit()
 
@@ -571,21 +558,30 @@ async def sweep_expired_feature_overrides(
         "admin.feature_override.expired_swept",
         actor_user_id=user.id,
         actor_email=user.email,
-        deleted_count=deleted_count,
+        deleted_count=feature_deleted,
+        limit_overrides_deleted=limit_deleted,
     )
-    await audit_service.record_audit_event(
-        session_factory,
-        event_type="admin.feature_override.expired_swept",
-        actor_user_id=user.id,
-        actor_email=user.email,
-        target_org_id=None,
-        target_org_name=None,
-        request_id=_request_id(),
-        ip_address=get_client_ip(request),
-        outcome="success",
-        detail=detail,
-    )
-    return {"deleted_count": deleted_count}
+    for event_type, detail in (
+        ("admin.feature_override.expired_swept", feature_detail),
+        ("admin.limit_override.expired_swept", limit_detail),
+    ):
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type=event_type,
+            actor_user_id=user.id,
+            actor_email=user.email,
+            target_org_id=None,
+            target_org_name=None,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail=detail,
+        )
+    return {
+        "deleted_count": deleted_count,
+        "feature_overrides_deleted": feature_deleted,
+        "limit_overrides_deleted": limit_deleted,
+    }
 
 
 @router.put(
@@ -647,7 +643,8 @@ async def set_feature_override(
                 row = existing
         await db.commit()
         await db.refresh(row)
-    except IntegrityError:
+    except (IntegrityError, StaleDataError):
+        # StaleDataError: a sweep deleted the row between our read and UPDATE.
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -757,6 +754,204 @@ async def revoke_feature_override(
     return Response(status_code=204)
 
 
+# ── Limit overrides (TBD-585) ────────────────────────────────────────────
+
+
+def _validate_meter(meter: str) -> None:
+    if meter not in ALL_METER_KEYS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown meter: {meter!r}"
+        )
+
+
+def _require_superadmin_for_platform_meter(meter: str, user: User) -> None:
+    """Platform meters spend platform money.
+
+    ponytail: explicit superadmin guard instead of a permission, because no
+    user-to-platform-role link exists yet. Before L4.8 grants ``orgs.manage``
+    beyond superadmin, add a ``platform_ai.manage`` permission (or a per-org
+    maximum) and let it REPLACE this guard.
+    """
+    if meter.startswith("platform_ai.") and not user.is_superadmin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+
+async def _limit_override_to_response(row: OrgLimitOverride, db: AsyncSession) -> dict:
+    email = None
+    if row.set_by is not None:
+        email = await db.scalar(select(User.email).where(User.id == row.set_by))
+    return {
+        "meter": row.meter,
+        "period": row.period,
+        "limit_value": row.limit_value,
+        "set_by": row.set_by,
+        "set_by_email": email,
+        "set_at": row.set_at.isoformat() if row.set_at else None,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "note": row.note,
+        "is_expired": row.expires_at is not None and row.expires_at <= utcnow_naive(),
+    }
+
+
+async def _target_org_name(db: AsyncSession, org_id: int) -> str:
+    name = await db.scalar(select(Organization.name).where(Organization.id == org_id))
+    if name is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
+    return name
+
+
+@router.put(
+    "/{org_id}/limit-overrides/{meter}",
+    response_model=OrgLimitOverrideResponse,
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
+)
+@limiter.shared_limit(
+    dynamic_limit("admin_orgs.limit_override_set", "60/hour"),
+    scope="admin_orgs.limit_override_set",
+)
+async def set_limit_override(
+    org_id: int,
+    meter: str,
+    body: LimitOverrideUpsert,
+    request: Request,
+    user: User = Depends(require_permission("orgs.manage")),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    _validate_meter(meter)
+    _require_superadmin_for_platform_meter(meter, user)
+    if body.limit_value is None and meter.startswith("platform_ai."):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{meter} spends platform money and cannot be unlimited",
+        )
+    target_org_name = await _target_org_name(db, org_id)
+    actor_id, actor_email = user.id, user.email
+
+    existing = await db.scalar(
+        select(OrgLimitOverride).where(
+            OrgLimitOverride.org_id == org_id, OrgLimitOverride.meter == meter
+        )
+    )
+    old = (
+        None if existing is None
+        else (existing.period, existing.limit_value, existing.expires_at)
+    )
+
+    try:
+        async with db.begin_nested():
+            if existing is None:
+                row = OrgLimitOverride(
+                    org_id=org_id, meter=meter, period=body.period,
+                    limit_value=body.limit_value, set_by=actor_id,
+                    expires_at=body.expires_at, note=body.note,
+                )
+                db.add(row)
+            else:
+                existing.period = body.period
+                existing.limit_value = body.limit_value
+                existing.set_by = actor_id
+                existing.set_at = utcnow_naive()
+                existing.expires_at = body.expires_at
+                existing.note = body.note
+                row = existing
+        await db.commit()
+        await db.refresh(row)
+    except (IntegrityError, StaleDataError):
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Override changed concurrently; retry.",
+        )
+
+    detail = {
+        "meter": meter,
+        "old_period": old[0] if old else None,
+        "old_limit_value": old[1] if old else None,
+        "old_expires_at": old[2].isoformat() if old and old[2] else None,
+        "new_period": body.period,
+        "new_limit_value": body.limit_value,
+        "new_expires_at": body.expires_at.isoformat() if body.expires_at else None,
+        "note_present": body.note is not None,
+    }
+    await logger.ainfo(
+        "admin.org.limit.set", target_org_id=org_id,
+        actor_user_id=actor_id, actor_email=actor_email, **detail,
+    )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="admin.limit_override.set",
+        actor_user_id=actor_id,
+        actor_email=actor_email,
+        target_org_id=org_id,
+        target_org_name=target_org_name,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=detail,
+    )
+    return await _limit_override_to_response(row, db)
+
+
+@router.delete(
+    "/{org_id}/limit-overrides/{meter}",
+    status_code=204,
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
+)
+@limiter.shared_limit(
+    dynamic_limit("admin_orgs.limit_override_delete", "60/hour"),
+    scope="admin_orgs.limit_override_delete",
+)
+async def revoke_limit_override(
+    org_id: int,
+    meter: str,
+    request: Request,
+    user: User = Depends(require_permission("orgs.manage")),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    _validate_meter(meter)
+    _require_superadmin_for_platform_meter(meter, user)
+    target_org_name = await _target_org_name(db, org_id)
+    actor_id, actor_email = user.id, user.email
+
+    existing = await db.scalar(
+        select(OrgLimitOverride).where(
+            OrgLimitOverride.org_id == org_id, OrgLimitOverride.meter == meter
+        )
+    )
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"LimitOverride {org_id}/{meter} not found",
+        )
+    detail = {
+        "meter": meter,
+        "old_period": existing.period,
+        "old_limit_value": existing.limit_value,
+    }
+    await db.delete(existing)
+    await db.commit()
+
+    await logger.ainfo(
+        "admin.org.limit.revoked", target_org_id=org_id,
+        actor_user_id=actor_id, actor_email=actor_email, **detail,
+    )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="admin.limit_override.deleted",
+        actor_user_id=actor_id,
+        actor_email=actor_email,
+        target_org_id=org_id,
+        target_org_name=target_org_name,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=detail,
+    )
+    return Response(status_code=204)
+
+
 # ── Feature state composite (T16) ────────────────────────────────────────
 
 
@@ -776,55 +971,92 @@ async def get_feature_state(
     if org is None:
         raise HTTPException(status_code=404, detail="Organization not found")
 
-    plan_features = (await feature_service.get_entitlements(db, org_id)).plan_features
+    now = utcnow_naive()  # one clock for the resolver and the display fields
+    ent = await feature_service.get_entitlements(db, org_id, now=now)
 
-    plan_row = await db.execute(
-        select(Plan.id, Plan.name, Plan.slug)
-        .join(Subscription, Subscription.plan_id == Plan.id)
-        .where(Subscription.org_id == org_id)
-    )
-    plan_data = plan_row.first()
+    plan_data = (
+        await db.execute(
+            select(Plan.id, Plan.name, Plan.slug)
+            .join(Subscription, Subscription.plan_id == Plan.id)
+            .where(Subscription.org_id == org_id)
+        )
+    ).first()
     plan_summary = (
         {"id": plan_data.id, "name": plan_data.name, "slug": plan_data.slug}
         if plan_data else None
     )
 
-    # All overrides (active + expired) joined to setter email.
-    rows = await db.execute(
-        select(OrgFeatureOverride, User.email)
-        .outerjoin(User, User.id == OrgFeatureOverride.set_by)
-        .where(OrgFeatureOverride.org_id == org_id)
-    )
-    now = utcnow_naive()
-    overrides_by_key: dict[str, dict] = {}
-    for row, email in rows.all():
-        if row.feature_key not in ALL_FEATURE_KEYS:
-            continue  # defensive filter
-        is_expired = row.expires_at is not None and row.expires_at <= now
-        overrides_by_key[row.feature_key] = {
-            "feature_key": row.feature_key,
-            "value": row.value,
-            "set_by": row.set_by,
-            "set_by_email": email,
-            "set_at": row.set_at.isoformat() if row.set_at else None,
-            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
-            "note": row.note,
-            "is_expired": is_expired,
-        }
+    # All override rows (active + expired), read ONLY for display fields; what
+    # is in force comes from ``ent.overridden``.
+    feature_ovr: dict[str, dict] = {}
+    for row, email in (
+        await db.execute(
+            select(OrgFeatureOverride, User.email)
+            .outerjoin(User, User.id == OrgFeatureOverride.set_by)
+            .where(OrgFeatureOverride.org_id == org_id)
+        )
+    ).all():
+        if row.feature_key in ALL_FEATURE_KEYS:
+            feature_ovr[row.feature_key] = {
+                "feature_key": row.feature_key,
+                "value": row.value,
+                "set_by": row.set_by,
+                "set_by_email": email,
+                "set_at": row.set_at.isoformat() if row.set_at else None,
+                "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                "note": row.note,
+                "is_expired": row.feature_key not in ent.overridden,
+            }
+    limit_ovr: dict[str, dict] = {}
+    for row, email in (
+        await db.execute(
+            select(OrgLimitOverride, User.email)
+            .outerjoin(User, User.id == OrgLimitOverride.set_by)
+            .where(OrgLimitOverride.org_id == org_id)
+        )
+    ).all():
+        if row.meter in ALL_METER_KEYS:
+            limit_ovr[row.meter] = {
+                "meter": row.meter,
+                "period": row.period,
+                "limit_value": row.limit_value,
+                "set_by": row.set_by,
+                "set_by_email": email,
+                "set_at": row.set_at.isoformat() if row.set_at else None,
+                "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                "note": row.note,
+                "is_expired": row.meter not in ent.overridden,
+            }
 
-    feature_rows = []
-    for key in sorted(ALL_FEATURE_KEYS):
-        plan_default = plan_features.get(key, False)
-        ovr = overrides_by_key.get(key)
-        effective = ovr["value"] if (ovr and not ovr["is_expired"]) else plan_default
-        feature_rows.append({
-            "key": key,
-            "plan_default": plan_default,
-            "effective": effective,
-            "override": ovr,
-        })
+    def _lv(v) -> dict:
+        return {"period": v.period, "limit": v.limit}
 
-    return {"plan": plan_summary, "features": feature_rows}
+    return {
+        "plan": plan_summary,
+        "features": [
+            {
+                "key": key,
+                "plan_default": ent.plan_features[key],
+                "effective": ent.features[key],
+                "override": feature_ovr.get(key),
+            }
+            for key in sorted(ALL_FEATURE_KEYS)
+        ],
+        "limits": [
+            {
+                "meter": meter,
+                "module": METER_MODULES[meter],
+                "plan": _lv(ent.plan_limits[meter]),
+                "effective": _lv(ent.limits[meter]),
+                "source": (
+                    "override" if meter in ent.overridden
+                    else "plan" if ent.has_plan else "default"
+                ),
+                "override": limit_ovr.get(meter),
+            }
+            for meter in sorted(ALL_METER_KEYS)
+        ],
+    }
 
 
 # ── Org members (L4.4 — superadmin escape hatch) ─────────────────────────
