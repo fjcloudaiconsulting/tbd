@@ -1,0 +1,29 @@
+{
+  "_source": "Anthropic Messages API wire format (POST /v1/messages, anthropic-version 2023-06-01), tool use with two parallel calls then a final answer. Authored from the documented response shape; no live call.",
+  "round1": {
+    "id": "msg_01XFDUDYJgAACzvnptvVoYEL",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-haiku-4-5",
+    "content": [
+      {"type": "text", "text": "I'll check your budgets and forecast."},
+      {"type": "tool_use", "id": "toolu_01A09q90qw90lq917835lq9", "name": "budgets_list", "input": {}},
+      {"type": "tool_use", "id": "toolu_01B7nYf4kPq2ZtWcM3sXa8Rj", "name": "forecast_get", "input": {"period_start": "2026-09-01"}}
+    ],
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "usage": {"input_tokens": 512, "output_tokens": 88}
+  },
+  "round2": {
+    "id": "msg_01Aq9w938a90dw8q7c2a8sBb",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-haiku-4-5",
+    "content": [
+      {"type": "text", "text": "Groceries is at 80% of its budget and the forecast ends the month positive."}
+    ],
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": {"input_tokens": 701, "output_tokens": 24}
+  }
+}

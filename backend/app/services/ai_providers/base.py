@@ -28,6 +28,9 @@ capability, including the PR3 ones, until PR4 wires a real backend.
 """
 from __future__ import annotations
 
+import json
+import re
+import uuid
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional, Protocol, runtime_checkable
 
@@ -99,10 +102,24 @@ class FunctionCallResponse:
     """Provider-neutral function-call response.
 
     ``tool_calls`` is the structured list of tool invocations the model
-    requested. Each entry has ``name`` (the tool name) and
-    ``arguments`` (a dict — already JSON-parsed). ``content`` is any
-    free-text the model emitted alongside the tool call (typically
+    requested. Each entry has ``id`` (the provider's call id, or a
+    synthesized one when the provider's is unusable; Ollama entries
+    carry no id), ``name`` (the tool
+    name) and ``arguments`` (a dict, already JSON-parsed). ``content`` is
+    any free-text the model emitted alongside the tool call (typically
     empty when a tool was invoked).
+
+    Multi-round transcript (provider-neutral, accepted by every
+    ``function_call`` except Ollama's): append
+    ``{"role": "assistant", "content": resp.content, "tool_calls":
+    resp.tool_calls}`` and then exactly one ``{"role": "tool",
+    "tool_call_id": <id>, "content": <str>}`` per call, error text
+    included, before the next non-tool message (providers reject a call
+    left without a result). The caller builds and validates the
+    transcript; adapters assume every call carries its id. Each
+    adapter translates these into its provider's native shape. Only
+    ``function_call`` with a non-empty ``tools`` list translates them;
+    ``chat`` and ``stream`` do not.
     """
 
     tool_calls: list[dict]
@@ -196,6 +213,90 @@ class CapabilityNotSupported(Exception):
         super().__init__(f"{capability} not supported by model {model!r}")
         self.model = model
         self.capability = capability
+
+
+# Printable ASCII without spaces: keeps upstream formats such as
+# ``functions.name:0`` while refusing oversized or control-laden ids.
+_SAFE_TOOL_CALL_ID = re.compile(r"[\x21-\x7e]{1,64}")
+
+
+def tool_call_id(raw: object, seen: set[str]) -> str:
+    """The provider's call id, or a synthesized one (unique across
+    rounds) when it is missing, repeated within the response, or not 1
+    to 64 printable non-space ASCII chars: results are keyed by id, and
+    every later round echoes it back. Records the returned id in ``seen``."""
+    if (
+        not isinstance(raw, str)
+        or not _SAFE_TOOL_CALL_ID.fullmatch(raw)
+        or raw in seen
+    ):
+        raw = f"call_{uuid.uuid4().hex[:24]}"
+    seen.add(raw)
+    return raw
+
+
+def parse_openai_tool_calls(message: dict) -> list[dict]:
+    """Neutral tool calls from an OpenAI-shape assistant ``message``.
+
+    Arguments arrive as a JSON string (some servers send the object
+    itself); anything that is not an object becomes ``{}`` so every call
+    satisfies the dict contract. A wrongly shaped message or call raises
+    ``AttributeError``, which the adapters map to
+    ``provider_unexpected_shape``.
+    """
+    tool_calls: list[dict] = []
+    seen: set[str] = set()
+    for call in message.get("tool_calls") or []:
+        fn = call.get("function") or {}
+        args = fn.get("arguments")
+        if not isinstance(args, dict):
+            try:
+                args = json.loads(args or "{}")
+            except (TypeError, ValueError, RecursionError):
+                args = {}
+        tool_calls.append(
+            {
+                "id": tool_call_id(call.get("id"), seen),
+                "name": str(fn.get("name") or ""),
+                "arguments": args if isinstance(args, dict) else {},
+            }
+        )
+    return tool_calls
+
+
+def to_openai_messages(messages: list[dict]) -> list[dict]:
+    """Translate neutral assistant tool-call turns to OpenAI wire shape.
+
+    An empty ``tool_calls`` (a round that ended in a plain answer) is
+    dropped, since OpenAI rejects an empty array. ``tool`` messages are
+    already OpenAI shape; every other message passes through unchanged.
+    """
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") == "assistant" and "tool_calls" in m:
+            if not m["tool_calls"]:
+                # OpenAI requires content on an assistant turn without calls.
+                m = {k: v for k, v in m.items() if k != "tool_calls"}
+                m["content"] = m.get("content") or ""
+            else:
+                m = {
+                    **m,
+                    # null is the documented value next to tool_calls.
+                    "content": m.get("content") or None,
+                    "tool_calls": [
+                        {
+                            "id": c["id"],
+                            "type": "function",
+                            "function": {
+                                "name": c["name"],
+                                "arguments": json.dumps(c.get("arguments") or {}),
+                            },
+                        }
+                        for c in m["tool_calls"]
+                    ],
+                }
+        out.append(m)
+    return out
 
 
 @runtime_checkable

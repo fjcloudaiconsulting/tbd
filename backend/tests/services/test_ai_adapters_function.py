@@ -152,7 +152,7 @@ async def test_anthropic_function_call_normalizes_oai_tools_and_parses_tool_use(
         tools=TOOLS_OPENAI,
     )
     assert resp.tool_calls == [
-        {"name": "set_category", "arguments": {"slug": "rent"}}
+        {"id": "tu_1", "name": "set_category", "arguments": {"slug": "rent"}}
     ]
     assert resp.content == "Looks like rent."
 
@@ -259,9 +259,15 @@ async def test_openai_compatible_function_call_passes_through(monkeypatch):
         messages=[{"role": "user", "content": "x"}],
         tools=TOOLS_OPENAI,
     )
+    # No id on the wire, so the adapter synthesizes one (TBD-579).
     assert resp.tool_calls == [
-        {"name": "set_category", "arguments": {"slug": "utilities"}}
+        {
+            "id": resp.tool_calls[0]["id"],
+            "name": "set_category",
+            "arguments": {"slug": "utilities"},
+        }
     ]
+    assert resp.tool_calls[0]["id"].startswith("call_")
 
 
 @pytest.mark.asyncio

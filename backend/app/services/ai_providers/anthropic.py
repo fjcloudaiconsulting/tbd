@@ -29,6 +29,7 @@ from app.services.ai_providers.base import (
     StreamChunk,
     TokenUsage,
     ValidateResult,
+    tool_call_id,
 )
 
 
@@ -64,6 +65,71 @@ def _split_system(messages: list[dict]) -> tuple[list[str], list[dict]]:
         else:
             chat_messages.append(m)
     return system_parts, chat_messages
+
+
+def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
+    """Translate the neutral tool transcript into Anthropic blocks.
+
+    An assistant turn with ``tool_calls`` becomes a text block, only when
+    the text is not blank (Anthropic rejects whitespace-only text), plus
+    one ``tool_use`` block per call; an empty ``tool_calls`` key is
+    dropped (Anthropic rejects unknown keys), and so is the whole turn
+    when its text is empty. A run of ``tool`` messages becomes ONE
+    user message of ``tool_result`` blocks, and a plain user message
+    right after that run is folded into it after the results: Anthropic
+    wants every result in the user turn that follows the ``tool_use``
+    turn, results first. Everything else passes through unchanged.
+    """
+    out: list[dict] = []
+    open_results: Optional[list] = None
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            block = {
+                "type": "tool_result",
+                "tool_use_id": m.get("tool_call_id"),
+                "content": m.get("content") or "",
+            }
+            if open_results is None:
+                open_results = [block]
+                out.append({"role": "user", "content": open_results})
+            else:
+                open_results.append(block)
+            continue
+        if role == "user" and open_results is not None:
+            content = m.get("content")
+            if isinstance(content, str):
+                if content.strip():
+                    open_results.append({"type": "text", "text": content})
+            elif isinstance(content, list):
+                open_results.extend(content)
+            open_results = None
+            continue
+        open_results = None
+        if role == "assistant" and "tool_calls" in m and not m["tool_calls"]:
+            # A blank answer is dropped: Anthropic rejects empty assistant turns.
+            text = m.get("content")
+            if text.strip() if isinstance(text, str) else text:
+                out.append({k: v for k, v in m.items() if k != "tool_calls"})
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            blocks: list[dict] = []
+            text = m.get("content")
+            if isinstance(text, str) and text.strip():
+                blocks.append({"type": "text", "text": text})
+            blocks.extend(
+                {
+                    "type": "tool_use",
+                    "id": c["id"],
+                    "name": c["name"],
+                    "input": c.get("arguments") or {},
+                }
+                for c in m["tool_calls"]
+            )
+            out.append({"role": "assistant", "content": blocks})
+            continue
+        out.append(m)
+    return out
 
 
 def _normalize_tool_for_anthropic(tool: dict) -> dict:
@@ -306,6 +372,7 @@ class AnthropicAdapter:
         tools; both are normalized to Anthropic's flat shape.
         """
         system_parts, chat_messages = _split_system(messages)
+        chat_messages = _to_anthropic_messages(chat_messages)
         normalized_tools = [_normalize_tool_for_anthropic(t) for t in tools]
         headers = {
             "x-api-key": self.api_key,
@@ -337,11 +404,12 @@ class AnthropicAdapter:
             )
         try:
             payload = resp.json()
-        except ValueError:
+        except (ValueError, RecursionError):
             raise AIProviderError(code="provider_invalid_json") from None
         try:
             blocks = payload.get("content", []) or []
             tool_calls: list[dict] = []
+            seen_ids: set[str] = set()
             text_parts: list[str] = []
             for b in blocks:
                 if not isinstance(b, dict):
@@ -350,6 +418,7 @@ class AnthropicAdapter:
                     inp = b.get("input")
                     tool_calls.append(
                         {
+                            "id": tool_call_id(b.get("id"), seen_ids),
                             "name": str(b.get("name") or ""),
                             "arguments": inp if isinstance(inp, dict) else {},
                         }
@@ -359,7 +428,15 @@ class AnthropicAdapter:
             usage = payload.get("usage", {}) or {}
             prompt_tokens = int(usage.get("input_tokens", 0) or 0)
             completion_tokens = int(usage.get("output_tokens", 0) or 0)
-        except (KeyError, TypeError):
+        except (
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            OverflowError,
+            RecursionError,
+        ):
             raise AIProviderError(code="provider_unexpected_shape") from None
         return FunctionCallResponse(
             tool_calls=tool_calls,
