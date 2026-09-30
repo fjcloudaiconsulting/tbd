@@ -21,6 +21,10 @@ export const FEATURE_LABELS: Record<FeatureKey, { label: string; description: st
     label: "AI Agent",
     description: "In-app assistant and MCP access to the agent tools over the org's own data.",
   },
+  plans: {
+    label: "Plans",
+    description: "Scenario planning: build and compare what-if plans.",
+  },
 };
 
 // Mirrors FEATURE_MODULES / METER_MODULES in backend/app/auth/feature_catalog.py.
@@ -29,6 +33,7 @@ export const FEATURE_LABELS: Record<FeatureKey, { label: string; description: st
 // tests/lib/feature-catalog.test.ts.
 export const FEATURE_MODULES: Record<string, readonly FeatureKey[]> = {
   ai: ["ai.agent", "ai.autocategorize", "ai.budget", "ai.forecast", "ai.smart_plan"],
+  plans: ["plans"],
 };
 
 export const METER_MODULES: Record<string, string> = {
