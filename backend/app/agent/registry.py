@@ -13,6 +13,12 @@ registry owns everything that must not vary between tools:
 * ``register`` refuses a half-declared tool, a bad name, a ``write`` tool that
   mirrors a DELETE route, and any tool mirroring a never-exposable area.
 
+Write and sensitive tools never run from ``invoke``: it hands them to
+``app.agent.actions`` (preview, then confirm), which owns the pending-action
+table, the limits and the execution. ``confirm_action`` / ``cancel_action``
+here are the front doors' only way to decide a staged action, so this module
+stays the one place a ``ToolContext`` is built.
+
 Per-surface usage meters (``assistant.turns``, ``mcp.calls``) and token-keyed
 rate limits are admitted by the front doors and the entitlement resolver that
 build on this registry; no limit data exists yet for ``invoke`` to read.
@@ -21,7 +27,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import structlog
@@ -61,7 +67,7 @@ AGENT_SCOPES = frozenset({"agent:read", "agent:write", "agent:auto"})
 _NEVER_EXPOSE_PREFIXES: tuple[str, ...] = (
     "/api/v1/admin",            # platform surface
     "/api/v1/ai",               # AI features: provider egress and spend
-    "/api/v1/agent/tokens",     # agent tokens
+    "/api/v1/agent",            # agent tokens and the confirm surface itself
     "/api/v1/auth",             # login, password, MFA, email
     "/api/v1/feedback",         # sends mail
     "/api/v1/oauth",            # MCP authorization
@@ -115,10 +121,13 @@ class ToolError(Exception):
     ``code`` is stable and machine-readable; ``detail`` is safe to show.
     """
 
-    def __init__(self, code: str, detail: str = "") -> None:
+    def __init__(self, code: str, detail: str = "", data: dict[str, Any] | None = None) -> None:
         super().__init__(code)
         self.code = code
         self.detail = detail
+        # Machine-readable extras for the front door (e.g. the fresh preview of
+        # ``preview_stale``, the recorded status of ``action_already_decided``).
+        self.data = data or {}
 
 
 class ToolRegistrationError(Exception):
@@ -132,6 +141,37 @@ class ToolContext:
     org_id: int
     channel: Channel
     api_token_id: int | None
+
+
+@dataclass(frozen=True)
+class Change:
+    """One field of one entity a write would change, as the server computed it.
+
+    ``before`` / ``after`` are JSON scalars (a Decimal is rendered as a fixed
+    2dp string by the tool, so equal values fingerprint equal).
+    """
+
+    entity: str
+    id: Any
+    field: str
+    before: Any
+    after: Any
+    currency: str | None = None
+
+
+@dataclass
+class Preview:
+    """What a write tool says it will do. ``summary`` never embeds a
+    user-writable string (it is not wrapped): user text goes in ``context``
+    under a key in :data:`UNTRUSTED_KEYS`.
+
+    A ``preview`` hook must read fresh (``populate_existing``): the auto path
+    re-previews in the same session, whose identity map may hold a stale row."""
+
+    summary: str
+    changes: list[Change]
+    warnings: list[str] = field(default_factory=list)
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -220,6 +260,16 @@ def all_tools() -> list[ToolSpec]:
     return list(_TOOLS.values())
 
 
+async def call_mapped(fn: Callable[..., Awaitable[Any]], *a: Any) -> Any:
+    """Await a tool hook, mapping the service layer's refusals to ``ToolError``."""
+    try:
+        return await fn(*a)
+    except NotFoundError as exc:
+        raise ToolError("not_found", str(exc)) from None
+    except ValidationError as exc:
+        raise ToolError("invalid_arguments", str(exc)) from None
+
+
 async def invoke(
     db: AsyncSession,
     user: User,
@@ -234,48 +284,43 @@ async def invoke(
 
     ``scope`` is the agent token's scope on the MCP channel and must be
     ``None`` in-app (a browser session has full tool access subject to the
-    other gates). Raises :class:`ToolError` on any refusal.
+    other gates). A write or sensitive tool is previewed, not run: the result
+    is the staged action (or, for ``agent:auto`` on a ``write`` tool, its
+    executed outcome). Raises :class:`ToolError` on any refusal.
     """
+    # Read once: a rollback below expires the ORM user, and a lazy load in
+    # the log call would raise MissingGreenlet.
+    org_id, user_id = user.org_id, user.id
     try:
         data = await _gate_and_run(db, user, name, raw_args, channel, scope, api_token_id)
     except ToolError as exc:
         await logger.ainfo(
-            "agent.tool.invoked", tool=name, channel=channel, org_id=user.org_id,
-            user_id=user.id, outcome=exc.code,
+            "agent.tool.invoked", tool=name, channel=channel, org_id=org_id,
+            user_id=user_id, outcome=exc.code,
         )
+        exc.data = wrap_untrusted(exc.data)
         raise
     except Exception:
         # Gates and tools alike: never hand SQL or internals to a model or a
         # harness. Roll back so the caller's session stays usable for the
-        # next call in the same turn (nothing here writes, so nothing is lost).
-        await logger.aexception("agent.tool.failed", tool=name, channel=channel, org_id=user.org_id)
+        # next call in the same turn.
+        await logger.aexception("agent.tool.failed", tool=name, channel=channel, org_id=org_id)
         if db is not None:
             await db.rollback()
         raise ToolError("internal_error", "the tool failed") from None
     await logger.ainfo(
-        "agent.tool.invoked", tool=name, channel=channel, org_id=user.org_id, user_id=user.id,
+        "agent.tool.invoked", tool=name, channel=channel, org_id=org_id, user_id=user_id,
         outcome="ok",
     )
     return {"data": wrap_untrusted(data)}
 
 
-async def _gate_and_run(
-    db: AsyncSession, user: User, name: str, raw_args: dict[str, Any] | None,
-    channel: Channel, scope: str | None, api_token_id: int | None,
-) -> Any:
-    spec = _TOOLS.get(name)
-    if spec is None:
-        raise ToolError("unknown_tool", name)
-
-    # 1. Args.
-    try:
-        args = spec.args.model_validate(raw_args or {})
-    except PydanticValidationError as exc:
-        raise ToolError(
-            "invalid_arguments",
-            "; ".join(f"{'.'.join(map(str, e['loc'])) or 'args'}: {e['msg']}" for e in exc.errors()),
-        ) from None
-
+async def check_gates(
+    db: AsyncSession, user: User, spec: ToolSpec, channel: str, scope: str | None
+) -> None:
+    """Gates 2-5 for ``spec`` against the CURRENT state of the org and the
+    principal. Shared by ``invoke`` and by confirm, which re-runs them because
+    the world may have changed since the preview."""
     org_id = user.org_id
     # 2. Plan entitlement.
     if not await feature_service.has_feature(db, org_id, AGENT_FEATURE_KEY):
@@ -298,15 +343,76 @@ async def _gate_and_run(
     else:
         raise ToolError("scope_denied", f"unknown channel {channel!r}")
 
-    if spec.run is None:
-        # Write and sensitive tools go through preview-confirm, which does not
-        # exist yet; nothing may execute them from here.
-        raise ToolError("unsupported", "write tools need preview and confirm")
 
+async def _gate_and_run(
+    db: AsyncSession, user: User, name: str, raw_args: dict[str, Any] | None,
+    channel: Channel, scope: str | None, api_token_id: int | None,
+) -> Any:
+    spec = _TOOLS.get(name)
+    if spec is None:
+        raise ToolError("unknown_tool", name)
+
+    # 1. Args.
+    try:
+        args = spec.args.model_validate(raw_args or {})
+    except PydanticValidationError as exc:
+        raise ToolError(
+            "invalid_arguments",
+            "; ".join(f"{'.'.join(map(str, e['loc'])) or 'args'}: {e['msg']}" for e in exc.errors()),
+        ) from None
+
+    await check_gates(db, user, spec, channel, scope)
+
+    ctx = ToolContext(
+        db=db, user=user, org_id=user.org_id, channel=channel, api_token_id=api_token_id
+    )
+    if spec.risk == "read":
+        return await call_mapped(spec.run, ctx, args)
+    from app.agent import actions  # deferred: actions imports this module
+
+    return await actions.propose(ctx, spec, args, scope=scope)
+
+
+async def _decide(
+    which: str, db: AsyncSession, user: User, action_id: str, channel: Channel,
+    scope: str | None, api_token_id: int | None,
+) -> dict[str, Any]:
+    from app.agent import actions  # deferred: actions imports this module
+
+    org_id, user_id = user.org_id, user.id
     ctx = ToolContext(db=db, user=user, org_id=org_id, channel=channel, api_token_id=api_token_id)
     try:
-        return await spec.run(ctx, args)
-    except NotFoundError as exc:
-        raise ToolError("not_found", str(exc)) from None
-    except ValidationError as exc:
-        raise ToolError("invalid_arguments", str(exc)) from None
+        data = await getattr(actions, which)(ctx, action_id, scope=scope)
+    except ToolError as exc:
+        await logger.ainfo(
+            f"agent.action.{which}", channel=channel, org_id=org_id, user_id=user_id,
+            outcome=exc.code,
+        )
+        exc.data = wrap_untrusted(exc.data)
+        raise
+    except Exception:
+        # Everything after the claim is handled inside the engine; this is a
+        # failure before it (the database was unreachable, say).
+        await logger.aexception(f"agent.action.{which}.failed", channel=channel, org_id=org_id)
+        await db.rollback()
+        raise ToolError("internal", "the action failed") from None
+    await logger.ainfo(
+        f"agent.action.{which}", channel=channel, org_id=org_id, user_id=user_id, outcome="ok",
+    )
+    return {"data": wrap_untrusted(data)}
+
+
+async def confirm_action(
+    db: AsyncSession, user: User, action_id: str, *,
+    channel: Channel, scope: str | None, api_token_id: int | None,
+) -> dict[str, Any]:
+    """Confirm a staged action as its own principal. The action's tool and
+    arguments are the STORED ones: this signature takes no arguments."""
+    return await _decide("confirm", db, user, action_id, channel, scope, api_token_id)
+
+
+async def cancel_action(
+    db: AsyncSession, user: User, action_id: str, *,
+    channel: Channel, scope: str | None, api_token_id: int | None,
+) -> dict[str, Any]:
+    return await _decide("cancel", db, user, action_id, channel, scope, api_token_id)

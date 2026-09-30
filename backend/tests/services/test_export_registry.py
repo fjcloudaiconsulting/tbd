@@ -128,8 +128,8 @@ def test_table_count_is_what_the_spec_measured():
     drift (44 → 49 → "37 files" → 35). Not a correctness gate — legs 1 and 2
     are — but a loud signal when the surface moves.
     """
-    assert len(Base.metadata.tables) == 49
-    assert len(EXPORT_DISPOSITION) == 49
+    assert len(Base.metadata.tables) == 50
+    assert len(EXPORT_DISPOSITION) == 50
 
 
 # ══ Fixtures for the data-path legs ═══════════════════════════════════════
@@ -488,6 +488,20 @@ async def _seed_org(db: AsyncSession, *, marker: str) -> dict:
             prompt_tokens=1,
             completion_tokens=1,
             total_tokens=2,
+        )
+    )
+
+    # agent_pending_actions — org_id scoped; api_token_id redacted.
+    from app.models.agent_pending_action import AgentPendingAction
+
+    _now = datetime.datetime(2026, 1, 1)
+    db.add(
+        AgentPendingAction(
+            id=(marker.lower() * 32)[:32], org_id=oid, user_id=uid, channel="in_app",
+            tool="budgets_update_amount", risk="write", mode="confirm",
+            args_json={"marker": f"AGENT-{marker}"}, args_sha256="0" * 64,
+            fingerprint="0" * 64, preview_json={"summary": f"AGENT-{marker}"},
+            status="pending", created_at=_now, expires_at=_now,
         )
     )
 

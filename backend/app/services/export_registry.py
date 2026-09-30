@@ -43,7 +43,7 @@ from typing import Union
 # Bumped whenever a disposition, a scope, or a redact set changes. Recorded
 # in the export header and in the ``org.data.exported`` audit row so an
 # artifact handed to a data subject can be tied to the rules that built it.
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
 
 
 # ── Scoping ────────────────────────────────────────────────────────────────
@@ -177,6 +177,13 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
         # no user_id column, so there is no user attribution to be had. A
         # wrong reason in the registry documents a falsehood.
         "org-scoped, no third-party surface",
+    ),
+    # A parked or decided agent preview. ``api_token_id`` is redacted for the
+    # same reason as on ``audit_events`` below: it names an operator-side
+    # credential in a table the subject cannot see.
+    "agent_pending_actions": Include(
+        OrgColumn(), "agent write previews and their outcomes for the subject's org",
+        redact=frozenset({"api_token_id"}),
     ),
     "announcements": Exclude("platform-global operator content, identical for every org"),
     # ⚠ Reason strings SHIP to the data subject in the header's ``excluded``

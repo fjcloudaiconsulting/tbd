@@ -45,6 +45,12 @@ B_START = P_START - datetime.timedelta(days=40)  # a date only org B has a perio
 C_START = (P_START - datetime.timedelta(days=1)).replace(day=1)  # org A's closed period
 
 
+def _reads():
+    """The read tools: ``budgets_update_amount`` and other writes have their own
+    suite (``test_actions.py``)."""
+    return [t for t in all_tools() if t.risk == "read"]
+
+
 def _args(name: str) -> dict:
     if name == "transactions_search":
         return {"date_from": str(P_START), "date_to": str(TODAY), "category_match": "subtree"}
@@ -150,7 +156,7 @@ def _strings(value, parent=None):
 async def test_invoke_runs_all_six_reads_for_an_entitled_user(factory):
     async with factory() as db:
         a = await _org(db, "A")
-    out = {t.name: (await _call(factory, a["user"], t.name))["data"] for t in all_tools()}
+    out = {t.name: (await _call(factory, a["user"], t.name))["data"] for t in _reads()}
 
     assert [r["id"] for r in out["accounts_list"]] == [a["acct"].id]
     assert {r["id"] for r in out["categories_list"]} == {a["master"].id, a["sub"].id}
@@ -252,7 +258,7 @@ async def test_fr7_reads_write_nothing(factory, seeded):
         # would find it and answer instead of ``no_open_period``.
         await _org(db, "B")
     before = await _row_counts(factory)
-    for tool in all_tools():
+    for tool in _reads():
         if tool.name in PERIOD_TOOLS and not seeded:
             with pytest.raises(ToolError) as exc:
                 await _call(factory, a["user"], tool.name)
@@ -269,7 +275,7 @@ async def test_fr10_attacker_strings_arrive_only_wrapped(factory):
     async with factory() as db:
         a = await _org(db, "A")
     seen = 0
-    for tool in all_tools():
+    for tool in _reads():
         data = (await _call(factory, a["user"], tool.name))["data"]
         for parent, s in _strings(data):
             if MARK.lower() in s.lower():

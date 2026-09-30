@@ -72,6 +72,8 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
         "admin_users.pending_email_cancel",
         "10/hour",
     ),
+    ("agent", "confirm"): ("agent.confirm", "30/minute"),
+    ("agent", "cancel"): ("agent.cancel", "30/minute"),
     ("api_tokens", "mint_token"): ("api_tokens.mint", "10/hour"),
     ("auth", "check_username"): ("auth.check_username", "20/minute"),
     ("auth", "forgot_password"): ("auth.forgot_password", "5/minute"),

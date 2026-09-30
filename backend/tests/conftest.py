@@ -230,6 +230,7 @@ class _SharedFakeRedis:
     def __init__(self):
         self._kv: dict[str, Any] = {}
         self._sets: dict[str, set] = defaultdict(set)
+        self._ttls: dict[str, int] = {}
         self.abort_pipeline = False
         # PR 3 race-test plumbing. See class docstring.
         import asyncio
@@ -279,6 +280,18 @@ class _SharedFakeRedis:
 
     async def setex(self, key, ttl, value):
         self._kv[key] = value
+        return True
+
+    # Fixed-window counters (TBD-577 agent limits): INCR then EXPIRE on first hit.
+    async def incr(self, key):
+        n = int(self._kv.get(key, 0)) + 1
+        self._kv[key] = n
+        return n
+
+    async def expire(self, key, ttl, **kwargs):
+        if key not in self._kv:
+            return False
+        self._ttls[key] = ttl
         return True
 
     async def delete(self, *keys):

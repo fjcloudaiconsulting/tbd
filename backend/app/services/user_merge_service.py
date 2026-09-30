@@ -183,6 +183,9 @@ async def merge_users(
     if source.email_verified and not target.email_verified:
         target.email_verified = True
 
+    # agent_pending_actions is NOT reassigned: the source user's rows are dropped
+    # by ON DELETE CASCADE on purpose (ephemeral previews, 10 minute TTL).
+    #
     # Finally delete the source row. With all references reassigned,
     # the delete succeeds without tripping any FK constraint or
     # silently nulling out an audit/tag attribution.
