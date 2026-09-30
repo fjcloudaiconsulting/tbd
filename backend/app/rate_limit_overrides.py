@@ -1,57 +1,51 @@
-"""Runtime integration between slowapi and the override resolver.
+"""Runtime integration between slowapi and the override table (TBD-492).
 
-This module is the bridge from a ``@limiter.limit(...)`` decorator
-site to the per-org / per-user override table:
+Two halves, joined by a ``ContextVar``:
 
-- ``dynamic_limit("auth.login", "20/minute")`` returns a slowapi-
-  compatible *callable* the decorator accepts. On every request the
-  callable consults the override resolver and returns either the
-  override's limit string (formatted into slowapi's "N/Ns" shape) or
-  the original default.
-- ``parse_default_limit("20/minute")`` is the inverse formatter used
-  by tests + sanity assertions; it accepts the same set of
-  ``period`` words slowapi accepts.
+- ``load_rate_limit_overrides`` is an async FastAPI dependency attached to
+  every overridable route (``dependencies=[Depends(...)]``). It runs after
+  auth, reads the caller's active override rows in ONE query on its own
+  short session, and stores ``{endpoint_pattern: "N/period"}`` in
+  ``_overrides_cv``.
+- ``dynamic_limit(pattern, default)`` is the zero-arg provider slowapi calls
+  (``LimitGroup.__iter__``) when the wrapped route runs, i.e. after the
+  dependencies. It returns the caller's override for ``pattern`` or
+  ``default``.
 
-Why a callable rather than rewriting every decorator at registration
-time: slowapi's decorator captures the limit value at *decorator-
-import time* — too early to know the requester's identity or to
-consult Redis. The Limiter class explicitly accepts a callable that
-receives the request, evaluated per call (see slowapi extension.py
-``StrOrCallableStr = Union[str, Callable[..., str]]``).
+It must be an ``async`` dependency: FastAPI runs a sync one in a threadpool
+copy of the context, so the ``set`` would never reach the route.
 
-Failure stance. If the resolver raises, or Redis is unavailable, or
-the JWT is unreadable, the helper returns the default. That matches
-the project-wide rate-limit fail-open posture and prevents an
-override-system bug from locking out the platform.
+Failure stance: any loader error, or an unusable override string, means the
+static default applies (project-wide rate-limit fail-open posture).
 
-Pre-auth limitation. ``dynamic_limit()`` requires an authenticated
-identity (a ``user_id`` or ``org_id`` extractable from the request)
-to resolve org / user overrides. Pre-auth endpoints (login,
-register, password-reset request, check-username, email
-verification, MFA challenge step, invitation preview / accept, the
-cookie-only refresh ``/verify`` route, etc.) have no Bearer JWT yet
-when the limiter callable runs, so they always fall back to the
-static default regardless of whether an override row exists. This
-is by design; per-identity throttling is meaningless before an
-identity is known. Pre-auth rate limits should be tuned by editing
-the static slowapi decorator default itself, not by creating an
-override. The full list of pre-auth patterns lives in
-``app.rate_limit_endpoint_catalogue.PRE_AUTH_ENDPOINT_PATTERNS`` and the
-admin UI surfaces a warning when one of those patterns is picked.
+Pre-auth routes (``PRE_AUTH_ENDPOINT_PATTERNS``) have no identity when the
+limiter runs and keep static string limits; tune them in code.
+
+Known limits: the bucket key is still the client IP, and changing an
+override starts a fresh counter (the ``limits`` storage key embeds the
+amount).
 """
-from __future__ import annotations
-
-import asyncio
+import contextvars
 import re
-from typing import Callable, Optional
+from datetime import datetime, timezone
+from typing import Callable, Mapping
 
 import structlog
-from starlette.requests import Request
+from fastapi import Depends
+from limits import parse_many
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import settings
+from app.deps import get_current_user, get_session_factory
+from app.models.rate_limit_override import RateLimitOverride
+from app.models.user import User
 
 
 logger = structlog.stdlib.get_logger()
+
+_overrides_cv: contextvars.ContextVar[Mapping[str, str]] = contextvars.ContextVar(
+    "rate_limit_overrides", default={}
+)
 
 
 # Slowapi accepts these period words. Mapped to seconds so the
@@ -106,18 +100,11 @@ def parse_default_limit(value: str) -> tuple[int, int]:
 
 
 def format_limit(max_requests: int, period_seconds: int) -> str:
-    """Format ``(max, period_s)`` as a slowapi-style string.
+    """Format ``(max, period_s)`` as a string ``limits.parse_many`` accepts.
 
-    Prefers the natural period word ("minute", "hour", "day",
-    "second") when the seconds value is one of the standard buckets;
-    falls back to the bare-numeric ``N/X`` shape (which slowapi's
-    underlying ``limits`` library accepts as "X seconds") for any
-    other value.
-
-    The natural-word form round-trips through ``parse_default_limit``
-    cleanly and avoids the ``"42/60second"`` glued form which the
-    parser explicitly rejects (mixing explicit seconds and a word
-    suffix).
+    Standard buckets use the period word; anything else is
+    ``"N/P seconds"`` (a bare ``"N/P"`` is rejected by ``parse_many`` and
+    slowapi then drops the limit, leaving the route unlimited).
     """
     if period_seconds == 1:
         return f"{max_requests}/second"
@@ -127,230 +114,77 @@ def format_limit(max_requests: int, period_seconds: int) -> str:
         return f"{max_requests}/hour"
     if period_seconds == 86400:
         return f"{max_requests}/day"
-    return f"{max_requests}/{period_seconds}"
+    return f"{max_requests}/{period_seconds} seconds"
 
 
-def _request_identity(request: Request) -> tuple[Optional[int], Optional[int]]:
-    """Best-effort extraction of ``(user_id, org_id)`` from a request.
+def _usable(limit: str) -> bool:
+    """``parse_many`` accepts it and every item allows >=1 request per >=1 period."""
+    try:
+        items = parse_many(limit)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(items) and all(i.amount >= 1 and i.multiples >= 1 for i in items)
 
-    Tried sources, in order:
 
-    1. ``request.state.user_id`` / ``request.state.org_id`` if the
-       request-context middleware has populated them (auth path).
-    2. The Authorization Bearer token's JWT payload (``sub`` and
-       ``org_id`` claims).
-    3. ``(None, None)`` — the resolver falls through to the default.
+async def load_rate_limit_overrides(
+    user: User = Depends(get_current_user),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+) -> None:
+    """Populate ``_overrides_cv`` for this request. Never raises.
 
-    Decoding the JWT here without verifying the signature would be a
-    spoof vector, so we always go through the proper decoder. Any
-    failure path returns the (None, None) tuple — fail open.
+    Own short session, so a failed query cannot poison the route's session.
+    Org rows first, then user rows overwrite (user beats org); ``ORDER BY id``
+    makes the newest row win within a scope.
     """
-    # 1. Try the request-context middleware first; in the auth path it
-    # is already populated.
-    state_user = getattr(request.state, "user_id", None)
-    state_org = getattr(request.state, "org_id", None)
-    if state_user is not None or state_org is not None:
-        return state_user, state_org
-
-    # 2. Fall back to decoding the Authorization header. Many of the
-    # limited endpoints are PRE-auth (e.g. /auth/login) and the
-    # middleware hasn't run get_current_user yet, but the decorator
-    # call from slowapi happens before the dependency. So we
-    # short-circuit on missing/malformed headers.
-    auth = request.headers.get("authorization")
-    if not auth or not auth.lower().startswith("bearer "):
-        return None, None
-    token = auth.split(" ", 1)[1].strip()
-    if not token:
-        return None, None
-
+    overrides: dict[str, str] = {}
     try:
-        import jwt as pyjwt
-
-        payload = pyjwt.decode(
-            token,
-            settings.jwt_secret_key,
-            algorithms=[settings.jwt_algorithm],
-            options={"require": []},
-        )
-    except Exception:  # noqa: BLE001 — any decode failure: fail open.
-        return None, None
-    sub = payload.get("sub")
-    org_id = payload.get("org_id")
-    try:
-        user_id = int(sub) if sub is not None else None
-    except (TypeError, ValueError):
-        user_id = None
-    try:
-        org_id_int = int(org_id) if org_id is not None else None
-    except (TypeError, ValueError):
-        org_id_int = None
-    return user_id, org_id_int
-
-
-async def _resolve_async(
-    *,
-    user_id: Optional[int],
-    org_id: Optional[int],
-    endpoint_pattern: str,
-    default: str,
-) -> str:
-    # Lazy imports keep test-substrate cold-start cheap and avoid a
-    # circular at module-load time (the service imports nothing from
-    # this module, but a future cross-import would trip without the
-    # lazy form).
-    from app.database import async_session
-    from app.services import rate_limit_overrides_service as svc
-
-    if user_id is None and org_id is None:
-        return default
-    try:
-        async with async_session() as session:
-            wire = await svc.resolve_override(
-                session,
-                user_id=user_id,
-                org_id=org_id,
-                endpoint_pattern=endpoint_pattern,
-            )
-    except Exception as exc:  # noqa: BLE001 — fail open on any DB error.
-        logger.warning(
-            "rate_limit_override.resolve_failed",
-            error=str(exc),
-            endpoint=endpoint_pattern,
-        )
-        return default
-    if wire is None or wire == "-":
-        return default
-    # wire format is "<max>/<period_seconds>"; transform to slowapi.
-    try:
-        max_str, period_str = wire.split("/", 1)
-        return format_limit(int(max_str), int(period_str))
-    except (ValueError, IndexError):
-        return default
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        user_id, org_id = user.id, user.org_id
+        async with session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(RateLimitOverride)
+                    .where(
+                        or_(
+                            RateLimitOverride.user_id == user_id,
+                            RateLimitOverride.org_id == org_id,
+                        )
+                    )
+                    .where(
+                        or_(
+                            RateLimitOverride.expires_at.is_(None),
+                            RateLimitOverride.expires_at > now,
+                        )
+                    )
+                    .order_by(RateLimitOverride.id.asc())
+                )
+            ).scalars().all()
+        by_org: dict[str, str] = {}
+        by_user: dict[str, str] = {}
+        for r in rows:
+            if r.max_requests < 1 or r.period_seconds < 1:
+                continue
+            target = by_user if r.user_id == user_id else by_org
+            target[r.endpoint_pattern] = format_limit(r.max_requests, r.period_seconds)
+        overrides = {**by_org, **by_user}
+    except Exception as exc:  # noqa: BLE001 — fail open to the defaults.
+        logger.warning("rate_limit_override.load_failed", error=str(exc))
+        overrides = {}
+    _overrides_cv.set(overrides)
 
 
-def dynamic_limit(endpoint_pattern: str, default: str) -> Callable[..., str]:
-    """Return a slowapi-compatible callable that yields a per-request
-    limit string.
+def dynamic_limit(endpoint_pattern: str, default: str) -> Callable[[], str]:
+    """Zero-arg slowapi limit provider: the caller's override, else ``default``.
 
-    Usage at the decorator site::
-
-        @limiter.limit(dynamic_limit("auth.login", "20/minute"))
-        async def login(...):
-            ...
-
-    Behaviour:
-
-    - Parses ``default`` once at module import to surface a
-      programmer error early (an unparseable default would otherwise
-      blow up only when the limiter first runs).
-    - Returns a fresh closure per call (slowapi keeps it cached).
-    - The closure is sync-callable, but the underlying DB read is
-      async — bridged via ``asyncio.run`` on a fresh loop iff no
-      running loop is detected (slowapi 0.1.9's evaluate path is
-      currently sync but the bridge tolerates both).
-
-    Pre-auth endpoints WILL NOT honour per-org / per-user overrides.
-    The closure short-circuits to ``default`` whenever neither a
-    ``user_id`` nor an ``org_id`` can be extracted from the request,
-    which is always the case for the following patterns:
-
-    - ``auth.check_username``
-    - ``auth.forgot_password``
-    - ``auth.login``
-    - ``auth.mfa_email_code``
-    - ``auth.mfa_email_verify``
-    - ``auth.mfa_recovery``
-    - ``auth.mfa_verify``
-    - ``auth.register``
-    - ``auth.resend_verification_public``
-    - ``auth.verify`` (cookie-based, no Bearer)
-    - ``auth.verify_email``
-    - ``org_members.accept_invitation``
-    - ``org_members.preview_invitation``
-
-    Tune those routes via the static ``@limiter.limit("N/period")``
-    string at the decorator site. See module docstring above for the
-    full rationale; the catalogue is the authoritative list at
-    ``app.rate_limit_endpoint_catalogue.PRE_AUTH_ENDPOINT_PATTERNS``.
+    ``default`` is validated at construction so a typo crashes import, not the
+    first request. ``.pattern`` / ``.default`` are read by the fences.
     """
-    # Force-parse the default once. If this raises, the import
-    # explodes loudly instead of silently shipping a broken decorator.
-    parse_default_limit(default)
+    parse_many(default)
 
-    def _limit_for_request(request: Request) -> str:
-        try:
-            user_id, org_id = _request_identity(request)
-        except Exception:  # noqa: BLE001 — any extraction failure: default.
-            return default
-        if user_id is None and org_id is None:
-            return default
-        # Bridge async resolver into the slowapi sync evaluation path.
-        # Two cases:
-        # 1. There is no running event loop in the current thread.
-        #    -> Use ``asyncio.run``. This is the path when slowapi's
-        #       extension calls us from a sync decorator (rare today
-        #       under uvicorn but supported).
-        # 2. There IS a running loop (the default uvicorn path).
-        #    -> ``asyncio.run`` would refuse; we spin a fresh thread
-        #       so the blocking call doesn't park the event loop.
-        try:
-            asyncio.get_running_loop()
-            running_loop = True
-        except RuntimeError:
-            running_loop = False
+    def provider() -> str:
+        override = _overrides_cv.get().get(endpoint_pattern)
+        return override if override is not None and _usable(override) else default
 
-        coro_factory = lambda: _resolve_async(  # noqa: E731 — local closure
-            user_id=user_id,
-            org_id=org_id,
-            endpoint_pattern=endpoint_pattern,
-            default=default,
-        )
-        try:
-            if not running_loop:
-                return asyncio.run(coro_factory())
-            # Running loop: run on a worker thread with its own loop.
-            import concurrent.futures
-            import threading
-
-            result_holder: dict = {}
-
-            def _worker():
-                loop = asyncio.new_event_loop()
-                try:
-                    result_holder["v"] = loop.run_until_complete(coro_factory())
-                except Exception as exc:  # noqa: BLE001
-                    result_holder["err"] = exc
-                finally:
-                    loop.close()
-
-            t = threading.Thread(target=_worker, daemon=True)
-            t.start()
-            # Slowapi sync-storage path already runs synchronously on
-            # the event loop; this thread is bounded by the resolver's
-            # internal timeouts (Redis 1s + DB short-pool). We cap at
-            # 2s as a hard ceiling to avoid wedging the request.
-            t.join(timeout=2.0)
-            if t.is_alive():
-                logger.warning(
-                    "rate_limit_override.resolve_timeout",
-                    endpoint=endpoint_pattern,
-                )
-                return default
-            if "err" in result_holder:
-                logger.warning(
-                    "rate_limit_override.resolve_thread_error",
-                    error=str(result_holder["err"]),
-                    endpoint=endpoint_pattern,
-                )
-                return default
-            return result_holder.get("v", default)
-        except Exception as exc:  # noqa: BLE001 — last-line fail-open.
-            logger.warning(
-                "rate_limit_override.bridge_failed",
-                error=str(exc),
-                endpoint=endpoint_pattern,
-            )
-            return default
-
-    return _limit_for_request
+    provider.pattern = endpoint_pattern  # type: ignore[attr-defined]
+    provider.default = default  # type: ignore[attr-defined]
+    return provider

@@ -6,8 +6,7 @@ append the matching pattern below." Until this file existed that instruction had
 **zero** enforcement, and it had already been ignored six times: 31 decorators
 under ``app/routers/`` against 25 catalogue patterns.
 
-That matters even though ``rate_limit_overrides.dynamic_limit`` has no call
-sites today, because the catalogue is rendered in the admin UI's pattern
+That matters because the catalogue is rendered in the admin UI's pattern
 dropdown. An operator who does not find ``auth.logout`` there concludes the
 route is unlimited. An untruthful source of truth is worse than none, and
 deleting the claim is not an option — the override schema validator accepts
@@ -43,8 +42,8 @@ catalogue pattern and the missing map entry — never to relax the comparison.
 
 The end state, filed separately, is a ``@rate_limited(pattern, limit)`` wrapper
 that registers the pair at import time. That makes the pattern derivable by
-construction, deletes BOTH hand-maintained lists, and would give
-``dynamic_limit`` its first call sites. It touches all 31 decorator sites, which
+construction, deletes BOTH hand-maintained lists, and would replace the
+``dynamic_limit`` call-site literals. It touches all 31 decorator sites, which
 is why it is not folded into a security fix.
 """
 from __future__ import annotations
@@ -117,11 +116,13 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
 }
 
 
-def _find_decorated_routes() -> dict[tuple[str, str], str]:
-    """Every ``(module_stem, function_name) -> limit-string`` under routers/.
+def _find_decorated_routes() -> dict[tuple[str, str], tuple[str | None, str]]:
+    """Every ``(module_stem, function_name) -> (pattern, limit-string)`` under routers/.
 
-    Both ``limiter.limit("...")`` and ``limiter.shared_limit("...", scope=...)``
-    with a literal first argument are collected.
+    Both ``limiter.limit(...)`` and ``limiter.shared_limit(..., scope=...)`` are
+    collected. The first argument is either a literal (static limit, pattern
+    ``None``) or ``dynamic_limit("<pattern>", "<default>")`` with two literals
+    (TBD-492), from which the call-site pattern and the default are read.
 
     ⚠ ``shared_limit`` MUST be matched here. slowapi buckets a plain ``limit``
     on ``request.url.path`` -- the CONCRETE path -- so a route carrying a path
@@ -130,11 +131,10 @@ def _find_decorated_routes() -> dict[tuple[str, str], str]:
     ``limit``, converting a route to ``shared_limit`` to FIX that would make it
     vanish from the inventory, silently un-fencing the very route being
     hardened.
-    A non-literal argument (the ``dynamic_limit(...)`` shape, if it ever gains
-    call sites) is collected with its source unparsed, so it still shows up
-    here rather than vanishing from the inventory.
+    Any other non-literal argument is collected with its source unparsed, so it
+    still shows up here rather than vanishing from the inventory.
     """
-    found: dict[tuple[str, str], str] = {}
+    found: dict[tuple[str, str], tuple[str | None, str]] = {}
     for path in sorted(ROUTERS_DIR.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
@@ -150,12 +150,19 @@ def _find_decorated_routes() -> dict[tuple[str, str], str]:
                     and dec.args
                 ):
                     arg = dec.args[0]
-                    limit = (
-                        arg.value
-                        if isinstance(arg, ast.Constant)
-                        else ast.unparse(arg)
-                    )
-                    found[(path.stem, node.name)] = limit
+                    if isinstance(arg, ast.Constant):
+                        entry = (None, arg.value)
+                    elif (
+                        isinstance(arg, ast.Call)
+                        and isinstance(arg.func, ast.Name)
+                        and arg.func.id == "dynamic_limit"
+                        and len(arg.args) == 2
+                        and all(isinstance(a, ast.Constant) for a in arg.args)
+                    ):
+                        entry = (arg.args[0].value, arg.args[1].value)
+                    else:
+                        entry = (None, ast.unparse(arg))
+                    found[(path.stem, node.name)] = entry
     return found
 
 
@@ -175,7 +182,7 @@ def test_every_limiter_decorator_maps_to_a_catalogue_pattern():
         "@limiter.limit route(s) with no DECORATOR_PATTERNS entry — add the "
         "entry AND the matching catalogue pattern in "
         "app/rate_limit_endpoint_catalogue.py:\n"
-        + "\n".join(f"  - {m}::{fn} ({found[(m, fn)]})" for m, fn in unmapped)
+        + "\n".join(f"  - {m}::{fn} ({found[(m, fn)][1]})" for m, fn in unmapped)
     )
 
     stale = sorted(set(DECORATOR_PATTERNS) - set(found))
@@ -187,7 +194,7 @@ def test_every_limiter_decorator_maps_to_a_catalogue_pattern():
 
     retuned = {
         site: (DECORATOR_PATTERNS[site][1], limit)
-        for site, limit in found.items()
+        for site, (_pattern, limit) in found.items()
         if DECORATOR_PATTERNS[site][1] != limit
     }
     assert not retuned, (
@@ -198,6 +205,23 @@ def test_every_limiter_decorator_maps_to_a_catalogue_pattern():
             for (m, fn), (was, now) in sorted(retuned.items())
         )
     )
+
+
+def test_call_site_pattern_matches_the_map_and_overridables_are_dynamic():
+    """F7. ``dynamic_limit("<pattern>", ...)`` must name the SAME pattern the
+    map records for that route: a typo at the call site would save an override
+    the route never reads. And every OVERRIDABLE route must be dynamic, every
+    PRE_AUTH one static (no identity exists when its limiter runs).
+    """
+    found = _find_decorated_routes()
+    wrong = []
+    for site, (call_pattern, _limit) in sorted(found.items()):
+        mapped = DECORATOR_PATTERNS[site][0]
+        if mapped in OVERRIDABLE_ENDPOINT_PATTERNS and call_pattern != mapped:
+            wrong.append((site, "call-site", call_pattern, "map", mapped))
+        if mapped in PRE_AUTH_ENDPOINT_PATTERNS and call_pattern is not None:
+            wrong.append((site, "pre-auth route must stay static", call_pattern))
+    assert not wrong, wrong
 
 
 def test_every_mapped_pattern_is_in_the_catalogue():
@@ -265,7 +289,7 @@ def _path_param_routes_with_limits() -> dict[str, dict]:
 
     So the inventory is taken from the two things that cannot disagree with
     production: FastAPI's assembled ``app.routes`` (the real resolved path, all
-    routers, all mount styles) and slowapi's own ``_route_limits`` registry
+    routers, all mount styles) and slowapi's own ``_route_limits`` / ``_dynamic_route_limits`` registries
     (populated by the decorator itself, whatever the module named it).
     ``Limit.scope`` is ``""`` for a plain ``limit`` and the scope string for a
     ``shared_limit``, so the pinned/unpinned question is read off slowapi's own
@@ -286,6 +310,14 @@ def _path_param_routes_with_limits() -> dict[str, dict]:
                 "path": route.path,
                 "scope": lim.scope or None,
                 "limit": str(lim.limit),
+            }
+        # TBD-492: overridable routes register a LimitGroup here instead. Its
+        # scope is private to slowapi's LimitGroup; read it the way slowapi does.
+        for group in limiter._dynamic_route_limits.get(name, []):
+            out[name] = {
+                "path": route.path,
+                "scope": group._LimitGroup__scope or None,
+                "limit": group._LimitGroup__limit_provider.default,
             }
     return out
 
@@ -384,7 +416,7 @@ def test_pinned_scope_equals_the_catalogue_pattern():
     The two coincide for `accounts.adjust_balance` and
     `org_members.remove_member` and DIVERGE for `orgs.rename_org_endpoint`,
     whose pattern is `orgs.rename`. The pattern is the string an operator picks
-    in the override dropdown and the key TBD-492's `dynamic_limit` will read,
+    in the override dropdown and the key `dynamic_limit` reads,
     so the pattern is the correct choice -- but nothing enforced it, and a
     future author could pick a scope that silently diverges from the catalogue.
     """

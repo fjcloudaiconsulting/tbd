@@ -26,6 +26,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.user import User
 from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.feedback import FeedbackCreate, FeedbackResponse
 from app.services import audit_service, feedback_service
 
@@ -39,8 +40,8 @@ def _request_id() -> Optional[str]:
     return structlog.contextvars.get_contextvars().get("request_id")
 
 
-@router.post("", response_model=FeedbackResponse, status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/hour")
+@router.post("", response_model=FeedbackResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(load_rate_limit_overrides)])
+@limiter.limit(dynamic_limit("feedback.submit", "5/hour"))
 async def submit_feedback(
     body: FeedbackCreate,
     request: Request,

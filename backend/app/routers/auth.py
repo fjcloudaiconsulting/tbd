@@ -75,6 +75,7 @@ from app.security import (
 from app.captcha import verify_captcha
 from app.models.notification import NotificationCategory
 from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.services import audit_service, notification_service
 from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
 from app.services.notification_templates import (
@@ -2485,8 +2486,8 @@ async def verify_email(
     )
 
 
-@router.post("/resend-verification")
-@limiter.limit("3/hour")
+@router.post("/resend-verification", dependencies=[Depends(load_rate_limit_overrides)])
+@limiter.limit(dynamic_limit("auth.resend_verification", "3/hour"))
 async def resend_verification(
     request: Request,
     current_user: User = Depends(get_current_user),
@@ -4210,7 +4211,7 @@ async def google_callback(
     # this surface COMPLETELY, and the claim was false while the issuer was
     # missing; the day the callback's email or cookie binding is loosened,
     # this becomes the load-bearing path.
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
 # Matches the 10/hour on the mint this proof feeds (``api_tokens.mint_token``)
 # and sits above the 5/hour on the two ``users.py`` consumers: an issuer must
@@ -4218,7 +4219,7 @@ async def google_callback(
 # -- slowapi binds one ``key_func`` per Limiter and there is no per-user bucket
 # anywhere. A shared NAT therefore shares the bucket, which is the same cost
 # already accepted on the tighter 5/hour credential-change endpoints.
-@limiter.limit("10/hour")
+@limiter.limit(dynamic_limit("auth.sso_stepup_initiate", "10/hour"))
 async def sso_stepup_initiate(
     request: Request,
     response: Response,

@@ -49,6 +49,7 @@ from app.deps import get_current_user
 from app.models.report import Report, ReportVersion, ReportVisibility
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.reports.templates import get_report_templates
 from app.schemas.report import (
     ReportCreate,
@@ -219,8 +220,9 @@ async def _run_source_query(db: AsyncSession, ast: ReportsQuery, *, org_id: int)
 @router.post(
     "/query",
     response_model=ReportsQueryResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
 )
-@limiter.limit("60/minute")
+@limiter.limit(dynamic_limit("reports.query", "60/minute"))
 async def run_query(
     request: Request,
     body: ReportsQuery,
@@ -239,8 +241,9 @@ async def run_query(
 @router.post(
     "/query/sankey",
     response_model=SankeyResponse,
+    dependencies=[Depends(load_rate_limit_overrides)],
 )
-@limiter.limit("60/minute")
+@limiter.limit(dynamic_limit("reports.sankey_query", "60/minute"))
 async def run_sankey_query(
     request: Request,
     body: SankeyQuery,

@@ -12,6 +12,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.user import Organization, User
 from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.auth import (
     USERNAME_MAX_LENGTH,
     USERNAME_MIN_LENGTH,
@@ -69,9 +70,9 @@ def _user_response(user: User) -> UserResponse:
 @router.put(
     "/me",
     response_model=UserResponse,
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
-@limiter.limit("5/hour")
+@limiter.limit(dynamic_limit("users.update_profile", "5/hour"))
 async def update_profile(
     request: Request,
     body: ProfileUpdate,
@@ -339,9 +340,9 @@ async def update_profile(
 @router.delete(
     "/me/pending-email",
     status_code=204,
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
-@limiter.limit("10/hour")
+@limiter.limit(dynamic_limit("users.cancel_pending_email", "10/hour"))
 async def cancel_pending_email(
     request: Request,
     current_user: User = Depends(get_current_user),
@@ -426,9 +427,9 @@ async def cancel_pending_email(
 @router.post(
     "/me/password",
     status_code=204,
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
-@limiter.limit("5/hour")
+@limiter.limit(dynamic_limit("users.change_password", "5/hour"))
 async def change_password(
     request: Request,
     body: PasswordChange,

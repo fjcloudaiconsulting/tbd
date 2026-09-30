@@ -37,6 +37,7 @@ from app.deps import get_current_user, get_session_factory
 from app.models.notification import NotificationCategory
 from app.models.user import User
 from app.rate_limit import get_client_ip, limiter
+from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.api_token import ApiTokenOut, MintTokenRequest, MintTokenResponse
 from app.schemas.common import ListEnvelope
 from app.security import verify_password
@@ -138,9 +139,9 @@ def _out(row) -> ApiTokenOut:
     "",
     response_model=MintTokenResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_interactive_session)],
+    dependencies=[Depends(require_interactive_session), Depends(load_rate_limit_overrides)],
 )
-@limiter.limit("10/hour")
+@limiter.limit(dynamic_limit("api_tokens.mint", "10/hour"))
 async def mint_token(
     request: Request,
     response: Response,
