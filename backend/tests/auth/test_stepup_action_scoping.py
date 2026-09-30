@@ -252,8 +252,8 @@ def test_every_action_has_exactly_one_consumer():
 )
 async def test_f1_grid_only_the_issued_action_accepts_the_proof(factory, issued, consumer):
     """Kills: action-agnostic compare; one consumer left unconverted; a
-    wrong-action attempt that burns AND commits the token. (A burn that is
-    only flushed is rolled back by the handler's raise, so a
+    wrong-action attempt that burns AND commits the token. (An uncommitted
+    burn is rolled back by the handler's raise, so a
     consume-before-validate mutant is caught here only where a failure path
     commits: pat_mint's audit on the shared test connection.)"""
     uid = await _seed(factory)
