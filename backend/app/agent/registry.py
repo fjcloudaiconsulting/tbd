@@ -220,15 +220,6 @@ def all_tools() -> list[ToolSpec]:
     return list(_TOOLS.values())
 
 
-def schemas_for(tools: list[ToolSpec] | None = None) -> list[dict[str, Any]]:
-    """Name, description and JSON schema per tool: the single source for both
-    the MCP ``tools/list`` and the LLM ``tools=`` payload."""
-    return [
-        {"name": t.name, "description": t.description, "input_schema": t.args.model_json_schema()}
-        for t in (all_tools() if tools is None else tools)
-    ]
-
-
 async def invoke(
     db: AsyncSession,
     user: User,
