@@ -62,10 +62,10 @@ ALLOWED_BINDERS: tuple[tuple[str, str, str], ...] = (
         "agent/auth.py",
         "authenticate_agent_token",
         "TBD-578: the agent-token credential check for the MCP front door. "
-        "Never on the same request as authenticate_pat (an agent request "
-        "does not go through get_current_user), so the two never compete "
-        "for one request's context; bound before its rejection branches for "
-        "the same reason as pat.py",
+        "If it and authenticate_pat ever run on one request, both resolve "
+        "the same Authorization bearer and bind the same row id, so they "
+        "cannot disagree; bound before its rejection branches for the same "
+        "reason as pat.py",
     ),
 )
 
