@@ -22,7 +22,7 @@ from sqlalchemy import event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app import redis_client
-from app.agent import registry
+from app.agent import actions, registry
 from app.agent.registry import Change, Preview, ToolError, ToolSpec, invoke
 from app.models import Account, AccountType, Category, Organization
 from app.models.agent_pending_action import AgentPendingAction
@@ -555,27 +555,34 @@ async def test_fp12_expired_and_decided_rows_do_not_count(factory, w):
     await _stage(factory, w, "150.00")
 
 
+
+def _k(key: str) -> str:
+    """The live windowed Redis key for bucket ``key`` (window from its suffix)."""
+    window = {"min": 60, "day": 86_400}.get(key.rsplit(":", 1)[1], 3_600)
+    return actions.window_key(key, window)
+
+
 async def test_fp12_daily_preview_caps_fail_closed_at_the_boundary(factory, w):
     a = w["A"]
     fake = _fake()
-    fake._kv[f"agent:usr:{a['member']}:preview:day"] = 199
+    fake._kv[_k(f"agent:usr:{a['member']}:preview:day")] = 199
     await _stage(factory, w, "101.00")
     err = await _refused(_stage(factory, w, "102.00"))
     assert err.code == "preview_rate_limited"
     fake._kv.clear()
-    fake._kv[f"agent:org:{a['org']}:preview:day"] = 1000
+    fake._kv[_k(f"agent:org:{a['org']}:preview:day")] = 1000
     assert (await _refused(_stage(factory, w, "103.00"))).code == "preview_rate_limited"
     fake._kv.clear()
-    fake._kv[f"agent:tok:{a['t1']}:preview:day"] = 200
+    fake._kv[_k(f"agent:tok:{a['t1']}:preview:day")] = 200
     assert (await _refused(_stage(factory, w, "104.00", api_token_id=a["t1"], **MCP))
             ).code == "preview_rate_limited"
     fake._kv.clear()
-    fake._kv[f"agent:tok:{a['t1']}:preview:min"] = 20
+    fake._kv[_k(f"agent:tok:{a['t1']}:preview:min")] = 20
     assert (await _refused(_stage(factory, w, "105.00", api_token_id=a["t1"], **MCP))
             ).code == "preview_rate_limited"
     fake._kv.clear()
     await _stage(factory, w, "106.00")
-    assert fake._ttls[f"agent:usr:{a['member']}:preview:day"] == 86_400
+    assert fake._ttls[_k(f"agent:usr:{a['member']}:preview:day")] == 86_400
 
 
 class _DownRedis:
@@ -682,7 +689,7 @@ async def test_cancel_is_pending_only_unaudited_and_principal_bound(factory, w):
 async def test_confirm_bucket_is_30_per_hour_and_checked_before_the_claim(factory, w):
     a = w["A"]
     out = await _stage(factory, w)
-    _fake()._kv[f"agent:usr:{a['member']}:confirm"] = 30
+    _fake()._kv[_k(f"agent:usr:{a['member']}:confirm")] = 30
     assert (await _refused(_confirm(factory, a["member"], out["action_id"]))).code == "confirm_rate_limited"
     assert (await _row(factory, out["action_id"])).status.value == "pending"
 
@@ -692,7 +699,7 @@ async def test_sensitive_confirm_over_mcp_has_its_own_daily_bucket(factory, w, s
     calls = scratch("sens_tool", risk="sensitive")
     out = await _invoke(factory, a["member"], "sens_tool", {"budget_id": a["b1"]},
                         api_token_id=a["t1"], **MCP)
-    _fake()._kv[f"agent:tok:{a['t1']}:sensitive:day"] = 10
+    _fake()._kv[_k(f"agent:tok:{a['t1']}:sensitive:day")] = 10
     err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a["t1"], **MCP))
     assert err.code == "sensitive_budget_exhausted"
     assert (await _row(factory, out["action_id"])).status.value == "failed"
@@ -764,7 +771,7 @@ async def test_fa7_auto_budget_exhausted_is_429_never_a_silent_preview(factory, 
     fail-closed test)."""
     a = w["A"]
     fake = _fake()
-    fake._kv[f"agent:tok:{a['t1']}:auto:day"] = 99
+    fake._kv[_k(f"agent:tok:{a['t1']}:auto:day")] = 99
     out = await _stage(factory, w, api_token_id=a["t1"], **AUTO)  # the 100th
     assert out["status"] == "done"
     err = await _refused(_stage(factory, w, "130.00", api_token_id=a["t1"], **AUTO))  # the 101st
@@ -773,14 +780,14 @@ async def test_fa7_auto_budget_exhausted_is_429_never_a_silent_preview(factory, 
     assert (await _amount(factory, a["b1"])) == Decimal("120.00")
     # the per-user cap is separate
     fake._kv.clear()
-    fake._kv[f"agent:usr:{a['member']}:auto:day"] = 200
+    fake._kv[_k(f"agent:usr:{a['member']}:auto:day")] = 200
     assert (await _refused(_stage(factory, w, "131.00", api_token_id=a["t2"], **AUTO))
             ).code == "auto_budget_exhausted"
 
 
 async def test_auto_confirm_bucket_429_cancels_the_staged_row(factory, w):
     a = w["A"]
-    _fake()._kv[f"agent:tok:{a['t1']}:confirm"] = 30
+    _fake()._kv[_k(f"agent:tok:{a['t1']}:confirm")] = 30
     err = await _refused(_stage(factory, w, api_token_id=a["t1"], **AUTO))
     assert err.code == "confirm_rate_limited"
     (row,) = await _rows(factory)

@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import time
 from dataclasses import asdict
 from datetime import timedelta
 from typing import Any
@@ -83,17 +84,24 @@ def _scope_gate(ctx: ToolContext, scope: str | None) -> None:
         raise ToolError("scope_denied", "not a valid agent principal")
 
 
+def window_key(key: str, window: int) -> str:
+    return f"{key}:{int(time.time()) // window}"
+
+
 async def _hit(key: str, limit: int, window: int, code: str) -> None:
-    """Fixed-window counter: INCR, EXPIRE on the first hit. Fails closed."""
+    """Fixed-window counter. Fails closed.
+
+    The window index is part of the key and EXPIRE runs on every hit, so a
+    lost EXPIRE (crash between the two calls) strands one window's key, never
+    the bucket: the next window is a new key.
+    """
     client = redis_client.get_client()
     if client is None:
         raise ToolError("limits_unavailable", "rate limiting is unavailable")
+    key = window_key(key, window)
     try:
         n = await client.incr(key)
-        if n == 1:
-            # ponytail: a crash between INCR and EXPIRE leaves a key with no TTL
-            # (it fails closed, forever); pipeline them if that is ever observed.
-            await client.expire(key, window)
+        await client.expire(key, window)
     except RedisError:
         raise ToolError("limits_unavailable", "rate limiting is unavailable") from None
     if n > limit:
