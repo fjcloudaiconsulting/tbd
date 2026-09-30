@@ -84,7 +84,7 @@ import pathlib
 
 import pytest
 
-from app.auth.feature_catalog import ALL_FEATURE_KEYS
+from app.auth.feature_catalog import ALL_FEATURE_KEYS, FEATURE_MODULES, METER_MODULES
 
 #: ⚠ Run this on the HOST, from the repo root. The fixture directory is
 #: mounted read-only into the backend container, so an in-container run
@@ -177,9 +177,49 @@ def test_fixture_is_reproducible_from_the_generator() -> None:
     would fail. The literal below is therefore kept byte-identical to the
     generator's `json.dumps(..., indent=2) + "\\n"` by hand.
     """
-    expected = json.dumps({"keys": sorted(ALL_FEATURE_KEYS)}, indent=2) + "\n"
+    expected = json.dumps(
+        {
+            "keys": sorted(ALL_FEATURE_KEYS),
+            "meters": dict(sorted(METER_MODULES.items())),
+            "modules": {m: sorted(k) for m, k in sorted(FEATURE_MODULES.items())},
+        },
+        indent=2,
+    ) + "\n"
     assert _fixture_path().read_text() == expected, (
         "feature-catalog.json is not byte-identical to its generator's "
         f"output. Regenerate with `{REGEN}` rather than hand-editing, and "
         "review the diff."
     )
+
+
+def test_modules_and_meters_match_the_python_catalog() -> None:
+    """FENCE F-E3 (TBD-559), cross-language half. The fixture's module and
+    meter maps equal the Python ones, so the frontend mirror, which the vitest
+    drift guard compares against this fixture, agrees with the backend.
+
+    Wrong implementation killed: a key moved between modules, or a meter added,
+    in Python without regenerating the fixture. Set-equality on ``keys`` above
+    cannot see either.
+    """
+    payload = _load()
+    assert payload["meters"] == METER_MODULES
+    assert {m: set(k) for m, k in payload["modules"].items()} == {
+        m: set(k) for m, k in FEATURE_MODULES.items()
+    }
+
+
+def test_every_key_and_meter_is_in_exactly_one_module() -> None:
+    """FENCE F-E3 (TBD-559), catalog half. Every feature key sits in exactly
+    one module, no module lists an unknown key, and every meter names a module
+    that exists.
+
+    Wrong implementations killed: a key added to ``FeatureKey`` with no module
+    (the admin UI could never grant it in one click), a key listed in two
+    modules (granting one module would silently grant part of another), and a
+    meter pointing at a module that does not exist.
+    """
+    listed = [k for keys in FEATURE_MODULES.values() for k in keys]
+    assert sorted(listed) == sorted(ALL_FEATURE_KEYS), (
+        "each feature key must appear in exactly one FEATURE_MODULES entry"
+    )
+    assert set(METER_MODULES.values()) <= set(FEATURE_MODULES)

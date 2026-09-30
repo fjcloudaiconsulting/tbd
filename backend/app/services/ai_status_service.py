@@ -16,7 +16,7 @@ async def get_ai_feature_status(
 ) -> dict[str, dict[str, bool]]:
     """Return per-feature {entitled, configured} keyed by UI id.
 
-    Keys: "categorize", "forecast", "budget".
+    Keys: "categorize", "forecast", "budget", "agent".
     """
     features = await feature_service.get_features(db, org_id)
     out: dict[str, dict[str, bool]] = {}

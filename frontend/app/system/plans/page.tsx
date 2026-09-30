@@ -33,6 +33,7 @@ const DEFAULT_FEATURES: PlanFeatures = {
   "ai.forecast": false,
   "ai.smart_plan": false,
   "ai.autocategorize": false,
+  "ai.agent": false,
 };
 
 const FEATURE_KEYS = Object.keys(FEATURE_LABELS) as FeatureKey[];

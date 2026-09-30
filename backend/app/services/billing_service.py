@@ -73,6 +73,28 @@ def next_cycle_window(
     return next_start, following - datetime.timedelta(days=1)
 
 
+async def _open_periods(db: AsyncSession, org_id: int) -> list[BillingPeriod]:
+    """The org's open rows (``end_date IS NULL``), newest start first."""
+    result = await db.execute(
+        select(BillingPeriod).where(
+            BillingPeriod.org_id == org_id,
+            BillingPeriod.end_date.is_(None),
+        ).order_by(BillingPeriod.start_date.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def find_open_period(db: AsyncSession, org_id: int) -> BillingPeriod | None:
+    """The period :func:`get_current_period` would return, or ``None``.
+
+    READ-ONLY twin of :func:`get_current_period` (TBD-559): it never
+    auto-creates. The agent's read tools resolve their period through this so
+    a read on an org with no open period writes nothing.
+    """
+    open_periods = await _open_periods(db, org_id)
+    return open_periods[0] if open_periods else None
+
+
 async def get_current_period(
     db: AsyncSession, org_id: int, *, today: datetime.date | None = None
 ) -> BillingPeriod:
@@ -103,13 +125,7 @@ async def get_current_period(
     has resolved a clock and calls it looks clock-safe while still reaching this
     auto-create. It takes a ``today`` pass-through for that reason; thread it.
     """
-    result = await db.execute(
-        select(BillingPeriod).where(
-            BillingPeriod.org_id == org_id,
-            BillingPeriod.end_date.is_(None),
-        ).order_by(BillingPeriod.start_date.desc())
-    )
-    open_periods = list(result.scalars().all())
+    open_periods = await _open_periods(db, org_id)
 
     if len(open_periods) > 1:
         import structlog

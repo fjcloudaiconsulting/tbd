@@ -1,8 +1,24 @@
 {
   "keys": [
+    "ai.agent",
     "ai.autocategorize",
     "ai.budget",
     "ai.forecast",
     "ai.smart_plan"
-  ]
+  ],
+  "meters": {
+    "assistant.turns": "ai",
+    "mcp.calls": "ai",
+    "platform_ai.cents": "ai",
+    "platform_ai.tokens": "ai"
+  },
+  "modules": {
+    "ai": [
+      "ai.agent",
+      "ai.autocategorize",
+      "ai.budget",
+      "ai.forecast",
+      "ai.smart_plan"
+    ]
+  }
 }

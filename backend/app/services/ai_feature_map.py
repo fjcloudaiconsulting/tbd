@@ -1,4 +1,4 @@
-"""Canonical mapping for the 3 user-facing AI features.
+"""Canonical mapping for the user-facing AI features.
 
 The entitlement key (feature catalog), the routing feature name (dispatch),
 and the UI id all differ. This is the ONE place that triple lives; any drift
@@ -11,6 +11,8 @@ AI_FEATURE_MAP: tuple[tuple[str, str, str], ...] = (
     ("ai.autocategorize", "categorize_transactions", "categorize"),
     ("ai.forecast", "smart_forecast", "forecast"),
     ("ai.budget", "smart_budget", "budget"),
+    # TBD-559: one key for both agent surfaces (in-app assistant and MCP).
+    ("ai.agent", "chat", "agent"),
 )
 
 
