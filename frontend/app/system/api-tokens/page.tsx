@@ -78,6 +78,18 @@ export default function SystemApiTokensPage() {
     }
   }, [loading, user, canManage, router]);
 
+  // TBD-390: the SSO step-up callback for `pat_mint` lands here. Strip its
+  // `#stepup_token=` fragment and `?sso_stepup_error=` param on mount so a
+  // proof never sits in history. Nothing here reads them (no UI yet).
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const hasToken = url.hash.startsWith("#stepup_token=");
+    if (!hasToken && !url.searchParams.has("sso_stepup_error")) return;
+    if (hasToken) url.hash = "";
+    url.searchParams.delete("sso_stepup_error");
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }, []);
+
   if (loading) {
     return (
       <SystemLayout current="API Tokens">

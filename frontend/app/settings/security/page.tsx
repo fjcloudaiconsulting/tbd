@@ -27,15 +27,14 @@ import {
 } from "@/lib/styles";
 import type { MfaSetupResponse, MfaEnableResponse } from "@/lib/types";
 
-// Mirror of the backend's `_STEPUP_RETURN_TARGETS` allowlist key.
-// Initiate POST sends this so the callback knows to redirect back to
-// /settings/security (here) instead of the email-change page.
-const STEPUP_RETURN_TO = "security";
+// Mirror of a backend `STEPUP_ACTIONS` key. The proof is scoped to this
+// action, and the callback redirects back to /settings/security (here).
+const STEPUP_ACTION = "password_set";
 
 /**
  * Friendly copy keyed by the `?sso_stepup_error=<code>` value that
  * /api/v1/auth/sso-stepup/callback redirects back with on failure.
- * The security page is reached via `return_to: "security"`, so any
+ * The security page is reached via `action: "password_set"`, so any
  * step-up flow started here (first-time password set) lands back here
  * on failure. Without this banner the user sees no feedback at all.
  *
@@ -85,7 +84,7 @@ export default function SecurityPage() {
 
   // `?sso_stepup_error=<code>` arrives via the 307 from
   // /api/v1/auth/sso-stepup/callback when the Google round-trip
-  // fails AND the state slot encoded `return_to: "security"` (any
+  // fails AND the state slot encoded `action: "password_set"` (any
   // step-up initiated from this page). Without this banner the
   // user lands here with no visible feedback.
   const stepupErrorCode = searchParams?.get("sso_stepup_error");
@@ -123,7 +122,7 @@ export default function SecurityPage() {
         "/api/v1/auth/sso-stepup/initiate",
         {
           method: "POST",
-          body: JSON.stringify({ return_to: STEPUP_RETURN_TO }),
+          body: JSON.stringify({ action: STEPUP_ACTION }),
         },
       );
       // Full navigation, not router.push — Google must own the next page.

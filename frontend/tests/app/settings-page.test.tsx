@@ -108,6 +108,39 @@ describe("Settings page — email change step-up token state hygiene", () => {
     ).toBeInTheDocument();
   });
 
+  it("clicking 'Verify with Google' POSTs initiate with action=email_change", async () => {
+    mockUser(false);
+    vi.mocked(apiFetch).mockResolvedValueOnce({
+      redirect_url: "https://accounts.google.com/o/oauth2/v2/auth?state=stepup",
+    } as never);
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: { ...originalLocation, href: "", hash: "" },
+    });
+
+    render(<SettingsProfilePage />);
+    fireEvent.change(screen.getByLabelText(/^Email$/i), {
+      target: { value: "new@acme.io" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Verify with Google/i }));
+
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith(
+        "/api/v1/auth/sso-stepup/initiate",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ action: "email_change" }),
+        }),
+      );
+    });
+
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: originalLocation,
+    });
+  });
+
   it("renders the SSO step-up error banner when ?sso_stepup_error=state is on the URL", () => {
     mockUser(false);
     vi.spyOn(nextNavigation, "useSearchParams").mockReturnValue(

@@ -1,5 +1,4 @@
 import re
-import secrets
 from datetime import datetime, timezone
 
 import structlog
@@ -8,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.pat import require_interactive_session
+from app.auth.stepup import consume_stepup, stepup_valid
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.user import Organization, User
@@ -37,15 +37,6 @@ def _request_id() -> str | None:
 
 _USERNAME_RE = re.compile(USERNAME_PATTERN)
 
-
-def _aware(dt: datetime) -> datetime:
-    """Treat naive datetimes as UTC. The `users` step-up expiry column
-    is plain `DateTime` (naive) for cross-DB compatibility, but every
-    write goes through `datetime.now(timezone.utc)` so the underlying
-    instant is always UTC. This helper makes the comparison safe even
-    if a future migration flips the column to `DateTime(timezone=True)`.
-    """
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
@@ -156,8 +147,8 @@ async def update_profile(
         # Two acceptable proofs of presence:
         #   - normal users (`password_set=True`) supply `current_password`
         #   - SSO users who never set a password (`password_set=False`)
-        #     instead supply a fresh `stepup_token` that the SSO step-up
-        #     callback wrote on their row (5min hard expiry, single-use).
+        #     instead supply a fresh step-up proof issued for the
+        #     `email_change` action (5min hard expiry, single-use, TBD-390).
         if current_user.password_set:
             if not body.current_password or not verify_password(
                 body.current_password, current_user.password_hash
@@ -167,20 +158,9 @@ async def update_profile(
                     detail="Current password is required and must be correct to change email",
                 )
         else:
-            now_check = datetime.now(timezone.utc)
-            stored = current_user.stepup_token
-            expires_at = current_user.stepup_token_expires_at
-            # Compare in a constant-time manner; reject missing/expired
-            # tokens with the same generic 400 the password branch
-            # returns to avoid leaking which check failed.
-            valid = (
-                bool(body.stepup_token)
-                and stored is not None
-                and expires_at is not None
-                and _aware(expires_at) > now_check
-                and secrets.compare_digest(body.stepup_token, stored)
-            )
-            if not valid:
+            # Constant-time, scoped to this action; missing/expired/wrong
+            # proofs share one generic 400 so no check leaks.
+            if not stepup_valid(current_user, body.stepup_token, "email_change"):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Step-up verification with Google is required to change email",
@@ -204,9 +184,14 @@ async def update_profile(
             )
         if not current_user.password_set:
             # Step-up was validated above; only consume now that the
-            # change is actually about to be applied.
-            current_user.stepup_token = None
-            current_user.stepup_token_expires_at = None
+            # change is actually about to be applied. A lost race (another
+            # request spent the proof) is the same 400. After False the
+            # session is rolled back: raise, never read `current_user`.
+            if not await consume_stepup(db, current_user):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Step-up verification with Google is required to change email",
+                )
         # TBD-361. TWO-PHASE COMMIT. Record the CLAIM; change nothing about
         # identity. The live `email`, `email_verified` and the user's session
         # all survive until the new address proves itself.
@@ -455,8 +440,8 @@ async def change_password(
     #   - `password_set=True` (default for every classic register flow):
     #     require a valid `current_password`. Existing behavior.
     #   - `password_set=False` (Google SSO user setting a real password
-    #     for the first time): require a valid `stepup_token` issued by
-    #     the SSO step-up callback. Same proof-of-presence the email
+    #     for the first time): require a valid step-up proof issued by
+    #     the SSO step-up callback for the `password_set` action. Same proof-of-presence the email
     #     change branch uses, for the same reason — without it a
     #     stolen SSO session could write a persistent local password
     #     and convert a transient hijack into permanent account access.
@@ -476,25 +461,15 @@ async def change_password(
                 detail="Current password is incorrect",
             )
     else:
-        now_check = datetime.now(timezone.utc)
-        stored = current_user.stepup_token
-        expires_at = current_user.stepup_token_expires_at
-        valid = (
-            bool(body.stepup_token)
-            and stored is not None
-            and expires_at is not None
-            and _aware(expires_at) > now_check
-            and secrets.compare_digest(body.stepup_token, stored)
-        )
-        if not valid:
+        # Validate, then spend atomically so the proof cannot be replayed.
+        # After a False consume the session is rolled back: raise only.
+        if not stepup_valid(current_user, body.stepup_token, "password_set") or not (
+            await consume_stepup(db, current_user)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Step-up verification with Google is required to set a password",
             )
-        # Consume the token so it cannot be replayed against any
-        # other step-up-gated endpoint.
-        current_user.stepup_token = None
-        current_user.stepup_token_expires_at = None
 
     now = datetime.now(timezone.utc)
     current_user.password_hash = hash_password(body.new_password)

@@ -131,12 +131,11 @@ class User(Base):
     # check kicks in. Default True so every existing row stays on the
     # normal change-password path.
     password_set: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="1")
-    # Single-use, 5-minute step-up token issued by the SSO step-up
-    # callback (POST /api/v1/auth/sso-stepup/initiate → callback). The
-    # email-change endpoint accepts it as an alternative to the current
-    # password when `password_set` is False so SSO users can still
-    # rotate their email without ever having a password to type. Token
-    # is consumed (set to None) on first use; expiry is hard.
+    # Single-use, 5-minute step-up proof issued by the SSO step-up
+    # callback (POST /api/v1/auth/sso-stepup/initiate → callback), stored
+    # as `f"{action}:{token}"` so it authorizes ONE action (TBD-390). Read
+    # and written only through `app.auth.stepup`; consumed atomically on
+    # first use; expiry is hard.
     stepup_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
     stepup_token_expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True

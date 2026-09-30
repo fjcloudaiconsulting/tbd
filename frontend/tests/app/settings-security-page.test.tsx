@@ -1,14 +1,14 @@
 /**
  * /settings/security step-up error banner coverage (Finding 1).
  *
- * The step-up flow initiated from this page encodes `return_to: "security"`
+ * The step-up flow initiated from this page encodes `action: "password_set"`
  * in state, so failures redirect back to /settings/security?sso_stepup_error=
  * <code>. Pre-fix the page had no banner UI, so the user saw nothing.
  * These tests pin:
  *
  *   - the banner renders for each error code with the security-context copy
  *   - the retry CTA wires through the existing Verify-with-Google flow,
- *     hitting /api/v1/auth/sso-stepup/initiate with `{ return_to: "security" }`
+ *     hitting /api/v1/auth/sso-stepup/initiate with `{ action: "password_set" }`
  *     so a successful retry lands back here, not on /settings
  *   - dismiss/retry strips ?sso_stepup_error= from the URL
  *
@@ -186,7 +186,7 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
     expect(screen.queryByTestId("sso-stepup-error-banner")).toBeNull();
   });
 
-  it("retry CTA re-initiates step-up with return_to: 'security' (no jsdom navigation warning)", async () => {
+  it("retry CTA re-initiates step-up with action: 'password_set' (no jsdom navigation warning)", async () => {
     mockUser(false);
     vi.spyOn(nextNavigation, "useSearchParams").mockReturnValue(
       new URLSearchParams("sso_stepup_error=state") as never,
@@ -214,9 +214,9 @@ describe("Settings/Security page — SSO step-up error banner (Finding 1)", () =
         "/api/v1/auth/sso-stepup/initiate",
         expect.objectContaining({
           method: "POST",
-          // The page sends return_to: "security" so a successful retry
+          // The page sends action: "password_set" so a successful retry
           // lands back here, not on /settings.
-          body: JSON.stringify({ return_to: "security" }),
+          body: JSON.stringify({ action: "password_set" }),
         }),
       );
     });

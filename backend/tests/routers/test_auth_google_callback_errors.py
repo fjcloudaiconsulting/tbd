@@ -1797,7 +1797,7 @@ async def test_stepup_expired_oauth_state_cookie_redirects_with_state_code(
     with TestClient(app) as client:
         res = client.get(
             "/api/v1/auth/sso-stepup/callback",
-            params={"code": "dummy", "state": f"stepup:{user_id}:nonce:settings"},
+            params={"code": "dummy", "state": f"stepup:{user_id}:nonce:email_change"},
             follow_redirects=False,
         )
 

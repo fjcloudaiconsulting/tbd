@@ -12,8 +12,9 @@ Security-critical paths:
 
 * **Step-up on mint (spec §8, mirrors ``users.py``):** a ``password_set``
   superadmin proves presence with ``current_password`` (``verify_password``);
-  an SSO superadmin (``password_set=False``) with a fresh, constant-time
-  ``stepup_token`` that is **consumed** on success; and — *additionally* —
+  an SSO superadmin (``password_set=False``) with a fresh step-up proof
+  issued for the ``pat_mint`` action (``app.auth.stepup``, TBD-390), spent
+  atomically on success; and — *additionally* —
   any operator with ``mfa_enabled`` must supply a fresh TOTP ``mfa_code``.
   Missing/wrong proof → 401. Operators without MFA are never asked for it.
 * **Reveal-once (SEC-R5):** the plaintext token appears ONLY in the mint
@@ -23,8 +24,6 @@ Security-critical paths:
   failure; ``api_token.revoked``; ``api_token.revoked_all`` (with count).
   Detail carries name/scope/expiry/prefix — never the secret.
 """
-import secrets
-from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
@@ -32,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.pat import require_interactive_session
+from app.auth.stepup import consume_stepup, stepup_valid
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.notification import NotificationCategory
@@ -52,12 +52,6 @@ router = APIRouter(prefix="/api/v1/system/api-tokens", tags=["api-tokens"])
 
 def _request_id() -> Optional[str]:
     return structlog.contextvars.get_contextvars().get("request_id")
-
-
-def _aware(dt: datetime) -> datetime:
-    """Treat a naive DB datetime as UTC before comparing to an aware now
-    (the ``users.py`` step-up idiom — ``stepup_token_expires_at`` is naive)."""
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 async def require_superadmin(
@@ -88,8 +82,8 @@ def _step_up_401() -> HTTPException:
 def _verify_step_up(user: User, body: MintTokenRequest) -> bool:
     """Validate the mint step-up proofs against the LIVE user row (spec §8).
 
-    Returns ``True`` when an SSO ``stepup_token`` was consumed-worthy (caller
-    must null it after the mint transaction), ``False`` otherwise. Raises a
+    Returns ``True`` when an SSO step-up proof was validated (the caller must
+    spend it with ``consume_stepup`` before minting), ``False`` otherwise. Raises a
     generic 401 for any missing/invalid proof; raises 503 only for a genuine
     MFA config error (undecryptable secret), matching ``auth.py``.
 
@@ -97,27 +91,16 @@ def _verify_step_up(user: User, body: MintTokenRequest) -> bool:
     handler after every proof (including MFA) has passed, so a failed MFA
     check can't burn a valid step-up token.
     """
-    now = datetime.now(timezone.utc)
-
-    consume_stepup = False
+    sso_proof = False
     if user.password_set:
         if not body.current_password or not verify_password(
             body.current_password, user.password_hash
         ):
             raise _step_up_401()
     else:
-        stored = user.stepup_token
-        expires_at = user.stepup_token_expires_at
-        valid = (
-            bool(body.stepup_token)
-            and stored is not None
-            and expires_at is not None
-            and _aware(expires_at) > now
-            and secrets.compare_digest(body.stepup_token, stored)
-        )
-        if not valid:
+        if not stepup_valid(user, body.stepup_token, "pat_mint"):
             raise _step_up_401()
-        consume_stepup = True
+        sso_proof = True
 
     # Additionally require a fresh TOTP for MFA-enabled operators. The trigger
     # is the canonical ``mfa_enabled`` flag, NOT ``totp_secret`` non-null
@@ -135,7 +118,7 @@ def _verify_step_up(user: User, body: MintTokenRequest) -> bool:
         if not verify_totp(secret, body.mfa_code):
             raise _step_up_401()
 
-    return consume_stepup
+    return sso_proof
 
 
 def _out(row) -> ApiTokenOut:
@@ -175,7 +158,14 @@ async def mint_token(
     # live-but-hijacked session trying to plant a backdoor token), so it is
     # audited before we reject.
     try:
-        consume_stepup = _verify_step_up(current_user, body)
+        sso_proof = _verify_step_up(current_user, body)
+        # Spend the SSO proof now that every proof (MFA included) has passed,
+        # so a failed MFA never burns it and it can't be replayed (SEC F4).
+        # A lost race is the same audited 401. After False the session is
+        # rolled back, which is why the audit below reads only the actor
+        # fields captured up front.
+        if sso_proof and not await consume_stepup(db, current_user):
+            raise _step_up_401()
     except HTTPException as exc:
         if exc.status_code == status.HTTP_401_UNAUTHORIZED:
             await audit_service.record_audit_event(
@@ -197,13 +187,6 @@ async def mint_token(
                 },
             )
         raise
-
-    # Consume the SSO step-up token now that every proof has passed, so it
-    # can't be replayed across mint + another sensitive action (SEC F4). The
-    # mutation rides the same ``db`` session that ``mint`` commits below.
-    if consume_stepup:
-        current_user.stepup_token = None
-        current_user.stepup_token_expires_at = None
 
     plaintext, row = await api_token_service.mint(
         db,

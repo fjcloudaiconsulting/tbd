@@ -1,16 +1,16 @@
-"""SSO step-up `return_to` allowlist + state shape coverage.
+"""SSO step-up action allowlist + state shape coverage.
 
-Pins the invariants flagged in the PR #149 review:
+Pins the invariants flagged in the PR #149 review, re-keyed on the action
+since TBD-390 (the action replaced `return_to`):
 
-  - No `return_to` in the request body encodes the default key into
-    state, and the callback redirects to `/settings`.
-  - `return_to: "security"` encodes the security key, and the
-    callback redirects to `/settings/security#stepup_token=<token>`
-    (the issued token, in the URL fragment).
-  - An unknown `return_to` value (junk strings, traversal payloads,
-    open-redirect-style URLs) MUST NOT redirect to that target. The
-    initiate handler silently coerces the key to the default before
-    encoding state, so the callback redirects to `/settings`.
+  - `action: "email_change"` encodes that action into state, and the
+    callback redirects to `/settings`.
+  - `action: "password_set"` encodes that action, and the callback
+    redirects to `/settings/security#stepup_token=<token>` (the bare
+    issued token, in the URL fragment).
+  - An unknown action (junk strings, traversal payloads, open-redirect
+    style URLs, the old return keys) is a 422 with no state cookie, so
+    nothing attacker-chosen can reach a redirect target.
   - Malformed state at the callback (3-part legacy shape, empty
     string, junk) returns 400 "Malformed step-up state". No redirect,
     no step-up token issued.
@@ -323,22 +323,25 @@ def _patch_httpx_for_email(
 
 
 # ---------------------------------------------------------------------------
-# Test 1 — no `return_to` in the body → default key in state, /settings.
+# Test 1 — `action: "email_change"` → action in state, /settings.
+# (TBD-390: the action replaced `return_to`; initiate without a known action
+# is a 422, fenced in tests/auth/test_stepup_action_scoping.py F6.)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_initiate_without_return_to_encodes_default_key(
+async def test_initiate_with_email_change_action_encodes_the_action(
     session_factory, google_config
 ):
-    """When the request body omits `return_to`, the state cookie must
-    encode the default key ("settings") in slot 4. The callback later
-    keys off that slot, so the encoded value is what drives the
-    redirect target."""
+    """The state cookie must encode the action in slot 4. The callback
+    later keys off that slot, so the encoded value is what drives both the
+    proof's scope and the redirect target."""
     user_id = await _seed_user(session_factory)
     app = _make_app(session_factory, user_id)
 
     with TestClient(app) as client:
-        res = client.post("/api/v1/auth/sso-stepup/initiate")
+        res = client.post(
+            "/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"}
+        )
 
     assert res.status_code == 200, res.text
     state_cookie = res.cookies.get("oauth_state")
@@ -348,15 +351,15 @@ async def test_initiate_without_return_to_encodes_default_key(
     assert parts[0] == "stepup"
     assert parts[1] == str(user_id)
     assert len(parts) == 4
-    assert parts[3] == "settings"
+    assert parts[3] == "email_change"
 
 
 @pytest.mark.asyncio
-async def test_callback_with_default_state_redirects_to_settings(
+async def test_callback_with_email_change_state_redirects_to_settings(
     session_factory, google_config, monkeypatch
 ):
-    """End-to-end pin: state with the default key → 302 to /settings
-    (no `/security` suffix), with the issued step-up token in the URL
+    """End-to-end pin: email_change state → 302 to /settings (no
+    `/security` suffix), with the issued step-up token in the URL
     fragment."""
     user_id = await _seed_user(session_factory, email="alice@acme.io")
     app = _make_app(session_factory, user_id)
@@ -364,7 +367,9 @@ async def test_callback_with_default_state_redirects_to_settings(
 
     with TestClient(app) as client:
         # Run initiate so we have a matching state cookie+string.
-        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        init = client.post(
+            "/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"}
+        )
         assert init.status_code == 200
         state = init.cookies.get("oauth_state")
         client.cookies.set("oauth_state", state)
@@ -383,11 +388,11 @@ async def test_callback_with_default_state_redirects_to_settings(
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — `return_to: "security"` → /settings/security#stepup_token=<token>.
+# Test 2 — `action: "password_set"` → /settings/security#stepup_token=<token>.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_initiate_with_security_return_to_encodes_security_key(
+async def test_initiate_with_password_set_action_encodes_the_action(
     session_factory, google_config
 ):
     user_id = await _seed_user(session_factory)
@@ -396,7 +401,7 @@ async def test_initiate_with_security_return_to_encodes_security_key(
     with TestClient(app) as client:
         res = client.post(
             "/api/v1/auth/sso-stepup/initiate",
-            json={"return_to": "security"},
+            json={"action": "password_set"},
         )
 
     assert res.status_code == 200, res.text
@@ -406,18 +411,17 @@ async def test_initiate_with_security_return_to_encodes_security_key(
     assert parts[0] == "stepup"
     assert parts[1] == str(user_id)
     assert len(parts) == 4
-    assert parts[3] == "security"
+    assert parts[3] == "password_set"
 
 
 @pytest.mark.asyncio
-async def test_callback_with_security_state_redirects_with_issued_token(
+async def test_callback_with_password_set_state_redirects_with_issued_token(
     session_factory, google_config, monkeypatch
 ):
     """Locks the headline invariant: a successful callback for the
-    "security" target redirects to /settings/security#stepup_token=...
-    where the fragment carries the same random token that was just
-    written to `users.stepup_token`. The token in the URL must be the
-    real issued token, not a placeholder."""
+    password_set action redirects to /settings/security#stepup_token=...
+    where the fragment carries the bare random token and the row stores it
+    scoped to the action (`password_set:<token>`)."""
     user_id = await _seed_user(session_factory, email="alice@acme.io")
     app = _make_app(session_factory, user_id)
     _patch_httpx_for_email(monkeypatch, "alice@acme.io")
@@ -425,7 +429,7 @@ async def test_callback_with_security_state_redirects_with_issued_token(
     with TestClient(app) as client:
         init = client.post(
             "/api/v1/auth/sso-stepup/initiate",
-            json={"return_to": "security"},
+            json={"action": "password_set"},
         )
         assert init.status_code == 200
         state = init.cookies.get("oauth_state")
@@ -441,92 +445,49 @@ async def test_callback_with_security_state_redirects_with_issued_token(
     location = callback.headers["location"]
     assert location.startswith("http://localhost/settings/security#stepup_token=")
 
-    # The token in the fragment must equal the one written to the row.
     fragment_token = location.split("#stepup_token=", 1)[1]
     assert fragment_token, "expected a non-empty step-up token in the fragment"
 
     async with session_factory() as db:
         user = await db.get(User, user_id)
         assert user is not None
-        assert user.stepup_token == fragment_token
+        assert user.stepup_token == f"password_set:{fragment_token}"
         assert user.stepup_token_expires_at is not None
 
 
 # ---------------------------------------------------------------------------
-# Test 3 — unknown `return_to` value → silently coerced to default. No
-# attacker-controlled host or path ever reaches the redirect Location.
+# Test 3 — an unknown action is a 422 with no state cookie. It is no longer
+# silently coerced to a default: a default action would be a proof for an
+# action the caller never asked for. No attacker value reaches a Location.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "evil_return_to",
+    "evil_action",
     [
         "evil.example.com",
         "admin",
         "../",
         "//attacker.com",
+        "settings",
+        "security",
     ],
 )
 @pytest.mark.asyncio
-async def test_initiate_unknown_return_to_silently_coerces_to_default(
-    session_factory, google_config, evil_return_to
+async def test_initiate_unknown_action_is_rejected(
+    session_factory, google_config, evil_action
 ):
-    """The schema accepts arbitrary short strings; the handler validates
-    against `_STEPUP_RETURN_TARGETS` and falls back to the default
-    rather than 4xx, so old clients never break. The state must
-    therefore encode "settings", never the attacker-supplied token."""
     user_id = await _seed_user(session_factory)
     app = _make_app(session_factory, user_id)
 
     with TestClient(app) as client:
         res = client.post(
             "/api/v1/auth/sso-stepup/initiate",
-            json={"return_to": evil_return_to},
+            json={"action": evil_action},
         )
 
-    assert res.status_code == 200, res.text
-    state_cookie = res.cookies.get("oauth_state")
-    assert state_cookie is not None
-    parts = state_cookie.split(":")
-    assert len(parts) == 4
-    assert parts[3] == "settings"
-    assert evil_return_to not in state_cookie
-
-    # And the Google consent URL embeds the same coerced state, so the
-    # round trip can't smuggle the attacker value back either.
-    redirect_url = res.json()["redirect_url"]
-    assert evil_return_to not in redirect_url
-
-
-@pytest.mark.asyncio
-async def test_callback_with_attacker_target_redirects_to_default(
-    session_factory, google_config, monkeypatch
-):
-    """End-to-end pin: even when initiate is called with an attacker
-    string, the callback redirect lands on /settings, never on the
-    attacker-supplied path or host."""
-    user_id = await _seed_user(session_factory, email="alice@acme.io")
-    app = _make_app(session_factory, user_id)
-    _patch_httpx_for_email(monkeypatch, "alice@acme.io")
-
-    with TestClient(app) as client:
-        init = client.post(
-            "/api/v1/auth/sso-stepup/initiate",
-            json={"return_to": "//attacker.com"},
-        )
-        assert init.status_code == 200
-        state = init.cookies.get("oauth_state")
-        client.cookies.set("oauth_state", state)
-
-        callback = client.get(
-            "/api/v1/auth/sso-stepup/callback",
-            params={"code": "fake-google-code", "state": state},
-            follow_redirects=False,
-        )
-
-    assert callback.status_code == 302, callback.text
-    location = callback.headers["location"]
-    assert location.startswith("http://localhost/settings#stepup_token=")
-    assert "attacker.com" not in location
+    assert res.status_code == 422, res.text
+    assert res.cookies.get("oauth_state") is None
+    assert "redirect_url" not in res.text
 
 
 # ---------------------------------------------------------------------------
@@ -539,9 +500,10 @@ async def test_callback_with_attacker_target_redirects_to_default(
     [
         "stepup:1:nonce-only-three-parts",  # legacy 3-part shape
         "nope",  # junk
-        "stepup::nonce:settings",  # empty user_id slot
-        "stepup:not-an-int:nonce:settings",  # non-numeric user_id
-        "stepup:1:nonce:not-a-known-target",  # unknown return key
+        "stepup::nonce:email_change",  # empty user_id slot
+        "stepup:not-an-int:nonce:email_change",  # non-numeric user_id
+        "stepup:1:nonce:not-a-known-target",  # unknown action
+        "stepup:1:nonce:settings",  # pre-TBD-390 return key
     ],
 )
 @pytest.mark.asyncio
@@ -614,7 +576,7 @@ async def test_callback_with_empty_state_returns_friendly_redirect(
 # ---------------------------------------------------------------------------
 # Test 5 — Google cancel / missing code / provider error branches.
 # These bypass FastAPI's old 422 by accepting code/state as Optional.
-# The redirect target derives from `return_to` in state, so we run
+# The redirect target derives from the action in state, so we run
 # each branch for both /settings (default) and /settings/security.
 # ---------------------------------------------------------------------------
 
@@ -623,11 +585,11 @@ async def test_callback_with_empty_state_returns_friendly_redirect(
 async def test_stepup_callback_user_cancelled_redirects_to_settings(
     session_factory, google_config
 ):
-    """User cancelled at Google. Default `return_to` (no /security)
+    """User cancelled at Google. `email_change` action (no /security)
     in state → friendly /settings redirect with banner-ready code."""
     user_id = await _seed_user(session_factory)
     app = _make_app(session_factory, user_id)
-    state = f"stepup:{user_id}:nonce:settings"
+    state = f"stepup:{user_id}:nonce:email_change"
 
     with TestClient(app) as client:
         # TBD-353: the cookie is now set so this test keeps asserting the
@@ -660,11 +622,11 @@ async def test_stepup_callback_user_cancelled_redirects_to_security(
     session_factory, google_config
 ):
     """Same cancel branch, but step-up initiated from /settings/security
-    (`return_to: "security"`). Redirect must land on the security page,
+    (`action: "password_set"`). Redirect must land on the security page,
     not /settings."""
     user_id = await _seed_user(session_factory)
     app = _make_app(session_factory, user_id)
-    state = f"stepup:{user_id}:nonce:security"
+    state = f"stepup:{user_id}:nonce:password_set"
 
     with TestClient(app) as client:
         res = client.get(
@@ -688,7 +650,7 @@ async def test_stepup_callback_provider_error_redirects_with_provider_error_code
     the banner copy reflects "Google had a problem", not "you cancelled"."""
     user_id = await _seed_user(session_factory)
     app = _make_app(session_factory, user_id)
-    state = f"stepup:{user_id}:nonce:security"
+    state = f"stepup:{user_id}:nonce:password_set"
 
     with TestClient(app) as client:
         # TBD-353: the cookie is now set so this test keeps asserting the
@@ -722,7 +684,7 @@ async def test_stepup_callback_missing_code_and_error_redirects_with_token_code(
     "token" UI copy but audit the specific `missing_code` reason."""
     user_id = await _seed_user(session_factory)
     app = _make_app(session_factory, user_id)
-    state = f"stepup:{user_id}:nonce:security"
+    state = f"stepup:{user_id}:nonce:password_set"
 
     with TestClient(app) as client:
         # TBD-353: the cookie is now set so this test keeps asserting the
@@ -789,7 +751,9 @@ async def test_stepup_token_post_timeout_redirects_and_audits_timeout(
 
     started = time.monotonic()
     with TestClient(app) as client:
-        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        init = client.post(
+            "/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"}
+        )
         assert init.status_code == 200
         state = init.cookies.get("oauth_state")
         client.cookies.set("oauth_state", state)
@@ -839,7 +803,9 @@ async def test_stepup_userinfo_get_timeout_records_last_phase(
 
     started = time.monotonic()
     with TestClient(app) as client:
-        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        init = client.post(
+            "/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"}
+        )
         assert init.status_code == 200
         state = init.cookies.get("oauth_state")
         client.cookies.set("oauth_state", state)
@@ -882,7 +848,9 @@ async def test_stepup_two_individually_fast_calls_trip_the_shared_deadline(
     _patch_httpx_for_email(monkeypatch, "alice@acme.io", hang_on="both", delay_s=0.4)
 
     with TestClient(app) as client:
-        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        init = client.post(
+            "/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"}
+        )
         assert init.status_code == 200
         state = init.cookies.get("oauth_state")
         client.cookies.set("oauth_state", state)
@@ -923,7 +891,7 @@ async def test_stepup_timeout_honours_the_security_return_target(
     with TestClient(app) as client:
         init = client.post(
             "/api/v1/auth/sso-stepup/initiate",
-            json={"return_to": "security"},
+            json={"action": "password_set"},
         )
         assert init.status_code == 200
         state = init.cookies.get("oauth_state")
@@ -991,7 +959,9 @@ async def test_stepup_exchange_timeout_emits_the_ungated_warning(
 
     with patch.object(auth_module, "_LOGGER") as logger_mock:
         with TestClient(app) as client:
-            init = client.post("/api/v1/auth/sso-stepup/initiate")
+            init = client.post(
+            "/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"}
+        )
             assert init.status_code == 200
             state = init.cookies.get("oauth_state")
             client.cookies.set("oauth_state", state)
@@ -1028,7 +998,9 @@ async def test_stepup_exchange_timeout_warning_fires_on_the_timeout_path_only(
 
     with patch.object(auth_module, "_LOGGER") as logger_mock:
         with TestClient(app) as client:
-            init = client.post("/api/v1/auth/sso-stepup/initiate")
+            init = client.post(
+            "/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"}
+        )
             assert init.status_code == 200
             state = init.cookies.get("oauth_state")
             client.cookies.set("oauth_state", state)
@@ -1077,7 +1049,9 @@ async def test_stepup_non_timeout_exception_is_not_swallowed(
     )
 
     with TestClient(app) as client:
-        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        init = client.post(
+            "/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"}
+        )
         assert init.status_code == 200
         state = init.cookies.get("oauth_state")
         client.cookies.set("oauth_state", state)
@@ -1122,7 +1096,8 @@ def _drive_stepup_callback(app, client_kwargs: dict | None = None):
     """
     with TestClient(app) as client:
         init = client.post(
-            "/api/v1/auth/sso-stepup/initiate", **(client_kwargs or {})
+            "/api/v1/auth/sso-stepup/initiate",
+            **(client_kwargs or {"json": {"action": "email_change"}}),
         )
         assert init.status_code == 200, init.text
         state = init.cookies.get("oauth_state")
@@ -1439,7 +1414,7 @@ async def test_stepup_token_payload_failure_honours_the_security_return_target(
     *Kills:* a guard that hand-rolls its own `RedirectResponse` with
     the default `/settings` target instead of returning through
     `_stepup_failure`. S6 cannot catch that — S6 initiates with no
-    `return_to`, so the default target and the resolved target are the
+    action `email_change`, so the default target and the resolved target are the
     same string, and a hard-coded default passes it.
 
     A user who started the step-up from /settings/security and lands
@@ -1456,7 +1431,7 @@ async def test_stepup_token_payload_failure_honours_the_security_return_target(
         token_payload={"error": "invalid_grant"},
     )
 
-    res = _drive_stepup_callback(app, {"json": {"return_to": "security"}})
+    res = _drive_stepup_callback(app, {"json": {"action": "password_set"}})
 
     assert res.status_code == 307, res.text
     location = res.headers.get("location", "")
@@ -1483,7 +1458,9 @@ async def test_stepup_programmer_error_at_the_userinfo_call_is_not_swallowed(
     )
 
     with TestClient(app) as client:
-        init = client.post("/api/v1/auth/sso-stepup/initiate")
+        init = client.post(
+            "/api/v1/auth/sso-stepup/initiate", json={"action": "email_change"}
+        )
         assert init.status_code == 200
         state = init.cookies.get("oauth_state")
         client.cookies.set("oauth_state", state)
