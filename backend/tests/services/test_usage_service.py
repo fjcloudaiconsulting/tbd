@@ -13,9 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.dialects import mysql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.util import await_only
 
 from app.models import Base
 from app.models.settings import OrgSetting
@@ -28,30 +29,13 @@ from app.services.usage_service import PlanLimitReached, admit, period_start, re
 NOW = datetime(2026, 9, 30, 12, 0, 0)
 
 
-class _BarrierSession(AsyncSession):
-    """Holds the FIRST UPDATE of ``usage_counters`` on a barrier, so two admits
-    are forced past everything they read before either increments."""
-
-    barrier: asyncio.Barrier | None = None
-    _hit = False
-
-    async def execute(self, stmt, *a, **k):
-        if (
-            self.barrier is not None and not self._hit and getattr(stmt, "is_update", False)
-            and stmt.table.name == "usage_counters"
-        ):
-            self._hit = True
-            await asyncio.wait_for(self.barrier.wait(), 10)
-        return await super().execute(stmt, *a, **k)
-
-
 @pytest_asyncio.fixture
 async def factory(tmp_path):
     eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/u.db")
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     try:
-        yield async_sessionmaker(eng, class_=_BarrierSession, expire_on_commit=False)
+        yield async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
     finally:
         await eng.dispose()
 
@@ -83,10 +67,28 @@ def _mcp(period: str, limit: int | None) -> dict:
 
 # ── F-Q2: the race ────────────────────────────────────────────────────────
 
+def _barrier_on_counter_writes(factory, barrier: asyncio.Barrier) -> None:
+    """Hold each connection's FIRST write to ``usage_counters`` (UPDATE or
+    INSERT, however issued: Core or an ORM flush) on ``barrier``, so two admits
+    are forced past everything they read before either writes. The engine is
+    per test (the fixture disposes it), so the listener needs no removal."""
+    held: set[int] = set()
+
+    def hook(conn, cursor, statement, parameters, context, executemany):
+        head = statement.lstrip().upper()
+        if "usage_counters" in statement and head.startswith(("UPDATE", "INSERT")):
+            key = id(conn.connection.dbapi_connection)
+            if key not in held:
+                held.add(key)
+                await_only(asyncio.wait_for(barrier.wait(), 10))
+
+    event.listen(factory.kw["bind"].sync_engine, "before_cursor_execute", hook)
+
+
 @pytest.mark.parametrize("warm", [True, False], ids=["warm_row", "cold_row"])
 async def test_fq2_two_admits_at_the_limit_exactly_one_passes(factory, warm):
     """FENCE F-Q2. Two admits, forced past their reads by a barrier on the
-    first UPDATE, with one unit of headroom: exactly one passes and the
+    first write to the counter, with one unit of headroom: exactly one passes and the
     counter lands ON the limit. Warm: row at limit-1 (limit 3). Cold: no row
     (limit 1), so the upsert itself is raced too.
 
@@ -102,11 +104,10 @@ async def test_fq2_two_admits_at_the_limit_exactly_one_passes(factory, warm):
                                 period_start=start, value=limit - 1))
             await db.commit()
 
-    barrier = asyncio.Barrier(2)
+    _barrier_on_counter_writes(factory, asyncio.Barrier(2))
 
     async def one():
         async with factory() as db:
-            db.barrier = barrier
             await admit(db, org, "mcp.calls", now=NOW)
 
     results = await asyncio.gather(one(), one(), return_exceptions=True)

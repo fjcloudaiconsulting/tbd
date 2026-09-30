@@ -15,6 +15,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app._time import utcnow_naive
 from app.agent import registry
 from app.agent.registry import ToolError, invoke
 from app.models import Category, Organization
@@ -30,7 +31,7 @@ from app.models.usage_counter import UsageCounter
 from app.models.user import Role, User
 from app.security import hash_password
 
-P_START = datetime.date.today().replace(day=1)
+P_START = utcnow_naive().date().replace(day=1)
 
 
 @pytest_asyncio.fixture
@@ -221,3 +222,13 @@ async def test_402_mcp_zero_limit_carries_null_resets_at(factory, w):
     err = await _refused(_invoke(factory, w, "accounts_list", {}, **_mcp(w)))
     assert err.code == "plan_limit_reached"
     assert err.data == {"meter": "mcp.calls", "limit": 0, "period": "month", "resets_at": None}
+
+
+async def test_admission_precedes_the_scope_gate(factory, w):
+    """FENCE (signed-off order, A1.1). An mcp call refused by gate 5 (an
+    ``agent:read`` token calling a write tool) still counts exactly one
+    ``mcp.calls``. Wrong implementation: admission moved after ``check_gates``,
+    so calls refused by the later gates are free."""
+    err = await _refused(_stage(factory, w, "120.00", **_mcp(w, "agent:read")))
+    assert err.code == "scope_denied"
+    assert await _count(factory, w) == 1
