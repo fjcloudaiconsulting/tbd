@@ -81,6 +81,13 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # ``{action_id}``: a plain ``limit`` would bucket per concrete path.
     "agent.cancel",
     "agent.confirm",
+    # agent_tokens router (TBD-578). Mint is ``dynamic_limit`` (IP); the
+    # path-param routes use ``shared_limit`` for the same reason as above.
+    "agent_tokens.mint",
+    "agent_tokens.org_revoke",
+    "agent_tokens.revoke",
+    "agent_tokens.revoke_all",
+    "agent_tokens.update",
     # api-tokens router (superadmin PAT mint)
     "api_tokens.mint",
     # auth router (post-auth resend, requires get_current_user)

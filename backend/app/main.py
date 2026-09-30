@@ -26,7 +26,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from app.database import engine
 from app.logging import setup_logging
 from app.rate_limit import limiter
-from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_broadcasts, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, agent, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, api_tokens, auth, budgets, categories, cc_cycle_payments, dashboard, feedback, forecast, forecast_plans, import_router, notifications, onboarding, org_data, org_members, orgs, plans, public_stats, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users, webhooks
+from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_broadcasts, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, agent, agent_tokens, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, api_tokens, auth, budgets, categories, cc_cycle_payments, dashboard, feedback, forecast, forecast_plans, import_router, notifications, onboarding, org_data, org_members, orgs, plans, public_stats, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users, webhooks
 from app.routers import scheduler as scheduler_router
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.import_ofx_service import init_ofx_executor, shutdown_ofx_executor
@@ -423,6 +423,11 @@ _SENSITIVE_FIELD_NAMES = frozenset({
     # is still bearer-shaped data that should never round-trip into a
     # 422 response body.
     "captcha_token",
+    # Step-up proofs on the token mint bodies (TBD-578): a body-level 422
+    # (e.g. agent:auto without its acknowledgment) echoes the whole body, and
+    # an unspent SSO proof stays valid for 5 minutes.
+    "stepup_token",
+    "mfa_code",
 })
 
 _REDACTED = "<redacted>"
@@ -504,6 +509,7 @@ app.include_router(transactions.router)
 app.include_router(recurring.router)
 app.include_router(budgets.router)
 app.include_router(agent.router)
+app.include_router(agent_tokens.router)
 app.include_router(forecast.router)
 app.include_router(forecast_plans.router)
 app.include_router(settings.router)

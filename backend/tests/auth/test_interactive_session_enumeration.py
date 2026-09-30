@@ -37,6 +37,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.models import Base
 from app.models.api_token import ApiToken
+from app.models.feature_override import OrgFeatureOverride
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.security import create_access_token
@@ -49,6 +50,7 @@ from app.routers.admin_features import router as admin_features_router
 from app.routers.admin_orgs import router as admin_orgs_router
 from app.routers.admin_roles import router as admin_roles_router
 from app.routers.admin_users import router as admin_users_router
+from app.routers.agent_tokens import router as agent_tokens_router
 from app.routers.api_tokens import router as api_tokens_router
 from app.routers.auth import router as auth_router
 from app.routers.org_data import router as org_data_router
@@ -72,6 +74,15 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/v1/system/api-tokens"),            # list_tokens
     ("DELETE", "/api/v1/system/api-tokens/1"),       # revoke_token
     ("POST", "/api/v1/system/api-tokens/revoke-all"),  # revoke_all_tokens
+    # TBD-578 agent access tokens: a token must never mint, widen, list or
+    # revoke tokens (its own or, as an org admin's, the members').
+    ("POST", "/api/v1/agent/tokens"),                # mint_agent_token
+    ("GET", "/api/v1/agent/tokens"),                 # list_agent_tokens
+    ("PATCH", "/api/v1/agent/tokens/1"),             # downgrade_agent_token
+    ("DELETE", "/api/v1/agent/tokens/1"),            # revoke_agent_token
+    ("POST", "/api/v1/agent/tokens/revoke-all"),     # revoke_all_agent_tokens
+    ("GET", "/api/v1/agent/tokens/org"),             # list_org_agent_tokens
+    ("DELETE", "/api/v1/agent/tokens/org/1"),        # revoke_org_agent_token
     # ── B. Account-takeover surface (spec §7B) ──────────────────────────────
     ("PUT", "/api/v1/users/me"),                     # update_profile (email change)
     ("POST", "/api/v1/users/me/password"),           # change_password
@@ -148,6 +159,10 @@ async def superadmin(factory) -> User:
     async with factory() as s:
         org = Organization(name="Platform", billing_cycle_day=1)
         s.add(org)
+        await s.flush()
+        # ai.agent so the agent-token mint's feature gate admits the session
+        # (its interactive-session guard runs first either way).
+        s.add(OrgFeatureOverride(org_id=org.id, feature_key="ai.agent", value=True))
         await s.commit()
         u = User(
             org_id=org.id,
@@ -173,6 +188,7 @@ def app(factory):
         factory,
         routers=[
             api_tokens_router,
+            agent_tokens_router,
             users_router,
             auth_router,
             admin_users_router,

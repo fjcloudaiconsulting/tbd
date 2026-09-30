@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.models.api_token import ApiToken
 from app.models.user import User
-from app.security import derive_hmac_key
+from app.security import derive_hmac_key, token_cutoff
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -123,6 +123,10 @@ async def mint(
         created_by_user_id=user.id,
         created_by_email=user.email,
         expires_at=expires_at,
+        # App-side, floored to the second: MySQL stores whole seconds, and the
+        # agent-token cutoff compare (``created_at <= token_cutoff``) must see
+        # the same value on SQLite CI as in production.
+        created_at=_naive_utc_now().replace(microsecond=0),
     )
     db.add(row)
     await db.commit()
@@ -216,3 +220,155 @@ async def maybe_stamp_last_used(
             await session.commit()
     except Exception:  # noqa: BLE001 — never break auth on a stamp failure
         logger.warning("api_token.last_used_stamp_failed", api_token_id=token_id)
+
+
+# ── Agent access tokens (TBD-578) ───────────────────────────────────────────
+# Personal tokens any active user may mint for their own AI harness. Same
+# table, hashing and lookup as the superadmin PATs; told apart by scope. REST
+# refuses these scopes (``authenticate_pat`` admits only superadmin owners
+# and only ``read``/``write``), so an agent token reaches the MCP front door
+# only.
+
+# Rank for the downward-only PATCH. Keys must equal ``registry.AGENT_SCOPES``.
+AGENT_SCOPE_RANK: dict[str, int] = {"agent:read": 1, "agent:write": 2, "agent:auto": 3}
+MAX_LIVE_AGENT_TOKENS = 5
+
+
+class AgentTokenCapReached(Exception):
+    """The owner already holds ``MAX_LIVE_AGENT_TOKENS`` live agent tokens."""
+
+
+class SessionCutoffMoved(Exception):
+    """A logout-everywhere or password change landed while the mint ran."""
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def agent_token_status(row: ApiToken, cutoff: datetime) -> str:
+    """``token_status`` plus ``invalidated``: a token minted at or before the
+    owner's session cutoff is dead (``authenticate_agent_token``) even though
+    it is neither revoked nor expired."""
+    status = token_status(row)
+    if status == "active" and _aware(row.created_at) <= cutoff:
+        return "invalidated"
+    return status
+
+
+async def mint_agent(
+    db: AsyncSession,
+    *,
+    user: User,
+    name: str,
+    scope: str,
+    expires_in_days: int,
+    cutoff_seen: datetime,
+) -> tuple[str, ApiToken]:
+    """Mint an agent token under the owner-row lock.
+
+    Both reads LOCK. Under MySQL REPEATABLE READ the request already read the
+    user (``get_current_user``), which fixed its snapshot; a plain count after
+    the lock would still see that snapshot and let parallel mints all pass
+    the cap. ``cutoff_seen`` is ``token_cutoff(user)`` when the request
+    started: if it moved, a logout-everywhere or password change ran in
+    between and must win. On refusal the session is rolled back first, so the
+    lock is gone before the caller writes its out-of-band audit row.
+    """
+    fresh = (
+        await db.execute(
+            select(User)
+            .where(User.id == user.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    cutoff = token_cutoff(fresh)
+    if cutoff != cutoff_seen:
+        await db.rollback()
+        raise SessionCutoffMoved()
+    rows = (
+        await db.execute(
+            select(ApiToken)
+            .where(
+                ApiToken.created_by_user_id == fresh.id,
+                ApiToken.scope.in_(AGENT_SCOPE_RANK),
+                ApiToken.revoked_at.is_(None),
+                ApiToken.expires_at > _naive_utc_now(),
+            )
+            .with_for_update()
+        )
+    ).scalars().all()
+    if sum(1 for r in rows if _aware(r.created_at) > cutoff) >= MAX_LIVE_AGENT_TOKENS:
+        await db.rollback()
+        raise AgentTokenCapReached()
+    return await mint(
+        db, user=fresh, name=name, scope=scope, expires_in_days=expires_in_days
+    )
+
+
+async def list_agent_for(db: AsyncSession, user: User) -> list[ApiToken]:
+    """The caller's agent tokens (never their REST PATs), newest first."""
+    result = await db.execute(
+        select(ApiToken)
+        .where(
+            ApiToken.created_by_user_id == user.id,
+            ApiToken.scope.in_(AGENT_SCOPE_RANK),
+        )
+        .order_by(ApiToken.created_at.desc(), ApiToken.id.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def get_own_agent(db: AsyncSession, token_id: int, user: User) -> ApiToken | None:
+    """The caller's agent token ``token_id``, or ``None`` (foreign, REST PAT)."""
+    result = await db.execute(
+        select(ApiToken).where(
+            ApiToken.id == token_id,
+            ApiToken.created_by_user_id == user.id,
+            ApiToken.scope.in_(AGENT_SCOPE_RANK),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_agent_for_org(db: AsyncSession, org_id: int) -> list[tuple[ApiToken, User]]:
+    """Agent tokens whose owner belongs to ``org_id`` (org-admin view)."""
+    result = await db.execute(
+        select(ApiToken, User)
+        .join(User, User.id == ApiToken.created_by_user_id)
+        .where(User.org_id == org_id, ApiToken.scope.in_(AGENT_SCOPE_RANK))
+        .order_by(ApiToken.created_at.desc(), ApiToken.id.desc())
+    )
+    return list(result.tuples())
+
+
+async def get_org_agent(
+    db: AsyncSession, token_id: int, org_id: int
+) -> tuple[ApiToken, User] | None:
+    """Agent token ``token_id`` if its owner belongs to ``org_id``."""
+    result = await db.execute(
+        select(ApiToken, User)
+        .join(User, User.id == ApiToken.created_by_user_id)
+        .where(
+            ApiToken.id == token_id,
+            User.org_id == org_id,
+            ApiToken.scope.in_(AGENT_SCOPE_RANK),
+        )
+    )
+    return result.tuples().first()
+
+
+async def revoke_all_agent(db: AsyncSession, user: User) -> int:
+    """Revoke the caller's unrevoked agent tokens; REST PATs are untouched."""
+    result = await db.execute(
+        update(ApiToken)
+        .where(
+            ApiToken.created_by_user_id == user.id,
+            ApiToken.scope.in_(AGENT_SCOPE_RANK),
+            ApiToken.revoked_at.is_(None),
+        )
+        .values(revoked_at=_naive_utc_now())
+    )
+    await db.commit()
+    return result.rowcount or 0

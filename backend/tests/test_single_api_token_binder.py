@@ -58,6 +58,15 @@ ALLOWED_BINDERS: tuple[tuple[str, str, str], ...] = (
         "the api_token.auth_rejected branches below it are attributed too "
         "(TBD-188 §3 — the bind's line position IS the fix)",
     ),
+    (
+        "agent/auth.py",
+        "authenticate_agent_token",
+        "TBD-578: the agent-token credential check for the MCP front door. "
+        "If it and authenticate_pat ever run on one request, both resolve "
+        "the same Authorization bearer and bind the same row id, so they "
+        "cannot disagree; bound before its rejection branches for the same "
+        "reason as pat.py",
+    ),
 )
 
 
@@ -171,9 +180,9 @@ def test_the_single_binder_is_counted_once():
     shape that makes the first bind's position stop mattering.
     """
     binds = _find_binds()
-    assert len(binds) == 1, (
-        "expected exactly one `bind_contextvars(api_token_id=...)` call in "
-        "backend/app/, found "
+    assert len(binds) == len(ALLOWED_BINDERS), (
+        "expected exactly one `bind_contextvars(api_token_id=...)` call per "
+        "allowlisted binder in backend/app/, found "
         + str(len(binds))
         + ":\n"
         + "\n".join(f"  - {b.file}::{b.function} (line {b.lineno})" for b in binds)

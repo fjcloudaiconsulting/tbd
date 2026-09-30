@@ -40,8 +40,10 @@ from app.deps import get_session_factory
 from app.models import Base
 from app.models.api_token import ApiToken
 from app.models.audit_event import AuditEvent
+from app.models.feature_override import OrgFeatureOverride
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
+from app.routers import agent_tokens as agent_tokens_module
 from app.routers import api_tokens as api_tokens_module
 from app.routers import auth as auth_module
 from app.routers import users as users_module
@@ -105,6 +107,7 @@ def _client(factory) -> TestClient:
     app.dependency_overrides[get_session_factory] = lambda: factory
     app.include_router(users_module.router)
     app.include_router(api_tokens_module.router)
+    app.include_router(agent_tokens_module.router)
     app.include_router(auth_module.router)
     return TestClient(app)
 
@@ -116,6 +119,8 @@ async def _seed(factory) -> int:
         org = Organization(name=f"Org {tag}", billing_cycle_day=1)
         s.add(org)
         await s.flush()
+        # ai.agent so the agent_token_mint consumer's feature gate admits it.
+        s.add(OrgFeatureOverride(org_id=org.id, feature_key="ai.agent", value=True))
         u = User(
             org_id=org.id,
             username=f"u{tag}",
@@ -213,6 +218,20 @@ CONSUMERS: dict[str, Consumer] = {
         401,
         "Step-up verification required",
         api_tokens_module,
+    ),
+    "agent_token_mint": Consumer(
+        "POST",
+        "/api/v1/agent/tokens",
+        lambda tok, uid: {
+            "name": "harness",
+            "scope": "agent:write",
+            "expires_in_days": 30,
+            "stepup_token": tok,
+        },
+        201,
+        401,
+        "Step-up verification required",
+        agent_tokens_module,
     ),
 }
 
@@ -493,7 +512,8 @@ async def _side_effect_free(factory, uid: int, action: str) -> None:
         failures = [
             r
             for r in await _all_audit_rows(factory)
-            if r.event_type == "api_token.created"
+            if r.event_type
+            == ("agent_token.created" if action == "agent_token_mint" else "api_token.created")
             and r.outcome == "failure"
             and r.actor_user_id == uid
         ]
@@ -574,6 +594,11 @@ APP_ROOT = Path(app_pkg.__file__).resolve().parent
 NAMES = {"stepup_token", "stepup_token_expires_at"}
 OWNER = {"auth/stepup.py", "models/user.py"}
 CONSTANT_OK = OWNER | {"services/export_registry.py"}
+# main.py: ``stepup_token`` is a string in the 422 redaction set (TBD-578), a
+# request-body key, never the column. Only bare string constants are exempt
+# there; attribute access, ``stepup_token=`` keywords and text() SQL are
+# still caught.
+STRING_OK = {"main.py"}
 
 
 def _violations(rel: str, tree: ast.AST) -> list[str]:
@@ -587,7 +612,10 @@ def _violations(rel: str, tree: ast.AST) -> list[str]:
                 out.append(f"{where} .{node.attr}")
         elif isinstance(node, ast.keyword) and node.arg in NAMES and not constant_ok:
             out.append(f"{where} {node.arg}=")
-        elif isinstance(node, ast.Constant) and node.value in NAMES and not constant_ok:
+        elif (
+            isinstance(node, ast.Constant) and node.value in NAMES
+            and not constant_ok and rel not in STRING_OK
+        ):
             out.append(f"{where} {node.value!r}")
         elif isinstance(node, ast.Call) and rel not in OWNER:
             fn = node.func
