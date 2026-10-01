@@ -61,7 +61,7 @@ or whether a red required check actually blocks a merge.
 # looking for it. `notify-backup-stale.sh` (now in aws-infra) carries the safe idiom;
 # the weaker `notify-deploy-drift.sh` form was copied here by mistake.
 #
-# ⚠ F8 asserts the five dedupe LITERALS are pairwise distinct. That does NOT
+# ⚠ F8 asserts the dedupe LITERALS are pairwise distinct. That does NOT
 # constrain what a fuzzy title search matches, so it is not a fence on this.
 EXISTING="$(gh issue list \
   --repo "$GH_REPO" \

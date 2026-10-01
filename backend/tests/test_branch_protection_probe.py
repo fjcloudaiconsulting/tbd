@@ -2177,11 +2177,9 @@ def test_w1_the_alarm_step_actually_invokes_the_notifier():
     F21 all stay GREEN: drift detected, no issue ever opened. The `if:` was
     fenced and the body was not.
 
-    House precedent, three files away -- `test_backup_offhead`'s sibling
-    `test_backup_offhost.py:367` treats exactly this as load-bearing:
-
-        alarm = [s for s in steps if "notify-backup-stale.sh" in str(s.get("run", ""))]
-        assert alarm, "the workflow never invokes the alarm script."
+    House precedent: the backup freshness probe's alarm test (now in
+    fjcloudaiconsulting/aws-infra, `tests/test_backup_probe.py`) treats exactly
+    this as load-bearing: the alarm step must run the notifier script.
     """
     steps = {st.get("id"): st for st in _steps() if st.get("id")}
     assert "alarm" in steps, f"ids were {sorted(steps)}"
@@ -2257,7 +2255,7 @@ def _effective_dedupe_tokens(path: pathlib.Path) -> set[str]:
     `TITLE_PREFIX`; `notify-smoke-failure.sh:42` and
     `notify-undeployed-release.sh:73` hardcode `TITLE` and a SEPARATE
     `--search '"[...]" in:title'` literal. A fence collecting `TITLE_PREFIX=`
-    assignments finds three values, asserts they differ, and PASSES -- while a
+    assignments finds two values, asserts they differ, and PASSES -- while a
     new notifier copied from the other idiom with `[smoke-fail]` still in its
     search line deduplicates straight into the smoke-failure issue and produces
     ZERO signal during an incident.

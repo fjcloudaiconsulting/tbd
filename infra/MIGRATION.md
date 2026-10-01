@@ -304,10 +304,11 @@ final name, which `gzip -t` happily passes. See the comment block in
 `roles/backups/templates/mysql-backup.sh.j2`.
 
 ⚠ **Since TBD-400, something does observe it** — but from off the box, not on
-it. `.github/workflows/backup-freshness-probe.yml` in fjcloudaiconsulting/aws-infra (moved there in INFRA-20) runs at 04:17 UTC, lists the
-bucket's object metadata through a read-only role, and opens a deduped
-`[backup-stale]` GitHub issue in aws-infra when the newest manifest is older than 25 hours,
-missing, or sits beside an implausibly small dump.
+it. `.github/workflows/backup-freshness-probe.yml` in fjcloudaiconsulting/aws-infra
+(moved there in INFRA-20) runs at 04:17 UTC, lists the bucket's object metadata
+through a read-only role, and opens a deduped `[backup-stale]` GitHub issue in
+aws-infra when the newest manifest is older than 25 hours, missing, or sits
+beside an implausibly small dump.
 
 ⚠⚠ It runs in CI **because an alert emitted by the droplet cannot fire when the
 droplet is gone, or when its cron never ran** — which is exactly the disaster the
