@@ -585,3 +585,60 @@ def issue_test_refresh_token(user_id: int, **kwargs) -> str:
         client._kv[key] = payload
         client._sets[family_key].add(jti)
     return token
+
+
+# ---------------------------------------------------------------------------
+# Fast ``Base.metadata.create_all`` for empty SQLite DBs (INFRA-52).
+#
+# ~280 test call sites run ``conn.run_sync(Base.metadata.create_all)`` on a
+# fresh in-memory DB; SQLAlchemy re-compiles the DDL and issues a checkfirst
+# PRAGMA per table each time (~20% of a shard). Compile once per session,
+# replay the raw DDL per call. Anything else (non-SQLite, non-empty DB,
+# ``tables=``/``checkfirst=`` args, Engine instead of Connection, other
+# MetaData objects) falls through to the real create_all, so custom or
+# partial schemas are untouched. Each call still runs on its own connection,
+# so per-test isolation is unchanged.
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="session", autouse=True)
+def _fast_sqlite_create_all():
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import Connection
+
+    from app.models import Base
+
+    md = Base.metadata
+    real = md.create_all
+    cache: dict[tuple, list[str]] = {}
+
+    def _ddl() -> list[str]:
+        key = tuple(sorted(md.tables))  # rebuild if a test adds tables
+        if key not in cache:
+            eng = create_engine("sqlite://")
+            real(eng)
+            with eng.connect() as c:
+                cache[key] = [
+                    r[0]
+                    for r in c.exec_driver_sql(
+                        "SELECT sql FROM sqlite_master "
+                        "WHERE sql IS NOT NULL ORDER BY rowid"
+                    )
+                ]
+            eng.dispose()
+        return cache[key]
+
+    def fast(bind, *args, **kwargs):
+        if (
+            isinstance(bind, Connection)
+            and bind.dialect.name == "sqlite"
+            and not args
+            and not kwargs
+            and bind.exec_driver_sql("SELECT 1 FROM sqlite_master LIMIT 1").first() is None
+        ):
+            for stmt in _ddl():
+                bind.exec_driver_sql(stmt)
+            return None
+        return real(bind, *args, **kwargs)
+
+    md.create_all = fast
+    yield
+    del md.create_all
