@@ -85,13 +85,7 @@ infra/
 │   ├── outputs.tf
 │   ├── variables.tf
 │   ├── modules/                    # vpc/, droplet/, firewall/, project/
-│   └── apex/                       # AWS apex landing (TFC: <tfc-org>/<apex-workspace>)
-│       ├── main.tf
-│       ├── variables.tf
-│       ├── outputs.tf
-│       ├── providers.tf            # default region + us-east-1 alias for ACM
-│       ├── versions.tf
-│       └── README.md               # apex-specific bootstrap + IAM detail
+│   └── (apex/ and backups/ now live in aws-infra: terraform/tbd-apex, terraform/tbd-backups)
 └── ansible/                        # Ubuntu 24.04 bootstrap for <data-droplet>
 ```
 
@@ -104,12 +98,12 @@ debug-only.
 
 | Workspace | Cloud | Working dir | Trigger pattern | Auth |
 |---|---|---|---|---|
-| `<tfc-org>/<data-workspace>` | DigitalOcean | `infra/terraform/` | `infra/terraform/**` (excludes `apex/`) | `do_token` workspace variable |
-| `<tfc-org>/<apex-workspace>` | AWS | `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex` | `aws-infra terraform/tbd-apex/**` | OIDC workload identity (`TFC_AWS_PROVIDER_AUTH=true`, `TFC_AWS_RUN_ROLE_ARN=<tfc_role_arn output>`) |
+| `<tfc-org>/<data-workspace>` | DigitalOcean | `infra/terraform/` | `infra/terraform/**`  | `do_token` workspace variable |
+| `<tfc-org>/<apex-workspace>` | AWS | `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex` | lives in aws-infra | OIDC workload identity (`TFC_AWS_PROVIDER_AUTH=true`, `TFC_AWS_RUN_ROLE_ARN=<tfc_role_arn output>`) |
 
 The two workspaces deliberately have non-overlapping working directories.
-A change under `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex` triggers `<apex-workspace>` only; a change
-under `infra/terraform/main.tf` triggers `<data-workspace>` only. State is
+A change under `infra/terraform/` triggers `<data-workspace>` only; the apex
+workspace lives in aws-infra. State is
 isolated.
 
 ## DNS
@@ -182,7 +176,7 @@ flowchart LR
 
 CloudFront requires viewer certs in `us-east-1`. The bucket is in
 `var.aws_region` (default `eu-central-1`), but the cert provider in
-`apex/providers.tf` uses the `aws.us_east_1` alias for the certificate
+`terraform/tbd-apex/providers.tf` (aws-infra) uses the `aws.us_east_1` alias for the certificate
 resource only. No other resource is pinned to that region.
 
 ### Why a separate TFC workspace
@@ -347,10 +341,9 @@ VPC CIDR only. ICMP from VPC.
 
 State and runs live in Terraform Cloud, workspace `<tfc-org>/<data-workspace>`,
 VCS-driven against this repo with the working directory and trigger
-paths both scoped to `infra/terraform/` (the apex workspace handles
-`aws-infra terraform/tbd-apex/**` independently). Workflow:
+paths both scoped to `infra/terraform/` (the apex workspace lives in aws-infra). Workflow:
 
-1. Open a PR that touches `infra/terraform/**` (outside `apex/`). TFC
+1. Open a PR that touches `infra/terraform/**` . TFC
    posts a speculative plan on the run page.
 2. Merge to `main`. TFC starts an apply run. Apply method is **manual
    Confirm & Apply** on the TFC UI.
@@ -545,8 +538,8 @@ TBD-400. Recorded here so it is discoverable:
 All three are VCS-driven with **manual Confirm & Apply**; auto-apply is off
 everywhere.
 
-⚠ Do not copy an `aws_account_id` between `apex/` and `backups/`. They are
-different accounts, and `backups/main.tf` asserts the caller matches so a
+⚠ Do not copy an `aws_account_id` between aws-infra `terraform/tbd-apex` and `terraform/tbd-backups`. They are
+different accounts, and `terraform/tbd-backups/main.tf` asserts the caller matches so a
 mistake dies at plan rather than creating a bucket in the wrong place.
 
 ⚠ `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/aws/bootstrap` holds the trust and provisioner documents for the

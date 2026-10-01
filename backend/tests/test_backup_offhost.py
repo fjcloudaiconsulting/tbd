@@ -390,9 +390,10 @@ def test_the_probe_workflow_alarms_on_could_not_run_too():
 # ---------------------------------------------------------------------------
 # F3. The uploader is put-only, and stays that way.
 # ---------------------------------------------------------------------------
-# The policy/trust documents moved to aws-infra (terraform/tbd-backups/policies/
-# backup-uploader.json, backup-probe.json), which now owns their action-set,
-# Effect and Resource fences. Only the uploader script (still here) is checked.
+# The policy/trust documents moved to aws-infra, whose CI runs
+# .github/scripts/check-tbd-backups-fences.py (exact uploader/probe action sets,
+# Allow-only + bucket/key-scoped resources, SSE condition, F5 TBD-372 trust
+# anchor incl. no-glob). Only the uploader script (still here) is checked.
 
 
 def test_the_uploader_must_name_the_encryption_key_explicitly():

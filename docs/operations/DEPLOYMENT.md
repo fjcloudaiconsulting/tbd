@@ -640,13 +640,13 @@ Separate TFC workspace because the auth path is different (AWS OIDC rather than 
 ### Workflow
 
 Same shape as the `pfv` workspace:
-- Speculative plan on every PR that touches `aws-infra terraform/tbd-apex/**`
+- Speculative plan on every PR that touches the apex Terraform (in aws-infra)
 - Apply on merge to `main`, **manual Confirm & Apply** in TFC
 - Local CLI plan-only is allowed for debug; never apply from CLI
 
 ```mermaid
 flowchart LR
-  pr[PR touches aws-infra terraform/tbd-apex/**] --> tfcsp[TFC apex speculative plan]
+  pr[PR touches apex Terraform in aws-infra] --> tfcsp[TFC apex speculative plan]
   tfcsp -->|status check on PR| pr
   pr --> merge[Merge to main]
   merge --> tfcapp[TFC apex apply run]
@@ -776,11 +776,11 @@ flowchart TD
   apexq -- yes --> apex[apex-deploy.yml also fires: S3 sync + CloudFront invalidation]
   apexq -- no --> apexno[apex-deploy.yml does not fire]
 
-  start --> tf1{P in aws-infra terraform/tbd-apex/**?}
-  tf1 -- yes --> tfapex[TFC apex workspace apply waits on Confirm and Apply]
-  tf1 -- no --> tf2{P in infra/terraform/**?}
+  start --> tf2{P in infra/terraform/**?}
   tf2 -- yes --> tfpfv[TFC data workspace apply waits on Confirm and Apply]
 ```
+
+Apex and backups Terraform changes are made in the aws-infra repo.
 
 Concrete cases:
 
@@ -792,7 +792,6 @@ Concrete cases:
 | `frontend/lib/brand.ts` (feat) | Both `release.yml` AND `apex-deploy.yml`. |
 | `backend/alembic/versions/abc_new_migration.py` | `release.yml` -> deploy -> PRE_DEPLOY migrate applies it -> roll backend |
 | `infra/terraform/main.tf` | TFC `<data-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge. `release.yml` runs and no-ops (`chore`/`ci` type, or `infra` scope). |
-| `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/main.tf` | TFC `<apex-workspace>`; same `release.yml` no-op. |
 | `.do/app.yaml` (chore) | `release.yml` fires but semantic-release does not bump. Operator must run `gh workflow run deploy.yml --ref main`. |
 | `.github/workflows/test.yml` | `test.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and no-ops on the `ci` type. |
 | `README.md` only | `release.yml` **runs** and no-ops on the `docs` type. Nothing is tagged and nothing deploys. |

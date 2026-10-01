@@ -152,7 +152,7 @@ WANT = ("backup_s3_bucket", "backup_s3_prefix", "backup_s3_region",
 missing = [k for k in WANT if not (raw.get(k) or {}).get("value")]
 if missing:
     sys.exit(
-        "!! FlamaCorp/tbd-backups has not produced these outputs yet: " + ", ".join(missing) +
+        "!! FlamaCorp/tbd-backups has not produced these outputs yet (or the aws-infra checkout has not run `terraform init`): " + ", ".join(missing) +
         "\n   TBD-400 adds them, in aws-infra terraform/tbd-backups/. They exist only"
         "\n   after that workspace has been applied (manual Confirm & Apply)."
         "\n   Refusing to converge a backups role with no destination -- that"
