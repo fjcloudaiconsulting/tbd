@@ -1,3 +1,4 @@
+import functools
 import logging
 import os
 import re
@@ -6,6 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+import bcrypt
 import pytest
 
 
@@ -21,6 +23,22 @@ os.environ.setdefault(
     "test-jwt-secret-that-is-long-enough-for-pytest-1234567890",
 )
 os.environ.setdefault("APP_ENV", "development")
+
+# INFRA-51: bcrypt cost 12 (the production default) makes every hash_password
+# call in a fixture cost ~250ms; 149 test files do it. Use cost 4 (bcrypt's
+# minimum) in tests only. Production hashing is untouched: app/security.py
+# still calls bcrypt.gensalt() with no rounds, and test_security.py proves it
+# by restoring the original via ``bcrypt.gensalt.__wrapped__``.
+# getattr: stay idempotent if this module is ever imported twice.
+_real_gensalt = getattr(bcrypt.gensalt, "__wrapped__", bcrypt.gensalt)
+
+
+@functools.wraps(_real_gensalt)
+def _cheap_gensalt(rounds: int = 4, prefix: bytes = b"2b") -> bytes:
+    return _real_gensalt(rounds=rounds, prefix=prefix)
+
+
+bcrypt.gensalt = _cheap_gensalt
 
 # ---------------------------------------------------------------------------
 # Per-xdist-worker Redis isolation (TBD-555).

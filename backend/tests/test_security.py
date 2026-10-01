@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
+
 from app.models.user import Role, User
 from app.security import (
     create_access_token,
@@ -23,6 +25,12 @@ def make_user(**overrides) -> User:
     }
     base.update(overrides)
     return User(**base)
+
+
+def test_hash_password_production_cost_is_12(monkeypatch) -> None:
+    # conftest patches bcrypt.gensalt to cost 4 (INFRA-51); undo it here.
+    monkeypatch.setattr(bcrypt, "gensalt", bcrypt.gensalt.__wrapped__)
+    assert hash_password("x").startswith("$2b$12$")
 
 
 def test_hash_password_roundtrip_verifies_plaintext() -> None:
