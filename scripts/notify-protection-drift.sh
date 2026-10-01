@@ -6,7 +6,8 @@
 #
 # ⚠ THE FIFTH COPY, and declining to extract at five needs a different argument
 # than declining at three. notify-smoke-failure.sh, notify-undeployed-release.sh,
-# notify-deploy-drift.sh and notify-backup-stale.sh are the other four;
+# notify-deploy-drift.sh and notify-backup-stale.sh (moved to aws-infra in
+# INFRA-20) were the other four;
 # notify-undeployed-release.sh said extraction should happen "on the third" and
 # notify-deploy-drift.sh:11-19 declined at the third. The shared surface is now
 # large enough that the NEXT probe should extract it. The reason not to do it
@@ -57,7 +58,7 @@ or whether a red required check actually blocks a merge.
 # production` returns the deploy-drift issue. So `[branch-protection]` matches
 # any open issue whose title contains both "branch" and "protection", and this
 # alarm would land as a comment on somebody else's incident, where nobody is
-# looking for it. `notify-backup-stale.sh:49-50` already carries the safe idiom;
+# looking for it. `notify-backup-stale.sh` (now in aws-infra) carries the safe idiom;
 # the weaker `notify-deploy-drift.sh` form was copied here by mistake.
 #
 # ⚠ F8 asserts the five dedupe LITERALS are pairwise distinct. That does NOT

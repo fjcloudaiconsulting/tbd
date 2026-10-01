@@ -24,7 +24,7 @@
 # overstates its coverage is worse than none, because the next design decision
 # will cite it.
 #
-# ⚠ STDIN RATHER THAN CALLING `gh` ITSELF, per check-backup-freshness.sh's own
+# ⚠ STDIN RATHER THAN CALLING `gh` ITSELF, per check-backup-freshness.sh's (aws-infra) own
 # header: a probe exercisable only against healthy live state proves nothing
 # about its unhealthy paths, and those are the only paths that matter.
 #

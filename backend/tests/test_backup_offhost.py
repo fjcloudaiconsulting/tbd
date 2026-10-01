@@ -4,21 +4,21 @@ The hazard: the nightly dump was written to /var/backups/mysql on the droplet it
 protects, with droplet snapshots off, so a disk or droplet loss took the data and
 its only backup together. Fixing that adds three things that can each fail
 silently -- a verification, an upload, and an alarm -- so each is fenced by being
-EXECUTED, not by being read.
+EXECUTED, not by being read. The alarm (the off-host freshness probe) and its
+tests live in fjcloudaiconsulting/aws-infra since INFRA-20.
 
-⚠⚠ THE VERIFICATION AND THE PROBE ARE REAL FILES, NOT JINJA, SPECIFICALLY SO
-THESE TESTS CAN RUN THEM. Logic embedded in a `.j2` can only ever be
-grep-fenced, and in this repo a grep is routinely satisfied by a comment -- both
-scripts carry long comments naming the very strings a grep would look for.
+⚠⚠ THE VERIFICATION IS A REAL FILE, NOT JINJA, SPECIFICALLY SO THESE TESTS CAN
+RUN IT. Logic embedded in a `.j2` can only ever be
+grep-fenced, and in this repo a grep is routinely satisfied by a comment -- the
+script carries long comments naming the very strings a grep would look for.
 
 ⚠ A behavioural test found a real defect here that a structural one could not:
-`check-backup-freshness.sh` originally ran its evaluator as `python3 - <<'PY'`,
+the freshness probe's `check-backup-freshness.sh` originally ran its evaluator as `python3 - <<'PY'`,
 which makes the HEREDOC stdin, so the piped S3 listing never reached the program
 and every input, healthy or not, was judged "listing has no Contents key". A
 fence asserting the script mentions "Contents" would have passed it.
 """
 
-import json
 import os
 import pathlib
 import re
@@ -262,128 +262,6 @@ def test_the_table_count_is_read_live_and_passed_through():
         f"the verifier is called with {args[-1]!r} as its table count rather "
         'than "${EXPECTED_TABLES}". A literal there is the same date bomb, one '
         "argument to the right."
-    )
-
-
-# ---------------------------------------------------------------------------
-# F2. The freshness probe distinguishes fresh / stale / could-not-run.
-# ---------------------------------------------------------------------------
-PROBE = "scripts/ci/check-backup-freshness.sh"
-PREFIX = "pfv-data-01/2026/08/27"
-
-
-def _listing(age_hours: float, *, manifest=True, grants=True, dump_size=620000, now=1000000000):
-    import datetime
-    ts = datetime.datetime.fromtimestamp(
-        now - age_hours * 3600, datetime.timezone.utc
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
-    objs = [{"Key": f"{PREFIX}/pfv2_x.sql.gz", "Size": dump_size, "LastModified": ts}]
-    if grants:
-        objs.append({"Key": f"{PREFIX}/grants_x.sql.gz", "Size": 800, "LastModified": ts})
-    if manifest:
-        objs.append({"Key": f"{PREFIX}/manifest_x.json", "Size": 484, "LastModified": ts})
-    return json.dumps({"Contents": objs})
-
-
-def _probe(payload: str, now=1000000000):
-    return subprocess.run(
-        ["bash", str(_p(PROBE))],
-        input=payload, capture_output=True, text=True,
-        env={**os.environ, "NOW_EPOCH": str(now)},
-    )
-
-
-def test_probe_reports_fresh_for_a_complete_recent_night():
-    r = _probe(_listing(2))
-    assert r.returncode == 0, f"{r.stdout}{r.stderr}"
-    assert "fresh" in r.stdout
-
-
-def test_probe_reports_stale_after_one_missed_night():
-    """26h is one missed run. The threshold must alarm on ONE miss, not two."""
-    r = _probe(_listing(26))
-    assert r.returncode == 1
-    assert "STALE" in r.stdout
-
-
-def test_probe_reports_stale_when_the_manifest_is_missing():
-    """⚠ The manifest is uploaded LAST, so its absence is the only evidence
-    distinguishing 'the night completed' from 'the dump uploaded and then the
-    grants upload died'. A presence check on the dump alone is fail-open."""
-    r = _probe(_listing(2, manifest=False))
-    assert r.returncode == 1
-    assert "manifest" in r.stdout
-
-
-def test_probe_reports_stale_when_grants_are_missing():
-    r = _probe(_listing(2, grants=False))
-    assert r.returncode == 1
-
-
-def test_probe_reports_stale_for_an_implausibly_small_dump():
-    """'Some object exists' reads a bucket of tiny stubs as healthy forever."""
-    r = _probe(_listing(2, dump_size=12))
-    assert r.returncode == 1
-
-
-def test_probe_reports_stale_for_an_empty_bucket():
-    r = _probe(json.dumps({"Contents": []}))
-    assert r.returncode == 1
-
-
-@pytest.mark.parametrize(
-    "payload", ["not json", '{"Name": "b"}', "", '{"IsTruncated": true, "Contents": []}'],
-    ids=["malformed", "not-a-listing", "empty-stdin", "truncated"],
-)
-def test_probe_reports_could_not_run_rather_than_healthy(payload):
-    """⚠ Exit 2, never 0. A probe that cannot answer must not be mistaken for a
-    probe that answered 'fine'.
-
-    ⚠ A TRUNCATED listing is in here deliberately: answering from half the
-    objects could miss the newest page entirely. The CLI auto-paginates today,
-    so this only bites if someone adds --max-items -- which is exactly the kind
-    of change that would otherwise pass review."""
-    r = _probe(payload)
-    assert r.returncode == 2, f"rc={r.returncode} out={r.stdout}"
-
-
-def test_probe_reports_stale_for_a_genuinely_empty_bucket():
-    """⚠ `aws s3api list-objects-v2` OMITS Contents for an empty result rather
-    than emitting `"Contents": []`, so the real-world empty bucket arrives as
-    `{"KeyCount": 0, ...}`. Classifying that as 'could not run' told the
-    operator the wrong thing about a bucket that is genuinely, alarmingly
-    empty."""
-    r = _probe('{"KeyCount": 0, "Name": "tbd-mysql-backups-884686184019"}')
-    assert r.returncode == 1, f"rc={r.returncode} out={r.stdout}"
-    assert "empty" in r.stdout.lower()
-
-
-def test_the_probe_workflow_alarms_on_could_not_run_too():
-    """Kills: only failing the job. A red scheduled workflow notifies nobody,
-    and nothing else in this repo covers this signal."""
-    import yaml
-    wf = yaml.safe_load(_p(".github/workflows/backup-freshness-probe.yml").read_text())
-    steps = wf["jobs"]["probe"]["steps"]
-    alarm = [s for s in steps if "notify-backup-stale.sh" in str(s.get("run", ""))]
-    assert alarm, "the workflow never invokes the alarm script."
-    # ⚠ Normalized EXACT match, not a substring. `verdict == 'stale' &&
-    # verdict != 'fresh-x'` contains both "!=" and "fresh" and stayed green,
-    # while silencing the could-not-run verdict -- the one this test is named
-    # after, and the one that fires while the workspace is still unapplied.
-    cond = " ".join(str(alarm[0].get("if", "")).split())
-    assert cond == "steps.check.outputs.verdict != 'fresh'", (
-        f"the alarm fires on {cond!r}. It must be exactly "
-        "\"steps.check.outputs.verdict != 'fresh'\" so that ANY non-fresh "
-        "verdict, including could-not-run, raises the alarm."
-    )
-    # ⚠ PyYAML parses the workflow key `on:` as the BOOLEAN True (YAML 1.1
-    # treats on/off/yes/no as booleans), so wf["on"] raises KeyError on a
-    # perfectly valid workflow. Accept either key.
-    triggers = wf.get("on", wf.get(True))
-    assert triggers, "could not read the workflow's triggers."
-    assert triggers.get("schedule"), (
-        "the probe has no schedule, so it detects no silence -- which is the "
-        "only failure mode it exists to catch."
     )
 
 
