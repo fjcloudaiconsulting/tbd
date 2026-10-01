@@ -52,6 +52,9 @@ from app.services import (
     ai_credential_service,
     ai_routing_service,
 )
+from app.services.ai_providers.openai_compatible import (
+    OPENAI_COMPATIBLE_PRESETS,
+)
 from app.services.ai_routing_service import (
     CrossOrgRoutingDenied,
     UnknownFeatureName,
@@ -96,6 +99,12 @@ async def get_provider_options(
                 "label": "Native (hosted by The Better Decision)",
                 "availability": "not_yet_available",
             },
+        ],
+        # Hosts reached through the openai_compatible adapter; the form
+        # offers them as extra choices that prefill ``base_url`` (TBD-590).
+        "presets": [
+            {**preset, "provider": AiProvider.OPENAI_COMPATIBLE.value}
+            for preset in OPENAI_COMPATIBLE_PRESETS
         ],
         "ai_native_enabled": settings.ai_native_enabled,
     }
