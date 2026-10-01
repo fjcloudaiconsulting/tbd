@@ -628,6 +628,8 @@ async def test_disconnect_before_the_first_byte_releases_the_lock(factory, w, pr
 
     async def send(message):
         sent.append(message)
+        if message["type"] == "http.response.start":
+            await asyncio.sleep(0.05)  # the disconnect lands here, before the body starts
 
     scope = {
         "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",
@@ -637,6 +639,7 @@ async def test_disconnect_before_the_first_byte_releases_the_lock(factory, w, pr
                     (b"content-length", str(len(body)).encode())],
     }
     await app(scope, receive, send)
+    assert [m["type"] for m in sent] == ["http.response.start"]  # no body byte was produced
     assert sent[0]["status"] == 200
     assert await fake_redis.get(chat.lock_key(w["org"])) is None
     assert await _turns(factory, w["org"]) == 1
