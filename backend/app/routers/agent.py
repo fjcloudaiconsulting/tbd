@@ -37,7 +37,7 @@ _STATUS: dict[str, int] = {
     "action_already_decided": 409, "action_in_progress": 409, "preview_stale": 409,
     "feature_not_entitled": 403, "feature_disabled": 403, "insufficient_role": 403,
     "scope_denied": 403,
-    "invalid_arguments": 422, "no_change": 422,
+    "invalid_arguments": 422, "no_change": 422, "unsupported_in_v1": 422,
     "payload_too_large": 413,
     "not_found": 404,
     "preview_rate_limited": 429, "too_many_pending_actions": 429,

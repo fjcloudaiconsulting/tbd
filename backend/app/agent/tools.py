@@ -1,4 +1,5 @@
-"""The v1 agent tools: six reads (TBD-559) and ``budgets_update_amount`` (TBD-577).
+"""The v1 agent tools: six reads (TBD-559), ``budgets_update_amount`` (TBD-577)
+and ``transactions_set_category`` (TBD-580).
 
 Each tool is a thin adapter over the code its mirrored REST route runs, scoped
 by ``ctx``. ``accounts_list`` and ``categories_list`` call the route handlers
@@ -24,13 +25,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
 from app.agent.registry import Change, Preview, ToolContext, ToolError, ToolSpec, register
-from app.models import Budget, Category, Organization
+from app.models import Budget, Category, Organization, Transaction
+from app.models.category_rule import CategoryRule
 from app.models.user import Role
 from app.routers.accounts import list_accounts
 from app.routers.categories import list_categories
 from app.schemas.budget import BudgetUpdate
 from app.schemas.forecast import ForecastResponse
-from app.schemas.transaction import SpendingByCategoryResponse
+from app.schemas.transaction import SpendingByCategoryResponse, TransactionUpdate
 from app.services import (
     billing_service,
     budget_service,
@@ -39,8 +41,10 @@ from app.services import (
     spending_service,
     transaction_service,
 )
-from app.services.exceptions import NotFoundError
+from app.services.category_rules_service import normalize_description
+from app.services.exceptions import NotFoundError, ValidationError
 from app.services.feature_gate import Feature
+from app.services.transaction_filters import is_reportable_transaction
 
 MAX_SEARCH_DAYS = 366
 MAX_PAGE = 50
@@ -66,6 +70,12 @@ class BudgetAmountArgs(_Args):
     # is stricter where the column is (Numeric(12, 2)): fenced by F-R4.
     budget_id: int
     amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+
+
+class SetCategoryArgs(_Args):
+    # Mirrors ``PUT /transactions/{transaction_id}`` with only ``category_id``.
+    transaction_id: int
+    category_id: int
 
 
 class TransactionSearchArgs(_Args):
@@ -258,4 +268,130 @@ register(ToolSpec(
         "nothing changes until it is confirmed."
     ),
     preview=_budgets_update_amount_preview, execute=_budgets_update_amount_execute,
+))
+
+
+# ── transactions_set_category ─────────────────────────────────────────────
+#
+# ``update_transaction`` also writes rows this preview could not list: the
+# category is mirrored onto a transfer partner, and onto the recurring template
+# plus every pending sibling. v1 refuses any row with a link or a series, at
+# preview, at confirm's re-preview, and again in execute.
+#
+# The preview reads the row FOR UPDATE: in ``confirm`` nothing commits between
+# the re-preview and the execute, so the row it fingerprinted (description,
+# category, links) is the row ``update_transaction`` writes. Ceiling: the rule
+# row is read unlocked, so a concurrent import re-learning the same token in
+# that window makes the disclosed ``before`` stale (most-recent-wins anyway).
+#
+# The one derived write it may do is the org's category rule for the row's
+# normalized description, listed with the token as its id: editing the
+# description changes the token, so the confirm re-preview goes stale. The
+# token is bank or user text, so the id is wrapped as untrusted. An
+# ``agent:auto`` principal learns no rule and lists none (``ctx.auto``).
+
+
+async def _load_editable(ctx: ToolContext, transaction_id: int) -> Transaction:
+    tx = await ctx.db.scalar(
+        select(Transaction)
+        .where(Transaction.id == transaction_id, Transaction.org_id == ctx.org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if tx is None:
+        raise NotFoundError("Transaction")
+    if tx.recurring_id is not None:
+        raise ToolError(
+            "unsupported_in_v1", "a transaction in a recurring series cannot be recategorized here",
+            data={"reason": "recurring_series"},
+        )
+    if tx.linked_transaction_id is not None:
+        raise ToolError(
+            "unsupported_in_v1", "a linked transaction cannot be recategorized here",
+            data={"reason": "linked_transaction"},
+        )
+    if tx.is_manual_adjustment:
+        raise ValidationError("Manual balance adjustments cannot be edited")
+    return tx
+
+
+def _rule_token(ctx: ToolContext, tx: Transaction) -> str:
+    """The rule ``update_transaction`` would learn, or "" for none (the same
+    gate it applies: reportable rows only, and never for an auto principal)."""
+    if ctx.auto or not is_reportable_transaction(tx):
+        return ""
+    return normalize_description(tx.description)
+
+
+async def _rule_category(ctx: ToolContext, token: str) -> int | None:
+    return await ctx.db.scalar(
+        select(CategoryRule.category_id)
+        .where(CategoryRule.org_id == ctx.org_id, CategoryRule.normalized_token == token)
+        .execution_options(populate_existing=True)
+    )
+
+
+async def _set_category_preview(ctx: ToolContext, args: SetCategoryArgs) -> Preview:
+    tx = await _load_editable(ctx, args.transaction_id)
+    if tx.category_id == args.category_id:
+        raise ToolError("no_change", "the transaction already has this category")
+    await transaction_service.validate_category_for_type(
+        ctx.db, args.category_id, ctx.org_id, tx.type
+    )
+    names = dict((await ctx.db.execute(
+        select(Category.id, Category.name).where(
+            Category.org_id == ctx.org_id, Category.id.in_([tx.category_id, args.category_id])
+        )
+    )).all())
+    changes = [Change("transactions", tx.id, "category_id", tx.category_id, args.category_id)]
+    warnings = []
+    token = _rule_token(ctx, tx)
+    if token:
+        changes.append(Change(
+            "category_rules", {"untrusted": token}, "category_id",
+            await _rule_category(ctx, token), args.category_id,
+        ))
+        warnings.append(
+            "Also updates the organization's categorization rule for this description, "
+            "which categorizes future imports."
+        )
+    return Preview(
+        summary=(
+            f"Change the category of transaction {tx.id} "
+            f"from category {tx.category_id} to category {args.category_id}"
+        ),
+        changes=changes,
+        warnings=warnings,
+        context={
+            "description": tx.description,
+            "from": {"category_name": names.get(tx.category_id)},
+            "to": {"category_name": names.get(args.category_id)},
+        },
+    )
+
+
+async def _set_category_execute(ctx: ToolContext, args: SetCategoryArgs) -> dict:
+    tx = await _load_editable(ctx, args.transaction_id)
+    token = _rule_token(ctx, tx)
+    out = await transaction_service.update_transaction(
+        ctx.db, ctx.org_id, args.transaction_id,
+        TransactionUpdate(category_id=args.category_id), learn=not ctx.auto,
+    )
+    result = transaction_service.to_response(out).model_dump(mode="json")
+    # ``update_transaction`` swallows a failed rule write: report whether the
+    # rule now maps to the target (True too if it already did and the write failed).
+    result["rule_learned"] = bool(token) and await _rule_category(ctx, token) == args.category_id
+    return result
+
+
+register(ToolSpec(
+    name="transactions_set_category", risk="write", args=SetCategoryArgs,
+    product_area=None, min_role=Role.MEMBER,
+    mirrors_route=("PUT", "/api/v1/transactions/{transaction_id}"),
+    description=(
+        "Change the category of one transaction. Transactions in a recurring series "
+        "or linked to another transaction are refused. Returns a preview to confirm; "
+        "nothing changes until it is confirmed."
+    ),
+    preview=_set_category_preview, execute=_set_category_execute,
 ))

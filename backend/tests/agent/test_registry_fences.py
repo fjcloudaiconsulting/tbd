@@ -81,13 +81,15 @@ def scratch_tool():
         registry._TOOLS.pop(name, None)
 
 
-def test_registry_ships_the_six_v1_reads_and_the_first_write():
+def test_registry_ships_the_six_v1_reads_and_the_writes():
     assert sorted(t.name for t in TOOLS) == sorted([
         "accounts_list", "categories_list", "budgets_list",
         "transactions_search", "spending_by_category", "forecast_get",
-        "budgets_update_amount",
+        "budgets_update_amount", "transactions_set_category",
     ])
-    assert {t.name for t in TOOLS if t.risk != "read"} == {"budgets_update_amount"}
+    assert {t.name for t in TOOLS if t.risk != "read"} == {
+        "budgets_update_amount", "transactions_set_category",
+    }
     assert {t.risk for t in TOOLS} == {"read", "write"}
 
 
@@ -233,6 +235,8 @@ def _valid_base(tool) -> dict:
         return {"date_from": "2026-01-01", "date_to": "2026-01-31", "category_match": "exact"}
     if tool.name == "budgets_update_amount":
         return {"budget_id": 1, "amount": "10.00"}
+    if tool.name == "transactions_set_category":
+        return {"transaction_id": 1, "category_id": 2}
     return {}
 
 
