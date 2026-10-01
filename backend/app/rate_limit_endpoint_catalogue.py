@@ -85,6 +85,7 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # agent router (TBD-577). ``shared_limit`` because both routes carry
     # ``{action_id}``: a plain ``limit`` would bucket per concrete path.
     "agent.cancel",
+    "agent.chat",  # TBD-560, no path param: plain ``limit``
     "agent.confirm",
     # agent_tokens router (TBD-578). Mint is ``dynamic_limit`` (IP); the
     # path-param routes use ``shared_limit`` for the same reason as above.
