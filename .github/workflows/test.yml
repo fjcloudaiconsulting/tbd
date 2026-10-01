@@ -216,8 +216,8 @@ jobs:
 
   # TBD-561 (F-M6): the MCP server component ships from its own image. Build
   # backend/Dockerfile.mcp and import app.mcp_main INSIDE it, so a tool that
-  # starts importing a package the image excludes (alembic, ofxtools, pyotp,
-  # qrcode) fails here, not at deploy. The pin-parity half is a backend test.
+  # starts importing (at module load) a package the image excludes (alembic,
+  # ofxtools, pyotp, qrcode) fails here, not at deploy. The pin-parity half is a backend test.
   # Throwaway secrets: Settings refuses to import without real-looking ones.
   # Nothing is pushed: no consumer of a registry image exists yet.
   mcp-image:

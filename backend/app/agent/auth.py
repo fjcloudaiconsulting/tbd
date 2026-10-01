@@ -36,7 +36,9 @@ logger = structlog.stdlib.get_logger(__name__)
 def www_authenticate() -> str:
     """Every MCP 401 points at the protected-resource metadata (RFC 9728) so
     an OAuth client can discover the authorization server (F-O8). Derived from
-    ``app_url`` so a branch deploy advertises its own origin."""
+    ``app_url`` so a branch deploy advertises its own origin. The metadata
+    route itself ships with the OAuth authorization server; until then a
+    client that follows the header gets a 404 and falls back to its token."""
     url = f"{settings.app_url.rstrip('/')}/.well-known/oauth-protected-resource/mcp"
     return f'Bearer resource_metadata="{url}"'
 

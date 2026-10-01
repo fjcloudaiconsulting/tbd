@@ -371,7 +371,7 @@ The MCP component is its own image and process and never imports `app.main`, so 
 
 | Route | Credential |
 | --- | --- |
-| `POST /mcp` | An agent access token (`pat_` bearer with an `agent:*` scope), checked by `authenticate_agent_token` outside the dependency graph, before any JSON-RPC method is parsed or dispatched (`initialize` and `ping` included). Every 401 carries `WWW-Authenticate: Bearer resource_metadata=...`. The org also needs `ai.agent` and a non-zero `mcp.calls` limit (403 otherwise). |
+| `POST /mcp` | An agent access token (`pat_` bearer with an `agent:*` scope), checked by `authenticate_agent_token` outside the dependency graph, before any JSON-RPC method is parsed or dispatched (`initialize` and `ping` included). Every 401 carries `WWW-Authenticate: Bearer resource_metadata=...` (the metadata route ships with the OAuth authorization server). Failed auth is capped at 300/minute per client IP, which then refuses the whole IP for the minute; valid tokens are limited per token. The org also needs `ai.agent` and a non-zero `mcp.calls` limit (403 otherwise). |
 | `GET /health` | Open. The component's liveness probe; not routed through the public ingress. |
 
 ### Platform-gated endpoints (authorization, not just authentication)
