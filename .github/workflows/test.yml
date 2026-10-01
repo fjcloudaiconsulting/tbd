@@ -195,7 +195,9 @@ jobs:
           # below (TBD-498). Six shards writing the default `.coverage` would
           # clobber each other; this keeps each shard's data file distinct.
           COVERAGE_FILE: .coverage.${{ matrix.group }}
-        run: pytest --splits ${{ strategy.job-total }} --group ${{ matrix.group }} --durations-path .test_durations --cov=app --cov-report=
+          # INFRA-53: coverage is main-only; PR shards skip it (nothing reads it there).
+          COV_FLAGS: ${{ github.event_name != 'pull_request' && '--cov=app --cov-report=' || '' }}
+        run: pytest --splits ${{ strategy.job-total }} --group ${{ matrix.group }} --durations-path .test_durations $COV_FLAGS
 
       - name: Run backend syntax smoke
         if: ${{ matrix.group == 1 }}
@@ -206,6 +208,7 @@ jobs:
       # (TBD-498). `include-hidden-files` is required: the data file is a
       # dotfile and `upload-artifact@v4` skips those by default, silently.
       - name: Upload shard coverage data
+        if: ${{ github.event_name != 'pull_request' }}
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.group }}
@@ -378,20 +381,20 @@ jobs:
       # look at the real numbers before advertising anything on a public
       # README.
       - name: Download shard coverage data
-        if: ${{ needs.changes.outputs.backend == 'true' }}
+        if: ${{ needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
         uses: actions/download-artifact@v4
         with:
           pattern: coverage-*
           path: cov
 
       - name: Set up Python for coverage combine
-        if: ${{ needs.changes.outputs.backend == 'true' }}
+        if: ${{ needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Combine shard coverage and report
-        if: ${{ needs.changes.outputs.backend == 'true' }}
+        if: ${{ needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
         continue-on-error: true
         run: |
           pip install coverage==7.6.10
