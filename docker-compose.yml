@@ -47,6 +47,11 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379/0
+      # TBD-561: ONE explicit key shared with the `mcp` service. Without it
+      # each derives its PAT pepper from its own JWT secret, and mcp has its
+      # own (as in production), so tokens minted here would not authenticate
+      # there. Set API_TOKEN_HMAC_KEY in .env to override.
+      - API_TOKEN_HMAC_KEY=${API_TOKEN_HMAC_KEY:-dev-only-shared-api-token-hmac-key-not-for-prod}
     depends_on:
       mysql:
         condition: service_healthy
@@ -103,6 +108,12 @@ services:
       # the wrong remedy. The right one is:
       #     docker compose up -d --force-recreate backend
       - ./backend/.test_durations:/app/.test_durations:ro
+      # TBD-561: tests/mcp/test_mcp_image.py reads these two build inputs of
+      # the MCP image, which no directory mount covers. Read-only; recreate
+      # the container after a `git pull` replaces either file (inode mount).
+      - ./backend/requirements-mcp.txt:/app/requirements-mcp.txt:ro
+      - ./backend/Dockerfile.mcp:/app/Dockerfile.mcp:ro
+      - ./backend/requirements.txt:/app/requirements.txt:ro
       - ./.github:/app/.github:ro
       # TBD-419: read-only mount so backend/tests/test_dataplane_apt_pins.py and
       # test_apt_policy_filter.py can parse the ansible tree and import the
@@ -164,6 +175,34 @@ services:
       # protects on the CLI side).
       - ./.git:/app/.git:ro
 
+  # TBD-561: the MCP server component, built from its own image
+  # (backend/Dockerfile.mcp). No env_file on purpose: it must not receive the
+  # backend's JWT secret, MFA keys or AI credential key. Its JWT and MFA
+  # recovery secrets are its own (they satisfy the boot validators and can
+  # neither verify nor mint a backend session).
+  mcp:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.mcp
+    expose:
+      - "8001"
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - APP_URL=${APP_URL:-http://localhost}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - API_TOKEN_HMAC_KEY=${API_TOKEN_HMAC_KEY:-dev-only-shared-api-token-hmac-key-not-for-prod}
+      - JWT_SECRET_KEY=dev-only-mcp-jwt-secret-never-the-backend-value
+      - MFA_RECOVERY_HMAC_KEY=dev-only-mcp-mfa-recovery-hmac-key-unused-here
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--reload", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+    volumes:
+      - ./backend/app:/app/app:ro
+
   frontend:
     build:
       context: ./frontend
@@ -220,6 +259,7 @@ services:
     depends_on:
       - frontend
       - backend
+      - mcp
 
 volumes:
   mysql_data:

@@ -1,0 +1,31 @@
+# MCP server component (TBD-561). Its own image, built from the same source
+# tree as the backend so it imports the shared agent registry in-process.
+#
+# Copies ONLY app/: no alembic/, scripts/, seed.py or tests/. It runs no
+# migrations, mounts no REST router and holds no AI key. Every package comes
+# from requirements-mcp.txt, a subset of requirements.txt with the SAME pins
+# (fenced by tests/mcp/test_mcp_image.py); the CI `mcp-image` job builds this
+# file and imports app.mcp_main inside it, so a tool that starts importing an
+# excluded package fails the build, not production.
+#
+# Pure-Python MySQL driver (aiomysql + PyMySQL), so no gcc build layer.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements-mcp.txt ./
+RUN pip install --no-cache-dir -r requirements-mcp.txt
+
+COPY app ./app
+
+RUN addgroup --system --gid 1001 mcp && \
+    adduser --system --uid 1001 mcp
+USER mcp
+
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8001
+
+# Same proxy trust list as the backend image (see backend/Dockerfile).
+CMD ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]

@@ -29,7 +29,7 @@ from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
 from app import redis_client
-from app.agent.auth import authenticate_agent_token
+from app.agent.auth import authenticate_agent_token, www_authenticate
 from app.agent.registry import AGENT_SCOPES
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -296,7 +296,9 @@ async def test_f_t3_every_rejection_is_the_same_401(factory):
             await _auth(factory, plaintext)
         e = ei.value
         seen.add((e.status_code, e.detail, tuple(sorted((e.headers or {}).items()))))
-    assert seen == {(401, "Invalid or expired token", (("WWW-Authenticate", "Bearer"),))}
+    # TBD-561 (F-O8): one header for every reason, pointing at the metadata.
+    assert seen == {(401, "Invalid or expired token", (("WWW-Authenticate", www_authenticate()),))}
+    assert "resource_metadata=" in www_authenticate()
     # Known-but-dead tokens are audited with the token in the ACTOR column:
     # the bind precedes the rejection branches (the pat.py rule).
     rejected = await _audits(factory, "api_token.auth_rejected")

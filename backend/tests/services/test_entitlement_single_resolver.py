@@ -200,6 +200,9 @@ ALLOWED: dict[tuple[str, str], str] = {
         "THE resolver: reads Plan.features/usage_limits and both override tables.",
     ("services/feature_service.py", "get_features"):
         "reads Entitlements.features (resolver output), not a plan column.",
+    ("mcp_main.py", "mcp_endpoint"):
+        "the MCP front door reads Entitlements.features/limits (resolver output) once "
+        "per request for the F-E4 door; reads no plan column or override row.",
     ("routers/admin_orgs.py", "get_feature_state"):
         "display fields of the override rows + Entitlements.features; what is in "
         "force comes from ent.overridden.",

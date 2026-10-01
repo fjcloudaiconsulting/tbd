@@ -37,6 +37,8 @@ services:
     environment:
       - APP_ENV=production
       - REDIS_URL=redis://redis:6379/0
+      # TBD-561: no dev default in production; the shared pepper must be set.
+      - API_TOKEN_HMAC_KEY=${API_TOKEN_HMAC_KEY:?set API_TOKEN_HMAC_KEY in .env}
     depends_on:
       mysql:
         condition: service_healthy
@@ -46,6 +48,18 @@ services:
         condition: service_completed_successfully
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
     volumes: []  # Override dev volume mounts — immutable container
+
+  # TBD-561: the MCP component with its OWN JWT and MFA recovery secrets
+  # (never the backend's) and no dev defaults.
+  mcp:
+    restart: unless-stopped
+    environment:
+      - APP_ENV=production
+      - API_TOKEN_HMAC_KEY=${API_TOKEN_HMAC_KEY:?set API_TOKEN_HMAC_KEY in .env}
+      - JWT_SECRET_KEY=${MCP_JWT_SECRET_KEY:?set MCP_JWT_SECRET_KEY in .env}
+      - MFA_RECOVERY_HMAC_KEY=${MCP_MFA_RECOVERY_HMAC_KEY:?set MCP_MFA_RECOVERY_HMAC_KEY in .env}
+    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+    volumes: []  # immutable container
 
   frontend:
     build:

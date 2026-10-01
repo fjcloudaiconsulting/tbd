@@ -214,6 +214,32 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # TBD-561 (F-M6): the MCP server component ships from its own image. Build
+  # backend/Dockerfile.mcp and import app.mcp_main INSIDE it, so a tool that
+  # starts importing (at module load) a package the image excludes (alembic,
+  # ofxtools, pyotp, qrcode) fails here, not at deploy. The pin-parity half is a backend test.
+  # Throwaway secrets: Settings refuses to import without real-looking ones.
+  # Nothing is pushed: no consumer of a registry image exists yet.
+  mcp-image:
+    name: MCP Image
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Build the MCP image
+        run: docker build -f backend/Dockerfile.mcp -t "tbd-mcp:${GITHUB_SHA}" backend
+
+      - name: Import the MCP app inside the image
+        run: >-
+          docker run --rm
+          -e JWT_SECRET_KEY="$(openssl rand -hex 32)"
+          -e MFA_RECOVERY_HMAC_KEY="$(openssl rand -hex 32)"
+          "tbd-mcp:${GITHUB_SHA}"
+          python -c "import sys, app.mcp_main; assert 'app.main' not in sys.modules; print('mcp import ok')"
+
   # Stable aggregate gate. Branch protection / required-check config can
   # point at this single "Backend Checks" context; it passes only when
   # every shard passed. Keeping the name "Backend Checks" preserves the
@@ -221,7 +247,7 @@ jobs:
   backend:
     name: Backend Checks
     runs-on: ubuntu-latest
-    needs: [changes, backend-shard, migrations]
+    needs: [changes, backend-shard, migrations, mcp-image]
     if: ${{ always() }}
     steps:
       # ⚠ THE WIRING GUARD MUST STAY THE FIRST STEP IN THIS JOB.
@@ -321,6 +347,13 @@ jobs:
           "${{ needs.backend-shard.result }}"
           "${{ needs.changes.outputs.backend }}"
           "Backend shards"
+
+      - name: Verify the MCP image built and imported
+        run: >-
+          bash scripts/ci/assert-gate.sh
+          "${{ needs.mcp-image.result }}"
+          "${{ needs.changes.outputs.backend }}"
+          "MCP Image"
 
       # `Migration Checks` is folded into this aggregate deliberately. It is
       # the one context branch protection is expected to require (TBD-347),

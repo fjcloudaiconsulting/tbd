@@ -23,8 +23,8 @@ The ``mcp.calls`` meter is admitted HERE (TBD-585), on the mcp channel only:
 once per ``invoke`` after args validation and before the other gates, and once
 per ``confirm_action`` / ``cancel_action``. The auto path counts once (it
 confirms inside the engine, not through ``confirm_action``). ``assistant.turns``
-is admitted by the in-app front door, per turn; token-keyed rate limits (gate 6)
-by the MCP front door work (561/578).
+is admitted by the in-app front door, per turn. Gate 6 (``actions.call_gate``,
+the per-token call limit, TBD-561) runs just above every admission.
 """
 from __future__ import annotations
 
@@ -401,8 +401,11 @@ async def _gate_and_run(
             "; ".join(f"{'.'.join(map(str, e['loc'])) or 'args'}: {e['msg']}" for e in exc.errors()),
         ) from None
 
-    # Gate 6 (per-token rate limit, 561/578) goes ABOVE this line: a refused
-    # call must not spend the plan's meter.
+    # 6. Per-token rate limit, ABOVE the admission line: a refused call must
+    # not spend the plan's meter.
+    from app.agent import actions  # deferred: actions imports this module
+
+    await actions.call_gate(channel, api_token_id, spec.risk)
     await _admit_mcp_call(db, user, channel)
 
     await check_gates(db, user, spec, channel, scope)
@@ -413,8 +416,6 @@ async def _gate_and_run(
     )
     if spec.risk == "read":
         return await call_mapped(spec.run, ctx, args)
-    from app.agent import actions  # deferred: actions imports this module
-
     return await actions.propose(ctx, spec, args, scope=scope)
 
 
@@ -430,6 +431,7 @@ async def _decide(
         auto=_is_auto(channel, scope),
     )
     try:
+        await actions.call_gate(channel, api_token_id, which)  # gate 6, fails closed
         await _admit_mcp_call(db, user, channel)
         data = await getattr(actions, which)(ctx, action_id, scope=scope)
     except ToolError as exc:
