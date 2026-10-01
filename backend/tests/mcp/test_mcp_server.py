@@ -384,6 +384,8 @@ async def test_one_call_draws_exactly_one_from_the_bucket(client, w, _autouse_fa
     assert (await _call(client, "accounts_list", {})).status_code == 200
     key = window_key(f"agent:tok:{w['tok']['write']}:calls:min", 60)
     assert int(await _autouse_fake_redis.get(key)) == 1
+    req = window_key(f"agent:tok:{w['tok']['write']}:req:min", 60)
+    assert int(await _autouse_fake_redis.get(req)) == 1
 
 
 async def test_fq12_a_call_refused_at_gate_6_does_not_burn_the_meter(

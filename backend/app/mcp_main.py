@@ -62,9 +62,7 @@ SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")  # latest first
 SERVER_INFO = {"name": "the-better-decision", "version": "1"}
 
 # JSON-RPC codes. -32000..-32099 are server-defined.
-PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL = (
-    -32700, -32600, -32601, -32602, -32603,
-)
+PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
 FORBIDDEN, RATE_LIMITED, UNAVAILABLE = -32003, -32029, -32050
 
 
@@ -184,8 +182,9 @@ async def _ip_failures(ip: str, *, add: bool) -> int:
     so valid traffic never fills it. ponytail: once tripped it refuses the
     whole IP before auth (no DB lookups), so one junk client behind a shared
     hosted egress IP can stall that IP's valid tokens for the minute; revisit
-    with the OAuth ticket (authenticate first, refuse only failures). Async client, fails OPEN (a Redis outage must not lock out every
-    harness, and the sync limiter would block the event loop per request)."""
+    with the OAuth ticket (authenticate first, refuse only failures).
+    Async client, fails OPEN (a Redis outage must not lock out every harness,
+    and the sync limiter would block the event loop per request)."""
     client = redis_client.get_client()
     if client is None:
         return 0
