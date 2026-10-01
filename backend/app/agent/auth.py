@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.pat import _aware, _record_auth_rejected
+from app.config import settings
 from app.models.api_token import ApiToken
 from app.models.user import User
 from app.rate_limit import get_client_ip
@@ -32,11 +33,19 @@ from app.services.api_token_service import (
 logger = structlog.stdlib.get_logger(__name__)
 
 
+def www_authenticate() -> str:
+    """Every MCP 401 points at the protected-resource metadata (RFC 9728) so
+    an OAuth client can discover the authorization server (F-O8). Derived from
+    ``app_url`` so a branch deploy advertises its own origin."""
+    url = f"{settings.app_url.rstrip('/')}/.well-known/oauth-protected-resource/mcp"
+    return f'Bearer resource_metadata="{url}"'
+
+
 def _reject() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired token",
-        headers={"WWW-Authenticate": "Bearer"},
+        headers={"WWW-Authenticate": www_authenticate()},
     )
 
 

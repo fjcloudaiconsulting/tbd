@@ -1,0 +1,20 @@
+# MCP server component (TBD-561, backend/Dockerfile.mcp). A SUBSET of
+# requirements.txt with the SAME pins: tests/mcp/test_mcp_image.py fails on a
+# package missing from requirements.txt or pinned differently there.
+# Excluded on purpose: alembic (no migrations), ofxtools (no import),
+# pyotp and qrcode (no MFA), python-multipart (no forms).
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+pydantic[email]==2.11.3
+pydantic-settings==2.9.1
+sqlalchemy==2.0.41
+aiomysql==0.2.0
+PyMySQL==1.1.3
+PyJWT[crypto]==2.10.1
+bcrypt==4.3.0
+structlog==25.1.0
+python-dateutil==2.9.0
+httpx==0.28.1
+slowapi==0.1.9
+cryptography==44.0.3
+redis==5.2.1

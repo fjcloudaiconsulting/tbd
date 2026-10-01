@@ -575,7 +575,10 @@ async def test_principal_scope_gate(entitled, scratch_tool, monkeypatch, channel
     hooks = dict(run=_run) if risk == "read" else dict(run=None, preview=_noop, execute=_noop)
     route = ("GET", "/api/v1/accounts") if risk == "read" else ("PUT", "/api/v1/budgets/{budget_id}")
     scratch_tool(_spec(name="scoped_tool", risk=risk, mirrors_route=route, **hooks))
-    call = invoke(None, _user(Role.OWNER), "scoped_tool", {}, channel=channel, scope=scope)
+    # An mcp principal always carries its token id (gate 6 refuses one without).
+    tok = 1 if channel == "mcp" and scope is not None else None
+    call = invoke(None, _user(Role.OWNER), "scoped_tool", {}, channel=channel, scope=scope,
+                  api_token_id=tok)
     if ok == "staged":
         assert await call == {"data": {"staged": "scoped_tool"}}
     elif ok:

@@ -365,6 +365,15 @@ The table documents **reachability**, not a claim that every listed route is ful
 
 All other endpoints require a Bearer access token via the `get_current_user` dependency.
 
+**MCP server component (separate app, `backend/app/mcp_main.py`, not part of the 26 above)**
+
+The MCP component is its own image and process and never imports `app.main`, so the allowlist test cannot see it. Its route set is exactly these two pairs, fenced by `backend/tests/mcp/test_mcp_server.py` (F-M1).
+
+| Route | Credential |
+| --- | --- |
+| `POST /mcp` | An agent access token (`pat_` bearer with an `agent:*` scope), checked by `authenticate_agent_token` outside the dependency graph, before any JSON-RPC method is parsed or dispatched (`initialize` and `ping` included). Every 401 carries `WWW-Authenticate: Bearer resource_metadata=...`. The org also needs `ai.agent` and a non-zero `mcp.calls` limit (403 otherwise). |
+| `GET /health` | Open. The component's liveness probe; not routed through the public ingress. |
+
 ### Platform-gated endpoints (authorization, not just authentication)
 
 Authentication says *who you are*; the set above is where that stops being
