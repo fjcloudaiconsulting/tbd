@@ -457,7 +457,7 @@ async def test_sweep_deletes_only_expired_rows(session_factory):
         res = client.post("/api/v1/admin/orgs/feature-overrides/sweep-expired")
 
     assert res.status_code == 200
-    assert res.json() == {"deleted_count": 2}
+    assert res.json() == {"deleted_count": 2, "feature_overrides_deleted": 2, "limit_overrides_deleted": 0}
 
     async with session_factory() as db:
         remaining_keys = sorted(
@@ -534,7 +534,7 @@ async def test_sweep_idempotent_when_nothing_expired(session_factory):
     with TestClient(app) as client:
         res = client.post("/api/v1/admin/orgs/feature-overrides/sweep-expired")
     assert res.status_code == 200
-    assert res.json() == {"deleted_count": 0}
+    assert res.json() == {"deleted_count": 0, "feature_overrides_deleted": 0, "limit_overrides_deleted": 0}
 
     async with session_factory() as db:
         rows = (
@@ -720,7 +720,7 @@ async def test_sweep_audit_count_matches_actual_deletes(session_factory):
     # Only ai.forecast survived to be deleted by the route. ai.budget
     # was deleted out-of-band; the route's DELETE-by-id should not
     # count it.
-    assert res.json() == {"deleted_count": 1}
+    assert res.json() == {"deleted_count": 1, "feature_overrides_deleted": 1, "limit_overrides_deleted": 0}
 
     async with session_factory() as db:
         rows = (
@@ -794,7 +794,7 @@ async def test_sweep_zero_deletes_when_all_expired_rows_already_gone(session_fac
         with TestClient(app) as client:
             res = client.post("/api/v1/admin/orgs/feature-overrides/sweep-expired")
     assert res.status_code == 200
-    assert res.json() == {"deleted_count": 0}
+    assert res.json() == {"deleted_count": 0, "feature_overrides_deleted": 0, "limit_overrides_deleted": 0}
 
     async with session_factory() as db:
         row = (

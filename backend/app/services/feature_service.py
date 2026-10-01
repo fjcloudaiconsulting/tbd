@@ -1,17 +1,27 @@
-"""L4.11 — feature entitlement resolver.
+"""L4.11 / TBD-585 — the entitlement resolver (features and usage limits).
 
 Pure service layer. No FastAPI dependencies. The resolver order is
-defaults → plan.features → active org override. Override row presence
+defaults → plan → active org override. Override row presence
 (not row.value truthiness) is what wins, so a row with value=False
 correctly denies an otherwise plan-granted feature.
 """
 from __future__ import annotations
 
-from sqlalchemy import func, or_, select
+from dataclasses import dataclass
+from datetime import datetime
+
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.feature_catalog import ALL_FEATURE_KEYS, PlanFeatures
+from app._time import utcnow_naive
+from app.auth.feature_catalog import (
+    ALL_FEATURE_KEYS,
+    ALL_METER_KEYS,
+    PlanFeatures,
+    PlanUsageLimits,
+)
 from app.models.feature_override import OrgFeatureOverride
+from app.models.limit_override import OrgLimitOverride
 from app.models.subscription import Plan, Subscription
 
 
@@ -28,19 +38,96 @@ class UnknownFeatureKey(Exception):
         super().__init__(f"Unknown feature key: {key!r}")
 
 
-async def get_features(db: AsyncSession, org_id: int) -> dict[str, bool]:
-    """Return the effective feature map for an org.
+@dataclass(frozen=True)
+class UsageLimit:
+    period: str
+    limit: int | None  # None = unlimited, 0 = none
 
-    Resolution order: defaults (False) → plan.features → active override.
-    Fail-closed if the org has no subscription (returns all-False).
+
+@dataclass(frozen=True)
+class Entitlements:
+    """What an org may use, resolved once. ``plan_*`` are the plan's values
+    before overrides (catalog defaults when there is no subscription);
+    ``overridden`` names every feature key and meter an ACTIVE override set."""
+
+    features: dict[str, bool]
+    limits: dict[str, UsageLimit]
+    plan_features: dict[str, bool]
+    plan_limits: dict[str, UsageLimit]
+    has_plan: bool
+    overridden: frozenset[str]
+
+
+def _limits(model: PlanUsageLimits) -> dict[str, UsageLimit]:
+    return {m: UsageLimit(**v) for m, v in model.model_dump(by_alias=True).items()}
+
+
+async def get_entitlements(
+    db: AsyncSession, org_id: int, *, now: datetime | None = None
+) -> Entitlements:
+    """The ONE entitlement resolver: defaults -> plan -> active overrides.
+
+    Override row PRESENCE wins (a False feature row denies a plan grant, a
+    NULL limit row makes the meter unlimited, a limit row replaces the meter's
+    ``{period, limit}`` wholesale). An override is active while
+    ``expires_at IS NULL OR expires_at > now`` on the app clock. No
+    subscription: catalog defaults, overrides still apply. Bad stored data
+    (an unknown plan key, a null platform limit) raises.
     """
-    plan_features = await _fetch_plan_features(db, org_id)
-    overrides = await _fetch_active_overrides(db, org_id)
+    now = now or utcnow_naive()
+    plan = (
+        await db.execute(
+            select(Plan.features, Plan.usage_limits)
+            .join(Subscription, Subscription.plan_id == Plan.id)
+            .where(Subscription.org_id == org_id)
+        )
+    ).first()
+    plan_features = PlanFeatures.model_validate(
+        (plan.features if plan else None) or {}
+    ).model_dump(by_alias=True)
+    plan_limits = PlanUsageLimits.model_validate((plan.usage_limits if plan else None) or {})
 
-    merged = {key: False for key in ALL_FEATURE_KEYS}
-    merged.update(plan_features)
-    merged.update(overrides)
-    return merged
+    feature_rows = (
+        await db.execute(
+            select(OrgFeatureOverride.feature_key, OrgFeatureOverride.value)
+            .where(OrgFeatureOverride.org_id == org_id)
+            .where(or_(OrgFeatureOverride.expires_at.is_(None), OrgFeatureOverride.expires_at > now))
+        )
+    ).all()
+    limit_rows = (
+        await db.execute(
+            select(OrgLimitOverride.meter, OrgLimitOverride.period, OrgLimitOverride.limit_value)
+            .where(OrgLimitOverride.org_id == org_id)
+            .where(or_(OrgLimitOverride.expires_at.is_(None), OrgLimitOverride.expires_at > now))
+        )
+    ).all()
+    # Defensive filter: a stale row predating a catalog removal must not leak.
+    feature_ovr = {r.feature_key: r.value for r in feature_rows if r.feature_key in ALL_FEATURE_KEYS}
+    limit_ovr = {
+        r.meter: {"period": r.period, "limit": r.limit_value}
+        for r in limit_rows if r.meter in ALL_METER_KEYS
+    }
+    # Validated once more: a tampered NULL platform override fails loudly.
+    merged_limits = PlanUsageLimits.model_validate(
+        {**plan_limits.model_dump(by_alias=True), **limit_ovr}
+    )
+    return Entitlements(
+        features={**plan_features, **feature_ovr},
+        limits=_limits(merged_limits),
+        plan_features=plan_features,
+        plan_limits=_limits(plan_limits),
+        has_plan=plan is not None,
+        overridden=frozenset(feature_ovr) | frozenset(limit_ovr),
+    )
+
+
+async def get_features(db: AsyncSession, org_id: int) -> dict[str, bool]:
+    """The effective feature map for an org (see :func:`get_entitlements`).
+
+    Looked up through the module global so a patch of ``get_entitlements``
+    reaches every consumer.
+    """
+    return (await get_entitlements(db, org_id)).features
 
 
 async def has_feature(db: AsyncSession, org_id: int, key: str) -> bool:
@@ -48,27 +135,3 @@ async def has_feature(db: AsyncSession, org_id: int, key: str) -> bool:
         raise UnknownFeatureKey(key)
     features = await get_features(db, org_id)
     return features[key]
-
-
-async def _fetch_plan_features(db: AsyncSession, org_id: int) -> dict[str, bool]:
-    row = await db.execute(
-        select(Plan.features)
-        .join(Subscription, Subscription.plan_id == Plan.id)
-        .where(Subscription.org_id == org_id)
-    )
-    raw = row.scalar_one_or_none() or {}
-    # Read-side validation: bad DB data must fail loudly.
-    return PlanFeatures.model_validate(raw).model_dump(by_alias=True)
-
-
-async def _fetch_active_overrides(db: AsyncSession, org_id: int) -> dict[str, bool]:
-    rows = await db.execute(
-        select(OrgFeatureOverride.feature_key, OrgFeatureOverride.value)
-        .where(OrgFeatureOverride.org_id == org_id)
-        .where(or_(
-            OrgFeatureOverride.expires_at.is_(None),
-            OrgFeatureOverride.expires_at > func.now(),
-        ))
-    )
-    # Defensive filter — a stale row predating a catalog key removal must not leak.
-    return {r.feature_key: r.value for r in rows.all() if r.feature_key in ALL_FEATURE_KEYS}

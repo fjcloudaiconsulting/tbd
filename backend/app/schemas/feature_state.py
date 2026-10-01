@@ -2,6 +2,7 @@
 from pydantic import BaseModel, ConfigDict
 
 from app.schemas.feature_override import OrgFeatureOverrideResponse
+from app.schemas.limit_override import OrgLimitOverrideResponse
 
 
 class PlanSummary(BaseModel):
@@ -19,6 +20,21 @@ class FeatureStateRow(BaseModel):
     override: OrgFeatureOverrideResponse | None
 
 
+class LimitValue(BaseModel):
+    period: str
+    limit: int | None
+
+
+class LimitStateRow(BaseModel):
+    meter: str
+    module: str
+    plan: LimitValue
+    effective: LimitValue
+    source: str  # "override" | "plan" | "default"
+    override: OrgLimitOverrideResponse | None
+
+
 class FeatureStateResponse(BaseModel):
     plan: PlanSummary | None
     features: list[FeatureStateRow]
+    limits: list[LimitStateRow]

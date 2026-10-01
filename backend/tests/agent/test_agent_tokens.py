@@ -509,6 +509,33 @@ async def test_m2_only_mint_is_gated_on_ai_agent(factory, client):
     assert (await client.delete(f"{BASE}/{tid}", headers=h)).status_code == 200
 
 
+async def test_f_e4_mint_refused_when_mcp_calls_limit_is_zero(factory, client):
+    """FENCE F-E4 (mint half, TBD-585). ``ai.agent`` on but the effective
+    ``mcp.calls`` limit 0 (here a per-org limit override): mint is 403, before
+    the step-up and the per-user bucket. A limit of 1 still mints. Wrong
+    implementation: gating mint on the ``ai.agent`` key alone (201)."""
+    from app.models.limit_override import OrgLimitOverride
+
+    org = await _org(factory, "Z")
+    async with factory() as s:
+        s.add(OrgLimitOverride(org_id=org, meter="mcp.calls", period="day", limit_value=0))
+        await s.commit()
+    uid = await _user(factory, org, "z")
+    h = await _jwt(factory, uid)
+    r = await client.post(BASE, json=_mint_body(), headers=h)
+    assert r.status_code == 403
+    assert r.json()["detail"] == {
+        "code": "feature_not_enabled", "feature_key": "ai.agent", "meter": "mcp.calls",
+    }
+    async with factory() as s:
+        row = (await s.execute(
+            select(OrgLimitOverride).where(OrgLimitOverride.org_id == org)
+        )).scalar_one()
+        row.limit_value = 1
+        await s.commit()
+    assert (await client.post(BASE, json=_mint_body(), headers=h)).status_code == 201
+
+
 # ── M3: per-user mint bucket ────────────────────────────────────────────────
 
 

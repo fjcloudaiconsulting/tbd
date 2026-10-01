@@ -57,6 +57,11 @@ from __future__ import annotations
 OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # accounts router
     "accounts.adjust_balance",
+    # admin_orgs router (TBD-585). Both routes carry ``{org_id}`` and so use
+    # ``shared_limit``: a plain ``limit`` would bucket per concrete path and
+    # give every target org a private budget.
+    "admin_orgs.limit_override_delete",
+    "admin_orgs.limit_override_set",
     # admin_users router (TBD-362 operator email recovery). Both routes sit
     # behind ``users.reset_credentials`` + ``require_interactive_session``, so
     # the decorator runs with an authenticated identity behind it.

@@ -494,6 +494,13 @@ def entitled(monkeypatch):
 
     monkeypatch.setattr(registry.feature_service, "has_feature", _has)
 
+    async def _admit(db, org_id, meter, n=1, *, now=None):
+        # These tests pass db=None; mcp.calls admission is fenced on a real
+        # database in tests/services/test_usage_service.py (TBD-585).
+        assert meter == "mcp.calls"
+
+    monkeypatch.setattr(registry.usage_service, "admit", _admit)
+
 
 @pytest.mark.parametrize("role", [Role.MEMBER, Role.ADMIN, Role.OWNER])
 async def test_fr9_every_role_passes_a_member_tool(entitled, scratch_tool, role):
