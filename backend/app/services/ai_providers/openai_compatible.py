@@ -1,4 +1,9 @@
-"""OpenAI-compatible adapter — validates by GET {base_url}/v1/models.
+"""OpenAI-compatible adapter — validates by GET {api_root}/models.
+
+``api_root`` is the API root including its version (``/v1``,
+``/v1beta/openai``, ``/api/v1``). A credential row created before
+TBD-590 has ``base_url_is_api_root = False`` and keeps the legacy
+``{base_url}/v1`` root, so its request URLs stay byte-identical.
 
 Same wire shape as the OpenAI adapter; the only difference is the
 URL prefix. PR3 mirrors the same capability surface — embed,
@@ -20,7 +25,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import AsyncIterator, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -65,10 +72,45 @@ DEFAULT_CAPABILITIES = [
 ]
 
 
+# Hosts reached through the OpenAI-compatible adapter with a fixed API
+# root. Served by ``GET /settings/ai-providers/options`` as BYOK presets.
+OPENAI_COMPATIBLE_PRESETS: tuple[dict[str, str], ...] = (
+    {
+        "key": "openrouter",
+        "label": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+    },
+    {
+        "key": "gemini",
+        "label": "Google Gemini",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    },
+)
+
+_VERSION_SEGMENT = re.compile(r"^v\d+(?:(?:alpha|beta)\d*)?$", re.IGNORECASE)
+UNVERSIONED_ROOT_404_ERROR = (
+    "Provider rejected the request (404). "
+    "Include the API version in the base URL, for example /v1."
+)
+
+
+def _has_version_segment(base_url: str) -> bool:
+    return any(
+        _VERSION_SEGMENT.match(seg) for seg in urlsplit(base_url).path.split("/")
+    )
+
+
 class OpenAICompatibleAdapter:
-    def __init__(self, *, api_key: str, base_url: str) -> None:
+    def __init__(
+        self, *, api_key: str, base_url: str, base_url_is_api_root: bool = False
+    ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self.base_url_is_api_root = base_url_is_api_root
+        # Plain concat, never urljoin: legacy rows must stay byte-identical.
+        self.api_root = (
+            self.base_url if base_url_is_api_root else f"{self.base_url}/v1"
+        )
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -77,7 +119,7 @@ class OpenAICompatibleAdapter:
         }
 
     async def validate(self) -> ValidateResult:
-        """GET /v1/models and advertise the full capability surface.
+        """GET {api_root}/models and advertise the full capability surface.
 
         OpenAI-compatible servers can't be introspected for individual
         capability support, so we advertise everything this adapter
@@ -89,7 +131,7 @@ class OpenAICompatibleAdapter:
         leaking provider response data into the error.
         """
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        url = f"{self.base_url}/v1/models"
+        url = f"{self.api_root}/models"
         try:
             async with guarded_async_client(timeout=VALIDATE_TIMEOUT_S) as client:
                 # ``TimeoutError`` is caught alongside httpx's own timeout
@@ -116,6 +158,12 @@ class OpenAICompatibleAdapter:
             # Do NOT echo provider response body — a hostile OAI-compatible
             # endpoint can mirror request headers / body back, leaking the
             # plaintext API key that just left this process.
+            if (
+                resp.status_code == 404
+                and self.base_url_is_api_root
+                and not _has_version_segment(self.base_url)
+            ):
+                return ValidateResult(ok=False, error=UNVERSIONED_ROOT_404_ERROR)
             if 400 <= resp.status_code < 500:
                 return ValidateResult(
                     ok=False,
@@ -147,11 +195,11 @@ class OpenAICompatibleAdapter:
         messages: list[dict],
         max_tokens: Optional[int] = None,
     ) -> LLMResponse:
-        """POST {base_url}/v1/chat/completions."""
+        """POST {api_root}/chat/completions."""
         body: dict = {"model": model, "messages": messages}
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
-        url = f"{self.base_url}/v1/chat/completions"
+        url = f"{self.api_root}/chat/completions"
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
@@ -191,7 +239,7 @@ class OpenAICompatibleAdapter:
         texts: list[str],
         model: Optional[str] = None,
     ) -> EmbedResponse:
-        """POST {base_url}/v1/embeddings.
+        """POST {api_root}/embeddings.
 
         The model parameter is required — OpenAI-compatible servers
         don't share OpenAI's default model name.
@@ -199,7 +247,7 @@ class OpenAICompatibleAdapter:
         if not model:
             raise AIProviderError(code="oai_compatible_embed_model_required")
         body = {"model": model, "input": texts}
-        url = f"{self.base_url}/v1/embeddings"
+        url = f"{self.api_root}/embeddings"
         try:
             async with guarded_async_client(timeout=EMBED_TIMEOUT_S) as client:
                 async with asyncio.timeout(EMBED_TIMEOUT_S):
@@ -263,7 +311,7 @@ class OpenAICompatibleAdapter:
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
-        url = f"{self.base_url}/v1/chat/completions"
+        url = f"{self.api_root}/chat/completions"
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
@@ -305,7 +353,7 @@ class OpenAICompatibleAdapter:
         tools: list[dict],
         max_tokens: Optional[int] = None,
     ) -> FunctionCallResponse:
-        """POST {base_url}/v1/chat/completions with tools.
+        """POST {api_root}/chat/completions with tools.
 
         If the actual server doesn't support function calling, the
         upstream 4xx error will bubble through as a sanitized
@@ -320,7 +368,7 @@ class OpenAICompatibleAdapter:
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
-        url = f"{self.base_url}/v1/chat/completions"
+        url = f"{self.api_root}/chat/completions"
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 async with asyncio.timeout(CHAT_TIMEOUT_S):
@@ -373,7 +421,7 @@ class OpenAICompatibleAdapter:
         messages: list[dict],
         max_tokens: Optional[int] = None,
     ) -> AsyncIterator[StreamChunk]:
-        """POST {base_url}/v1/chat/completions with ``stream=true``.
+        """POST {api_root}/chat/completions with ``stream=true``.
 
         Mirrors the OpenAI streaming shape. ``include_usage`` is
         best-effort — compatible servers vary on whether they emit the
@@ -388,7 +436,7 @@ class OpenAICompatibleAdapter:
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
-        url = f"{self.base_url}/v1/chat/completions"
+        url = f"{self.api_root}/chat/completions"
 
         final_usage: Optional[TokenUsage] = None
         try:

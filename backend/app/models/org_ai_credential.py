@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -65,6 +66,13 @@ class OrgAICredential(Base):
     )
     base_url: Mapped[Optional[str]] = mapped_column(
         String(512), nullable=True
+    )
+    # TBD-590: True means ``base_url`` is the API root including its version
+    # and the adapter appends only the endpoint. Rows created before it are
+    # False and keep the legacy ``{base_url}/v1`` root. ``base_url`` is
+    # immutable after create, so only the create path writes True.
+    base_url_is_api_root: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="0", default=False
     )
     key_fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     last_four: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)

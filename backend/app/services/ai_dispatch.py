@@ -904,6 +904,7 @@ async def call_llm(
         api_key=api_key,
         bearer_token=bearer,
         base_url=cred.base_url,
+        base_url_is_api_root=cred.base_url_is_api_root,
     )
 
     messages = request_payload.get("messages") or []
@@ -1219,6 +1220,7 @@ async def _prepare_dispatch(
         api_key=api_key,
         bearer_token=bearer,
         base_url=cred.base_url,
+        base_url_is_api_root=cred.base_url_is_api_root,
     )
 
     return _PreparedDispatch(

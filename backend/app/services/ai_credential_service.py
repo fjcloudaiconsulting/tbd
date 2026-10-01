@@ -59,12 +59,14 @@ async def _run_validate(
     api_key: Optional[str],
     bearer_token: Optional[str],
     base_url: Optional[str],
+    base_url_is_api_root: bool,
 ) -> ValidateResult:
     adapter = get_adapter(
         provider,
         api_key=api_key,
         bearer_token=bearer_token,
         base_url=base_url,
+        base_url_is_api_root=base_url_is_api_root,
     )
     return await adapter.validate()
 
@@ -162,6 +164,7 @@ async def create_credential(
         api_key=payload.api_key,
         bearer_token=payload.bearer_token,
         base_url=payload.base_url,
+        base_url_is_api_root=True,
     )
     if not result.ok:
         raise _credential_validation_failure(result.error or "validation failed")
@@ -174,6 +177,7 @@ async def create_credential(
             encrypt(payload.bearer_token) if payload.bearer_token else None
         ),
         base_url=payload.base_url,
+        base_url_is_api_root=True,
         key_fingerprint=fingerprint(payload.api_key) if payload.api_key else None,
         last_four=last_four(payload.api_key) if payload.api_key else None,
         discovered_capabilities=result.discovered_capabilities,
@@ -238,6 +242,7 @@ async def rotate_credential(
         api_key=new_api_key,
         bearer_token=new_bearer_token,
         base_url=credential.base_url,
+        base_url_is_api_root=credential.base_url_is_api_root,
     )
     if not result.ok:
         raise _credential_validation_failure(result.error or "validation failed")
@@ -299,6 +304,7 @@ async def validate_credential(
         api_key=api_key,
         bearer_token=bearer_token,
         base_url=credential.base_url,
+        base_url_is_api_root=credential.base_url_is_api_root,
     )
     credential.last_validated_at = datetime.now(timezone.utc)
     if result.ok:

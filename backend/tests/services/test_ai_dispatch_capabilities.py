@@ -53,6 +53,7 @@ from app.services.ai_dispatch import (
     AICapabilityNotSupported,
     AICapExceeded,
     AIDispatchFailed,
+    call_llm,
     call_llm_embed,
     call_llm_function,
     call_llm_stream,
@@ -1574,3 +1575,116 @@ async def test_structured_retry_multiplier_blocks_when_single_would_fit(
         )
     assert result.response.tool_calls[0]["name"] == "f"
     func_adapter.function_call.assert_awaited_once()
+
+
+# ---------- TBD-590: dispatch passes the row's api-root flag ----------
+
+
+def _capture_urls(monkeypatch, response_json: dict) -> list[str]:
+    import httpx
+
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        return httpx.Response(200, json=response_json)
+
+    transport = httpx.MockTransport(handler)
+    original = httpx.AsyncClient.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        kwargs["transport"] = transport
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", _patched_init)
+    return urls
+
+
+_CHAT_REPLY = {
+    "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+    "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("is_api_root", "base_url", "expected"),
+    [
+        # Legacy row: byte-identical to the pre-TBD-590 URL.
+        (False, "https://vllm.example.com", "https://vllm.example.com/v1/chat/completions"),
+        # New row: the stored base URL is the versioned API root.
+        (True, "https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/chat/completions"),
+    ],
+)
+async def test_call_llm_uses_the_rows_api_root_flag(
+    monkeypatch,
+    db: AsyncSession,
+    org,
+    admin_user,
+    openai_compatible_credential,
+    openai_compatible_routing,
+    is_api_root,
+    base_url,
+    expected,
+):
+    openai_compatible_credential.base_url = base_url
+    openai_compatible_credential.base_url_is_api_root = is_api_root
+    await db.commit()
+    urls = _capture_urls(monkeypatch, _CHAT_REPLY)
+
+    await call_llm(
+        db,
+        org_id=org.id,
+        feature_key="chat",
+        request_payload={"messages": [{"role": "user", "content": "x"}]},
+    )
+
+    assert urls == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("is_api_root", "base_url", "expected"),
+    [
+        (False, "https://vllm.example.com", "https://vllm.example.com/v1/chat/completions"),
+        (
+            True,
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        ),
+    ],
+)
+async def test_prepared_dispatch_uses_the_rows_api_root_flag(
+    monkeypatch,
+    db: AsyncSession,
+    org,
+    admin_user,
+    openai_compatible_credential,
+    openai_compatible_routing,
+    is_api_root,
+    base_url,
+    expected,
+):
+    openai_compatible_credential.base_url = base_url
+    openai_compatible_credential.base_url_is_api_root = is_api_root
+    await db.commit()
+    urls = _capture_urls(monkeypatch, _CHAT_REPLY)
+
+    await call_llm_function(
+        db,
+        org_id=org.id,
+        feature_key="chat",
+        messages=[{"role": "user", "content": "x"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "noop",
+                    "description": "noop",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+
+    assert urls == [expected]
