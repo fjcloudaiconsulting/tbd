@@ -1779,7 +1779,7 @@ def test_f7_the_push_trigger_is_unfiltered():
     """⚠⚠ Revision 1 guarded this with a YAML COMMENT ONLY. In a repo whose
     standing rule is *a grep can be satisfied by a comment*, the load-bearing
     property had no test -- and copying a sibling probe's paths-filtered `on:`
-    block (`backup-freshness-probe.yml` has exactly one) would kill the primary
+    block (aws-infra's `backup-freshness-probe.yml` has exactly one) would kill the primary
     detection path with every other fence green.
 
     The suspected primary cause PRODUCES a push to `main`, so unfiltered push is
@@ -2016,10 +2016,10 @@ def test_c6_the_dedupe_does_not_capture_an_unrelated_issue(tmp_path):
     search for `[branch-protection]` also matches any open issue whose title
     contains "branch" and "protection", and taking `.[0].number` blindly would
     post this alarm as a comment on somebody else's incident, where nobody is
-    looking for it. `notify-backup-stale.sh` already had the safe idiom; the
+    looking for it. `notify-backup-stale.sh` (now in aws-infra) had the safe idiom; the
     weaker `notify-deploy-drift.sh` form was copied here.
 
-    ⚠ F8 asserts the five dedupe LITERALS are pairwise distinct. That says
+    ⚠ F8 asserts the dedupe LITERALS are pairwise distinct. That says
     nothing about what a fuzzy title search matches, so F8 is not a fence on
     this and must not be mistaken for one.
 
@@ -2177,11 +2177,9 @@ def test_w1_the_alarm_step_actually_invokes_the_notifier():
     F21 all stay GREEN: drift detected, no issue ever opened. The `if:` was
     fenced and the body was not.
 
-    House precedent, three files away -- `test_backup_offhead`'s sibling
-    `test_backup_offhost.py:367` treats exactly this as load-bearing:
-
-        alarm = [s for s in steps if "notify-backup-stale.sh" in str(s.get("run", ""))]
-        assert alarm, "the workflow never invokes the alarm script."
+    House precedent: the backup freshness probe's alarm test (now in
+    fjcloudaiconsulting/aws-infra, `tests/test_backup_probe.py`) treats exactly
+    this as load-bearing: the alarm step must run the notifier script.
     """
     steps = {st.get("id"): st for st in _steps() if st.get("id")}
     assert "alarm" in steps, f"ids were {sorted(steps)}"
@@ -2253,11 +2251,11 @@ def _effective_dedupe_tokens(path: pathlib.Path) -> set[str]:
     """The bracket token a notifier ACTUALLY deduplicates on.
 
     ⚠⚠ THE HOUSE HAS TWO IDIOMS AND A FENCE THAT KNOWS ONLY ONE IS VACUOUS.
-    Measured: only `notify-deploy-drift.sh:29` and `notify-backup-stale.sh:15`
-    define `TITLE_PREFIX`; `notify-smoke-failure.sh:42` and
+    Measured: `notify-deploy-drift.sh` and `notify-protection-drift.sh` define
+    `TITLE_PREFIX`; `notify-smoke-failure.sh:42` and
     `notify-undeployed-release.sh:73` hardcode `TITLE` and a SEPARATE
     `--search '"[...]" in:title'` literal. A fence collecting `TITLE_PREFIX=`
-    assignments finds three values, asserts they differ, and PASSES -- while a
+    assignments finds two values, asserts they differ, and PASSES -- while a
     new notifier copied from the other idiom with `[smoke-fail]` still in its
     search line deduplicates straight into the smoke-failure issue and produces
     ZERO signal during an incident.
@@ -2297,8 +2295,8 @@ def test_f8_every_notifier_dedupe_bucket_is_pairwise_distinct():
     # fails for reasons outside its own subject is one that gets deleted. The
     # property is pairwise distinctness over whatever exists; the floor only
     # guarantees the corpus was actually found.
-    assert len(notifiers) >= 5, (
-        f"expected at least the 5 known notifiers, found "
+    assert len(notifiers) >= 4, (
+        f"expected at least the 4 known notifiers, found "
         f"{[p.name for p in notifiers]}; this fence searched the wrong tree.")
     buckets = {p.name: _effective_dedupe_tokens(p) for p in notifiers}
     seen: dict[str, str] = {}
@@ -2315,13 +2313,12 @@ def test_f8_every_notifier_dedupe_bucket_is_pairwise_distinct():
 def test_f8_the_resolver_sees_both_house_idioms():
     """⚠ Non-vacuity of the resolver itself. If it silently returned an empty set
     for the `TITLE=`-only idiom, the fence above would compare two tokens instead
-    of five and pass while proving almost nothing."""
+    of four and pass while proving almost nothing."""
     root = REPO_ROOT
     for name, expected in (
         ("notify-smoke-failure.sh", "[smoke-fail]"),
         ("notify-undeployed-release.sh", "[undeployed-release]"),
         ("notify-deploy-drift.sh", "[deploy-drift]"),
-        ("notify-backup-stale.sh", "[backup-stale]"),
     ):
         tokens = _effective_dedupe_tokens(_scripts_dir() / name)
         assert expected in tokens, f"{name}: resolved {tokens}, expected {expected}"

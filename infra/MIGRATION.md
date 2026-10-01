@@ -304,10 +304,11 @@ final name, which `gzip -t` happily passes. See the comment block in
 `roles/backups/templates/mysql-backup.sh.j2`.
 
 ⚠ **Since TBD-400, something does observe it** — but from off the box, not on
-it. `.github/workflows/backup-freshness-probe.yml` runs at 04:17 UTC, lists the
-bucket's object metadata through a read-only role, and opens a deduped
-`[backup-stale]` GitHub issue when the newest manifest is older than 25 hours,
-missing, or sits beside an implausibly small dump.
+it. `.github/workflows/backup-freshness-probe.yml` in fjcloudaiconsulting/aws-infra
+(moved there in INFRA-20) runs at 04:17 UTC, lists the bucket's object metadata
+through a read-only role, and opens a deduped `[backup-stale]` GitHub issue in
+aws-infra when the newest manifest is older than 25 hours, missing, or sits
+beside an implausibly small dump.
 
 ⚠⚠ It runs in CI **because an alert emitted by the droplet cannot fire when the
 droplet is gone, or when its cron never ran** — which is exactly the disaster the
@@ -997,7 +998,7 @@ roughly seven minutes of the 24-minute outage on 2026-08-19.
    02:00 (`roles/backups/defaults/main.yml:4-5`) and this play restarts MySQL,
    which kills `mysqldump` mid-stream; the `EXIT` trap then deletes the partial
    and that night produces **no** backup. It is caught only by
-   `backup-freshness-probe.yml` at 04:17 UTC the following morning, at the
+   aws-infra's `backup-freshness-probe.yml` at 04:17 UTC the following morning, at the
    25-hour threshold.
 
    ⚠⚠ **"No package moves" is not "no restarts". This play restarts MySQL *and*
