@@ -12,7 +12,7 @@ before the caller is known):
 
 1. a per-IP ceiling on FAILED auth (300/min);
 2. agent-token auth; every 401 carries ``resource_metadata`` (F-M4, F-O8);
-   then every request draws on its token's call bucket (gate 6);
+   then every request draws on its token's request bucket;
 3. the entitlement door: ``ai.agent`` on and an ``mcp.calls`` limit other than
    0, or 403 (F-E4). It admits nothing: only ``tools/call`` counts (F-Q5);
 4. the body, capped, then JSON-RPC dispatch.
@@ -57,6 +57,7 @@ session_factory = async_session
 METER = "mcp.calls"
 MAX_BODY = 64 * 1024
 IP_AUTH_FAILURES_PER_MIN = 300
+REQUESTS_PER_MIN = 300  # per token, every request (tools/call also draws gate 6)
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")  # latest first
 SERVER_INFO = {"name": "the-better-decision", "version": "1"}
 
@@ -179,9 +180,11 @@ async def _tools_call(db, user, token, params: dict[str, Any]) -> dict[str, Any]
 async def _ip_failures(ip: str, *, add: bool) -> int:
     """Failed-auth count for ``ip`` this minute (incremented when ``add``).
 
-    Only FAILED auth is counted per IP: a valid token is limited per token
-    (gate 6), so hosted clients sharing a few egress IPs never throttle each
-    other. Async client, fails OPEN (a Redis outage must not lock out every
+    Only FAILED auth is counted per IP: a valid token is limited per token,
+    so valid traffic never fills it. ponytail: once tripped it refuses the
+    whole IP before auth (no DB lookups), so one junk client behind a shared
+    hosted egress IP can stall that IP's valid tokens for the minute; revisit
+    with the OAuth ticket (authenticate first, refuse only failures). Async client, fails OPEN (a Redis outage must not lock out every
     harness, and the sync limiter would block the event loop per request)."""
     client = redis_client.get_client()
     if client is None:
@@ -223,7 +226,24 @@ async def mcp_endpoint(request: Request) -> Response:
             logger.exception("mcp.auth_unavailable")
             return _rpc_error(503, UNAVAILABLE, "temporarily unavailable")
 
-        ent = await feature_service.get_entitlements(db, user.org_id)
+        # Every authenticated request draws on the token's request bucket
+        # (fails open), so a token spread over many IPs is bounded whatever it
+        # sends. Separate from gate 6's call bucket, so tools/call is never
+        # charged twice against one limit.
+        try:
+            await actions._hit(f"agent:tok:{token.id}:req:min", REQUESTS_PER_MIN, 60,
+                               "token_rate_limited")
+        except ToolError as exc:
+            if exc.code != "limits_unavailable":
+                return _rpc_error(429, RATE_LIMITED, "rate limited", headers={"Retry-After": "60"},
+                                  data={"code": exc.code, "detail": exc.detail, "data": {}})
+            logger.warning("rate_limit.degraded", where="mcp.requests", api_token_id=token.id)
+
+        try:
+            ent = await feature_service.get_entitlements(db, user.org_id)
+        except SQLAlchemyError:
+            logger.exception("mcp.entitlements_unavailable")
+            return _rpc_error(503, UNAVAILABLE, "temporarily unavailable")
         if not ent.features.get(AGENT_FEATURE_KEY) or ent.limits[METER].limit == 0:
             # 403, not 401: the token is fine, so an OAuth client must not
             # re-authenticate in a loop. No WWW-Authenticate.
@@ -241,7 +261,7 @@ async def mcp_endpoint(request: Request) -> Response:
             return _rpc_error(413, INVALID_REQUEST, "request body too large")
         try:
             msg = json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: deeply nested input
             return _rpc_error(400, PARSE_ERROR, "parse error")
         if isinstance(msg, list):
             return _rpc_error(400, INVALID_REQUEST, "batch requests are not supported")
@@ -255,16 +275,6 @@ async def mcp_endpoint(request: Request) -> Response:
         if "id" not in msg:
             return Response(status_code=202)  # any notification
         id_ = msg["id"]
-        if method != "tools/call":
-            # Every other request draws on its token's call bucket too, so a
-            # token spread over many IPs stays bounded. tools/call draws inside
-            # the registry (gate 6, just above the meter), never twice.
-            try:
-                await actions.call_gate("mcp", token.id, "read")
-            except ToolError as exc:
-                return _rpc_error(429, RATE_LIMITED, "rate limited", id_=id_,
-                                  data={"code": exc.code, "detail": exc.detail, "data": {}},
-                                  headers={"Retry-After": "60"})
         params = msg.get("params")
         if params is not None and not isinstance(params, dict):
             return _rpc_error(200, INVALID_PARAMS, "params must be an object", id_=id_)

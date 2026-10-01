@@ -39,6 +39,7 @@ from app.models.feature_override import OrgFeatureOverride
 from app.models.limit_override import OrgLimitOverride
 from app.models.usage_counter import UsageCounter
 from app.models.user import Role, User
+from app.config import settings
 from app.security import hash_password
 from app.services.api_token_service import hash_api_token
 from app.services.feature_gate import Feature
@@ -210,7 +211,9 @@ def test_fm1_route_set_is_exactly_post_mcp_and_get_health():
 
 def test_fm1_mcp_main_does_not_import_app_main():
     """FENCE F-M1. Wrong implementation: ``mcp_main`` importing ``app.main``
-    (and with it every REST router, the scheduler and the migration guard)."""
+    (the app that mounts the REST routers, the scheduler and the migration
+    guard). Tools import two router MODULES for their handler functions;
+    nothing mounts them, which the route-set fence above proves."""
     out = subprocess.run(
         [sys.executable, "-c",
          "import sys, app.mcp_main; print('app.main' in sys.modules)"],
@@ -237,8 +240,9 @@ async def test_fm4_every_method_401s_without_a_valid_agent_bearer(client, w, fac
     body = None if raw else _msg(method)
     r = await _post(client, body, token=token, raw=raw)
     assert r.status_code == 401
+    origin = settings.app_url.rstrip("/")
     assert r.headers["www-authenticate"] == (
-        'Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"'
+        f'Bearer resource_metadata="{origin}/.well-known/oauth-protected-resource/mcp"'
     )
     assert r.json() == {"detail": "Invalid or expired token"}
     assert await _count(factory, w) == 0
@@ -264,6 +268,8 @@ async def test_fe4_door_refuses_every_method(client, w, factory, method, off):
     r = await _post(client, _msg(method))
     assert r.status_code == 403
     assert "www-authenticate" not in r.headers
+    # Nothing is parsed before the door: a malformed body is refused the same.
+    assert (await _post(client, None, raw="{not json")).status_code == 403
     err = r.json()["error"]["data"]
     assert err == {"code": "feature_not_enabled", "feature_key": "ai.agent", "meter": "mcp.calls"}
     assert await _count(factory, w) == 0
@@ -318,6 +324,8 @@ async def test_annotations_follow_risk_and_token(client, w, scratch):
             "readOnlyHint": False, "destructiveHint": True}
         assert listed["confirm_action"]["annotations"] == {
             "readOnlyHint": False, "destructiveHint": True}
+        assert listed["cancel_action"]["annotations"] == {
+            "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
     schema = listed["budgets_update_amount"]["inputSchema"]
     assert schema["type"] == "object" and "budget_id" in schema["properties"]
     assert schema.get("additionalProperties") is False
@@ -367,6 +375,15 @@ async def test_fm2_limits_are_keyed_on_the_token_not_the_ip(client, w, factory, 
     assert a.json()["error"]["data"]["code"] == "token_rate_limited"
     b = await _call(client, "accounts_list", {}, token="write2")
     assert b.status_code == 200 and b.json()["result"]["isError"] is False
+
+
+async def test_one_call_draws_exactly_one_from_the_bucket(client, w, _autouse_fake_redis, frozen):
+    """FENCE. Wrong implementation: the front door also charging tools/call
+    (the registry charges it), halving every token's real limit."""
+    from app.agent.actions import window_key
+    assert (await _call(client, "accounts_list", {})).status_code == 200
+    key = window_key(f"agent:tok:{w['tok']['write']}:calls:min", 60)
+    assert int(await _autouse_fake_redis.get(key)) == 1
 
 
 async def test_fq12_a_call_refused_at_gate_6_does_not_burn_the_meter(
@@ -529,6 +546,8 @@ async def test_failed_auth_ceiling_is_per_ip_and_valid_tokens_do_not_count(clien
     assert (await _post(client, _msg("ping"), token=None, ip=ip)).status_code == 401  # 300th
     r = await _post(client, _msg("ping"), token=None, ip=ip)
     assert r.status_code == 429 and r.headers["retry-after"] == "60"
+    # A tripped IP refuses before auth, valid bearer or not (no DB lookups).
+    assert (await _post(client, _msg("ping"), ip=ip)).status_code == 429
     assert (await _post(client, _msg("ping"), token=None, ip="198.51.100.10")).status_code == 401
 
 
@@ -538,14 +557,20 @@ async def test_failed_auth_ceiling_fails_open_without_redis(client, w, monkeypat
     assert (await _post(client, _msg("ping"), token=None)).status_code == 401
 
 
-async def test_every_method_draws_on_the_token_bucket(client, w, factory, _autouse_fake_redis, frozen):
+async def test_every_request_draws_on_the_token_request_bucket(
+    client, w, factory, _autouse_fake_redis, frozen
+):
     """FENCE (folded). Wrong implementation: only tools/call token-limited, so
     a token spread over many IPs runs unbounded auth + entitlement queries
-    through initialize / ping / tools/list."""
-    await _exhaust_minute(_autouse_fake_redis, w["tok"]["write"])
-    for m in ["initialize", "ping", "tools/list"]:
+    through initialize / ping / tools/list, notifications, bad bodies, or a
+    non-entitled org."""
+    from app.agent.actions import window_key
+    await _autouse_fake_redis.set(
+        window_key(f"agent:tok:{w['tok']['write']}:req:min", 60), "300")
+    for m in ["initialize", "ping", "tools/list", "notifications/initialized", "tools/call"]:
         r = await _post(client, _msg(m), token="write", ip=f"192.0.2.{len(m)}")
         assert r.status_code == 429, m
+    assert (await _post(client, None, raw="{not json")).status_code == 429
     assert (await _post(client, _msg("ping"), token="write2")).status_code == 200
     assert await _count(factory, w) == 0
 
@@ -566,12 +591,37 @@ async def test_db_outage_on_auth_is_503_never_401(client, w, monkeypatch):
     assert r.status_code == 503 and "www-authenticate" not in r.headers
 
 
-async def test_unsupported_protocol_header_is_400(client, w):
-    headers = {"authorization": f"Bearer {_tok('write')}", "content-type": "application/json",
-               "mcp-protocol-version": "1999-01-01"}
-    r = await client.post("/mcp", content=json.dumps(_msg("ping")), headers=headers)
-    assert r.status_code == 400
+async def test_protocol_version_header(client, w):
+    headers = {"authorization": f"Bearer {_tok('write')}", "content-type": "application/json"}
+    for version, status in [("1999-01-01", 400), ("2025-06-18", 200), ("2025-11-25", 200)]:
+        r = await client.post("/mcp", content=json.dumps(_msg("ping")),
+                              headers={**headers, "mcp-protocol-version": version})
+        assert r.status_code == status, version
+
+
+@pytest.mark.parametrize("header", ["Bearer", "Bearer ", f"Basic {_tok('write')}",
+                                    _tok("write")])
+async def test_only_a_bearer_scheme_authenticates(client, w, header):
+    r = await client.post("/mcp", content=json.dumps(_msg("ping")),
+                          headers={"authorization": header, "content-type": "application/json"})
+    assert r.status_code == 401
 
 
 async def test_get_mcp_is_405(client):
     assert (await client.get("/mcp")).status_code == 405
+
+
+async def test_db_outage_at_the_door_is_503(client, w, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    async def boom(*a, **k):
+        raise OperationalError("select", {}, Exception("down"))
+
+    monkeypatch.setattr(mcp_main.feature_service, "get_entitlements", boom)
+    r = await _post(client, _msg("ping"))
+    assert r.status_code == 503 and "www-authenticate" not in r.headers
+
+
+async def test_deeply_nested_body_is_a_parse_error_not_a_500(client, w):
+    r = await _post(client, None, raw="[" * 60_000)
+    assert r.status_code == 400 and r.json()["error"]["code"] == -32700
