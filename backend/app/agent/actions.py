@@ -108,6 +108,30 @@ async def _hit(key: str, limit: int, window: int, code: str) -> None:
         raise ToolError(code, "limit reached, try again later")
 
 
+# Gate 6 (TBD-561): every MCP tools/call, confirm and cancel draws one call
+# from its TOKEN's bucket, after args validation and BEFORE the ``mcp.calls``
+# admission, so a throttled harness never spends the org's plan meter.
+CALLS_PER_MIN, CALLS_PER_DAY = 120, 2000
+
+
+async def call_gate(channel: str, api_token_id: int | None, risk: str) -> None:
+    """Gate 6. A no-op in-app (its bounds are the turn meter and the chat
+    limits). Fails OPEN for ``read`` (as the read tools' limits always did),
+    CLOSED for anything else: during a Redis outage a write would be refused
+    below admission anyway, after spending the meter."""
+    if channel != "mcp":
+        return
+    if api_token_id is None:
+        raise ToolError("scope_denied", "agent token required")
+    try:
+        await _hit(f"agent:tok:{api_token_id}:calls:min", CALLS_PER_MIN, MINUTE, "token_rate_limited")
+        await _hit(f"agent:tok:{api_token_id}:calls:day", CALLS_PER_DAY, DAY, "token_rate_limited")
+    except ToolError as exc:
+        if exc.code != "limits_unavailable" or risk != "read":
+            raise
+        logger.warning("rate_limit.degraded", where="agent.call_gate", api_token_id=api_token_id)
+
+
 def _preview_dict(pv: Preview) -> dict[str, Any]:
     # Round-trip through JSON so what is fingerprinted is what is stored.
     return json.loads(_canonical({

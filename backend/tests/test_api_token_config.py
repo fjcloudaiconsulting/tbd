@@ -38,6 +38,15 @@ def test_prod_accepts_valid_key():
     assert s.api_token_hmac_key == _VALID_PAT_KEY
 
 
+def test_prod_refuses_the_dev_compose_default():
+    """TBD-561: docker-compose.yml ships a public dev default for this key; a
+    production boot that inherited it must refuse, not hash PATs with it."""
+    dev = "dev-only-shared-api-token-hmac-key-not-for-prod"
+    with pytest.raises(ValidationError, match="dev compose default"):
+        _settings(app_env="production", api_token_hmac_key=dev)
+    assert _settings(api_token_hmac_key=dev).api_token_hmac_key == dev  # dev boots
+
+
 def test_key_must_differ_from_jwt_secret():
     with pytest.raises(ValidationError, match="must differ"):
         _settings(app_env="production", api_token_hmac_key=_VALID_JWT)

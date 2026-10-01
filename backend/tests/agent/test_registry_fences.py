@@ -575,7 +575,10 @@ async def test_principal_scope_gate(entitled, scratch_tool, monkeypatch, channel
     hooks = dict(run=_run) if risk == "read" else dict(run=None, preview=_noop, execute=_noop)
     route = ("GET", "/api/v1/accounts") if risk == "read" else ("PUT", "/api/v1/budgets/{budget_id}")
     scratch_tool(_spec(name="scoped_tool", risk=risk, mirrors_route=route, **hooks))
-    call = invoke(None, _user(Role.OWNER), "scoped_tool", {}, channel=channel, scope=scope)
+    # An mcp principal always carries its token id (gate 6 refuses one without).
+    tok = 1 if channel == "mcp" else None
+    call = invoke(None, _user(Role.OWNER), "scoped_tool", {}, channel=channel, scope=scope,
+                  api_token_id=tok)
     if ok == "staged":
         assert await call == {"data": {"staged": "scoped_tool"}}
     elif ok:
@@ -584,6 +587,16 @@ async def test_principal_scope_gate(entitled, scratch_tool, monkeypatch, channel
         with pytest.raises(ToolError) as exc:
             await call
         assert exc.value.code == "scope_denied"
+
+
+async def test_mcp_call_without_a_token_id_is_refused_before_the_meter(entitled, scratch_tool):
+    """FENCE (TBD-561 gate 6). Wrong implementation: gate 6 skipping a
+    missing token id, so an mcp principal with no token is unthrottled."""
+    scratch_tool(_spec(name="scoped_tool", run=_run))
+    with pytest.raises(ToolError) as exc:
+        await invoke(None, _user(Role.OWNER), "scoped_tool", {}, channel="mcp",
+                     scope="agent:write", api_token_id=None)
+    assert exc.value.code == "scope_denied"
 
 
 async def test_unexpected_tool_failure_is_an_opaque_error(entitled, scratch_tool):

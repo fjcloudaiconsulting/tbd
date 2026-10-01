@@ -508,6 +508,9 @@ class Settings(BaseSettings):
                 )
         elif self.app_env == "production":
             raise ValueError("API_TOKEN_HMAC_KEY is required in production")
+        if key and self.app_env == "production" and key.startswith("dev-only"):
+            # TBD-561: docker-compose.yml's shared dev default is public.
+            raise ValueError("API_TOKEN_HMAC_KEY is the dev compose default; set a real secret")
 
         # ``api_token_hmac_key_prev`` is verify-only (rotation aid) so it has
         # no prod-required branch — only validate when present, but apply the
