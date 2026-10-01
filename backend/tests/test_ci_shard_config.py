@@ -271,3 +271,43 @@ def test_the_harvest_does_not_run_the_fence_that_reads_its_own_output():
         "harvest, making regeneration impossible -- the remedy gated on the "
         "problem it fixes."
     )
+
+
+NOT_PR = "github.event_name != 'pull_request'"
+
+
+def test_coverage_runs_on_non_pr_events_only_and_all_its_steps_agree():
+    """INFRA-53: PR shards skip `--cov` (it costs wall time and nothing reads it
+    on a PR). The five coverage steps (pytest flags, shard upload, and the
+    Backend Checks download, setup and combine) must all follow the SAME condition:
+
+      * `--cov` dropped on PRs but the shard upload still runs -> the data file
+        never exists and `if-no-files-found: error` turns every PR shard red.
+      * the Backend Checks combine still runs on PRs -> it downloads nothing.
+    """
+    aggregate = WORKFLOW["jobs"]["backend"]["steps"]
+    gated = {
+        "pytest --cov": _pytest_step(),
+        "shard coverage upload": next(
+            s for s in SHARD_JOB["steps"] if "coverage-" in str(s.get("with", {}).get("name", ""))
+        ),
+        "download": next(s for s in aggregate if "download-artifact" in str(s.get("uses", ""))),
+        "combine setup": next(
+            s for s in aggregate if "Set up Python for coverage" in str(s.get("name", ""))
+        ),
+        "combine": next(s for s in aggregate if "coverage combine" in str(s.get("run", ""))),
+    }
+    for label, step in gated.items():
+        text = str(step.get("if", "")) + str(step.get("env", ""))
+        assert NOT_PR in text, f"{label} step is not gated on `{NOT_PR}`: {step.get('name')!r}"
+    # The flags must reach pytest ONLY via an unquoted $COV_FLAGS whose truthy
+    # branch is the coverage flags (kills: var dropped from run, quoted var
+    # passed as one arg, inverted ternary).
+    step = _pytest_step()
+    run = str(step["run"])
+    assert "--cov" not in run.replace("$COV_FLAGS", ""), "pytest step runs --cov unconditionally"
+    assert "$COV_FLAGS" in run, "pytest run no longer uses $COV_FLAGS; main shards would emit no data file"
+    assert '"$COV_FLAGS"' not in run, "$COV_FLAGS is quoted: pytest-cov gets one misparsed arg"
+    assert NOT_PR + " && '--cov=app" in str(step["env"]["COV_FLAGS"]), (
+        "COV_FLAGS truthy branch is not the coverage flags under the non-PR condition"
+    )
