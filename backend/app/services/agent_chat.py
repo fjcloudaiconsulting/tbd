@@ -299,18 +299,24 @@ async def stream_turn(
                 break
         if outcome not in ("ok", "preview"):
             yield _sse("error", {"code": outcome})
+        # Free the org before ``done``: a client may send its next turn on it.
+        await release_lock(org_id, nonce)
         yield _sse("done", {})
     except Exception:
         await logger.aexception("agent.turn.failed", org_id=org_id, user_id=user_id)
         outcome = "internal_error"
         yield _sse("error", {"code": outcome})
         yield _sse("done", {})
+    except BaseException:  # the client went away (cancel or close)
+        outcome = "client_disconnected"
+        raise
     finally:
         with anyio.CancelScope(shield=True):
             if pending is not None:
                 # Let the in-flight dispatch finish (bounded by its own
                 # timeout) so its ledger row lands and no call outlives the lock.
-                await asyncio.gather(pending, return_exceptions=True)
+                # ``wait``, not ``gather``: never propagate a cancel into it.
+                await asyncio.wait({pending})
             await release_lock(org_id, nonce)
             if db is not None:
                 try:

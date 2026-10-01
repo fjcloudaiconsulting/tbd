@@ -91,9 +91,13 @@ async def engine(tmp_path):
 
 class _Tracked(AsyncSession):
     closed = False
+    ledger_at_close: int | None = None
 
     async def close(self):
-        self.closed = True
+        if not self.closed:
+            self.closed = True
+            async with AsyncSession(self.bind) as probe:
+                self.ledger_at_close = await probe.scalar(select(func.count(AIUsageLedger.id)))
         await super().close()
 
 
@@ -422,6 +426,8 @@ async def test_real_anthropic_adapter_two_rounds(factory, w, client, monkeypatch
     ev = _events((await client.post(URL, json=ASK)).text)
     assert ev[-2:] == [("message", {"text": "One account."}), ("done", {})]
     assert "finance app" in bodies[0]["system"]
+    offered = {t["name"]: t for t in bodies[0]["tools"]}
+    assert "input_schema" in offered["accounts_list"]
     turn = bodies[1]["messages"]
     assert turn[1]["content"][0]["type"] == "tool_use" and turn[1]["content"][0]["id"] == "toolu_01"
     result = turn[2]["content"][0]
@@ -501,7 +507,7 @@ async def test_lock_busy_and_redis_down_fail_closed(factory, w, client, provider
     assert len(adapter.seen) == 1 and await _turns(factory, w["org"]) == 1
 
 
-async def test_plan_meter(factory, w, client, provider):
+async def test_plan_meter(factory, w, client, provider, fake_redis):
     """FENCE F-E4 + 402: ``assistant.turns`` limit 1 serves one turn then
     402s; limit 0 closes the surface (403); ``ai.agent`` off is 403."""
     await _add(factory, OrgLimitOverride(org_id=w["org"], meter="assistant.turns",
@@ -512,6 +518,7 @@ async def test_plan_meter(factory, w, client, provider):
     r = await client.post(URL, json=ASK)
     assert (r.status_code, r.json()["detail"]["code"]) == (402, "plan_limit_reached")
     assert r.json()["detail"]["meter"] == "assistant.turns"
+    assert await fake_redis.get(chat.lock_key(w["org"])) is None
     async with factory._f() as db:
         row = await db.scalar(select(OrgLimitOverride))
         row.limit_value = 0
@@ -537,6 +544,7 @@ async def test_plan_meter(factory, w, client, provider):
     [{"role": "user", "content": "hi", "tool_calls": []}],
     [{"role": "user", "content": "hi"}] * 41,
     [{"role": "user", "content": "x" * (64 * 1024 + 1)}],
+    [{"role": "user", "content": "\u20ac" * 22000}],  # 22000 chars, 66000 bytes
     [],
 ])
 async def test_body_validation(messages, factory, w, client, provider):
@@ -607,6 +615,7 @@ async def test_real_disconnect_waits_for_the_dispatch_then_releases(
         assert ledger_at_release == ["provider_timeout"]
         assert len(adapter.seen) == 1
         assert factory.made and all(s.closed for s in factory.made)
+        assert factory.made[-1].ledger_at_close == 1  # closed only after the dispatch landed
     finally:
         server.should_exit = True
         await serving
@@ -689,3 +698,75 @@ async def test_tools_offered_follow_the_gates(factory, w, client, provider):
     assert adapter.seen
     offered = {t["function"]["name"] for t in adapter.tools[0]}
     assert "forecast_get" not in offered and "accounts_list" in offered
+
+
+async def test_tool_after_a_refused_write_in_the_same_round(factory, w, client, provider):
+    """FENCE: ``invoke`` rolls back on a refusal (expiring the user); the next
+    call of the round re-loads it. Wrong implementation: the user loaded once
+    (MissingGreenlet, the turn dies as ``internal_error``)."""
+    _as(factory, w["user"])
+    provider([
+        _resp([_call("budgets_update_amount", {"budget_id": 999999, "amount": "1.00"}, "c1"),
+               _call("accounts_list", cid="c2")]),
+        _resp(content="ok"),
+    ])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    assert ("tool_result", {"name": "accounts_list", "ok": True, "rows": 1}) in ev
+    assert ev[-1] == ("done", {}) and ("error", {"code": "internal_error"}) not in ev
+
+
+async def test_keepalive_while_a_dispatch_runs(factory, w, client, provider, monkeypatch):
+    """FENCE: a comment every KEEPALIVE_SECONDS while the model thinks."""
+    monkeypatch.setattr(chat, "KEEPALIVE_SECONDS", 0.05)
+
+    async def slow():
+        await asyncio.sleep(0.3)
+        return _resp(content="hi")
+
+    _as(factory, w["user"])
+    provider(lambda n: slow())
+    r = await client.post(URL, json=ASK)
+    assert ": keepalive" in r.text and _events(r.text)[-1] == ("done", {})
+
+
+async def test_disconnect_at_a_keepalive_reaps_the_dispatch_first(
+    factory, w, provider, fake_redis, monkeypatch,
+):
+    """FENCE: the cancel lands in ``send`` while the generator is parked at a
+    keepalive with a dispatch in flight. Wrong implementation: the response
+    releasing without closing the generator (lock freed, dispatch still
+    spending, no ledger row yet)."""
+    monkeypatch.setattr(chat, "KEEPALIVE_SECONDS", 0.05)
+    monkeypatch.setattr(app_settings, "ai_dispatch_timeout_s", 0.5)
+    _as(factory, w["user"])
+
+    async def hang():
+        await asyncio.sleep(30)
+
+    provider(lambda n: hang())
+    body = json.dumps(ASK).encode()
+    first_chunk = asyncio.Event()
+    msgs = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def receive():
+        if msgs:
+            return msgs.pop(0)
+        await first_chunk.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_chunk.set()
+            await asyncio.sleep(10)  # parked in send when the cancel lands
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",
+        "method": "POST", "scheme": "http", "path": URL, "raw_path": URL.encode(),
+        "query_string": b"", "root_path": "", "client": ("127.0.0.1", 1), "server": ("t", 80),
+        "headers": [(b"host", b"t"), (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode())],
+    }
+    await app(scope, receive, send)
+    assert await fake_redis.get(chat.lock_key(w["org"])) is None
+    assert [r.error_class for r in await _ledger(factory)] == ["provider_timeout"]
+    assert factory.made[-1].closed and factory.made[-1].ledger_at_close == 1
