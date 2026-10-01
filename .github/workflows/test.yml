@@ -207,8 +207,9 @@ jobs:
       # one number — a per-shard `--cov` figure is a slice, not a number
       # (TBD-498). `include-hidden-files` is required: the data file is a
       # dotfile and `upload-artifact@v4` skips those by default, silently.
-      # This `if:` must match COV_FLAGS's condition above, or
-      # `if-no-files-found: error` turns every PR shard red (INFRA-53).
+      # This `if:` must match COV_FLAGS's condition above: a mismatch either
+      # way makes `if-no-files-found: error` turn shards red, and on main that
+      # blocks the deploy (INFRA-53).
       - name: Upload shard coverage data
         if: ${{ github.event_name != 'pull_request' }}
         uses: actions/upload-artifact@v4
