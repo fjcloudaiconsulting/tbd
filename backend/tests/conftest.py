@@ -342,6 +342,17 @@ class _SharedFakeRedis:
         # its "reused:" return token, which the rotate script never uses.
         if 'reused:' in script:
             return await self._eval_detect_reuse(numkeys, *args)
+        # Compare-and-delete (TBD-560 agent turn lock release).
+        from app.services.agent_chat import _RELEASE_LUA
+        if script == _RELEASE_LUA:
+            # Suspend like a real round trip, so a cancelled caller is seen.
+            import asyncio
+            await asyncio.sleep(0)
+            key, nonce = args[0], args[1]
+            if self._kv.get(key) == nonce:
+                del self._kv[key]
+                return 1
+            return 0
         # Sanity check: otherwise this fake only knows the rotate script.
         markers = (
             'SISMEMBER',
