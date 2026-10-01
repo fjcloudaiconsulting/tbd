@@ -212,7 +212,7 @@ async def stream_turn(
     loop = asyncio.get_running_loop()
     started = loop.time()
     deadline = started + TURN_SECONDS
-    rounds, outcome = 0, "internal_error"
+    rounds, outcome = 0, "running"
     db: AsyncSession | None = None
     pending: asyncio.Task | None = None
     try:
@@ -262,17 +262,18 @@ async def stream_turn(
                 spec = registry.get_tool(call["name"])
                 # A model-chosen name is never echoed unless it is ours.
                 shown = spec.name if spec else "unknown_tool"
+                if spec is not None:
+                    # Fresh every call: ``invoke`` rolls back on a refusal
+                    # (expiring the user), and a deactivation must stop the turn.
+                    user = await db.get(User, user_id, populate_existing=True)
+                    if user is None or not user.is_active:
+                        outcome = "user_inactive"
+                        break
                 yield _sse("tool_call", {"name": shown})
                 if spec is None:
                     result: Any = {"error": "unknown_tool"}
                     yield _sse("tool_result", {"name": shown, "ok": False, "code": "unknown_tool"})
                 else:
-                    # ``invoke`` rolls back on a refusal, which expires the
-                    # user; ``get`` re-loads an expired row.
-                    user = await db.get(User, user_id)
-                    if user is None or not user.is_active:
-                        outcome = "user_inactive"
-                        break
                     try:
                         data = (await registry.invoke(
                             db, user, spec.name, call.get("arguments") or {}, channel="in_app",
@@ -308,7 +309,8 @@ async def stream_turn(
         yield _sse("error", {"code": outcome})
         yield _sse("done", {})
     except BaseException:  # the client went away (cancel or close)
-        outcome = "client_disconnected"
+        if outcome == "running":
+            outcome = "client_disconnected"
         raise
     finally:
         with anyio.CancelScope(shield=True):
@@ -317,6 +319,8 @@ async def stream_turn(
                 # timeout) so its ledger row lands and no call outlives the lock.
                 # ``wait``, not ``gather``: never propagate a cancel into it.
                 await asyncio.wait({pending})
+                if not pending.cancelled():
+                    pending.exception()  # retrieved: no "never retrieved" noise
             await release_lock(org_id, nonce)
             if db is not None:
                 try:

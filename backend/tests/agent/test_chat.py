@@ -684,7 +684,7 @@ async def test_user_deactivated_mid_turn_ends_it(factory, w, client, provider):
     adapter = provider(lambda n: deactivate_then_call(n))
     ev = _events((await client.post(URL, json=ASK)).text)
     assert ev[-2:] == [("error", {"code": "user_inactive"}), ("done", {})]
-    assert ("tool_result" not in [e for e, _ in ev]) and len(adapter.seen) == 1
+    assert [e for e, _ in ev] == ["error", "done"] and len(adapter.seen) == 1
 
 
 async def test_tools_offered_follow_the_gates(factory, w, client, provider):
@@ -770,3 +770,32 @@ async def test_disconnect_at_a_keepalive_reaps_the_dispatch_first(
     assert await fake_redis.get(chat.lock_key(w["org"])) is None
     assert [r.error_class for r in await _ledger(factory)] == ["provider_timeout"]
     assert factory.made[-1].closed and factory.made[-1].ledger_at_close == 1
+
+
+async def test_lock_is_free_when_done_arrives(factory, w, provider, fake_redis):
+    """FENCE: the org lock is released before ``done`` is sent, so a client
+    that sends its next turn on ``done`` is not refused ``agent_busy``."""
+    _as(factory, w["user"])
+    provider([_resp(content="hi")])
+    body = json.dumps(ASK).encode()
+    msgs = [{"type": "http.request", "body": body, "more_body": False}]
+    held_at_done = []
+
+    async def receive():
+        if msgs:
+            return msgs.pop(0)
+        await asyncio.sleep(30)
+
+    async def send(message):
+        if b"event: done" in message.get("body", b""):
+            held_at_done.append(await fake_redis.get(chat.lock_key(w["org"])))
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",
+        "method": "POST", "scheme": "http", "path": URL, "raw_path": URL.encode(),
+        "query_string": b"", "root_path": "", "client": ("127.0.0.1", 1), "server": ("t", 80),
+        "headers": [(b"host", b"t"), (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode())],
+    }
+    await app(scope, receive, send)
+    assert held_at_done == [None]
