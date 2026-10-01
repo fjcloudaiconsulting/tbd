@@ -57,7 +57,7 @@ jobs:
         continue-on-error: true
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # Created by infra/terraform/backups/. Trust is StringEquals on
+          # Created by https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-backups. Trust is StringEquals on
           # refs/heads/main, so a PR context cannot assume it even by rewriting
           # this file in that PR.
           role-to-assume: arn:aws:iam::884686184019:role/github-actions-backup-probe

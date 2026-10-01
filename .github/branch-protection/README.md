@@ -73,7 +73,7 @@ unfiltered, so a credential-less merge alarms `could-not-run` once per merge
 forever — spending the alarm's credibility before it ever reports something
 true. This is written down because it is a hand-created, out-of-band step that a
 future reader cannot infer from the checkout, the same reason
-`infra/aws/bootstrap/` exists.
+`https://github.com/fjcloudaiconsulting/aws-infra/tree/main/aws/bootstrap` exists.
 
 **Why an App and not the workflow token or a PAT.** `GITHUB_TOKEN` structurally
 cannot read branch protection — the workflow `permissions:` key has no

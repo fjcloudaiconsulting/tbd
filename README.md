@@ -85,7 +85,7 @@ Every part of the project has a single authoritative document. Start with the ro
 | [infra/README.md](infra/README.md) | End-to-end topology of both clouds. DigitalOcean App Platform + data droplet (MySQL + Redis) for the app surface, AWS (S3 + CloudFront + ACM + IAM OIDC) for the apex landing surface. TFC workspace layout, OIDC overview, DNS split between Cloudflare (app subdomain) and Route 53 (apex). |
 | [infra/MIGRATION.md](infra/MIGRATION.md) | Production data-plane migration runbook. Used during the move from DO managed services to the self-hosted droplet, retained as the reference for any future host migration. |
 | [infra/terraform/README.md](infra/terraform/README.md) | Day-2 reference for the `<tfc-org>/<data-workspace>` TFC workspace (DO data droplet). Variables, working dir, manual Confirm-and-Apply convention. |
-| [infra/terraform/apex/README.md](infra/terraform/apex/README.md) | Day-2 reference for the `<tfc-org>/<apex-workspace>` TFC workspace (AWS apex landing). Bootstrap path B (static keys for one apply, then flip to OIDC), GitHub Actions deploy role, ACM in `us-east-1` rationale. |
+| [aws-infra terraform/tbd-apex/README.md](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/README.md) | Day-2 reference for the `<tfc-org>/<apex-workspace>` TFC workspace (AWS apex landing). Bootstrap path B (static keys for one apply, then flip to OIDC), GitHub Actions deploy role, ACM in `us-east-1` rationale. |
 | [infra/ansible/README.md](infra/ansible/README.md) | Configuration management for the data droplet (`<data-droplet>`). MySQL + Redis roles, cloud-firewall coexistence, common role tasks. |
 
 ### Product + design

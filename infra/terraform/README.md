@@ -6,7 +6,7 @@ and runs live in TFC; this directory holds the configuration.
 
 > The apex landing (AWS S3 + CloudFront + ACM + IAM OIDC) lives in a
 > separate workspace `<tfc-org>/<apex-workspace>` with working directory
-> `infra/terraform/apex/` and trigger pattern `infra/terraform/apex/**`.
+> `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex` and trigger pattern `aws-infra terraform/tbd-apex/**`.
 > Keeping the AWS provisioning isolated from this DigitalOcean workspace
 > contains the blast radius and lets each workspace use its own auth
 > path (DO API token here, AWS OIDC there). See

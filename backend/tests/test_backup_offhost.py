@@ -390,55 +390,9 @@ def test_the_probe_workflow_alarms_on_could_not_run_too():
 # ---------------------------------------------------------------------------
 # F3. The uploader is put-only, and stays that way.
 # ---------------------------------------------------------------------------
-UPLOADER_POLICY = "infra/terraform/backups/policies/backup-uploader.json"
-PROBE_POLICY = "infra/terraform/backups/policies/backup-probe.json"
-
-
-def _actions(rel: str) -> set[str]:
-    doc = json.loads(_p(rel).read_text())
-    out: set[str] = set()
-    for stmt in doc["Statement"]:
-        action = stmt["Action"]
-        out.update(action if isinstance(action, list) else [action])
-    return out
-
-
-def test_the_uploader_policy_is_exactly_put_and_encrypt():
-    """Exact set, BOTH directions. This is the fence that catches a future
-    s3:GetObject widening -- the droplet is the most exposed machine in the
-    system, and read access would let a compromise harvest every historical
-    password-hash set."""
-    assert _actions(UPLOADER_POLICY) == {
-        "s3:PutObject", "kms:GenerateDataKey", "kms:Encrypt", "kms:DescribeKey",
-    }
-
-
-def test_the_probe_policy_is_exactly_list():
-    assert _actions(PROBE_POLICY) == {"s3:ListBucket"}
-
-
-@pytest.mark.parametrize("policy", [UPLOADER_POLICY, PROBE_POLICY],
-                         ids=["uploader", "probe"])
-def test_the_policies_grant_and_are_scoped(policy):
-    """⚠ Pinning Action alone says nothing about WHAT may be done WHERE.
-
-    A mutant flipped Effect to Deny and widened Resource to `arn:aws:s3:::*/*`
-    while keeping the action set identical, and stayed green. Effect and
-    Resource are as load-bearing as Action.
-    """
-    doc = json.loads(_p(policy).read_text())
-    for stmt in doc["Statement"]:
-        assert stmt["Effect"] == "Allow", (
-            f"{policy} contains a {stmt['Effect']} statement; these are grant "
-            "policies and a Deny here would silently disable the feature."
-        )
-        resources = stmt["Resource"]
-        for resource in resources if isinstance(resources, list) else [resources]:
-            assert "${bucket}" in resource or "${kms_key_arn}" in resource, (
-                f"{policy} grants on {resource!r}, which is not scoped to this "
-                "bucket or key. A wildcard here would let the droplet's "
-                "credential act on every bucket in the account."
-            )
+# The policy/trust documents moved to aws-infra (terraform/tbd-backups/policies/
+# backup-uploader.json, backup-probe.json), which now owns their action-set,
+# Effect and Resource fences. Only the uploader script (still here) is checked.
 
 
 def test_the_uploader_must_name_the_encryption_key_explicitly():
@@ -446,12 +400,8 @@ def test_the_uploader_must_name_the_encryption_key_explicitly():
     StringEquals against an ABSENT header FAILS. Relying on the bucket default
     does not satisfy it, and the resulting 403 reads like a credential problem.
     So the uploader has to send both, explicitly."""
-    doc = json.loads(_p(UPLOADER_POLICY).read_text())
-    put = [s for s in doc["Statement"] if "s3:PutObject" in str(s["Action"])][0]
-    cond = put["Condition"]["StringEquals"]
-    assert cond["s3:x-amz-server-side-encryption"] == "aws:kms"
-    assert "kms-key-id" in " ".join(cond.keys())
-
+    # backup-uploader.json (aws-infra terraform/tbd-backups/policies/) conditions
+    # on s3:x-amz-server-side-encryption == aws:kms and the kms-key-id header.
     # ⚠ PARSED, NOT GREPPED. The uploader's comments discuss
     # ServerSideEncryption, SSEKMSKeyId and ChecksumAlgorithm at length, so a
     # substring check over its source is satisfied by prose explaining their
@@ -542,69 +492,6 @@ def test_the_backup_script_never_reads_an_object_back():
     body = "\n".join(_script_lines(f"{BACKUPS_ROLE}/templates/mysql-backup.sh.j2"))
     for forbidden in ("get-object", "s3 cp s3://", "download_file", "get_object"):
         assert forbidden not in body, f"the backup script tries to read back: {forbidden}"
-
-
-# ---------------------------------------------------------------------------
-# F5. The TBD-372 trust-anchor fence. This is the one that PREVENTS the event.
-# ---------------------------------------------------------------------------
-def test_the_trust_document_names_the_workspace_this_configuration_declares():
-    """TBD-372: the apex OIDC role's trust policy is managed BY the workspace it
-    authorizes, so a rename applied with the pattern unchanged denied
-    AssumeRoleWithWebIdentity and the workspace could not apply its own fix.
-
-    Non-management would only have made recovery a one-liner. Comparing the two
-    at PR time stops the rename from ever being applied."""
-    versions = _p("infra/terraform/backups/versions.tf").read_text()
-    declared = re.search(r'workspaces\s*\{[^}]*name\s*=\s*"([^"]+)"', versions, re.DOTALL)
-    assert declared, "could not find the workspace name in versions.tf"
-    workspace = declared.group(1)
-
-    trust = json.loads(_p("infra/aws/bootstrap/tfc-backups-trust.json").read_text())
-    subs = [
-        v
-        for stmt in trust["Statement"]
-        for cond in stmt.get("Condition", {}).values()
-        for k, v in cond.items()
-        if k.endswith(":sub")
-    ]
-    assert subs, "the trust document has no sub condition at all."
-    # ⚠ ANY, not ALL. The documented safe rename is "widen the pattern to span
-    # both names, apply, rename, then narrow" -- and an ALL predicate makes both
-    # widened forms fail at PR time, so the only way past CI would be to rename
-    # FIRST, which is precisely the TBD-372 lockout this fence exists to
-    # prevent. The property is "the declared workspace is authorized by at least
-    # one statement", not "no other workspace is".
-    assert any(f"workspace:{workspace}:" in sub for sub in subs), (
-        f"versions.tf declares workspace {workspace!r} but no committed trust "
-        f"statement authorizes it (subs: {subs}). Applying this would deny the "
-        "workspace its own role and it could not apply the fix (TBD-372). "
-        "Widen the pattern, apply, rename, then narrow."
-    )
-
-
-def test_the_trust_document_does_not_glob_the_workspace_name():
-    """apex carries `tbd-apex*` as scar tissue from the rename that caused
-    TBD-372. A fresh anchor should not inherit a wildcard on the segment that IS
-    the trust boundary."""
-    versions = _p("infra/terraform/backups/versions.tf").read_text()
-    declared = re.search(r'workspaces\s*\{[^}]*name\s*=\s*"([^"]+)"', versions, re.DOTALL)
-    workspace = declared.group(1)
-    trust = _p("infra/aws/bootstrap/tfc-backups-trust.json").read_text()
-    # ⚠ Scoped to a glob that would MATCH the declared name. A widened pattern
-    # naming a DIFFERENT workspace is the legitimate mid-rename state; banning
-    # every glob outright would forbid it.
-    for sub in re.findall(r'"app\.terraform\.io:sub":\s*"([^"]+)"', trust):
-        seg = re.search(r"workspace:([^:]+):", sub)
-        if not seg:
-            continue
-        pattern = seg.group(1)
-        if "*" in pattern and pattern.split("*")[0] and workspace.startswith(pattern.split("*")[0]):
-            raise AssertionError(
-                f"the workspace segment {pattern!r} is a glob matching the "
-                f"declared workspace {workspace!r}. apex carries such a wildcard "
-                "only as scar tissue from the rename that caused TBD-372; a "
-                "fresh anchor must name its workspace exactly."
-            )
 
 
 # ---------------------------------------------------------------------------
