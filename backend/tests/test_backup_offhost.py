@@ -8,15 +8,16 @@ EXECUTED, not by being read. The alarm (the off-host freshness probe) and its
 tests live in fjcloudaiconsulting/aws-infra since INFRA-20.
 
 ⚠⚠ THE VERIFICATION IS A REAL FILE, NOT JINJA, SPECIFICALLY SO THESE TESTS CAN
-RUN IT. Logic embedded in a `.j2` can only ever be grep-fenced, and in this repo a grep is routinely satisfied by a comment -- the
-script carries long comments naming the very strings a grep would look for.
+RUN IT. Logic embedded in a `.j2` can only ever be grep-fenced, and in this repo
+a grep is routinely satisfied by a comment -- the script carries long comments
+naming the very strings a grep would look for.
 
 ⚠ A behavioural test found a real defect here that a structural one could not:
 the freshness probe's `check-backup-freshness.sh` originally ran its evaluator
-as `python3 - <<'PY'`, which makes the HEREDOC stdin, so the piped S3 listing never reached the program
-and every input, healthy or not, was judged "listing has no Contents key". A
-fence asserting the script mentions "Contents" would have passed it.
-"""
+as `python3 - <<'PY'`, which makes the HEREDOC stdin, so the piped S3 listing
+never reached the program and every input, healthy or not, was judged "listing
+has no Contents key". A fence asserting the script mentions "Contents" would
+have passed it. """
 
 import os
 import pathlib
