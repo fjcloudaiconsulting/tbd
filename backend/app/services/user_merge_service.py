@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_event import AuditEvent
 from app.models.feature_override import OrgFeatureOverride
+from app.models.limit_override import OrgLimitOverride
 from app.models.invitation import Invitation
 from app.models.org_data_reset_lock import OrgDataResetLock
 from app.models.tag import Tag
@@ -152,6 +153,14 @@ async def merge_users(
         .values(set_by=target_user_id)
     )
     counts["org_feature_overrides"] = res.rowcount or 0
+
+    # 3b. org_limit_overrides.set_by (SET NULL), same reasoning (TBD-585).
+    res = await db.execute(
+        update(OrgLimitOverride)
+        .where(OrgLimitOverride.set_by == source_user_id)
+        .values(set_by=target_user_id)
+    )
+    counts["org_limit_overrides"] = res.rowcount or 0
 
     # 4. tags.created_by_user_id (SET NULL). Reassign so the
     # creator attribution survives.

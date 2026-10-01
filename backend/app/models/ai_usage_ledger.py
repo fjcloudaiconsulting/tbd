@@ -25,6 +25,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Enum,
     ForeignKey,
     Index,
     Integer,
@@ -114,4 +115,11 @@ class AIUsageLedger(Base):
     # every non-structured row (chat, embed, function_call, stream).
     retries_used: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
+    )
+    # TBD-585: who paid. Every writer today dispatches on the org's own key;
+    # the platform-funded path (586) writes "platform".
+    billing_source: Mapped[str] = mapped_column(
+        Enum("org_key", "platform", name="ai_billing_source"),
+        nullable=False,
+        server_default="org_key",
     )

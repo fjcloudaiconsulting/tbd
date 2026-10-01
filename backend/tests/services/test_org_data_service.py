@@ -26,6 +26,8 @@ from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.cc_cycle_payment import CcCyclePayment
 from app.models.feature_override import OrgFeatureOverride
+from app.models.limit_override import OrgLimitOverride
+from app.models.usage_counter import UsageCounter
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.merchant_dictionary import MerchantDictionaryEntry
 from app.models.forecast_plan import (
@@ -219,7 +221,14 @@ async def _seed_full_org(factory, *, name: str = "Acme") -> dict:
             value=False,
             set_by=owner.id,
         )
-        db.add_all([plan_item, invite, rule, override])
+        limit_override = OrgLimitOverride(
+            org_id=org.id, meter="mcp.calls", period="day", limit_value=5, set_by=owner.id,
+        )
+        counter = UsageCounter(
+            org_id=org.id, meter="mcp.calls", period="day",
+            period_start=utcnow_naive().date(), value=3,
+        )
+        db.add_all([plan_item, invite, rule, override, limit_override, counter])
         await db.commit()
 
         # Tags: one local tag attached to the seeded transaction, plus a
@@ -293,7 +302,7 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
         "recurring_transactions", "forecast_plans", "billing_periods",
         "import_batches", "accounts", "account_types", "category_rules",
         "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
-        "cc_cycle_payments", "agent_pending_actions",
+        "cc_cycle_payments", "agent_pending_actions", "usage_counters",
     }
     assert set(counts.keys()) == expected_keys
     for key, n in counts.items():
@@ -341,6 +350,7 @@ async def test_wipe_preserves_org_shell(session_factory):
         assert await _count(db, Subscription, org_id=seeded["org_id"]) == 1
         assert await _count(db, OrgSetting, org_id=seeded["org_id"]) == 1
         assert await _count(db, OrgFeatureOverride, org_id=seeded["org_id"]) == 1
+        assert await _count(db, OrgLimitOverride, org_id=seeded["org_id"]) == 1
         assert await _count(db, Invitation, org_id=seeded["org_id"]) == 1
 
 
@@ -440,6 +450,29 @@ async def test_reset_returns_counts_and_wipes_data(session_factory):
     async with session_factory() as db:
         # Org shell still alive (wrapper didn't accidentally call cascade).
         assert await _count(db, Organization, id=seeded["org_id"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_reset_leaves_usage_counters_but_wipe_removes_them(session_factory):
+    """fence: a tenant self-service reset must not refund quota (usage_counters
+    survive), while the admin delete path (wipe) removes them with the org."""
+    seeded = await _seed_full_org(session_factory)
+    org_id = seeded["org_id"]
+
+    async with session_factory() as db:
+        counts = await org_data_service.reset_org_data(db, org_id=org_id)
+    assert "usage_counters" not in counts
+    async with session_factory() as db:
+        assert await _count(db, UsageCounter, org_id=org_id) == 1
+        assert (await db.scalar(select(UsageCounter.value))) == 3
+        assert await _count(db, OrgLimitOverride, org_id=org_id) == 1
+
+    async with session_factory() as db:
+        counts = await org_data_service.wipe_org_data(db, org_id=org_id)
+        await db.commit()
+    assert counts["usage_counters"] == 1
+    async with session_factory() as db:
+        assert await _count(db, UsageCounter, org_id=org_id) == 0
 
 
 @pytest.mark.asyncio

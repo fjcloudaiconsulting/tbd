@@ -31,6 +31,7 @@ from app.routers import scheduler as scheduler_router
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.import_ofx_service import init_ofx_executor, shutdown_ofx_executor
 from app.services.scheduler.loop import scheduler_loop
+from app.services.usage_service import PlanLimitReached
 
 # Setup JSON logging early so uvicorn's loggers are captured
 setup_logging()
@@ -380,6 +381,22 @@ async def not_found_handler(request, exc: NotFoundError):
 @app.exception_handler(ValidationError)
 async def validation_handler(request, exc: ValidationError):
     return JSONResponse(status_code=400, content={"detail": exc.detail})
+
+
+@app.exception_handler(PlanLimitReached)
+async def plan_limit_handler(request, exc: PlanLimitReached):
+    # TBD-585: same envelope as the AI cap refusal (ai_dispatch), plus the
+    # facts a client needs to say when the meter resets.
+    return JSONResponse(
+        status_code=402,
+        content={"detail": {
+            "code": "plan_limit_reached",
+            "meter": exc.meter,
+            "limit": exc.limit,
+            "period": exc.period,
+            "resets_at": exc.resets_at.isoformat() if exc.resets_at else None,
+        }},
+    )
 
 
 @app.exception_handler(ConflictError)

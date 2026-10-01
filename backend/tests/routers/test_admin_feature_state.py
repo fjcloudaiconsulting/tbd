@@ -183,19 +183,19 @@ async def test_feature_state_returns_all_keys(session_factory):
 
     rows = body["features"]
     assert isinstance(rows, list)
-    assert len(rows) == 5
+    assert len(rows) == 6
 
     keys = [r["key"] for r in rows]
     assert keys == sorted(ALL_FEATURE_KEYS)
     assert keys == sorted(
-        ["ai.budget", "ai.forecast", "ai.smart_plan", "ai.autocategorize", "ai.agent"]
+        ["ai.budget", "ai.forecast", "ai.smart_plan", "ai.autocategorize", "ai.agent", "plans"]
     )
 
     by_key = {r["key"]: r for r in rows}
     assert by_key["ai.budget"]["plan_default"] is True
     assert by_key["ai.budget"]["effective"] is True
     assert by_key["ai.budget"]["override"] is None
-    for k in ("ai.forecast", "ai.smart_plan", "ai.autocategorize", "ai.agent"):
+    for k in ("ai.forecast", "ai.smart_plan", "ai.autocategorize", "ai.agent", "plans"):
         assert by_key[k]["plan_default"] is False
         assert by_key[k]["effective"] is False
         assert by_key[k]["override"] is None
@@ -246,7 +246,7 @@ async def test_feature_state_effective_reflects_override(session_factory):
     assert budget_row["override"]["feature_key"] == "ai.budget"
 
     # Other keys unchanged: plan_default=False, no override.
-    for k in ("ai.forecast", "ai.smart_plan", "ai.autocategorize", "ai.agent"):
+    for k in ("ai.forecast", "ai.smart_plan", "ai.autocategorize", "ai.agent", "plans"):
         assert by_key[k]["plan_default"] is False
         assert by_key[k]["effective"] is False
         assert by_key[k]["override"] is None

@@ -1,8 +1,9 @@
 from decimal import Decimal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
-from app.auth.feature_catalog import PlanFeatures
+from app.auth.feature_catalog import PlanFeatures, PlanUsageLimits
 
 
 class PlanResponse(BaseModel):
@@ -20,6 +21,14 @@ class PlanResponse(BaseModel):
     max_users: int | None
     retention_days: int | None
     features: dict[str, bool]
+    usage_limits: dict[str, dict[str, Any]]
+
+    @field_validator("usage_limits", mode="before")
+    @classmethod
+    def _canonicalize_usage_limits(cls, v):
+        # Same defensive read-side canonicalization: a legacy ``{}`` row or a
+        # drifted one reads as the full four-meter shape.
+        return PlanUsageLimits.model_validate(v or {}).model_dump(by_alias=True)
 
     @field_validator("features", mode="before")
     @classmethod
@@ -43,6 +52,9 @@ class PlanCreate(BaseModel):
     max_users: int | None = Field(default=None, ge=1)
     retention_days: int | None = Field(default=None, ge=1)
     features: dict[str, StrictBool] = Field(default_factory=dict)
+    # Partial per-meter map; values are validated by canonicalize_usage_limits
+    # (400), not here, so the error surface matches unknown feature keys.
+    usage_limits: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class PlanUpdate(BaseModel):
@@ -58,6 +70,14 @@ class PlanUpdate(BaseModel):
     max_users: int | None = Field(default=None, ge=1)
     retention_days: int | None = Field(default=None, ge=1)
     features: dict[str, StrictBool] | None = None
+    usage_limits: dict[str, dict[str, Any]] | None = None
+
+    @model_validator(mode="after")
+    def _usage_limits_not_null(self):
+        # Omitted is fine; an explicit null would hit the NOT NULL column.
+        if "usage_limits" in self.model_fields_set and self.usage_limits is None:
+            raise ValueError("usage_limits cannot be null")
+        return self
 
 
 class PlanDuplicateRequest(BaseModel):

@@ -11,12 +11,17 @@ Two distinct paths:
   org_id = :id`` statements inside the caller's transaction. The
   whole org is going away, so partial-state risk is moot and the
   caller wants one commit boundary.
-- ``reset_org_data`` (self-service tenant reset) issues batched
+- ``reset_org_data`` (self-service tenant reset) keeps its OWN list of
+  tables (it does not call ``wipe_org_data``) and issues batched
   ``DELETE WHERE id IN (...)`` over PK chunks with a commit between
   each chunk. Releases locks so other traffic can interleave on a
   single-replica MySQL instance. Accepts partial-wipe risk on
   interruption — the operation is idempotent (re-running picks up
   any remaining rows + re-runs the seed).
+
+The two lists differ on purpose in one place: ``usage_counters`` is wiped
+with the org (admin delete) but NOT by the tenant reset, which would
+otherwise refund the org's metered quota on demand.
 """
 from __future__ import annotations
 
@@ -35,6 +40,7 @@ from app.models.import_batch import ImportBatch
 from app.models.recurring import RecurringTransaction
 from app.models.tag import Tag, TagDictionary, TagDictionaryContributor, TransactionTag
 from app.models.transaction import Transaction
+from app.models.usage_counter import UsageCounter
 from app.services.org_bootstrap_service import seed_org_defaults
 
 
@@ -102,14 +108,17 @@ async def wipe_org_data(
     """Delete every row in org-scoped data tables for ``org_id``.
 
     Preserves the org shell (organizations, users, subscriptions,
-    org_settings, org_feature_overrides, invitations). Never touches
+    org_settings, org_feature_overrides, org_limit_overrides,
+    invitations). Never touches
     cross-org PUBLIC tables (e.g. merchant_dictionary, tag_dictionary)
     other than to decrement the per-tag contributor count so the
     k-anonymity invariant survives org deletion. Caller commits.
 
-    Returns a dict of ``{table: rowcount}``. Single source of truth
-    for the wipe-order across both this service's reset path AND
-    ``admin_orgs_service.delete_org_cascade``.
+    Returns a dict of ``{table: rowcount}``. The wipe order used by
+    ``admin_orgs_service.delete_org_cascade``. ``reset_org_data`` does NOT
+    call this: it keeps a parallel batched list, so a new org-scoped data
+    table must be added to BOTH (unless, like ``usage_counters``, the reset
+    must leave it).
 
     Convention: every new org-scoped data table goes through this
     function. See ``project_roadmap.md`` TECHNICAL DEBT section.
@@ -217,6 +226,11 @@ async def wipe_org_data(
 
     counts["tags"] = (
         await db.execute(delete(Tag).where(Tag.org_id == org_id))
+    ).rowcount or 0
+
+    # Metered usage goes with the org. Deliberately NOT in reset_org_data.
+    counts["usage_counters"] = (
+        await db.execute(delete(UsageCounter).where(UsageCounter.org_id == org_id))
     ).rowcount or 0
 
     return counts

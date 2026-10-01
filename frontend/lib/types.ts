@@ -487,6 +487,7 @@ export interface Plan {
   max_users: number | null;
   retention_days: number | null;
   features: PlanFeatures;
+  usage_limits: PlanUsageLimits;
 }
 
 export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled";
@@ -510,7 +511,8 @@ export type FeatureKey =
   | "ai.forecast"
   | "ai.smart_plan"
   | "ai.autocategorize"
-  | "ai.agent";
+  | "ai.agent"
+  | "plans";
 
 export interface PlanFeatures {
   "ai.budget": boolean;
@@ -518,7 +520,25 @@ export interface PlanFeatures {
   "ai.smart_plan": boolean;
   "ai.autocategorize": boolean;
   "ai.agent": boolean;
+  plans: boolean;
 }
+
+// TBD-585 usage meters. Mirrors MeterKey / PlanUsageLimits in
+// backend/app/auth/feature_catalog.py. `limit` null is unlimited, 0 is none.
+export type MeterKey =
+  | "assistant.turns"
+  | "mcp.calls"
+  | "platform_ai.tokens"
+  | "platform_ai.cents";
+
+export type UsagePeriod = "day" | "month";
+
+export interface UsageLimitValue {
+  period: UsagePeriod;
+  limit: number | null;
+}
+
+export type PlanUsageLimits = Record<MeterKey, UsageLimitValue>;
 
 // Notification preferences — mirrors the backend
 // `NotificationPreferencesResponse` / `NotificationPreferencesUpdate`
@@ -558,9 +578,31 @@ export interface FeatureStateRow {
   override: OrgFeatureOverride | null;
 }
 
+export interface OrgLimitOverride {
+  meter: MeterKey;
+  period: UsagePeriod;
+  limit_value: number | null;
+  set_by: number | null;
+  set_by_email: string | null;
+  set_at: string;          // ISO 8601 UTC
+  expires_at: string | null;  // ISO 8601 UTC
+  note: string | null;
+  is_expired: boolean;
+}
+
+export interface LimitStateRow {
+  meter: MeterKey;
+  module: string;
+  plan: UsageLimitValue;
+  effective: UsageLimitValue;
+  source: "override" | "plan" | "default";
+  override: OrgLimitOverride | null;
+}
+
 export interface FeatureStateResponse {
   plan: { id: number; name: string; slug: string } | null;
   features: FeatureStateRow[];
+  limits: LimitStateRow[];
 }
 
 // ── Transfer-pair shapes ─────────────────────────────────────────────────────

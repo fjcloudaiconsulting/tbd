@@ -8,8 +8,8 @@ registry owns everything that must not vary between tools:
   authenticated ``User`` row. Tools read ``ctx.org_id``; their args models
   forbid extra fields and carry no tenancy field, so a model cannot name an org.
 * ``invoke`` applies the gates in order, all fail-closed: args validation, the
-  ``ai.agent`` plan feature, the product-area switch, the role rank, and the
-  principal's scope.
+  ``mcp.calls`` meter (mcp channel), the ``ai.agent`` plan feature, the
+  product-area switch, the role rank, and the principal's scope.
 * ``register`` refuses a half-declared tool, a bad name, a ``write`` tool that
   mirrors a DELETE route, and any tool mirroring a never-exposable area.
 
@@ -19,9 +19,12 @@ table, the limits and the execution. ``confirm_action`` / ``cancel_action``
 here are the front doors' only way to decide a staged action, so this module
 stays the one place a ``ToolContext`` is built.
 
-Per-surface usage meters (``assistant.turns``, ``mcp.calls``) and token-keyed
-rate limits are admitted by the front doors and the entitlement resolver that
-build on this registry; no limit data exists yet for ``invoke`` to read.
+The ``mcp.calls`` meter is admitted HERE (TBD-585), on the mcp channel only:
+once per ``invoke`` after args validation and before the other gates, and once
+per ``confirm_action`` / ``cancel_action``. The auto path counts once (it
+confirms inside the engine, not through ``confirm_action``). ``assistant.turns``
+is admitted by the in-app front door, per turn; token-keyed rate limits (gate 6)
+by the MCP front door work (561/578).
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import Role, User
-from app.services import feature_service
+from app.services import feature_service, usage_service
 from app.services.exceptions import NotFoundError, ValidationError
 from app.services.feature_gate import Feature, resolve_feature
 
@@ -128,6 +131,31 @@ class ToolError(Exception):
         # Machine-readable extras for the front door (e.g. the fresh preview of
         # ``preview_stale``, the recorded status of ``action_already_decided``).
         self.data = data or {}
+
+
+def _limit_error(exc: usage_service.PlanLimitReached) -> ToolError:
+    return ToolError(
+        "plan_limit_reached",
+        f"{exc.meter} limit reached for this {exc.period}",
+        data={
+            "meter": exc.meter, "limit": exc.limit, "period": exc.period,
+            "resets_at": exc.resets_at.isoformat() if exc.resets_at else None,
+        },
+    )
+
+
+async def _admit_mcp_call(db: AsyncSession, user: User, channel: str) -> None:
+    """Count one ``mcp.calls`` for an mcp-channel call, or refuse it.
+
+    Commits ``db`` (see ``usage_service.admit``): nothing may be written in
+    this session before it.
+    """
+    if channel != "mcp":
+        return
+    try:
+        await usage_service.admit(db, user.org_id, "mcp.calls")
+    except usage_service.PlanLimitReached as exc:
+        raise _limit_error(exc) from None
 
 
 class ToolRegistrationError(Exception):
@@ -361,6 +389,10 @@ async def _gate_and_run(
             "; ".join(f"{'.'.join(map(str, e['loc'])) or 'args'}: {e['msg']}" for e in exc.errors()),
         ) from None
 
+    # Gate 6 (per-token rate limit, 561/578) goes ABOVE this line: a refused
+    # call must not spend the plan's meter.
+    await _admit_mcp_call(db, user, channel)
+
     await check_gates(db, user, spec, channel, scope)
 
     ctx = ToolContext(
@@ -382,6 +414,7 @@ async def _decide(
     org_id, user_id = user.org_id, user.id
     ctx = ToolContext(db=db, user=user, org_id=org_id, channel=channel, api_token_id=api_token_id)
     try:
+        await _admit_mcp_call(db, user, channel)
         data = await getattr(actions, which)(ctx, action_id, scope=scope)
     except ToolError as exc:
         await logger.ainfo(

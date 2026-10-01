@@ -17,7 +17,9 @@ def test_plan_response_features_canonicalizes_missing_keys():
         price_monthly=0, price_yearly=0,
         max_users=None, retention_days=None,
         features={"ai.budget": True},  # incomplete on purpose
+        usage_limits={},  # legacy empty object
     )
+    assert plan.model_dump()["usage_limits"]["mcp.calls"] == {"period": "month", "limit": None}
     out = plan.model_dump()["features"]
     assert out["ai.budget"] is True
     assert out["ai.forecast"] is False
@@ -37,6 +39,7 @@ def test_plan_response_features_full_payload():
             "ai.smart_plan": True,
             "ai.autocategorize": False,
         },
+        usage_limits={},
     )
     payload = plan.model_dump()
     assert payload["features"]["ai.budget"] is True

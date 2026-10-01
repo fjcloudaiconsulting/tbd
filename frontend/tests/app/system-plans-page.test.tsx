@@ -61,6 +61,12 @@ const PRO_PLAN = {
     "ai.smart_plan": false,
     "ai.autocategorize": false,
   },
+  usage_limits: {
+    "assistant.turns": { period: "month", limit: null },
+    "mcp.calls": { period: "month", limit: null },
+    "platform_ai.tokens": { period: "month", limit: 0 },
+    "platform_ai.cents": { period: "month", limit: 0 },
+  },
 };
 
 // /api/v1/plans/all now returns a ListEnvelope; the table sends sort +

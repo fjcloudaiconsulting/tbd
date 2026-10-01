@@ -139,3 +139,15 @@ def require_permission(
         f"require_permission_{permission.replace('.', '_')}"
     )
     return dependency
+
+
+def require_superadmin_for_platform_meter(meter: str, user: User) -> None:
+    """Platform meters spend platform money.
+
+    ponytail: explicit superadmin guard instead of a permission, because no
+    user-to-platform-role link exists yet. Before L4.8 grants ``orgs.manage``
+    (or ``plans.manage``) beyond superadmin, add a ``platform_ai.manage`` permission (or a per-org
+    maximum) and let it REPLACE this guard.
+    """
+    if meter.startswith("platform_ai.") and not user.is_superadmin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
