@@ -54,6 +54,7 @@ logger = structlog.stdlib.get_logger()
 
 FEATURE_KEY = "chat"  # AI routing + cap key (``ai_feature_map``)
 MAX_ROUNDS = 6
+MAX_CALLS_PER_ROUND = 8  # the rest of a round's calls get a ``too_many_calls`` result
 TURN_SECONDS = 90.0
 KEEPALIVE_SECONDS = 15.0
 # Outlives a full turn plus the one dispatch the ``finally`` may wait for.
@@ -251,7 +252,13 @@ async def stream_turn(
                 {"role": "assistant", "content": resp.content, "tool_calls": resp.tool_calls}
             )
             previewed = False
-            for call in resp.tool_calls:
+            for i, call in enumerate(resp.tool_calls):
+                if i >= MAX_CALLS_PER_ROUND:
+                    transcript.append({
+                        "role": "tool", "tool_call_id": call["id"],
+                        "content": json.dumps({"error": "too_many_calls"}),
+                    })
+                    continue
                 spec = registry.get_tool(call["name"])
                 # A model-chosen name is never echoed unless it is ours.
                 shown = spec.name if spec else "unknown_tool"
@@ -263,6 +270,9 @@ async def stream_turn(
                     # ``invoke`` rolls back on a refusal, which expires the
                     # user; ``get`` re-loads an expired row.
                     user = await db.get(User, user_id)
+                    if user is None or not user.is_active:
+                        outcome = "user_inactive"
+                        break
                     try:
                         data = (await registry.invoke(
                             db, user, spec.name, call.get("arguments") or {}, channel="in_app",
@@ -284,6 +294,8 @@ async def stream_turn(
                 })
             if previewed:
                 outcome = "preview"
+                break
+            if outcome == "user_inactive":
                 break
         if outcome not in ("ok", "preview"):
             yield _sse("error", {"code": outcome})

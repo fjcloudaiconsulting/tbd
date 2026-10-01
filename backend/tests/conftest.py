@@ -342,9 +342,8 @@ class _SharedFakeRedis:
         # its "reused:" return token, which the rotate script never uses.
         if 'reused:' in script:
             return await self._eval_detect_reuse(numkeys, *args)
-        # Compare-and-delete (TBD-560 agent turn lock release).
-        from app.services.agent_chat import _RELEASE_LUA
-        if script == _RELEASE_LUA:
+        # Compare-and-delete (TBD-560 agent turn lock release, ``_RELEASE_LUA``).
+        if "redis.call('get', KEYS[1]) == ARGV[1]" in script:
             # Suspend like a real round trip, so a cancelled caller is seen.
             import asyncio
             await asyncio.sleep(0)

@@ -187,9 +187,11 @@ class Scripted:
     def __init__(self, script):
         self.script = script  # list of responses, or a callable(n) -> response
         self.seen: list[list[dict]] = []
+        self.tools: list[list[dict]] = []
 
     async def function_call(self, *, model, messages, tools, max_tokens=None):
         self.seen.append(copy.deepcopy(messages))
+        self.tools.append(tools)
         n = len(self.seen)
         r = self.script(n) if callable(self.script) else self.script[n - 1]
         return await r if asyncio.iscoroutine(r) else r
@@ -643,3 +645,47 @@ async def test_disconnect_before_the_first_byte_releases_the_lock(factory, w, pr
     assert sent[0]["status"] == 200
     assert await fake_redis.get(chat.lock_key(w["org"])) is None
     assert await _turns(factory, w["org"]) == 1
+
+
+async def test_calls_per_round_are_capped(factory, w, client, provider):
+    """FENCE: one reply asking for many reads runs at most 8; every call id
+    still gets its result. Wrong implementation: an unbounded fan-out."""
+    _as(factory, w["user"])
+    adapter = provider([
+        _resp([_call("accounts_list", cid=f"c{i}") for i in range(9)]),
+        _resp(content="done"),
+    ])
+    ev = _events((await client.post(URL, json=ASK)).text)
+    assert [e for e, _ in ev].count("tool_result") == chat.MAX_CALLS_PER_ROUND == 8
+    tools = [m for m in adapter.seen[1] if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tools] == [f"c{i}" for i in range(9)]
+    assert json.loads(tools[-1]["content"]) == {"error": "too_many_calls"}
+
+
+async def test_user_deactivated_mid_turn_ends_it(factory, w, client, provider):
+    """FENCE: a user deactivated during the turn runs no further tool."""
+    _as(factory, w["user"])
+
+    async def deactivate_then_call(n):
+        async with factory._f() as db:
+            (await db.get(User, w["user"])).is_active = False
+            await db.commit()
+        return _resp([_call("accounts_list")])
+
+    adapter = provider(lambda n: deactivate_then_call(n))
+    ev = _events((await client.post(URL, json=ASK)).text)
+    assert ev[-2:] == [("error", {"code": "user_inactive"}), ("done", {})]
+    assert ("tool_result" not in [e for e, _ in ev]) and len(adapter.seen) == 1
+
+
+async def test_tools_offered_follow_the_gates(factory, w, client, provider):
+    """GUARD: a product area switched off is not offered to the model."""
+    from app.models.settings import OrgSetting
+
+    await _add(factory, OrgSetting(org_id=w["org"], key="orgpref.forecast", value="off"))
+    _as(factory, w["user"])
+    adapter = provider([_resp(content="hi")])
+    await client.post(URL, json=ASK)
+    assert adapter.seen
+    offered = {t["function"]["name"] for t in adapter.tools[0]}
+    assert "forecast_get" not in offered and "accounts_list" in offered

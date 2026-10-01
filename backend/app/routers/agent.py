@@ -1,5 +1,6 @@
 """In-app agent routes: decisions on staged actions (TBD-577) and the
-assistant chat turn (TBD-560, ``chat_router``).
+assistant chat turn (TBD-560): ``POST /api/v1/agent/chat`` on ``chat_router``,
+streamed as server-sent events (``app.services.agent_chat``).
 
 ``POST /api/v1/agent/actions/{id}/confirm`` and ``/cancel``, and
 ``GET /api/v1/agent/actions`` (the review list). Interactive sessions only: a
