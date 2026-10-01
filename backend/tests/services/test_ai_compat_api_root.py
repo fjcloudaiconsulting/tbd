@@ -364,7 +364,7 @@ async def test_legacy_row_rotate_and_validate_keep_the_v1_root(
 
 
 def _load_migration_083():
-    path = BACKEND / "alembic" / "versions" / "083_ai_credential_api_root.py"
+    path = BACKEND / "alembic" / "versions" / "084_ai_credential_api_root.py"
     spec = importlib.util.spec_from_file_location("m083", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
