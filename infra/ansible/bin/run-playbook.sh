@@ -44,7 +44,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANSIBLE_DIR="$(dirname "$HERE")"
 TERRAFORM_DIR="$(dirname "$ANSIBLE_DIR")/terraform"
-BACKUPS_TERRAFORM_DIR="$TERRAFORM_DIR/backups"
+# tbd-backups moved to fjcloudaiconsulting/aws-infra (terraform/tbd-backups);
+# default to a sibling checkout, override with BACKUPS_TERRAFORM_DIR.
+BACKUPS_TERRAFORM_DIR="${BACKUPS_TERRAFORM_DIR:-$(dirname "$(dirname "$ANSIBLE_DIR")")/../aws-infra/terraform/tbd-backups}"
 VENV_ANSIBLE="${VENV_ANSIBLE:-$HOME/.virtualenvs/ansible/bin}"
 
 SCRATCH_HOST=""; SCRATCH_PRIVATE_IP=""; HOST_NAME="pfv-data-01"; PRODUCTION=0; PASSTHRU=()
@@ -136,6 +138,11 @@ json.dump(out, open(sys.argv[1], "w"))
 # false there and these values are never referenced.
 if [[ "$PRODUCTION" -eq 1 ]]; then
   echo "==> reading backup destination from Terraform state (tbd-backups)"
+  [[ -d "$BACKUPS_TERRAFORM_DIR" ]] || {
+    echo "!! $BACKUPS_TERRAFORM_DIR not found. tbd-backups lives in https://github.com/fjcloudaiconsulting/aws-infra" >&2
+    echo "   (terraform/tbd-backups): clone it next to this repo or set BACKUPS_TERRAFORM_DIR." >&2
+    exit 1
+  }
   terraform -chdir="$BACKUPS_TERRAFORM_DIR" output -json 2>/dev/null | python3 -c '
 import json, sys
 raw = json.load(sys.stdin)
@@ -145,8 +152,8 @@ WANT = ("backup_s3_bucket", "backup_s3_prefix", "backup_s3_region",
 missing = [k for k in WANT if not (raw.get(k) or {}).get("value")]
 if missing:
     sys.exit(
-        "!! FlamaCorp/tbd-backups has not produced these outputs yet: " + ", ".join(missing) +
-        "\n   TBD-400 adds them, in infra/terraform/backups/. They exist only"
+        "!! FlamaCorp/tbd-backups has not produced these outputs yet (or the aws-infra checkout has not run `terraform init`): " + ", ".join(missing) +
+        "\n   TBD-400 adds them, in aws-infra terraform/tbd-backups/. They exist only"
         "\n   after that workspace has been applied (manual Confirm & Apply)."
         "\n   Refusing to converge a backups role with no destination -- that"
         "\n   would leave production believing it has an off-host backup."

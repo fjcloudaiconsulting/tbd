@@ -620,7 +620,7 @@ After-droplet steps (one-time): Ansible playbook bootstraps the host. See `infra
 
 ## 7. Terraform: `<tfc-org>/<apex-workspace>` (AWS apex control plane)
 
-Source: `infra/terraform/apex/`, `infra/terraform/apex/README.md`.
+Source: `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex`, `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/README.md`.
 
 Separate TFC workspace because the auth path is different (AWS OIDC rather than a DO API token) and the blast radius is contained.
 
@@ -640,13 +640,13 @@ Separate TFC workspace because the auth path is different (AWS OIDC rather than 
 ### Workflow
 
 Same shape as the `pfv` workspace:
-- Speculative plan on every PR that touches `infra/terraform/apex/**`
+- Speculative plan on every PR that touches the apex Terraform (in aws-infra)
 - Apply on merge to `main`, **manual Confirm & Apply** in TFC
 - Local CLI plan-only is allowed for debug; never apply from CLI
 
 ```mermaid
 flowchart LR
-  pr[PR touches infra/terraform/apex/**] --> tfcsp[TFC apex speculative plan]
+  pr[PR touches apex Terraform in aws-infra] --> tfcsp[TFC apex speculative plan]
   tfcsp -->|status check on PR| pr
   pr --> merge[Merge to main]
   merge --> tfcapp[TFC apex apply run]
@@ -776,11 +776,11 @@ flowchart TD
   apexq -- yes --> apex[apex-deploy.yml also fires: S3 sync + CloudFront invalidation]
   apexq -- no --> apexno[apex-deploy.yml does not fire]
 
-  start --> tf1{P in infra/terraform/apex/**?}
-  tf1 -- yes --> tfapex[TFC apex workspace apply waits on Confirm and Apply]
-  tf1 -- no --> tf2{P in infra/terraform/**?}
+  start --> tf2{P in infra/terraform/**?}
   tf2 -- yes --> tfpfv[TFC data workspace apply waits on Confirm and Apply]
 ```
+
+Apex and backups Terraform changes are made in the aws-infra repo.
 
 Concrete cases:
 
@@ -792,7 +792,6 @@ Concrete cases:
 | `frontend/lib/brand.ts` (feat) | Both `release.yml` AND `apex-deploy.yml`. |
 | `backend/alembic/versions/abc_new_migration.py` | `release.yml` -> deploy -> PRE_DEPLOY migrate applies it -> roll backend |
 | `infra/terraform/main.tf` | TFC `<data-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge. `release.yml` runs and no-ops (`chore`/`ci` type, or `infra` scope). |
-| `infra/terraform/apex/main.tf` | TFC `<apex-workspace>`; same `release.yml` no-op. |
 | `.do/app.yaml` (chore) | `release.yml` fires but semantic-release does not bump. Operator must run `gh workflow run deploy.yml --ref main`. |
 | `.github/workflows/test.yml` | `test.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and no-ops on the `ci` type. |
 | `README.md` only | `release.yml` **runs** and no-ops on the `docs` type. Nothing is tagged and nothing deploys. |
@@ -874,7 +873,7 @@ If a migration **partially applies** and the job exits non-zero, the PRE_DEPLOY 
 | Backend access logs (live) | DO console -> Apps -> `pfv` -> Runtime Logs -> backend component |
 | Frontend access logs (live) | DO console -> Apps -> `pfv` -> Runtime Logs -> frontend component |
 | `PRE_DEPLOY migrate` job logs | DO console -> Apps -> `pfv` -> Activity -> select deploy -> migrate job |
-| Apex CloudFront access logs | Not enabled today. `infra/terraform/apex/main.tf` (`aws_cloudfront_distribution.apex`) does not configure `logging_config`. Post-launch follow-up: provision a separate S3 bucket for CloudFront standard logs and add the logging block. For real-time debugging until then, AWS console -> CloudFront -> distribution -> Monitoring tab. |
+| Apex CloudFront access logs | Not enabled today. `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/main.tf` (`aws_cloudfront_distribution.apex`) does not configure `logging_config`. Post-launch follow-up: provision a separate S3 bucket for CloudFront standard logs and add the logging block. For real-time debugging until then, AWS console -> CloudFront -> distribution -> Monitoring tab. |
 | Apex S3 contents | AWS console -> S3 -> `thebetterdecision-com-apex` |
 | MySQL slow query / error log | SSH to `<data-droplet>`: `journalctl -u mysql` or `/var/log/mysql/error.log` |
 | Nightly mysqldump | `<data-droplet>`: `ls -lh /var/backups/mysql/`; log at `/var/log/mysql-backup.log` |
