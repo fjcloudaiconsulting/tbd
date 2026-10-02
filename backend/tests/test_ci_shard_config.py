@@ -321,7 +321,8 @@ def test_frontend_coverage_is_main_only_and_the_scripts_cannot_drift():
       * the TEST_SCRIPT ternary inverted, or `$TEST_SCRIPT` dropped from `run`
         (a hardcoded `npm test` silently restores coverage on PRs);
       * `test:nocov` drifting from `test` (e.g. losing the act-guard judge), so
-        PRs would stop enforcing what main enforces.
+        PRs would stop enforcing what main enforces;
+      * `exit ${PIPESTATUS[0]}` dropped, so tee's exit code turns a red suite green.
     """
     step = next(
         s
@@ -329,6 +330,7 @@ def test_frontend_coverage_is_main_only_and_the_scripts_cannot_drift():
         if s.get("name") == "Run frontend tests"
     )
     assert "npm run \"$TEST_SCRIPT\"" in str(step["run"]), "frontend run no longer uses $TEST_SCRIPT"
+    assert "exit ${PIPESTATUS[0]}" in str(step["run"]), "tee would mask a red frontend suite"
     assert str(step["env"]["TEST_SCRIPT"]).replace(" ", "") == (
         "${{github.event_name=='pull_request'&&'test:nocov'||'test'}}"
     ), "TEST_SCRIPT must be test:nocov on pull_request and test otherwise"
