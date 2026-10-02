@@ -720,9 +720,15 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # INFRA-54: coverage is main-only, like the backend (INFRA-53). PRs run
+      # `test:nocov` (same act-guard reporter and judge, no --coverage); nothing
+      # reads PR coverage (no threshold). The badge step below is main-only and
+      # greps the coverage summary, so main must keep running `npm test`.
       - name: Run frontend tests
         working-directory: frontend
-        run: npm test | tee /tmp/fe-test.log; exit ${PIPESTATUS[0]}
+        env:
+          TEST_SCRIPT: ${{ github.event_name == 'pull_request' && 'test:nocov' || 'test' }}
+        run: npm run "$TEST_SCRIPT" | tee /tmp/fe-test.log; exit ${PIPESTATUS[0]}
 
       # TBD-500: as above, number only, `main` pushes only, fails soft.
       # ⚠ `exit ${PIPESTATUS[0]}` on the step above is load-bearing: piping into

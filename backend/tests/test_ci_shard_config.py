@@ -24,6 +24,7 @@ inconsistency is structurally unreachable. This fence exists for the next person
 who reverts to literals -- which is the likelier failure, because literals read
 more obviously.
 """
+import json
 import re
 from pathlib import Path
 
@@ -311,3 +312,28 @@ def test_coverage_runs_on_non_pr_events_only_and_all_its_steps_agree():
     assert NOT_PR + " && '--cov=app" in str(step["env"]["COV_FLAGS"]), (
         "COV_FLAGS truthy branch is not the coverage flags under the non-PR condition"
     )
+
+
+def test_frontend_coverage_is_main_only_and_the_scripts_cannot_drift():
+    """INFRA-54: PRs run `test:nocov`, everything else `test` (the main-only badge
+    greps the coverage summary). Fenced:
+
+      * the TEST_SCRIPT ternary inverted, or `$TEST_SCRIPT` dropped from `run`
+        (a hardcoded `npm test` silently restores coverage on PRs);
+      * `test:nocov` drifting from `test` (e.g. losing the act-guard judge), so
+        PRs would stop enforcing what main enforces.
+    """
+    step = next(
+        s
+        for s in WORKFLOW["jobs"]["frontend-work"]["steps"]
+        if s.get("name") == "Run frontend tests"
+    )
+    assert "npm run \"$TEST_SCRIPT\"" in str(step["run"]), "frontend run no longer uses $TEST_SCRIPT"
+    assert str(step["env"]["TEST_SCRIPT"]).replace(" ", "") == (
+        "${{github.event_name=='pull_request'&&'test:nocov'||'test'}}"
+    ), "TEST_SCRIPT must be test:nocov on pull_request and test otherwise"
+    scripts = json.loads((REPO_ROOT / "frontend" / "package.json").read_text())["scripts"]
+    assert scripts["test:nocov"] == scripts["test"].replace(" --coverage", ""), (
+        "test:nocov drifted from test (must differ only by ` --coverage`)"
+    )
+    assert "--coverage" in scripts["test"] and "--coverage" not in scripts["test:nocov"]
