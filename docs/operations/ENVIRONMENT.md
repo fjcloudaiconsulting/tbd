@@ -163,7 +163,7 @@ All frontend config is read at runtime (`TBD_*`, via
 `frontend/lib/runtime-config.ts`): the root layout serialises it into
 `window.__TBD_CONFIG__` per request, so ONE image serves every environment and
 changing a value needs a redeploy or restart, not a rebuild. Never use
-`TBD_*` (CI fails on it). The apex static export (`TBD_BUILD_TARGET=apex`,
+`NEXT_PUBLIC_*` (CI fails on it). The apex static export (`TBD_BUILD_TARGET=apex`,
 `TBD_APP_URL`, `TBD_APEX_URL`, `TBD_GA_*`) is a separate artifact whose
 inputs are build-time by nature; `next.config.apex.ts` inlines them.
 
@@ -425,7 +425,7 @@ on the next push. Treat the file as the complete env contract.
 - `backend/app/rate_limit.py` — `PFV_RUNTIME` consumer.
 - `backend/app/security.py` — `JWT_SECRET_KEY` consumer.
 - `backend/app/services/email_service.py` — Mailgun env consumer.
-- `frontend/next.config.ts` — CSP build, `TBD_API_URL` origin
+- `frontend/proxy.ts` + `lib/security-headers.ts` — per-request CSP, `TBD_API_URL` origin
   allowlist (via `lib/security-headers.ts`).
 - `frontend/components/auth/GoogleSSOButton.tsx` — gates on
   `TBD_GOOGLE_SSO_ENABLED`.
