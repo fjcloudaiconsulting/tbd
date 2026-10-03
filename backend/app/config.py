@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # buying back user-visible latency.
     #
     # Per-operation read/write timeouts are NOT exposed here:
-    # aiomysql 0.2.0 (pinned in requirements.txt) doesn't accept
+    # aiomysql 0.2.0 (pinned in pyproject.toml) doesn't accept
     # them. Stale-socket bounds live at ``db_pool_recycle`` (rotate
     # before NAT drop) and at the route-local handler timeout.
     db_connect_timeout: int = 10

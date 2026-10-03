@@ -3,22 +3,18 @@ has previously broken the application at runtime."""
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
-REQUIREMENTS_PATH = (
-    Path(__file__).resolve().parent.parent / "requirements.txt"
-)
+PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 
 
 def _parse_requirements() -> dict[str, str]:
-    """Return ``{name_lower: version}`` for every ``==`` / ``~=`` pin in
-    ``backend/requirements.txt``. Skips blank lines and ``#`` comments;
-    strips extras (``pydantic[email]`` → ``pydantic``)."""
+    """Return ``{name_lower: version}`` for every ``==`` / ``~=`` pin in the
+    ``app`` dependency group of ``backend/pyproject.toml``; strips extras
+    (``pydantic[email]`` -> ``pydantic``)."""
     pins: dict[str, str] = {}
-    for raw in REQUIREMENTS_PATH.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
+    for line in tomllib.loads(PYPROJECT.read_text())["dependency-groups"]["app"]:
         for sep in ("==", "~="):
             if sep in line:
                 name, _, ver = line.partition(sep)
@@ -36,8 +32,8 @@ def test_pymysql_is_pinned() -> None:
     ``ping(self, reconnect)`` still requires the positional arg.
     Pinning PyMySQL is therefore part of the contract — not optional."""
     assert "pymysql" in _parse_requirements(), (
-        "PyMySQL must be pinned in requirements.txt. aiomysql does "
-        "not pin it, so a fresh `pip install` will resolve whatever "
+        "PyMySQL must be pinned in pyproject.toml. aiomysql does "
+        "not pin it, so a fresh `uv lock` will resolve whatever "
         "PyMySQL is current on PyPI — and that has caused production "
         "outages when SQLAlchemy's dialect detection silently flipped."
     )

@@ -474,7 +474,9 @@ Migration files live at `backend/alembic/versions/` and follow sequential number
 
 ### Backend (pytest)
 
-Run inside the `backend` container. The dev image installs `requirements-dev.txt` because `INSTALL_DEV=true` is set in `docker-compose.yml`. Production and CI builds keep `INSTALL_DEV=false`.
+Run inside the `backend` container. The dev image installs the `dev` group of `backend/uv.lock` because `INSTALL_DEV=true` is set in `docker-compose.yml`. Production and CI builds keep `INSTALL_DEV=false`.
+
+Dependencies live in `backend/pyproject.toml` (groups `app`, `dev`, `mcp`) and are locked in `backend/uv.lock`. Add or bump one with `cd backend && uv add --group app <pkg>==<ver>` (or edit the group), then `uv lock`, commit both files, and rebuild the image. `mcp` must stay a same-pin subset of `app` (fenced by `tests/mcp/test_mcp_image.py`).
 
 ```bash
 # Full suite, in parallel across cores -- this is the one you want
