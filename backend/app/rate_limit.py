@@ -47,8 +47,9 @@ Spoof resistance:
   applies because the XFF walk replaces it).
 - ``CLIENT_IP_HEADER`` is honoured only when set (by the deployment,
   never the request), and only for a value that parses as one IP.
-  Set it only where every request reaches the backend through a proxy
-  that overwrites that header.
+  Set it only where the origin accepts requests from our own proxy zone
+  exclusively (Cloudflare: Authenticated Origin Pulls, INFRA-93); a
+  Cloudflare-ranges firewall alone lets other zones' Workers choose it.
 """
 
 from __future__ import annotations
@@ -120,11 +121,14 @@ def _is_app_platform_runtime() -> bool:
 def _client_ip_from_configured_header(request: Request) -> str | None:
     """The visitor's IP from the header named by ``CLIENT_IP_HEADER``.
 
-    k3s behind Cloudflare (INFRA-83) sets ``CLIENT_IP_HEADER=cf-connecting-ip``:
-    Cloudflare overwrites that header on every request, and the node only
-    accepts 443 from Cloudflare ranges, so no visitor can choose its value.
-    Never set it where requests can arrive without passing that proxy
-    (DigitalOcean, local dev): the header is then caller-controlled.
+    k3s behind Cloudflare (INFRA-83) sets ``CLIENT_IP_HEADER=cf-connecting-ip``.
+    Cloudflare overwrites that header on every request, but a Cloudflare-only
+    firewall is NOT enough: a Worker on any other Cloudflare zone can send a
+    same-zone subrequest with ``x-real-ip`` set, and Cloudflare forwards that
+    value as ``CF-Connecting-IP``. The header is trustworthy only when the
+    origin accepts our zones exclusively (Authenticated Origin Pulls with a
+    zone-level certificate, INFRA-93). Never set it where requests can arrive
+    without passing our zone (DigitalOcean, local dev).
     Returns None when unset, absent, or not exactly one IP address.
     """
     header = os.environ.get("CLIENT_IP_HEADER", "").strip()
@@ -204,6 +208,27 @@ def get_client_ip(request: Request) -> str:
     return client_host or "127.0.0.1"
 
 
+def rate_limit_key(request: Request) -> str:
+    """Bucket key for per-IP limits: ``get_client_ip``, with IPv6 cut to its /64.
+
+    One visitor routinely holds a whole /64 (2^64 addresses), so a /128 key
+    lets them rotate past every limit. IPv4-mapped addresses are unwrapped
+    first: all of ``::ffff:a.b.c.d`` share ``::/64``. Audit logs keep using
+    ``get_client_ip`` and record the full address. Values that are not an IP
+    (e.g. the test client's ``testclient``) pass through unchanged.
+    """
+    client_ip = get_client_ip(request)
+    try:
+        ip = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return client_ip
+    if ip.version == 4:
+        return client_ip
+    if ip.ipv4_mapped:
+        return str(ip.ipv4_mapped)
+    return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+
+
 def _build_limiter() -> Limiter:
     """Construct the slowapi ``Limiter`` with Redis-backed storage when
     ``settings.redis_url`` is configured, else fall back to in-memory.
@@ -254,7 +279,7 @@ def _build_limiter() -> Limiter:
         # Async storage (async+redis://) is the longer-term fix — separate PR;
         # requires coredis dependency review + async fail-open wrapper rewrite.
         limiter = Limiter(
-            key_func=get_client_ip,
+            key_func=rate_limit_key,
             storage_uri=redis_url,
             storage_options={
                 "socket_connect_timeout": 1,
@@ -280,7 +305,7 @@ def _build_limiter() -> Limiter:
     # raise the storage errors the wrapper guards against, and leaving
     # it unwrapped keeps construction-time tests (which assert the
     # storage type) unchanged.
-    return Limiter(key_func=get_client_ip)
+    return Limiter(key_func=rate_limit_key)
 
 
 limiter = _build_limiter()

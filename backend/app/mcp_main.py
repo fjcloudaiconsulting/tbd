@@ -45,7 +45,7 @@ from app.agent.auth import authenticate_agent_token, www_authenticate
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
 from app.database import async_session, engine
 from app.logging import setup_logging
-from app.rate_limit import get_client_ip
+from app.rate_limit import rate_limit_key
 from app.services import feature_service
 
 setup_logging()
@@ -201,7 +201,7 @@ async def _ip_failures(ip: str, *, add: bool) -> int:
 
 
 async def mcp_endpoint(request: Request) -> Response:
-    ip = get_client_ip(request)
+    ip = rate_limit_key(request)
     if await _ip_failures(ip, add=False) >= IP_AUTH_FAILURES_PER_MIN:
         return _rpc_error(429, RATE_LIMITED, "too many failed attempts",
                           headers={"Retry-After": "60"})

@@ -135,5 +135,6 @@ def test_module_level_limiter_built_at_import_time():
     ``@limiter.limit(...)`` decorator binds to.
     """
     assert rate_limit.limiter is not None
-    # ``key_func`` must still be the topology-aware resolver from PR #233.
-    assert rate_limit.limiter._key_func is rate_limit.get_client_ip
+    # ``key_func`` must still be the topology-aware resolver from PR #233
+    # (via rate_limit_key, which buckets IPv6 by /64, INFRA-83).
+    assert rate_limit.limiter._key_func is rate_limit.rate_limit_key

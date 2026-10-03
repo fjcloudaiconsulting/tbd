@@ -391,6 +391,73 @@ def test_client_ip_header_missing_falls_back_to_peer(monkeypatch):
     assert get_client_ip(request) == "10.42.0.12"
 
 
+# ── rate_limit_key: IPv6 buckets by /64 (INFRA-83) ───────────────────────
+#
+# One routed IPv6 /64 is 2^64 addresses; keyed per /128 a visitor rotates
+# addresses and never fills a bucket. The limiter key collapses IPv6 to its
+# /64; get_client_ip (audit logs) keeps the full address.
+
+
+def _key_for(ip: str) -> str:
+    from app.rate_limit import rate_limit_key
+
+    return rate_limit_key(_make_request(client_host=ip))
+
+
+def test_rate_limit_key_shares_one_bucket_per_ipv6_64():
+    assert _key_for("2001:db8:1:2::1") == _key_for("2001:db8:1:2:ffff:ffff:ffff:ffff")
+
+
+def test_rate_limit_key_separates_different_ipv6_64s():
+    assert _key_for("2001:db8:1:2::1") != _key_for("2001:db8:1:3::1")
+
+
+def test_rate_limit_key_leaves_ipv4_alone():
+    assert _key_for("203.0.113.7") == "203.0.113.7"
+    assert _key_for("203.0.113.7") != _key_for("203.0.113.8")
+
+
+def test_rate_limit_key_keeps_ipv4_mapped_addresses_apart():
+    """Every ::ffff:a.b.c.d sits in ::/64; bucketing them by /64 would put
+    all of them in one bucket."""
+    assert _key_for("::ffff:203.0.113.7") == "203.0.113.7"
+    assert _key_for("::ffff:203.0.113.7") != _key_for("::ffff:203.0.113.8")
+
+
+def test_rate_limit_key_passes_non_ip_values_through():
+    assert _key_for("testclient") == "testclient"
+
+
+def test_audit_ip_keeps_the_full_ipv6_address():
+    request = _make_request(client_host="2001:db8:1:2::1")
+    assert get_client_ip(request) == "2001:db8:1:2::1"
+
+
+def test_limiter_keys_on_rate_limit_key():
+    from app import rate_limit
+
+    assert rate_limit.limiter._key_func is rate_limit.rate_limit_key
+
+
+def test_mcp_auth_failure_counter_keys_on_the_64(monkeypatch):
+    import asyncio
+
+    from app import mcp_main
+
+    seen: list[str] = []
+
+    async def _tripped(ip, *, add):
+        seen.append(ip)
+        return mcp_main.IP_AUTH_FAILURES_PER_MIN
+
+    monkeypatch.setattr(mcp_main, "_ip_failures", _tripped)
+    response = asyncio.run(
+        mcp_main.mcp_endpoint(_make_request(client_host="2001:db8:1:2::1"))
+    )
+    assert response.status_code == 429
+    assert seen == [_key_for("2001:db8:1:2::2")]
+
+
 # ── Integration: audit_events.ip_address persists the resolved client ─────
 
 
