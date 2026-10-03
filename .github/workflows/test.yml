@@ -47,7 +47,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: test-${{ github.workflow }}-${{ github.ref }}
+  # INFRA-42: `main` runs are keyed by sha. A concurrency group holds at most
+  # ONE pending run and cancels the older pending one even with
+  # `cancel-in-progress: false`, so a shared `main` group dropped a merge's run
+  # in a burst of three. Every `main` commit needs its own run: it builds the
+  # sha-<7> images that a release later promotes, and release.yml's
+  # await-tests waits for exactly that run's conclusion.
+  group: test-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   # ⚠ PR runs cancel their own superseded runs; `main` runs MUST NOT.
   # On push, `github.ref` is `refs/heads/main` for every merge, so all
   # post-merge runs share one concurrency group. With a blanket
@@ -142,9 +148,11 @@ jobs:
   # no wall clock. Six was bought for headroom rather than speed. ⚠ By
   # 2026-09-13 shard 5/6 (~470s) had become the slowest job itself (TBD-524).
   # A full run peaks at 9 concurrent jobs (8 before TBD-422 split the frontend
-  # suite), so two concurrent PRs peak at 18 of the 20 public runners. Eight
+  # suite), so two concurrent PRs peaked at 18 of the 20 public runners. Eight
   # shards would put them over that budget, and queueing costs more than the
-  # extra shard saves.
+  # extra shard saves. ⚠ INFRA-42 added the three Publish Image jobs (short,
+  # cached builds): a full run now peaks at 12, so two full PRs at once queue
+  # a few jobs.
   backend-shard:
     name: Backend Shard ${{ matrix.group }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
@@ -296,6 +304,42 @@ jobs:
           "tbd-migrations:${GITHUB_SHA}"
           python -c "import alembic, scripts.migrate; print('migrations import ok')"
 
+  # INFRA-42: the GHCR images, through the shared build-image workflow
+  # (RELEASE_CONTRACT.md section 3). Pull requests build without pushing; a
+  # push to `main` publishes sha-<7>, which release.yml's promote retags as
+  # vX.Y.Z and never rebuilds. detect-changed-areas.sh reports every area as
+  # changed on any non-PR event, so every `main` commit (the release-please
+  # commit included) gets all three images.
+  backend-images:
+    name: Publish Image (${{ matrix.image }})
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    strategy:
+      matrix:
+        include:
+          - { image: backend, target: prod }
+          - { image: migrations, target: migrations }
+    permissions:
+      contents: read
+      packages: write
+    uses: fjcloudaiconsulting/.github/.github/workflows/build-image.yml@v1
+    with:
+      image: ${{ matrix.image }}
+      context: backend
+      target: ${{ matrix.target }}
+
+  frontend-image:
+    name: Publish Image (frontend)
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: fjcloudaiconsulting/.github/.github/workflows/build-image.yml@v1
+    with:
+      image: frontend
+      context: frontend
+
   # Stable aggregate gate. Branch protection / required-check config can
   # point at this single "Backend Checks" context; it passes only when
   # every shard passed. Keeping the name "Backend Checks" preserves the
@@ -303,7 +347,7 @@ jobs:
   backend:
     name: Backend Checks
     runs-on: ubuntu-latest
-    needs: [changes, backend-shard, migrations, mcp-image, backend-image]
+    needs: [changes, backend-shard, migrations, mcp-image, backend-image, backend-images]
     if: ${{ always() }}
     steps:
       # ⚠ THE WIRING GUARD MUST STAY THE FIRST STEP IN THIS JOB.
@@ -417,6 +461,13 @@ jobs:
           "${{ needs.backend-image.result }}"
           "${{ needs.changes.outputs.backend }}"
           "Backend Image"
+
+      - name: Verify the backend and migrations images built (and published on main)
+        run: >-
+          bash scripts/ci/assert-gate.sh
+          "${{ needs.backend-images.result }}"
+          "${{ needs.changes.outputs.backend }}"
+          "Publish backend images"
 
       # `Migration Checks` is folded into this aggregate deliberately. It is
       # the one context branch protection is expected to require (TBD-347),
@@ -887,7 +938,7 @@ jobs:
   frontend:
     name: Frontend Checks
     runs-on: ubuntu-latest
-    needs: [changes, frontend-work, frontend-static]
+    needs: [changes, frontend-work, frontend-static, frontend-image]
     if: ${{ always() }}
     steps:
       - name: Checkout repository
@@ -912,3 +963,10 @@ jobs:
           "${{ needs.frontend-static.result }}"
           "${{ needs.changes.outputs.frontend }}"
           "Frontend static checks"
+
+      - name: Verify the frontend image built (and published on main)
+        run: >-
+          bash scripts/ci/assert-gate.sh
+          "${{ needs.frontend-image.result }}"
+          "${{ needs.changes.outputs.frontend }}"
+          "Publish frontend image"
