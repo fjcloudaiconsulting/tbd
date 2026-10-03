@@ -37,7 +37,7 @@
 #
 # ⚠ Do NOT "fix" the drift by deleting the filter the way release.yml's was
 # deleted. The two are not analogous. release.yml's filter was redundant with
-# `.releaserc.json`; this one is the only thing bounding COST. Every run here
+# its release gate; this one is the only thing bounding COST. Every run here
 # does an S3 sync plus a CloudFront `/*` invalidation, and invalidations past
 # 1,000/month are metered. Removing it buys one invalidation per merge to
 # main, forever.

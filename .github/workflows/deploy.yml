@@ -1,10 +1,10 @@
 # Manual production deploy escape hatch.
 #
 # Automatic production deploys are now driven by release.yml's gated
-# `deploy` job, which only fires when semantic-release decides the merge
-# warrants a new release. That means infra-only commits that don't
-# trigger a release (chore(.do), chore(nginx), chore(infra),
-# chore(Dockerfile), ...) will NOT auto-deploy. When such a change must
+# `deploy` job, which only fires when the owner merges the release-please
+# PR (INFRA-42). That means a change merged since the last release
+# (chore(.do), chore(nginx), chore(infra), chore(Dockerfile), ...) does NOT
+# auto-deploy until the next release. When such a change must
 # ship, an operator runs this workflow manually:
 #
 #   gh workflow run deploy.yml --ref main
@@ -120,7 +120,7 @@ jobs:
   # `smoke-tests` above is SKIPPED when `deploy` fails, so its
   # `if: failure()` notifier never runs.
   #
-  # This path has no `release` job, so there is no `new_release_published`
+  # This path has no `release` job, so there is no `release_created`
   # arm and no tag to annotate — the script handles an empty RELEASE_TAG. The
   # `!= 'success'` (rather than `== 'failure'`) keeps CANCELLED in scope for
   # the same reason release.yml does: a deploy cancelled mid-push can leave

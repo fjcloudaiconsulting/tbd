@@ -70,6 +70,8 @@ the env-var name (uppercased).
 |---|---|---|---|---|---|---|---|---|
 | `APP_NAME` | no | `"The Better Decision"` | `.env` | conftest | `.do/app.yaml` | no | Display name in emails and Swagger title. | Default used. |
 | `APP_ENV` | yes | `development` | `.env` | conftest | `.do/app.yaml` (`production`) | no | Selects dev vs prod code paths (CORS, cookies, MFA fallback, lifespan migrations). | Defaults to `development`. Prod-only code paths are skipped. |
+| `TBD_APP_VERSION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Release version reported by `/health` (`version`). Baked into the published GHCR images at build time from the Dockerfile `ARG`; DO builds without build args. | Falls back to `dev`. |
+| `TBD_APP_REVISION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Git revision reported by `/health` (`revision`). Baked at build time like `TBD_APP_VERSION`. | Falls back to `dev`. |
 | `LOG_LEVEL` | no | `INFO` | `.env` | conftest | `.do/app.yaml` | no | structlog level filter. | Defaults to `INFO`. |
 | `DATABASE_URL` | yes | `mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2` | `.env` | conftest sets a placeholder | `.do/app.yaml` (SECRET, also bound to migrate job) | yes (prod) | Async SQLAlchemy DSN. Alembic and the app share it. | Backend cannot reach MySQL; lifespan and Alembic fail. |
 | `DB_POOL_SIZE` | no | `5` | `.env` | unset | `.do/app.yaml` (optional override) | no | SQLAlchemy pool size per replica. See K8S-3 (PR #251). | Default 5 used. |
@@ -401,9 +403,8 @@ doctl apps update <app-id> --spec .do/app.yaml
 ```
 
 Without that step, edits to `.do/app.yaml` do not take effect until the
-next release-classified merge (release.yml's deploy job runs only on
-commits that semantic-release labels as a release). `chore`, `docs`, and
-`refactor` commits do not auto-deploy.
+next release (release.yml's deploy job runs only when the release-please PR
+is merged and a release is created). Ordinary merges do not auto-deploy.
 
 Any env var NOT present in `.do/app.yaml` is REMOVED from the live app
 on the next push. Treat the file as the complete env contract.

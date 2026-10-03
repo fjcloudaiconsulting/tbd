@@ -11,7 +11,8 @@ name: Deploy Drift Probe
 #
 # ⚠ And removing release.yml's paths filter (TBD-424) did NOT close that window,
 # despite being blamed for it. Measured: every merge in that window was a
-# suppressed scope, so `deploy` was skipped by `new_release_published`
+# suppressed scope, so `deploy` was skipped by the release gate
+# (then semantic-release's `new_release_published`, now `release_created`)
 # regardless. The blind window is a property of the DEPLOY GATE, not of any
 # trigger filter. This probe is the actual remedy.
 #

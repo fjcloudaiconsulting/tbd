@@ -20,7 +20,7 @@
 # protection changed". `allow_merge_commit` / `allow_rebase_merge` /
 # `allow_squash_merge` live on `GET /repos/{o}/{r}`, NOT here, so re-enabling
 # merge commits leaves this probe green while breaking the release pipeline --
-# the squash subject IS the string semantic-release parses. A monitor that
+# the squash subject IS the string release-please parses. A monitor that
 # overstates its coverage is worse than none, because the next design decision
 # will cite it.
 #

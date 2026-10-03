@@ -7,7 +7,7 @@
 #   * `allow_merge_commit` / `allow_rebase_merge` / `allow_squash_merge` -- these
 #     live on `GET /repos/{o}/{r}`, NOT on /protection. CONTRIBUTING.md asserts
 #     squash-merge-only and the release pipeline depends on it, because the
-#     squash subject IS the string semantic-release parses. Re-enabling merge
+#     squash subject IS the string release-please parses. Re-enabling merge
 #     commits leaves this probe green. The most important uncovered setting here.
 #   * repository and organization rulesets
 #   * organization-level policy; required-workflow configuration

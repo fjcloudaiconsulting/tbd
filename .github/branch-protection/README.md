@@ -15,7 +15,7 @@ below have been looked at directly:
 
 | field | recorded | note |
 |---|---|---|
-| `allow_force_pushes` | `false` | **Ratified 2026-09-01.** It had drifted to `true` for at least three weeks; the operator ruled it back to `false` and the setting was restored before this file recorded it. Nothing in this repo pushes to `main` — semantic-release tags but never commits back. |
+| `allow_force_pushes` | `false` | **Ratified 2026-09-01.** It had drifted to `true` for at least three weeks; the operator ruled it back to `false` and the setting was restored before this file recorded it. Nothing in this repo pushes to `main` — release-please tags via the Release App and commits back only through its release PR (no direct pushes to main). |
 | `allow_deletions` | `false` | Matches the recorded intent. Listed here only because it is the other field that has drifted before. |
 
 Seeding this file with the *aspirational* values instead would make the probe red
@@ -33,7 +33,7 @@ since a human last looked"** — a claim the probe can actually make — and nev
 * `allow_merge_commit` / `allow_rebase_merge` / `allow_squash_merge` — these live
   on `GET /repos/{owner}/{repo}`, **not** on `/protection`. `CONTRIBUTING.md` asserts
   squash-merge-only and the release pipeline depends on it, because the squash
-  subject *is* the string semantic-release parses. **This is the most important
+  subject *is* the string release-please parses. **This is the most important
   uncovered setting in the repo.**
 * Repository and organization rulesets.
 * Organization-level policy and required-workflow configuration.

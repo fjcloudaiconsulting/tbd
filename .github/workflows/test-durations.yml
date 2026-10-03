@@ -14,9 +14,9 @@ name: Test Durations
 # passed.
 #
 # Harvesting inside test.yml would also buy nothing. `test.yml` runs with
-# `permissions: contents: read`, there is no `@semantic-release/git` in
-# .releaserc.json, and `release.yml` sets `persist-credentials: false` -- so
-# nothing in this repo has ever written a commit to `main`, and `main` requires
+# `permissions: contents: read`, release-please commits only through its
+# release PR, and checkouts set `persist-credentials: false` -- so nothing in
+# this repo writes a commit to `main` directly, and `main` requires
 # reviews with `enforce_admins: true`. An in-CI harvest would still terminate in
 # a human commit, exactly like this workflow, having added deploy-blocking risk
 # for no saved step.
