@@ -369,7 +369,8 @@ def test_client_ip_header_unset_ignores_forged_cf_connecting_ip(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "value", ["not-an-ip", "203.0.113.7, 198.51.100.1", "", "   "]
+    "value",
+    ["not-an-ip", "203.0.113.7, 198.51.100.1", "", "   ", "fe80::1%" + "x" * 80],
 )
 def test_client_ip_header_with_invalid_value_falls_back(monkeypatch, value):
     """A value that is not one IP address is never used as a rate-limit key."""

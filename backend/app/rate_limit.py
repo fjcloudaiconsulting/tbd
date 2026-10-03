@@ -1,7 +1,7 @@
 """Rate limiter and client-IP resolver shared across routers.
 
 The default ``slowapi.util.get_remote_address`` is wrong for this app's
-production topology. Two environments exist:
+production topology. Three environments exist:
 
 1. **Local / docker-compose - nginx in front of backend.** nginx sets
    ``X-Forwarded-For $remote_addr`` (the immediate peer ONLY, NOT
@@ -132,9 +132,14 @@ def _client_ip_from_configured_header(request: Request) -> str | None:
         return None
     value = (request.headers.get(header) or "").strip()
     try:
-        return str(ipaddress.ip_address(value))
+        ip = ipaddress.ip_address(value)
     except ValueError:
         return None
+    # A scope id ("fe80::1%<anything>") would carry caller-chosen text into
+    # rate-limit keys and the 45-char audit column.
+    if getattr(ip, "scope_id", None):
+        return None
+    return str(ip)
 
 
 def get_client_ip(request: Request) -> str:
