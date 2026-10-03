@@ -41,7 +41,7 @@
 #   REF_NAME       — github.ref_name (branch)
 #   ACTOR          — github.actor
 #   DEPLOY_RESULT  — needs.deploy.result (failure / cancelled / skipped)
-#   RELEASE_TAG    — OPTIONAL. needs.release.outputs.new_release_git_tag.
+#   RELEASE_TAG    — OPTIONAL. needs.release.outputs.tag_name.
 #                    Empty on the manual deploy.yml path, which has no
 #                    `release` job. Not in the required list on purpose: a
 #                    manual deploy that fails is still worth an alarm, and

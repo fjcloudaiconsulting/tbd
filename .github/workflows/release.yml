@@ -168,6 +168,9 @@ jobs:
 
   # Retag the release commit's sha-<7> images (test.yml built them on that
   # commit's push) as vX.Y.Z. Never rebuilds; fails if an image is missing.
+  # Unlike ziftbook (one workflow), the image build is not a `needs` here: it
+  # lives in test.yml, and the release job has already awaited that commit's
+  # Test run, which includes the build.
   promote:
     needs: release
     if: needs.release.outputs.release_created == 'true'

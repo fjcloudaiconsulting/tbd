@@ -55,9 +55,9 @@ concurrency:
   # await-tests waits for exactly that run's conclusion.
   group: test-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   # ⚠ PR runs cancel their own superseded runs; `main` runs MUST NOT.
-  # On push, `github.ref` is `refs/heads/main` for every merge, so all
-  # post-merge runs share one concurrency group. With a blanket
-  # `cancel-in-progress: true` each merge cancels the previous merge's run —
+  # Before INFRA-42 every post-merge run shared the `refs/heads/main` group,
+  # and with a blanket `cancel-in-progress: true` each merge cancelled the
+  # previous merge's run —
   # measured burst: four merges inside fifteen minutes on 2026-08-09 — so the
   # conflict introduced by merge N is cancelled by merge N+1 and never
   # reported. That silently defeats the `push:` trigger above in exactly the
