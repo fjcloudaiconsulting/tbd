@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import pytest
 from starlette.requests import Request
 
 from app.rate_limit import get_client_ip
@@ -326,6 +327,67 @@ def test_do_runtime_mode_case_insensitive(monkeypatch):
         headers={"do-connecting-ip": "203.0.113.7"},
     )
     assert get_client_ip(request) == "203.0.113.7"
+
+
+# ── CLIENT_IP_HEADER (k3s behind Cloudflare, INFRA-83) ───────────────────
+#
+# Cloudflare -> Traefik -> backend: uvicorn's proxy-headers rewrite leaves a
+# Cloudflare edge (or Traefik) address in request.client.host; the visitor is
+# in CF-Connecting-IP, which Cloudflare overwrites on every request.
+
+
+def test_client_ip_header_returns_cloudflare_visitor(monkeypatch):
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
+    request = _make_request(
+        client_host="172.70.1.1",  # a Cloudflare edge
+        headers={
+            "cf-connecting-ip": "203.0.113.7",
+            "x-forwarded-for": "6.6.6.6, 203.0.113.7, 172.70.1.1",
+        },
+    )
+    assert get_client_ip(request) == "203.0.113.7"
+
+
+def test_client_ip_header_name_is_case_insensitive(monkeypatch):
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    monkeypatch.setenv("CLIENT_IP_HEADER", "CF-Connecting-IP")
+    request = _make_request(
+        client_host="10.42.0.9", headers={"cf-connecting-ip": "2001:db8::7"}
+    )
+    assert get_client_ip(request) == "2001:db8::7"
+
+
+def test_client_ip_header_unset_ignores_forged_cf_connecting_ip(monkeypatch):
+    """DigitalOcean and local dev: anyone can send CF-Connecting-IP."""
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    monkeypatch.delenv("CLIENT_IP_HEADER", raising=False)
+    request = _make_request(
+        client_host="198.51.100.99", headers={"cf-connecting-ip": "203.0.113.7"}
+    )
+    assert get_client_ip(request) == "198.51.100.99"
+
+
+@pytest.mark.parametrize(
+    "value", ["not-an-ip", "203.0.113.7, 198.51.100.1", "", "   "]
+)
+def test_client_ip_header_with_invalid_value_falls_back(monkeypatch, value):
+    """A value that is not one IP address is never used as a rate-limit key."""
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
+    request = _make_request(
+        client_host="198.51.100.99", headers={"cf-connecting-ip": value}
+    )
+    assert get_client_ip(request) == "198.51.100.99"
+
+
+def test_client_ip_header_missing_falls_back_to_peer(monkeypatch):
+    """In-cluster callers (the frontend's server-side fetches, probes) send no
+    CF-Connecting-IP and resolve as before."""
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
+    request = _make_request(client_host="10.42.0.12")
+    assert get_client_ip(request) == "10.42.0.12"
 
 
 # ── Integration: audit_events.ip_address persists the resolved client ─────

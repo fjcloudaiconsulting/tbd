@@ -22,6 +22,11 @@ production topology. Two environments exist:
    layer, (b) the env var is set by us (terraform / DO spec), not by
    the request. Docs:
    https://docs.digitalocean.com/support/where-can-i-find-the-client-ip-address-of-a-request-connecting-to-my-app/
+3. **Production - k3s on Lightsail behind Cloudflare (INFRA-83).**
+   Cloudflare -> Traefik -> backend. The peer and the XFF chain hold
+   Cloudflare edge and pod addresses; the visitor is in
+   ``CF-Connecting-IP``. The deployment sets
+   ``CLIENT_IP_HEADER=cf-connecting-ip`` to read it.
 
 Spoof resistance:
 
@@ -40,6 +45,10 @@ Spoof resistance:
   ``PFV_RUNTIME=app_platform`` is set. In any other runtime it is
   ignored entirely (the trusted-peer gate from PR #82 no longer
   applies because the XFF walk replaces it).
+- ``CLIENT_IP_HEADER`` is honoured only when set (by the deployment,
+  never the request), and only for a value that parses as one IP.
+  Set it only where every request reaches the backend through a proxy
+  that overwrites that header.
 """
 
 from __future__ import annotations
@@ -108,11 +117,34 @@ def _is_app_platform_runtime() -> bool:
     return os.environ.get("PFV_RUNTIME", "").lower() == "app_platform"
 
 
+def _client_ip_from_configured_header(request: Request) -> str | None:
+    """The visitor's IP from the header named by ``CLIENT_IP_HEADER``.
+
+    k3s behind Cloudflare (INFRA-83) sets ``CLIENT_IP_HEADER=cf-connecting-ip``:
+    Cloudflare overwrites that header on every request, and the node only
+    accepts 443 from Cloudflare ranges, so no visitor can choose its value.
+    Never set it where requests can arrive without passing that proxy
+    (DigitalOcean, local dev): the header is then caller-controlled.
+    Returns None when unset, absent, or not exactly one IP address.
+    """
+    header = os.environ.get("CLIENT_IP_HEADER", "").strip()
+    if not header:
+        return None
+    value = (request.headers.get(header) or "").strip()
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
 def get_client_ip(request: Request) -> str:
     """Resolve the real client IP for rate limiting and audit logging.
 
     Resolution order:
 
+    0. **Configured edge header.** When ``CLIENT_IP_HEADER`` names a
+       header (k3s: ``cf-connecting-ip``) holding one valid IP, use it.
+       See ``_client_ip_from_configured_header`` for when that is safe.
     1. **DO App Platform mode.** When ``PFV_RUNTIME=app_platform`` is
        set, consult ``do-connecting-ip`` unconditionally. DO's ingress
        is the only writer of that header in App Platform, and the env
@@ -128,6 +160,11 @@ def get_client_ip(request: Request) -> str:
        a public path is its own client IP; we refuse to honour any
        forwarded-by headers in that case.
     """
+    # 0. A deployment-named header written by the edge proxy (Cloudflare).
+    header_ip = _client_ip_from_configured_header(request)
+    if header_ip:
+        return header_ip
+
     # 1. DO App Platform runtime: do-connecting-ip is authoritative.
     if _is_app_platform_runtime():
         do_ip = request.headers.get("do-connecting-ip")
