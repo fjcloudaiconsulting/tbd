@@ -2,17 +2,14 @@
 #   migrations  one-shot job image: `python scripts/migrate.py` (alembic upgrade head)
 #   prod        the serving image (uvicorn). LAST stage on purpose: a plain
 #               `docker build` (DO App Platform, docker compose) builds it.
-# Both share the `runtime` stage; they differ only in CMD. The build toolchain
-# (gcc, headers, pip cache) lives in `builder` and never reaches either.
+# Both share the `runtime` stage; they differ only in CMD. Dependencies are
+# installed into a venv in `builder` (all wheels, no compiler needed); only the
+# venv reaches either image.
 #   docker build --target migrations -t tbd-migrations backend
 #   docker build --target prod       -t tbd-backend    backend
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc default-libmysqlclient-dev pkg-config \
-    && rm -rf /var/lib/apt/lists/*
 
 ARG INSTALL_DEV=false
 

@@ -252,6 +252,7 @@ jobs:
   backend-image:
     name: Backend Image
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     steps:
@@ -274,6 +275,7 @@ jobs:
         run: |
           docker build -t "tbd-default:${GITHUB_SHA}" backend
           docker inspect -f '{{index .Config.Cmd 0}}' "tbd-default:${GITHUB_SHA}" | grep -x uvicorn
+          docker inspect -f '{{.Config.User}} {{.Config.ExposedPorts}} {{.Config.WorkingDir}}' "tbd-default:${GITHUB_SHA}" | grep -Fx 'backend map[8000/tcp:{}] /app'
           docker inspect -f '{{json .Config.Cmd}}' "tbd-migrations:${GITHUB_SHA}" | grep -Fx '["python","/app/scripts/migrate.py"]'
 
       - name: Import the app inside the prod image

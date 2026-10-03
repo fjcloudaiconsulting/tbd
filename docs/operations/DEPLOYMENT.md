@@ -676,7 +676,7 @@ After bootstrap, TFC runs use workload identity. Long-lived AWS keys exist nowhe
 
 ## 8. Database migrations
 
-`backend/Dockerfile` is multi-stage with two named targets, both without the build toolchain (gcc lives only in the `builder` stage):
+`backend/Dockerfile` is multi-stage with two named targets, both built from a venv made in a separate `builder` stage:
 
 | Target | Runs | Build |
 |---|---|---|
