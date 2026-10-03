@@ -281,7 +281,7 @@ services:
       # Setup flow:
       #   1. Create the Turnstile widget at https://dash.cloudflare.com/?to=/:account/turnstile
       #      for app.thebetterdecision.com. Copy the site key into the
-      #      NEXT_PUBLIC_CAPTCHA_SITE_KEY value below.
+      #      TBD_CAPTCHA_SITE_KEY (frontend service) value below.
       #   2. Add the Turnstile secret via the DO console (this app's
       #      Settings → App-Level Environment Variables → backend service).
       #      Save — DO encrypts it server-side.
@@ -356,19 +356,18 @@ services:
       timeout_seconds: 5
       failure_threshold: 3
     envs:
-      - key: NEXT_PUBLIC_API_URL
-        scope: RUN_AND_BUILD_TIME
+      - key: TBD_API_URL
+        scope: RUN_TIME
         value: ""
       - key: HOSTNAME
         scope: RUN_AND_BUILD_TIME
         value: "0.0.0.0"
-      # NEXT_PUBLIC_* env vars are baked into the static JS bundle at BUILD
-      # time, so the scope MUST include BUILD_TIME (RUN_TIME alone is a
-      # no-op for Next.js). When this is not exactly the string "true",
-      # GoogleSSOButton renders null and the "Sign in with Google" button
-      # disappears from /login and /register. See PR #229 (L5.9).
-      - key: NEXT_PUBLIC_GOOGLE_SSO_ENABLED
-        scope: RUN_AND_BUILD_TIME
+      # Runtime-only (read per request by lib/runtime-config.ts), so RUN_TIME
+      # scope. When this is not exactly the string "true", GoogleSSOButton
+      # renders null and the "Sign in with Google" button disappears from
+      # /login and /register. See PR #229 (L5.9).
+      - key: TBD_GOOGLE_SSO_ENABLED
+        scope: RUN_TIME
         value: "true"
       # Server-side (RSC) reach to the backend. Browser requests use the App
       # Platform ingress (relative URLs); server-side fetches must hit the
@@ -377,27 +376,13 @@ services:
       - key: BACKEND_INTERNAL_URL
         scope: RUN_TIME
         value: ${backend.PRIVATE_URL}
-      # Turnstile widget site key. NEXT_PUBLIC_* envs are inlined into the
-      # static JS bundle at build, so a key change requires a frontend
-      # rebuild (`doctl apps update --spec` triggers it). Leave value
-      # empty until the Cloudflare site is created — the widget render is
-      # gated on both the backend's CAPTCHA_REQUIRED flag AND a non-empty
-      # site key, so an empty value means no widget renders even if the
-      # backend asks for one.
-      - key: NEXT_PUBLIC_CAPTCHA_PROVIDER
-        scope: RUN_AND_BUILD_TIME
-        value: "turnstile"
-      - key: NEXT_PUBLIC_CAPTCHA_SITE_KEY
-        scope: RUN_AND_BUILD_TIME
+      # Turnstile widget site key, read at runtime, so a change only needs
+      # a redeploy, not an image rebuild. Leave value empty until the
+      # Cloudflare site is created: the widget render is gated on both the
+      # backend's CAPTCHA_REQUIRED flag AND a non-empty site key.
+      - key: TBD_CAPTCHA_SITE_KEY
+        scope: RUN_TIME
         value: "0x4AAAAAADTu1HIFconXLShc"
-      # Reports v2 frontend gate. SHIPPING AS "false" through PRs 1 to 3.
-      # Frontend hides the Reports nav item and routes when this is not
-      # exactly "true"; backend FEATURE_REPORTS_V2 above is the
-      # load-bearing 404 gate. Flip both to "true" together in PR 4. See
-      # specs/2026-05-22-reports-v2-flexible-canvas.md §11.
-      - key: NEXT_PUBLIC_FEATURE_REPORTS_V2
-        scope: RUN_AND_BUILD_TIME
-        value: "true"
 
 # Pre-deploy job: run Alembic migrations exactly once before any backend
 # replica starts. This is the canonical "init container" pattern for App

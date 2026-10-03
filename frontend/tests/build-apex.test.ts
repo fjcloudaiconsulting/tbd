@@ -10,7 +10,7 @@ import path from "node:path";
 //   - next.config.apex.ts exports `output: 'export'` and the auth-island
 //     + AuthProvider webpack aliases.
 //   - package.json has the build:apex script wired to the bash driver.
-//   - lib/links.ts returns relative paths when NEXT_PUBLIC_BUILD_TARGET
+//   - lib/links.ts returns relative paths when TBD_BUILD_TARGET
 //     is unset and absolute BRAND_APP_URL paths when set to "apex".
 //
 // We intentionally do NOT shell out to `next build` here — it takes ~20s
@@ -34,7 +34,7 @@ describe("apex build target — scripts/build-apex.sh", () => {
   });
 
   it("invokes next build with BUILD_TARGET=apex env", () => {
-    expect(script).toContain("NEXT_PUBLIC_BUILD_TARGET=apex");
+    expect(script).toContain("TBD_BUILD_TARGET=apex");
     expect(script).toMatch(/npx\s+next\s+build/);
   });
 
@@ -287,36 +287,36 @@ describe("apex build target — apex stubs", () => {
   });
 });
 
-// lib/links.ts reads NEXT_PUBLIC_BUILD_TARGET at module evaluation time.
+// lib/links.ts reads TBD_BUILD_TARGET at module evaluation time.
 // vi.resetModules() forces a fresh evaluation per test case so each env
 // permutation is independent.
 async function loadLinks(env: { target?: string; appUrl?: string }) {
-  delete process.env.NEXT_PUBLIC_BUILD_TARGET;
-  delete process.env.NEXT_PUBLIC_APP_URL;
+  delete process.env.TBD_BUILD_TARGET;
+  delete process.env.TBD_APP_URL;
   if (env.target !== undefined) {
-    process.env.NEXT_PUBLIC_BUILD_TARGET = env.target;
+    process.env.TBD_BUILD_TARGET = env.target;
   }
   if (env.appUrl !== undefined) {
-    process.env.NEXT_PUBLIC_APP_URL = env.appUrl;
+    process.env.TBD_APP_URL = env.appUrl;
   }
   vi.resetModules();
   return (await import("@/lib/links")) as typeof import("@/lib/links");
 }
 
 describe("apex build target — lib/links.ts cross-domain CTAs", () => {
-  const origTarget = process.env.NEXT_PUBLIC_BUILD_TARGET;
-  const origUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const origTarget = process.env.TBD_BUILD_TARGET;
+  const origUrl = process.env.TBD_APP_URL;
 
   afterEach(() => {
     if (origTarget === undefined) {
-      delete process.env.NEXT_PUBLIC_BUILD_TARGET;
+      delete process.env.TBD_BUILD_TARGET;
     } else {
-      process.env.NEXT_PUBLIC_BUILD_TARGET = origTarget;
+      process.env.TBD_BUILD_TARGET = origTarget;
     }
     if (origUrl === undefined) {
-      delete process.env.NEXT_PUBLIC_APP_URL;
+      delete process.env.TBD_APP_URL;
     } else {
-      process.env.NEXT_PUBLIC_APP_URL = origUrl;
+      process.env.TBD_APP_URL = origUrl;
     }
     vi.resetModules();
   });
@@ -336,13 +336,13 @@ describe("apex build target — lib/links.ts cross-domain CTAs", () => {
     expect(mod.BRAND_APP_URL).toBe("https://app.thebetterdecision.com");
   });
 
-  it("honours NEXT_PUBLIC_APP_URL override and strips trailing slash", async () => {
+  it("honours TBD_APP_URL override and strips trailing slash", async () => {
     const mod = await loadLinks({ target: "apex", appUrl: "https://staging.example.com/" });
     expect(mod.BRAND_APP_URL).toBe("https://staging.example.com");
     expect(mod.signupHref()).toBe("https://staging.example.com/register");
   });
 
-  it("ignores empty NEXT_PUBLIC_APP_URL and falls back to the default", async () => {
+  it("ignores empty TBD_APP_URL and falls back to the default", async () => {
     const mod = await loadLinks({ target: "apex", appUrl: "" });
     expect(mod.BRAND_APP_URL).toBe("https://app.thebetterdecision.com");
   });

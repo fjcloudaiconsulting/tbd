@@ -2,23 +2,23 @@ import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// isApexBuild is a module-level const read from NEXT_PUBLIC_BUILD_TARGET at
+// isApexBuild is a module-level const read from TBD_BUILD_TARGET at
 // import time, so set the env + resetModules BEFORE dynamically importing the
 // component (same pattern as GoogleAnalytics.test.tsx).
-const origTarget = process.env.NEXT_PUBLIC_BUILD_TARGET;
+const origTarget = process.env.TBD_BUILD_TARGET;
 
 afterEach(() => {
   if (origTarget === undefined) {
-    delete process.env.NEXT_PUBLIC_BUILD_TARGET;
+    delete process.env.TBD_BUILD_TARGET;
   } else {
-    process.env.NEXT_PUBLIC_BUILD_TARGET = origTarget;
+    process.env.TBD_BUILD_TARGET = origTarget;
   }
   vi.resetModules();
 });
 
 describe("<CookiePreferencesButton />", () => {
   it("renders nothing on a non-apex build (no banner to re-open)", async () => {
-    delete process.env.NEXT_PUBLIC_BUILD_TARGET;
+    delete process.env.TBD_BUILD_TARGET;
     vi.resetModules();
     const { default: CookiePreferencesButton } = await import(
       "@/components/landing/CookiePreferencesButton"
@@ -28,7 +28,7 @@ describe("<CookiePreferencesButton />", () => {
   });
 
   it("renders on apex and dispatches the open-consent event on click", async () => {
-    process.env.NEXT_PUBLIC_BUILD_TARGET = "apex";
+    process.env.TBD_BUILD_TARGET = "apex";
     vi.resetModules();
     const [{ default: CookiePreferencesButton }, { CONSENT_OPEN_EVENT }] =
       await Promise.all([

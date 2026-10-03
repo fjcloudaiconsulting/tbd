@@ -108,9 +108,9 @@ beforeEach(() => {
   apiFetchMock.mockReset();
   turnstileResetMock.mockReset();
   // The widget render condition AND-s captcha_required from /auth/status
-  // with a non-empty NEXT_PUBLIC_CAPTCHA_SITE_KEY. Set a value here so the
+  // with a non-empty TBD_CAPTCHA_SITE_KEY. Set a value here so the
   // mocked status response is the only switch each test flips.
-  vi.stubEnv("NEXT_PUBLIC_CAPTCHA_SITE_KEY", "1x00000000000000000000BB");
+  vi.stubEnv("TBD_CAPTCHA_SITE_KEY", "1x00000000000000000000BB");
 });
 
 afterEach(() => {

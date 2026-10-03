@@ -67,7 +67,7 @@ export const reportingEndpointsHeader = `${CSP_REPORT_GROUP}="${CSP_REPORT_PATH}
 // connect-src so api.ts fetch() calls aren't blocked. Empty string →
 // same-origin via nginx, nothing extra to allow.
 function apiOrigin(): string {
-  const raw = process.env.NEXT_PUBLIC_API_URL;
+  const raw = process.env.TBD_API_URL;
   if (!raw) return "";
   try {
     return new URL(raw).origin;

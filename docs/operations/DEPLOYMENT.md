@@ -536,7 +536,7 @@ sequenceDiagram
 
   GH->>Node: actions/checkout, setup-node@22
   Node->>Node: npm ci --no-audit --no-fund (frontend/)
-  Node->>Node: npm run build:apex (build-apex.sh, NEXT_PUBLIC_BUILD_TARGET=apex)
+  Node->>Node: npm run build:apex (build-apex.sh, TBD_BUILD_TARGET=apex)
   Node->>Node: verify out-apex/index.html and _meta.json exist
   Node->>OIDC: aws-actions/configure-aws-credentials@v4 (role-to-assume)
   OIDC-->>Node: short-lived STS creds (sub claim must match repo:flamarion/pfv:ref:refs/heads/main)
@@ -892,4 +892,4 @@ Triage shortcuts:
 | App can't reach MySQL or Redis | Confirm `.do/app.yaml`'s top-level `vpc.id` matches the TFC output, and `DATABASE_URL` / `REDIS_URL` point at the droplet's `<vpc-cidr>` private IP |
 | Secret env var "disappeared" after deploy | `.do/app.yaml` must declare every SECRET with its `EV[...]` blob. Missing -> stripped on push. Refresh via `doctl apps spec get <app-id>` |
 
-For the env var matrix and common per-variable failures (Google SSO button missing, `NEXT_PUBLIC_*` not in client bundle, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Common failure modes".
+For the env var matrix and common per-variable failures (Google SSO button missing, old `NEXT_PUBLIC_*` keys in the live spec, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Common failure modes".

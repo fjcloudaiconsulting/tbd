@@ -1,5 +1,6 @@
 "use client";
 
+import { runtimeConfig } from "@/lib/runtime-config";
 import { FormEvent, useMemo, useState } from "react";
 
 import SlideInPanel from "@/components/floating/SlideInPanel";
@@ -74,7 +75,7 @@ function collectAutoContext(): AutoContext {
     url: cleanUrl,
     user_agent:
       typeof navigator !== "undefined" ? navigator.userAgent : "",
-    app_version: process.env.NEXT_PUBLIC_APP_VERSION ?? "dev",
+    app_version: runtimeConfig().appVersion,
     viewport_w:
       typeof window !== "undefined" ? window.innerWidth : 0,
     viewport_h:

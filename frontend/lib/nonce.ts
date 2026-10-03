@@ -17,7 +17,7 @@
  *     nonce contract.
  *
  *   * Apex static export (``next.config.apex.ts``,
- *     ``NEXT_PUBLIC_BUILD_TARGET=apex``): there is no per-request
+ *     ``TBD_BUILD_TARGET=apex``): there is no per-request
  *     header at static-generation time. Calling ``headers()`` would
  *     throw and break the export. This function returns an empty
  *     string in that path; CloudFront response-headers policy
@@ -29,7 +29,7 @@
  */
 import { headers } from "next/headers";
 
-const APEX_BUILD = process.env.NEXT_PUBLIC_BUILD_TARGET === "apex";
+const APEX_BUILD = process.env.TBD_BUILD_TARGET === "apex";
 
 export async function readNonce(): Promise<string> {
   if (APEX_BUILD) {
