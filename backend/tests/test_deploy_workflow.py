@@ -18,6 +18,8 @@ multiple times in production:
 """
 from pathlib import Path
 
+import pytest
+
 
 def _find_repo_root(start: Path) -> Path:
     """Walk upward from `start` until a directory containing both
@@ -153,13 +155,13 @@ def _yaml(path: Path) -> dict:
     return doc
 
 
-def test_release_gates_semantic_release_on_the_post_merge_suite():
+def test_release_gates_release_please_on_the_post_merge_suite():
     """The gate must run BEFORE `release`, not between `release` and `deploy`.
 
-    semantic-release cuts an immutable git tag and publishes a GitHub Release.
-    Measured on PR #654 it did so 7m41s before the post-merge suite reported,
-    so gating only the deploy would still leave a published release for a
-    commit whose suite then goes red.
+    release-please cuts an immutable git tag and publishes a GitHub Release.
+    Under semantic-release, measured on PR #654, that happened 7m41s before the
+    post-merge suite reported, so gating only the deploy would still leave a
+    published release for a commit whose suite then goes red.
     """
     jobs = _yaml(RELEASE_WORKFLOW)["jobs"]
     assert "await-tests" in jobs, "release.yml lost its await-tests gate"
@@ -170,6 +172,127 @@ def test_release_gates_semantic_release_on_the_post_merge_suite():
     # The wait needs `actions: read` to list runs; without it the API 403s and
     # the gate fails closed for a reason that looks exactly like a working gate.
     assert (jobs["await-tests"].get("permissions") or {}).get("actions") == "read"
+
+
+def test_release_awaits_the_tests_of_the_commit_it_tags():
+    """INFRA-42. release-please tags the merge commit of the merged release PR,
+    which is not this run's commit when a merge landed on top (or the release
+    commit's own run was dropped from the concurrency group). await-tests only
+    proved THIS commit, so the release job must also await that commit's Test
+    run, BEFORE release-please can tag it. That run also publishes the sha-<7>
+    images `promote` retags.
+    """
+    job = _yaml(RELEASE_WORKFLOW)["jobs"]["release"]
+    steps = job["steps"]
+    wait = _index_of(
+        steps, lambda s: "await-test-run.sh" in str(s.get("run", "")), "await-test-run.sh"
+    )
+    tag = _index_of(
+        steps,
+        lambda s: "googleapis/release-please-action@" in str(s.get("uses", "")),
+        "release-please-action",
+    )
+    assert wait < tag, "the release commit's tests must be awaited before release-please runs"
+    run = str(steps[wait]["run"])
+    for fragment in ("autorelease: pending", "--state merged", "mergeCommit", "set -euo pipefail"):
+        assert fragment in run, (
+            f"the wait must target the merged release PR's merge commit, the one "
+            f"release-please tags, and fail the job; missing {fragment!r}"
+        )
+    assert "|| true" not in run and "|| :" not in run, "a swallowed wait gates nothing"
+    assert '[ "$sha" = "$GITHUB_SHA" ]' in run, (
+        "only this run's own commit (already awaited by await-tests) may be skipped"
+    )
+    perms = job.get("permissions") or {}
+    assert perms.get("actions") == "read", (
+        "listing workflow runs needs `actions: read`; without it the wait 403s"
+    )
+    assert perms.get("pull-requests") == "read", "`gh pr list` needs `pull-requests: read`"
+
+
+def test_deploy_awaits_the_tagged_commits_tests_before_pushing_the_spec():
+    """INFRA-42. A release PR merged between the release job's lookup and
+    release-please's own query is tagged unawaited; the deploy re-checks the
+    tagged commit before DO is touched."""
+    steps = _deploy_steps(RELEASE_WORKFLOW)
+    wait = _index_of(
+        steps, lambda s: "await-test-run.sh" in str(s.get("run", "")), "await-test-run.sh"
+    )
+    deploy = _index_of(
+        steps, lambda s: DEPLOY_ACTION in str(s.get("uses", "")), DEPLOY_ACTION
+    )
+    assert wait < deploy
+    assert "needs.release.outputs.tag_name" in str(steps[wait].get("env", {}).get("TAG"))
+    job = _yaml(RELEASE_WORKFLOW)["jobs"]["deploy"]
+    assert (job.get("permissions") or {}).get("actions") == "read"
+
+
+def test_release_please_runs_with_the_release_app_token():
+    """RELEASE_CONTRACT.md section 2. A release PR opened with GITHUB_TOKEN
+    triggers no CI, so its required checks never report and it cannot merge."""
+    job = _yaml(RELEASE_WORKFLOW)["jobs"]["release"]
+    assert job.get("environment") == "release", "the App secrets live in environment `release`"
+    steps = job["steps"]
+    rp = steps[
+        _index_of(
+            steps,
+            lambda s: "googleapis/release-please-action@" in str(s.get("uses", "")),
+            "release-please-action",
+        )
+    ]
+    assert rp["with"]["token"] == "${{ steps.app.outputs.token }}"
+    app = next(s for s in steps if s.get("id") == "app")
+    assert "actions/create-github-app-token@" in app["uses"]
+    assert app["with"].get("permission-workflows") == "write", (
+        "without workflows: write the tag is refused when a later main commit "
+        "changed a workflow file (INFRA-78)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("job", "workflow"),
+    [("promote", "promote-release"), ("release-smoke", "smoke")],
+)
+def test_ghcr_promote_and_smoke_run_once_per_release(job, workflow):
+    """INFRA-42. The GHCR side of a release: retag the release commit's images
+    (never rebuild) and boot them, only when release-please cut a release."""
+    jobs = _yaml(RELEASE_WORKFLOW)["jobs"]
+    assert jobs[job]["uses"] == (
+        f"fjcloudaiconsulting/.github/.github/workflows/{workflow}.yml@v1"
+    )
+    assert _normalise_expr(jobs[job].get("if")) == (
+        "needs.release.outputs.release_created == 'true'"
+    )
+    assert jobs[job]["with"]["version"] == "${{ needs.release.outputs.version }}"
+
+
+def test_do_deploy_does_not_wait_on_the_ghcr_side():
+    """DO builds from source, so a GHCR promote or smoke failure must not hold
+    production back (INFRA-42 design); the smoke must boot promoted images."""
+    jobs = _yaml(RELEASE_WORKFLOW)["jobs"]
+    assert jobs["deploy"]["needs"] == "release"
+    assert "promote" in jobs["release-smoke"]["needs"]
+
+
+def test_release_runs_are_serialised_and_never_cancelled():
+    """TBD-391 / INFRA-42. One Release run at a time, so two DO spec pushes
+    never interleave, and never `cancel-in-progress`: a run cancelled after
+    release-please tagged, or mid-deploy, leaves a release DO never got or a
+    half-rolled app. (Superseded PENDING runs are still dropped by GitHub;
+    the next run's merged-release-PR await covers them.)"""
+    concurrency = _yaml(RELEASE_WORKFLOW)["concurrency"]
+    assert concurrency["group"] == "release-deploy"
+    assert concurrency["cancel-in-progress"] is False
+
+
+def test_version_txt_matches_the_release_please_manifest():
+    """build-image bakes version.txt; promote checks the label against the
+    tag release-please derives from the manifest. Out of step, every release
+    fails promote."""
+    import json
+
+    manifest = json.loads((REPO_ROOT / ".release-please-manifest.json").read_text())
+    assert manifest == {".": (REPO_ROOT / "version.txt").read_text().strip()}
 
 
 def test_apex_gates_its_deploy_but_never_the_manual_recovery():
@@ -307,11 +430,10 @@ def test_the_break_glass_override_is_opt_in_and_defaults_to_false():
 # and the removal must not be "fixed" by loosening the deploy condition or by
 # reintroducing the same question as in-workflow change detection.
 #
-# Why the filter went: `.releaserc.json` answers "should this merge ship?" by
-# commit INTENT, and since 1f246cbe its suppressions actually suppress (see
-# test_release_rules_ordering.py). The paths filter answered the same question
-# by a wrong proxy -- file paths -- and was a second, unfenced gate. Measured
-# over the last ~100 merges it changed zero release outcomes.
+# Why the filter went (semantic-release era): commit intent answered "should
+# this merge ship?" and the paths filter answered it again by a wrong proxy,
+# file paths. Since INFRA-42 the answer is the owner merging the release-please
+# PR, and every push must reach release-please.
 # ---------------------------------------------------------------------------
 
 
@@ -351,8 +473,8 @@ def test_release_workflow_has_no_trigger_level_paths_filter():
     proxy for the real question, and it is the WRONG proxy: it cannot tell a
     `chore(frontend):` apart from a `feat(frontend):`, and it silently
     misattributes a suppressed merge's commits to whatever merge next happens
-    to touch an allowlisted path. `.releaserc.json` answers the real question
-    by commit type/scope and is fenced by test_release_rules_ordering.py.
+    to touch an allowlisted path. Since INFRA-42 the real question is answered
+    by the owner merging the release-please PR.
 
     ⚠ `paths-ignore` is checked too: it is the same gate spelled inversely and
     would otherwise walk straight past a fence that only looked for `paths`.
@@ -363,12 +485,9 @@ def test_release_workflow_has_no_trigger_level_paths_filter():
     assert not offenders, (
         f"release.yml's `on.push` reintroduced {offenders}. Do not suppress "
         "releases by file path — a path filter cannot tell shipping intent "
-        "from a chore, and the commits it skips are silently attributed to a "
-        "later merge. Suppress in `.releaserc.json` instead (add a "
-        '`{"type"/"scope": ..., "release": false}` rule AFTER every rule that '
-        "grants a real release type -- see test_release_rules_ordering.py), "
-        "and let the `new_release_published` condition on `deploy` gate the "
-        "ship. TBD-424 defect 2."
+        "from a chore, and a skipped push can leave a merged release PR "
+        "untagged. What ships is decided by merging the release-please PR, "
+        "through the `release_created` condition on `deploy`. TBD-424 defect 2."
     )
 
 
@@ -383,23 +502,25 @@ def test_release_workflow_push_trigger_is_only_branch_scoped():
     assert set(push) == {"branches"}, (
         f"release.yml's `on.push` keys are {sorted(push)}; the only permitted "
         "trigger-level narrowing is `branches`. Every push to main must start "
-        "a Release run; what ships is decided by .releaserc.json and by the "
-        "`new_release_published` condition on `deploy`. TBD-424."
+        "a Release run; what ships is decided by merging the release-please PR, "
+        "through the `release_created` condition on `deploy`. TBD-424."
     )
 
 
-def test_release_deploy_still_gates_solely_on_new_release_published():
+def test_release_deploy_still_gates_solely_on_release_created():
     """F3 (TBD-424). The dangerous wrong fix.
 
     Removing the paths filter AND loosening this condition turns release.yml
     into deploy-on-every-merge -- a production push for every docs typo. The
-    filter's removal is only safe BECAUSE this condition is the gate.
+    filter's removal is only safe BECAUSE this condition is the gate. It is
+    also the "exactly once per release" rule: release-please reports
+    `release_created` only in the run that creates the tag.
     """
     deploy = _yaml(RELEASE_WORKFLOW)["jobs"]["deploy"]
     condition = _normalise_expr(deploy.get("if"))
-    assert condition == "needs.release.outputs.new_release_published == 'true'", (
+    assert condition == "needs.release.outputs.release_created == 'true'", (
         f"release.yml's `deploy` job guard is now {condition!r}. It must stay "
-        "exactly `needs.release.outputs.new_release_published == 'true'`: with "
+        "exactly `needs.release.outputs.release_created == 'true'`: with "
         "the trigger-level paths filter gone (TBD-424) this condition is the "
         "ONLY thing standing between a docs-only merge and a production "
         "deploy. Widening it -- or adding an `||` arm -- ships everything."
@@ -412,9 +533,8 @@ def test_release_workflow_does_not_do_its_own_change_detection():
     `test.yml`'s detector (scripts/ci/detect-changed-areas.sh) is
     VERDICT-NEUTRAL: it fails TRUE on any uncertainty and structurally cannot
     turn a red suite green. The same detector on the release side would be
-    VERDICT-CHANGING -- it could veto a release semantic-release decided to
-    cut, a silent UNDER-release, a failure mode this pipeline has never had.
-    semantic-release's own commit analysis IS the change detection here.
+    VERDICT-CHANGING -- it could skip the run that tags a merged release PR,
+    a silent UNDER-release, a failure mode this pipeline has never had.
     """
     # ⚠ Scans the PARSED steps, not the raw file: the `on:` block deliberately
     # NAMES detect-changed-areas.sh in the comment explaining why it must not
@@ -429,8 +549,7 @@ def test_release_workflow_does_not_do_its_own_change_detection():
         f"release.yml invokes detect-changed-areas.sh in {offenders}. "
         "In-workflow change detection was deliberately rejected for the "
         "release path (TBD-424): on test.yml it can only ever ADD work, here "
-        "it could silently SUPPRESS a release semantic-release decided to "
-        "cut. Let .releaserc.json decide."
+        "it could silently SUPPRESS the run that tags a merged release PR."
     )
 
 
@@ -482,13 +601,13 @@ def test_release_notifies_when_a_published_release_did_not_deploy():
     condition = _normalise_expr(job.get("if"))
     for fragment in (
         "always()",
-        "needs.release.outputs.new_release_published == 'true'",
+        "needs.release.outputs.release_created == 'true'",
         "needs.deploy.result != 'success'",
     ):
         assert fragment in condition, (
             f"`{NOTIFIER_JOB}`'s `if:` is {condition!r} and is missing "
             f"{fragment!r}. Without `always()` the job is skipped along with "
-            "its failed upstream; without the `new_release_published` arm it "
+            "its failed upstream; without the `release_created` arm it "
             "fires on every no-op release run; and `failure()` alone misses a "
             "SKIPPED or CANCELLED deploy, which is most of the failure space."
         )
@@ -504,6 +623,68 @@ def test_release_notifies_when_a_published_release_did_not_deploy():
         "workflow-level block (which grants `issues: read`), so omitting it "
         "makes the notifier 403 exactly when it is needed."
     )
+
+
+def _notifier_fires(condition: str, release: str, created: str, deploy: str) -> bool:
+    """Evaluate the notifier's `if:` for one outcome. Only the operators and
+    contexts it uses are supported; anything else fails the eval loudly."""
+    expr = (
+        condition.replace("always()", "True")
+        .replace("&&", " and ")
+        .replace("||", " or ")
+        .replace("needs.release.outputs.release_created", repr(created))
+        .replace("needs.release.result", repr(release))
+        .replace("needs.deploy.result", repr(deploy))
+    )
+    return eval(expr, {"__builtins__": {}}, {"True": True})
+
+
+@pytest.mark.parametrize(
+    ("release", "created", "deploy", "fires"),
+    [
+        ("success", "true", "failure", True),  # released, deploy failed
+        ("success", "true", "cancelled", True),
+        ("success", "true", "success", False),  # released and deployed
+        ("success", "", "skipped", False),  # ordinary merge
+        ("skipped", "", "skipped", False),  # await-tests red: its own red run
+        ("failure", "", "skipped", True),  # INFRA-42: died after publishing?
+        ("cancelled", "", "skipped", True),
+    ],
+)
+def test_the_notifier_fires_for_every_undeployed_outcome(release, created, deploy, fires):
+    """INFRA-42. release-please can publish the GitHub Release and then fail
+    (PR comment, relabel): no `release_created`, `deploy` skips, and a re-run
+    throws DuplicateReleaseError. That version would never reach DO, silently,
+    so a failed release job must raise the alarm too, without firing on an
+    ordinary merge."""
+    condition = _normalise_expr(_yaml(RELEASE_WORKFLOW)["jobs"][NOTIFIER_JOB].get("if"))
+    assert _notifier_fires(condition, release, created, deploy) is fires, condition
+
+
+def test_the_notifier_names_a_failed_release_job_instead_of_a_manual_deploy(tmp_path):
+    """The alarm must say what happened: with no tag and a failed release job
+    it points at the Releases page, not at a manual deploy.yml run."""
+    import os
+    import subprocess
+
+    log = tmp_path / "gh.log"
+    stub = tmp_path / "gh"
+    stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >> "{log}"\nexit 0\n')
+    stub.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "GH_TOKEN": "x", "GH_REPO": "o/r", "RUN_ID": "1", "SHA": "abc",
+        "REF_NAME": "main", "ACTOR": "a", "DEPLOY_RESULT": "skipped",
+        "RELEASE_TAG": "", "RELEASE_RESULT": "failure",
+    }
+    script = REPO_ROOT / "scripts" / "notify-undeployed-release.sh"
+    done = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    body = log.read_text()
+    assert "issue" in body and "create" in body, body
+    assert "may already have published a GitHub Release" in body
+    assert "manual `deploy.yml` run" not in body
 
 
 def test_the_undeployed_release_notifier_is_wired_into_both_deploy_paths():

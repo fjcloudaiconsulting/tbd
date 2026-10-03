@@ -14,9 +14,9 @@ name: Test Durations
 # passed.
 #
 # Harvesting inside test.yml would also buy nothing. `test.yml` runs with
-# `permissions: contents: read`, there is no `@semantic-release/git` in
-# .releaserc.json, and `release.yml` sets `persist-credentials: false` -- so
-# nothing in this repo has ever written a commit to `main`, and `main` requires
+# `permissions: contents: read`, release-please commits only through its
+# release PR, and checkouts set `persist-credentials: false` -- so nothing in
+# this repo writes a commit to `main` directly, and `main` requires
 # reviews with `enforce_admins: true`. An in-CI harvest would still terminate in
 # a human commit, exactly like this workflow, having added deploy-blocking risk
 # for no saved step.
@@ -98,10 +98,10 @@ jobs:
           --health-retries 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.12.13"
           python-version: "3.12"
@@ -145,7 +145,7 @@ jobs:
           --deselect tests/test_test_durations_freshness.py
 
       - name: Upload this shard's durations
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: durations-shard-${{ matrix.group }}
           path: backend/.test_durations
@@ -162,7 +162,7 @@ jobs:
     needs: harvest
     steps:
       - name: Download every shard's durations
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: durations-shard-*
           path: shards
@@ -218,7 +218,7 @@ jobs:
           PY
 
       - name: Upload the regenerated durations file
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-durations
           path: backend/.test_durations

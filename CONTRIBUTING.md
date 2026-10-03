@@ -55,7 +55,7 @@ flowchart TD
     B -->|frontend/**| D[docker compose exec frontend pnpm test<br/>docker compose exec frontend pnpm exec tsc --noEmit]
     B -->|backend/alembic/versions/**| E[Restart backend so lifespan applies the migration<br/>./tbd restart]
     B -->|nginx/** or .do/**| F[./tbd prod for a local prod-shaped run<br/>Smoke endpoints by hand]
-    B -->|docs only| G[No tests required.<br/>Use chore: or docs: prefix so semantic-release skips deploy.]
+    B -->|docs only| G[No tests required.<br/>Use chore: or docs: prefix so it stays out of the release notes.]
     C --> H[Commit with Conventional Commits prefix]
     D --> H
     E --> H
@@ -64,31 +64,31 @@ flowchart TD
     H --> I[Push branch, open PR<br/>test.yml runs on PR]
     I --> J[Merge to main]
     J --> K{Commit prefix release-eligible?}
-    K -->|feat, fix, perf, revert| L[release.yml ships to production]
-    K -->|chore, docs, refactor, test, style| M[No deploy. Use gh workflow run deploy.yml<br/>if you need to force a redeploy.]
+    K -->|feat, fix, perf, revert| L[Lands in the release PR. Merging that PR ships to production.]
+    K -->|chore, docs, refactor, test, style| M[No release PR entry. Use gh workflow run deploy.yml<br/>if you need to force a redeploy.]
 ```
 
 If you touched migrations, run `docker compose exec backend alembic current` and `docker compose exec backend alembic upgrade head` inside the container to confirm. See [Database migrations](#database-migrations).
 
-## Conventional Commits and the deploy gate
+## Conventional Commits and the release PR
 
-This repo is auto-deployed by `semantic-release` on push to `main`. The commit prefix is the deploy decision, not a stylistic detail.
+This repo uses `release-please`. Merging a `feat:`/`fix:` PR does not deploy; it lands in the open release PR (`chore(main): release X.Y.Z`), and production deploys exactly once, when the owner merges that PR. The commit prefix still decides the version bump and the CHANGELOG section, so it is not a stylistic detail.
 
-| Prefix | Release? | What ships |
+| Prefix | Release? | Effect when the release PR is merged |
 |--------|----------|------------|
 | `feat:` | Yes (minor bump) | App Platform redeploy + smoke tests |
 | `fix:` | Yes (patch bump) | App Platform redeploy + smoke tests |
 | `perf:` | Yes (patch bump) | App Platform redeploy + smoke tests |
 | `revert:` | Yes (patch bump) | App Platform redeploy + smoke tests |
-| `feat!:`, `BREAKING CHANGE:` footer | Yes (major bump) | App Platform redeploy + smoke tests |
+| `feat!:`, `BREAKING CHANGE:` footer | Yes (minor bump below 1.0, `bump-minor-pre-major`; major after) | App Platform redeploy + smoke tests |
 | `chore:`, `docs:`, `refactor:`, `test:`, `style:`, `ci:`, `build:` | No | Nothing. CI runs `test.yml` only. |
 
 Scope is freeform (`feat(admin):`, `fix(frontend):`, `chore(.do):`). Scope does not change release behavior.
 
 Rules in practice:
 
-- If your change should reach production on merge, use `feat:`, `fix:`, or `perf:`.
-- If your change is internal only (refactor, test fix, doc edit, CI tweak, dependency bump), use `chore:` / `docs:` / `refactor:` / `test:`. The merge will not redeploy. This is the right answer most of the time for non-product changes.
+- If your change should reach production with the next release, use `feat:`, `fix:`, or `perf:`.
+- If your change is internal only (refactor, test fix, doc edit, CI tweak, dependency bump), use `chore:` / `docs:` / `refactor:` / `test:`. It will not appear in the release PR. This is the right answer most of the time for non-product changes.
 - Infra-only changes (`chore(.do)`, `chore(infra)`, `chore(nginx)`) sometimes need to ship without a version bump. Use the manual escape hatch: `gh workflow run deploy.yml --ref main`. See `docs/operations/DEPLOYMENT.md` for when this is appropriate.
 
 Full pipeline detail (path filters, gating logic, smoke tests, apex deploy) lives in `docs/operations/DEPLOYMENT.md`. The short version is in [CI on your PR vs CI after merge](#ci-on-your-pr-vs-ci-after-merge) below.
@@ -102,8 +102,8 @@ PR push (any branch):
 
 Merge to `main`:
 
-- `.github/workflows/release.yml` also runs on **every** push to `main`, deliberately with no `paths:` filter (TBD-424) — the filter only ever deferred `semantic-release`'s own commit-intent analysis and then misattributed the result. It runs `semantic-release`. If (and only if) `semantic-release` decides a new release is warranted, the gated `deploy` job pushes `.do/app.yaml` to DO App Platform, then `scripts/smoke-test.sh` asserts the live app serves traffic.
-- `chore:` / `docs:` / `refactor:` commits still trigger `release.yml`, but `semantic-release` no-ops and the deploy job is skipped.
+- `.github/workflows/release.yml` also runs on **every** push to `main`, deliberately with no `paths:` filter (TBD-424) — the filter only ever deferred the release tool's own commit-intent analysis and then misattributed the result. It runs `release-please`: on an ordinary merge it opens or updates the release PR and nothing ships. If (and only if) the merge is the release PR itself, a release is created and the gated jobs retag the GHCR images, smoke them, push `.do/app.yaml` to DO App Platform, then `scripts/smoke-test.sh` asserts the live app serves traffic.
+- Every other merge (including `chore:` / `docs:` / `refactor:`) still triggers `release.yml`, but only updates the release PR; the deploy job is skipped.
 - `.github/workflows/apex-deploy.yml` deploys the apex landing site (`thebetterdecision.com`) to AWS S3 + CloudFront on merges that touch the apex path filter. Independent of the DO release pipeline; landing-only commits never fire the DO redeploy.
 
 If you need to force a redeploy of the current production spec without merging a code change, use the manual workflow:
@@ -544,14 +544,14 @@ Swagger UI at http://localhost/api/docs is the fastest way to poke a single endp
 - **Never push directly to `main`.** Always branch and open a PR.
 - **Branch naming: lead with the Jira issue key** — `TBD-<number>-<slug>`, e.g. `TBD-179-sso-timeout`. The key is what links the branch, its commits and the PR to the issue in Jira. For work with no Jira issue, fall back to `feat/<name>`, `fix/<name>`, `chore/<name>`.
 - **Put the issue key in commit messages too**, e.g. `fix(auth): TBD-179 bound the session-issuance await`. Commit messages are what make CI runs appear as "builds" on the Jira issue; the branch name alone does not.
-- Match the PR title to the commit prefix (`feat:`, `fix:`, ...) and append the key, e.g. `fix(auth): bound the session-issuance await (TBD-179)`. **The repo is squash-merge only**, so the PR title becomes the commit subject and is exactly what semantic-release reads.
+- Match the PR title to the commit prefix (`feat:`, `fix:`, ...) and append the key, e.g. `fix(auth): bound the session-issuance await (TBD-179)`. **The repo is squash-merge only**, so the PR title becomes the commit subject and is exactly what release-please reads.
 - Keep PR descriptions concise. No test plan section required. Note the squash body is the PR description, so it lands in permanent history.
 
 ## Deployment
 
 The full deployment pipeline (release gating, App Platform spec, smoke tests, manual escape hatches, apex pipeline) is in `docs/operations/DEPLOYMENT.md`. The short version contributors need to know:
 
-- Merges to `main` trigger `release.yml`. Whether App Platform redeploys depends on the commit prefix (see [Conventional Commits and the deploy gate](#conventional-commits-and-the-deploy-gate)).
+- Merges to `main` trigger `release.yml`. App Platform redeploys only when the release-please PR is merged (see [Conventional Commits and the release PR](#conventional-commits-and-the-release-pr)).
 - `.do/app.yaml` is the source of truth for App Platform config. Secrets are encrypted `EV[...]` blobs committed in-file; any secret missing from this file is removed from the live app on push.
 - Terraform (`infra/terraform/`) is VCS-driven via HCP Terraform Cloud (workspace `<tfc-org>/<data-workspace>`). PRs get speculative plans; merges create runs that require manual Confirm and Apply. CLI `terraform plan` / `apply` is debug-only.
 - Droplet bootstrap (`infra/ansible/`) handles MySQL, Redis, hardening, and nightly mysqldump.

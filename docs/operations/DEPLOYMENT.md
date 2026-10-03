@@ -24,7 +24,7 @@ flowchart LR
   dev --> tfc1[TFC data workspace]
   dev --> tfc2[TFC apex workspace]
 
-  rel -->|semantic-release published| do[DO App Platform pfv]
+  rel -->|release-please release created| do[DO App Platform pfv]
   do --> appurl[app.thebetterdecision.com]
 
   apex -->|build + S3 sync + CF invalidate| s3[AWS S3]
@@ -124,7 +124,7 @@ drifts too far from the collected suite.
 
 Source: `.github/workflows/release.yml`. Spec: `.do/app.yaml`.
 
-`release.yml` is the **single arbiter** of "should we ship to prod". It runs on every push to `main` whose changed paths intersect a coarse allowlist, and uses **semantic-release** to decide whether the merge warrants a new version. If yes, the gated `deploy` job pushes `.do/app.yaml` to DO App Platform; DO runs the `PRE_DEPLOY` migrate job, then rolls the backend and frontend services; then `smoke-tests` asserts the live app actually serves traffic.
+`release.yml` is the **single arbiter** of "should we ship to prod". It runs on every push to `main` and uses **release-please** (via the Release GitHub App token, environment `release`): an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; production deploys exactly once, when the owner merges that PR. On that merge `release` tags `vX.Y.Z` on the release commit and publishes the GitHub Release (`release_created`). Only then do the gated jobs run: `promote` (shared promote-release workflow retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations}` built by `test.yml` on that commit as `vX.Y.Z`), `release-smoke` (boots those images with `compose.smoke.yaml` and checks `/health` returns the version and revision), `deploy` (pushes `.do/app.yaml` to DO App Platform; DO runs the `PRE_DEPLOY` migrate job, then rolls the backend and frontend services), `smoke-tests` (asserts the live app actually serves traffic) and `notify-undeployed-release`. Before `release` runs, `await-tests` waits for the `Test` workflow on this sha, and `release` additionally waits for the `Test` run of the merged release PR's commit when that is not this run's commit.
 
 ### Trigger
 
@@ -132,17 +132,11 @@ Source: `.github/workflows/release.yml`. Spec: `.do/app.yaml`.
 on:
   push:
     branches: [main]
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - "nginx/**"
-      - ".do/**"
-      - "Dockerfile*"
 ```
 
-This path filter is a **coarse precheck**, not the deploy gate. Pushes that don't touch any allowlisted path skip the workflow entirely (no CI minutes spent). Pushes that do touch one still run, and then semantic-release inside the workflow makes the real ship/no-ship call based on conventional commit types (`feat:`, `fix:`, etc).
+There is **no `paths:` filter** (TBD-424). Every push must reach release-please, or the release PR goes stale and the merged one is never tagged. The ship/no-ship call is the owner merging the release PR; conventional commit types (`feat:`, `fix:`, etc) only decide the version bump and CHANGELOG section.
 
-Why this design: pre-PR #178 the workflow shipped on every allowlisted change, which meant a `chore(frontend): tsconfig` merge would redeploy production for no reason. Semantic-release suppresses `chore:`, `perf:`, `docs:`, `refactor:`, etc. and only ships when a `feat:` or `fix:` (or higher) gets merged.
+Why this design: merging a `feat:`/`fix:` PR no longer deploys by itself, so production ships once per release, when the owner decides, instead of on every merge.
 
 ### Job graph
 
@@ -150,18 +144,19 @@ Why this design: pre-PR #178 the workflow shipped on every allowlisted change, w
 sequenceDiagram
   participant Owner
   participant GH as GitHub Actions
-  participant SR as semantic-release
+  participant SR as release-please
   participant DO as DO App Platform
   participant MIG as PRE_DEPLOY migrate job
   participant BE as backend service
   participant FE as frontend service
   participant SMK as smoke-tests job
 
-  Owner->>GH: merge PR to main (path-filtered)
-  GH->>SR: run release job
+  Owner->>GH: merge PR to main
+  GH->>SR: run release job (after await-tests)
   SR->>SR: analyze conventional commits since last tag
-  alt new_release_published == true
-    SR->>GH: tag v.X.Y.Z, GitHub Release
+  alt release_created == true (release PR merged)
+    SR->>GH: tag vX.Y.Z, GitHub Release
+    GH->>GH: promote + release-smoke (GHCR images)
     GH->>DO: deploy job: app_action/deploy@v2 with .do/app.yaml
     DO->>MIG: kind: PRE_DEPLOY, run python /app/scripts/migrate.py
     MIG-->>DO: rc 0, alembic head reached
@@ -175,8 +170,8 @@ sequenceDiagram
     alt smoke fails
       SMK->>GH: open or comment on a GH issue (notify-smoke-failure.sh)
     end
-  else no_release
-    SR-->>GH: skip deploy and smoke-tests
+  else ordinary merge
+    SR-->>GH: open or update release PR, skip deploy and smoke-tests
   end
 ```
 
@@ -185,14 +180,14 @@ sequenceDiagram
 ```yaml
 deploy:
   needs: release
-  if: needs.release.outputs.new_release_published == 'true'
+  if: needs.release.outputs.release_created == 'true'
 ```
 
-This is the load-bearing line. Without `new_release_published`, `deploy` does not run, `smoke-tests` does not run, nothing ships. The output is set by `cycjimmy/semantic-release-action@v6` based on whether the conventional-commit analysis produced a new version.
+This is the load-bearing line (see `.github/workflows/release.yml` for the exact expression). Without `release_created`, `deploy` does not run, `smoke-tests` does not run, nothing ships. The output is set by release-please only when the merge is the release PR.
 
 ### Why a gated `deploy` job and not `on: release: { types: [published] }`
 
-GitHub does not cascade workflow runs when a release is created by `GITHUB_TOKEN`, which is what semantic-release uses. A separate workflow listening on `release.published` would never fire. So `deploy` lives in the same workflow file and gates on the upstream job's output.
+One workflow keeps the "exactly one deploy per release" rule in a single `if:`, fenced by `backend/tests/test_deploy_workflow.py`. `deploy` therefore lives in the same workflow file and gates on the upstream job's output.
 
 ### Deploy step internals
 
@@ -437,7 +432,7 @@ gh workflow run deploy.yml --ref main
 ```
 
 When to use it:
-- An infra-only commit shipped (`chore(.do): ...`, `chore(nginx): ...`, `chore(Dockerfile): ...`). semantic-release will not bump for `chore:`, so `release.yml` will not deploy. Run `deploy.yml` to push the new spec.
+- An infra-only commit shipped (`chore(.do): ...`, `chore(nginx): ...`, `chore(Dockerfile): ...`). A `chore:` does not enter the release PR, so `release.yml` will not deploy it. Run `deploy.yml` to push the new spec.
 - The most recent `release.yml` run failed at the deploy step and the cause is fixed, but no new release will be cut from a follow-up commit.
 - Forcing a redeploy of the current `main` (e.g. to refresh credentials surfaced via the spec).
 
@@ -758,14 +753,12 @@ For env var detail (`DATABASE_URL`, `APP_ENV`, etc.) on the migrate job, see [`E
 `main` starts a Release run, whatever it touched — a README-only merge included.
 What a run then *does* is decided further down the pipe, in two steps:
 
-1. **`.releaserc.json` decides whether a version is cut**, from the merged
-   commit's conventional-commit type and scope. `feat` / `fix` / `revert` and
-   anything breaking cut one; `chore`, `docs`, `style`, `refactor`, `test`,
-   `build`, `ci`, `perf` and the suppressed scopes (`ci`, `deps-dev`, `test`,
-   `tests`, `dev`, `infra`) do not. ⚠ Those rules are ORDER-DEPENDENT — see
-   `backend/tests/test_release_rules_ordering.py`.
-2. **`new_release_published` decides whether it deploys.** No version cut means
-   the `deploy` job is skipped and `.do/app.yaml` is never pushed.
+1. **release-please decides what goes into the release PR**, from the merged
+   commit's conventional-commit type (see `release-please-config.json`). It
+   only opens or updates the PR; it never tags on an ordinary merge.
+2. **`release_created` decides whether it deploys.** It is set only on the
+   merge of the release PR. Any other merge means the `deploy` job is skipped
+   and `.do/app.yaml` is never pushed.
 
 So the common outcome for a non-shipping merge is now a Release run that
 concludes in about a minute having done nothing, rather than no run at all.
@@ -778,9 +771,9 @@ touched an allowlisted path.
 flowchart TD
   start[Commit lands on main with type <type> touching path P]
   start --> rel[release.yml ALWAYS fires: no paths filter]
-  rel --> semrel{Does .releaserc.json cut a version?}
-  semrel -- "feat / fix / revert / breaking" --> deploy[deploy job pushes .do/app.yaml, then smoke tests]
-  semrel -- "chore / docs / ci / perf / suppressed scope" --> noship[Release run completes. No tag, no deploy.]
+  rel --> semrel{Is this the merge of the release PR?}
+  semrel -- "yes: release_created" --> deploy[promote, release-smoke, deploy pushes .do/app.yaml, then smoke tests]
+  semrel -- "no: ordinary merge" --> noship[Release PR opened or updated. No tag, no deploy.]
 
   start --> apexq{P in the apex allowlist?<br/>app/page.tsx, app/privacy/**,<br/>app/terms/**, app/docs/**,<br/>components/landing/**, lib/brand.ts,<br/>globals.css, build-apex.sh, ...}
   apexq -- yes --> apex[apex-deploy.yml also fires: S3 sync + CloudFront invalidation]
@@ -796,19 +789,19 @@ Concrete cases:
 
 | You changed | Fires |
 |---|---|
-| `backend/app/routers/transactions.py` (feat) | `release.yml` -> semantic-release publishes -> deploy -> migrate (no-op if no new revs) -> roll backend |
-| `frontend/components/dashboard/Foo.tsx` (feat) | `release.yml` -> publishes -> deploy -> roll frontend |
-| `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. `release.yml` **also runs now** and publishes a version, which redeploys DO. |
+| `backend/app/routers/transactions.py` (feat) | `release.yml` updates the release PR; on its merge: release -> deploy -> migrate (no-op if no new revs) -> roll backend |
+| `frontend/components/dashboard/Foo.tsx` (feat) | `release.yml` updates the release PR; on its merge: deploy -> roll frontend |
+| `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. `release.yml` **also runs** and updates the release PR; DO redeploys when that PR is merged. |
 | `frontend/lib/brand.ts` (feat) | Both `release.yml` AND `apex-deploy.yml`. |
-| `backend/alembic/versions/abc_new_migration.py` | `release.yml` -> deploy -> PRE_DEPLOY migrate applies it -> roll backend |
-| `infra/terraform/main.tf` | TFC `<data-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge. `release.yml` runs and no-ops (`chore`/`ci` type, or `infra` scope). |
-| `.do/app.yaml` (chore) | `release.yml` fires but semantic-release does not bump. Operator must run `gh workflow run deploy.yml --ref main`. |
-| `.github/workflows/test.yml` | `test.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and no-ops on the `ci` type. |
-| `README.md` only | `release.yml` **runs** and no-ops on the `docs` type. Nothing is tagged and nothing deploys. |
+| `backend/alembic/versions/abc_new_migration.py` | release PR merge -> deploy -> PRE_DEPLOY migrate applies it -> roll backend |
+| `infra/terraform/main.tf` | TFC `<data-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge. `release.yml` runs and only updates the release PR. |
+| `.do/app.yaml` (chore) | `release.yml` fires but the change does not enter the release PR. Operator must run `gh workflow run deploy.yml --ref main`. |
+| `.github/workflows/test.yml` | `test.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and only updates the release PR. |
+| `README.md` only | `release.yml` **runs** and only updates the release PR. Nothing is tagged and nothing deploys. |
 
 ⚠ The old "mutually exclusive apex / DO path-filter split" is **gone on the DO
 side**. A landing-only commit no longer skips `release.yml`; if its commit type
-warrants a version, it cuts one and redeploys DO. That is the correct
+warrants a version, it enters the release PR and redeploys DO when that is merged. That is the correct
 behaviour — the version line should reflect what shipped, and a landing change
 that is worth a `feat` is worth a version — but it is a behaviour change from
 what this section used to describe. `apex-deploy.yml` keeps its own `paths:`
@@ -826,7 +819,7 @@ Forward-only philosophy across the board. "Rollback" means "publish a new state 
 
 Option A, revert the merge commit:
 1. `git revert -m 1 <merge-sha>` on a branch, push, PR, merge.
-2. semantic-release sees the revert as a fix or feat (conventional-commit style matters) and publishes a new release.
+2. release-please lists the revert in the release PR (conventional-commit style matters). Merge the release PR to publish a new release.
 3. `deploy` ships, PRE_DEPLOY runs (no-op if the revert did not touch migrations), backend / frontend roll.
 4. Smoke tests confirm.
 
@@ -861,7 +854,7 @@ For destructive teardown (rare), queue a `Destroy plan` from the TFC workspace U
 Forward-only. **Never `alembic downgrade` in production.** The path to a safe rollback is:
 
 1. Open a PR with a new alembic revision that performs the data and schema fix-up. Conventional title `fix(db): ...`.
-2. Merge. `release.yml` -> semantic-release publishes -> deploy -> PRE_DEPLOY migrate applies the fix-up revision. Backend rolls on top.
+2. Merge, then merge the release PR. `release.yml` -> release -> deploy -> PRE_DEPLOY migrate applies the fix-up revision. Backend rolls on top.
 3. Verify via the new revision's `migrate.step.end` event in the PRE_DEPLOY job logs.
 
 If a migration **partially applies** and the job exits non-zero, the PRE_DEPLOY contract halts the rollout. The new backend revision never starts. Diagnose from the streamed alembic output + the `migrate.failed` event (`reason`, `step_index`, `revision`). Fix-up paths:
@@ -893,7 +886,10 @@ Triage shortcuts:
 
 | Symptom | First look at |
 |---|---|
-| Merge to `main` happened, prod didn't update | `release.yml` -> did `release` job set `new_release_published=true`? Conventional commit type may be `chore` |
+| Merge to `main` happened, prod didn't update | `release.yml` -> did `release` set `release_created=true`? Only the merge of the release PR deploys; an ordinary merge just updates it |
+| `release` job failed after the release PR merged | The Test run of the release PR's commit is red. Re-run that commit's failed Test jobs (not a `workflow_dispatch` run), then re-run the failed Release run (or wait for the next push to `main`) |
+| Release created but `deploy` failed | Re-running the whole Release run will not redeploy (the release already exists). Use `gh workflow run deploy.yml --ref main` |
+| Drift probe reports AHEAD after a release | DO builds `main` HEAD, so a merge that landed between the release and the deploy ships with it; AHEAD clears at the next release |
 | Deploy went green, app still broken | Smoke-test job output, then DO Runtime Logs on the failing component |
 | Migrate job hung or failed | DO Activity -> latest deploy -> migrate job. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
 | Apex site shows stale content | Confirm `apex-deploy.yml` ran for the SHA; check CloudFront invalidation completed; `curl https://thebetterdecision.com/_meta.json` (object is no-cache). If the apex hostname is itself unreachable, fall back to the TFC output `cloudfront_distribution_domain` to probe the distribution directly. |

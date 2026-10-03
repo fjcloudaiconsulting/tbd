@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     app_name: str = "The Better Decision"
     app_env: str = "development"
     log_level: str = "INFO"
+    # Baked at image build time (backend/Dockerfile ARGs, env TBD_APP_VERSION /
+    # TBD_APP_REVISION); /health reports them. "dev" outside a published image.
+    tbd_app_version: str = "dev"
+    tbd_app_revision: str = "dev"
 
     # Database
     database_url: str = "mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2"

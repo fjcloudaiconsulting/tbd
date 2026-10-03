@@ -571,7 +571,13 @@ app.include_router(webhooks.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    # Liveness only. version/revision are the release contract's (section 5):
+    # the post-release smoke test asserts them on the published image.
+    return {
+        "status": "ok",
+        "version": app_settings.tbd_app_version,
+        "revision": app_settings.tbd_app_revision,
+    }
 
 
 # ── Readiness probes (TBD-413) ──────────────────────────────────────────────

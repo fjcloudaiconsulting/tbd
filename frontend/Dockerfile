@@ -31,6 +31,11 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 
+# The only baked value (RELEASE_CONTRACT.md section 3): build-image passes it,
+# lib/runtime-config.ts reads it. After the COPYs so they stay cached. A plain build gets "dev".
+ARG APP_VERSION=dev
+ENV TBD_APP_VERSION=$APP_VERSION
+
 USER nextjs
 
 EXPOSE 3000

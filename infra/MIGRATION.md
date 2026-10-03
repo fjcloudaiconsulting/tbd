@@ -1226,16 +1226,13 @@ roughly seven minutes of the 24-minute outage on 2026-08-19.
    merge, any unrelated merge to `main` hits the same guard and is refused.
    Land it before anything else.
 
-   ⚠⚠ **This PR will NOT deploy itself, and nothing will tell you.** Titled the
-   way every infra change in this repo is titled — `fix(infra):`,
-   `chore(infra):`, even `feat(infra):` — it publishes **no release**:
-   `.releaserc.json`'s `{"scope": "infra", "release": false}` is the last rule
-   and a suppression that comes last wins (TBD-424). `release.yml:147` gates
-   `deploy` on `new_release_published == 'true'`, so the deploy is skipped —
-   and `notify-undeployed-release` is gated on the **same** output
-   (`release.yml:251`), so the alarm cannot fire either. Measured 2026-08-28:
-   the last release is `v0.259.3` (2026-08-27) and the five infra merges since
-   it all show a green `Release` run that published and deployed nothing.
+   ⚠⚠ **This PR will NOT deploy itself, and nothing will tell you.** Merging
+   it only updates the release-please PR; `release.yml` gates `deploy` on
+   `release_created`, which is set only when the release PR itself is merged,
+   so the deploy is skipped — and `notify-undeployed-release` is gated on the
+   **same** output, so the alarm cannot fire either. (Historical, under
+   semantic-release: the last release was `v0.259.3` (2026-08-27) and the five
+   infra merges since it published and deployed nothing.)
    Step 6 therefore has to deploy explicitly.
 
 6. **Deploy explicitly, then verify.** Merging step 5 does not deploy (see the
