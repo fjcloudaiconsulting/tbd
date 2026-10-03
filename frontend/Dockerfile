@@ -3,15 +3,17 @@ FROM node:22-slim AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm install
+# pnpm version comes from packageManager in package.json.
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
 
 COPY . .
 
 # No build args: config is runtime-only (TBD_* env, see lib/runtime-config.ts), so one
 # image serves every environment. Canonical list: docs/operations/ENVIRONMENT.md.
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+RUN pnpm build
 
 # --- Runtime stage ---
 FROM node:22-slim AS runner

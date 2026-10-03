@@ -19,7 +19,7 @@ describe("runtime-only frontend config", () => {
   it("no NEXT_PUBLIC_* in code, Dockerfiles, compose, CI or the DO spec", () => {
     const files = execFileSync("git", ["ls-files", ...SCOPE], { cwd: repoRoot, encoding: "utf8" })
       .split("\n")
-      .filter((f) => f && f !== SELF && !/\.(png|ico|jpe?g|woff2?|svg|lock)$|package-lock\.json$/.test(f));
+      .filter((f) => f && f !== SELF && !/\.(png|ico|jpe?g|woff2?|svg|lock)$|pnpm-lock\.yaml$/.test(f));
     expect(files.length).toBeGreaterThan(50);
     const offenders = files.filter((f) => readFileSync(path.join(repoRoot, f), "utf8").includes("NEXT_PUBLIC_"));
     expect(offenders).toEqual([]);

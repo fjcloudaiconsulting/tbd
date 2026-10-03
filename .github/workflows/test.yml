@@ -772,22 +772,36 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
+
+      # pnpm version comes from packageManager in frontend/package.json.
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Locate pnpm store
+        id: pnpm-store
+        working-directory: frontend
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # INFRA-54: coverage is main-only, like the backend (INFRA-53). PRs run
       # `test:nocov` (same act-guard reporter and judge, no --coverage); nothing
       # reads PR coverage (no threshold). The badge step below is main-only and
-      # greps the coverage summary, so main must keep running `npm test`.
+      # greps the coverage summary, so main must keep running `pnpm test`.
       - name: Run frontend tests
         working-directory: frontend
         env:
           TEST_SCRIPT: ${{ github.event_name == 'pull_request' && 'test:nocov' || 'test' }}
-        run: npm run "$TEST_SCRIPT" | tee /tmp/fe-test.log; exit ${PIPESTATUS[0]}
+        run: pnpm run "$TEST_SCRIPT" | tee /tmp/fe-test.log; exit ${PIPESTATUS[0]}
 
       # TBD-500: as above, number only, `main` pushes only, fails soft.
       # ⚠ `exit ${PIPESTATUS[0]}` on the step above is load-bearing: piping into
@@ -814,12 +828,26 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
+
+      # pnpm version comes from packageManager in frontend/package.json.
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Locate pnpm store
+        id: pnpm-store
+        working-directory: frontend
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Check design tokens
         working-directory: frontend
@@ -827,17 +855,17 @@ jobs:
 
       - name: Run frontend lint
         working-directory: frontend
-        run: npm run lint -- --quiet
+        run: pnpm lint --quiet
 
       # `next build` type-checks only what it bundles, so a type error in a
       # test file merged green before this (TBD-516: #761 + #762, fixed #763).
       - name: Type-check frontend
         working-directory: frontend
-        run: npx tsc --noEmit
+        run: pnpm exec tsc --noEmit
 
       - name: Run frontend production build
         working-directory: frontend
-        run: npm run build
+        run: pnpm build
 
       - name: Run apex static export build
         working-directory: frontend
@@ -846,7 +874,7 @@ jobs:
           TBD_SITE_URL: https://thebetterdecision.com
           TBD_APP_URL: https://app.thebetterdecision.com
         run: |
-          npm run build:apex
+          pnpm build:apex
           # Belt-and-suspenders sanity: the build script's own trap should
           # have already cleared out-apex/ failures, but verify the
           # entry points landed before signaling green to the PR.

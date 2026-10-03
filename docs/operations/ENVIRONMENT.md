@@ -201,7 +201,7 @@ deploy contract.
 |---|---|---|---|
 | `PFV_RUNTIME=app_platform` | backend | `get_client_ip` uses `do-connecting-ip` unconditionally so `audit_events.ip_address` records the real user IP, not the DO ingress peer. | PR #233, `project_audit_log_client_ip_bug.md` |
 | `PFV_MIGRATE_OK_OFF_MAIN=1` | backend (lifespan + `./tbd migrate`) | Escape hatch for the branch guard that refuses to run migrations from a non-`main` checkout. Off-by-default. | `tbd` CLI, `backend/app/main.py` |
-| `PFV_DEPDRIFT_SKIP=1` | `./tbd` CLI | Skips the host-vs-container `package-lock.json` SHA check on `./tbd start`. | `tbd` CLI line 48, PR #249 |
+| `PFV_DEPDRIFT_SKIP=1` | `./tbd` CLI | Skips the host-vs-container `pnpm-lock.yaml` SHA check on `./tbd start`. | `tbd` CLI line 48, PR #249 |
 | `PFV_DEPDRIFT_HOST_HASH`, `PFV_DEPDRIFT_CONTAINER_HASH` | `./tbd` CLI (tests only) | Test seam for the drift guard. Not for human use. | `tbd` CLI |
 | `TBD_GOOGLE_SSO_ENABLED=true` | frontend (runtime) | Shows the "Sign in with Google" button on `/login`, `/register`, and step-up flows. Hidden otherwise. | PR #229 |
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | backend | SQLAlchemy engine pool sizing. Defaults safe for single-replica; override when scaling HPA so `replicas * (pool_size + max_overflow)` stays under the managed-DB connection cap. | PR #251 (K8S-3) |

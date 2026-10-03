@@ -22,7 +22,7 @@ import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
 // the client directly with synthetic initial props instead; the wiring
 // itself is exercised by the production build's `server-only` import
 // boundary on `lib/auth-server.ts` (a client-side leak would fail
-// `npm run build`).
+// `pnpm build`).
 
 const push = vi.hoisted(() => vi.fn());
 

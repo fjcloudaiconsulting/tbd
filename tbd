@@ -29,13 +29,13 @@ Commands:
 EOF
 }
 
-# Warn (do not block) when the host's frontend/package-lock.json hash
+# Warn (do not block) when the host's frontend/pnpm-lock.yaml hash
 # differs from the lockfile baked into the running frontend container.
 # Drift here is the symptom of:
-#   - `npm install` editing the lockfile on the host without a rebuild,
+#   - `pnpm install` editing the lockfile on the host without a rebuild,
 #   - a teammate's branch landing new deps that haven't been installed
 #     into the running container,
-#   - the frontend image predating a `package-lock.json` change.
+#   - the frontend image predating a `pnpm-lock.yaml` change.
 #
 # Skips cleanly when docker / the frontend container / sha256sum is not
 # available so this stays a fast, non-blocking, dev-loop nicety.
@@ -47,7 +47,7 @@ EOF
 check_frontend_dep_drift() {
   [[ "${PFV_DEPDRIFT_SKIP:-}" == "1" ]] && return 0
 
-  local host_lock="frontend/package-lock.json"
+  local host_lock="frontend/pnpm-lock.yaml"
   [[ -f "$host_lock" ]] || return 0
 
   local host_hash
@@ -72,19 +72,19 @@ check_frontend_dep_drift() {
     local fe_id
     fe_id="$(docker compose ps -q frontend 2>/dev/null || true)"
     [[ -n "$fe_id" ]] || return 0
-    container_hash="$(docker compose exec -T frontend sha256sum /app/package-lock.json 2>/dev/null | awk '{print $1}')"
+    container_hash="$(docker compose exec -T frontend sha256sum /app/pnpm-lock.yaml 2>/dev/null | awk '{print $1}')"
     [[ -n "$container_hash" ]] || return 0
   fi
 
   if [[ "$host_hash" != "$container_hash" ]]; then
     cat >&2 <<EOF
-WARNING: host frontend/package-lock.json differs from the frontend
+WARNING: host frontend/pnpm-lock.yaml differs from the frontend
 container's installed lockfile. Frontend tests, type-check, and build
 may behave inconsistently until the container is rebuilt.
 
 Fix with either:
   ./tbd rebuild
-  docker compose exec frontend npm ci
+  docker compose exec frontend pnpm install --frozen-lockfile
 
 (Set PFV_DEPDRIFT_SKIP=1 to silence this check.)
 EOF

@@ -62,7 +62,7 @@ Two jobs run in parallel:
 | Job | Steps | Failure means |
 |---|---|---|
 | **Backend Checks** | Python 3.12, `uv sync --locked` (uv 0.12.13), `pytest`, then `python -m compileall backend/app` | Pytest failed, or a syntax error slipped in that pytest didn't reach |
-| **Frontend Checks** | Node 22, `npm ci`, `scripts/check-design-tokens.sh`, `npm run lint -- --quiet`, `npm test`, `npm run build` | One of: design-token violation, lint error, test failure, production build failure |
+| **Frontend Checks** | Node 22, `pnpm install --frozen-lockfile`, `scripts/check-design-tokens.sh`, `pnpm lint --quiet`, `pnpm test`, `pnpm build` | One of: design-token violation, lint error, test failure, production build failure |
 
 Both must pass for merge (branch protection rule).
 
@@ -75,18 +75,18 @@ flowchart LR
   parallel --> fe[Frontend Checks]
   be --> bep[pytest]
   be --> bec[compileall app/]
-  fe --> fei[npm ci]
+  fe --> fei[pnpm install --frozen-lockfile]
   fe --> fed[check-design-tokens.sh]
-  fe --> fel[npm run lint --quiet]
-  fe --> fet[npm test]
-  fe --> feb[npm run build]
+  fe --> fel[pnpm lint --quiet]
+  fe --> fet[pnpm test]
+  fe --> feb[pnpm build]
   bep & bec & fed & fel & fet & feb --> merge[Both jobs green = mergeable]
 ```
 
 How to read failures:
 - **Design tokens**: `frontend/scripts/check-design-tokens.sh` scans for hard-coded colors / spacings that should use brand tokens. Output names the file and line.
-- **Lint**: `npm run lint -- --quiet` shows only errors (warnings are tolerated; treat warnings shown in logs as informational).
-- **Frontend build**: a build failure here means it will also fail in production. Test locally with `docker compose exec frontend npm run build`.
+- **Lint**: `pnpm lint --quiet` shows only errors (warnings are tolerated; treat warnings shown in logs as informational).
+- **Frontend build**: a build failure here means it will also fail in production. Test locally with `docker compose exec frontend pnpm build`.
 - **Pytest**: known-flaky `tests/app/transactions-page.test.tsx` does not run here (that's a Jest test). For backend flake see `~/.claude/projects/-Users-flamarion-src-tbd/memory/` references; otherwise the failure is real.
 
 Re-run a single job from the PR's Checks tab.
@@ -492,7 +492,8 @@ on:
       - "frontend/public/**"
       # Build inputs
       - "frontend/package.json"
-      - "frontend/package-lock.json"
+      - "frontend/pnpm-lock.yaml"
+      - "frontend/pnpm-workspace.yaml"
       # The workflow itself
       - ".github/workflows/apex-deploy.yml"
 ```
@@ -535,8 +536,8 @@ sequenceDiagram
   participant CF as CloudFront distribution
 
   GH->>Node: actions/checkout, setup-node@22
-  Node->>Node: npm ci --no-audit --no-fund (frontend/)
-  Node->>Node: npm run build:apex (build-apex.sh, TBD_BUILD_TARGET=apex)
+  Node->>Node: pnpm install --frozen-lockfile (frontend/)
+  Node->>Node: pnpm build:apex (build-apex.sh, TBD_BUILD_TARGET=apex)
   Node->>Node: verify out-apex/index.html and _meta.json exist
   Node->>OIDC: aws-actions/configure-aws-credentials@v4 (role-to-assume)
   OIDC-->>Node: short-lived STS creds (sub claim must match repo:flamarion/pfv:ref:refs/heads/main)

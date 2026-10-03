@@ -110,7 +110,7 @@ Browser
 
 - **App backend** serves a REST API under `/api/v1/`. Stateless, horizontally scalable, ready for K8s.
 - **App frontend** is a Next.js App Router build. All API calls use Bearer token auth with silent refresh.
-- **Apex landing** is a separate Next.js static export built by `npm run build:apex`, deployed to S3 via GitHub Actions with OIDC role assume.
+- **Apex landing** is a separate Next.js static export built by `pnpm build:apex`, deployed to S3 via GitHub Actions with OIDC role assume.
 - **nginx** routes traffic in development. DO App Platform handles ingress for the app in production; CloudFront handles ingress for the apex.
 
 For the full pipeline mechanics, see [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md). For the cross-cloud topology, see [infra/README.md](infra/README.md).
