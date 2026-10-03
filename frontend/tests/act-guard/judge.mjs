@@ -69,7 +69,7 @@ if (run.shard) {
   );
 }
 
-// `pnpm test tests/foo.test.tsx` is the documented dev workflow. Locally
+// A filtered vitest run (one file) is the documented dev workflow. Locally
 // that is fine and we say so; in CI it must never happen, because adding a
 // filter to the workflow would quietly disarm the gate.
 if (run.partial) {

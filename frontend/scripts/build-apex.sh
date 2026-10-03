@@ -214,7 +214,7 @@ rm -rf "${FRONTEND_DIR}/.next-apex" "${FRONTEND_DIR}/out" "${FRONTEND_DIR}/out-a
 export TBD_SITE_URL
 
 TBD_BUILD_TARGET=apex \
-  npx next build
+  pnpm exec next build
 
 # Next 16 with `output: 'export'` + a custom `distDir` writes the static
 # export DIRECTLY into the distDir (here `.next-apex/`). Earlier Next

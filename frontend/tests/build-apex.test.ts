@@ -35,7 +35,7 @@ describe("apex build target — scripts/build-apex.sh", () => {
 
   it("invokes next build with BUILD_TARGET=apex env", () => {
     expect(script).toContain("TBD_BUILD_TARGET=apex");
-    expect(script).toMatch(/npx\s+next\s+build/);
+    expect(script).toMatch(/pnpm\s+exec\s+next\s+build/);
   });
 
   it("swaps next.config.ts <-> next.config.apex.ts (Next 16 has no --config flag)", () => {

@@ -14,7 +14,7 @@ Sibling docs you will end up at:
 
 - Docker and Docker Compose.
 - Git.
-- Node.js 22+ on the host (only needed if you want `tsc` outside the container). The app itself runs entirely in containers.
+- Node.js 22+ and pnpm on the host (only needed if you want `tsc` outside the container). Run `corepack enable` once so `pnpm` follows `packageManager` in `frontend/package.json`; Node 25+ no longer ships corepack, so install pnpm separately there. The app itself runs entirely in containers.
 
 ## Quickstart (under 30 minutes)
 

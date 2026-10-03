@@ -6,7 +6,7 @@
  * separate so the judge (`scripts/act-baseline.mjs`) is a pure function over
  * two JSON files, runnable and testable without booting vitest.
  *
- * ⚠ `partial` MARKS A FILTERED RUN. `pnpm test tests/foo.test.tsx` is the
+ * ⚠ `partial` MARKS A FILTERED RUN. A filtered vitest run (one file) is the
  * documented dev workflow, and comparing one file's tally against the full
  * baseline would fail every time. The judge skips (loudly) on a partial run
  * locally, and REFUSES under CI so nobody can neuter the gate by adding a
