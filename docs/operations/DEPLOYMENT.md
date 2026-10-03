@@ -676,6 +676,15 @@ After bootstrap, TFC runs use workload identity. Long-lived AWS keys exist nowhe
 
 ## 8. Database migrations
 
+`backend/Dockerfile` is multi-stage with two named targets, both without the build toolchain (gcc lives only in the `builder` stage):
+
+| Target | Runs | Build |
+|---|---|---|
+| `prod` (last stage, so the default) | uvicorn on :8000 | `docker build --target prod -t tbd-backend backend` |
+| `migrations` | `python /app/scripts/migrate.py`, one-shot, exits 0/non-zero | `docker build --target migrations -t tbd-migrations backend` |
+
+Both need `DATABASE_URL` and the usual app secrets at run time. The scheduler/worker run the `prod` image with a different command. `INSTALL_DEV=true` (local compose) adds pytest to the venv.
+
 Three callers, one engine.
 
 ```mermaid
