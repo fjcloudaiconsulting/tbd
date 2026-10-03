@@ -7,6 +7,7 @@ these pin the decisions the helper makes.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -56,3 +57,11 @@ def test_non_mysql_connection_is_left_alone():
     with engine.connect() as conn:
         acquire_migration_lock(conn)
         assert conn.execute(text("SELECT 1")).scalar() == 1
+
+
+def test_env_py_locks_before_alembic_runs():
+    """The helper is useless unless alembic/env.py calls it first."""
+    src = (Path(__file__).resolve().parents[1] / "alembic" / "env.py").read_text()
+    lock = src.find("acquire_migration_lock(connection)")
+    assert lock != -1
+    assert lock < src.find("context.configure(connection=connection")

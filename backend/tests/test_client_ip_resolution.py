@@ -349,7 +349,7 @@ def test_client_ip_header_returns_cloudflare_visitor(monkeypatch):
     assert get_client_ip(request) == "203.0.113.7"
 
 
-def test_client_ip_header_name_is_case_insensitive(monkeypatch):
+def test_client_ip_header_accepts_ipv6_and_any_name_case(monkeypatch):
     monkeypatch.delenv("PFV_RUNTIME", raising=False)
     monkeypatch.setenv("CLIENT_IP_HEADER", "CF-Connecting-IP")
     request = _make_request(
