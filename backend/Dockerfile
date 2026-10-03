@@ -3,24 +3,26 @@
 #   prod        the serving image (uvicorn). LAST stage on purpose: a plain
 #               `docker build` (DO App Platform, docker compose) builds it.
 # Both share the `runtime` stage; they differ only in CMD. Dependencies are
-# installed into a venv in `builder` (all wheels, no compiler needed); only the
+# installed (uv, from uv.lock) into a venv in `builder` (all wheels, no compiler needed); only the
 # venv reaches either image.
 #   docker build --target migrations -t tbd-migrations backend
 #   docker build --target prod       -t tbd-backend    backend
 FROM python:3.12-slim AS builder
 
+COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /bin/
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_DOWNLOADS=0
+
 WORKDIR /app
 
 ARG INSTALL_DEV=false
 
-RUN python -m venv /opt/venv
-ENV PATH=/opt/venv/bin:$PATH
-
-COPY requirements.txt requirements-dev.txt ./
-RUN pip install --no-cache-dir -r requirements.txt && \
-    if [ "$INSTALL_DEV" = "true" ]; then \
-        pip install --no-cache-dir -r requirements-dev.txt; \
-    fi
+# Plain COPY, no BuildKit mounts: DO App Platform's builder is not assumed to support them.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-install-project --no-default-groups --group app \
+        $([ "$INSTALL_DEV" = "true" ] && echo "--group dev")
 
 FROM python:3.12-slim AS runtime
 

@@ -23,7 +23,7 @@ def _build_connect_args() -> dict:
     establishing a new connection — important for cold-start and
     pool-grow paths where a network blip would otherwise hang the
     handler. Per-operation read/write timeouts are NOT set here:
-    aiomysql 0.2.0 (the version pinned in requirements.txt) does
+    aiomysql 0.2.0 (the version pinned in pyproject.toml) does
     not accept ``read_timeout`` / ``write_timeout`` kwargs — those
     were added in 0.2.1+. The stale-socket-hang class is therefore
     bounded at two other layers: ``pool_recycle`` (rotates pooled

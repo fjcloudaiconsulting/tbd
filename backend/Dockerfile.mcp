@@ -3,7 +3,7 @@
 #
 # Copies ONLY app/: no alembic/, scripts/, seed.py or tests/. It runs no
 # migrations, mounts no REST router and holds no AI key. Every package comes
-# from requirements-mcp.txt, a subset of requirements.txt with the SAME pins
+# from the `mcp` group of uv.lock, a subset of the `app` group with the SAME pins
 # (fenced by tests/mcp/test_mcp_image.py); the CI `mcp-image` job builds this
 # file and imports app.mcp_main inside it, so a tool that starts importing an
 # excluded package fails the build, not production.
@@ -11,10 +11,18 @@
 # Pure-Python MySQL driver (aiomysql + PyMySQL), so no gcc build layer.
 FROM python:3.12-slim
 
+COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /bin/
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_DOWNLOADS=0 \
+    PATH=/opt/venv/bin:$PATH
+
 WORKDIR /app
 
-COPY requirements-mcp.txt ./
-RUN pip install --no-cache-dir -r requirements-mcp.txt
+# Plain COPY, no BuildKit mounts: DO App Platform's builder is not assumed to support them.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-install-project --no-default-groups --group mcp
 
 COPY app ./app
 

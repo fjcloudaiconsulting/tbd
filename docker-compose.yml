@@ -108,12 +108,11 @@ services:
       # the wrong remedy. The right one is:
       #     docker compose up -d --force-recreate backend
       - ./backend/.test_durations:/app/.test_durations:ro
-      # TBD-561: tests/mcp/test_mcp_image.py reads these two build inputs of
+      # TBD-561: tests/mcp/test_mcp_image.py reads these build inputs of
       # the MCP image, which no directory mount covers. Read-only; recreate
       # the container after a `git pull` replaces either file (inode mount).
-      - ./backend/requirements-mcp.txt:/app/requirements-mcp.txt:ro
+      - ./backend/pyproject.toml:/app/pyproject.toml:ro
       - ./backend/Dockerfile.mcp:/app/Dockerfile.mcp:ro
-      - ./backend/requirements.txt:/app/requirements.txt:ro
       - ./.github:/app/.github:ro
       # TBD-419: read-only mount so backend/tests/test_dataplane_apt_pins.py and
       # test_apt_policy_filter.py can parse the ansible tree and import the

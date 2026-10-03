@@ -42,7 +42,7 @@ def test_connect_timeout_is_propagated_to_aiomysql() -> None:
     args = database._build_connect_args()
     assert args.get("connect_timeout") == settings.db_connect_timeout
     # Pin the negative contract too: a future bump to aiomysql 0.2.1+
-    # might add support for these, but until requirements.txt moves,
+    # might add support for these, but until pyproject.toml moves,
     # passing them through here is a hard production failure.
     assert "read_timeout" not in args
     assert "write_timeout" not in args
@@ -69,7 +69,7 @@ def test_connect_args_only_uses_aiomysql_supported_kwargs() -> None:
     assert unsupported == set(), (
         f"connect_args contains kwargs not accepted by aiomysql.connect() "
         f"in the pinned version: {unsupported}. Either drop them or bump "
-        f"aiomysql in requirements.txt."
+        f"aiomysql in pyproject.toml."
     )
 
 
