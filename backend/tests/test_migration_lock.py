@@ -7,6 +7,7 @@ these pin the decisions the helper makes.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -60,8 +61,27 @@ def test_non_mysql_connection_is_left_alone():
 
 
 def test_env_py_locks_before_alembic_runs():
-    """The helper is useless unless alembic/env.py calls it first."""
+    """The helper is useless unless alembic/env.py calls it first: a real call
+    statement in do_run_migrations, ahead of context.configure (a comment or
+    string mentioning it does not count)."""
     src = (Path(__file__).resolve().parents[1] / "alembic" / "env.py").read_text()
-    lock = src.find("acquire_migration_lock(connection)")
-    assert lock != -1
-    assert lock < src.find("context.configure(connection=connection")
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.FunctionDef) and node.name == "do_run_migrations"
+    )
+
+    def _called(stmt, name):
+        return (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Call)
+            and ast.unparse(stmt.value.func) == name
+        )
+
+    order = [
+        name
+        for stmt in fn.body
+        for name in ("acquire_migration_lock", "context.configure")
+        if _called(stmt, name)
+    ]
+    assert order[:2] == ["acquire_migration_lock", "context.configure"]
