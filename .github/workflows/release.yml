@@ -201,9 +201,25 @@ jobs:
     if: needs.release.outputs.release_created == 'true'
     permissions:
       contents: read
+      # await-test-run.sh lists workflow runs.
+      actions: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # Closes the seconds-wide window between the release job's
+      # `gh pr list` and release-please's own query: a release PR merged in
+      # between is tagged without its Test run awaited. Normally a no-op
+      # (that run already passed); red means a failed deploy, which the
+      # notifier below reports.
+      - name: Await the tests of the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          ./scripts/ci/await-test-run.sh "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)"
 
       # ⚠⚠ Refuse to deploy if the committed spec would overwrite a live
       # secret. On 2026-08-20 exactly that took production's database and

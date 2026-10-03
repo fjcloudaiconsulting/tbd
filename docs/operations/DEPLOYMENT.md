@@ -887,7 +887,7 @@ Triage shortcuts:
 | Symptom | First look at |
 |---|---|
 | Merge to `main` happened, prod didn't update | `release.yml` -> did `release` set `release_created=true`? Only the merge of the release PR deploys; an ordinary merge just updates it |
-| `release` job failed after the release PR merged | The Test run of the release PR's commit is red. Re-run that commit's failed Test jobs (not a `workflow_dispatch` run) |
+| `release` job failed after the release PR merged | The Test run of the release PR's commit is red. Re-run that commit's failed Test jobs (not a `workflow_dispatch` run), then re-run the failed Release run (or wait for the next push to `main`) |
 | Release created but `deploy` failed | Re-running the whole Release run will not redeploy (the release already exists). Use `gh workflow run deploy.yml --ref main` |
 | Drift probe reports AHEAD after a release | DO builds `main` HEAD, so a merge that landed between the release and the deploy ships with it; AHEAD clears at the next release |
 | Deploy went green, app still broken | Smoke-test job output, then DO Runtime Logs on the failing component |

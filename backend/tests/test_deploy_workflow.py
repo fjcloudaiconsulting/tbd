@@ -194,13 +194,37 @@ def test_release_awaits_the_tests_of_the_commit_it_tags():
     )
     assert wait < tag, "the release commit's tests must be awaited before release-please runs"
     run = str(steps[wait]["run"])
-    assert "autorelease: pending" in run and "mergeCommit" in run, (
-        "the wait must target the merged release PR's merge commit, the one "
-        "release-please tags"
+    for fragment in ("autorelease: pending", "--state merged", "mergeCommit", "set -euo pipefail"):
+        assert fragment in run, (
+            f"the wait must target the merged release PR's merge commit, the one "
+            f"release-please tags, and fail the job; missing {fragment!r}"
+        )
+    assert "|| true" not in run and "|| :" not in run, "a swallowed wait gates nothing"
+    assert '[ "$sha" = "$GITHUB_SHA" ]' in run, (
+        "only this run's own commit (already awaited by await-tests) may be skipped"
     )
-    assert (job.get("permissions") or {}).get("actions") == "read", (
+    perms = job.get("permissions") or {}
+    assert perms.get("actions") == "read", (
         "listing workflow runs needs `actions: read`; without it the wait 403s"
     )
+    assert perms.get("pull-requests") == "read", "`gh pr list` needs `pull-requests: read`"
+
+
+def test_deploy_awaits_the_tagged_commits_tests_before_pushing_the_spec():
+    """INFRA-42. A release PR merged between the release job's lookup and
+    release-please's own query is tagged unawaited; the deploy re-checks the
+    tagged commit before DO is touched."""
+    steps = _deploy_steps(RELEASE_WORKFLOW)
+    wait = _index_of(
+        steps, lambda s: "await-test-run.sh" in str(s.get("run", "")), "await-test-run.sh"
+    )
+    deploy = _index_of(
+        steps, lambda s: DEPLOY_ACTION in str(s.get("uses", "")), DEPLOY_ACTION
+    )
+    assert wait < deploy
+    assert "needs.release.outputs.tag_name" in str(steps[wait].get("env", {}).get("TAG"))
+    job = _yaml(RELEASE_WORKFLOW)["jobs"]["deploy"]
+    assert (job.get("permissions") or {}).get("actions") == "read"
 
 
 def test_release_please_runs_with_the_release_app_token():
@@ -240,6 +264,24 @@ def test_ghcr_promote_and_smoke_run_once_per_release(job, workflow):
         "needs.release.outputs.release_created == 'true'"
     )
     assert jobs[job]["with"]["version"] == "${{ needs.release.outputs.version }}"
+
+
+def test_do_deploy_does_not_wait_on_the_ghcr_side():
+    """DO builds from source, so a GHCR promote or smoke failure must not hold
+    production back (INFRA-42 design); the smoke must boot promoted images."""
+    jobs = _yaml(RELEASE_WORKFLOW)["jobs"]
+    assert jobs["deploy"]["needs"] == "release"
+    assert "promote" in jobs["release-smoke"]["needs"]
+
+
+def test_version_txt_matches_the_release_please_manifest():
+    """build-image bakes version.txt; promote checks the label against the
+    tag release-please derives from the manifest. Out of step, every release
+    fails promote."""
+    import json
+
+    manifest = json.loads((REPO_ROOT / ".release-please-manifest.json").read_text())
+    assert manifest == {".": (REPO_ROOT / "version.txt").read_text().strip()}
 
 
 def test_apex_gates_its_deploy_but_never_the_manual_recovery():
