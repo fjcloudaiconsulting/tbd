@@ -246,6 +246,54 @@ jobs:
           "tbd-mcp:${GITHUB_SHA}"
           python -c "import sys, app.mcp_main; assert 'app.main' not in sys.modules; print('mcp import ok')"
 
+  # INFRA-39: backend/Dockerfile ships two targets (prod, migrations). Build
+  # both, prove the runtime has no build toolchain, and import the app and the
+  # alembic entrypoint inside them. Nothing is pushed yet.
+  backend-image:
+    name: Backend Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Build the prod target
+        run: docker build --target prod -t "tbd-backend:${GITHUB_SHA}" backend
+
+      - name: Build the migrations target
+        run: docker build --target migrations -t "tbd-migrations:${GITHUB_SHA}" backend
+
+      - name: No build toolchain in either runtime image
+        run: |
+          for img in tbd-backend tbd-migrations; do
+            docker run --rm --entrypoint sh "$img:${GITHUB_SHA}" -c '! command -v gcc && ! command -v pkg-config'
+          done
+
+      - name: Targets keep their CMD, and a plain build is prod
+        run: |
+          docker build -t "tbd-default:${GITHUB_SHA}" backend
+          docker inspect -f '{{index .Config.Cmd 0}}' "tbd-default:${GITHUB_SHA}" | grep -x uvicorn
+          docker inspect -f '{{.Config.User}} {{.Config.ExposedPorts}} {{.Config.WorkingDir}}' "tbd-default:${GITHUB_SHA}" | grep -Fx 'backend map[8000/tcp:{}] /app'
+          docker inspect -f '{{json .Config.Cmd}}' "tbd-migrations:${GITHUB_SHA}" | grep -Fx '["python","/app/scripts/migrate.py"]'
+
+      - name: Import the app inside the prod image
+        run: >-
+          docker run --rm
+          -e JWT_SECRET_KEY="$(openssl rand -hex 32)"
+          -e MFA_RECOVERY_HMAC_KEY="$(openssl rand -hex 32)"
+          "tbd-backend:${GITHUB_SHA}"
+          python -c "import app.main; print('backend import ok')"
+
+      - name: Import the migration runner inside the migrations image
+        run: >-
+          docker run --rm
+          -e JWT_SECRET_KEY="$(openssl rand -hex 32)"
+          -e MFA_RECOVERY_HMAC_KEY="$(openssl rand -hex 32)"
+          "tbd-migrations:${GITHUB_SHA}"
+          python -c "import alembic, scripts.migrate; print('migrations import ok')"
+
   # Stable aggregate gate. Branch protection / required-check config can
   # point at this single "Backend Checks" context; it passes only when
   # every shard passed. Keeping the name "Backend Checks" preserves the
@@ -253,7 +301,7 @@ jobs:
   backend:
     name: Backend Checks
     runs-on: ubuntu-latest
-    needs: [changes, backend-shard, migrations, mcp-image]
+    needs: [changes, backend-shard, migrations, mcp-image, backend-image]
     if: ${{ always() }}
     steps:
       # ⚠ THE WIRING GUARD MUST STAY THE FIRST STEP IN THIS JOB.
@@ -360,6 +408,13 @@ jobs:
           "${{ needs.mcp-image.result }}"
           "${{ needs.changes.outputs.backend }}"
           "MCP Image"
+
+      - name: Verify the backend image targets built
+        run: >-
+          bash scripts/ci/assert-gate.sh
+          "${{ needs.backend-image.result }}"
+          "${{ needs.changes.outputs.backend }}"
+          "Backend Image"
 
       # `Migration Checks` is folded into this aggregate deliberately. It is
       # the one context branch protection is expected to require (TBD-347),
