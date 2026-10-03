@@ -81,7 +81,7 @@ jobs:
       migrations: ${{ steps.detect.outputs.migrations }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # ⚠ Load-bearing. The default depth-1 clone does not contain the PR's
           # base commit, so the diff would fail — and the detector fails SAFE
@@ -171,10 +171,10 @@ jobs:
           --health-retries 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.12.13"
           python-version: "3.12"
@@ -214,7 +214,7 @@ jobs:
       # blocks the deploy (INFRA-53).
       - name: Upload shard coverage data
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ matrix.group }}
           path: backend/.coverage.${{ matrix.group }}
@@ -235,7 +235,7 @@ jobs:
     if: ${{ needs.changes.outputs.backend == 'true' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Build the MCP image
         run: docker build -f backend/Dockerfile.mcp -t "tbd-mcp:${GITHUB_SHA}" backend
@@ -259,7 +259,7 @@ jobs:
     if: ${{ needs.changes.outputs.backend == 'true' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Build the prod target
         run: docker build --target prod -t "tbd-backend:${GITHUB_SHA}" backend
@@ -310,7 +310,7 @@ jobs:
       # This job is `if: always()`. If the guard sat after the shard-result
       # `exit 1` below, a failing shard would mask a wiring failure and the
       # guard would only ever run on already-green builds.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Only `Backend Checks` and `Frontend Checks` are required contexts on
       # `main`. So a new top-level job added to this file WITHOUT wiring it
@@ -445,14 +445,14 @@ jobs:
       # README.
       - name: Download shard coverage data
         if: ${{ needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: coverage-*
           path: cov
 
       - name: Set up Python for coverage combine
         if: ${{ needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
@@ -582,10 +582,10 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}/backend
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.12.13"
           python-version: "3.12"
@@ -766,10 +766,10 @@ jobs:
     if: ${{ needs.changes.outputs.frontend == 'true' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
 
@@ -783,7 +783,7 @@ jobs:
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
@@ -822,10 +822,10 @@ jobs:
     if: ${{ needs.changes.outputs.frontend == 'true' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
 
@@ -839,7 +839,7 @@ jobs:
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
@@ -891,7 +891,7 @@ jobs:
     if: ${{ always() }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # Same rule, same script, same fence as the backend aggregate. See the
       # comment block there for why the accept is conditional and why it is

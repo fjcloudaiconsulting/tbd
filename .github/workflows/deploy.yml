@@ -34,14 +34,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # ⚠⚠ Refuse to deploy if the committed spec would overwrite a live
       # secret. On 2026-08-20 exactly that took production's database and
       # redis credentials down (TBD-425); infra/MIGRATION.md step 9 had
       # warned about it since May and a runbook comment did not stop it.
       - name: Install doctl
-        uses: digitalocean/action-doctl@v2
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
@@ -54,7 +54,7 @@ jobs:
           ./scripts/ci/assert-app-spec-secrets-synced.sh
 
       - name: Deploy to DigitalOcean App Platform
-        uses: digitalocean/app_action/deploy@v2
+        uses: digitalocean/app_action/deploy@cc55bc9b848d25f9c1c9f831cf843fbab3fbfb15 # v2.0.11
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
           # NOTE: Do NOT add `app_name` here. The v2 action's createSpec
@@ -91,7 +91,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Run smoke tests against production
         env:
@@ -134,7 +134,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Open or update the undeployed-release issue
         env:

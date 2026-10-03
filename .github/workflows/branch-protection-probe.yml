@@ -65,7 +65,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # ⚠ `GITHUB_TOKEN` structurally cannot read branch protection: the workflow
       # `permissions:` key has no `administration` scope. A fine-grained PAT
@@ -84,7 +84,7 @@ jobs:
       - name: Mint an installation token
         id: auth
         continue-on-error: true
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
         with:
           app-id: ${{ vars.PROTECTION_PROBE_APP_ID }}
           private-key: ${{ secrets.PROTECTION_PROBE_APP_KEY }}
