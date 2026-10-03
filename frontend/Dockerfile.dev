@@ -5,7 +5,8 @@ WORKDIR /app
 # pnpm version comes from packageManager in package.json.
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
+# Local compose only (BuildKit); the DO-built frontend/Dockerfile has no cache mount.
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
 
 COPY . .
 
