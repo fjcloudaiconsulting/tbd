@@ -46,6 +46,10 @@
 #                    `release` job. Not in the required list on purpose: a
 #                    manual deploy that fails is still worth an alarm, and
 #                    exiting 2 there would trade the alarm for a red step.
+#   RELEASE_RESULT — OPTIONAL. needs.release.result. `failure`/`cancelled`
+#                    with no tag means the release job died, possibly AFTER
+#                    release-please published the GitHub Release; a re-run
+#                    then never reports it again (INFRA-42).
 #
 # Behavior:
 #   - Dedupes against any open issue whose title starts with
@@ -74,7 +78,12 @@ TITLE="[undeployed-release] Release published but not deployed"
 RUN_URL="https://github.com/${GH_REPO}/actions/runs/${RUN_ID}"
 TAG="${RELEASE_TAG:-}"
 
-if [[ -n "$TAG" ]]; then
+RELEASE_RESULT="${RELEASE_RESULT:-}"
+
+if [[ -z "$TAG" && -n "$RELEASE_RESULT" && "$RELEASE_RESULT" != "success" ]]; then
+  TAG_LINE="- **Release tag:** unknown. The \`release\` job ended \`${RELEASE_RESULT}\`, so no tag was reported. release-please may already have published a GitHub Release before failing, and a re-run will NOT report it again: check https://github.com/${GH_REPO}/releases."
+  DIVERGENCE="If a release newer than production exists there, production is not serving it and no automatic deploy will follow."
+elif [[ -n "$TAG" ]]; then
   TAG_LINE="- **Release tag:** \`${TAG}\` (published, immutable)"
   DIVERGENCE="Production is running PRE-\`${TAG}\` code, and \`${TAG}\` corresponds to nothing deployed."
 else

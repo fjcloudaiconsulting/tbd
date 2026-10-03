@@ -404,3 +404,18 @@ def test_no_other_job_claims_a_required_context_name():
             f"job `{job}` is named {spec.get('name')!r}, colliding with a "
             "required status-check context."
         )
+
+
+def test_every_main_commit_gets_its_own_test_run():
+    """INFRA-42. A concurrency group keeps at most ONE pending run and cancels
+    the older pending one even with `cancel-in-progress: false`. With every
+    `main` push in the `refs/heads/main` group, a burst of three merges drops
+    the middle commit's run: no sha-<7> images for it, and release.yml's
+    await-test-run.sh sees `cancelled` and refuses the release. Push runs must
+    be keyed by sha; PR runs keep cancelling their own superseded runs."""
+    concurrency = WORKFLOW["concurrency"]
+    assert "github.event_name == 'push' && github.sha" in concurrency["group"], (
+        f"test.yml's concurrency group is {concurrency['group']!r}; `main` push "
+        "runs must be keyed by `github.sha`, not by `github.ref`."
+    )
+    assert concurrency["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"

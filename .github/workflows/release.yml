@@ -318,10 +318,16 @@ jobs:
   notify-undeployed-release:
     runs-on: ubuntu-latest
     needs: [release, deploy]
+    # INFRA-42: also when the release job itself failed. release-please can
+    # publish the GitHub Release and then fail (PR comment, relabel); the job
+    # reports no `release_created`, `deploy` skips, and a re-run throws
+    # DuplicateReleaseError, so that version would never reach DO silently.
     if: >-
       ${{ always()
-          && needs.release.outputs.release_created == 'true'
-          && needs.deploy.result != 'success' }}
+          && ((needs.release.outputs.release_created == 'true'
+               && needs.deploy.result != 'success')
+              || needs.release.result == 'failure'
+              || needs.release.result == 'cancelled') }}
     permissions:
       # ⚠ Job-level permissions REPLACE the workflow-level block (which grants
       # only `contents: read`), so `issues: write` must be spelled out here or
@@ -351,6 +357,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           RELEASE_TAG: ${{ needs.release.outputs.tag_name }}
+          RELEASE_RESULT: ${{ needs.release.result }}
         run: ./scripts/notify-undeployed-release.sh
 
       # Best effort, and second on purpose. Demotes the published release to a

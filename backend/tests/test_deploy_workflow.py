@@ -274,6 +274,17 @@ def test_do_deploy_does_not_wait_on_the_ghcr_side():
     assert "promote" in jobs["release-smoke"]["needs"]
 
 
+def test_release_runs_are_serialised_and_never_cancelled():
+    """TBD-391 / INFRA-42. One Release run at a time, so two DO spec pushes
+    never interleave, and never `cancel-in-progress`: a run cancelled after
+    release-please tagged, or mid-deploy, leaves a release DO never got or a
+    half-rolled app. (Superseded PENDING runs are still dropped by GitHub;
+    the next run's merged-release-PR await covers them.)"""
+    concurrency = _yaml(RELEASE_WORKFLOW)["concurrency"]
+    assert concurrency["group"] == "release-deploy"
+    assert concurrency["cancel-in-progress"] is False
+
+
 def test_version_txt_matches_the_release_please_manifest():
     """build-image bakes version.txt; promote checks the label against the
     tag release-please derives from the manifest. Out of step, every release
@@ -612,6 +623,68 @@ def test_release_notifies_when_a_published_release_did_not_deploy():
         "workflow-level block (which grants `issues: read`), so omitting it "
         "makes the notifier 403 exactly when it is needed."
     )
+
+
+def _notifier_fires(condition: str, release: str, created: str, deploy: str) -> bool:
+    """Evaluate the notifier's `if:` for one outcome. Only the operators and
+    contexts it uses are supported; anything else fails the eval loudly."""
+    expr = (
+        condition.replace("always()", "True")
+        .replace("&&", " and ")
+        .replace("||", " or ")
+        .replace("needs.release.outputs.release_created", repr(created))
+        .replace("needs.release.result", repr(release))
+        .replace("needs.deploy.result", repr(deploy))
+    )
+    return eval(expr, {"__builtins__": {}}, {"True": True})
+
+
+@pytest.mark.parametrize(
+    ("release", "created", "deploy", "fires"),
+    [
+        ("success", "true", "failure", True),  # released, deploy failed
+        ("success", "true", "cancelled", True),
+        ("success", "true", "success", False),  # released and deployed
+        ("success", "", "skipped", False),  # ordinary merge
+        ("skipped", "", "skipped", False),  # await-tests red: its own red run
+        ("failure", "", "skipped", True),  # INFRA-42: died after publishing?
+        ("cancelled", "", "skipped", True),
+    ],
+)
+def test_the_notifier_fires_for_every_undeployed_outcome(release, created, deploy, fires):
+    """INFRA-42. release-please can publish the GitHub Release and then fail
+    (PR comment, relabel): no `release_created`, `deploy` skips, and a re-run
+    throws DuplicateReleaseError. That version would never reach DO, silently,
+    so a failed release job must raise the alarm too, without firing on an
+    ordinary merge."""
+    condition = _normalise_expr(_yaml(RELEASE_WORKFLOW)["jobs"][NOTIFIER_JOB].get("if"))
+    assert _notifier_fires(condition, release, created, deploy) is fires, condition
+
+
+def test_the_notifier_names_a_failed_release_job_instead_of_a_manual_deploy(tmp_path):
+    """The alarm must say what happened: with no tag and a failed release job
+    it points at the Releases page, not at a manual deploy.yml run."""
+    import os
+    import subprocess
+
+    log = tmp_path / "gh.log"
+    stub = tmp_path / "gh"
+    stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >> "{log}"\nexit 0\n')
+    stub.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "GH_TOKEN": "x", "GH_REPO": "o/r", "RUN_ID": "1", "SHA": "abc",
+        "REF_NAME": "main", "ACTOR": "a", "DEPLOY_RESULT": "skipped",
+        "RELEASE_TAG": "", "RELEASE_RESULT": "failure",
+    }
+    script = REPO_ROOT / "scripts" / "notify-undeployed-release.sh"
+    done = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    body = log.read_text()
+    assert "issue" in body and "create" in body, body
+    assert "may already have published a GitHub Release" in body
+    assert "manual `deploy.yml` run" not in body
 
 
 def test_the_undeployed_release_notifier_is_wired_into_both_deploy_paths():
