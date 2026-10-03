@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import pytest
 from starlette.requests import Request
 
 from app.rate_limit import get_client_ip
@@ -326,6 +327,135 @@ def test_do_runtime_mode_case_insensitive(monkeypatch):
         headers={"do-connecting-ip": "203.0.113.7"},
     )
     assert get_client_ip(request) == "203.0.113.7"
+
+
+# ── CLIENT_IP_HEADER (k3s behind Cloudflare, INFRA-83) ───────────────────
+#
+# Cloudflare -> Traefik -> backend: uvicorn's proxy-headers rewrite leaves a
+# Cloudflare edge (or Traefik) address in request.client.host; the visitor is
+# in CF-Connecting-IP, which Cloudflare overwrites on every request.
+
+
+def test_client_ip_header_returns_cloudflare_visitor(monkeypatch):
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
+    request = _make_request(
+        client_host="172.70.1.1",  # a Cloudflare edge
+        headers={
+            "cf-connecting-ip": "203.0.113.7",
+            "x-forwarded-for": "6.6.6.6, 203.0.113.7, 172.70.1.1",
+        },
+    )
+    assert get_client_ip(request) == "203.0.113.7"
+
+
+def test_client_ip_header_accepts_ipv6_and_any_name_case(monkeypatch):
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    monkeypatch.setenv("CLIENT_IP_HEADER", "CF-Connecting-IP")
+    request = _make_request(
+        client_host="10.42.0.9", headers={"cf-connecting-ip": "2001:db8::7"}
+    )
+    assert get_client_ip(request) == "2001:db8::7"
+
+
+def test_client_ip_header_unset_ignores_forged_cf_connecting_ip(monkeypatch):
+    """DigitalOcean and local dev: anyone can send CF-Connecting-IP."""
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    monkeypatch.delenv("CLIENT_IP_HEADER", raising=False)
+    request = _make_request(
+        client_host="198.51.100.99", headers={"cf-connecting-ip": "203.0.113.7"}
+    )
+    assert get_client_ip(request) == "198.51.100.99"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not-an-ip", "203.0.113.7, 198.51.100.1", "", "   ", "fe80::1%" + "x" * 80],
+)
+def test_client_ip_header_with_invalid_value_falls_back(monkeypatch, value):
+    """A value that is not one IP address is never used as a rate-limit key."""
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
+    request = _make_request(
+        client_host="198.51.100.99", headers={"cf-connecting-ip": value}
+    )
+    assert get_client_ip(request) == "198.51.100.99"
+
+
+def test_client_ip_header_missing_falls_back_to_peer(monkeypatch):
+    """In-cluster callers (the frontend's server-side fetches, probes) send no
+    CF-Connecting-IP and resolve as before."""
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
+    request = _make_request(client_host="10.42.0.12")
+    assert get_client_ip(request) == "10.42.0.12"
+
+
+# ── rate_limit_key: IPv6 buckets by /64 (INFRA-83) ───────────────────────
+#
+# One routed IPv6 /64 is 2^64 addresses; keyed per /128 a visitor rotates
+# addresses and never fills a bucket. The limiter key collapses IPv6 to its
+# /64; get_client_ip (audit logs) keeps the full address.
+
+
+def _key_for(ip: str) -> str:
+    from app.rate_limit import rate_limit_key
+
+    return rate_limit_key(_make_request(client_host=ip))
+
+
+def test_rate_limit_key_shares_one_bucket_per_ipv6_64():
+    assert _key_for("2001:db8:1:2::1") == _key_for("2001:db8:1:2:ffff:ffff:ffff:ffff")
+
+
+def test_rate_limit_key_separates_different_ipv6_64s():
+    assert _key_for("2001:db8:1:2::1") != _key_for("2001:db8:1:3::1")
+
+
+def test_rate_limit_key_leaves_ipv4_alone():
+    assert _key_for("203.0.113.7") == "203.0.113.7"
+    assert _key_for("203.0.113.7") != _key_for("203.0.113.8")
+
+
+def test_rate_limit_key_keeps_ipv4_mapped_addresses_apart():
+    """Every ::ffff:a.b.c.d sits in ::/64; bucketing them by /64 would put
+    all of them in one bucket."""
+    assert _key_for("::ffff:203.0.113.7") == "203.0.113.7"
+    assert _key_for("::ffff:203.0.113.7") != _key_for("::ffff:203.0.113.8")
+
+
+def test_rate_limit_key_passes_non_ip_values_through():
+    assert _key_for("testclient") == "testclient"
+
+
+def test_audit_ip_keeps_the_full_ipv6_address():
+    request = _make_request(client_host="2001:db8:1:2::1")
+    assert get_client_ip(request) == "2001:db8:1:2::1"
+
+
+def test_limiter_keys_on_rate_limit_key():
+    from app import rate_limit
+
+    assert rate_limit.limiter._key_func is rate_limit.rate_limit_key
+
+
+def test_mcp_auth_failure_counter_keys_on_the_64(monkeypatch):
+    import asyncio
+
+    from app import mcp_main
+
+    seen: list[str] = []
+
+    async def _tripped(ip, *, add):
+        seen.append(ip)
+        return mcp_main.IP_AUTH_FAILURES_PER_MIN
+
+    monkeypatch.setattr(mcp_main, "_ip_failures", _tripped)
+    response = asyncio.run(
+        mcp_main.mcp_endpoint(_make_request(client_host="2001:db8:1:2::1"))
+    )
+    assert response.status_code == 429
+    assert seen == [_key_for("2001:db8:1:2::2")]
 
 
 # ── Integration: audit_events.ip_address persists the resolved client ─────

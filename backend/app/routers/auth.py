@@ -1941,9 +1941,9 @@ async def logout(
     # ``actor_user_id=None, sid_count=0, jti_count=0`` names no subject,
     # and writing one on every anonymous POST was the unbounded-insert
     # primitive this ticket exists to remove. The rate limit above
-    # throttles it per address; it cannot remove it, because
-    # ``get_client_ip`` returns raw un-collapsed addresses and a routed
-    # IPv6 /64 is 2^64 buckets.
+    # throttles it per address; it cannot remove it: the limiter key
+    # (``rate_limit_key``) collapses IPv6 only to its /64, and a routed
+    # IPv6 /48 is still 65536 buckets.
     #
     # ⚠ It is NOT true that the dropped row "records nothing an operator
     # can act on" -- an earlier draft said that and it was too strong.

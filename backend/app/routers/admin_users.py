@@ -647,7 +647,7 @@ async def delete_user(
 # `invitation_service.py` all refuse to mutate a superadmin.
 #
 # ⚠ NOT IMPLEMENTED, DELIBERATELY: per-actor rate limiting (not expressible
-# against the single `Limiter(key_func=get_client_ip)`; the `shared_limit`
+# against the single `Limiter(key_func=rate_limit_key)`; the `shared_limit`
 # below bounds the route in aggregate and fails CLOSED when two operators
 # share an IP). ⚠ It MUST stay `shared_limit`: a plain `limit` buckets on the
 # concrete `request.url.path`, so `{user_id}` would give every target its own

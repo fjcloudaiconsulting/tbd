@@ -13,8 +13,9 @@ _ACCESS_RE = re.compile(
 )
 
 
-# Paths excluded from access logs (health checks flood logs in production)
-_SILENT_PATHS = {"/health", "/ready"}
+# Paths excluded from access logs (health checks flood logs in production;
+# Route 53 polls /health/dependencies, INFRA-83)
+_SILENT_PATHS = {"/health", "/ready", "/health/dependencies"}
 
 
 class _DropHealthCheck(logging.Filter):

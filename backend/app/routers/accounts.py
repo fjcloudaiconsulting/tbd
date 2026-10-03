@@ -810,8 +810,8 @@ async def delete_account(
 # conversions. It was effectively unlimited (20/hour PER ACCOUNT); it is now
 # 20/hour across every account for one client IP. An admin doing a first-time
 # reconciliation sweep across more than 20 accounts will hit it, and two admins
-# behind one office egress share the bucket -- `get_client_ip` is the key
-# function, so buckets are (ip, scope), not per user or per org. Judged the
+# behind one office egress share the bucket -- `rate_limit_key` (the client IP,
+# IPv6 cut to its /64) is the key function, so buckets are (ip, scope), not per user or per org. Judged the
 # right trade anyway, because a per-account bucket bounds nothing against the
 # abuse this limit exists to stop. If it bites in practice, raise the number;
 # do not go back to a plain `limit`.
