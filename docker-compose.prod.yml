@@ -67,7 +67,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      - NEXT_PUBLIC_API_URL=
+      - TBD_API_URL=
       - HOSTNAME=0.0.0.0
       # Server-side (RSC) reach to the backend. Browser requests use the
       # nginx ingress (relative URLs); server-side fetches must hit the

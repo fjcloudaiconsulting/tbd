@@ -1,5 +1,6 @@
 "use client";
 
+import { runtimeConfig } from "@/lib/runtime-config";
 import { useId, type MouseEventHandler } from "react";
 
 /**
@@ -14,7 +15,7 @@ import { useId, type MouseEventHandler } from "react";
  *   - meets contrast in light + dark variants (white surface for light,
  *     #131314 surface for dark, both with Google-spec text colors).
  *
- * The component reads `NEXT_PUBLIC_GOOGLE_SSO_ENABLED`. If the flag is not
+ * The component reads `TBD_GOOGLE_SSO_ENABLED`. If the flag is not
  * exactly "true", the button is hidden by default to avoid a broken-redirect
  * experience when ops has not configured Google OAuth in this environment.
  * Pass `showWhenDisabled` to keep it rendered as an aria-disabled affordance,
@@ -40,7 +41,7 @@ export interface GoogleSSOButtonProps {
 }
 
 function isSSOEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_GOOGLE_SSO_ENABLED === "true";
+  return runtimeConfig().googleSsoEnabled;
 }
 
 function GoogleGMark() {

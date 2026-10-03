@@ -14,7 +14,7 @@
 #      config file at the project root is the only knob. The apex config
 #      sets `output: 'export'` and aliases the auth-island and
 #      AuthProvider to no-op stubs.
-#   3. Run `next build` with NEXT_PUBLIC_BUILD_TARGET=apex.
+#   3. Run `next build` with TBD_BUILD_TARGET=apex.
 #   4. ALWAYS restore the original config and the staged routes, even on
 #      failure (trap on EXIT / INT / TERM).
 #   5. Move `out/` -> `out-apex/`, sanity-prune any non-allowlisted paths
@@ -206,14 +206,14 @@ cp "${APEX_CONFIG_FILE}" "${CONFIG_FILE}"
 echo "build-apex: running next build with apex config"
 rm -rf "${FRONTEND_DIR}/.next-apex" "${FRONTEND_DIR}/out" "${FRONTEND_DIR}/out-apex"
 
-# NEXT_PUBLIC_SITE_URL drives canonical URLs and og:image / og:url meta
+# TBD_SITE_URL drives canonical URLs and og:image / og:url meta
 # tags from lib/site.ts. On apex it MUST point at the apex host so the
 # rendered HTML doesn't claim canonical = app.thebetterdecision.com.
 # Override via env when invoking the script for a non-prod apex host.
-: "${NEXT_PUBLIC_SITE_URL:=https://thebetterdecision.com}"
-export NEXT_PUBLIC_SITE_URL
+: "${TBD_SITE_URL:=https://thebetterdecision.com}"
+export TBD_SITE_URL
 
-NEXT_PUBLIC_BUILD_TARGET=apex \
+TBD_BUILD_TARGET=apex \
   npx next build
 
 # Next 16 with `output: 'export'` + a custom `distDir` writes the static
@@ -252,8 +252,8 @@ fi
 
 COMMIT_SHA="$(git -C "${FRONTEND_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-APEX_URL="${NEXT_PUBLIC_APEX_URL:-https://thebetterdecision.com}"
-APP_URL="${NEXT_PUBLIC_APP_URL:-https://app.thebetterdecision.com}"
+APEX_URL="${TBD_APEX_URL:-https://thebetterdecision.com}"
+APP_URL="${TBD_APP_URL:-https://app.thebetterdecision.com}"
 
 # Static SEO replacements for the routes staged out of the build.
 # robots.txt — allow indexing of the apex landing surface, point at the

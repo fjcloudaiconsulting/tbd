@@ -1,5 +1,6 @@
 "use client";
 
+import { runtimeConfig } from "@/lib/runtime-config";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -60,7 +61,7 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
   const [captchaRequired, setCaptchaRequired] = useState(false);
   const [captchaToken, setCaptchaToken] = useState("");
   const turnstileRef = useRef<TurnstileInstance>(null);
-  const captchaSiteKey = process.env.NEXT_PUBLIC_CAPTCHA_SITE_KEY ?? "";
+  const captchaSiteKey = runtimeConfig().captchaSiteKey;
 
   useEffect(() => {
     let cancelled = false;
@@ -279,7 +280,7 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
           <button type="submit" disabled={submitting || usernameStatus === "taken"} className={`w-full ${btnPrimary}`}>
             {submitting ? "Creating account..." : "Create Account"}
           </button>
-          {process.env.NEXT_PUBLIC_GOOGLE_SSO_ENABLED === "true" && (
+          {runtimeConfig().googleSsoEnabled && (
             <>
               <div className="flex items-center gap-3 my-4">
                 <div className="flex-1 border-t border-border" />

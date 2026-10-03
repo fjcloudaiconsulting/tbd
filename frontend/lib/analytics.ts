@@ -1,7 +1,7 @@
 // GA4 measurement config. GA loads ONLY on the apex marketing build; the
 // authenticated app host never renders it (see GoogleAnalytics.tsx).
 export const GA_MEASUREMENT_ID =
-  process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID || "G-GRXDVTVBLV";
+  process.env.TBD_GA_MEASUREMENT_ID || "G-GRXDVTVBLV";
 
 // First-party measurement path for the Google tag gateway. With the gateway,
 // the gtag.js loader (and all GA collection) is served from our own domain
@@ -11,9 +11,9 @@ export const GA_MEASUREMENT_ID =
 // external origins ('self' covers it). Must match the CloudFront behavior's
 // path pattern (/vd9r/*).
 export const GA_GATEWAY_PATH =
-  process.env.NEXT_PUBLIC_GA_GATEWAY_PATH || "/vd9r/";
+  process.env.TBD_GA_GATEWAY_PATH || "/vd9r/";
 
-export const isApexBuild = process.env.NEXT_PUBLIC_BUILD_TARGET === "apex";
+export const isApexBuild = process.env.TBD_BUILD_TARGET === "apex";
 
 // One value per DISTINCT signup CTA placement. The GA4 `cta_location`
 // breakdown is only useful when no two placements share a value, so every

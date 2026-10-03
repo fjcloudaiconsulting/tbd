@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 
 import GoogleSSOButton from "@/components/auth/GoogleSSOButton";
 
-const ENV_KEY = "NEXT_PUBLIC_GOOGLE_SSO_ENABLED";
+const ENV_KEY = "TBD_GOOGLE_SSO_ENABLED";
 
 function withFlag(value: string | undefined, fn: () => void) {
   const original = process.env[ENV_KEY];
@@ -66,7 +66,7 @@ describe("GoogleSSOButton", () => {
     });
   });
 
-  it("renders nothing when NEXT_PUBLIC_GOOGLE_SSO_ENABLED is not 'true'", () => {
+  it("renders nothing when TBD_GOOGLE_SSO_ENABLED is not 'true'", () => {
     withFlag(undefined, () => {
       const { container } = render(<GoogleSSOButton onClick={() => {}} />);
       expect(container.firstChild).toBeNull();

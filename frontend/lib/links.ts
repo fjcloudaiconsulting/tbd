@@ -10,18 +10,18 @@
 // cookies do not cross the host boundary, so we MUST link absolutely to the
 // app host for sign-in and sign-up.
 //
-// Selection is via NEXT_PUBLIC_BUILD_TARGET, set at build time:
+// Selection is via TBD_BUILD_TARGET, set at build time:
 //   - "apex"  -> CTAs are absolute URLs to BRAND_APP_URL
 //   - unset / anything else -> CTAs are relative paths (existing behaviour)
 //
 // BRAND_APP_URL defaults to https://app.thebetterdecision.com but can be
-// overridden via NEXT_PUBLIC_APP_URL (no trailing slash). This lets the apex
+// overridden via TBD_APP_URL (no trailing slash). This lets the apex
 // build target a staging app host if needed.
 
-const rawAppUrl = (process.env.NEXT_PUBLIC_APP_URL || "").trim();
+const rawAppUrl = (process.env.TBD_APP_URL || "").trim();
 export const BRAND_APP_URL = (rawAppUrl || "https://app.thebetterdecision.com").replace(/\/$/, "");
 
-export const IS_APEX_BUILD = process.env.NEXT_PUBLIC_BUILD_TARGET === "apex";
+export const IS_APEX_BUILD = process.env.TBD_BUILD_TARGET === "apex";
 
 function joinAppUrl(path: string): string {
   if (!path.startsWith("/")) {

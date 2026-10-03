@@ -230,7 +230,7 @@ For the full router-by-router and service-by-service map, see the live file tree
 
 ### Key design decisions
 
-- **All config via env vars.** `pydantic-settings` in backend, `NEXT_PUBLIC_` prefix in frontend. See `docs/operations/ENVIRONMENT.md`.
+- **All config via env vars.** `pydantic-settings` in backend, `TBD_*` runtime env in frontend (never `NEXT_PUBLIC_*`: one image serves every env). See `docs/operations/ENVIRONMENT.md`.
 - **Stateless backend.** No in-memory state. JWT for auth. Ready for horizontal scaling.
 - **Migrations auto-run on startup in dev.** In production they run as a `PRE_DEPLOY` job (App Platform) before the app starts. See [Database migrations](#database-migrations).
 - **First user is superadmin.** No bootstrap seed needed.

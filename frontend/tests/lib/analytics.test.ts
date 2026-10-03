@@ -8,7 +8,7 @@ afterEach(() => {
 
 async function loadAnalytics(buildTarget?: string) {
   vi.resetModules();
-  if (buildTarget) vi.stubEnv("NEXT_PUBLIC_BUILD_TARGET", buildTarget);
+  if (buildTarget) vi.stubEnv("TBD_BUILD_TARGET", buildTarget);
   return import("@/lib/analytics");
 }
 

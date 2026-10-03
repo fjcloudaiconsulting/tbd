@@ -5,28 +5,28 @@ import { render } from "@testing-library/react";
 // set process.env and call vi.resetModules() BEFORE dynamically importing
 // the module under test. Pattern mirrors build-apex.test.ts's loadLinks().
 
-const origTarget = process.env.NEXT_PUBLIC_BUILD_TARGET;
-const origMeasurementId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
+const origTarget = process.env.TBD_BUILD_TARGET;
+const origMeasurementId = process.env.TBD_GA_MEASUREMENT_ID;
 
 afterEach(() => {
   // Restore original env vars and flush module registry.
   if (origTarget === undefined) {
-    delete process.env.NEXT_PUBLIC_BUILD_TARGET;
+    delete process.env.TBD_BUILD_TARGET;
   } else {
-    process.env.NEXT_PUBLIC_BUILD_TARGET = origTarget;
+    process.env.TBD_BUILD_TARGET = origTarget;
   }
   if (origMeasurementId === undefined) {
-    delete process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
+    delete process.env.TBD_GA_MEASUREMENT_ID;
   } else {
-    process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID = origMeasurementId;
+    process.env.TBD_GA_MEASUREMENT_ID = origMeasurementId;
   }
   vi.resetModules();
 });
 
 describe("GoogleAnalytics — non-apex build", () => {
-  it("renders nothing when NEXT_PUBLIC_BUILD_TARGET is not 'apex'", async () => {
-    delete process.env.NEXT_PUBLIC_BUILD_TARGET;
-    delete process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
+  it("renders nothing when TBD_BUILD_TARGET is not 'apex'", async () => {
+    delete process.env.TBD_BUILD_TARGET;
+    delete process.env.TBD_GA_MEASUREMENT_ID;
     vi.resetModules();
 
     const { GoogleAnalytics } = await import(
@@ -48,8 +48,8 @@ describe("GoogleAnalytics — non-apex build", () => {
 
 describe("GoogleAnalytics — apex build", () => {
   it("renders GA4 scripts for the apex build", async () => {
-    process.env.NEXT_PUBLIC_BUILD_TARGET = "apex";
-    process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID = "G-GRXDVTVBLV";
+    process.env.TBD_BUILD_TARGET = "apex";
+    process.env.TBD_GA_MEASUREMENT_ID = "G-GRXDVTVBLV";
     vi.resetModules();
 
     const { GoogleAnalytics } = await import(
@@ -92,8 +92,8 @@ describe("GoogleAnalytics — apex build", () => {
   });
 
   it("sets a denied Consent Mode default BEFORE gtag config", async () => {
-    process.env.NEXT_PUBLIC_BUILD_TARGET = "apex";
-    process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID = "G-GRXDVTVBLV";
+    process.env.TBD_BUILD_TARGET = "apex";
+    process.env.TBD_GA_MEASUREMENT_ID = "G-GRXDVTVBLV";
     vi.resetModules();
 
     const { GoogleAnalytics } = await import(

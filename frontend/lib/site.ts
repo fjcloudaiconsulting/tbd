@@ -1,6 +1,6 @@
-// Treat empty string as unset — NEXT_PUBLIC_SITE_URL= in .env or a blank
+// Treat empty string as unset — TBD_SITE_URL= in .env or a blank
 // App Platform value would otherwise produce new URL("") and crash the build.
-const rawSiteUrl = (process.env.NEXT_PUBLIC_SITE_URL || "").trim();
+const rawSiteUrl = (process.env.TBD_SITE_URL || "").trim();
 export const siteUrl = (rawSiteUrl || "https://app.thebetterdecision.com").replace(/\/$/, "");
 
 // The apex (marketing) host. This is the SINGLE canonical home for all
@@ -10,7 +10,7 @@ export const siteUrl = (rawSiteUrl || "https://app.thebetterdecision.com").repla
 // Pages that exist on BOTH hosts (/, /privacy, /terms, /docs, /docs/plans)
 // must canonicalize to the apex so the app-subdomain copies don't split
 // ranking signal. App-only pages (/login, /register) keep self-canonicals.
-const rawApexUrl = (process.env.NEXT_PUBLIC_APEX_URL || "").trim();
+const rawApexUrl = (process.env.TBD_APEX_URL || "").trim();
 export const apexUrl = (rawApexUrl || "https://thebetterdecision.com").replace(/\/$/, "");
 
 // Absolute apex canonical URL for a shared public page. Includes the

@@ -32,7 +32,7 @@ import { logger } from "./logger";
 
 const SERVER_API_URL =
   process.env.BACKEND_INTERNAL_URL ||
-  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.TBD_API_URL ||
   "http://localhost:8000";
 
 // Default bounded budget for every server-side fetch. Tighter than the

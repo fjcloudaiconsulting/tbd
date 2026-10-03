@@ -108,10 +108,8 @@ the env-var name (uppercased).
 | `CAPTCHA_EXPECTED_HOSTNAME` | no | `""` | `.env` empty (skipped in dev) | unset | `.do/app.yaml` (`app.thebetterdecision.com`) | no | Pins the `hostname` field of the verify response. Empty disables the check (provider's widget-domain allowlist still applies). | Tokens issued from a different origin are still accepted when empty. |
 | `CAPTCHA_EXPECTED_ACTION` | no | `""` | `.env` empty | unset | `.do/app.yaml` (`register`) | no | Pins the `action` field of the verify response (set client-side via the Turnstile widget options). Defense-in-depth pairing for the hostname pin. | Tokens issued for a different action would be accepted when empty. |
 | `BILLING_UI_ENABLED` | no | `false` | `.env` `false` | unset (defaults to `false`) | `.do/app.yaml` `false` (flip to `true` when payment platform is wired) | no | Master switch for the customer-facing plan / trial / billing surface. When `false`, the trial banner, settings Billing tab, and `/settings/billing` plan grid are hidden; `/settings/billing` renders an explanatory empty state. Admin / operator views under `/admin/*` and `/system/*` are unaffected. Exposed via `/api/v1/auth/status` so a backend flip becomes a customer-facing change on the next page load. Backend API gating (`/api/v1/subscriptions`, `/api/v1/plans`) is NOT in scope; UI-only hide. | Trial / billing UI visible to customers when `true` before payment is live. Flip to `false` to hide. |
-| `FEATURE_REPORTS_V2` | no | `false` | `.env` `false` | unset (defaults to `false`) | `.do/app.yaml` `false` (flip to `true` in PR 4 once frontend + templates + sharing ship) | no | Master switch for the Reports v2 backend. When `false`, every route under `/api/v1/reports/*` returns 404 via a router-level dependency. Spec `specs/2026-05-22-reports-v2-flexible-canvas.md` §11. Frontend nav + routes are gated separately via `NEXT_PUBLIC_FEATURE_REPORTS_V2`; both sides flip together. | Reports surface unreachable from any client when `false`. Reports listing / CRUD / query unavailable. |
-| `NEXT_PUBLIC_FEATURE_REPORTS_V2` | no | `false` | `.env` `false` | `.env` `false` | `.do/app.yaml` `false` (flip to `true` in PR 4) | no | Build-time gate for the Reports v2 frontend nav item and route shells. When not exactly `"true"`, the Reports menu entry is hidden and `/reports/*` routes are absent from the bundle. Pairs with the backend `FEATURE_REPORTS_V2` 404 gate. | Reports nav + routes hidden in the bundle when `false`. |
-| `NEXT_PUBLIC_CAPTCHA_PROVIDER` | no | `"turnstile"` | `.env` | `.env` | `.do/app.yaml` | no | Build-time label inlined into the Next.js bundle. Reserved for a second provider later. | Mislabel only. |
-| `NEXT_PUBLIC_CAPTCHA_SITE_KEY` | yes when `CAPTCHA_REQUIRED=true` | `1x00000000000000000000BB` (Turnstile always-pass test key) | `.env` (test key) | `.env` (test key) | `.do/app.yaml` (real Cloudflare site key) | no | Build-time inlined site key the widget renders against. Changing the value requires a frontend image rebuild. Widget render is gated on both `captcha_required` from `/api/v1/auth/status` AND a non-empty site key, so an empty value here means no widget renders even when the backend asks for one. | Empty in prod + `CAPTCHA_REQUIRED=true` → users can never obtain a token, every register attempt is rejected with `captcha_failed`. |
+| `FEATURE_REPORTS_V2` | no | `false` | `.env` `false` | unset (defaults to `false`) | `.do/app.yaml` `false` (flip to `true` in PR 4 once frontend + templates + sharing ship) | no | Master switch for the Reports v2 backend. When `false`, every route under `/api/v1/reports/*` returns 404 via a router-level dependency. Spec `specs/2026-05-22-reports-v2-flexible-canvas.md` §11. The frontend has no separate flag. | Reports surface unreachable from any client when `false`. Reports listing / CRUD / query unavailable. |
+| `TBD_CAPTCHA_SITE_KEY` | yes when `CAPTCHA_REQUIRED=true` | `1x00000000000000000000BB` (Turnstile always-pass test key) | `.env` (test key) | `.env` (test key) | `.do/app.yaml` (real Cloudflare site key) | no | Runtime site key the widget renders against. Changing the value needs a redeploy only. Widget render is gated on both `captcha_required` from `/api/v1/auth/status` AND a non-empty site key, so an empty value here means no widget renders even when the backend asks for one. | Empty in prod + `CAPTCHA_REQUIRED=true` → users can never obtain a token, every register attempt is rejected with `captcha_failed`. |
 | `GOOGLE_CLIENT_SECRET` | yes for SSO | `""` | `.env` | unset | `.do/app.yaml` SECRET | yes | Google OAuth2 client secret. | SSO token exchange fails with `invalid_client`. |
 | `BACKEND_CORS_ORIGINS` | yes | `http://localhost:3000` | `.env` (`http://localhost`) | unset | `.do/app.yaml` (`https://app.thebetterdecision.com`) | no | Comma-separated allowlist for `Access-Control-Allow-Origin`. | Browser blocks frontend XHR with CORS error. |
 | `DEFAULT_PLAN_SLUG` | no | `pro` | `.env` (optional) | unset | inherit default | no | Default subscription plan slug at first-user creation. | Default `pro` used (beta posture). |
@@ -161,16 +159,20 @@ demo1234` user documented in CONTRIBUTING.md.
 
 ### Frontend (Next.js)
 
-Loaded at build time (`NEXT_PUBLIC_*`) or at server runtime (everything
-else). `NEXT_PUBLIC_*` values are baked into the static JS bundle, so they
-MUST be set at BUILD time in App Platform.
+All frontend config is read at runtime (`TBD_*`, via
+`frontend/lib/runtime-config.ts`): the root layout serialises it into
+`window.__TBD_CONFIG__` per request, so ONE image serves every environment and
+changing a value needs a redeploy or restart, not a rebuild. Never use
+`NEXT_PUBLIC_*` (CI fails on it). The apex static export (`TBD_BUILD_TARGET=apex`,
+`TBD_APP_URL`, `TBD_APEX_URL`, `TBD_GA_*`) is a separate artifact whose
+inputs are build-time by nature; `next.config.apex.ts` inlines them.
 
 | Variable | Required | Default | Local | CI | Prod | Sensitive | Purpose | Failure mode if missing |
 |---|---|---|---|---|---|---|---|---|
-| `NEXT_PUBLIC_API_URL` | no | `""` | `.env` (empty for same-origin via nginx) | unset | `.do/app.yaml` (empty for same-origin via ingress) | no | Prefix prepended to fetch URLs in `lib/api.ts`. Empty means same-origin. | Cross-origin deployments lose API access if missing and not same-origin. |
-| `NEXT_PUBLIC_SITE_URL` | no | empty (no canonical headers emitted) | `.env` (`https://app.thebetterdecision.com`) | unset | inherit `.env.example` or set explicitly | no | Canonical URL used in SEO metadata (sitemap, robots, OG image URLs). | Canonical tags and OG URLs are omitted. |
-| `NEXT_PUBLIC_GOOGLE_SSO_ENABLED` | yes when SSO is wired | `false` | `.env` (`true` to show the button) | unset | `.do/app.yaml` (`true`) | no | `GoogleSSOButton`, `LoginPageBody`, and `RegisterPageBody` render the "Sign in with Google" button only when this is exactly the string `"true"`. | Button is hidden; users have no SSO entry point. |
-| `NEXT_PUBLIC_APP_VERSION` | no | `dev` | unset | unset | unset (consider setting at build) | no | Stamped into feedback widget payloads as `app_version`. | Falls back to `dev`. |
+| `TBD_API_URL` | no | `""` | `.env` (empty for same-origin via nginx) | unset | `.do/app.yaml` (empty for same-origin via ingress) | no | Prefix prepended to fetch URLs in `lib/api.ts`. Empty means same-origin. | Cross-origin deployments lose API access if missing and not same-origin. |
+| `TBD_SITE_URL` | no | empty (no canonical headers emitted) | `.env` (`https://app.thebetterdecision.com`) | unset | inherit `.env.example` or set explicitly | no | Canonical URL used in SEO metadata (sitemap, robots, OG image URLs). | Canonical tags and OG URLs are omitted. |
+| `TBD_GOOGLE_SSO_ENABLED` | yes when SSO is wired | `false` | `.env` (`true` to show the button) | unset | `.do/app.yaml` (`true`) | no | `GoogleSSOButton`, `LoginPageBody`, and `RegisterPageBody` render the "Sign in with Google" button only when this is exactly the string `"true"`. | Button is hidden; users have no SSO entry point. |
+| `TBD_APP_VERSION` | no | `dev` | unset | unset | unset | no | Stamped into feedback widget payloads as `app_version`. | Falls back to `dev`. |
 | `BACKEND_INTERNAL_URL` | yes for RSC | unset | `docker-compose.yml` (`http://backend:8000`) | unset | `.do/app.yaml` RUN_TIME (`${backend.PRIVATE_URL}`) | no | Server-side fetch base URL for React Server Components (`forecast-plans`, `import/reconcile`, `lib/auth-server.ts`). | RSC pages cannot reach the backend; pages 500. |
 | `HOSTNAME` | yes (DO) | unset | unset | unset | `.do/app.yaml` (`0.0.0.0`) | no | Forces Next standalone server to bind on all interfaces inside the container. | App Platform health check times out. |
 | `NODE_ENV` | implicit | `production` in built image, `development` under `next dev` | container default | container default | container default | no | Switches CSP `unsafe-eval`, dev-only error logging, hot reload. | Production behavior assumed when unset (Next default). |
@@ -201,7 +203,7 @@ deploy contract.
 | `PFV_MIGRATE_OK_OFF_MAIN=1` | backend (lifespan + `./tbd migrate`) | Escape hatch for the branch guard that refuses to run migrations from a non-`main` checkout. Off-by-default. | `tbd` CLI, `backend/app/main.py` |
 | `PFV_DEPDRIFT_SKIP=1` | `./tbd` CLI | Skips the host-vs-container `package-lock.json` SHA check on `./tbd start`. | `tbd` CLI line 48, PR #249 |
 | `PFV_DEPDRIFT_HOST_HASH`, `PFV_DEPDRIFT_CONTAINER_HASH` | `./tbd` CLI (tests only) | Test seam for the drift guard. Not for human use. | `tbd` CLI |
-| `NEXT_PUBLIC_GOOGLE_SSO_ENABLED=true` | frontend (build time) | Shows the "Sign in with Google" button on `/login`, `/register`, and step-up flows. Hidden otherwise. | PR #229 |
+| `TBD_GOOGLE_SSO_ENABLED=true` | frontend (runtime) | Shows the "Sign in with Google" button on `/login`, `/register`, and step-up flows. Hidden otherwise. | PR #229 |
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | backend | SQLAlchemy engine pool sizing. Defaults safe for single-replica; override when scaling HPA so `replicas * (pool_size + max_overflow)` stays under the managed-DB connection cap. | PR #251 (K8S-3) |
 | `COOKIE_SECURE` | backend | When `true`, cookies are flagged `Secure` and browsers refuse to send them over HTTP. Must be `false` for local-dev HTTP and `true` for prod HTTPS. | `backend/app/config.py` |
 | `AUTH_DEBUG_LOGGING=true` | backend | Enables the `auth.refresh.rejected` structured log event at every terminal-401 raise site in `/auth/refresh`. Each event carries a stable `reason` enum and 8-char SHA-256 prefixes of jti/sid (raw values are never logged). Flip on during incident triage; disable when done. The 401 still fires regardless of the flag — only the diagnostic emission is gated. | `backend/app/routers/auth.py` (`_log_refresh_rejected`), `backend/app/config.py` |
@@ -246,7 +248,7 @@ These are committed as plaintext in `.do/app.yaml`:
 - `COOKIE_SECURE`
 - `MAILGUN_DOMAIN`, `MAILGUN_REGION`, `EMAIL_FROM`
 - `PFV_RUNTIME`
-- `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_GOOGLE_SSO_ENABLED`
+- `TBD_API_URL`, `TBD_GOOGLE_SSO_ENABLED`
 - `HOSTNAME`, `BACKEND_INTERNAL_URL`
 
 ---
@@ -260,12 +262,12 @@ These are committed as plaintext in `.do/app.yaml`:
    - Set `JWT_SECRET_KEY` to a real 32+ char secret.
    - Leave Mailgun blank for console-logged email.
    - Leave Google blank unless you have real OAuth credentials.
-   - `NEXT_PUBLIC_GOOGLE_SSO_ENABLED=false` unless you do (otherwise the
+   - `TBD_GOOGLE_SSO_ENABLED=false` unless you do (otherwise the
      button errors out on click).
 3. `./tbd start`
 4. `docker compose` reads `.env` via `env_file: .env` on the backend
    service. The frontend service gets `BACKEND_INTERNAL_URL` and
-   `NEXT_PUBLIC_API_URL` inline from `docker-compose.yml`.
+   `TBD_API_URL` inline from `docker-compose.yml`.
 
 ### CI (GitHub Actions)
 
@@ -299,10 +301,8 @@ The deploy workflow (`.github/workflows/release.yml`) uses
 `app_spec_location: .do/app.yaml` and does NOT set `app_name` (see
 [Spec-sync hazards](#spec-sync-hazards-digitalocean-app-platform)).
 
-For build-time `NEXT_PUBLIC_*` vars (the SSO flag is the load-bearing
-example), changing the spec triggers an App Platform rebuild because the
-JS bundle must be regenerated. Expect a 2 to 3 minute auth-flow downtime
-during the rebuild.
+Frontend `TBD_*` vars are RUN_TIME only: changing one redeploys the same
+image with the new env, with no rebuild.
 
 ---
 
@@ -311,31 +311,13 @@ during the rebuild.
 ### "Google SSO button doesn't appear in production"
 
 Symptom: `/login` and `/register` render without the "Sign in with
-Google" button. Cause: `NEXT_PUBLIC_GOOGLE_SSO_ENABLED` is not set
-(or not exactly the string `"true"`) at BUILD time. Fix: confirm the
-variable is present in `.do/app.yaml`'s `frontend` `envs` block with
-scope `RUN_AND_BUILD_TIME` and value `"true"`, then re-deploy
-(`doctl apps update ... --spec .do/app.yaml`). A fresh build is required;
-runtime-only changes do not bake into the JS bundle.
-
-### "NEXT_PUBLIC_* env set in App Platform spec but not visible in client bundle"
-
-Symptom: a `NEXT_PUBLIC_*` env is correctly declared in `.do/app.yaml`
-with `scope: RUN_AND_BUILD_TIME`, `doctl apps update` succeeds, the
-build finishes green, but `process.env.NEXT_PUBLIC_<NAME>` is still
-`undefined` in the served JS bundle (so the feature it gates stays
-hidden). Cause: `frontend/Dockerfile`'s build stage requires an explicit
-`ARG NEXT_PUBLIC_<NAME>` line for every `NEXT_PUBLIC_*` env. Without
-the `ARG`, the build stage does not see the env even though DO App
-Platform's `RUN_AND_BUILD_TIME` scope makes it available to the build
-CONTEXT. Next.js then inlines `undefined === "true"` as `false` and the
-feature stays off. Fix: adding a new `NEXT_PUBLIC_*` env requires
-(a) adding to `.do/app.yaml`, (b) adding an `ARG NEXT_PUBLIC_<NAME>`
-line (and matching `ENV NEXT_PUBLIC_<NAME>=$NEXT_PUBLIC_<NAME>` to
-promote it into the `npm run build` environment) to the build stage of
-`frontend/Dockerfile`, (c) `doctl apps update <APP_ID> --spec .do/app.yaml`
-to trigger a fresh build. This affects every `NEXT_PUBLIC_*` env, not
-just the SSO flag.
+Google" button. Cause: `TBD_GOOGLE_SSO_ENABLED` is not set (or not exactly the
+string `"true"`) in the running frontend. Fix: confirm the variable is in
+`.do/app.yaml`'s `frontend` `envs` block (scope `RUN_TIME`, value `"true"`) and
+in the live spec (`doctl apps spec get <APP_ID>`), then re-deploy. No rebuild
+is needed. Right after the runtime-config release, also check the live spec has
+`TBD_API_URL`, `TBD_GOOGLE_SSO_ENABLED` and `TBD_CAPTCHA_SITE_KEY` rather than
+the old `NEXT_PUBLIC_*` keys.
 
 ### "Audit log shows ingress IP not user IP in production"
 
@@ -357,9 +339,9 @@ coordinator decision. See PR #245 for context on the storage backend.
 ### "Frontend can't reach the API in production"
 
 Symptom: every fetch returns 404 or hits the wrong host. Cause:
-`NEXT_PUBLIC_API_URL` is set to a value other than the empty string
+`TBD_API_URL` is set to a value other than the empty string
 when the frontend is same-origin with the backend (the production
-default). Fix: leave `NEXT_PUBLIC_API_URL=""` in `.do/app.yaml` so
+default). Fix: leave `TBD_API_URL=""` in `.do/app.yaml` so
 fetch URLs become relative and route through the App Platform ingress
 back to the `backend` component.
 
@@ -443,10 +425,10 @@ on the next push. Treat the file as the complete env contract.
 - `backend/app/rate_limit.py` — `PFV_RUNTIME` consumer.
 - `backend/app/security.py` — `JWT_SECRET_KEY` consumer.
 - `backend/app/services/email_service.py` — Mailgun env consumer.
-- `frontend/next.config.ts` — CSP build, `NEXT_PUBLIC_API_URL` origin
-  allowlist.
+- `frontend/proxy.ts` + `lib/security-headers.ts` — per-request CSP, `TBD_API_URL` origin
+  allowlist (via `lib/security-headers.ts`).
 - `frontend/components/auth/GoogleSSOButton.tsx` — gates on
-  `NEXT_PUBLIC_GOOGLE_SSO_ENABLED`.
+  `TBD_GOOGLE_SSO_ENABLED`.
 - `pfv` (CLI) — `PFV_DEPDRIFT_*` and `PFV_MIGRATE_OK_OFF_MAIN` consumers.
 - `.github/workflows/release.yml`, `.github/workflows/deploy.yml` — GH
   Actions secrets and deploy invocation.

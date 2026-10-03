@@ -8,7 +8,7 @@ import type { NextConfig } from "next";
 // The PRIMARY build (next.config.ts, `npm run build`) still produces the
 // standalone Node bundle deployed to DigitalOcean App Platform on
 // app.thebetterdecision.com. The two targets share the same Next.js app;
-// build-target selection is via NEXT_PUBLIC_BUILD_TARGET=apex.
+// build-target selection is via TBD_BUILD_TARGET=apex.
 //
 // Route allowlisting:
 //   `output: 'export'` requires every route in `app/` to be statically
@@ -71,6 +71,19 @@ const WEBPACK_APEX_ALIASES: Record<string, string> = {
 const apexConfig: NextConfig = {
   output: "export",
   trailingSlash: true,
+  // The static export has no server to read env from, so its build-time
+  // inputs are inlined into the bundles explicitly. (The app image uses
+  // lib/runtime-config.ts instead and inlines nothing.)
+  env: Object.fromEntries(
+    [
+      "TBD_BUILD_TARGET",
+      "TBD_SITE_URL",
+      "TBD_APP_URL",
+      "TBD_APEX_URL",
+      "TBD_GA_MEASUREMENT_ID",
+      "TBD_GA_GATEWAY_PATH",
+    ].map((k) => [k, process.env[k] ?? ""]),
+  ),
   // CloudFront serves images raw; we don't run the Next image optimizer.
   images: { unoptimized: true },
   poweredByHeader: false,

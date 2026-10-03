@@ -1,5 +1,6 @@
 "use client";
 
+import { runtimeConfig } from "@/lib/runtime-config";
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -238,7 +239,7 @@ export default function LoginPageBody() {
           <button type="submit" disabled={submitting} className={`w-full ${btnPrimary}`}>
             {submitting ? "Signing in..." : "Sign In"}
           </button>
-          {process.env.NEXT_PUBLIC_GOOGLE_SSO_ENABLED === "true" && (
+          {runtimeConfig().googleSsoEnabled && (
             <>
               <div className="flex items-center gap-3 my-4">
                 <div className="flex-1 border-t border-border" />

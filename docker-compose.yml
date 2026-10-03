@@ -210,16 +210,15 @@ services:
     expose:
       - "3000"
     environment:
-      - NEXT_PUBLIC_API_URL=
+      - TBD_API_URL=
       # Server-side (RSC) reach to the backend. Browser requests use the
       # nginx ingress (relative URLs); server-side fetches must hit the
       # backend service directly inside the compose network.
       - BACKEND_INTERNAL_URL=http://backend:8000
-      # Pull NEXT_PUBLIC_* envs from host .env so dev mode mirrors prod.
-      # Add new NEXT_PUBLIC_* envs here too.
-      - NEXT_PUBLIC_GOOGLE_SSO_ENABLED=${NEXT_PUBLIC_GOOGLE_SSO_ENABLED:-}
-      - NEXT_PUBLIC_CAPTCHA_PROVIDER=${NEXT_PUBLIC_CAPTCHA_PROVIDER:-turnstile}
-      - NEXT_PUBLIC_CAPTCHA_SITE_KEY=${NEXT_PUBLIC_CAPTCHA_SITE_KEY:-1x00000000000000000000BB}
+      # Pull TBD_* envs from host .env so dev mode mirrors prod.
+      # Add new TBD_* envs here too.
+      - TBD_GOOGLE_SSO_ENABLED=${TBD_GOOGLE_SSO_ENABLED:-}
+      - TBD_CAPTCHA_SITE_KEY=${TBD_CAPTCHA_SITE_KEY:-1x00000000000000000000BB}
     depends_on:
       - backend
     volumes:

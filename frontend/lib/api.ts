@@ -1,6 +1,8 @@
 import type { SchedulerSettings } from "@/lib/types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+import { runtimeConfig } from "@/lib/runtime-config";
+
+const apiUrl = () => runtimeConfig().apiUrl;
 const DEFAULT_TIMEOUT_MS = 10_000;
 // Auth recovery paths (/auth/refresh, /auth/me, /auth/status) get a
 // longer budget so the first request after a hibernated DO App Platform
@@ -368,7 +370,7 @@ async function refreshAccessTokenOnce(attempt: number): Promise<RefreshResult> {
     // handshake + container boot doesn't false-positive at the
     // observed 28s tail. See RECOVERY_TIMEOUT_MS comment.
     res = await fetchWithTimeout(
-      `${API_URL}/api/v1/auth/refresh`,
+      `${apiUrl()}/api/v1/auth/refresh`,
       {
         method: "POST",
         credentials: "include",
@@ -454,7 +456,7 @@ async function probeAuthMeAlive(): Promise<boolean> {
     // logout when /me confirms session liveness after a transient
     // refresh failure.
     const res = await fetchWithTimeout(
-      `${API_URL}/api/v1/auth/me`,
+      `${apiUrl()}/api/v1/auth/me`,
       {
         method: "GET",
         credentials: "include",
@@ -526,7 +528,7 @@ export async function apiFetch<T>(
   }
 
   let res = await fetchWithTimeout(
-    `${API_URL}${path}`,
+    `${apiUrl()}${path}`,
     {
       ...fetchInit,
       headers,
@@ -573,7 +575,7 @@ export async function apiFetch<T>(
       headers.set("Authorization", `Bearer ${refreshResult.accessToken}`);
       const retryStartedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
       res = await fetchWithTimeout(
-        `${API_URL}${path}`,
+        `${apiUrl()}${path}`,
         {
           ...fetchInit,
           headers,

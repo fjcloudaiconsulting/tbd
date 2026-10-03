@@ -838,9 +838,9 @@ jobs:
       - name: Run apex static export build
         working-directory: frontend
         env:
-          NEXT_PUBLIC_BUILD_TARGET: apex
-          NEXT_PUBLIC_SITE_URL: https://thebetterdecision.com
-          NEXT_PUBLIC_APP_URL: https://app.thebetterdecision.com
+          TBD_BUILD_TARGET: apex
+          TBD_SITE_URL: https://thebetterdecision.com
+          TBD_APP_URL: https://app.thebetterdecision.com
         run: |
           npm run build:apex
           # Belt-and-suspenders sanity: the build script's own trap should
