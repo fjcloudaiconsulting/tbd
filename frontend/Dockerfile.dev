@@ -2,8 +2,11 @@ FROM node:22-slim
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm install
+# pnpm version comes from packageManager in package.json.
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# Local compose only (BuildKit); the DO-built frontend/Dockerfile has no cache mount.
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
 
 COPY . .
 
@@ -11,4 +14,4 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 EXPOSE 3000
 
-CMD ["npm", "run", "dev"]
+CMD ["pnpm", "dev"]

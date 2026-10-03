@@ -5,7 +5,7 @@ import type { NextConfig } from "next";
 // export of the landing surface only, for upload to S3 + CloudFront on
 // the apex host (thebetterdecision.com).
 //
-// The PRIMARY build (next.config.ts, `npm run build`) still produces the
+// The PRIMARY build (next.config.ts, `pnpm build`) still produces the
 // standalone Node bundle deployed to DigitalOcean App Platform on
 // app.thebetterdecision.com. The two targets share the same Next.js app;
 // build-target selection is via TBD_BUILD_TARGET=apex.
@@ -88,7 +88,7 @@ const apexConfig: NextConfig = {
   images: { unoptimized: true },
   poweredByHeader: false,
   // Distribute landing assets to a SEPARATE out directory so the standard
-  // `npm run build` artefacts under `.next/` / `out/` are untouched.
+  // `pnpm build` artefacts under `.next/` / `out/` are untouched.
   distDir: ".next-apex",
   // Next.js 16 defaults to Turbopack. Configure Turbopack's resolveAlias
   // so the apex-target stubs land in the bundle.

@@ -14,7 +14,7 @@ Sibling docs you will end up at:
 
 - Docker and Docker Compose.
 - Git.
-- Node.js 22+ on the host (only needed if you want `tsc` outside the container). The app itself runs entirely in containers.
+- Node.js 22+ and pnpm on the host (only needed if you want `tsc` outside the container). Run `corepack enable` once so `pnpm` follows `packageManager` in `frontend/package.json`. Use the corepack bundled with current Node 22; an older global corepack fails with `Cannot find module .../pnpm/12.8.1/bin/pnpm.cjs` (fix: `npm i -g corepack@latest`); Node 25+ no longer ships corepack, so install pnpm separately there. The app itself runs entirely in containers.
 
 ## Quickstart (under 30 minutes)
 
@@ -52,7 +52,7 @@ Full env var reference, including production-only and feature-flag variables, li
 flowchart TD
     A[Made a change] --> B{What did you touch?}
     B -->|backend/**| C[docker compose exec backend pytest]
-    B -->|frontend/**| D[docker compose exec frontend npm test<br/>docker compose exec frontend npx tsc --noEmit]
+    B -->|frontend/**| D[docker compose exec frontend pnpm test<br/>docker compose exec frontend pnpm exec tsc --noEmit]
     B -->|backend/alembic/versions/**| E[Restart backend so lifespan applies the migration<br/>./tbd restart]
     B -->|nginx/** or .do/**| F[./tbd prod for a local prod-shaped run<br/>Smoke endpoints by hand]
     B -->|docs only| G[No tests required.<br/>Use chore: or docs: prefix so semantic-release skips deploy.]
@@ -514,21 +514,21 @@ If you are working through a parallel agent session, use `-p team-<name>` on eve
 ### Frontend (vitest / jest)
 
 ```bash
-docker compose exec frontend npm test                                  # whole suite + the act() warning gate
-docker compose exec frontend npx vitest run tests/lib/api.test.ts      # one file
+docker compose exec frontend pnpm test                                 # whole suite + the act() warning gate
+docker compose exec frontend pnpm exec vitest run tests/lib/api.test.ts # one file
 ```
 
-⚠ `npm test -- <path>` is **not** a filtered run. The `test` script ends in the act()
-gate's judge, so npm appends the path to the judge command and vitest still runs
-everything. Use `npx vitest run <file>` for a single file, then the full `npm test`
+⚠ `pnpm test <path>` is **not** a filtered run. The `test` script ends in the act()
+gate's judge, so pnpm appends the path to the judge command and vitest still runs
+everything. Use `pnpm exec vitest run <file>` for a single file, then the full `pnpm test`
 before you trust a green: only the full run arms the act() gate.
 
 ### TypeScript type checking
 
 ```bash
-docker compose exec frontend npx tsc --noEmit
+docker compose exec frontend pnpm exec tsc --noEmit
 # or, on the host
-cd frontend && npx tsc --noEmit
+cd frontend && pnpm exec tsc --noEmit
 ```
 
 CI runs the same check in the `Frontend Static Checks` job on every PR that touches
@@ -581,7 +581,7 @@ Common causes:
 ### Frontend build fails
 
 ```bash
-cd frontend && npx tsc --noEmit       # surface TS errors
+cd frontend && pnpm exec tsc --noEmit  # surface TS errors
 ./tbd rebuild                          # rebuild from scratch
 ```
 

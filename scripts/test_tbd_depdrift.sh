@@ -69,13 +69,13 @@ assert_warning_matches() {
   fi
 }
 
-# The function reads `frontend/package-lock.json` from $PWD. Run the
+# The function reads `frontend/pnpm-lock.yaml` from $PWD. Run the
 # tests from a tempdir that has an empty placeholder lockfile so the
 # host-hash path is exercised when overrides are NOT set.
 work_dir="$(mktemp -d -t tbd_depdrift_work.XXXXXX)"
 trap 'rm -rf "$work_dir"; rm -f "$tmp_fn"' EXIT
 mkdir -p "$work_dir/frontend"
-echo "{}" > "$work_dir/frontend/package-lock.json"
+echo "{}" > "$work_dir/frontend/pnpm-lock.yaml"
 cd "$work_dir"
 
 # 1. Matching hashes — no warning.
@@ -85,7 +85,7 @@ assert_no_warning "matching hashes emit no warning" \
 
 # 2. Differing hashes — warning fires.
 assert_warning_matches "differing hashes emit drift warning" \
-  "host frontend/package-lock.json differs" \
+  "host frontend/pnpm-lock.yaml differs" \
   env PFV_DEPDRIFT_HOST_HASH=abc123 PFV_DEPDRIFT_CONTAINER_HASH=def456 \
   bash -c "source '$tmp_fn'; check_frontend_dep_drift"
 
@@ -94,11 +94,11 @@ assert_no_warning "PFV_DEPDRIFT_SKIP=1 silences mismatched hashes" \
   env PFV_DEPDRIFT_SKIP=1 PFV_DEPDRIFT_HOST_HASH=abc123 PFV_DEPDRIFT_CONTAINER_HASH=def456 \
   bash -c "source '$tmp_fn'; check_frontend_dep_drift"
 
-# 4. Missing frontend/package-lock.json — silent skip.
-rm -f "$work_dir/frontend/package-lock.json"
-assert_no_warning "missing package-lock.json skips silently" \
+# 4. Missing frontend/pnpm-lock.yaml — silent skip.
+rm -f "$work_dir/frontend/pnpm-lock.yaml"
+assert_no_warning "missing pnpm-lock.yaml skips silently" \
   bash -c "source '$tmp_fn'; check_frontend_dep_drift"
-echo "{}" > "$work_dir/frontend/package-lock.json"  # restore for any future checks
+echo "{}" > "$work_dir/frontend/pnpm-lock.yaml"  # restore for any future checks
 
 echo ""
 echo "==================="

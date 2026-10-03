@@ -12,7 +12,7 @@
  * Every way this gate can die silently produces the SAME observable: the
  * counts drop. Hook not installed; matcher no longer matches React's format;
  * the name read from the wrong console.error argument; the task-meta channel
- * broken by a Vitest upgrade; the reporter flag dropped from the npm script;
+ * broken by a Vitest upgrade; the reporter flag dropped from the package.json script;
  * a test file blanket-silencing console.error. A gate that permits decreases
  * cannot tell any of those apart from "we fixed some warnings" -- it is
  * structurally incapable of detecting its own death, which is exactly the
@@ -36,7 +36,7 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BASELINE = resolve(HERE, "act-baseline.json");
 const ARTIFACT = resolve(process.cwd(), ".act-warnings.json");
-const REGEN = "npm run act:baseline -- --write";
+const REGEN = "pnpm act:baseline --write";
 
 const mode = process.argv[2] === "--write" ? "write" : "check";
 const inCI = Boolean(process.env.CI);
@@ -69,7 +69,7 @@ if (run.shard) {
   );
 }
 
-// `npm test -- tests/foo.test.tsx` is the documented dev workflow. Locally
+// A filtered vitest run (one file) is the documented dev workflow. Locally
 // that is fine and we say so; in CI it must never happen, because adding a
 // filter to the workflow would quietly disarm the gate.
 if (run.partial) {

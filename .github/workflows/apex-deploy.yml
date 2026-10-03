@@ -1,6 +1,6 @@
 # Apex landing deploy.
 #
-# Builds the apex static export (`npm run build:apex`) and pushes it to
+# Builds the apex static export (`pnpm build:apex`) and pushes it to
 # the S3 bucket fronted by CloudFront at https://thebetterdecision.com.
 # Auth is via GitHub OIDC -> AWS IAM role (no long-lived AWS keys).
 #
@@ -133,7 +133,8 @@ on:
       - "frontend/public/**"
       # Dependencies the apex build resolves
       - "frontend/package.json"
-      - "frontend/package-lock.json"
+      - "frontend/pnpm-lock.yaml"
+      - "frontend/pnpm-workspace.yaml"
       # The workflow itself
       - ".github/workflows/apex-deploy.yml"
 
@@ -151,7 +152,7 @@ jobs:
   # identical race (push to main, no dependency on the Test run).
   #
   # ⚠ A SEPARATE JOB, not a step inside build-and-deploy. That job's
-  # `timeout-minutes: 15` is already largely consumed by `npm ci` +
+  # `timeout-minutes: 15` is already largely consumed by `pnpm install` +
   # `build:apex`; adding an ~8 minute wait inside it would convert a healthy
   # deploy into a timeout failure. The wait gets its own budget.
   #
@@ -214,12 +215,26 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+
+      # pnpm version comes from packageManager in frontend/package.json.
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Locate pnpm store
+        id: pnpm-store
+        working-directory: frontend
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci --no-audit --no-fund
+        run: pnpm install --frozen-lockfile
 
       - name: Build apex static export
         working-directory: frontend
@@ -227,7 +242,7 @@ jobs:
           TBD_BUILD_TARGET: apex
           TBD_SITE_URL: https://thebetterdecision.com
           TBD_APP_URL: https://app.thebetterdecision.com
-        run: npm run build:apex
+        run: pnpm build:apex
 
       - name: Verify build output
         working-directory: frontend

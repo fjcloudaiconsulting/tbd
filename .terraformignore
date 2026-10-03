@@ -7,8 +7,8 @@
 #
 #   illegal slug error: invalid symlink ("frontend/node_modules") has external target
 #
-# npm creates absolute symlinks under node_modules and the packer refuses any
-# symlink pointing outside the slug. The practical effect was that nobody could
+# node_modules can hold symlinks that point outside the slug, and the packer
+# refuses any such symlink. The practical effect was that nobody could
 # run a speculative plan locally at all -- every change had to be validated by
 # merging it. Everything below is either unpackable or simply irrelevant to
 # infra/terraform.
