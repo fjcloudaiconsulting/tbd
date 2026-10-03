@@ -1,6 +1,9 @@
 import type { MetadataRoute } from "next";
 import { siteUrl } from "@/lib/site";
 
+// Per-request: siteUrl comes from runtime env, so this must not be prerendered at build.
+export const dynamic = "force-dynamic";
+
 export default function sitemap(): MetadataRoute.Sitemap {
   const lastModified = new Date();
 
