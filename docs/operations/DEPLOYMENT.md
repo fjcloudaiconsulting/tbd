@@ -683,7 +683,7 @@ After bootstrap, TFC runs use workload identity. Long-lived AWS keys exist nowhe
 | `prod` (last stage, so the default) | uvicorn on :8000 | `docker build --target prod -t tbd-backend backend` |
 | `migrations` | `python /app/scripts/migrate.py`, one-shot, exits 0/non-zero | `docker build --target migrations -t tbd-migrations backend` |
 
-Both need `DATABASE_URL` and the usual app secrets at run time. The scheduler/worker run the `prod` image with a different command. `INSTALL_DEV=true` (local compose) adds pytest to the venv.
+Both need `DATABASE_URL` and the usual app secrets at run time. `INSTALL_DEV=true` (local compose) adds pytest to the venv.
 
 Three callers, one engine.
 

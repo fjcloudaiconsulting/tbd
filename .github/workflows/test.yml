@@ -267,8 +267,14 @@ jobs:
       - name: No build toolchain in either runtime image
         run: |
           for img in tbd-backend tbd-migrations; do
-            docker run --rm --entrypoint sh "$img:${GITHUB_SHA}" -c '! command -v gcc'
+            docker run --rm --entrypoint sh "$img:${GITHUB_SHA}" -c '! command -v gcc && ! command -v pkg-config'
           done
+
+      - name: Targets keep their CMD, and a plain build is prod
+        run: |
+          docker build -t "tbd-default:${GITHUB_SHA}" backend
+          docker inspect -f '{{index .Config.Cmd 0}}' "tbd-default:${GITHUB_SHA}" | grep -x uvicorn
+          docker inspect -f '{{json .Config.Cmd}}' "tbd-migrations:${GITHUB_SHA}" | grep -Fx '["python","/app/scripts/migrate.py"]'
 
       - name: Import the app inside the prod image
         run: >-
