@@ -9,6 +9,7 @@ qrcode) creeping back into the image.
 """
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -20,8 +21,8 @@ def _pins(group: str) -> dict[str, str]:
     out: dict[str, str] = {}
     groups = tomllib.loads((BACKEND / "pyproject.toml").read_text())["dependency-groups"]
     for req in groups[group]:
-        name, sep, ver = req.partition("==")
-        out[name.split("[", 1)[0].lower()] = (name[len(name.split("[", 1)[0]):]) + sep + ver
+        m = re.fullmatch(r"([A-Za-z0-9_.-]+)(\[[^\]]+\])?(.*)", req)
+        out[m.group(1).lower()] = (m.group(2) or "") + m.group(3)
     return out
 
 

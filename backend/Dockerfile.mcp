@@ -22,7 +22,8 @@ WORKDIR /app
 
 # Plain COPY, no BuildKit mounts: DO App Platform's builder is not assumed to support them.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-install-project --no-default-groups --group mcp
+RUN uv sync --locked --no-install-project --no-default-groups --group mcp && \
+    rm /bin/uv /bin/uvx
 
 COPY app ./app
 
