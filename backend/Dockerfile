@@ -1,12 +1,20 @@
-FROM python:3.12-slim
+# Multi-stage (INFRA-39). Targets:
+#   migrations  one-shot job image: `python scripts/migrate.py` (alembic upgrade head)
+#   prod        the serving image (uvicorn). LAST stage on purpose: a plain
+#               `docker build` (DO App Platform, docker compose) builds it.
+# Both share the `runtime` stage; they differ only in CMD. Dependencies are
+# installed into a venv in `builder` (all wheels, no compiler needed); only the
+# venv reaches either image.
+#   docker build --target migrations -t tbd-migrations backend
+#   docker build --target prod       -t tbd-backend    backend
+FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc default-libmysqlclient-dev pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
 ARG INSTALL_DEV=false
+
+RUN python -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
 
 COPY requirements.txt requirements-dev.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && \
@@ -14,12 +22,18 @@ RUN pip install --no-cache-dir -r requirements.txt && \
         pip install --no-cache-dir -r requirements-dev.txt; \
     fi
 
+FROM python:3.12-slim AS runtime
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
 COPY . .
 
 RUN addgroup --system --gid 1001 backend && \
     adduser --system --uid 1001 backend
 USER backend
 
+ENV PATH=/opt/venv/bin:$PATH
 ENV PYTHONPATH=/app
 # Force unbuffered stdout/stderr so log lines reach the docker log driver
 # (and the App Platform log capture) immediately. Without this, Python
@@ -28,14 +42,17 @@ ENV PYTHONPATH=/app
 # buffer fills before flushing.
 ENV PYTHONUNBUFFERED=1
 
-EXPOSE 8000
+FROM runtime AS migrations
 
-# Migrations run as a true init step (App Platform PRE_DEPLOY job in
-# .do/app.yaml) — NOT in the serving process startup path. Putting
-# `alembic upgrade head` in the entrypoint would gate uvicorn's port-bind
-# on migration time, so any migration that exceeds the orchestrator's
-# probe budget would look like a hung container and be rolled back even
-# though it's progressing fine.
+# Run as a true init step (App Platform PRE_DEPLOY job in .do/app.yaml, a k8s
+# Job), NOT in the serving process: `alembic upgrade head` in the entrypoint
+# would gate uvicorn's port-bind on migration time, so a slow migration looks
+# like a hung container and is rolled back.
+CMD ["python", "/app/scripts/migrate.py"]
+
+FROM runtime AS prod
+
+EXPOSE 8000
 
 # --proxy-headers makes uvicorn parse X-Forwarded-For / X-Forwarded-Proto
 # so request.client.host becomes the real client IP (slowapi.get_remote_

@@ -1,0 +1,10 @@
+.env*
+*.db
+__pycache__
+*.py[cod]
+.pytest_cache
+.coverage*
+.test_durations
+.venv*
+venv
+tests
