@@ -124,7 +124,7 @@ the env-var name (uppercased).
 | `EXPORT_MAX_ROWS` | no | `2000000` | `.env` (optional) | unset | inherit default | no | Pre-flight `COUNT(*)` ceiling across every table the export registry includes (TBD-222). Above it `scripts/export_org.py` refuses and points the operator at the `privacy@` email channel. | Default 2 000 000. A refusal is safe: no partial artifact is produced. |
 | `EXPORT_MAX_BYTES` | no | `1073741824` | `.env` (optional) | unset | inherit default | no | Cumulative encoded-output ceiling for one export, checked incrementally and aborted the moment it is crossed. A row count does NOT bound bytes (`transactions.description` is free text; several columns are unbounded JSON), and bytes is what exhausts a 512 MB single-instance box. | Default 1 GiB. On abort with `--out` the `.part` file is UNLINKED, so nothing is left at or beside the destination; with `--stdout` the bytes already redirected are trailer-less and fail verification by design. |
 | `PFV_RUNTIME` | yes for prod | unset | unset | unset | `.do/app.yaml` (`app_platform`) | no | Tells `rate_limit.get_client_ip` to read `do-connecting-ip` unconditionally. | `audit_events.ip_address` records the DO ingress IP, not the user's IP. |
-| `CLIENT_IP_HEADER` | yes for k3s prod | unset | unset | unset | `cf-connecting-ip` in the aws-infra `tbd-prod` backend manifest | no | Header `rate_limit.get_client_ip` trusts for the visitor's IP when it holds one valid IP. Set only where the origin accepts our Cloudflare zone exclusively (Authenticated Origin Pulls, INFRA-93). A Cloudflare-ranges firewall is not enough: a Worker on another zone can set `x-real-ip`, which Cloudflare forwards as `CF-Connecting-IP`. | Unset behind Cloudflare: rate limits and `audit_events.ip_address` key on Cloudflare edge IPs. Set without Authenticated Origin Pulls: callers can pick their own IP. |
+| `CLIENT_IP_HEADER` | yes for k3s prod | unset | unset | unset | `cf-connecting-ip` in the aws-infra `tbd-prod` backend and frontend manifests | no | Header `rate_limit.get_client_ip` trusts for the visitor's IP when it holds one valid IP; the frontend `proxy.ts` access log (`remote_addr`) follows the same rule. Set only where the origin accepts our Cloudflare zone exclusively (Authenticated Origin Pulls, INFRA-93). A Cloudflare-ranges firewall is not enough: a Worker on another zone can set `x-real-ip`, which Cloudflare forwards as `CF-Connecting-IP`. | Unset behind Cloudflare: rate limits and `audit_events.ip_address` key on Cloudflare edge IPs. Set without Authenticated Origin Pulls: callers can pick their own IP. |
 | `PFV_MIGRATE_OK_OFF_MAIN` | no | unset | shell / `.env` only when needed | unset | unset | no | Escape hatch for the lifespan + `./tbd migrate` branch guard. Allows migrations from a non-`main` checkout. | Without it, lifespan and `./tbd migrate` refuse to run on a feature branch. |
 
 #### Backend MySQL container (local dev only)
@@ -203,7 +203,7 @@ deploy contract.
 | Variable | Component | What it does | Reference |
 |---|---|---|---|
 | `PFV_RUNTIME=app_platform` | backend | `get_client_ip` uses `do-connecting-ip` unconditionally so `audit_events.ip_address` records the real user IP, not the DO ingress peer. | PR #233, `project_audit_log_client_ip_bug.md` |
-| `CLIENT_IP_HEADER=cf-connecting-ip` | backend | `get_client_ip` reads the visitor's IP from that header (k3s behind Cloudflare). Safe only with Authenticated Origin Pulls (INFRA-93). | INFRA-83, `backend/app/rate_limit.py` |
+| `CLIENT_IP_HEADER=cf-connecting-ip` | backend, frontend | `get_client_ip` and the frontend access log read the visitor's IP from that header (k3s behind Cloudflare). Safe only with Authenticated Origin Pulls (INFRA-93). | INFRA-83, INFRA-97, `backend/app/rate_limit.py`, `frontend/proxy.ts` |
 | `PFV_MIGRATE_OK_OFF_MAIN=1` | backend (lifespan + `./tbd migrate`) | Escape hatch for the branch guard that refuses to run migrations from a non-`main` checkout. Off-by-default. | `tbd` CLI, `backend/app/main.py` |
 | `PFV_DEPDRIFT_SKIP=1` | `./tbd` CLI | Skips the host-vs-container `pnpm-lock.yaml` SHA check on `./tbd start`. | `tbd` CLI line 48, PR #249 |
 | `PFV_DEPDRIFT_HOST_HASH`, `PFV_DEPDRIFT_CONTAINER_HASH` | `./tbd` CLI (tests only) | Test seam for the drift guard. Not for human use. | `tbd` CLI |
@@ -334,7 +334,8 @@ row in prod MySQL.
 
 On k3s behind Cloudflare the same symptom shows Cloudflare edge or `10.42.x.x`
 addresses. Cause: `CLIENT_IP_HEADER=cf-connecting-ip` is missing from the
-aws-infra `tbd-prod` backend manifest.
+aws-infra `tbd-prod` backend manifest (or, for the frontend access log's
+`remote_addr`, from the frontend manifest).
 
 ### "Rate limit returns 500 instead of allowing the request"
 
