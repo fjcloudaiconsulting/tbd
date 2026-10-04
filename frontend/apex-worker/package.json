@@ -1,0 +1,7 @@
+{
+  "name": "tbd-landing",
+  "private": true,
+  "scripts": {
+    "dev": "cp _headers ../out-apex/_headers && npx -y wrangler@4.147.0 dev"
+  }
+}
