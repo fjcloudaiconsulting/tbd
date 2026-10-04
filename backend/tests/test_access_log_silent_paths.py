@@ -38,6 +38,8 @@ def test_other_paths_are_logged(path):
     [
         ("/api/v1/auth/google/callback?code=SECRET&state=S", "/api/v1/auth/google/callback"),
         ("/api/v1/orgs/invitations/preview?token=SECRET", "/api/v1/orgs/invitations/preview"),
+        # httptools' lenient URL parsing lets a tab through into the query.
+        ("/api/v1/auth/google/callback?a=1\tcode=SECRET", "/api/v1/auth/google/callback"),
         ("/health?probe=SECRET", None),  # probe with a query is still dropped
     ],
 )

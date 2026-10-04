@@ -13,11 +13,12 @@ _ACCESS_RE = re.compile(
 )
 
 
-# The query string, up to the next whitespace. uvicorn percent-quotes the
-# path (a literal "?" there becomes %3F), so the first "?" in an access
-# line starts the query. Query values carry secrets (OAuth code/state on
-# /api/v1/auth/google/callback, invite tokens), INFRA-110.
-_QUERY_RE = re.compile(r"\?\S*")
+# The query string, up to the space before "HTTP/". uvicorn percent-quotes
+# the path (a literal "?" there becomes %3F), so the first "?" in an access
+# line starts the query. Only a space ends it: httptools' lenient parser lets
+# a tab or form feed through into the query. Query values carry secrets
+# (OAuth code/state on /api/v1/auth/google/callback, invite tokens), INFRA-110.
+_QUERY_RE = re.compile(r"\?[^ ]*")
 
 # Paths excluded from access logs (health checks flood logs in production;
 # Route 53 polls /health/dependencies, INFRA-83)
@@ -31,7 +32,9 @@ class _AccessLogFilter(logging.Filter):
     Applied directly to the uvicorn.access logger so the record is fixed
     (or dropped) before it reaches any handler or formatter. The record
     itself is rewritten (msg formatted, args emptied) because uvicorn
-    passes the full path with query in record.args.
+    passes the full path with query in record.args. Emptied args suit our
+    ProcessorFormatter; uvicorn's own AccessFormatter (which unpacks the
+    args) is never attached, since setup_logging replaces the handlers.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
