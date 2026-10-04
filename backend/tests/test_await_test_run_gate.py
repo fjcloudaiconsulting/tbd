@@ -173,6 +173,9 @@ def test_missing_run_fails_closed_rather_than_shipping(tmp_path):
     deadline. Kills treating an absent run as 'nothing to wait for'."""
     res = _invoke(tmp_path, _runs_payload())
     assert res.returncode == 1, res.stdout + res.stderr
+    # Exit 1 alone would also pass a script that fails at once on "absent",
+    # which would block every release whose push run is not listed yet.
+    assert "no Test run" in res.stdout and "timed out" in res.stderr, res.stdout + res.stderr
 
 
 def test_in_progress_does_not_ship_early(tmp_path):
@@ -222,7 +225,13 @@ def test_abbreviated_sha_fails_fast_and_distinctly(tmp_path):
 
 @pytest.mark.parametrize(
     ("event", "branch"),
-    [("pull_request", "feature"), ("workflow_dispatch", "main"), ("push", "feature")],
+    [
+        ("pull_request", "feature"),
+        # A fork PR from a branch named `main`: only the event check drops it.
+        ("pull_request", "main"),
+        ("workflow_dispatch", "main"),
+        ("push", "feature"),
+    ],
 )
 def test_only_the_push_run_on_main_counts(tmp_path, event, branch):
     """INFRA-96. The release commit's push run on `main` is the one that
@@ -258,3 +267,4 @@ def test_a_green_non_push_run_alone_fails_closed(tmp_path):
     )
     res = _invoke(tmp_path, payload)
     assert res.returncode == 1, res.stdout + res.stderr
+    assert "no Test run" in res.stdout and "timed out" in res.stderr, res.stdout + res.stderr

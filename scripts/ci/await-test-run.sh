@@ -58,14 +58,17 @@ while :; do
   status="api-error"
   concl="-"
   if payload=$(gh api \
-      "repos/${GH_REPO}/actions/workflows/${WORKFLOW}/runs?head_sha=${SHA}&per_page=100" \
+      "repos/${GH_REPO}/actions/workflows/${WORKFLOW}/runs?head_sha=${SHA}&event=push&branch=main&per_page=100" \
       2>&1); then
     # Only the `push` run on `main` counts (INFRA-96). It is the run that
     # builds the sha-<7> images `promote` retags; a `pull_request` or
     # `workflow_dispatch` run on the same sha is ignored even when newer, so it
-    # can neither mask a red push run nor block a green one. Filtered in the
-    # parser, not the query, so the fence (stubbed `gh`) exercises it. To
-    # rehearse against history, pass the sha of a red push run on main.
+    # can neither mask a red push run nor block a green one. A fork can add
+    # `pull_request` runs on any public sha (and name its branch `main`), so
+    # the EVENT check is the one that matters. Filtered twice: in the query, so
+    # 100+ such runs cannot push the real one off the page, and again in the
+    # parser, which is the copy the fence (stubbed `gh`) exercises. To rehearse
+    # against history, pass the sha of a red push run on main.
     #
     # Newest push run wins: a re-run of a red suite (a re-run keeps its
     # `push` event) unblocks a deploy without a force-push. Dispatching Test
