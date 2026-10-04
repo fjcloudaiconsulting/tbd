@@ -4,12 +4,12 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "The python-version input of astral-sh/setup-uv steps in CI, which the github-actions manager does not read, so the python runtime PR moves it with requires-python.",
+      "description": "The python-version input of astral-sh/setup-uv steps in CI, which the github-actions manager does not read, so the python runtime PR moves it with requires-python. Looked up as the python image, whose x.y tags keep the same precision.",
       "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": ["uses: astral-sh/setup-uv@[^\\n]*\\n\\s+with:\\n(?:\\s+[a-z-]+: [^\\n]*\\n)*?\\s+python-version: \"(?<currentValue>\\d+\\.\\d+)\""],
       "depNameTemplate": "python",
-      "datasourceTemplate": "python-version",
-      "versioningTemplate": "pep440"
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -66,6 +66,12 @@
       "matchUpdateTypes": ["major"],
       "groupName": "node runtime",
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "The setup-uv python-version is a plain x.y input: never pin a digest to it.",
+      "matchManagers": ["custom.regex"],
+      "matchDepNames": ["python"],
+      "pinDigests": false
     },
     {
       "description": "structlog majors are never proposed: INFRA-105 removes structlog.",
