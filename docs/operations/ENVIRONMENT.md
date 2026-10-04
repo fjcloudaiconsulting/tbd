@@ -262,8 +262,8 @@ Tests run inside `backend/tests/conftest.py`, which sets `DATABASE_URL`,
 NOT consume `.env`.
 
 `.github/workflows/release.yml` deploys nothing (see
-[`DEPLOYMENT.md`](DEPLOYMENT.md)). No workflow reads `SMOKE_USERNAME` or
-`SMOKE_PASSWORD` any more; they are left for deletion (INFRA-99). A by-hand
+[`DEPLOYMENT.md`](DEPLOYMENT.md)). No workflow uses smoke credentials and
+there are no GitHub secrets for them. A by-hand
 `scripts/smoke-test.sh` run reads the credentials from the cluster Secret
 `tbd-prod/tbd-smoke` (aws-infra `docs/runbooks.md`, "TBD smoke account").
 
