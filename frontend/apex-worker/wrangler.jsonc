@@ -7,6 +7,8 @@
   "compatibility_date": "2026-09-01",
   "main": "worker.js",
   "workers_dev": true,
+  // No per-version preview hosts: one public preview URL is enough, and _headers only noindexes that one.
+  "preview_urls": false,
   "assets": {
     "directory": "../out-apex",
     "binding": "ASSETS",

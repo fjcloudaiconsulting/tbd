@@ -55,8 +55,13 @@
 #   AWS_APEX_DISTRIBUTION_ID  CloudFront distribution ID
 #                             (Terraform output: cloudfront_distribution_id)
 #
-# No secrets are needed. The role ARN, bucket name, and distribution ID
+# No AWS secrets are needed. The role ARN, bucket name, and distribution ID
 # are public-shaped identifiers.
+#
+# INFRA-60: the deploy-worker job also publishes the same export to the
+# tbd-landing Cloudflare Worker (workers.dev preview) until INFRA-61 moves the
+# apex onto it. It needs one repository secret, CLOUDFLARE_API_TOKEN (Account >
+# Workers Scripts > Edit), and skips with a notice while that secret is unset.
 
 name: Deploy Apex Landing
 
@@ -208,9 +213,6 @@ jobs:
       S3_BUCKET: ${{ vars.AWS_APEX_BUCKET }}
       CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.AWS_APEX_DISTRIBUTION_ID }}
       DEPLOY_ROLE_ARN: ${{ vars.AWS_APEX_DEPLOY_ROLE_ARN }}
-      # INFRA-60. 'true' once the owner stores the Worker deploy token; until then the
-      # Worker steps below skip and this job stays green on the S3 deploy alone.
-      HAS_CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
 
     steps:
       - name: Checkout
@@ -328,21 +330,72 @@ jobs:
             --paths "/*" \
             >/dev/null
 
-      # INFRA-60. The same build also goes to the tbd-landing Worker, workers.dev preview only
-      # (https://tbd-landing.flamarion-fb5.workers.dev), until INFRA-61 moves the apex onto it
-      # and deletes the S3 and CloudFront steps above. Runs after them so _headers never
-      # reaches the bucket. Worker deploys are atomic, so the chunk ordering above is moot there.
-      - name: Skip the Worker deploy (no CLOUDFLARE_API_TOKEN)
+      - name: Print deploy summary
+        run: |
+          echo "Deployed apex landing"
+          echo "  Commit:        ${GITHUB_SHA}"
+          echo "  Bucket:        ${S3_BUCKET}"
+          echo "  Distribution:  ${CLOUDFRONT_DISTRIBUTION_ID}"
+          echo "  Verify via:    https://thebetterdecision.com/_meta.json"
+
+  # INFRA-60. The same export on the tbd-landing Worker, workers.dev preview only
+  # (https://tbd-landing.flamarion-fb5.workers.dev), until INFRA-61 moves the apex
+  # onto it and deletes build-and-deploy. A separate job, so the third-party
+  # wrangler steps never see the AWS deploy credentials or an OIDC token, and a
+  # Worker failure never touches the S3 deploy. Builds again rather than passing
+  # an artifact: a few runner minutes against one more moving part.
+  deploy-worker:
+    name: Deploy tbd-landing Worker (preview)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: await-tests
+    # Same dispatch bypass as build-and-deploy, but only from main: the S3 job is
+    # pinned to main by the AWS role trust, this one has nothing else holding it.
+    if: >-
+      ${{ !cancelled()
+          && github.ref == 'refs/heads/main'
+          && (needs.await-tests.result == 'success'
+              || github.event_name == 'workflow_dispatch') }}
+    permissions:
+      contents: read
+    env:
+      # 'true' once the owner stores the token; until then every step after the
+      # notice skips and the job stays green.
+      HAS_CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+
+    steps:
+      - name: Skip (no CLOUDFLARE_API_TOKEN)
         if: env.HAS_CF_TOKEN != 'true'
         run: echo "::notice::CLOUDFLARE_API_TOKEN is not set, skipping the tbd-landing Worker deploy"
 
-      - name: Stage Worker headers
+      - name: Checkout
+        if: env.HAS_CF_TOKEN == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        if: env.HAS_CF_TOKEN == 'true'
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+
+      - name: Install frontend dependencies
         if: env.HAS_CF_TOKEN == 'true'
         working-directory: frontend
-        run: cp apex-worker/_headers out-apex/_headers
+        run: corepack enable && pnpm install --frozen-lockfile
+
+      - name: Build apex static export
+        if: env.HAS_CF_TOKEN == 'true'
+        working-directory: frontend
+        env:
+          TBD_BUILD_TARGET: apex
+          TBD_SITE_URL: https://thebetterdecision.com
+          TBD_APP_URL: https://app.thebetterdecision.com
+        run: pnpm build:apex && cp apex-worker/_headers out-apex/_headers
 
       # Worker name, account, assets and routing all come from frontend/apex-worker/wrangler.jsonc.
-      - name: Deploy tbd-landing Worker (workers.dev preview)
+      - name: Deploy
         if: env.HAS_CF_TOKEN == 'true'
         uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
@@ -351,22 +404,20 @@ jobs:
           workingDirectory: frontend/apex-worker
           command: deploy
 
-      - name: Smoke test the Worker preview
+      - name: Smoke test the preview
         if: env.HAS_CF_TOKEN == 'true'
         run: |
-          # Retries cover workers.dev propagation on the first deploy.
+          # Retries cover workers.dev propagation on the first deploy. The header
+          # checks catch _headers rules Cloudflare dropped as invalid.
+          base=https://tbd-landing.flamarion-fb5.workers.dev
           for _ in $(seq 1 30); do
-            if curl -fsS --max-time 10 https://tbd-landing.flamarion-fb5.workers.dev/_meta.json | grep -q "\"${GITHUB_SHA}\""; then
-              echo "ok  preview serves ${GITHUB_SHA}"; exit 0
+            if curl -fsS --max-time 10 "$base/_meta.json" | grep -q "\"${GITHUB_SHA}\""; then
+              headers=$(curl -fsSI --max-time 10 "$base/")
+              for h in '^content-security-policy: default-src' '^strict-transport-security: max-age=63072000' '^x-robots-tag: noindex'; do
+                printf '%s' "$headers" | grep -qiE "$h" || { echo "FAIL $base/ lacks /$h/"; printf '%s\n' "$headers"; exit 1; }
+              done
+              echo "ok  preview serves ${GITHUB_SHA} with its headers"; exit 0
             fi
             sleep 5
           done
           echo "FAIL preview does not serve ${GITHUB_SHA}"; exit 1
-
-      - name: Print deploy summary
-        run: |
-          echo "Deployed apex landing"
-          echo "  Commit:        ${GITHUB_SHA}"
-          echo "  Bucket:        ${S3_BUCKET}"
-          echo "  Distribution:  ${CLOUDFRONT_DISTRIBUTION_ID}"
-          echo "  Verify via:    https://thebetterdecision.com/_meta.json"
