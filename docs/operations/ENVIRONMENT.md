@@ -334,7 +334,8 @@ row in prod MySQL.
 
 On k3s behind Cloudflare the same symptom shows Cloudflare edge or `10.42.x.x`
 addresses. Cause: `CLIENT_IP_HEADER=cf-connecting-ip` is missing from the
-aws-infra `tbd-prod` backend manifest.
+aws-infra `tbd-prod` backend manifest (or, for the frontend access log's
+`remote_addr`, from the frontend manifest).
 
 ### "Rate limit returns 500 instead of allowing the request"
 
