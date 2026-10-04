@@ -145,6 +145,16 @@ def test_ghcr_promote_and_smoke_run_once_per_release(job, workflow):
     assert jobs[job]["with"]["version"] == "${{ needs.release.outputs.version }}"
 
 
+def test_release_workflow_has_exactly_the_gated_release_jobs():
+    """Nothing in release.yml deploys (production is the aws-infra bump PR),
+    and smoke boots what promote retagged. A new job here must be added to
+    this set deliberately, together with its own gate."""
+    jobs = _yaml(RELEASE_WORKFLOW)["jobs"]
+    assert set(jobs) == {"await-tests", "release", "promote", "release-smoke"}
+    needs = jobs["release-smoke"]["needs"]
+    assert "promote" in ([needs] if isinstance(needs, str) else needs)
+
+
 def test_release_runs_are_serialised_and_never_cancelled():
     """TBD-391 / INFRA-42. One Release run at a time, and never
     `cancel-in-progress`: a run cancelled after release-please tagged leaves a

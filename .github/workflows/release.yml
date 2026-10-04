@@ -101,7 +101,6 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       version: ${{ steps.release.outputs.version }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       # Needed only for scripts/ci/await-test-run.sh below.
       - name: Checkout

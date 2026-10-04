@@ -587,12 +587,12 @@ class Settings(BaseSettings):
         #
         # Boot-fatal is the right severity here and is safe for the
         # production migrate step: it gets no CAPTCHA_* value, and the
-        # defaults below satisfy this check. Contrast the 2026-07-21 break, where #558 made
-        # API_TOKEN_HMAC_KEY prod-required and the job HAD no binding for
-        # it. TBD-438 made REDIS_URL prod-required under exactly that
-        # precedent, which is why the binding is now fenced by
-        # tests/test_redis_url_config.py rather than trusted. Keep it that way: giving the migrate job a CAPTCHA_* value
-        # would put it back in this validator's blast radius for no gain.
+        # defaults below satisfy this check. Contrast the 2026-07-21 break,
+        # where #558 made API_TOKEN_HMAC_KEY prod-required and the job HAD
+        # no binding for it; TBD-438 made REDIS_URL prod-required under the
+        # same precedent. Keep it that way: giving the migrate job a
+        # CAPTCHA_* value would put it back in this validator's blast radius
+        # for no gain.
         per_phase = self.captcha_verify_timeout_s
         total = self.captcha_verify_total_timeout_s
         if per_phase <= 0:

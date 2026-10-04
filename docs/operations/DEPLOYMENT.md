@@ -185,9 +185,10 @@ second factor at all.
 
 So the account stays single-factor. The compensating controls are:
 
-1. **Its username is not published.** It is `secrets.SMOKE_USERNAME` and a
-   cluster Secret, never a plaintext value in source.
-2. **A strong, rotated credential**, `secrets.SMOKE_PASSWORD`.
+1. **Its username is not published.** It lives only in the cluster Secrets
+   `tbd-prod/tbd-smoke` and the founder-count exclusion, never as a plaintext
+   value in source or a manifest.
+2. **A strong, rotated credential**, also in `tbd-prod/tbd-smoke`.
 3. **No PLATFORM rights, and a blast radius of one throwaway org.**
 
    ⚠ It IS `role: owner`, of its own dedicated organization, and that is not
@@ -216,8 +217,9 @@ rather than be handed a confirmed-valid, MFA-less target.
 ⚠ **Renaming is the part that actually remediates a disclosure.** A username
 that was ever in git history is known forever, so rotating the password alone
 leaves a known, MFA-less account name reachable at the public login form. The
-rotation procedure (rename, password, secrets, founder-count exclusion) is in
-the aws-infra runbook above.
+aws-infra runbook above covers the password rotation. A rename is
+`PUT /api/v1/users/me` as the smoke account, then the new name goes into
+`tbd-prod/tbd-smoke` and `FOUNDER_COUNT_EXCLUDE_USERNAMES` in the same change.
 
 ### How to verify a rollout
 
@@ -548,7 +550,7 @@ Forward-only philosophy across the board. "Rollback" means "publish a new state 
 
 ### App (production cluster)
 
-Revert the image-bump PR in aws-infra and merge it; Flux rolls the previous tags back. The `migrate` init container only moves the schema forward, so a rollback across a migration needs a fix-up migration (see "Database migrations" below). To undo the code itself, revert the merge commit here (`git revert -m 1 <merge-sha>`, PR, merge) and ship it through the next release. DigitalOcean App Platform is kept archived as a rollback target until INFRA-49 decommissions it.
+Revert the image-bump PR in aws-infra and merge it; Flux rolls the previous tags back. The `migrate` init container only moves the schema forward, so a rollback across a migration needs a fix-up migration (see "Database migrations" below). To undo the code itself, revert the merge commit here (`git revert -m 1 <merge-sha>`, PR, merge) and ship it through the next release.
 
 ### Apex landing (`apex-deploy.yml`)
 
@@ -578,7 +580,7 @@ Forward-only. **Never `alembic downgrade` in production.** The path to a safe ro
 2. Merge, then merge the release PR, then the aws-infra bump PR. The `migrate` init container applies the fix-up revision and the backend starts on top.
 3. Verify via the new revision's `migrate.step.end` event in `kubectl -n tbd-prod logs deploy/backend -c migrate`.
 
-If a migration **partially applies** and the container exits non-zero, the backend pod never starts (the previous ReplicaSet keeps serving). Diagnose from the streamed alembic output + the `migrate.failed` event (`reason`, `step_index`, `revision`). Fix-up paths:
+If a migration **partially applies** and the container exits non-zero, the backend pod never starts and, since the Deployment uses `strategy: Recreate`, the old pod is already gone: the API is down until a fix-up revision or an image revert is rolled out. Diagnose from the streamed alembic output + the `migrate.failed` event (`reason`, `step_index`, `revision`). Fix-up paths:
 - Schema state matches a known earlier revision: stamp it (`alembic stamp <rev>`) via a one-shot ops session and ship a new revision that completes the work. Only the operator should do this; agents must not (`feedback_agent_destructive_db_ops`).
 - Data corruption: write a fix-up migration; ship that. Database restore: [`clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/data/RESTORE.md) in aws-infra.
 
@@ -605,6 +607,7 @@ Triage shortcuts:
 | `release` job failed after the release PR merged | The Test run of the release PR's commit is red. Re-run that commit's failed Test jobs (not a `workflow_dispatch` run), then re-run the failed Release run (or wait for the next push to `main`) |
 | Release created but `promote` or `release-smoke` failed | Re-run the failed jobs of that Release run; the release already exists, so a new push to `main` will not redo them |
 | Release published, no bump PR in aws-infra | Renovate, then the `release-drift-probe` issue |
+| `release` job red after release-please already published the GitHub Release | `promote` never ran and a re-run cannot recover it (release-please finds the release and reports no `release_created`). Retag that commit's `sha-<7>` images as `vX.Y.Z` by hand, as `promote-release.yml` does; otherwise `release-drift-probe` flags it after its grace days |
 | Rollout done, app still broken | Run `scripts/smoke-test.sh` by hand (runbook above), then the backend/frontend pod logs |
 | `migrate` init container hung or failed | `kubectl -n tbd-prod logs deploy/backend -c migrate`. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
 | Apex site shows stale content | Confirm `apex-deploy.yml` ran for the SHA; check CloudFront invalidation completed; `curl https://thebetterdecision.com/_meta.json` (object is no-cache). If the apex hostname is itself unreachable, fall back to the TFC output `cloudfront_distribution_domain` to probe the distribution directly. |

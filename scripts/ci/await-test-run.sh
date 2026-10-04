@@ -23,15 +23,14 @@
 # So this script is the interlock. Without it, the guard reports after the
 # thing it exists to prevent has already shipped.
 #
-# ⚠ IT GATES `release`, NOT `deploy`. release-please cuts an immutable git
-# tag and publishes a GitHub Release before `deploy` ever starts. Gating only
-# the deploy would still leave a published release for a commit whose suite
-# then goes red, permanently desynchronising the version line from production.
+# ⚠ IT GATES `release`. release-please cuts an immutable git tag and publishes
+# a GitHub Release, so gating any later job would still leave a published
+# release for a commit whose suite then goes red.
 #
 # ⚠ THIS DEPENDS ON `test.yml` HAVING NO `paths:` FILTER. That ban (TBD-347) is
 # what guarantees a Test run always exists for every push to `main`, which is
 # what makes this wait terminate. Reintroducing a filter there would no longer
-# just break PRs -- it would silently stop production deploys, one 25-minute
+# just break PRs -- it would silently stop releases, one 25-minute
 # timeout at a time.
 set -uo pipefail
 

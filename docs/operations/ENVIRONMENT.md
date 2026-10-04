@@ -103,10 +103,10 @@ the env-var name (uppercased).
 | `CAPTCHA_EXPECTED_HOSTNAME` | no | `""` | `.env` empty (skipped in dev) | unset | tbd-prod manifest (`app.thebetterdecision.com`) | no | Pins the `hostname` field of the verify response. Empty disables the check (provider's widget-domain allowlist still applies). | Tokens issued from a different origin are still accepted when empty. |
 | `CAPTCHA_EXPECTED_ACTION` | no | `""` | `.env` empty | unset | tbd-prod manifest (`register`) | no | Pins the `action` field of the verify response (set client-side via the Turnstile widget options). Defense-in-depth pairing for the hostname pin. | Tokens issued for a different action would be accepted when empty. |
 | `BILLING_UI_ENABLED` | no | `false` | `.env` `false` | unset (defaults to `false`) | tbd-prod manifest `false` (flip to `true` when payment platform is wired) | no | Master switch for the customer-facing plan / trial / billing surface. When `false`, the trial banner, settings Billing tab, and `/settings/billing` plan grid are hidden; `/settings/billing` renders an explanatory empty state. Admin / operator views under `/admin/*` and `/system/*` are unaffected. Exposed via `/api/v1/auth/status` so a backend flip becomes a customer-facing change on the next page load. Backend API gating (`/api/v1/subscriptions`, `/api/v1/plans`) is NOT in scope; UI-only hide. | Trial / billing UI visible to customers when `true` before payment is live. Flip to `false` to hide. |
-| `FEATURE_REPORTS_V2` | no | `false` | `.env` `false` | unset (defaults to `false`) | tbd-prod manifest `false` (flip to `true` in PR 4 once frontend + templates + sharing ship) | no | Master switch for the Reports v2 backend. When `false`, every route under `/api/v1/reports/*` returns 404 via a router-level dependency. Spec `specs/2026-05-22-reports-v2-flexible-canvas.md` §11. The frontend has no separate flag. | Reports surface unreachable from any client when `false`. Reports listing / CRUD / query unavailable. |
+| `FEATURE_REPORTS_V2` | no | `false` | `.env` `false` | unset (defaults to `false`) | tbd-prod manifest `true` | no | Master switch for the Reports v2 backend. When `false`, every route under `/api/v1/reports/*` returns 404 via a router-level dependency. Spec `specs/2026-05-22-reports-v2-flexible-canvas.md` §11. The frontend has no separate flag. | Reports surface unreachable from any client when `false`. Reports listing / CRUD / query unavailable. |
 | `TBD_CAPTCHA_SITE_KEY` | yes when `CAPTCHA_REQUIRED=true` | `1x00000000000000000000BB` (Turnstile always-pass test key) | `.env` (test key) | `.env` (test key) | tbd-prod manifest (real Cloudflare site key) | no | Runtime site key the widget renders against. Changing the value needs a redeploy only. Widget render is gated on both `captcha_required` from `/api/v1/auth/status` AND a non-empty site key, so an empty value here means no widget renders even when the backend asks for one. | Empty in prod + `CAPTCHA_REQUIRED=true` → users can never obtain a token, every register attempt is rejected with `captcha_failed`. |
 | `GOOGLE_CLIENT_SECRET` | yes for SSO | `""` | `.env` | unset | tbd-prod secret | yes | Google OAuth2 client secret. | SSO token exchange fails with `invalid_client`. |
-| `BACKEND_CORS_ORIGINS` | yes | `http://localhost:3000` | `.env` (`http://localhost`) | unset | tbd-prod manifest (`https://app.thebetterdecision.com`) | no | Comma-separated allowlist for `Access-Control-Allow-Origin`. | Browser blocks frontend XHR with CORS error. |
+| `BACKEND_CORS_ORIGINS` | yes | `http://localhost:3000` | `.env` (`http://localhost`) | unset | tbd-prod manifest (app, apex and `www` origins) | no | Comma-separated allowlist for `Access-Control-Allow-Origin`. | Browser blocks frontend XHR with CORS error. |
 | `DEFAULT_PLAN_SLUG` | no | `pro` | `.env` (optional) | unset | inherit default | no | Default subscription plan slug at first-user creation. | Default `pro` used (beta posture). |
 | `TRIAL_DURATION_DAYS` | no | `14` | `.env` (optional) | unset | inherit default | no | Trial duration assigned at first-user creation. | Default 14 used. |
 | `OFX_PARSE_MAX_CONCURRENT` | no | `4` | `.env` (optional) | unset | inherit default | no | Global ceiling on simultaneous OFX statement parses (child processes) in one backend process. OFX files parse in a hard-killable child process so a pathological / adversarial upload cannot pin a CPU core after the request returns; this bounds how many can run at once. Per-replica (compute-only isolation, horizontally-scale-safe). Over the ceiling → HTTP 429 after `OFX_PARSE_QUEUE_WAIT_S`. | Default 4. Raise for more import throughput at the cost of more peak CPU/RAM; lower to protect a small box. |
@@ -183,6 +183,8 @@ declared separately from the backend container in the same manifest.
 |---|---|---|---|
 | `APP_ENV` | yes | tbd-prod manifest (`production`) | Selects prod code paths. |
 | `DATABASE_URL` | yes | tbd-prod secret | Migration target. Same Secret key as the backend container. |
+| `REDIS_URL` | yes | tbd-prod secret | Required in production by `Settings()` at import (TBD-438); without it the migrate container crashes before alembic runs. |
+| `API_TOKEN_HMAC_KEY` | yes | tbd-prod secret | Required in production by `Settings()` at import, same reason. |
 | `JWT_SECRET_KEY` | yes | tbd-prod secret | Required because `backend/app/config.py` instantiates `Settings()` at import; the JWT validator refuses the placeholder. Without this the migrate container crashes before alembic runs. See PR #202. |
 
 ---
@@ -227,10 +229,13 @@ These are secrets (never plain env):
 - `AI_CREDENTIAL_ENCRYPTION_KEY`
 - `AI_CREDENTIAL_ENCRYPTION_KEY_PREV` (when rotating)
 - `MAILGUN_API_KEY`
+- `MAILGUN_WEBHOOK_SIGNING_KEY`
+- `CAPTCHA_SECRET`
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
+- `FOUNDER_COUNT_EXCLUDE_USERNAMES` (names the smoke account, TBD-371)
 
-Everything else in the variable reference is plain env in the manifests.
+The manifests read each of these through `secretKeyRef`. When adding a variable, check whether it is a secret before making it plain env.
 
 ---
 
@@ -257,9 +262,10 @@ Tests run inside `backend/tests/conftest.py`, which sets `DATABASE_URL`,
 NOT consume `.env`.
 
 `.github/workflows/release.yml` deploys nothing (see
-[`DEPLOYMENT.md`](DEPLOYMENT.md)). `SMOKE_USERNAME` and `SMOKE_PASSWORD`
-(repo Actions secrets, Settings → Secrets and variables → Actions) are used
-only for a by-hand `scripts/smoke-test.sh` run after a production rollout.
+[`DEPLOYMENT.md`](DEPLOYMENT.md)). No workflow reads `SMOKE_USERNAME` or
+`SMOKE_PASSWORD` any more; they are left for deletion (INFRA-99). A by-hand
+`scripts/smoke-test.sh` run reads the credentials from the cluster Secret
+`tbd-prod/tbd-smoke` (aws-infra `docs/runbooks.md`, "TBD smoke account").
 
 ### Production
 
