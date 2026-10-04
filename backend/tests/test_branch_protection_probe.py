@@ -1899,7 +1899,7 @@ def test_the_workflow_declares_the_coverage_boundary():
     next TBD-404 will cite it. `allow_merge_commit` / `allow_rebase_merge` live
     on `GET /repos/{o}/{r}`, NOT on `/protection`, so re-enabling merge commits
     leaves this probe green -- and the entire release pipeline depends on
-    squash-only, because the squash subject IS the string semantic-release
+    squash-only, because the squash subject IS the string release-please
     parses."""
     body = _artifact(WORKFLOW).read_text()
     assert "allow_merge_commit" in body, (

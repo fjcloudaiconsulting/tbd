@@ -17,8 +17,8 @@
 # ⚠ COMPARE AGAINST THE LATEST TAG, NOT `main` HEAD.
 #
 # TBD-434 was filed saying "compare the active deployment SHA against main
-# HEAD". That is WRONG and would false-alarm continuously. Since TBD-424 made
-# `.releaserc.json`'s scope suppressions actually work, a `ci(...)`, `fix(infra)`
+# HEAD". That is WRONG and would false-alarm continuously. Since a
+# merge only updates the release-please PR, a `ci(...)`, `fix(infra)`
 # or `docs(...)` merge legitimately cuts NO release and therefore legitimately
 # never deploys, so `main` runs ahead of production as a matter of correct
 # design. Measured at the time of writing: main `8ab9036d`, latest tag v0.258.6

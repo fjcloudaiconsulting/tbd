@@ -47,11 +47,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: test-${{ github.workflow }}-${{ github.ref }}
+  # INFRA-42: `main` runs are keyed by sha. A concurrency group holds at most
+  # ONE pending run and cancels the older pending one even with
+  # `cancel-in-progress: false`, so a shared `main` group dropped a merge's run
+  # in a burst of three. Every `main` commit needs its own run: it builds the
+  # sha-<7> images that a release later promotes, and release.yml's
+  # await-tests waits for exactly that run's conclusion.
+  group: test-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   # ⚠ PR runs cancel their own superseded runs; `main` runs MUST NOT.
-  # On push, `github.ref` is `refs/heads/main` for every merge, so all
-  # post-merge runs share one concurrency group. With a blanket
-  # `cancel-in-progress: true` each merge cancels the previous merge's run —
+  # Before INFRA-42 every post-merge run shared the `refs/heads/main` group,
+  # and with a blanket `cancel-in-progress: true` each merge cancelled the
+  # previous merge's run —
   # measured burst: four merges inside fifteen minutes on 2026-08-09 — so the
   # conflict introduced by merge N is cancelled by merge N+1 and never
   # reported. That silently defeats the `push:` trigger above in exactly the
@@ -81,7 +87,7 @@ jobs:
       migrations: ${{ steps.detect.outputs.migrations }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # ⚠ Load-bearing. The default depth-1 clone does not contain the PR's
           # base commit, so the diff would fail — and the detector fails SAFE
@@ -142,9 +148,11 @@ jobs:
   # no wall clock. Six was bought for headroom rather than speed. ⚠ By
   # 2026-09-13 shard 5/6 (~470s) had become the slowest job itself (TBD-524).
   # A full run peaks at 9 concurrent jobs (8 before TBD-422 split the frontend
-  # suite), so two concurrent PRs peak at 18 of the 20 public runners. Eight
+  # suite), so two concurrent PRs peaked at 18 of the 20 public runners. Eight
   # shards would put them over that budget, and queueing costs more than the
-  # extra shard saves.
+  # extra shard saves. ⚠ INFRA-42 added the three Publish Image jobs (short,
+  # cached builds): a full run now peaks at 12, so two full PRs at once queue
+  # a few jobs.
   backend-shard:
     name: Backend Shard ${{ matrix.group }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
@@ -171,10 +179,10 @@ jobs:
           --health-retries 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.12.13"
           python-version: "3.12"
@@ -214,7 +222,7 @@ jobs:
       # blocks the deploy (INFRA-53).
       - name: Upload shard coverage data
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ matrix.group }}
           path: backend/.coverage.${{ matrix.group }}
@@ -235,7 +243,7 @@ jobs:
     if: ${{ needs.changes.outputs.backend == 'true' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Build the MCP image
         run: docker build -f backend/Dockerfile.mcp -t "tbd-mcp:${GITHUB_SHA}" backend
@@ -259,7 +267,7 @@ jobs:
     if: ${{ needs.changes.outputs.backend == 'true' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Build the prod target
         run: docker build --target prod -t "tbd-backend:${GITHUB_SHA}" backend
@@ -296,6 +304,42 @@ jobs:
           "tbd-migrations:${GITHUB_SHA}"
           python -c "import alembic, scripts.migrate; print('migrations import ok')"
 
+  # INFRA-42: the GHCR images, through the shared build-image workflow
+  # (RELEASE_CONTRACT.md section 3). Pull requests build without pushing; a
+  # push to `main` publishes sha-<7>, which release.yml's promote retags as
+  # vX.Y.Z and never rebuilds. detect-changed-areas.sh reports every area as
+  # changed on any non-PR event, so every `main` commit (the release-please
+  # commit included) gets all three images.
+  backend-images:
+    name: Publish Image (${{ matrix.image }})
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    strategy:
+      matrix:
+        include:
+          - { image: backend, target: prod }
+          - { image: migrations, target: migrations }
+    permissions:
+      contents: read
+      packages: write
+    uses: fjcloudaiconsulting/.github/.github/workflows/build-image.yml@v1
+    with:
+      image: ${{ matrix.image }}
+      context: backend
+      target: ${{ matrix.target }}
+
+  frontend-image:
+    name: Publish Image (frontend)
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: fjcloudaiconsulting/.github/.github/workflows/build-image.yml@v1
+    with:
+      image: frontend
+      context: frontend
+
   # Stable aggregate gate. Branch protection / required-check config can
   # point at this single "Backend Checks" context; it passes only when
   # every shard passed. Keeping the name "Backend Checks" preserves the
@@ -303,14 +347,14 @@ jobs:
   backend:
     name: Backend Checks
     runs-on: ubuntu-latest
-    needs: [changes, backend-shard, migrations, mcp-image, backend-image]
+    needs: [changes, backend-shard, migrations, mcp-image, backend-image, backend-images]
     if: ${{ always() }}
     steps:
       # ⚠ THE WIRING GUARD MUST STAY THE FIRST STEP IN THIS JOB.
       # This job is `if: always()`. If the guard sat after the shard-result
       # `exit 1` below, a failing shard would mask a wiring failure and the
       # guard would only ever run on already-green builds.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Only `Backend Checks` and `Frontend Checks` are required contexts on
       # `main`. So a new top-level job added to this file WITHOUT wiring it
@@ -418,6 +462,13 @@ jobs:
           "${{ needs.changes.outputs.backend }}"
           "Backend Image"
 
+      - name: Verify the backend and migrations images built (and published on main)
+        run: >-
+          bash scripts/ci/assert-gate.sh
+          "${{ needs.backend-images.result }}"
+          "${{ needs.changes.outputs.backend }}"
+          "Publish backend images"
+
       # `Migration Checks` is folded into this aggregate deliberately. It is
       # the one context branch protection is expected to require (TBD-347),
       # and a MySQL-only defect merging green because someone forgot to add a
@@ -445,14 +496,14 @@ jobs:
       # README.
       - name: Download shard coverage data
         if: ${{ needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: coverage-*
           path: cov
 
       - name: Set up Python for coverage combine
         if: ${{ needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
@@ -582,10 +633,10 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}/backend
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.12.13"
           python-version: "3.12"
@@ -766,10 +817,10 @@ jobs:
     if: ${{ needs.changes.outputs.frontend == 'true' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
 
@@ -783,7 +834,7 @@ jobs:
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
@@ -822,10 +873,10 @@ jobs:
     if: ${{ needs.changes.outputs.frontend == 'true' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
 
@@ -839,7 +890,7 @@ jobs:
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
@@ -887,11 +938,11 @@ jobs:
   frontend:
     name: Frontend Checks
     runs-on: ubuntu-latest
-    needs: [changes, frontend-work, frontend-static]
+    needs: [changes, frontend-work, frontend-static, frontend-image]
     if: ${{ always() }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # Same rule, same script, same fence as the backend aggregate. See the
       # comment block there for why the accept is conditional and why it is
@@ -912,3 +963,10 @@ jobs:
           "${{ needs.frontend-static.result }}"
           "${{ needs.changes.outputs.frontend }}"
           "Frontend static checks"
+
+      - name: Verify the frontend image built (and published on main)
+        run: >-
+          bash scripts/ci/assert-gate.sh
+          "${{ needs.frontend-image.result }}"
+          "${{ needs.changes.outputs.frontend }}"
+          "Publish frontend image"

@@ -37,7 +37,7 @@
 #
 # ⚠ Do NOT "fix" the drift by deleting the filter the way release.yml's was
 # deleted. The two are not analogous. release.yml's filter was redundant with
-# `.releaserc.json`; this one is the only thing bounding COST. Every run here
+# its release gate; this one is the only thing bounding COST. Every run here
 # does an S3 sync plus a CloudFront `/*` invalidation, and invalidations past
 # 1,000/month are metered. Removing it buys one invalidation per merge to
 # main, forever.
@@ -175,7 +175,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Wait for the Test workflow on this commit
         env:
@@ -209,10 +209,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
 
@@ -226,7 +226,7 @@ jobs:
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
@@ -253,7 +253,7 @@ jobs:
           ls -la out-apex/ | head -20
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v5
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
         with:
           role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}

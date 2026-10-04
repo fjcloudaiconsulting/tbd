@@ -1,22 +1,24 @@
-# Release orchestrator for main.
+# Release orchestrator for main (INFRA-42: release-please).
 #
-# This workflow is the single arbiter of "should we ship". It runs
-# semantic-release first; if (and only if) semantic-release decides a new
-# release is warranted, the gated `deploy` job pushes .do/app.yaml to DO
-# App Platform, and `smoke-tests` then asserts the live app actually
-# serves traffic. Path-only triggers were the previous gate but they
-# couldn't tell a `chore(frontend): tsconfig` apart from a real shipping
-# change, so chore commits were redeploying production. The semantic-
-# release outcome is now the gate instead. deploy.yml is preserved as a
-# manual `workflow_dispatch` escape hatch for the rare case where an
-# infra-only change (chore(.do), chore(nginx), chore(infra), ...) needs
-# to ship without a version bump.
+# Every push to main runs this. `release` runs release-please with the Release
+# GitHub App token: on an ordinary merge it opens or updates the release PR
+# and nothing ships; on the merge of that release PR it tags vX.Y.Z on the
+# release commit and publishes the GitHub Release (`release_created`). Only
+# then do the gated jobs run: `promote` retags the release commit's sha-<7>
+# GHCR images (built by test.yml, never rebuilt) as vX.Y.Z, `release-smoke`
+# boots those images (compose.smoke.yaml), and `deploy` pushes .do/app.yaml
+# to DO App Platform, which builds backend/ and frontend/ from main itself,
+# followed by `smoke-tests` against production. deploy.yml stays the manual
+# `workflow_dispatch` escape hatch for an infra-only change that must ship
+# without a version.
+#
+# DO is gated on the release alone, not on promote/release-smoke: it builds
+# from source, so a GHCR-side failure must not hold production back. That is
+# today's coupling; INFRA-48 replaces the DO jobs with the cluster handoff.
 #
 # Why the gating job and not `on: release: { types: [published] }` on
-# deploy.yml: GitHub does not cascade workflow runs from releases that
-# are created by GITHUB_TOKEN, which is exactly what semantic-release
-# uses. See
-# https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow
+# deploy.yml: one workflow keeps the "exactly one deploy per release" rule in
+# one `if:` (fenced by backend/tests/test_deploy_workflow.py).
 
 name: Release
 
@@ -26,45 +28,21 @@ on:
     # ⚠ NO `paths:` FILTER, DELIBERATELY (TBD-424 defect 2). Do not
     # reintroduce one -- not as `paths:`, and not as `paths-ignore:` either.
     #
-    # Shippability is decided in ONE place. `.releaserc.json` decides whether
-    # a version is cut, by commit type and scope; the `new_release_published`
-    # condition on the `deploy` job below decides whether that cut version is
-    # pushed to DO. One gate, one fence
-    # (backend/tests/test_release_rules_ordering.py). The path filter that
-    # used to live here was a SECOND, unfenced gate answering the same
-    # question by a wrong proxy -- file paths instead of commit intent -- and
-    # it was only load-bearing until 1f246cbe, which made the `scope:`
-    # suppressions in `.releaserc.json` actually suppress. Measured across the
-    # last ~100 merges, every merge the filter blocked would also have been
-    # suppressed by `.releaserc.json`, so removing it changes ZERO release
-    # outcomes: ~29 more Release runs, 0 more releases, 0 more deploys.
-    #
-    # ⚠ This is NOT the same reasoning as test.yml's ban on `paths:`. There, a
-    # filter is forbidden because a required status context that never reports
-    # blocks its PR forever, and because the deploy interlock waits for a
-    # `Test` run that must therefore always exist. Nothing here hangs: this
-    # filter was merely redundant where it was right, and wrong where it was
-    # not -- a suppressed merge's commits are silently folded into whatever
-    # merge next touches an allowlisted path, misattributing the release.
+    # Shippability is decided in ONE place: the owner merging the
+    # release-please PR, which sets `release_created`, the condition on the
+    # `deploy` job below. Every push must reach release-please, or the release
+    # PR goes stale and the merged one is never tagged.
     #
     # ⚠ Do NOT replace it with in-workflow change detection either. test.yml's
     # `changes` job (scripts/ci/detect-changed-areas.sh) is VERDICT-NEUTRAL:
-    # it fails TRUE on any uncertainty and can only ever add work, never turn
-    # a red suite green. The same detector here would be VERDICT-CHANGING --
-    # it could veto a release semantic-release decided to cut, i.e. a silent
-    # UNDER-release, a failure mode this pipeline has never had.
-    # semantic-release's own commit analysis IS the change detection.
-    #
-    # Cost, for the record: the `release-deploy` concurrency group below gains
-    # roughly 36% more entrants, so a merge that DOES release can now queue
-    # behind a no-op run. That is bounded to about one extra run of latency,
-    # because GitHub keeps at most one PENDING run per concurrency group and
-    # drops the rest.
+    # it fails TRUE on any uncertainty and can only ever add work. The same
+    # detector here would be VERDICT-CHANGING: it could skip the run that
+    # tags a merged release PR, a silent UNDER-release.
 
+# Least privilege; each job that needs more says so. release-please itself
+# writes with the Release App token, not GITHUB_TOKEN.
 permissions:
-  contents: write
-  issues: read
-  pull-requests: read
+  contents: read
 
 # TBD-391. This workflow had NO concurrency group, so two merges landing close
 # together ran two Release workflows at once and could push `.do/app.yaml` to
@@ -74,8 +52,8 @@ permissions:
 #
 # `cancel-in-progress: false` on purpose: a Release run that has already
 # started may be mid-deploy, and cancelling it could leave DO half-rolled.
-# semantic-release analyses every commit since the last tag, so a superseded
-# pending run loses nothing — its commits are picked up by the next one.
+# A superseded pending run loses nothing: release-please reads main as it is
+# when it runs, so the next run opens the release PR or tags a merged one.
 concurrency:
   group: release-deploy
   cancel-in-progress: false
@@ -84,9 +62,10 @@ jobs:
   # TBD-391. THE INTERLOCK. See scripts/ci/await-test-run.sh for the measured
   # timings and the full reasoning.
   #
-  # Placed before `release`, NOT between `release` and `deploy`: semantic-
-  # release cuts an immutable git tag and publishes a GitHub Release, and on
-  # PR #654 it did so 7m41s before the post-merge suite reported. Gating only
+  # Placed before `release`, NOT between `release` and `deploy`: release-
+  # please cuts an immutable git tag and publishes a GitHub Release (and under
+  # semantic-release, on PR #654, that happened 7m41s before the post-merge
+  # suite reported). Gating only
   # the deploy would still leave a published release for a commit whose suite
   # then goes red, permanently desynchronising the version line from what is
   # actually in production.
@@ -110,7 +89,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Wait for the Test workflow on this commit
         env:
@@ -119,42 +98,135 @@ jobs:
         run: ./scripts/ci/await-test-run.sh "${{ github.sha }}"
 
   release:
+    name: Release PR and tag
     needs: await-tests
     runs-on: ubuntu-latest
+    # Holds RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY. Branch `main` only, and
+    # NO required reviewers: this job runs on every push to main.
+    environment: release
+    # Above await-test-run.sh's own 25 minute ceiling.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # `gh pr list` and the Test run lookup.
+      pull-requests: read
+      actions: read
     outputs:
-      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
-      new_release_git_tag: ${{ steps.semantic.outputs.new_release_git_tag }}
+      release_created: ${{ steps.release.outputs.release_created }}
+      version: ${{ steps.release.outputs.version }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      # Needed only for scripts/ci/await-test-run.sh below.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          fetch-depth: 0
           persist-credentials: false
 
-      - name: Semantic Release
-        id: semantic
-        uses: cycjimmy/semantic-release-action@v6
-        with:
-          semantic_version: 24
-          extra_plugins: |
-            conventional-changelog-conventionalcommits@8
+      # ⚠ release-please acts on main as it is NOW, not on this commit: it tags
+      # the merge commit of whichever release PR is merged and still labelled
+      # `autorelease: pending`. If that commit is not this run's (a merge
+      # landed on top, or the release commit's own run was dropped as a
+      # superseded pending run), await-tests above proved nothing about it.
+      # So wait for ITS Test run too, which is also the run that publishes the
+      # sha-<7> images `promote` needs. Red or timed out: fail loudly, tag
+      # nothing.
+      - name: Await the tests of a merged release PR's commit
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shas=$(gh pr list --repo "$GH_REPO" --base main --state merged --label 'autorelease: pending' \
+            --json mergeCommit --jq '.[].mergeCommit.oid')
+          for sha in $shas; do
+            if [ "$sha" = "$GITHUB_SHA" ]; then echo "release commit is this run's commit"; continue; fi
+            ./scripts/ci/await-test-run.sh "$sha"
+          done
+
+      # An App token, not GITHUB_TOKEN, so the release PR triggers CI and can
+      # satisfy the required checks (RELEASE_CONTRACT.md section 2).
+      - name: Release App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+          # A tag on the release commit counts as creating its workflow files
+          # when a later main commit changed one (INFRA-78).
+          permission-workflows: write
+
+      - name: release-please
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Retag the release commit's sha-<7> images (test.yml built them on that
+  # commit's push) as vX.Y.Z. Never rebuilds; fails if an image is missing.
+  # Unlike ziftbook (one workflow), the image build is not a `needs` here: it
+  # lives in test.yml, and the release job has already awaited that commit's
+  # Test run, which includes the build.
+  promote:
+    needs: release
+    if: needs.release.outputs.release_created == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: fjcloudaiconsulting/.github/.github/workflows/promote-release.yml@v1
+    with:
+      version: ${{ needs.release.outputs.version }}
+      images: backend frontend migrations
+
+  # Boot the promoted vX.Y.Z images (compose.smoke.yaml): migrations twice,
+  # then /health must report this version and the release commit.
+  release-smoke:
+    needs: [release, promote]
+    if: needs.release.outputs.release_created == 'true'
+    permissions:
+      contents: read
+      packages: read
+    uses: fjcloudaiconsulting/.github/.github/workflows/smoke.yml@v1
+    with:
+      version: ${{ needs.release.outputs.version }}
+      health-url: http://localhost:8000/health
 
   deploy:
     runs-on: ubuntu-latest
     needs: release
-    if: needs.release.outputs.new_release_published == 'true'
+    if: needs.release.outputs.release_created == 'true'
+    permissions:
+      contents: read
+      # await-test-run.sh lists workflow runs.
+      actions: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # Closes the seconds-wide window between the release job's
+      # `gh pr list` and release-please's own query: a release PR merged in
+      # between is tagged without its Test run awaited. Normally a no-op
+      # (that run already passed); red means a failed deploy, which the
+      # notifier below reports.
+      - name: Await the tests of the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          ./scripts/ci/await-test-run.sh "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)"
 
       # ⚠⚠ Refuse to deploy if the committed spec would overwrite a live
       # secret. On 2026-08-20 exactly that took production's database and
       # redis credentials down (TBD-425); infra/MIGRATION.md step 9 had
       # warned about it since May and a runbook comment did not stop it.
       - name: Install doctl
-        uses: digitalocean/action-doctl@v2
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
@@ -166,7 +238,7 @@ jobs:
           ./scripts/ci/assert-app-spec-secrets-synced.sh
 
       - name: Deploy to DigitalOcean App Platform
-        uses: digitalocean/app_action/deploy@v2
+        uses: digitalocean/app_action/deploy@cc55bc9b848d25f9c1c9f831cf843fbab3fbfb15 # v2.0.11
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
           # NOTE: Do NOT add `app_name` here. The v2 action's createSpec
@@ -203,7 +275,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Run smoke tests against production
         env:
@@ -246,13 +318,19 @@ jobs:
   notify-undeployed-release:
     runs-on: ubuntu-latest
     needs: [release, deploy]
+    # INFRA-42: also when the release job itself failed. release-please can
+    # publish the GitHub Release and then fail (PR comment, relabel); the job
+    # reports no `release_created`, `deploy` skips, and a re-run throws
+    # DuplicateReleaseError, so that version would never reach DO silently.
     if: >-
       ${{ always()
-          && needs.release.outputs.new_release_published == 'true'
-          && needs.deploy.result != 'success' }}
+          && ((needs.release.outputs.release_created == 'true'
+               && needs.deploy.result != 'success')
+              || needs.release.result == 'failure'
+              || needs.release.result == 'cancelled') }}
     permissions:
       # ⚠ Job-level permissions REPLACE the workflow-level block (which grants
-      # only `issues: read`), so `issues: write` must be spelled out here or
+      # only `contents: read`), so `issues: write` must be spelled out here or
       # the notifier 403s at exactly the moment it is needed.
       #
       # `contents: write` is for the release annotation step below --
@@ -264,7 +342,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # ⚠⚠ STEP ORDER IS LOAD-BEARING. The issue is opened FIRST so that a
       # failure to annotate the GitHub Release can never suppress the alert.
@@ -278,7 +356,8 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           ACTOR: ${{ github.actor }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
-          RELEASE_TAG: ${{ needs.release.outputs.new_release_git_tag }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag_name }}
+          RELEASE_RESULT: ${{ needs.release.result }}
         run: ./scripts/notify-undeployed-release.sh
 
       # Best effort, and second on purpose. Demotes the published release to a
@@ -286,15 +365,14 @@ jobs:
       # sees that this version corresponds to nothing in production.
       #
       # ⚠ The git TAG is never deleted. It is immutable by policy and other
-      # things (changelogs, issue references, the next semantic-release run's
-      # baseline) already point at it; deleting it would trade a visible
+      # things (changelogs, issue references, release-please's baseline) already point at it; deleting it would trade a visible
       # inconsistency for an invisible one.
       - name: Flag the published release as NOT DEPLOYED
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.release.outputs.new_release_git_tag }}
+          TAG: ${{ needs.release.outputs.tag_name }}
           RUN_ID: ${{ github.run_id }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
         run: |

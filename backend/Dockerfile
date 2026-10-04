@@ -44,6 +44,14 @@ ENV PYTHONPATH=/app
 # buffer fills before flushing.
 ENV PYTHONUNBUFFERED=1
 
+# Baked by the shared build-image workflow (RELEASE_CONTRACT.md section 3) and
+# reported by /health. Last in this stage so the layers above stay cached
+# across commits. A plain build (DO App Platform) gets "dev".
+ARG APP_VERSION=dev
+ARG APP_REVISION=dev
+ENV TBD_APP_VERSION=$APP_VERSION \
+    TBD_APP_REVISION=$APP_REVISION
+
 FROM runtime AS migrations
 
 # Run as a true init step (App Platform PRE_DEPLOY job in .do/app.yaml, a k8s

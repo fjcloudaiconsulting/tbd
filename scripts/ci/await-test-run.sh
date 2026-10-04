@@ -23,7 +23,7 @@
 # So this script is the interlock. Without it, the guard reports after the
 # thing it exists to prevent has already shipped.
 #
-# ⚠ IT GATES `release`, NOT `deploy`. semantic-release cuts an immutable git
+# ⚠ IT GATES `release`, NOT `deploy`. release-please cuts an immutable git
 # tag and publishes a GitHub Release before `deploy` ever starts. Gating only
 # the deploy would still leave a published release for a commit whose suite
 # then goes red, permanently desynchronising the version line from production.

@@ -7,7 +7,7 @@
 #   * `allow_merge_commit` / `allow_rebase_merge` / `allow_squash_merge` -- these
 #     live on `GET /repos/{o}/{r}`, NOT on /protection. CONTRIBUTING.md asserts
 #     squash-merge-only and the release pipeline depends on it, because the
-#     squash subject IS the string semantic-release parses. Re-enabling merge
+#     squash subject IS the string release-please parses. Re-enabling merge
 #     commits leaves this probe green. The most important uncovered setting here.
 #   * repository and organization rulesets
 #   * organization-level policy; required-workflow configuration
@@ -65,7 +65,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # ⚠ `GITHUB_TOKEN` structurally cannot read branch protection: the workflow
       # `permissions:` key has no `administration` scope. A fine-grained PAT
@@ -84,7 +84,7 @@ jobs:
       - name: Mint an installation token
         id: auth
         continue-on-error: true
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
         with:
           app-id: ${{ vars.PROTECTION_PROBE_APP_ID }}
           private-key: ${{ secrets.PROTECTION_PROBE_APP_KEY }}

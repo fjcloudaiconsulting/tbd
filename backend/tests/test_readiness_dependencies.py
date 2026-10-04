@@ -477,11 +477,36 @@ def test_f11_health_is_pure_liveness_with_everything_down(client, monkeypatch):
     _break_db(monkeypatch)
     _set_redis(monkeypatch, _Pinger(raises=RedisConnectionError("no route")))
     _set_env(monkeypatch, "production")
+    monkeypatch.setattr(settings, "tbd_app_version", "dev")
+    monkeypatch.setattr(settings, "tbd_app_revision", "dev")
 
     r = client.get("/health")
 
     assert r.status_code == 200, r.text
-    assert r.json() == {"status": "ok"}
+    assert r.json() == {"status": "ok", "version": "dev", "revision": "dev"}
+
+
+def test_health_reports_the_baked_version_and_revision(client, monkeypatch):
+    """INFRA-42. The post-release smoke test asserts these on the published
+    image (release contract section 5). Kills a hardcoded value, and an env
+    name that drifts from the ENV the Dockerfile bakes."""
+    from app.config import Settings
+
+    monkeypatch.setenv("TBD_APP_VERSION", "1.2.3")
+    monkeypatch.setenv("TBD_APP_REVISION", "a" * 40)
+    baked = Settings()
+    monkeypatch.setattr(settings, "tbd_app_version", baked.tbd_app_version)
+    monkeypatch.setattr(settings, "tbd_app_revision", baked.tbd_app_revision)
+
+    r = client.get("/health")
+
+    assert r.json() == {"status": "ok", "version": "1.2.3", "revision": "a" * 40}
+    # Baked in the shared `runtime` stage, so both the prod and the
+    # migrations image carry it.
+    dockerfile = (pathlib.Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+    runtime = dockerfile.split("AS runtime\n", 1)[1].split("\nFROM runtime AS migrations", 1)[0]
+    assert "\nENV TBD_APP_VERSION=$APP_VERSION" in runtime
+    assert "TBD_APP_REVISION=$APP_REVISION" in runtime
 
 
 # ── F12-F13: the probe must be a pure observer ─────────────────────────────
