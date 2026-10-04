@@ -1,6 +1,17 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>fjcloudaiconsulting/.github#v1"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The python-version input of astral-sh/setup-uv steps in CI, which the github-actions manager does not read, so the python runtime PR moves it with requires-python.",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["uses: astral-sh/setup-uv@[^\\n]*\\n\\s+with:\\n(?:\\s+[a-z-]+: [^\\n]*\\n)*?\\s+python-version: \"(?<currentValue>\\d+\\.\\d+)\""],
+      "depNameTemplate": "python",
+      "datasourceTemplate": "python-version",
+      "versioningTemplate": "pep440"
+    }
+  ],
   "packageRules": [
     {
       "description": "Python non-major updates in one PR. FastAPI and uvicorn stay out and get their own PRs: a FastAPI minor can change telemetry behavior (INFRA-84, INFRA-105).",
@@ -38,7 +49,7 @@
       "groupName": "opentelemetry"
     },
     {
-      "description": "Library majors wait for approval on the Dependency Dashboard, then land one at a time after the non-major groups.",
+      "description": "All majors (libraries, actions, images) wait for approval on the Dependency Dashboard, approve them one at a time, after the non-major groups have landed.",
       "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true
     },
@@ -63,7 +74,7 @@
       "enabled": false
     },
     {
-      "description": "Datastore image majors are never proposed: production versions are owned by aws-infra (clusters/platform/data), and local and CI images follow them.",
+      "description": "Datastore image majors are never proposed: production versions are owned by aws-infra (clusters/platform/data), and local and CI images must not run ahead of them.",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["mysql", "valkey/valkey", "redis"],
       "matchUpdateTypes": ["major"],
