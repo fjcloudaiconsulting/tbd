@@ -60,15 +60,16 @@ while :; do
   if payload=$(gh api \
       "repos/${GH_REPO}/actions/workflows/${WORKFLOW}/runs?head_sha=${SHA}&per_page=100" \
       2>&1); then
-    # ⚠ DELIBERATELY NOT filtered on `event`. The same commit's Test run is a
-    # `push` run on main and a `pull_request` run on a branch. Keeping this
-    # event-agnostic is what lets the script be rehearsed against a genuinely
-    # RED historical run BEFORE it ships -- `test.yml` never fires a `push`
-    # event on a feature branch, so an `event=push` filter would make the
-    # pre-merge proof impossible and leave the central claim untested.
+    # Only the `push` run on `main` counts (INFRA-96). It is the run that
+    # builds the sha-<7> images `promote` retags; a `pull_request` or
+    # `workflow_dispatch` run on the same sha is ignored even when newer, so it
+    # can neither mask a red push run nor block a green one. Filtered in the
+    # parser, not the query, so the fence (stubbed `gh`) exercises it. To
+    # rehearse against history, pass the sha of a red push run on main.
     #
-    # Newest run wins: a re-run of a red suite should be able to unblock a
-    # deploy without a force-push.
+    # Newest push run wins: a re-run of a red suite (a re-run keeps its
+    # `push` event) unblocks a deploy without a force-push. Dispatching Test
+    # instead does not.
     #
     # ⚠ python3, NOT jq. Both exist on `ubuntu-latest`, but `jq` is ABSENT
     # from the backend container image where this script's fence runs. With
@@ -85,6 +86,7 @@ try:
 except Exception:
     print("parse-error -")
     raise SystemExit(0)
+runs = [r for r in runs if r.get("event") == "push" and r.get("head_branch") == "main"]
 if not runs:
     print("absent -")
 else:
