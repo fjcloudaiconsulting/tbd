@@ -69,11 +69,18 @@ def _runs_payload(*runs: str) -> str:
     return '{"total_count": %d, "workflow_runs": [%s]}' % (len(runs), ",".join(runs))
 
 
-def _run(status: str, conclusion: str | None, started: str = "2026-08-12T18:30:38Z") -> str:
+def _run(
+    status: str,
+    conclusion: str | None,
+    started: str = "2026-08-12T18:30:38Z",
+    *,
+    event: str = "push",
+    branch: str = "main",
+) -> str:
     concl = "null" if conclusion is None else f'"{conclusion}"'
     return (
         f'{{"status": "{status}", "conclusion": {concl}, '
-        f'"run_started_at": "{started}"}}'
+        f'"run_started_at": "{started}", "event": "{event}", "head_branch": "{branch}"}}'
     )
 
 
@@ -166,6 +173,9 @@ def test_missing_run_fails_closed_rather_than_shipping(tmp_path):
     deadline. Kills treating an absent run as 'nothing to wait for'."""
     res = _invoke(tmp_path, _runs_payload())
     assert res.returncode == 1, res.stdout + res.stderr
+    # Exit 1 alone would also pass a script that fails at once on "absent",
+    # which would block every release whose push run is not listed yet.
+    assert "no Test run" in res.stdout and "timed out" in res.stderr, res.stdout + res.stderr
 
 
 def test_in_progress_does_not_ship_early(tmp_path):
@@ -211,3 +221,50 @@ def test_abbreviated_sha_fails_fast_and_distinctly(tmp_path):
     'the suite failed'."""
     res = _invoke(tmp_path, _runs_payload(_run("completed", "success")), sha="1af0b38")
     assert res.returncode == 2, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize(
+    ("event", "branch"),
+    [
+        ("pull_request", "feature"),
+        # A fork PR from a branch named `main`: only the event check drops it.
+        ("pull_request", "main"),
+        ("workflow_dispatch", "main"),
+        ("push", "feature"),
+    ],
+)
+def test_only_the_push_run_on_main_counts(tmp_path, event, branch):
+    """INFRA-96. The release commit's push run on `main` is the one that
+    builds the sha-<7> images `promote` retags, so it is the only run the
+    gate may read. Any other run on the same sha is ignored, even when newer.
+
+    ⚠ The run that must be IGNORED is the NEWEST and listed LAST, so a script
+    without the event/branch filter picks it ("newest run wins") and goes red.
+    """
+    # Fail-open direction: a red push run must not be masked by a newer
+    # green run of another event or branch.
+    payload = _runs_payload(
+        _run("completed", "failure", started="2026-08-12T18:00:00Z"),
+        _run("completed", "success", started="2026-08-12T19:00:00Z", event=event, branch=branch),
+    )
+    res = _invoke(tmp_path, payload)
+    assert res.returncode == 1, res.stdout + res.stderr
+
+    # Mirror: a green push run must not be blocked by a newer red one.
+    payload = _runs_payload(
+        _run("completed", "success", started="2026-08-12T18:00:00Z"),
+        _run("completed", "failure", started="2026-08-12T19:00:00Z", event=event, branch=branch),
+    )
+    res = _invoke(tmp_path, payload)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+def test_a_green_non_push_run_alone_fails_closed(tmp_path):
+    """Only a pull_request run exists for the sha: that is "no push run yet",
+    so the gate waits and fails closed at the deadline instead of shipping."""
+    payload = _runs_payload(
+        _run("completed", "success", event="pull_request", branch="feature"),
+    )
+    res = _invoke(tmp_path, payload)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "no Test run" in res.stdout and "timed out" in res.stderr, res.stdout + res.stderr
