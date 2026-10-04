@@ -28,11 +28,11 @@ def make_client() -> TestClient:
     return TestClient(app)
 
 
-def test_get_current_user_returns_403_when_header_is_missing() -> None:
+def test_get_current_user_returns_401_when_header_is_missing() -> None:
     with make_client() as client:
         response = client.get("/protected")
 
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 def test_get_current_user_returns_401_for_invalid_bearer_token() -> None:
