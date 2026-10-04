@@ -993,6 +993,7 @@ async def test_fh_undecodable_bearer_is_rejected(session_factory):
         )
 
     assert res.status_code == 401, res.text
+    assert res.json()["detail"] == "Invalid or expired token"
 
 
 # ── F-I — the substituted period, and the write this GET performs ──────────

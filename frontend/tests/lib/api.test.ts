@@ -96,8 +96,8 @@ describe("apiFetch", () => {
   it("refreshes and retries once after a token-less 403 (cold-start race)", async () => {
     // Cold start / pre-hydration: no access token in memory yet. A request
     // that fires before AuthProvider restores the token goes out BARE, and
-    // FastAPI's HTTPBearer returns 403 "Not authenticated" for a missing
-    // header (NOT 401). The refresh cookie may still be valid, so apiFetch
+    // an older backend's HTTPBearer returns 403 "Not authenticated" for a
+    // missing header (newer FastAPI returns 401). The refresh cookie may still be valid, so apiFetch
     // must attempt one silent refresh + retry — exactly as it does for a
     // 401. Without this, the dashboard's mount-time fetches that race token
     // hydration surface a hard "Not authenticated" instead of recovering.
