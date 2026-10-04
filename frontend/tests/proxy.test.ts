@@ -34,7 +34,7 @@ describe("frontend proxy", () => {
     it("logs the configured header when it holds one valid IP", () => {
       vi.stubEnv("CLIENT_IP_HEADER", " CF-Connecting-IP ");
       expect(
-        loggedIp({ "cf-connecting-ip": " 2001:db8::7 ", "x-forwarded-for": "172.64.0.1" }),
+        loggedIp({ "cf-connecting-ip": "2001:db8::7", "x-forwarded-for": "172.64.0.1" }),
       ).toBe("2001:db8::7");
     });
 

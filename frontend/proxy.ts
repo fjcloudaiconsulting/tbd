@@ -90,7 +90,7 @@ function sanitizeQuery(search: string): string | undefined {
 function clientIp(request: NextRequest): string {
   const header = process.env.CLIENT_IP_HEADER?.trim();
   if (header) {
-    const value = (request.headers.get(header) ?? "").trim();
+    const value = request.headers.get(header) ?? "";
     if (isIP(value) && !value.includes("%")) return value;
   }
   const xff = request.headers.get("x-forwarded-for");
