@@ -14,6 +14,41 @@ describe("frontend proxy", () => {
     logSpy.mockRestore();
   });
 
+  describe("CLIENT_IP_HEADER (INFRA-97, same rule as the backend)", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    function loggedIp(headers: Record<string, string>): string {
+      proxy(new NextRequest("https://example.com/dashboard", { headers }));
+      return JSON.parse(logSpy.mock.calls[0][0] as string).remote_addr;
+    }
+
+    it("ignores a forged cf-connecting-ip when the env is unset", () => {
+      vi.stubEnv("CLIENT_IP_HEADER", "");
+      expect(
+        loggedIp({ "cf-connecting-ip": "6.6.6.6", "x-forwarded-for": "203.0.113.7" }),
+      ).toBe("203.0.113.7");
+    });
+
+    it("logs the configured header when it holds one valid IP", () => {
+      vi.stubEnv("CLIENT_IP_HEADER", " CF-Connecting-IP ");
+      expect(
+        loggedIp({ "cf-connecting-ip": " 2001:db8::7 ", "x-forwarded-for": "172.64.0.1" }),
+      ).toBe("2001:db8::7");
+    });
+
+    it.each(["198.51.100.1, 198.51.100.2", "not-an-ip", "fe80::1%evil", ""])(
+      "falls back to x-forwarded-for when the header holds %j",
+      (value) => {
+        vi.stubEnv("CLIENT_IP_HEADER", "cf-connecting-ip");
+        expect(
+          loggedIp({ "cf-connecting-ip": value, "x-forwarded-for": "203.0.113.7" }),
+        ).toBe("203.0.113.7");
+      },
+    );
+  });
+
   it("redacts sensitive query parameters and logs the first forwarded IP", () => {
     const request = new NextRequest(
       "https://example.com/verify-email?token=abc123&foo=bar&Code=7890",
