@@ -39,6 +39,20 @@ describe("frontend proxy", () => {
     expect(query.get("foo")).toBe("bar");
   });
 
+  // INFRA-110: the browser sends the full previous URL as Referer on
+  // same-origin navigation, so leaving /accept-invite?token=... would log it.
+  it("logs the referer without its query or fragment, and redacts state", () => {
+    const request = new NextRequest("https://example.com/dashboard?state=SECRET", {
+      headers: { referer: "https://example.com/accept-invite?token=SECRET#x" },
+    });
+
+    proxy(request);
+
+    const raw = logSpy.mock.calls[0][0] as string;
+    expect(raw).not.toContain("SECRET");
+    expect(JSON.parse(raw).referer).toBe("https://example.com/accept-invite");
+  });
+
   it("falls back to x-real-ip and omits undefined fields", () => {
     const request = new NextRequest("https://example.com/dashboard", {
       headers: {
