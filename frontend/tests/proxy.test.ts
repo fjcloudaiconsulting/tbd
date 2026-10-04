@@ -47,6 +47,13 @@ describe("frontend proxy", () => {
         ).toBe("203.0.113.7");
       },
     );
+
+    it("falls back instead of failing when the env is not a valid header name", () => {
+      vi.stubEnv("CLIENT_IP_HEADER", "cf connecting ip");
+      expect(
+        loggedIp({ "cf-connecting-ip": "6.6.6.6", "x-forwarded-for": "203.0.113.7" }),
+      ).toBe("203.0.113.7");
+    });
   });
 
   it("redacts sensitive query parameters and logs the first forwarded IP", () => {
