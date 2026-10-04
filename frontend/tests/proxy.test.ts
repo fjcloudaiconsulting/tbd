@@ -41,9 +41,9 @@ describe("frontend proxy", () => {
 
   // INFRA-110: the browser sends the full previous URL as Referer on
   // same-origin navigation, so leaving /accept-invite?token=... would log it.
-  it("logs the referer without its query or fragment, and redacts state", () => {
+  it("logs the referer without its query, and redacts state", () => {
     const request = new NextRequest("https://example.com/dashboard?state=SECRET", {
-      headers: { referer: "https://example.com/accept-invite?token=SECRET#x" },
+      headers: { referer: "https://example.com/accept-invite?token=SECRET" },
     });
 
     proxy(request);

@@ -78,9 +78,10 @@ function sanitizeQuery(search: string): string | undefined {
 }
 
 // The Referer is the full previous URL on same-origin navigation, so it can
-// carry an invite or reset token (INFRA-110). Keep origin and path only.
+// carry an invite or reset token (INFRA-110). Keep origin and path only
+// (browsers never send the fragment).
 function refererWithoutQuery(referer: string | null): string | undefined {
-  return referer?.split(/[?#]/, 1)[0] || undefined;
+  return referer?.split("?", 1)[0] || undefined;
 }
 
 function clientIp(request: NextRequest): string {
