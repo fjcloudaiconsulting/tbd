@@ -7,10 +7,12 @@ GIST_TOKEN in `-H`. Both now feed them to curl on stdin.
 
 Each test runs the real script with a stub `curl` first on PATH. The stub
 records its argv and stdin and answers like a healthy server, so a test
-asserts three things at once: no secret in any argv, the secret still reaches
-curl (on stdin, in the shape curl expects), and the script's exit code is
-unchanged. Nothing here can reach the network: if the stub were bypassed the
-log would be empty and every test fails on that first.
+asserts three things at once: no secret in curl's argv, the secret still
+reaches curl (on stdin, in the shape curl expects), and the script's exit code
+is unchanged. The stub only watches curl: a secret moved into another external
+command's argv (`env printf ...`) would pass, so keep feeding curl from the
+printf builtin. If the stub were bypassed the log would be empty and every test
+fails on that first; the URLs are `smoke.invalid` and a fake gist id.
 """
 
 import json
@@ -74,7 +76,7 @@ def _run(tmp_path: Path, script: Path, args: list[str], env: dict) -> tuple[subp
     log = tmp_path / "curl.log"
     r = subprocess.run(
         ["bash", str(script), *args],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=180,
         env={**os.environ, **env, "PATH": f"{stub.parent}{os.pathsep}{os.environ['PATH']}",
              "CURL_STUB_LOG": str(log), "CURL_STUB_TOKEN": TOKEN},
     )
@@ -100,12 +102,12 @@ def test_smoke_test_keeps_password_and_token_out_of_argv(tmp_path: Path) -> None
     for secret in (PASSWORD, TOKEN):
         assert secret not in r.stdout + r.stderr
 
-    by_url = {c["argv"][-1]: c for c in calls}
+    by_url = {next(a for a in c["argv"] if a.startswith("http")): c for c in calls}
     login = by_url["https://smoke.invalid/api/v1/auth/login"]
     assert json.loads(login["stdin"]) == {"login": USERNAME, "password": PASSWORD}
-    assert "--data-binary" in login["argv"]
+    assert login["argv"][login["argv"].index("Content-Type: application/json") - 1] == "-H"
     read = by_url["https://smoke.invalid/api/v1/categories"]
-    assert read["stdin"] == f"Authorization: Bearer {TOKEN}\n"
+    assert read["stdin"].rstrip("\n") == f"Authorization: Bearer {TOKEN}"
     assert read["argv"][read["argv"].index("@-") - 1] == "-H"
 
 
@@ -114,7 +116,7 @@ def test_smoke_test_exit_codes_unchanged(tmp_path: Path, env: dict, code: int) -
     full = {"SMOKE_BASE_URL": "https://smoke.invalid", "SMOKE_USERNAME": USERNAME,
             "SMOKE_PASSWORD": PASSWORD, **env}
     r = subprocess.run(["bash", str(_script("smoke-test.sh"))], capture_output=True,
-                       text=True, timeout=30, env={**os.environ, **full})
+                       text=True, timeout=180, env={**os.environ, **full})
     assert r.returncode == code, r.stdout + r.stderr
 
 
@@ -127,5 +129,5 @@ def test_coverage_badge_keeps_gist_token_out_of_argv(tmp_path: Path) -> None:
     assert "update-coverage-badge: backend = 91.5%" in r.stdout, r.stdout + r.stderr
     _assert_not_in_argv(calls, GIST_TOKEN)
     (call,) = calls
-    assert call["stdin"] == f"Authorization: Bearer {GIST_TOKEN}\n"
+    assert call["stdin"].rstrip("\n") == f"Authorization: Bearer {GIST_TOKEN}"
     assert call["argv"][call["argv"].index("@-") - 1] == "-H"

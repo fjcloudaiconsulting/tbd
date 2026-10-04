@@ -91,8 +91,8 @@ check_status() {
       status="$(curl "${CURL_OPTS[@]}" -o "$body_file" -w '%{http_code}' "$url" || echo "000")"
     fi
   else
-    status="$(curl "${CURL_OPTS[@]}" -o "$body_file" -w '%{http_code}' \
-      -X "$method" -H "Content-Type: application/json" --data "$data" "$url" || echo "000")"
+    status="$(printf '%s' "$data" | curl "${CURL_OPTS[@]}" -o "$body_file" -w '%{http_code}' \
+      -X "$method" -H "Content-Type: application/json" --data-binary @- "$url" || echo "000")"
   fi
 
   if [[ "$status" == "$expected" ]]; then
