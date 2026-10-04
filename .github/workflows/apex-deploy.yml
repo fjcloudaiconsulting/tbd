@@ -412,7 +412,7 @@ jobs:
           base=https://tbd-landing.flamarion-fb5.workers.dev
           for _ in $(seq 1 30); do
             if curl -fsS --max-time 10 "$base/_meta.json" | grep -q "\"${GITHUB_SHA}\""; then
-              headers=$(curl -fsSI --max-time 10 "$base/")
+              headers=$(curl -fsSI --max-time 10 "$base/") || { sleep 5; continue; }
               for h in '^content-security-policy: default-src' '^strict-transport-security: max-age=63072000' '^x-robots-tag: noindex'; do
                 printf '%s' "$headers" | grep -qiE "$h" || { echo "FAIL $base/ lacks /$h/"; printf '%s\n' "$headers"; exit 1; }
               done
