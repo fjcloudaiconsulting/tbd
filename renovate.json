@@ -34,14 +34,14 @@
     },
     {
       "description": "Python runtime upgrade (3.12 to 3.14 is a minor in Renovate's terms): Dockerfiles, requires-python and CI move together in one PR, on dashboard approval only. Owned by TBD-554.",
-      "matchPackageNames": ["python"],
+      "matchDepNames": ["python"],
       "matchUpdateTypes": ["major", "minor"],
       "groupName": "python runtime",
       "dependencyDashboardApproval": true
     },
     {
       "description": "Node runtime upgrade (22 to 24): Dockerfiles, CI and @types/node move together in one PR, on dashboard approval only. Owned by TBD-554.",
-      "matchPackageNames": ["node", "@types/node"],
+      "matchDepNames": ["node", "@types/node"],
       "matchUpdateTypes": ["major"],
       "groupName": "node runtime",
       "dependencyDashboardApproval": true
