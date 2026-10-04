@@ -1,5 +1,5 @@
 # --- Build stage ---
-FROM node:22-slim AS builder
+FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS builder
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
 # --- Runtime stage ---
-FROM node:22-slim AS runner
+FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS runner
 
 WORKDIR /app
 
