@@ -4,21 +4,12 @@
 #
 # Required env: GH_TOKEN, GH_REPO, RUN_ID, VERDICT, DETAIL.
 #
-# ⚠ THE FIFTH COPY, and declining to extract at five needs a different argument
-# than declining at three. notify-smoke-failure.sh, notify-undeployed-release.sh,
-# notify-deploy-drift.sh and notify-backup-stale.sh (moved to aws-infra in
-# INFRA-20) were the other four;
-# notify-undeployed-release.sh said extraction should happen "on the third" and
-# notify-deploy-drift.sh:11-19 declined at the third. The shared surface is now
-# large enough that the NEXT probe should extract it. The reason not to do it
-# HERE is that it would make a reviewer assessing a new probe silently review a
-# refactor of four live incident notifiers whose failure mode is silence during
-# an outage. Filed separately.
+# The only notifier left in this repo: the DigitalOcean-era deploy, smoke and
+# drift notifiers went with the DigitalOcean deploy path (INFRA-44), and
+# notify-backup-stale.sh moved to aws-infra (INFRA-20).
 #
-# ⚠⚠ ITS OWN DEDUPE BUCKET. Copying a sibling notifier and leaving TITLE_PREFIX
-# unchanged would make each alarm silence the other -- the branch-protection
-# alarm would land as a comment on the open deploy-drift issue and nobody would
-# ever see it. Fenced.
+# ⚠⚠ ITS OWN DEDUPE BUCKET. A new notifier copied from this one must change
+# TITLE_PREFIX, or each alarm would silence the other.
 #
 # ⚠ NO AUTO-CLOSE. A healed reading does not close the issue: the operator
 # decides when an incident is over. Auto-closing would also erase the record of
@@ -58,11 +49,8 @@ or whether a red required check actually blocks a merge.
 # production` returns the deploy-drift issue. So `[branch-protection]` matches
 # any open issue whose title contains both "branch" and "protection", and this
 # alarm would land as a comment on somebody else's incident, where nobody is
-# looking for it. `notify-backup-stale.sh` (now in aws-infra) carries the safe idiom;
-# the weaker `notify-deploy-drift.sh` form was copied here by mistake.
-#
-# ⚠ F8 asserts the dedupe LITERALS are pairwise distinct. That does NOT
-# constrain what a fuzzy title search matches, so it is not a fence on this.
+# looking for it. `notify-backup-stale.sh` (now in aws-infra) carries the same
+# safe idiom.
 EXISTING="$(gh issue list \
   --repo "$GH_REPO" \
   --state open \

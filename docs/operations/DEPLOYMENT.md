@@ -2,48 +2,38 @@
 
 Audience: a contributor who just cloned the repo and wants to understand what happens between `git push` and a live change at `app.thebetterdecision.com` or `thebetterdecision.com`. Also a triage reference for CI/CD failures.
 
-All five pipelines described here are live on `main` today (`test.yml`, `release.yml`, `deploy.yml`, `apex-deploy.yml`, `test-durations.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
+All four pipelines described here are live on `main` today (`test.yml`, `release.yml`, `apex-deploy.yml`, `test-durations.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
 
-For "how do I get my code ready to push", read [`CONTRIBUTING.md`](../../CONTRIBUTING.md). For the env var matrix, read [`ENVIRONMENT.md`](ENVIRONMENT.md). For the managed-to-droplet data move, read [`infra/MIGRATION.md`](../../infra/MIGRATION.md). This file does not duplicate any of them.
+For "how do I get my code ready to push", read [`CONTRIBUTING.md`](../../CONTRIBUTING.md). For the env var matrix, read [`ENVIRONMENT.md`](ENVIRONMENT.md). Production runs in `fjcloudaiconsulting/aws-infra`; this repo builds and releases the images, that one deploys them. This file does not duplicate either.
 
 ## 1. Overview
 
-Four production surfaces. Each has its own pipeline. Some changes fan out across more than one.
+Three production surfaces. Each has its own pipeline. Some changes fan out across more than one.
 
 | Surface | URL | Hosted by | Updated by |
 |---|---|---|---|
-| App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | DigitalOcean App Platform (`pfv` app) | `release.yml` (auto) or `deploy.yml` (manual) |
+| App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | Single-node k3s cluster, namespace `tbd-prod` (aws-infra) | `release.yml` publishes the `vX.Y.Z` images; merging the Renovate bump PR in aws-infra deploys them |
 | Apex landing (marketing, privacy, terms, docs) | `https://thebetterdecision.com` | AWS S3 + CloudFront | `apex-deploy.yml` (auto) |
-| Data plane (MySQL 8 + Redis) | private VPC IP `<vpc-ip>:3306 / :6379` | Self-hosted DO droplet `<data-droplet>` | TFC workspace `<tfc-org>/<data-workspace>` (manual confirm) |
-| Apex CDN + cert + IAM | n/a (control plane) | AWS (S3, CloudFront, ACM, IAM, Route 53) | TFC workspace `<tfc-org>/<apex-workspace>` (manual confirm) |
+| Apex CDN + cert + IAM | n/a (control plane) | AWS (S3, CloudFront, ACM, IAM, Route 53) | TFC workspace `<tfc-org>/<apex-workspace>` (manual confirm), in aws-infra |
 
 ```mermaid
 flowchart LR
   dev[Contributor push to main] --> rel[Release workflow]
   dev --> apex[Apex Deploy workflow]
-  dev --> tfc1[TFC data workspace]
-  dev --> tfc2[TFC apex workspace]
 
-  rel -->|release-please release created| do[DO App Platform pfv]
-  do --> appurl[app.thebetterdecision.com]
+  rel -->|release-please release created| ghcr[GHCR vX.Y.Z images]
+  ghcr -->|Renovate bump PR in aws-infra, merged| flux[Flux on the k3s cluster]
+  flux --> appurl[app.thebetterdecision.com]
 
   apex -->|build + S3 sync + CF invalidate| s3[AWS S3]
   s3 --> cf[CloudFront]
   cf --> apexurl[thebetterdecision.com]
 
-  tfc1 -->|Confirm and Apply| droplet[<data-droplet> droplet]
-  droplet --> db[MySQL 8 + Redis]
-  do -.->|VPC private IP| db
-
-  tfc2 -->|Confirm and Apply| awsctl[S3 + CloudFront + ACM + IAM + Route53]
-  awsctl -.- s3
-  awsctl -.- cf
-
   classDef pipe fill:#eef,stroke:#446
-  class rel,apex,tfc1,tfc2 pipe
+  class rel,apex pipe
 ```
 
-The data plane is reached by App Platform over the VPC's private IPv4. The apex CDN bucket is reached by GitHub Actions over the public AWS API using OIDC-issued credentials, not long-lived keys.
+The apex CDN bucket is reached by GitHub Actions over the public AWS API using OIDC-issued credentials, not long-lived keys. The app, its MySQL and Valkey, and their backups are described in aws-infra (see [Where to look](#9-where-to-look-when-something-breaks)).
 
 ## 2. PR lifecycle (`test.yml`)
 
@@ -110,7 +100,7 @@ the per-test timing file `pytest-split` uses to balance `test.yml`'s
 ⚠ **It is deliberately a separate workflow, not a step in `test.yml`.**
 `scripts/ci/await-test-run.sh` gates production releases on the **run-level**
 conclusion of `test.yml`, so an artifact upload added there would let a
-transient upload failure block a deploy for reasons unrelated to the tests.
+transient upload failure block a release for reasons unrelated to the tests.
 
 ⚠ **Do not regenerate the file locally.** `/app/.test_durations` is root-owned
 while the backend container runs as uid 1001, so `--store-durations` runs the
@@ -120,11 +110,13 @@ also measurably not a uniform rescaling of runner times.
 `backend/tests/test_test_durations_freshness.py` fails the build when the file
 drifts too far from the collected suite.
 
-## 3. Backend + Frontend production deploy (`release.yml`)
+## 3. Release and image promotion (`release.yml`)
 
-Source: `.github/workflows/release.yml`. Spec: `.do/app.yaml`.
+Source: `.github/workflows/release.yml`.
 
-`release.yml` is the **single arbiter** of "should we ship to prod". It runs on every push to `main` and uses **release-please** (via the Release GitHub App token, environment `release`): an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; production deploys exactly once, when the owner merges that PR. On that merge `release` tags `vX.Y.Z` on the release commit and publishes the GitHub Release (`release_created`). Only then do the gated jobs run: `promote` (shared promote-release workflow retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations}` built by `test.yml` on that commit as `vX.Y.Z`), `release-smoke` (boots those images with `compose.smoke.yaml` and checks `/health` returns the version and revision), `deploy` (pushes `.do/app.yaml` to DO App Platform; DO runs the `PRE_DEPLOY` migrate job, then rolls the backend and frontend services), `smoke-tests` (asserts the live app actually serves traffic) and `notify-undeployed-release`. Before `release` runs, `await-tests` waits for the `Test` workflow on this sha, and `release` additionally waits for the `Test` run of the merged release PR's commit when that is not this run's commit.
+`release.yml` is the **single arbiter** of "should we cut a release". It runs on every push to `main` and uses **release-please** (via the Release GitHub App token, environment `release`): an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; a release happens exactly once, when the owner merges that PR. On that merge `release` tags `vX.Y.Z` on the release commit and publishes the GitHub Release (`release_created`). Only then do the gated jobs run: `promote` (shared promote-release workflow retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations}` built by `test.yml` on that commit as `vX.Y.Z`) and `release-smoke` (shared smoke workflow boots those images with `compose.smoke.yaml`, runs the migrations twice, and checks `/health` returns the version and revision). Before `release` runs, `await-tests` waits for the `Test` workflow on this sha, and `release` additionally waits for the `Test` run of the merged release PR's commit when that is not this run's commit.
+
+**Nothing in this repo deploys.** Production is the k3s cluster in `fjcloudaiconsulting/aws-infra`: Renovate opens a PR there bumping the `vX.Y.Z` image tags in `clusters/platform/tbd-prod/`, and merging it is the deploy (Flux applies it). aws-infra's `release-drift-probe` opens an issue when a published release has not reached `clusters/`.
 
 ### Trigger
 
@@ -136,7 +128,7 @@ on:
 
 There is **no `paths:` filter** (TBD-424). Every push must reach release-please, or the release PR goes stale and the merged one is never tagged. The ship/no-ship call is the owner merging the release PR; conventional commit types (`feat:`, `fix:`, etc) only decide the version bump and CHANGELOG section.
 
-Why this design: merging a `feat:`/`fix:` PR no longer deploys by itself, so production ships once per release, when the owner decides, instead of on every merge.
+Why this design: merging a `feat:`/`fix:` PR no longer releases by itself, so versions ship once per release, when the owner decides, instead of on every merge.
 
 ### Job graph
 
@@ -145,98 +137,60 @@ sequenceDiagram
   participant Owner
   participant GH as GitHub Actions
   participant SR as release-please
-  participant DO as DO App Platform
-  participant MIG as PRE_DEPLOY migrate job
-  participant BE as backend service
-  participant FE as frontend service
-  participant SMK as smoke-tests job
+  participant GHCR as GHCR
+  participant RN as Renovate (aws-infra)
+  participant K as k3s cluster (Flux)
 
   Owner->>GH: merge PR to main
   GH->>SR: run release job (after await-tests)
   SR->>SR: analyze conventional commits since last tag
   alt release_created == true (release PR merged)
     SR->>GH: tag vX.Y.Z, GitHub Release
-    GH->>GH: promote + release-smoke (GHCR images)
-    GH->>DO: deploy job: app_action/deploy@v2 with .do/app.yaml
-    DO->>MIG: kind: PRE_DEPLOY, run python /app/scripts/migrate.py
-    MIG-->>DO: rc 0, alembic head reached
-    DO->>BE: roll backend (health probe /health)
-    DO->>FE: roll frontend (health probe /health)
-    BE-->>DO: 200 OK
-    FE-->>DO: 200 OK
-    DO-->>GH: deploy ACTIVE
-    GH->>SMK: smoke-tests job (needs: deploy)
-    SMK->>SMK: scripts/smoke-test.sh against app.thebetterdecision.com
-    alt smoke fails
-      SMK->>GH: open or comment on a GH issue (notify-smoke-failure.sh)
-    end
+    GH->>GHCR: promote: retag sha-<7> images as vX.Y.Z
+    GH->>GH: release-smoke: boot the images (compose.smoke.yaml)
+    RN->>RN: open PR bumping tags in clusters/platform/tbd-prod/
+    Owner->>RN: merge the bump PR
+    RN->>K: Flux applies; migrate init container runs, then backend and frontend roll
   else ordinary merge
-    SR-->>GH: open or update release PR, skip deploy and smoke-tests
+    SR-->>GH: open or update release PR, skip promote and release-smoke
   end
 ```
 
 ### The gate
 
 ```yaml
-deploy:
+promote:
   needs: release
   if: needs.release.outputs.release_created == 'true'
 ```
 
-This is the load-bearing line (see `.github/workflows/release.yml` for the exact expression). Without `release_created`, `deploy` does not run, `smoke-tests` does not run, nothing ships. The output is set by release-please only when the merge is the release PR.
+This is the load-bearing line (see `.github/workflows/release.yml` for the exact expression). Without `release_created`, `promote` and `release-smoke` do not run and nothing is retagged. The output is set by release-please only when the merge is the release PR. `backend/tests/test_release_workflow.py` fences the workflow's shape.
 
-### Why a gated `deploy` job and not `on: release: { types: [published] }`
+### Production rollout (aws-infra)
 
-One workflow keeps the "exactly one deploy per release" rule in a single `if:`, fenced by `backend/tests/test_deploy_workflow.py`. `deploy` therefore lives in the same workflow file and gates on the upstream job's output.
-
-### Deploy step internals
-
-`digitalocean/app_action/deploy@v2` with `app_spec_location: .do/app.yaml` and **no `app_name`**. With both set, the action ignores the file and fetches the live spec by name (that bug let PR #79's migration sit un-applied for hours). The action reads `.do/app.yaml` and picks up the app via its top-level `name: pfv` field. The current spec drives every deploy, which means:
-
-- Every SECRET must be declared in `.do/app.yaml` with its encrypted `EV[...]` value, or it gets removed from the live app on push. (See ENVIRONMENT.md "Spec-sync hazards" and the file's own preamble comment.)
-- Every domain, env var, ingress rule, and component must be present and current in the file.
-
-### `PRE_DEPLOY` migrate job
-
-Declared in `.do/app.yaml` as:
-
-```yaml
-jobs:
-  - name: migrate
-    kind: PRE_DEPLOY
-    source_dir: backend
-    dockerfile_path: backend/Dockerfile
-    run_command: python /app/scripts/migrate.py
-```
-
-App Platform holds the new revision back until this job exits 0. A long migration never causes the backend's serving probe to fail because the backend doesn't start serving until migrate is done. See Section 8 for migration details.
+The bump PR changes the image tags of the backend, frontend, scheduler and migrations in `clusters/platform/tbd-prod/`. Migrations run as the `migrate` init container of the backend pod (`python /app/scripts/migrate.py`, `migrations` image), so a new version never serves on an old schema; see `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/tbd-prod/backend.yaml` and Section 6. Following a rollout: [aws-infra runbooks, "Follow Flux and rollouts"](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md).
 
 ### Smoke tests
 
-`scripts/smoke-test.sh` runs after `deploy` succeeds. Env: `SMOKE_BASE_URL=https://app.thebetterdecision.com`, plus a `SMOKE_USERNAME` / `SMOKE_PASSWORD` for a dedicated smoke user. The smoke user must exist, must be `email_verified`, and must **not** have MFA enabled.
-
-On failure, `scripts/notify-smoke-failure.sh` opens (or comments on an existing) GitHub issue using `GH_TOKEN`. DO marking the deploy `ACTIVE` is necessary but not sufficient: smoke tests assert end-to-end traffic actually works.
+`scripts/smoke-test.sh` is run **by hand** after a production rollout. Env: `SMOKE_BASE_URL=https://app.thebetterdecision.com`, plus `SMOKE_USERNAME` / `SMOKE_PASSWORD` for a dedicated smoke user. The smoke user must exist, must be `email_verified`, and must **not** have MFA enabled. The exact command, the credentials' location and rotation are in [aws-infra runbooks, "TBD smoke account"](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md).
 
 #### ⚠ The smoke account cannot have MFA, and that is an accepted risk (TBD-371)
 
 `smoke-test.sh` authenticates with `POST /api/v1/auth/login` and expects a
 `TokenResponse`. With MFA enabled that endpoint returns an `MfaChallengeResponse`
 (`mfa_required` + `mfa_token`) instead, and the smoke test cannot proceed. Making
-it proceed would mean storing the account's **TOTP seed** as a CI secret — a
+it proceed would mean storing the account's **TOTP seed** as a secret, a
 shared secret that mints valid codes forever, which is strictly worse than no
 second factor at all.
 
 So the account stays single-factor. The compensating controls are:
 
-1. **Its username is not published.** It is `secrets.SMOKE_USERNAME` and an App
-   Platform SECRET, never a plaintext value in source. Until TBD-371 this was a
-   default in `backend/app/config.py` and a plaintext `value:` in
-   `.do/app.yaml` — the repository named the weakest authenticated account in
-   production and documented that it was weak, in the same breath.
+1. **Its username is not published.** It is `secrets.SMOKE_USERNAME` and a
+   cluster Secret, never a plaintext value in source.
 2. **A strong, rotated credential**, `secrets.SMOKE_PASSWORD`.
 3. **No PLATFORM rights, and a blast radius of one throwaway org.**
 
-   ⚠ It IS `role: owner` — of its own dedicated organization, and that is not
+   ⚠ It IS `role: owner`, of its own dedicated organization, and that is not
    avoidable: `register` hardcodes `role=Role.OWNER` and creates a fresh org
    per signup (`routers/auth.py:386-395`), so a standalone account cannot hold
    a lesser role. A lower role would need a second org and an invitation.
@@ -247,12 +201,8 @@ So the account stays single-factor. The compensating controls are:
      difference between "owner of an empty org" and "owner of the fleet". It is
      written only at construction and has no promote path
      (`is_superadmin=is_first_user_setup`), so only the very first account on
-     an install gets it — but verify rather than assume:
-
-     ```bash
-     mysql --no-defaults pfv2 -e \
-       "SELECT username, is_superadmin, is_founder FROM users WHERE id = 4;"
-     ```
+     an install gets it, but verify rather than assume (query the `users` table
+     for the smoke account's row).
 
    * **Its org holds nothing of value.** The smoke test reads
      `GET /api/v1/categories` and writes nothing, so the org should contain
@@ -260,193 +210,27 @@ So the account stays single-factor. The compensating controls are:
      tenant.
 
 ⚠ Usernames are enumerable through `POST /api/v1/auth/check-username` by design,
-so a non-published name is not secrecy — it just means an attacker must guess
+so a non-published name is not secrecy, it just means an attacker must guess
 rather than be handed a confirmed-valid, MFA-less target.
 
-#### Rotating the smoke account
+⚠ **Renaming is the part that actually remediates a disclosure.** A username
+that was ever in git history is known forever, so rotating the password alone
+leaves a known, MFA-less account name reachable at the public login form. The
+rotation procedure (rename, password, secrets, founder-count exclusion) is in
+the aws-infra runbook above.
 
-Do this whenever the credential may have been exposed. The account can rename
-itself; no database access is required.
+### How to verify a rollout
 
-**If you do not know the current password** — likely, since it lives only in
-`secrets.SMOKE_PASSWORD` and GitHub never shows a secret's value back — recover
-it self-service first. This satisfies the rotation on its own, and yields the
-login the rename needs:
-
-1. Find the account's email: sign in as a superadmin, `/admin/users`, search the
-   username from `secrets.SMOKE_USERNAME`.
-2. `POST /api/v1/auth/forgot-password` with `{"email": "<that address>"}`
-   (5/minute).
-3. Open the link from that mailbox and `POST /api/v1/auth/reset-password` with
-   `{"token": "<from the link>", "new_password": "<one you choose>"}`.
-
-⚠ This requires read access to that mailbox. If you do not have it, the admin
-email-change endpoint is **not** a way around it: it refuses an already-verified
-target with `409 user_already_verified`, deliberately, because repointing a
-verified account's address is an account-takeover primitive (TBD-362). The
-remaining routes are an out-of-band database write, or standing up a fresh smoke
-account and retiring the old one.
-
-⚠ **Renaming is the part that actually remediates the disclosure.** The old
-username is in git history permanently, so unpublishing it from HEAD does not
-un-know it. Rotating the password alone leaves a known, MFA-less account name
-reachable at the public login form.
-
-**If the account's email is fake** — as production's is — the reset above cannot
-land and there is no API route in. Registering a replacement does not work
-either: `is_founder=True` is hardcoded at registration, so a new account still
-needs excluding, and more fundamentally a fake-email account can never verify
-while `/login` 403s unverified accounts unconditionally and **no operator
-surface can write `email_verified`**. The only route is out-of-band SQL on the
-data droplet, which can do the rename and the rotation in one statement without
-needing a login at all.
-
-```bash
-# 1. Generate the hash with the app's OWN hasher, so the format matches.
-#    Read the password from stdin -- never argv, which is world-readable.
-printf %s "$NEW_PASS" | docker compose exec -T backend python -c \
-  'import sys; from app.security import hash_password; print(hash_password(sys.stdin.read()))'
-
-# 2. On the droplet. ⚠ --no-defaults is REQUIRED: /root/.my.cnf makes a bare
-#    `mysql` authenticate as the low-privilege pfv_backup, where reads succeed
-#    and only the writes fail -- so a runbook can look like it worked.
-mysql --no-defaults -e "SELECT CURRENT_USER()"      # must print root@localhost
-
-# ⚠⚠ QUOTED heredoc ('SQL'), never -e "..." — a bcrypt hash is $2b$12$...,
-#    and inside double quotes the shell expands $2, $1 and $12 to EMPTY
-#    positional parameters. The UPDATE then succeeds, writing a MANGLED hash,
-#    and the account silently cannot log in. Measured 2026-08-31: a hash
-#    stored this way begins `b2.OTaD` instead of `$2b$12$`.
-mysql --no-defaults pfv2 <<'SQL'
-UPDATE users
-   SET username       = '<new-name>',
-       password_hash  = '<hash from step 1>',
-       email          = '<a mailbox you actually control>',
-       email_verified = 1,
-       password_set   = 1
- WHERE username = '<old-name>';
-SQL
-
-# 3. VERIFY. `mysql -e "UPDATE ..."` prints nothing on success AND nothing when
-#    zero rows matched, so the write is unevidenced until you look.
-mysql --no-defaults pfv2 -e "
-  SELECT id, username, email, email_verified, password_set,
-         LEFT(password_hash,7) AS hash_prefix
-    FROM users WHERE username = '<new-name>';"
-#    hash_prefix MUST be \$2b\$12\$. Anything else means the shell ate the
-#    dollars and the credential is dead.
-```
-
-Then prove the login works **from a host where the password variable exists**,
-before a deploy finds out for you:
-
-```bash
-# ⚠ EXPORT first. `NEW_PASS=...` makes a SHELL variable; `os.environ` only sees
-#   EXPORTED ones, so python raises KeyError, curl posts an empty body and the
-#   API answers 422 — which reads like a rejected credential rather than a
-#   variable that never reached the process.
-export NEW_USER NEW_PASS
-echo "sanity: user=$NEW_USER pass-len=${#NEW_PASS}"   # pass-len 0 => not set
-
-python3 -c 'import json,os;print(json.dumps({"login":os.environ["NEW_USER"],"password":os.environ["NEW_PASS"]}))' \
- | curl -fsS -X POST https://app.thebetterdecision.com/api/v1/auth/login \
-     -H 'Content-Type: application/json' --data @-
-```
-
-An `access_token` in the response is the only proof the hash round-tripped.
-
-⚠ The login body field is **`login`**, not `username` — `LoginRequest` is
-`{login, password}` (`backend/app/schemas/auth.py:37-39`), and it accepts a
-username OR an email. Sending `username` omits a required field, so the API
-answers **422**, which reads like a rejected credential but is the schema
-refusing the request before any password is checked. A genuinely wrong password
-returns 401. `scripts/smoke-test.sh` is the authoritative example of this call.
-
-⚠ Run this from the host that generated the password, not from the droplet —
-the variables live wherever step 1 ran.
-
-⚠ Set a **real** email while you are in there. That is what stops this recurring:
-with a reachable address the account is recoverable through `forgot-password`
-next time, and none of this is needed again.
-
-⚠ `username` is `String(64) UNIQUE` and the API enforces `^[a-zA-Z0-9._-]+$`,
-3-64 chars. SQL bypasses that check, so pick a name that satisfies it or the
-next `PUT /users/me` on that row will fail validation. `email` is
-`String(120) UNIQUE`.
-
-⚠⚠ **Order matters.** Renaming changes what the founder-count exclusion list must
-contain, and changing the password invalidates the session you are using — so
-rename first, then rotate, then re-point the secrets.
-
-```bash
-BASE=https://app.thebetterdecision.com
-# 1. Log in as the CURRENT smoke account.
-TOKEN=$(curl -fsS -X POST "$BASE/api/v1/auth/login" \
-  -H 'Content-Type: application/json' \
-  -d "{\"login\":\"$OLD_USER\",\"password\":\"$OLD_PASS\"}" \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
-
-# 2. Rename it (PUT /users/me; uniqueness and the username rule are enforced).
-curl -fsS -X PUT "$BASE/api/v1/users/me" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"username\":\"$NEW_USER\"}"
-
-# 3. Rotate the password. ⚠ 5/hour rate limit; this invalidates the token above.
-curl -fsS -X POST "$BASE/api/v1/users/me/password" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"current_password\":\"$OLD_PASS\",\"new_password\":\"$NEW_PASS\"}"
-
-# 4. Re-point the CI secrets.
-gh secret set SMOKE_USERNAME --body "$NEW_USER"
-gh secret set SMOKE_PASSWORD --body "$NEW_PASS"
-```
-
-Then update the founder-count exclusion list to the new name, or
-`/api/v1/public/founder-count` counts the smoke account and advertises a number
-one too high. It is not silent — `public_stats` logs
-`public.founder_count.no_exclusions` at ERROR on every production request while
-the list is empty — but it is wrong until fixed.
-
-⚠⚠ **`FOUNDER_COUNT_EXCLUDE_USERNAMES` must be an App Platform SECRET, and the
-committed spec must carry its `EV[...]` ciphertext BEFORE the next deploy.** The
-committed `.do/app.yaml` is pushed as authoritative on every deploy, so a value
-set only in the DO console is erased by the next merge that ships (TBD-425).
-Set it in the console, read the blob back with `doctl apps spec get <APP_ID>`,
-commit it, and only then deploy.
-
-### How to verify a deploy
-
-1. Watch the workflow run: `https://github.com/flamarion/pfv/actions/workflows/release.yml`
-2. Watch the DO deploy: DO console -> Apps -> `pfv` -> Activity. The PRE_DEPLOY job logs appear first; structured `migrate.*` JSON events stream there.
+1. Watch the Release run: `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml`
+2. Follow the aws-infra bump PR and the Flux apply (runbook above); `kubectl -n tbd-prod logs deploy/backend -c migrate` shows the structured `migrate.*` JSON events.
 3. Inspect the running app: `curl -fsS https://app.thebetterdecision.com/health`, `curl -fsS https://app.thebetterdecision.com/ready`, and `curl -fsS https://app.thebetterdecision.com/health/dependencies`.
    `/ready` is the database-only rotation gate; `/health/dependencies` is the one that also covers Redis, and therefore the one that tells you whether anybody can log in.
 
-## 4. Manual deploy escape hatch (`deploy.yml`)
-
-Source: `.github/workflows/deploy.yml`.
-
-`deploy.yml` mirrors `release.yml`'s `deploy` + `smoke-tests` jobs. It is triggered exclusively by `workflow_dispatch`:
-
-```bash
-gh workflow run deploy.yml --ref main
-```
-
-When to use it:
-- An infra-only commit shipped (`chore(.do): ...`, `chore(nginx): ...`, `chore(Dockerfile): ...`). A `chore:` does not enter the release PR, so `release.yml` will not deploy it. Run `deploy.yml` to push the new spec.
-- The most recent `release.yml` run failed at the deploy step and the cause is fixed, but no new release will be cut from a follow-up commit.
-- Forcing a redeploy of the current `main` (e.g. to refresh credentials surfaced via the spec).
-
-What it does: same `app_action/deploy@v2` + `.do/app.yaml`, same PRE_DEPLOY migrate, same smoke tests. Auth is the same `DIGITALOCEAN_ACCESS_TOKEN` secret.
-
-What it does NOT do: bump a version, create a tag, or post to a release feed. It is a deploy-only escape hatch.
-
-For rollback to a prior `main` SHA, see Section 10.
-
-## 5. Apex landing deploy (`apex-deploy.yml`)
+## 4. Apex landing deploy (`apex-deploy.yml`)
 
 > Workflow is live on `main` (shipped in PR #267). It deploys to S3 + CloudFront on every push to `main` whose paths match the filter below. Public traffic reaches the distribution via the apex / www ALIAS records provisioned by PR #270.
 
-The apex landing (`thebetterdecision.com`) is a Next.js static export. `frontend/scripts/build-apex.sh` produces `frontend/out-apex/`. The workflow uploads that directory to an S3 bucket fronted by CloudFront in AWS, using **GitHub OIDC** to assume an IAM role (no long-lived AWS keys committed anywhere). The bucket, distribution, ACM cert, and IAM roles are provisioned by the `<tfc-org>/<apex-workspace>` TFC workspace (Section 7).
+The apex landing (`thebetterdecision.com`) is a Next.js static export. `frontend/scripts/build-apex.sh` produces `frontend/out-apex/`. The workflow uploads that directory to an S3 bucket fronted by CloudFront in AWS, using **GitHub OIDC** to assume an IAM role (no long-lived AWS keys committed anywhere). The bucket, distribution, ACM cert, and IAM roles are provisioned by the `<tfc-org>/<apex-workspace>` TFC workspace (Section 5).
 
 ### Trigger and path filter
 
@@ -493,9 +277,7 @@ on:
       - ".github/workflows/apex-deploy.yml"
 ```
 
-Shared paths (`frontend/lib/brand.ts`, `frontend/lib/styles.ts`, `frontend/components/ThemeProvider.tsx`, `frontend/public/**`, `frontend/package.json`, etc.) are also on `release.yml`'s allowlist. A change to any of these legitimately affects both surfaces and triggers both pipelines.
-
-Landing-only paths (`frontend/app/page.tsx`, `frontend/app/privacy/**`, `frontend/components/landing/**`, etc.) are **not** on `release.yml`'s allowlist, so a landing-only commit skips the DO release entirely. That is the intended split.
+`apex-deploy.yml` has its own `paths:` allowlist; `release.yml` has none (Section 3). A change to a shared path (`frontend/lib/brand.ts`, `frontend/public/**`, `frontend/package.json`, etc.) legitimately affects both surfaces and triggers both pipelines, while a landing-only change (`frontend/app/page.tsx`, `frontend/components/landing/**`, etc.) only deploys the apex unless its commit type warrants a release.
 
 ### Permissions and concurrency
 
@@ -571,54 +353,11 @@ The OIDC trust policy on `github-actions-apex-deploy` (provisioned by PR #240) u
    ```
 3. CloudFront invalidation status: AWS console -> CloudFront -> Distributions -> select -> Invalidations tab.
 
-## 6. Terraform: `<tfc-org>/<data-workspace>` (DO data droplet)
-
-Source: `infra/terraform/`, `infra/terraform/README.md`, `infra/README.md`.
-
-This TFC workspace manages the DigitalOcean control plane for the self-hosted MySQL + Redis pair:
-
-| Resource | Purpose |
-|---|---|
-| `digitalocean_vpc` | Dedicated `<vpc-cidr>` VPC in `<region>` |
-| `digitalocean_droplet` | `<data-droplet>`, `<droplet-size>`, Ubuntu 24.04, runs MySQL 8 + Redis |
-| `digitalocean_firewall` | SSH 22 from anywhere; MySQL 3306 / Redis 6379 / ICMP from VPC only |
-| `digitalocean_project_resources` | Attaches the droplet to the existing DO `pfv` project |
-
-### Workflow
-
-```mermaid
-flowchart LR
-  pr[PR touches infra/terraform/**] --> tfcsp[TFC speculative plan]
-  tfcsp -->|status check on PR| pr
-  pr --> merge[Merge to main]
-  merge --> tfcapp[TFC apply run created]
-  tfcapp --> hold[Status: waiting for confirmation]
-  hold -->|operator clicks Confirm and Apply| apply[Apply runs]
-  apply --> done[Droplet/VPC/firewall updated]
-  apply -.->|outputs| read[droplet_private_ipv4<br/>vpc_id<br/>droplet_public_ipv4]
-```
-
-- **Speculative plan** on every PR that touches `infra/terraform/**`. Posted as a PR status check from TFC's VCS integration. Working directory is `infra/terraform`, trigger pattern is `infra/terraform/**`. (The apex workspace has its own trigger; the two do not collide.)
-- **Apply** on merge. **Manual confirm** in the TFC UI; auto-apply is intentionally off. No infra change ever lands without an operator clicking Confirm & Apply.
-- **Local CLI** is debug-only per the `feedback_terraform_vcs_only` rule. `terraform login` once, then `terraform -chdir=infra/terraform plan` reaches the same remote state for inspection. Never `apply` from CLI.
-
-Workspace variables (set in TFC, never committed):
-- `do_token` (sensitive): scoped DO API token (droplets/vpcs/firewalls/projects RW, ssh_keys R)
-- `ssh_key_name`: name of an SSH key already registered in DO
-
-The provider lock file (`.terraform.lock.hcl`) is committed. TFC and laptop CLIs resolve identical provider versions.
-
-Outputs consumed elsewhere:
-- `droplet_private_ipv4` -> `DATABASE_URL` / `REDIS_URL` in `.do/app.yaml`
-- `vpc_id` -> top-level `vpc.id` block in `.do/app.yaml` (required for App Platform to reach the droplet on its private IP)
-
-After-droplet steps (one-time): Ansible playbook bootstraps the host. See `infra/README.md`.
-
-## 7. Terraform: `<tfc-org>/<apex-workspace>` (AWS apex control plane)
+## 5. Terraform: `<tfc-org>/<apex-workspace>` (AWS apex control plane)
 
 Source: `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex`, `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/README.md`.
 
-Separate TFC workspace because the auth path is different (AWS OIDC rather than a DO API token) and the blast radius is contained.
+Its own TFC workspace (AWS OIDC auth), so the blast radius is contained.
 
 | Resource | Purpose |
 |---|---|
@@ -635,7 +374,6 @@ Separate TFC workspace because the auth path is different (AWS OIDC rather than 
 
 ### Workflow
 
-Same shape as the `pfv` workspace:
 - Speculative plan on every PR that touches the apex Terraform (in aws-infra)
 - Apply on merge to `main`, **manual Confirm & Apply** in TFC
 - Local CLI plan-only is allowed for debug; never apply from CLI
@@ -667,10 +405,10 @@ After bootstrap, TFC runs use workload identity. Long-lived AWS keys exist nowhe
 
 ### What this workspace does **not** do
 
-- It does **not** manage the dashboard surface (`app.thebetterdecision.com`). That DNS lives on Cloudflare and points at App Platform.
+- It does **not** manage the dashboard surface (`app.thebetterdecision.com`). That DNS lives on Cloudflare (`terraform/cloudflare` in aws-infra) and points at the k3s node.
 - Route 53 writes are split into two narrowly-scoped IAM statements: `A` and `AAAA` on exactly the apex and www FQDNs, and `CNAME` on the exact ACM validation names exposed by `aws_acm_certificate.apex.domain_validation_options`. Every other record type and every other name in the zone is IAM-blocked.
 
-## 8. Database migrations
+## 6. Database migrations
 
 `backend/Dockerfile` is multi-stage with two named targets, both built from a venv made in a separate `builder` stage:
 
@@ -687,7 +425,7 @@ Three callers, one engine.
 sequenceDiagram
   participant Dev as Local dev (backend lifespan)
   participant CLI as ./tbd migrate (local CLI)
-  participant DO as DO PRE_DEPLOY job
+  participant K8S as migrate init container (k3s)
   participant Wrap as backend/scripts/migrate.py
   participant Alembic as alembic upgrade <rev>
   participant DB as MySQL 8
@@ -696,7 +434,7 @@ sequenceDiagram
   Dev->>Wrap: _run_migrations() (in-process import)
   CLI->>CLI: same branch guard
   CLI->>Wrap: python backend/scripts/migrate.py
-  DO->>Wrap: python /app/scripts/migrate.py (no branch guard, always head)
+  K8S->>Wrap: python /app/scripts/migrate.py (no branch guard, always head)
   Wrap->>Alembic: ScriptDirectory.get_heads()
   alt multi-head
     Wrap-->>Wrap: log migrate.failed reason=multiple_heads, exit 1
@@ -724,11 +462,11 @@ sequenceDiagram
 
 1. **Local dev (backend lifespan)**: `./tbd start | restart | rebuild` boots the backend. Its FastAPI lifespan calls `_run_migrations()` against the shared MySQL volume in dev. The lifespan reads `/app/.git/HEAD` and **refuses to migrate when the host checkout is on a non-main branch** (or is detached / unreadable). Override with `PFV_MIGRATE_OK_OFF_MAIN=1` in `.env` or the shell.
 2. **`./tbd migrate` (local CLI)**: same branch guard. Runs inside the local backend container. Never invoke from an agent worktree (it has no `-p` flag and targets the checkout's default compose project, `tbd` in the main checkout). See `reference_shared_mysql_volume_trap.md`.
-3. **Production (DO App Platform `PRE_DEPLOY` job)**: declared in `.do/app.yaml`, runs `python /app/scripts/migrate.py`. The new revision is held back until this job exits 0. The same wrapper is also used by the `migrate` service in `docker-compose.prod.yml`.
+3. **Production (`migrate` init container)**: the `migrations` image runs `python /app/scripts/migrate.py` as an init container of the backend pod in aws-infra (`clusters/platform/tbd-prod/backend.yaml`), so the backend does not start until it exits 0. A MySQL `GET_LOCK` in alembic's `env.py` serializes concurrent migrators. The same wrapper is also used by the `migrate` service in `docker-compose.prod.yml`.
 
 ### What the wrapper guarantees
 
-- Same exit code semantics as `alembic upgrade head` (0 on success, alembic's exit code on failure, 1 on safety errors). PRE_DEPLOY contract preserved.
+- Same exit code semantics as `alembic upgrade head` (0 on success, alembic's exit code on failure, 1 on safety errors). Init-container contract preserved.
 - Same stdout / stderr from alembic, line-buffered through threaded forwarders. No capture, no reorder.
 - **Multi-head guard**: if `ScriptDirectory.get_heads()` returns >1, the wrapper logs `migrate.failed reason="multiple_heads"` and exits 1. Refuses to auto-pick.
 - **Per-step structured JSON events**: an operator triaging from logs alone can answer "did the migrate job do anything, and if so what?":
@@ -742,92 +480,75 @@ sequenceDiagram
 
 ### Migration policy
 
-- **Forward-only in production.** `alembic downgrade` is forbidden in agent contexts per `feedback_agent_destructive_db_ops`. Rollback path is "write a new fix-up migration" (see Section 10).
-- Migrations land via the same PR that uses them. The PRE_DEPLOY job applies them on the next prod deploy, **before** any backend replica with the new code starts.
+- **Forward-only in production.** `alembic downgrade` is forbidden in agent contexts per `feedback_agent_destructive_db_ops`. Rollback path is "write a new fix-up migration" (see Section 8).
+- Migrations land via the same PR that uses them. The `migrate` init container applies them on the next prod rollout, **before** the backend with the new code starts.
 
-For env var detail (`DATABASE_URL`, `APP_ENV`, etc.) on the migrate job, see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Migrate job (DO PRE_DEPLOY)". For the managed-to-droplet data move, see [`infra/MIGRATION.md`](../../infra/MIGRATION.md).
+For env var detail (`DATABASE_URL`, `APP_ENV`, etc.) on the migrate container, see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Migrate init container".
 
-## 9. What triggers what (decision tree)
+## 7. What triggers what (decision tree)
 
 ⚠ **`release.yml` has NO `paths:` filter (TBD-424, 2026-08-20).** Every push to
-`main` starts a Release run, whatever it touched — a README-only merge included.
+`main` starts a Release run, whatever it touched, a README-only merge included.
 What a run then *does* is decided further down the pipe, in two steps:
 
 1. **release-please decides what goes into the release PR**, from the merged
    commit's conventional-commit type (see `release-please-config.json`). It
    only opens or updates the PR; it never tags on an ordinary merge.
-2. **`release_created` decides whether it deploys.** It is set only on the
-   merge of the release PR. Any other merge means the `deploy` job is skipped
-   and `.do/app.yaml` is never pushed.
+2. **`release_created` decides whether images are promoted.** It is set only on
+   the merge of the release PR. Any other merge means `promote` and
+   `release-smoke` are skipped. Nothing reaches production until the Renovate
+   bump PR in aws-infra is merged.
 
-So the common outcome for a non-shipping merge is now a Release run that
+So the common outcome for a non-shipping merge is a Release run that
 concludes in about a minute having done nothing, rather than no run at all.
-That is deliberate: the previous path filter answered "should we ship?" from
-file paths, which cannot distinguish `chore(frontend):` from `feat(frontend):`,
-and silently folded a filtered-out merge's commits into whatever merge next
-touched an allowlisted path.
+That is deliberate: a path filter cannot distinguish `chore(frontend):` from
+`feat(frontend):`, and silently folds a filtered-out merge's commits into
+whatever merge next touches an allowlisted path.
 
 ```mermaid
 flowchart TD
   start[Commit lands on main with type <type> touching path P]
   start --> rel[release.yml ALWAYS fires: no paths filter]
   rel --> semrel{Is this the merge of the release PR?}
-  semrel -- "yes: release_created" --> deploy[promote, release-smoke, deploy pushes .do/app.yaml, then smoke tests]
-  semrel -- "no: ordinary merge" --> noship[Release PR opened or updated. No tag, no deploy.]
+  semrel -- "yes: release_created" --> promote[promote retags images as vX.Y.Z, release-smoke boots them]
+  promote --> bump[Renovate bump PR in aws-infra; merging it deploys]
+  semrel -- "no: ordinary merge" --> noship[Release PR opened or updated. No tag, no images retagged.]
 
   start --> apexq{P in the apex allowlist?<br/>app/page.tsx, app/privacy/**,<br/>app/terms/**, app/docs/**,<br/>components/landing/**, lib/brand.ts,<br/>globals.css, build-apex.sh, ...}
   apexq -- yes --> apex[apex-deploy.yml also fires: S3 sync + CloudFront invalidation]
   apexq -- no --> apexno[apex-deploy.yml does not fire]
-
-  start --> tf2{P in infra/terraform/**?}
-  tf2 -- yes --> tfpfv[TFC data workspace apply waits on Confirm and Apply]
 ```
 
-Apex and backups Terraform changes are made in the aws-infra repo.
+Apex, backups and platform Terraform changes are made in the aws-infra repo.
 
 Concrete cases:
 
 | You changed | Fires |
 |---|---|
-| `backend/app/routers/transactions.py` (feat) | `release.yml` updates the release PR; on its merge: release -> deploy -> migrate (no-op if no new revs) -> roll backend |
-| `frontend/components/dashboard/Foo.tsx` (feat) | `release.yml` updates the release PR; on its merge: deploy -> roll frontend |
-| `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. `release.yml` **also runs** and updates the release PR; DO redeploys when that PR is merged. |
+| `backend/app/routers/transactions.py` (feat) | `release.yml` updates the release PR; on its merge: release -> promote -> release-smoke. Production rolls when the aws-infra bump PR is merged (migrate init container runs first, no-op if no new revs) |
+| `frontend/components/dashboard/Foo.tsx` (feat) | Same path; the frontend image rolls with the bump PR |
+| `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. `release.yml` **also runs** and updates the release PR. |
 | `frontend/lib/brand.ts` (feat) | Both `release.yml` AND `apex-deploy.yml`. |
-| `backend/alembic/versions/abc_new_migration.py` | release PR merge -> deploy -> PRE_DEPLOY migrate applies it -> roll backend |
-| `infra/terraform/main.tf` | TFC `<data-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge. `release.yml` runs and only updates the release PR. |
-| `.do/app.yaml` (chore) | `release.yml` fires but the change does not enter the release PR. Operator must run `gh workflow run deploy.yml --ref main`. |
+| `backend/alembic/versions/abc_new_migration.py` | release PR merge -> promote -> aws-infra bump PR merge -> `migrate` init container applies it -> backend starts |
 | `.github/workflows/test.yml` | `test.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and only updates the release PR. |
-| `README.md` only | `release.yml` **runs** and only updates the release PR. Nothing is tagged and nothing deploys. |
+| `README.md` only | `release.yml` **runs** and only updates the release PR. Nothing is tagged. |
 
-⚠ The old "mutually exclusive apex / DO path-filter split" is **gone on the DO
-side**. A landing-only commit no longer skips `release.yml`; if its commit type
-warrants a version, it enters the release PR and redeploys DO when that is merged. That is the correct
-behaviour — the version line should reflect what shipped, and a landing change
-that is worth a `feat` is worth a version — but it is a behaviour change from
-what this section used to describe. `apex-deploy.yml` keeps its own `paths:`
-filter, for a cost reason and not a correctness one: every apex run does an S3
+⚠ A landing-only commit does not skip `release.yml`: if its commit type
+warrants a version, it enters the release PR. That is the correct behaviour:
+the version line should reflect what shipped. `apex-deploy.yml` keeps its own
+`paths:` filter, for a cost reason and not a correctness one: every apex run does an S3
 sync plus a CloudFront `/*` invalidation, and invalidations past 1,000/month
-are metered. It is now the only hand-maintained path allowlist in the repo, and
+are metered. It is the only hand-maintained path allowlist in the repo, and
 it is known to have drifted (`features/`, `compare/`, `vs/`,
-`lib/dataPolicy.ts`) — tracked as **TBD-433**.
+`lib/dataPolicy.ts`), tracked as **TBD-433**.
 
-## 10. Rollback playbook
+## 8. Rollback playbook
 
 Forward-only philosophy across the board. "Rollback" means "publish a new state that undoes the bad state", not "revert state in place".
 
-### DO App (`release.yml` / `deploy.yml`)
+### App (production cluster)
 
-Option A, revert the merge commit:
-1. `git revert -m 1 <merge-sha>` on a branch, push, PR, merge.
-2. release-please lists the revert in the release PR (conventional-commit style matters). Merge the release PR to publish a new release.
-3. `deploy` ships, PRE_DEPLOY runs (no-op if the revert did not touch migrations), backend / frontend roll.
-4. Smoke tests confirm.
-
-Option B, redeploy a prior good `main` SHA via `deploy.yml`:
-1. Reset `main` to a prior known-good commit is **not allowed** (PR-only workflow). Instead:
-2. Cherry-pick the inverse of the bad change onto a new branch, PR, merge. This is effectively Option A.
-
-DO console "Rollback" button: avoid. App Platform's rollback rolls the **runtime image** back to a prior build, but the **spec** (`.do/app.yaml`) on the next push still reflects whatever is on `main`. This produces a runtime / spec mismatch that triggers more redeploys to resolve. Always rollback via the repo.
+Revert the image-bump PR in aws-infra and merge it; Flux rolls the previous tags back. The `migrate` init container only moves the schema forward, so a rollback across a migration needs a fix-up migration (see "Database migrations" below). To undo the code itself, revert the merge commit here (`git revert -m 1 <merge-sha>`, PR, merge) and ship it through the next release. DigitalOcean App Platform is kept archived as a rollback target until INFRA-49 decommissions it.
 
 ### Apex landing (`apex-deploy.yml`)
 
@@ -843,9 +564,9 @@ aws cloudfront create-invalidation --distribution-id <AWS_APEX_DISTRIBUTION_ID> 
 ```
 Prefer Option A for any rollback that affects more than one or two objects; the repo stays the source of truth.
 
-### Terraform (either workspace)
+### Terraform (apex workspace)
 
-Revert the merge commit in the repo. TFC plans the inverse change on the next merge. Operator clicks Confirm & Apply. State catches up.
+Revert the merge commit in aws-infra. TFC plans the inverse change on the next merge. Operator clicks Confirm & Apply. State catches up.
 
 For destructive teardown (rare), queue a `Destroy plan` from the TFC workspace UI. Local `terraform destroy` is debug-only.
 
@@ -854,48 +575,42 @@ For destructive teardown (rare), queue a `Destroy plan` from the TFC workspace U
 Forward-only. **Never `alembic downgrade` in production.** The path to a safe rollback is:
 
 1. Open a PR with a new alembic revision that performs the data and schema fix-up. Conventional title `fix(db): ...`.
-2. Merge, then merge the release PR. `release.yml` -> release -> deploy -> PRE_DEPLOY migrate applies the fix-up revision. Backend rolls on top.
-3. Verify via the new revision's `migrate.step.end` event in the PRE_DEPLOY job logs.
+2. Merge, then merge the release PR, then the aws-infra bump PR. The `migrate` init container applies the fix-up revision and the backend starts on top.
+3. Verify via the new revision's `migrate.step.end` event in `kubectl -n tbd-prod logs deploy/backend -c migrate`.
 
-If a migration **partially applies** and the job exits non-zero, the PRE_DEPLOY contract halts the rollout. The new backend revision never starts. Diagnose from the streamed alembic output + the `migrate.failed` event (`reason`, `step_index`, `revision`). Fix-up paths:
+If a migration **partially applies** and the container exits non-zero, the backend pod never starts (the previous ReplicaSet keeps serving). Diagnose from the streamed alembic output + the `migrate.failed` event (`reason`, `step_index`, `revision`). Fix-up paths:
 - Schema state matches a known earlier revision: stamp it (`alembic stamp <rev>`) via a one-shot ops session and ship a new revision that completes the work. Only the operator should do this; agents must not (`feedback_agent_destructive_db_ops`).
-- Data corruption: write a fix-up migration; ship that.
+- Data corruption: write a fix-up migration; ship that. Database restore: [`clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/data/RESTORE.md) in aws-infra.
 
-## 11. Where to look when something breaks
+## 9. Where to look when something breaks
 
 | Surface | Where the logs live |
 |---|---|
-| GitHub Actions runs (all workflows) | `https://github.com/flamarion/pfv/actions` |
-| `release.yml` runs specifically | `https://github.com/flamarion/pfv/actions/workflows/release.yml` |
-| `deploy.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/deploy.yml` |
-| `apex-deploy.yml` runs (post-#267) | `https://github.com/flamarion/pfv/actions/workflows/apex-deploy.yml` |
-| `test.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/test.yml` |
-| TFC `<data-workspace>` (DO data droplet) | `https://app.terraform.io/app/<tfc-org>/workspaces/<data-workspace>` |
+| GitHub Actions runs (all workflows) | `https://github.com/fjcloudaiconsulting/tbd/actions` |
+| `release.yml` runs specifically | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml` |
+| `apex-deploy.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/apex-deploy.yml` |
+| `test.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/test.yml` |
+| Production rollout, Flux, backend/frontend logs, `migrate` init container logs | [aws-infra `docs/runbooks.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md), "Follow Flux and rollouts" |
+| MySQL / Valkey (namespace `data`), backups and restore | [aws-infra `clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/data/RESTORE.md) |
+| Release published but not on the cluster | The `release-drift-probe` issue in aws-infra |
 | TFC `<apex-workspace>` (AWS apex) | `https://app.terraform.io/app/<tfc-org>/workspaces/<apex-workspace>` |
-| DO App Platform deploys | DO console -> Apps -> `pfv` -> Activity |
-| Backend access logs (live) | DO console -> Apps -> `pfv` -> Runtime Logs -> backend component |
-| Frontend access logs (live) | DO console -> Apps -> `pfv` -> Runtime Logs -> frontend component |
-| `PRE_DEPLOY migrate` job logs | DO console -> Apps -> `pfv` -> Activity -> select deploy -> migrate job |
 | Apex CloudFront access logs | Not enabled today. `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/main.tf` (`aws_cloudfront_distribution.apex`) does not configure `logging_config`. Post-launch follow-up: provision a separate S3 bucket for CloudFront standard logs and add the logging block. For real-time debugging until then, AWS console -> CloudFront -> distribution -> Monitoring tab. |
 | Apex S3 contents | AWS console -> S3 -> `thebetterdecision-com-apex` |
-| MySQL slow query / error log | SSH to `<data-droplet>`: `journalctl -u mysql` or `/var/log/mysql/error.log` |
-| Nightly mysqldump | `<data-droplet>`: `ls -lh /var/backups/mysql/`; log at `/var/log/mysql-backup.log` |
-| Smoke-test failure GitHub issue | Auto-opened by `scripts/notify-smoke-failure.sh`; check open issues in `flamarion/pfv` |
 
 Triage shortcuts:
 
 | Symptom | First look at |
 |---|---|
-| Merge to `main` happened, prod didn't update | `release.yml` -> did `release` set `release_created=true`? Only the merge of the release PR deploys; an ordinary merge just updates it |
+| Merge to `main` happened, prod didn't update | `release.yml` -> did `release` set `release_created=true`? Only the merge of the release PR cuts a release, and production only changes when the aws-infra bump PR is merged |
 | `release` job failed after the release PR merged | The Test run of the release PR's commit is red. Re-run that commit's failed Test jobs (not a `workflow_dispatch` run), then re-run the failed Release run (or wait for the next push to `main`) |
-| Release created but `deploy` failed | Re-running the whole Release run will not redeploy (the release already exists). Use `gh workflow run deploy.yml --ref main` |
-| Drift probe reports AHEAD after a release | DO builds `main` HEAD, so a merge that landed between the release and the deploy ships with it; AHEAD clears at the next release |
-| Deploy went green, app still broken | Smoke-test job output, then DO Runtime Logs on the failing component |
-| Migrate job hung or failed | DO Activity -> latest deploy -> migrate job. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
+| Release created but `promote` or `release-smoke` failed | Re-run the failed jobs of that Release run; the release already exists, so a new push to `main` will not redo them |
+| Release published, no bump PR in aws-infra | Renovate, then the `release-drift-probe` issue |
+| Rollout done, app still broken | Run `scripts/smoke-test.sh` by hand (runbook above), then the backend/frontend pod logs |
+| `migrate` init container hung or failed | `kubectl -n tbd-prod logs deploy/backend -c migrate`. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
 | Apex site shows stale content | Confirm `apex-deploy.yml` ran for the SHA; check CloudFront invalidation completed; `curl https://thebetterdecision.com/_meta.json` (object is no-cache). If the apex hostname is itself unreachable, fall back to the TFC output `cloudfront_distribution_domain` to probe the distribution directly. |
 | Apex 404 on a known route | The CloudFront Function rewrites `/path/` -> `/path/index.html`. Check the function's invocation logs in CloudFront Functions console |
 | Apex deploy failed at OIDC step | Trust policy on `github-actions-apex-deploy` pinned to `repo:flamarion/pfv:ref:refs/heads/main`. PR-context, forks, non-main branches are rejected by design |
-| App can't reach MySQL or Redis | Confirm `.do/app.yaml`'s top-level `vpc.id` matches the TFC output, and `DATABASE_URL` / `REDIS_URL` point at the droplet's `<vpc-cidr>` private IP |
-| Secret env var "disappeared" after deploy | `.do/app.yaml` must declare every SECRET with its `EV[...]` blob. Missing -> stripped on push. Refresh via `doctl apps spec get <app-id>` |
+| App can't reach MySQL or Valkey | Check the `data` namespace pods and the `DATABASE_URL` / `REDIS_URL` keys in the `tbd-prod` secret (aws-infra) |
+| Secret env var missing or wrong after a rollout | `clusters/platform/tbd-prod/*.secret.yaml` in aws-infra; the runbook's "Write or rotate a Kubernetes Secret" |
 
-For the env var matrix and common per-variable failures (Google SSO button missing, old `NEXT_PUBLIC_*` keys in the live spec, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Common failure modes".
+For the env var matrix and common per-variable failures (Google SSO button missing, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Common failure modes".

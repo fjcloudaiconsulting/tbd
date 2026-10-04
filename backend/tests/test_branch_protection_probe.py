@@ -21,7 +21,7 @@ explanation.
 ⚠ ON IMPORTS. The spec says this module must import "nothing beyond stdlib +
 pytest". That is an over-generalisation of the real finding and is not followed
 literally: `yaml` is imported, exactly as ten sibling fence modules already do
-(`test_deploy_drift_probe.py`, `test_ci_change_scoping_workflow.py`, ...). The
+(`test_release_workflow.py`, ...). The
 actual finding was that the module must not depend on `backend/tests/conftest.py`
 -- whose autouse fixture imports `structlog` -- because a missing conftest
 dependency turns every fence into a setup ERROR that reads like a RED while
@@ -64,7 +64,7 @@ def _artifact(relpath: str) -> pathlib.Path:
     ⚠ `/app/scripts` inside the backend container is the BACKEND's own scripts
     package, not the repo-root `scripts/`; the repo-root one is mounted at
     `/app/repo-scripts` (docker-compose.yml). This RAISES with the remedy rather
-    than skipping, following test_deploy_drift_probe.py: a skip makes a fence
+    than skipping: a skip makes a fence
     silently absent in whichever environment lacks the path, and a false red is
     what gets a fence weakened rather than obeyed.
     """
@@ -2016,12 +2016,7 @@ def test_c6_the_dedupe_does_not_capture_an_unrelated_issue(tmp_path):
     search for `[branch-protection]` also matches any open issue whose title
     contains "branch" and "protection", and taking `.[0].number` blindly would
     post this alarm as a comment on somebody else's incident, where nobody is
-    looking for it. `notify-backup-stale.sh` (now in aws-infra) had the safe idiom; the
-    weaker `notify-deploy-drift.sh` form was copied here.
-
-    ⚠ F8 asserts the dedupe LITERALS are pairwise distinct. That says
-    nothing about what a fuzzy title search matches, so F8 is not a fence on
-    this and must not be mistaken for one.
+    looking for it. `notify-backup-stale.sh` (now in aws-infra) had the safe idiom.
 
     The stub returns a fuzzy match the real API would return: an unrelated issue
     whose title merely contains the words."""
@@ -2242,86 +2237,6 @@ def test_w2_the_fail_step_body_actually_fails(tmp_path):
         "the fail step exits 0, so a drifted verdict leaves the job GREEN:\n"
         f"{script}")
     assert "drifted" in (r.stdout + r.stderr)
-
-
-# ---------------------------------------------------------------------------
-# F8. Kills: a shared dedupe bucket. One alarm silencing another.
-# ---------------------------------------------------------------------------
-def _effective_dedupe_tokens(path: pathlib.Path) -> set[str]:
-    """The bracket token a notifier ACTUALLY deduplicates on.
-
-    ⚠⚠ THE HOUSE HAS TWO IDIOMS AND A FENCE THAT KNOWS ONLY ONE IS VACUOUS.
-    Measured: `notify-deploy-drift.sh` and `notify-protection-drift.sh` define
-    `TITLE_PREFIX`; `notify-smoke-failure.sh:42` and
-    `notify-undeployed-release.sh:73` hardcode `TITLE` and a SEPARATE
-    `--search '"[...]" in:title'` literal. A fence collecting `TITLE_PREFIX=`
-    assignments finds two values, asserts they differ, and PASSES -- while a
-    new notifier copied from the other idiom with `[smoke-fail]` still in its
-    search line deduplicates straight into the smoke-failure issue and produces
-    ZERO signal during an incident.
-
-    ⚠ The `--search` line is the authority, because that is what actually
-    performs the dedupe. But two of the four spell it with a VARIABLE
-    (`--search "in:title ${TITLE_PREFIX}"`), so the token must be resolved
-    through one level of indirection -- the spec's "literals actually used in
-    the search calls" do not literally exist for half the corpus.
-    """
-    text = path.read_text()
-    code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
-    search_lines = [ln for ln in code if "--search" in ln]
-    assert search_lines, f"{path.name} performs no `gh issue list --search` dedupe"
-    tokens = set()
-    for ln in search_lines:
-        tokens.update(re.findall(r"\[[a-z0-9-]+\]", ln))
-        if re.search(r"\$\{?TITLE_PREFIX\}?", ln):
-            for decl in code:
-                if re.match(r"\s*TITLE_PREFIX\s*=", decl):
-                    tokens.update(re.findall(r"\[[a-z0-9-]+\]", decl))
-    assert tokens, (
-        f"{path.name} has a --search line but no resolvable bracket token: "
-        f"{search_lines}")
-    return tokens
-
-
-def test_f8_every_notifier_dedupe_bucket_is_pairwise_distinct():
-    """⚠ Revision 1 named this hazard in prose and wrote no test, so copying
-    `notify-deploy-drift.sh` and leaving the bucket unchanged would make each
-    alarm silence the other -- the branch-protection alarm landing as a comment
-    on the open deploy-drift issue, where nobody looks for it."""
-    root = REPO_ROOT
-    notifiers = sorted(_scripts_dir().glob("notify-*.sh"))
-    # ⚠ A FLOOR, NOT AN EQUALITY. An exact count reds THIS module when an
-    # unrelated PR adds a sixth notifier anywhere in the repo -- a fence that
-    # fails for reasons outside its own subject is one that gets deleted. The
-    # property is pairwise distinctness over whatever exists; the floor only
-    # guarantees the corpus was actually found.
-    assert len(notifiers) >= 4, (
-        f"expected at least the 4 known notifiers, found "
-        f"{[p.name for p in notifiers]}; this fence searched the wrong tree.")
-    buckets = {p.name: _effective_dedupe_tokens(p) for p in notifiers}
-    seen: dict[str, str] = {}
-    for name, tokens in buckets.items():
-        for tok in tokens:
-            assert seen.get(tok, name) == name, (
-                f"dedupe bucket {tok} is shared by {seen[tok]} and {name} -- one "
-                "alarm would silence the other")
-            seen[tok] = name
-    assert seen.get("[branch-protection]") == "notify-protection-drift.sh", (
-        f"the new notifier does not dedupe on its own bucket; buckets were {buckets}")
-
-
-def test_f8_the_resolver_sees_both_house_idioms():
-    """⚠ Non-vacuity of the resolver itself. If it silently returned an empty set
-    for the `TITLE=`-only idiom, the fence above would compare two tokens instead
-    of four and pass while proving almost nothing."""
-    root = REPO_ROOT
-    for name, expected in (
-        ("notify-smoke-failure.sh", "[smoke-fail]"),
-        ("notify-undeployed-release.sh", "[undeployed-release]"),
-        ("notify-deploy-drift.sh", "[deploy-drift]"),
-    ):
-        tokens = _effective_dedupe_tokens(_scripts_dir() / name)
-        assert expected in tokens, f"{name}: resolved {tokens}, expected {expected}"
 
 
 def test_f8_the_notifier_never_auto_closes():

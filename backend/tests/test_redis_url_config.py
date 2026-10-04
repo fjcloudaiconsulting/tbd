@@ -21,24 +21,15 @@ new one, and mirrors ``_validate_api_token_hmac_key`` in shape.
 ⚠ THE COUPLED CHANGE THIS FILE EXISTS TO PROTECT.
 ``backend/scripts/migrate.py`` imports ``app.logging`` (line 42), which does
 ``from app.config import settings`` (``app/logging.py:7``), which constructs
-``Settings()`` at module import (``config.py:601``). The App Platform
-PRE_DEPLOY migrate job runs with ``APP_ENV=production``. So the moment this
-validator exists, **the migrate job needs REDIS_URL bound or every production
-deploy fails before any backend replica starts.**
-
-``.do/app.yaml`` binds it today, but carried a comment saying the job "does
-NOT require this" and that the value was "synced rather than dropped" — an
-explicit invitation to delete it. That comment is rewritten in the same commit
-as this validator. ``test_migrate_job_binds_redis_url`` below is the fence on
-the binding itself, so deleting it fails here rather than in production.
+``Settings()`` at module import (``config.py:601``). The production migrate
+init container runs with ``APP_ENV=production``, so it needs REDIS_URL bound
+or every rollout fails before any backend replica starts. That binding lives
+in fjcloudaiconsulting/aws-infra (``clusters/platform/tbd-prod/backend.yaml``).
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-import yaml
 from pydantic import ValidationError
 
 from app.config import Settings
@@ -109,83 +100,3 @@ def test_non_production_still_constructs_without_redis_url(env):
     suite, so this is also the blast-radius control on the change itself.
     """
     assert _settings(app_env=env, redis_url="").redis_url == ""
-
-
-# ── The coupled change: the PRE_DEPLOY binding this validator now requires ──
-
-
-def _app_spec() -> dict:
-    """Read the committed App Platform spec.
-
-    Mounted read-only into the backend container for exactly this class of
-    fence; ``test_deploy_workflow.py`` reads it the same way.
-    """
-    path = Path("/app/.do/app.yaml")
-    if not path.exists():  # plain checkout in CI
-        path = Path(__file__).resolve().parents[2] / ".do" / "app.yaml"
-    return yaml.safe_load(path.read_text())
-
-
-def test_migrate_job_binds_redis_url():
-    """⚠ THE LOAD-BEARING FENCE. Kills the deletion this change invites.
-
-    ``migrate.py`` -> ``app.logging`` -> ``app.config`` -> ``Settings()`` at
-    import, under ``APP_ENV=production``. Drop this binding and PRE_DEPLOY
-    raises before a single migration runs, so **no production deploy
-    completes** — and the failure is in a job most people never look at.
-
-    Asserting the binding EXISTS is the point: the ``.do/app.yaml`` comment
-    used to invite deleting it.
-    """
-    jobs = _app_spec()["jobs"]
-    migrate = next(j for j in jobs if j["name"] == "migrate")
-    keys = {e["key"] for e in migrate["envs"]}
-    assert "REDIS_URL" in keys, (
-        "The PRE_DEPLOY migrate job must bind REDIS_URL. migrate.py imports "
-        "app.logging -> app.config, which constructs Settings() at import "
-        "under APP_ENV=production, where redis_url is now required. Removing "
-        "this binding breaks every production deploy at the migrate step."
-    )
-
-
-def test_migrate_job_runs_as_production():
-    """Pins the premise of the fence above.
-
-    If APP_ENV ever stopped being "production" here, the binding would no
-    longer be load-bearing and ``test_migrate_job_binds_redis_url`` would
-    still pass while guarding nothing. This makes that drift visible.
-    """
-    jobs = _app_spec()["jobs"]
-    migrate = next(j for j in jobs if j["name"] == "migrate")
-    app_env = next(e for e in migrate["envs"] if e["key"] == "APP_ENV")
-    assert app_env["value"] == "production"
-
-
-def test_app_yaml_comment_does_not_invite_dropping_the_binding():
-    """The comment is the actual hazard, so fence the comment.
-
-    The original text said the migrate job "does NOT require this" and that
-    the value was "synced rather than dropped". Both were true before the
-    validator and are false after it. A future reader acting on that text
-    breaks production, and no schema-level assertion would catch it because
-    the spec would still be valid YAML.
-    """
-    path = Path("/app/.do/app.yaml")
-    if not path.exists():
-        path = Path(__file__).resolve().parents[2] / ".do" / "app.yaml"
-    text = path.read_text()
-    # ⚠ Assert PRESENCE of the warning, not absence of the old sentence.
-    # Absence-of-a-string is the weakest fence shape there is: rewording the
-    # invitation to "the job doesn't need this" would keep it green while
-    # restoring the exact hazard. A presence assertion can only be defeated by
-    # deleting the warning, which is precisely the edit worth catching.
-    assert "DO NOT DELETE THIS BINDING" in text, (
-        "The PRE_DEPLOY REDIS_URL binding has lost its do-not-delete warning. "
-        "Since TBD-438 that binding is boot-critical: migrate.py imports "
-        "app.logging -> app.config, which constructs Settings() at import "
-        "under APP_ENV=production. Without the warning the next reader has "
-        "nothing telling them the binding cannot be dropped."
-    )
-    assert "does NOT require this" not in text, (
-        "The old comment claiming the job does not need REDIS_URL is back."
-    )
