@@ -45,7 +45,7 @@ def test_fm6_dockerfile_copies_only_the_app_package():
     # Renovate pins images as ``repo:tag@sha256:<64 hex>``; the repo and tag
     # stay asserted, only the digest suffix is optional.
     copies = [
-        [re.sub(r"@sha256:[0-9a-f]{64}$", "", tok) for tok in ln.split()[1:]]
+        [re.sub(r"^(--from=.*)@sha256:[0-9a-f]{64}$", r"\1", tok) for tok in ln.split()[1:]]
         for ln in text.splitlines()
         if ln.startswith("COPY ")
     ]
