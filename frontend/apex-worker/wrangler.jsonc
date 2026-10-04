@@ -6,6 +6,8 @@
   "account_id": "fb5eb042529f2621c6de3f34c6801174",
   "compatibility_date": "2026-09-01",
   "main": "worker.js",
+  // No "routes" or custom domains, on purpose: INFRA-61 attaches the apex and www outside this file,
+  // so the CI token only needs the Editor role on this one Worker, never zone or DNS rights.
   "workers_dev": true,
   // No per-version preview hosts: one public preview URL is enough, and _headers only noindexes that one.
   "preview_urls": false,
