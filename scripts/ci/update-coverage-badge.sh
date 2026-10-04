@@ -75,9 +75,11 @@ content = json.dumps({
 print(json.dumps({"files": {fname: {"content": content}}}))
 ' "$AREA" "$PCT" "$COLOR" "$FILE") || warn "could not build payload"
 
-CODE=$(curl -sS -o /tmp/badge-resp.json -w '%{http_code}' \
+# The token goes to curl on stdin (`-H @-`), never as an argument, so it stays
+# out of the process list (INFRA-95). printf is a bash builtin.
+CODE=$(printf 'Authorization: Bearer %s\n' "$GIST_TOKEN" | curl -sS -o /tmp/badge-resp.json -w '%{http_code}' \
   -X PATCH \
-  -H "Authorization: Bearer ${GIST_TOKEN}" \
+  -H @- \
   -H "Accept: application/vnd.github+json" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
   "https://api.github.com/gists/${GIST_ID}" \
