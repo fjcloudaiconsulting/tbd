@@ -64,7 +64,7 @@ function applySecurityHeaders(
 }
 
 const SENSITIVE_PARAMS = new Set([
-  "token", "code", "access_token", "refresh_token", "mfa_token", "key", "secret", "password",
+  "token", "code", "state", "access_token", "refresh_token", "mfa_token", "key", "secret", "password",
 ]);
 
 function sanitizeQuery(search: string): string | undefined {
@@ -77,6 +77,13 @@ function sanitizeQuery(search: string): string | undefined {
   }
   const result = params.toString();
   return result || undefined;
+}
+
+// The Referer is the full previous URL on same-origin navigation, so it can
+// carry an invite or reset token (INFRA-110). Keep origin and path only
+// (browsers never send the fragment).
+function refererWithoutQuery(referer: string | null): string | undefined {
+  return referer?.split("?", 1)[0] || undefined;
 }
 
 /**
@@ -176,7 +183,7 @@ export function proxy(request: NextRequest) {
     query: sanitizeQuery(request.nextUrl.search),
     remote_addr: clientIp(request),
     user_agent: request.headers.get("user-agent") || undefined,
-    referer: request.headers.get("referer") || undefined,
+    referer: refererWithoutQuery(request.headers.get("referer")),
   };
 
   // Remove undefined values for cleaner JSON
