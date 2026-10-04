@@ -1,7 +1,7 @@
 """Rate limiter and client-IP resolver shared across routers.
 
 The default ``slowapi.util.get_remote_address`` is wrong for this app's
-production topology. Two environments exist:
+production topology. Three environments exist:
 
 1. **Local / docker-compose - nginx in front of backend.** nginx sets
    ``X-Forwarded-For $remote_addr`` (the immediate peer ONLY, NOT
@@ -22,6 +22,11 @@ production topology. Two environments exist:
    layer, (b) the env var is set by us (terraform / DO spec), not by
    the request. Docs:
    https://docs.digitalocean.com/support/where-can-i-find-the-client-ip-address-of-a-request-connecting-to-my-app/
+3. **Production - k3s on Lightsail behind Cloudflare (INFRA-83).**
+   Cloudflare -> Traefik -> backend. The peer and the XFF chain hold
+   Cloudflare edge and pod addresses; the visitor is in
+   ``CF-Connecting-IP``. The deployment sets
+   ``CLIENT_IP_HEADER=cf-connecting-ip`` to read it.
 
 Spoof resistance:
 
@@ -40,6 +45,11 @@ Spoof resistance:
   ``PFV_RUNTIME=app_platform`` is set. In any other runtime it is
   ignored entirely (the trusted-peer gate from PR #82 no longer
   applies because the XFF walk replaces it).
+- ``CLIENT_IP_HEADER`` is honoured only when set (by the deployment,
+  never the request), and only for a value that parses as one IP.
+  Set it only where the origin accepts requests from our own proxy zone
+  exclusively (Cloudflare: Authenticated Origin Pulls, INFRA-93); a
+  Cloudflare-ranges firewall alone lets other zones' Workers choose it.
 """
 
 from __future__ import annotations
@@ -108,11 +118,42 @@ def _is_app_platform_runtime() -> bool:
     return os.environ.get("PFV_RUNTIME", "").lower() == "app_platform"
 
 
+def _client_ip_from_configured_header(request: Request) -> str | None:
+    """The visitor's IP from the header named by ``CLIENT_IP_HEADER``.
+
+    k3s behind Cloudflare (INFRA-83) sets ``CLIENT_IP_HEADER=cf-connecting-ip``.
+    Cloudflare overwrites that header on every request, but a Cloudflare-only
+    firewall is NOT enough: a Worker on any other Cloudflare zone can send a
+    same-zone subrequest with ``x-real-ip`` set, and Cloudflare forwards that
+    value as ``CF-Connecting-IP``. The header is trustworthy only when the
+    origin accepts our zones exclusively (Authenticated Origin Pulls with a
+    zone-level certificate, INFRA-93). Never set it where requests can arrive
+    without passing our zone (DigitalOcean, local dev).
+    Returns None when unset, absent, or not exactly one IP address.
+    """
+    header = os.environ.get("CLIENT_IP_HEADER", "").strip()
+    if not header:
+        return None
+    value = (request.headers.get(header) or "").strip()
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    # A scope id ("fe80::1%<anything>") would carry caller-chosen text into
+    # rate-limit keys and the 45-char audit column.
+    if getattr(ip, "scope_id", None):
+        return None
+    return str(ip)
+
+
 def get_client_ip(request: Request) -> str:
     """Resolve the real client IP for rate limiting and audit logging.
 
     Resolution order:
 
+    0. **Configured edge header.** When ``CLIENT_IP_HEADER`` names a
+       header (k3s: ``cf-connecting-ip``) holding one valid IP, use it.
+       See ``_client_ip_from_configured_header`` for when that is safe.
     1. **DO App Platform mode.** When ``PFV_RUNTIME=app_platform`` is
        set, consult ``do-connecting-ip`` unconditionally. DO's ingress
        is the only writer of that header in App Platform, and the env
@@ -128,6 +169,11 @@ def get_client_ip(request: Request) -> str:
        a public path is its own client IP; we refuse to honour any
        forwarded-by headers in that case.
     """
+    # 0. A deployment-named header written by the edge proxy (Cloudflare).
+    header_ip = _client_ip_from_configured_header(request)
+    if header_ip:
+        return header_ip
+
     # 1. DO App Platform runtime: do-connecting-ip is authoritative.
     if _is_app_platform_runtime():
         do_ip = request.headers.get("do-connecting-ip")
@@ -160,6 +206,27 @@ def get_client_ip(request: Request) -> str:
     # 3. Direct public peer (or no client). Return the peer IP and
     # refuse to honour any forwarded-by headers (they could be forged).
     return client_host or "127.0.0.1"
+
+
+def rate_limit_key(request: Request) -> str:
+    """Bucket key for per-IP limits: ``get_client_ip``, with IPv6 cut to its /64.
+
+    One visitor routinely holds a whole /64 (2^64 addresses), so a /128 key
+    lets them rotate past every limit. IPv4-mapped addresses are unwrapped
+    first: all of ``::ffff:a.b.c.d`` share ``::/64``. Audit logs keep using
+    ``get_client_ip`` and record the full address. Values that are not an IP
+    (e.g. the test client's ``testclient``) pass through unchanged.
+    """
+    client_ip = get_client_ip(request)
+    try:
+        ip = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return client_ip
+    if ip.version == 4:
+        return client_ip
+    if ip.ipv4_mapped:
+        return str(ip.ipv4_mapped)
+    return str(ipaddress.ip_network(f"{ip}/64", strict=False))
 
 
 def _build_limiter() -> Limiter:
@@ -212,7 +279,7 @@ def _build_limiter() -> Limiter:
         # Async storage (async+redis://) is the longer-term fix — separate PR;
         # requires coredis dependency review + async fail-open wrapper rewrite.
         limiter = Limiter(
-            key_func=get_client_ip,
+            key_func=rate_limit_key,
             storage_uri=redis_url,
             storage_options={
                 "socket_connect_timeout": 1,
@@ -238,7 +305,7 @@ def _build_limiter() -> Limiter:
     # raise the storage errors the wrapper guards against, and leaving
     # it unwrapped keeps construction-time tests (which assert the
     # storage type) unchanged.
-    return Limiter(key_func=get_client_ip)
+    return Limiter(key_func=rate_limit_key)
 
 
 limiter = _build_limiter()

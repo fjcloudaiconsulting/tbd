@@ -18,8 +18,10 @@ Behaviour vs. raw `alembic upgrade head`:
   * Per-step events let an operator see how many revisions ran, in which
     order, and how long each took.
 
-env.py is intentionally NOT modified; this script drives alembic from the
-outside via the public Python API + subprocess invocation.
+This script drives alembic from the outside via the public Python API +
+subprocess invocation. Concurrency is env.py's job: each run takes a MySQL
+GET_LOCK (app/migration_lock.py, INFRA-83), so a second migrator waits and
+then finds its revisions already applied (alembic no-ops).
 """
 
 from __future__ import annotations

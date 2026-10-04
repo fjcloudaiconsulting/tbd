@@ -6,6 +6,7 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.migration_lock import acquire_migration_lock
 from app.models import Base
 
 config = context.config
@@ -31,6 +32,8 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection):
+    # Two migrators must never run DDL at once (INFRA-83).
+    acquire_migration_lock(connection)
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
         context.run_migrations()

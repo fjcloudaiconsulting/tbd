@@ -77,7 +77,7 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     # 10 attempts per victim and nothing in aggregate.
     #
     # ⚠ Still on the shared IP key, not per actor: the single
-    # ``Limiter(key_func=get_client_ip)`` cannot express a per-actor bound.
+    # ``Limiter(key_func=rate_limit_key)`` cannot express a per-actor bound.
     # That part remains a deliberate subtraction, and it fails CLOSED when two
     # operators share an IP.
     "admin_users.email_change",
