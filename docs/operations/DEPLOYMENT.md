@@ -185,9 +185,10 @@ second factor at all.
 
 So the account stays single-factor. The compensating controls are:
 
-1. **Its username is not published.** It lives only in the cluster Secrets
-   `tbd-prod/tbd-smoke` and the founder-count exclusion, never as a plaintext
-   value in source or a manifest.
+1. **Its username is not published.** It lives in the cluster Secrets
+   `tbd-prod/tbd-smoke` and the founder-count exclusion (plus the unused
+   `SMOKE_USERNAME` Actions secret until INFRA-99 deletes it), never as a
+   plaintext value in source or a manifest.
 2. **A strong, rotated credential**, also in `tbd-prod/tbd-smoke`.
 3. **No PLATFORM rights, and a blast radius of one throwaway org.**
 
