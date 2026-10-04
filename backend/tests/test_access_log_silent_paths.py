@@ -48,19 +48,19 @@ def test_access_log_never_carries_the_query_string(target, path):
 
     setup_logging()
     access = logging.getLogger("uvicorn.access")
-    saved = list(access.handlers)
     buf, raw = io.StringIO(), io.StringIO()
     handler = logging.StreamHandler(buf)
-    handler.setFormatter(saved[0].formatter)
+    handler.setFormatter(access.handlers[0].formatter)
     # A plain formatter renders msg % args: catches a fix that only cleans
     # the structured ``path`` field and leaves the secret in the record.
     raw_handler = logging.StreamHandler(raw)
-    access.handlers = [handler, raw_handler]
-    try:
-        # Exactly uvicorn's own call (uvicorn/protocols/http/*_impl.py).
-        access.info('%s - "%s %s HTTP/%s" %d', "10.42.0.5:51234", "GET", target, "1.1", 200)
-    finally:
-        access.handlers = saved
+    # The logger's own filters, then the handlers, as Logger.handle does,
+    # minus its enabled checks: alembic's env.py fileConfig, run by other
+    # tests, disables uvicorn.access for the rest of the session.
+    record = _access_record(target)
+    if access.filter(record):
+        handler.handle(record)
+        raw_handler.handle(record)
 
     out = buf.getvalue()
     assert "SECRET" not in out
