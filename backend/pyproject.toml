@@ -29,7 +29,7 @@ app = [
     "structlog==25.1.0",
     "python-dateutil==2.9.0.post0",
     "httpx==0.28.1",
-    "slowapi==0.1.9",
+    "slowapi==0.1.10",
     "pyotp==2.9.0",
     "qrcode[pil]==8.0",
     "cryptography==44.0.3",
@@ -59,7 +59,7 @@ mcp = [
     "structlog==25.1.0",
     "python-dateutil==2.9.0.post0",
     "httpx==0.28.1",
-    "slowapi==0.1.9",
+    "slowapi==0.1.10",
     "cryptography==44.0.3",
     "redis==5.2.1",
 ]
