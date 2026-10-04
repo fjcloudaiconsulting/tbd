@@ -1,8 +1,7 @@
-# pnpm settings only (no workspace packages). Prebuilt binaries are used; install scripts stay disabled.
 overrides:
   "@types/react": 19.2.14
   "@types/react-dom": 19.2.3
-  esbuild: 0.28.1
+  esbuild: 0.28.2
   postcss: ^8.5.10 # keep in step with devDependencies.postcss
   # pnpm would dedupe d3-scale's "1 - 3" / "2 - 4" ranges down to @nivo/core's v1/v3 copies;
   # keep the versions npm resolved so recharts tick formatting does not change.
