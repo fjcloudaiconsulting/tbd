@@ -35,6 +35,15 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # SQLAlchemy >= 2.0.42 no longer parenthesises ``func.now(6)`` on MySQL 8,
+    # and MySQL rejects a bare ``now(6)`` default on a DATETIME (fsp 0) column
+    # (1067). Spell out the expression default that 2.0.41 emitted, so a fresh
+    # database ends with the same column as every database that already ran
+    # this revision: ``datetime NOT NULL DEFAULT (now(6))``.
+    if op.get_bind().dialect.name == "mysql":
+        created_at_default = sa.text("(now(6))")
+    else:
+        created_at_default = sa.func.now()
     op.create_table(
         "notifications",
         sa.Column(
@@ -76,7 +85,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(),
-            server_default=sa.func.now(6),
+            server_default=created_at_default,
             nullable=False,
         ),
     )
