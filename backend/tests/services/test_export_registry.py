@@ -128,8 +128,8 @@ def test_table_count_is_what_the_spec_measured():
     drift (44 → 49 → "37 files" → 35). Not a correctness gate — legs 1 and 2
     are — but a loud signal when the surface moves.
     """
-    assert len(Base.metadata.tables) == 52
-    assert len(EXPORT_DISPOSITION) == 52
+    assert len(Base.metadata.tables) == 53
+    assert len(EXPORT_DISPOSITION) == 53
 
 
 # ══ Fixtures for the data-path legs ═══════════════════════════════════════

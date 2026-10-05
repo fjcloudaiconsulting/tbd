@@ -63,7 +63,7 @@ from slowapi import Limiter
 from starlette.requests import Request
 
 from app.config import settings
-from app.rate_limit_failopen import wrap_limiter_failopen
+from app import rate_limit_db  # noqa: F401  (registers tbd-db://)
 
 logger = structlog.stdlib.get_logger()
 
@@ -230,82 +230,9 @@ def rate_limit_key(request: Request) -> str:
 
 
 def _build_limiter() -> Limiter:
-    """Construct the slowapi ``Limiter`` with Redis-backed storage when
-    ``settings.redis_url`` is configured, else fall back to in-memory.
-
-    Cross-replica accuracy (K8S-1, L0.6 audit). slowapi's default
-    in-memory storage keeps counters per-process, so once we scale
-    horizontally each replica enforces its own private budget. Pointing
-    the limiter at the same Redis the rest of the app already uses
-    (see ``redis_client.py``) makes the budget shared across replicas.
-
-    Storage shape: ``storage_uri="redis://..."`` is passed to the
-    ``Limiter`` constructor. slowapi delegates to ``limits`` which
-    instantiates its own Redis client from the URI. The app's
-    ``redis_client.get_client()`` is not directly reused because the
-    ``slowapi.Limiter`` constructor (v0.1.9) accepts only a URI string
-    plus ``storage_options: Dict[str, str]``, not an already-built
-    client/pool.
-
-    Fallback: if ``settings.redis_url`` is empty (local dev without the
-    compose Redis service), we keep the in-memory storage and warn so
-    the gap is visible in logs. Production / compose always set the URL.
-    """
-    redis_url = settings.redis_url
-    if redis_url:
-        logger.info(
-            "rate_limit.storage",
-            backend="redis",
-            multi_replica_safe=True,
-        )
-        # Production hotfix 2026-05-15. slowapi's Limiter passes storage_options
-        # through to limits-library's redis.from_url(). Without these, the
-        # library defaults to socket_timeout=None — infinite blocking read on
-        # the sync Redis storage path. Since slowapi evaluates limits
-        # synchronously inside async request handlers, a single flaky socket
-        # parks the entire uvicorn event loop. /health and every other route
-        # stop responding until the container is restarted.
-        #
-        # Rate limiting fails open via FailOpenRedisStorage (see
-        # rate_limit_failopen.py), so blocking the event loop here buys
-        # nothing — we want the shortest practical socket cap. 1 second is the
-        # ceiling; redis-py raises TimeoutError, the wrapper catches it,
-        # emits rate_limit.degraded, and the request proceeds via fail-open.
-        #
-        # No retry kwarg here: retry on the sync path multiplies event-loop
-        # blocking time. (The singleton async client at app/redis_client.py
-        # does have retry because async retries don't block the loop.)
-        #
-        # Async storage (async+redis://) is the longer-term fix — separate PR;
-        # requires coredis dependency review + async fail-open wrapper rewrite.
-        limiter = Limiter(
-            key_func=rate_limit_key,
-            storage_uri=redis_url,
-            storage_options={
-                "socket_connect_timeout": 1,
-                "socket_timeout": 1,
-                "socket_keepalive": True,
-                "health_check_interval": 30,
-            },
-        )
-        # Fail-open on Redis storage errors (prod hotfix 2026-05-13). The
-        # wrapper sits below slowapi so transient Redis blips no longer
-        # surface as HTTP 500 from rate-limited auth endpoints. See
-        # app/rate_limit_failopen.py for the design + trade-off note.
-        wrap_limiter_failopen(limiter)
-        return limiter
-
-    logger.warning(
-        "rate_limit.storage",
-        backend="memory",
-        multi_replica_safe=False,
-        reason="settings.redis_url empty; per-replica counters only",
-    )
-    # No fail-open wrap for the in-memory backend: MemoryStorage cannot
-    # raise the storage errors the wrapper guards against, and leaving
-    # it unwrapped keeps construction-time tests (which assert the
-    # storage type) unchanged.
-    return Limiter(key_func=rate_limit_key)
+    """Counters live in MySQL (rate limits move to MySQL, INFRA-121)."""
+    logger.info("rate_limit.storage", backend="db")
+    return Limiter(key_func=rate_limit_key, storage_uri="tbd-db://")
 
 
 limiter = _build_limiter()

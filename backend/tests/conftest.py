@@ -40,44 +40,6 @@ def _cheap_gensalt(rounds: int = 4, prefix: bytes = b"2b") -> bytes:
 
 bcrypt.gensalt = _cheap_gensalt
 
-# ---------------------------------------------------------------------------
-# Per-xdist-worker Redis isolation (TBD-555).
-#
-# The slowapi ``Limiter`` is a PROCESS-GLOBAL built at import time from
-# ``settings.redis_url``, and under ``TestClient`` the bucket key is the
-# constant ``("testclient", <scope>)``. With ``pytest -n`` every worker would
-# otherwise share one Redis logical DB, so two things break at once: counters
-# from one worker inflate another's, and ``limiter.reset()`` -- the autouse
-# fixture in every rate-limit module -- flushes the counter a boundary test in
-# a *different* worker is halfway through building.
-#
-# Give each worker its own logical DB. Redis ships 16 (0-15); db 0 stays with
-# the non-xdist session. Past 15 workers the DBs wrap and the interference
-# returns, so raise ``databases`` on the Redis service if that day comes.
-#
-# CI leaves ``REDIS_URL`` unset (MemoryStorage, already per-process), so this
-# is a no-op there. It must stay ABOVE any ``app.`` import: ``app.config``
-# reads the env once, at import.
-# ---------------------------------------------------------------------------
-_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")  # "gw0", "gw1", ...
-if _XDIST_WORKER and os.environ.get("REDIS_URL"):
-    _worker_n = int(_XDIST_WORKER.removeprefix("gw"))
-    # ⚠ FAIL LOUDLY rather than wrap. ``1 + n % 15`` would hand gw15 the same
-    # logical DB as gw0 and silently restore exactly the cross-worker counter
-    # interference this block exists to remove -- as a rare 429 flake in a
-    # boundary test, which is the least debuggable shape it could take.
-    if _worker_n >= 15:
-        raise RuntimeError(
-            f"pytest-xdist worker {_XDIST_WORKER} exceeds the 15 Redis logical "
-            "DBs available for per-worker rate-limiter isolation. Run with "
-            "-n 15 or fewer, or raise `databases` on the Redis service and "
-            "update this guard (backend/tests/conftest.py)."
-        )
-    _worker_db = 1 + _worker_n
-    os.environ["REDIS_URL"] = (
-        re.sub(r"/\d+$", "", os.environ["REDIS_URL"]) + f"/{_worker_db}"
-    )
-
 # Match the production logging.py suppression: ofxtools emits per-row INFO
 # during OFX parses ("Converting <STMTTRN>"). For tests that parse the
 # 10k-row fixture this distorts wall-clock timing AND floods captured
@@ -642,3 +604,70 @@ def _fast_sqlite_create_all():
     md.create_all = fast
     yield
     del md.create_all
+
+
+# ---------------------------------------------------------------------------
+# Rate limits move to MySQL (INFRA-121). Each xdist worker gets its own SQLite
+# FILE (QueuePool: every to_thread worker thread has its own connection; a
+# StaticPool would interleave transactions across threads).
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="session", autouse=True)
+def _rate_limit_engine(tmp_path_factory):
+    from sqlalchemy import create_engine, event
+
+    from app import rate_limit_db
+    from app.models.rate_limit import RateLimit
+
+    eng = create_engine(f"sqlite:///{tmp_path_factory.mktemp('rl')}/rl.db")
+
+    @event.listens_for(eng, "connect")
+    def _fast(dbapi_conn, _rec):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA synchronous=OFF")
+        cur.execute("PRAGMA journal_mode=MEMORY")
+        cur.close()
+
+    RateLimit.__table__.create(eng)
+    real = rate_limit_db._engine
+    rate_limit_db._engine = eng
+    yield eng
+    rate_limit_db._engine = real
+    eng.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _clear_rate_limits(_rate_limit_engine):
+    from sqlalchemy import text
+
+    with _rate_limit_engine.begin() as c:
+        c.execute(text("DELETE FROM rate_limits"))
+
+
+@pytest.fixture
+def limits_db_down():
+    """The limits DB refuses connections. Restores the engine itself: module
+    autouse ``limiter.reset()`` teardowns run before monkeypatch undo."""
+    from sqlalchemy import create_engine
+
+    from app import rate_limit_db
+
+    saved = rate_limit_db._engine
+    rate_limit_db._engine = create_engine("sqlite:////nonexistent-dir/x.db")
+    try:
+        yield
+    finally:
+        rate_limit_db._engine.dispose()
+        rate_limit_db._engine = saved
+
+
+@pytest.fixture
+def limits_hit_down(monkeypatch):
+    """``hit`` fails while ``get`` works (MCP has no slowapi decorator)."""
+    from sqlalchemy.exc import OperationalError
+
+    from app import rate_limit_db
+
+    def boom(*_a, **_k):
+        raise OperationalError("INSERT", {}, Exception("limits db down"))
+
+    monkeypatch.setattr(rate_limit_db, "hit", boom)
