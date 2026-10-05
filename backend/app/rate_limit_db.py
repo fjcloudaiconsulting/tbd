@@ -45,6 +45,7 @@ def _build_engine(url: str | None = None) -> Engine:
         pool_timeout=2,
         pool_pre_ping=True,
         pool_recycle=settings.db_pool_recycle,
+        hide_parameters=True,
     )
 
 

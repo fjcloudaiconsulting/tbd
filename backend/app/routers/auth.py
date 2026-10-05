@@ -536,8 +536,7 @@ async def login(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
-    # ponytail: the probe can pass and session issue still 503 a correct
-    # password only if another writer fills Valkey in between.
+    # Session store probed before the credential check (INFRA-121).
     try:
         await redis_client.session_store_probe()
     except (RedisRequired, RedisError) as exc:
