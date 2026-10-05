@@ -42,13 +42,13 @@ def test_fm6_excluded_packages_stay_out():
 
 def test_fm6_dockerfile_copies_only_the_app_package():
     text = (BACKEND / "Dockerfile.mcp").read_text()
-    # Renovate pins images as ``repo:tag@sha256:<64 hex>``; the repo and tag
-    # stay asserted, only the digest suffix is optional.
+    # Renovate bumps the uv tag and pins ``repo:x.y.z@sha256:<64 hex>``; the
+    # repo stays asserted, any x.y.z tag and an optional digest are accepted.
     copies = [
-        [re.sub(r"^(--from=.*)@sha256:[0-9a-f]{64}$", r"\1", tok) for tok in ln.split()[1:]]
+        [re.sub(r"^(--from=ghcr\.io/astral-sh/uv):\d+\.\d+\.\d+(@sha256:[0-9a-f]{64})?$", r"\1", tok) for tok in ln.split()[1:]]
         for ln in text.splitlines()
         if ln.startswith("COPY ")
     ]
-    assert copies == [["--from=ghcr.io/astral-sh/uv:0.12.13", "/uv", "/uvx", "/bin/"], ["pyproject.toml", "uv.lock", "./"], ["app", "./app"]], copies
+    assert copies == [["--from=ghcr.io/astral-sh/uv", "/uv", "/uvx", "/bin/"], ["pyproject.toml", "uv.lock", "./"], ["app", "./app"]], copies
     assert "--no-default-groups --group mcp" in text
     assert '"app.mcp_main:app"' in text and "USER mcp" in text
