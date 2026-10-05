@@ -54,7 +54,7 @@ flowchart TD
     B -->|backend/**| C[docker compose exec backend pytest]
     B -->|frontend/**| D[docker compose exec frontend pnpm test<br/>docker compose exec frontend pnpm exec tsc --noEmit]
     B -->|backend/alembic/versions/**| E[Restart backend so lifespan applies the migration<br/>./tbd restart]
-    B -->|nginx/**| F[./tbd prod for a local prod-shaped run<br/>Smoke endpoints by hand]
+    B -->|nginx/**| F[./tbd prod for a local prod-shaped run<br/>Smoke: aws-infra `post-deploy-smoke.yml` (INFRA-114)]
     B -->|docs only| G[No tests required.<br/>Use chore: or docs: prefix so it stays out of the release notes.]
     C --> H[Commit with Conventional Commits prefix]
     D --> H
@@ -531,7 +531,7 @@ in a test can no longer merge green.
 
 ### Manual smoke testing
 
-Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. The production smoke test is `scripts/smoke-test.sh`, run by hand after a rollout (aws-infra `docs/runbooks.md`, "TBD smoke account").
+Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. The production smoke test is `scripts/smoke-test.sh`, post-deploy smoke runs from aws-infra `post-deploy-smoke.yml` (INFRA-114); credentials per aws-infra `docs/runbooks.md`, "TBD smoke account".
 
 ## Branching and pull requests
 

@@ -81,3 +81,6 @@ frontend/tests/act-guard/.run*.json
 
 # TBD-498: local vitest coverage output, regenerated on every run.
 frontend/coverage/
+
+# INFRA-60: local wrangler dev state for frontend/apex-worker
+.wrangler/

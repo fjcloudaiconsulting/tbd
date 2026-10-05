@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 import { NextRequest, NextResponse } from "next/server";
 
 import { buildCspDirectives, securityHeadersTuplesWithNonce } from "./lib/security-headers";
@@ -62,7 +64,7 @@ function applySecurityHeaders(
 }
 
 const SENSITIVE_PARAMS = new Set([
-  "token", "code", "access_token", "refresh_token", "mfa_token", "key", "secret", "password",
+  "token", "code", "state", "access_token", "refresh_token", "mfa_token", "key", "secret", "password",
 ]);
 
 function sanitizeQuery(search: string): string | undefined {
@@ -77,7 +79,32 @@ function sanitizeQuery(search: string): string | undefined {
   return result || undefined;
 }
 
+// The Referer is the full previous URL on same-origin navigation, so it can
+// carry an invite or reset token (INFRA-110). Keep origin and path only
+// (browsers never send the fragment).
+function refererWithoutQuery(referer: string | null): string | undefined {
+  return referer?.split("?", 1)[0] || undefined;
+}
+
+/**
+ * The visitor's IP for the access log. Same rule as the backend's
+ * ``rate_limit._client_ip_from_configured_header`` (INFRA-83): when
+ * ``CLIENT_IP_HEADER`` names a header (k3s: ``cf-connecting-ip``) holding
+ * exactly one IP address without a scope id, log that. Set it only where the
+ * origin accepts our Cloudflare zone exclusively (Authenticated Origin Pulls,
+ * INFRA-93); while it is unset, a caller-sent copy of the header is ignored.
+ */
 function clientIp(request: NextRequest): string {
+  const header = process.env.CLIENT_IP_HEADER?.trim();
+  if (header) {
+    let value = "";
+    try {
+      value = request.headers.get(header) ?? "";
+    } catch {
+      // Not a valid header name: fall back rather than fail every request.
+    }
+    if (isIP(value) && !value.includes("%")) return value;
+  }
   const xff = request.headers.get("x-forwarded-for");
   if (xff) return xff.split(",")[0].trim();
   return request.headers.get("x-real-ip") || "unknown";
@@ -156,7 +183,7 @@ export function proxy(request: NextRequest) {
     query: sanitizeQuery(request.nextUrl.search),
     remote_addr: clientIp(request),
     user_agent: request.headers.get("user-agent") || undefined,
-    referer: request.headers.get("referer") || undefined,
+    referer: refererWithoutQuery(request.headers.get("referer")),
   };
 
   // Remove undefined values for cleaner JSON

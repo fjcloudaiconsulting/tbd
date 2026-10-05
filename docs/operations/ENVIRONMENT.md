@@ -263,8 +263,8 @@ NOT consume `.env`.
 
 `.github/workflows/release.yml` deploys nothing (see
 [`DEPLOYMENT.md`](DEPLOYMENT.md)). No workflow uses smoke credentials and
-there are no GitHub secrets for them. A by-hand
-`scripts/smoke-test.sh` run reads the credentials from the cluster Secret
+there are no GitHub secrets for them. The post-deploy smoke (aws-infra `post-deploy-smoke.yml`, INFRA-114)
+runs `scripts/smoke-test.sh` and reads the credentials from the cluster Secret
 `tbd-prod/tbd-smoke` (aws-infra `docs/runbooks.md`, "TBD smoke account").
 
 ### Production

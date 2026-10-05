@@ -13,21 +13,33 @@ _ACCESS_RE = re.compile(
 )
 
 
+# The query string, up to the space before "HTTP/". uvicorn percent-quotes
+# the path (a literal "?" there becomes %3F), so the first "?" in an access
+# line starts the query. Only a space ends it: httptools' lenient parser lets
+# a tab or form feed through into the query. Query values carry secrets
+# (OAuth code/state on /api/v1/auth/google/callback, invite tokens), INFRA-110.
+_QUERY_RE = re.compile(r"\?[^ ]*")
+
 # Paths excluded from access logs (health checks flood logs in production;
 # Route 53 polls /health/dependencies, INFRA-83)
 _SILENT_PATHS = {"/health", "/ready", "/health/dependencies"}
 
 
-class _DropHealthCheck(logging.Filter):
-    """Logging filter that silently drops health check access log records.
+class _AccessLogFilter(logging.Filter):
+    """Strips the query string from every uvicorn access record and drops
+    health check records.
 
-    Applied directly to the uvicorn.access logger so the record never
-    reaches the formatter — avoids structlog.DropEvent issues in the
-    ProcessorFormatter chain.
+    Applied directly to the uvicorn.access logger so the record is fixed
+    (or dropped) before it reaches any handler or formatter. The record
+    itself is rewritten (msg formatted, args emptied) because uvicorn
+    passes the full path with query in record.args. Emptied args suit our
+    ProcessorFormatter; uvicorn's own AccessFormatter (which unpacks the
+    args) is never attached, since setup_logging replaces the handlers.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
+        msg = _QUERY_RE.sub("", record.getMessage())
+        record.msg, record.args = msg, ()
         match = _ACCESS_RE.match(msg)
         if match and match.group("path") in _SILENT_PATHS:
             return False
@@ -107,5 +119,5 @@ def setup_logging() -> None:
         uv_logger.addHandler(handler)
         uv_logger.propagate = False
 
-    # Drop health check records before they reach the formatter chain
-    logging.getLogger("uvicorn.access").addFilter(_DropHealthCheck())
+    # Strip query strings and drop health checks before any handler runs
+    logging.getLogger("uvicorn.access").addFilter(_AccessLogFilter())

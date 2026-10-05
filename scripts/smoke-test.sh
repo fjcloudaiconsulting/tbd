@@ -82,14 +82,16 @@ check_status() {
   body_file="$(mktemp)"
   if [[ "$method" == "GET" ]]; then
     if [[ -n "$header" ]]; then
-      status="$(curl "${CURL_OPTS[@]}" -o "$body_file" -w '%{http_code}' \
-        -H "$header" "$url" || echo "000")"
+      # The header carries the bearer token: feed it on stdin (`-H @-`),
+      # never as an argument, so it stays out of the process list (INFRA-95).
+      status="$(printf '%s\n' "$header" | curl "${CURL_OPTS[@]}" -o "$body_file" \
+        -w '%{http_code}' -H @- "$url" || echo "000")"
     else
       status="$(curl "${CURL_OPTS[@]}" -o "$body_file" -w '%{http_code}' "$url" || echo "000")"
     fi
   else
-    status="$(curl "${CURL_OPTS[@]}" -o "$body_file" -w '%{http_code}' \
-      -X "$method" -H "Content-Type: application/json" --data "$data" "$url" || echo "000")"
+    status="$(printf '%s' "$data" | curl "${CURL_OPTS[@]}" -o "$body_file" -w '%{http_code}' \
+      -X "$method" -H "Content-Type: application/json" --data-binary @- "$url" || echo "000")"
   fi
 
   if [[ "$status" == "$expected" ]]; then
@@ -139,16 +141,18 @@ check_status "GET /health/dependencies" 200 GET "/health/dependencies" || true
 #
 # Build the JSON body via python3's json.dumps so a password containing
 # ", \, or a newline doesn't produce invalid JSON. Pass credentials via
-# environment so they never appear in argv (visible in `ps`).
+# environment so they never appear in argv (visible in `ps`), and hand the
+# body to curl on stdin (`--data-binary @-`) for the same reason (INFRA-95).
+# printf is a bash builtin, so the body is never an argument of any process.
 login_body="$(SMOKE_USER="$USERNAME" SMOKE_PWD="$PASSWORD" python3 -c '
 import json, os
 print(json.dumps({"login": os.environ["SMOKE_USER"], "password": os.environ["SMOKE_PWD"]}))
 ')"
 login_response="$(mktemp)"
 login_headers="$(mktemp)"
-login_status="$(curl "${CURL_OPTS[@]}" -o "$login_response" -D "$login_headers" \
-  -w '%{http_code}' \
-  -X POST -H "Content-Type: application/json" --data "$login_body" \
+login_status="$(printf '%s' "$login_body" | curl "${CURL_OPTS[@]}" \
+  -o "$login_response" -D "$login_headers" -w '%{http_code}' \
+  -X POST -H "Content-Type: application/json" --data-binary @- \
   "${BASE_URL}/api/v1/auth/login" || echo "000")"
 
 if [[ "$login_status" != "200" ]]; then

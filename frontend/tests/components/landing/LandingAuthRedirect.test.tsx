@@ -43,6 +43,7 @@ describe("<LandingAuthRedirect />", () => {
       forward: vi.fn(),
       refresh: vi.fn(),
       prefetch: vi.fn(),
+      bfcacheId: "test",
     } as ReturnType<typeof useRouter>);
   });
 
