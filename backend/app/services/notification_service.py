@@ -288,17 +288,16 @@ async def dispatch_notification(
         return None
 
     # Set created_at explicitly in Python rather than relying on the
-    # server_default (``func.now(6)`` on MySQL, plain CURRENT_TIMESTAMP
+    # server_default (``(now(6))`` on MySQL, plain CURRENT_TIMESTAMP
     # on SQLite). The dialect mismatch matters for cursor pagination:
     # SQLite stores timestamps without fractional seconds when the
     # default fires, but SQLAlchemy renders bound DateTime values
     # WITH ``.000000`` microsecond padding when the same value is
     # used in a WHERE clause — leading to text comparisons that go
     # the wrong way. Setting the column from Python gives us a
-    # consistent shape on both backends and guarantees that two rows
-    # written in the same transaction still get monotonically
-    # increasing timestamps (utcnow_naive carries microsecond
-    # precision).
+    # consistent shape on both backends. MySQL's DATETIME (fsp 0) rounds
+    # the value to the second, so rows written in the same second tie
+    # on created_at and the id tiebreak orders them.
     row = Notification(
         user_id=user_id,
         category=category,
