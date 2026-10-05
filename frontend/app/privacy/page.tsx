@@ -149,10 +149,10 @@ export default function PrivacyPolicyPage() {
                 (eu-central-1, Germany, EU).
               </li>
               <li>
-                <strong>DigitalOcean</strong> (former hosting): holds an
-                archived copy of the database from before our move to Amazon
-                Web Services, in the Amsterdam region (EU). It no longer runs
-                the service and is scheduled for deletion.
+                <strong>DigitalOcean</strong> (former hosting): holds archived
+                copies of the database and session cache from before our move
+                to Amazon Web Services, in the Amsterdam region (EU). It no
+                longer runs the service and is scheduled for deletion.
               </li>
               <li>
                 <strong>Cloudflare</strong> (CDN / edge): handles TLS
