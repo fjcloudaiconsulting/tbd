@@ -405,7 +405,7 @@ async def test_gate_6_daily_bucket(client, w, factory, frozen):
     assert await _count(factory, w) == 0
 
 
-async def test_a2_limits_down_is_503_for_every_risk(client, w, factory, limits_hit_down):
+async def test_a2_request_bucket_down_is_503_before_any_tool(client, w, factory, limits_hit_down):
     """A2. Wrong implementation: the request bucket (or gate 6) failing open,
     so calls are admitted and spend the meter while limits are unavailable."""
     for name, args in [("budgets_update_amount", {"budget_id": w["budget"], "amount": "1.00"}),
@@ -418,6 +418,31 @@ async def test_a2_limits_down_is_503_for_every_risk(client, w, factory, limits_h
     # A method with no gate 6 behind it: only the request bucket can refuse.
     r = await _post(client, _msg("ping"), token="write")
     assert r.status_code == 503 and r.json()["error"]["code"] == mcp_main.UNAVAILABLE
+
+
+async def test_gate_6_down_is_503_limits_unavailable_for_every_risk(
+    client, w, factory, monkeypatch
+):
+    """Gate 6 alone is down (req:min still works). Wrong implementation:
+    gate 6 failing open for reads, mapped to isError 200, or the meter
+    admitted before the gate."""
+    from sqlalchemy.exc import OperationalError
+
+    real = rate_limit_db.hit
+
+    def hit(key, *a, **k):
+        if ":calls:" in key:
+            raise OperationalError("INSERT", {}, Exception("down"))
+        return real(key, *a, **k)
+
+    monkeypatch.setattr(rate_limit_db, "hit", hit)
+    for name, args in [("budgets_update_amount", {"budget_id": w["budget"], "amount": "1.00"}),
+                       ("confirm_action", {"action_id": "0" * 32}),
+                       ("accounts_list", {})]:
+        r = await _call(client, name, args, token="write")
+        assert r.status_code == 503, (name, r.text)
+        assert r.json()["error"]["data"]["code"] == "limits_unavailable", name
+    assert await _count(factory, w) == 0
 
 
 async def test_a2_bad_bearer_while_hit_is_down_is_503_not_401(client, w, limits_hit_down):

@@ -100,3 +100,26 @@ def test_f5_db_storage_registered():
     s = storage_from_string("tbd-db://")
     assert isinstance(s, rate_limit_db.DbStorage)
     assert s.incr("s", 10) == 1 and s.get("s") == 1
+
+
+def test_engine_config_is_pinned(monkeypatch):
+    seen = {}
+
+    def fake(url, **kw):
+        seen["url"], seen["kw"] = url, kw
+
+    monkeypatch.setattr(rate_limit_db, "create_engine", fake)
+    rate_limit_db._build_engine("mysql+aiomysql://u:p@h/db?charset=utf8mb4")
+    assert seen["url"].drivername == "mysql+pymysql"
+    assert dict(seen["url"].query) == {}
+    kw = seen["kw"]
+    assert kw["connect_args"] == {
+        "connect_timeout": 2,
+        "read_timeout": 2,
+        "write_timeout": 2,
+        "init_command": "SET SESSION innodb_lock_wait_timeout=1",
+    }
+    assert kw["isolation_level"] == "READ COMMITTED"
+    assert (kw["pool_size"], kw["max_overflow"], kw["pool_timeout"]) == (2, 5, 2)
+    assert kw["pool_pre_ping"] is True
+    assert kw["hide_parameters"] is True
