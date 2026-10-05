@@ -90,6 +90,10 @@ const apexConfig: NextConfig = {
   // Distribute landing assets to a SEPARATE out directory so the standard
   // `pnpm build` artefacts under `.next/` / `out/` are untouched.
   distDir: ".next-apex",
+  // Next 16.3 type-checks the whole tsconfig project via the tsc CLI by
+  // default, including tests that import the app/ routes build-apex.sh stages
+  // out. The in-process checker skips *.test.* files, as 16.2 did.
+  experimental: { useTypeScriptCli: false },
   // Next.js 16 defaults to Turbopack. Configure Turbopack's resolveAlias
   // so the apex-target stubs land in the bundle.
   turbopack: {

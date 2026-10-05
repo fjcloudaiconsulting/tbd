@@ -511,8 +511,9 @@ export async function apiFetch<T>(
   }
 
   // Whether THIS request actually carried a bearer. Drives the token-less
-  // 403 recovery below: FastAPI's HTTPBearer returns 403 "Not authenticated"
-  // (not 401) when the Authorization header is missing entirely. That happens
+  // 403 recovery below: FastAPI's HTTPBearer returned 403 "Not authenticated"
+  // (401 since the FastAPI 0.136 upgrade, INFRA-124; the 403 arm stays for an
+  // older backend) when the Authorization header is missing entirely. That happens
   // on a cold-start race where a page's mount-time fetch fires before
   // AuthProvider has restored the in-memory token. A bare 403 must trigger
   // the same silent refresh + retry as a 401; a 403 that DID carry a token is

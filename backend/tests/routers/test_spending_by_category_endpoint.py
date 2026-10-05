@@ -948,7 +948,7 @@ def _anonymous_app(factory) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_fh_anonymous_request_is_rejected(session_factory):
-    """F-H. No ``Authorization`` header → **403 "Not authenticated"**, raised
+    """F-H. No ``Authorization`` header → **401 "Not authenticated"**, raised
     by ``HTTPBearer``'s ``auto_error`` before the handler body runs.
 
     The org is seeded with real settled expense on purpose: under the mutant
@@ -965,21 +965,21 @@ async def test_fh_anonymous_request_is_rejected(session_factory):
     with TestClient(app) as client:
         res = client.get(f"{SPEND_URL}?period_start={P_START}")
         # Auth evaluates BEFORE query parsing: a malformed ``period_start``
-        # from an anonymous caller is still 403, never 422 — so this route
+        # from an anonymous caller is still 401, never 422 — so this route
         # exposes no pre-auth parsing surface.
         malformed = client.get(f"{SPEND_URL}?period_start=not-a-date")
 
-    assert res.status_code == 403, res.text
+    assert res.status_code == 401, res.text
     assert res.json()["detail"] == "Not authenticated"
-    assert malformed.status_code == 403, malformed.text
+    assert malformed.status_code == 401, malformed.text
 
 
 @pytest.mark.asyncio
 async def test_fh_undecodable_bearer_is_rejected(session_factory):
     """F-H, second half. A well-formed ``Authorization: Bearer`` header whose
-    token does not decode → **401**, not 403 and not 200.
+    token does not decode → **401**, not 200.
 
-    The pair matters: 403-alone would also be satisfied by a bare
+    The pair matters: the missing-header 401 alone would also be satisfied by a bare
     ``HTTPBearer`` dependency that never resolves a user. The 401 comes from
     ``get_current_user``'s own ``decode_token`` arm, so together they pin that
     THIS dependency — not merely SOME security scheme — guards the route.
@@ -993,6 +993,7 @@ async def test_fh_undecodable_bearer_is_rejected(session_factory):
         )
 
     assert res.status_code == 401, res.text
+    assert res.json()["detail"] == "Invalid or expired token"
 
 
 # ── F-I — the substituted period, and the write this GET performs ──────────
