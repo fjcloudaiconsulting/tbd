@@ -1,17 +1,12 @@
-# Manual production deploy escape hatch.
+# Manual DigitalOcean App Platform deploy (archived path).
 #
-# Automatic production deploys are now driven by release.yml's gated
-# `deploy` job, which only fires when the owner merges the release-please
-# PR (INFRA-42). That means a change merged since the last release
-# (chore(.do), chore(nginx), chore(infra), chore(Dockerfile), ...) does NOT
-# auto-deploy until the next release. When such a change must
-# ship, an operator runs this workflow manually:
+# Production runs on the k3s cluster in fjcloudaiconsulting/aws-infra since
+# the 2026-10-04 cutover, and release.yml no longer deploys anywhere. This
+# workflow only targets the DO app kept for rollback (a rollback is a DNS
+# revert, not a deploy). Its token was replaced at the cutover, so a run fails
+# at doctl. INFRA-44 deletes it after INFRA-49.
 #
 #   gh workflow run deploy.yml --ref main
-#
-# The job body intentionally mirrors release.yml's deploy + smoke-tests
-# jobs so the manual path produces the same artifact and runs the same
-# post-deploy checks.
 
 name: Deploy to Production (manual)
 
@@ -111,7 +106,7 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: ./scripts/notify-smoke-failure.sh
 
-  # TBD-424 defect 4. Same alarm as release.yml's job of this name.
+  # TBD-424 defect 4. release.yml carried the same job until the k3s cutover.
   #
   # ⚠ Half-wiring a guard into one deploy path only is exactly the shape the
   # parametrized secret-drift fences in backend/tests/test_deploy_workflow.py
@@ -122,9 +117,8 @@ jobs:
   #
   # This path has no `release` job, so there is no `release_created`
   # arm and no tag to annotate — the script handles an empty RELEASE_TAG. The
-  # `!= 'success'` (rather than `== 'failure'`) keeps CANCELLED in scope for
-  # the same reason release.yml does: a deploy cancelled mid-push can leave
-  # DO half-rolled.
+  # `!= 'success'` (rather than `== 'failure'`) keeps CANCELLED in scope on
+  # purpose: a deploy cancelled mid-push can leave DO half-rolled.
   notify-undeployed-release:
     runs-on: ubuntu-latest
     needs: [deploy]

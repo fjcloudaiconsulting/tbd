@@ -12,7 +12,7 @@ Four production surfaces. Each has its own pipeline. Some changes fan out across
 
 | Surface | URL | Hosted by | Updated by |
 |---|---|---|---|
-| App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | DigitalOcean App Platform (`pfv` app) | `release.yml` (auto) or `deploy.yml` (manual) |
+| App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | Single-node k3s cluster, namespace `tbd-prod` (aws-infra) | `release.yml` publishes the `vX.Y.Z` images; merging the Renovate bump PR in aws-infra deploys them |
 | Apex landing (marketing, privacy, terms, docs) | `https://thebetterdecision.com` | AWS S3 + CloudFront | `apex-deploy.yml` (auto) |
 | Data plane (MySQL 8 + Redis) | private VPC IP `<vpc-ip>:3306 / :6379` | Self-hosted DO droplet `<data-droplet>` | TFC workspace `<tfc-org>/<data-workspace>` (manual confirm) |
 | Apex CDN + cert + IAM | n/a (control plane) | AWS (S3, CloudFront, ACM, IAM, Route 53) | TFC workspace `<tfc-org>/<apex-workspace>` (manual confirm) |
@@ -120,11 +120,13 @@ also measurably not a uniform rescaling of runner times.
 `backend/tests/test_test_durations_freshness.py` fails the build when the file
 drifts too far from the collected suite.
 
-## 3. Backend + Frontend production deploy (`release.yml`)
+## 3. Release and image promotion (`release.yml`)
 
-Source: `.github/workflows/release.yml`. Spec: `.do/app.yaml`.
+Source: `.github/workflows/release.yml`.
 
-`release.yml` is the **single arbiter** of "should we ship to prod". It runs on every push to `main` and uses **release-please** (via the Release GitHub App token, environment `release`): an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; production deploys exactly once, when the owner merges that PR. On that merge `release` tags `vX.Y.Z` on the release commit and publishes the GitHub Release (`release_created`). Only then do the gated jobs run: `promote` (shared promote-release workflow retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations}` built by `test.yml` on that commit as `vX.Y.Z`), `release-smoke` (boots those images with `compose.smoke.yaml` and checks `/health` returns the version and revision), `deploy` (pushes `.do/app.yaml` to DO App Platform; DO runs the `PRE_DEPLOY` migrate job, then rolls the backend and frontend services), `smoke-tests` (asserts the live app actually serves traffic) and `notify-undeployed-release`. Before `release` runs, `await-tests` waits for the `Test` workflow's push run on `main` for this sha (other runs on the same sha are ignored), and `release` additionally waits for the `Test` push run of the merged release PR's commit when that is not this run's commit.
+`release.yml` is the **single arbiter** of "should we cut a release". It runs on every push to `main` and uses **release-please** (via the Release GitHub App token, environment `release`): an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; a release happens exactly once, when the owner merges that PR. On that merge `release` tags `vX.Y.Z` on the release commit and publishes the GitHub Release (`release_created`). Only then do the gated jobs run: `promote` (shared promote-release workflow retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations}` built by `test.yml` on that commit as `vX.Y.Z`) and `release-smoke` (shared smoke workflow boots those images with `compose.smoke.yaml`, runs the migrations twice, and checks `/health` returns the version and revision). Before `release` runs, `await-tests` waits for the `Test` workflow on this sha, and `release` additionally waits for the `Test` run of the merged release PR's commit when that is not this run's commit.
+
+**Nothing in this repo deploys.** Production is the k3s cluster in `fjcloudaiconsulting/aws-infra`: Renovate opens a PR there bumping the `vX.Y.Z` image tags in `clusters/platform/tbd-prod/`, and merging it is the deploy (Flux applies it). aws-infra's `release-drift-probe` opens an issue when a published release has not reached `clusters/`.
 
 ### Trigger
 
@@ -136,7 +138,7 @@ on:
 
 There is **no `paths:` filter** (TBD-424). Every push must reach release-please, or the release PR goes stale and the merged one is never tagged. The ship/no-ship call is the owner merging the release PR; conventional commit types (`feat:`, `fix:`, etc) only decide the version bump and CHANGELOG section.
 
-Why this design: merging a `feat:`/`fix:` PR no longer deploys by itself, so production ships once per release, when the owner decides, instead of on every merge.
+Why this design: merging a `feat:`/`fix:` PR no longer releases by itself, so versions ship once per release, when the owner decides, instead of on every merge.
 
 ### Job graph
 
@@ -145,77 +147,42 @@ sequenceDiagram
   participant Owner
   participant GH as GitHub Actions
   participant SR as release-please
-  participant DO as DO App Platform
-  participant MIG as PRE_DEPLOY migrate job
-  participant BE as backend service
-  participant FE as frontend service
-  participant SMK as smoke-tests job
+  participant GHCR as GHCR
+  participant RN as Renovate (aws-infra)
+  participant K as k3s cluster (Flux)
 
   Owner->>GH: merge PR to main
   GH->>SR: run release job (after await-tests)
   SR->>SR: analyze conventional commits since last tag
   alt release_created == true (release PR merged)
     SR->>GH: tag vX.Y.Z, GitHub Release
-    GH->>GH: promote + release-smoke (GHCR images)
-    GH->>DO: deploy job: app_action/deploy@v2 with .do/app.yaml
-    DO->>MIG: kind: PRE_DEPLOY, run python /app/scripts/migrate.py
-    MIG-->>DO: rc 0, alembic head reached
-    DO->>BE: roll backend (health probe /health)
-    DO->>FE: roll frontend (health probe /health)
-    BE-->>DO: 200 OK
-    FE-->>DO: 200 OK
-    DO-->>GH: deploy ACTIVE
-    GH->>SMK: smoke-tests job (needs: deploy)
-    SMK->>SMK: scripts/smoke-test.sh against app.thebetterdecision.com
-    alt smoke fails
-      SMK->>GH: open or comment on a GH issue (notify-smoke-failure.sh)
-    end
+    GH->>GHCR: promote: retag sha-<7> images as vX.Y.Z
+    GH->>GH: release-smoke: boot the images (compose.smoke.yaml)
+    RN->>RN: open PR bumping tags in clusters/platform/tbd-prod/
+    Owner->>RN: merge the bump PR
+    RN->>K: Flux applies; migrate init container runs, then backend and frontend roll
   else ordinary merge
-    SR-->>GH: open or update release PR, skip deploy and smoke-tests
+    SR-->>GH: open or update release PR, skip promote and release-smoke
   end
 ```
 
 ### The gate
 
 ```yaml
-deploy:
+promote:
   needs: release
   if: needs.release.outputs.release_created == 'true'
 ```
 
-This is the load-bearing line (see `.github/workflows/release.yml` for the exact expression). Without `release_created`, `deploy` does not run, `smoke-tests` does not run, nothing ships. The output is set by release-please only when the merge is the release PR.
+This is the load-bearing line (see `.github/workflows/release.yml` for the exact expression). Without `release_created`, `promote` and `release-smoke` do not run and nothing is retagged. The output is set by release-please only when the merge is the release PR. `backend/tests/test_deploy_workflow.py` fences the workflow's shape.
 
-### Why a gated `deploy` job and not `on: release: { types: [published] }`
+### Production rollout (aws-infra)
 
-One workflow keeps the "exactly one deploy per release" rule in a single `if:`, fenced by `backend/tests/test_deploy_workflow.py`. `deploy` therefore lives in the same workflow file and gates on the upstream job's output.
-
-### Deploy step internals
-
-`digitalocean/app_action/deploy@v2` with `app_spec_location: .do/app.yaml` and **no `app_name`**. With both set, the action ignores the file and fetches the live spec by name (that bug let PR #79's migration sit un-applied for hours). The action reads `.do/app.yaml` and picks up the app via its top-level `name: pfv` field. The current spec drives every deploy, which means:
-
-- Every SECRET must be declared in `.do/app.yaml` with its encrypted `EV[...]` value, or it gets removed from the live app on push. (See ENVIRONMENT.md "Spec-sync hazards" and the file's own preamble comment.)
-- Every domain, env var, ingress rule, and component must be present and current in the file.
-
-### `PRE_DEPLOY` migrate job
-
-Declared in `.do/app.yaml` as:
-
-```yaml
-jobs:
-  - name: migrate
-    kind: PRE_DEPLOY
-    source_dir: backend
-    dockerfile_path: backend/Dockerfile
-    run_command: python /app/scripts/migrate.py
-```
-
-App Platform holds the new revision back until this job exits 0. A long migration never causes the backend's serving probe to fail because the backend doesn't start serving until migrate is done. See Section 8 for migration details.
+The bump PR changes the image tags of the backend, frontend, scheduler and migrations in `clusters/platform/tbd-prod/`. Migrations run as the `migrate` init container of the backend pod (`python /app/scripts/migrate.py`, `migrations` image), so a new version never serves on an old schema; see `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/tbd-prod/backend.yaml` and Section 8. Following a rollout: [aws-infra runbooks, "Follow Flux and rollouts"](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md).
 
 ### Smoke tests
 
-`scripts/smoke-test.sh` runs after `deploy` succeeds. Env: `SMOKE_BASE_URL=https://app.thebetterdecision.com`, plus a `SMOKE_USERNAME` / `SMOKE_PASSWORD` for a dedicated smoke user. The smoke user must exist, must be `email_verified`, and must **not** have MFA enabled.
-
-On failure, `scripts/notify-smoke-failure.sh` opens (or comments on an existing) GitHub issue using `GH_TOKEN`. DO marking the deploy `ACTIVE` is necessary but not sufficient: smoke tests assert end-to-end traffic actually works.
+`scripts/smoke-test.sh` runs after every production rollout from aws-infra's `post-deploy-smoke.yml` (INFRA-114), which opens or closes a `[post-deploy-smoke] tbd-prod` issue there; it can also be run by hand. Env: `SMOKE_BASE_URL=https://app.thebetterdecision.com`, plus `SMOKE_USERNAME` / `SMOKE_PASSWORD` for a dedicated smoke user, read from the SOPS Secret `tbd-prod/tbd-smoke`. The smoke user must exist, must be `email_verified`, and must **not** have MFA enabled. The exact command, the credentials' location and rotation are in [aws-infra runbooks, "TBD smoke account"](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md).
 
 #### ⚠ The smoke account cannot have MFA, and that is an accepted risk (TBD-371)
 
@@ -414,10 +381,10 @@ set only in the DO console is erased by the next merge that ships (TBD-425).
 Set it in the console, read the blob back with `doctl apps spec get <APP_ID>`,
 commit it, and only then deploy.
 
-### How to verify a deploy
+### How to verify a rollout
 
-1. Watch the workflow run: `https://github.com/flamarion/pfv/actions/workflows/release.yml`
-2. Watch the DO deploy: DO console -> Apps -> `pfv` -> Activity. The PRE_DEPLOY job logs appear first; structured `migrate.*` JSON events stream there.
+1. Watch the Release run: `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml`
+2. Follow the aws-infra bump PR and the Flux apply (runbook above); `kubectl -n tbd-prod logs deploy/backend -c migrate` shows the structured `migrate.*` JSON events.
 3. Inspect the running app: `curl -fsS https://app.thebetterdecision.com/health`, `curl -fsS https://app.thebetterdecision.com/ready`, and `curl -fsS https://app.thebetterdecision.com/health/dependencies`.
    `/ready` is the database-only rotation gate; `/health/dependencies` is the one that also covers Redis, and therefore the one that tells you whether anybody can log in.
 
@@ -425,18 +392,19 @@ commit it, and only then deploy.
 
 Source: `.github/workflows/deploy.yml`.
 
-`deploy.yml` mirrors `release.yml`'s `deploy` + `smoke-tests` jobs. It is triggered exclusively by `workflow_dispatch`:
+⚠ Archived with DigitalOcean since the 2026-10-04 k3s cutover: its `DIGITALOCEAN_ACCESS_TOKEN` was replaced on purpose, so a run fails at `doctl`, and `release.yml` no longer has a `deploy` job. A DigitalOcean rollback is a DNS revert to the still-running DO app, not a run of this workflow. INFRA-44 deletes it after INFRA-49.
+
+`deploy.yml` pushes `.do/app.yaml` to DO App Platform, then runs the smoke tests. It is triggered exclusively by `workflow_dispatch`:
 
 ```bash
 gh workflow run deploy.yml --ref main
 ```
 
 When to use it:
-- An infra-only commit shipped (`chore(.do): ...`, `chore(nginx): ...`, `chore(Dockerfile): ...`). A `chore:` does not enter the release PR, so `release.yml` will not deploy it. Run `deploy.yml` to push the new spec.
-- The most recent `release.yml` run failed at the deploy step and the cause is fixed, but no new release will be cut from a follow-up commit.
+- An infra-only commit shipped (`chore(.do): ...`, `chore(nginx): ...`, `chore(Dockerfile): ...`). Run `deploy.yml` to push the new spec.
 - Forcing a redeploy of the current `main` (e.g. to refresh credentials surfaced via the spec).
 
-What it does: same `app_action/deploy@v2` + `.do/app.yaml`, same PRE_DEPLOY migrate, same smoke tests. Auth is the same `DIGITALOCEAN_ACCESS_TOKEN` secret.
+What it does: `app_action/deploy@v2` with `.do/app.yaml`, the PRE_DEPLOY migrate, then the smoke tests. Auth is the `DIGITALOCEAN_ACCESS_TOKEN` secret.
 
 What it does NOT do: bump a version, create a tag, or post to a release feed. It is a deploy-only escape hatch.
 
@@ -756,9 +724,10 @@ What a run then *does* is decided further down the pipe, in two steps:
 1. **release-please decides what goes into the release PR**, from the merged
    commit's conventional-commit type (see `release-please-config.json`). It
    only opens or updates the PR; it never tags on an ordinary merge.
-2. **`release_created` decides whether it deploys.** It is set only on the
-   merge of the release PR. Any other merge means the `deploy` job is skipped
-   and `.do/app.yaml` is never pushed.
+2. **`release_created` decides whether images are promoted.** It is set only on
+   the merge of the release PR. Any other merge means `promote` and
+   `release-smoke` are skipped. Nothing reaches production until the Renovate
+   bump PR in aws-infra is merged.
 
 So the common outcome for a non-shipping merge is now a Release run that
 concludes in about a minute having done nothing, rather than no run at all.
@@ -772,8 +741,9 @@ flowchart TD
   start[Commit lands on main with type <type> touching path P]
   start --> rel[release.yml ALWAYS fires: no paths filter]
   rel --> semrel{Is this the merge of the release PR?}
-  semrel -- "yes: release_created" --> deploy[promote, release-smoke, deploy pushes .do/app.yaml, then smoke tests]
-  semrel -- "no: ordinary merge" --> noship[Release PR opened or updated. No tag, no deploy.]
+  semrel -- "yes: release_created" --> promote[promote retags images as vX.Y.Z, release-smoke boots them]
+  promote --> bump[Renovate bump PR in aws-infra; merging it deploys]
+  semrel -- "no: ordinary merge" --> noship[Release PR opened or updated. No tag, no images retagged.]
 
   start --> apexq{P in the apex allowlist?<br/>app/page.tsx, app/privacy/**,<br/>app/terms/**, app/docs/**,<br/>components/landing/**, lib/brand.ts,<br/>globals.css, build-apex.sh, ...}
   apexq -- yes --> apex[apex-deploy.yml also fires: S3 sync + CloudFront invalidation]
@@ -789,19 +759,19 @@ Concrete cases:
 
 | You changed | Fires |
 |---|---|
-| `backend/app/routers/transactions.py` (feat) | `release.yml` updates the release PR; on its merge: release -> deploy -> migrate (no-op if no new revs) -> roll backend |
-| `frontend/components/dashboard/Foo.tsx` (feat) | `release.yml` updates the release PR; on its merge: deploy -> roll frontend |
-| `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. `release.yml` **also runs** and updates the release PR; DO redeploys when that PR is merged. |
+| `backend/app/routers/transactions.py` (feat) | `release.yml` updates the release PR; on its merge: release -> promote -> release-smoke. Production rolls when the aws-infra bump PR is merged (migrate init container runs first, no-op if no new revs) |
+| `frontend/components/dashboard/Foo.tsx` (feat) | Same path; the frontend image rolls with the bump PR |
+| `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. `release.yml` **also runs** and updates the release PR. |
 | `frontend/lib/brand.ts` (feat) | Both `release.yml` AND `apex-deploy.yml`. |
-| `backend/alembic/versions/abc_new_migration.py` | release PR merge -> deploy -> PRE_DEPLOY migrate applies it -> roll backend |
+| `backend/alembic/versions/abc_new_migration.py` | release PR merge -> promote -> aws-infra bump PR merge -> `migrate` init container applies it -> backend starts |
 | `infra/terraform/main.tf` | TFC `<data-workspace>` speculative plan on PR; apply waits on operator Confirm & Apply after merge. `release.yml` runs and only updates the release PR. |
 | `.do/app.yaml` (chore) | `release.yml` fires but the change does not enter the release PR. Operator must run `gh workflow run deploy.yml --ref main`. |
 | `.github/workflows/test.yml` | `test.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and only updates the release PR. |
-| `README.md` only | `release.yml` **runs** and only updates the release PR. Nothing is tagged and nothing deploys. |
+| `README.md` only | `release.yml` **runs** and only updates the release PR. Nothing is tagged. |
 
 ⚠ The old "mutually exclusive apex / DO path-filter split" is **gone on the DO
 side**. A landing-only commit no longer skips `release.yml`; if its commit type
-warrants a version, it enters the release PR and redeploys DO when that is merged. That is the correct
+warrants a version, it enters the release PR. That is the correct
 behaviour — the version line should reflect what shipped, and a landing change
 that is worth a `feat` is worth a version — but it is a behaviour change from
 what this section used to describe. `apex-deploy.yml` keeps its own `paths:`
@@ -815,19 +785,9 @@ it is known to have drifted (`features/`, `compare/`, `vs/`,
 
 Forward-only philosophy across the board. "Rollback" means "publish a new state that undoes the bad state", not "revert state in place".
 
-### DO App (`release.yml` / `deploy.yml`)
+### App (production cluster)
 
-Option A, revert the merge commit:
-1. `git revert -m 1 <merge-sha>` on a branch, push, PR, merge.
-2. release-please lists the revert in the release PR (conventional-commit style matters). Merge the release PR to publish a new release.
-3. `deploy` ships, PRE_DEPLOY runs (no-op if the revert did not touch migrations), backend / frontend roll.
-4. Smoke tests confirm.
-
-Option B, redeploy a prior good `main` SHA via `deploy.yml`:
-1. Reset `main` to a prior known-good commit is **not allowed** (PR-only workflow). Instead:
-2. Cherry-pick the inverse of the bad change onto a new branch, PR, merge. This is effectively Option A.
-
-DO console "Rollback" button: avoid. App Platform's rollback rolls the **runtime image** back to a prior build, but the **spec** (`.do/app.yaml`) on the next push still reflects whatever is on `main`. This produces a runtime / spec mismatch that triggers more redeploys to resolve. Always rollback via the repo.
+Revert the image-bump PR in aws-infra and merge it; Flux rolls the previous tags back. The `migrate` init container only moves the schema forward, so a rollback across a migration needs a fix-up migration (see "Database migrations" below). To undo the code itself, revert the merge commit here (`git revert -m 1 <merge-sha>`, PR, merge) and ship it through the next release.
 
 ### Apex landing (`apex-deploy.yml`)
 
@@ -854,10 +814,10 @@ For destructive teardown (rare), queue a `Destroy plan` from the TFC workspace U
 Forward-only. **Never `alembic downgrade` in production.** The path to a safe rollback is:
 
 1. Open a PR with a new alembic revision that performs the data and schema fix-up. Conventional title `fix(db): ...`.
-2. Merge, then merge the release PR. `release.yml` -> release -> deploy -> PRE_DEPLOY migrate applies the fix-up revision. Backend rolls on top.
-3. Verify via the new revision's `migrate.step.end` event in the PRE_DEPLOY job logs.
+2. Merge, then merge the release PR, then the aws-infra bump PR. The `migrate` init container applies the fix-up revision and the backend starts on top.
+3. Verify via the new revision's `migrate.step.end` event in `kubectl -n tbd-prod logs deploy/backend -c migrate`.
 
-If a migration **partially applies** and the job exits non-zero, the PRE_DEPLOY contract halts the rollout. The new backend revision never starts. Diagnose from the streamed alembic output + the `migrate.failed` event (`reason`, `step_index`, `revision`). Fix-up paths:
+If a migration **partially applies** and the container exits non-zero, the backend pod never starts and, since the Deployment uses `strategy: Recreate`, the old pod is already gone: the API is down until a fix-up revision or an image revert is rolled out. Diagnose from the streamed alembic output + the `migrate.failed` event (`reason`, `step_index`, `revision`). Fix-up paths:
 - Schema state matches a known earlier revision: stamp it (`alembic stamp <rev>`) via a one-shot ops session and ship a new revision that completes the work. Only the operator should do this; agents must not (`feedback_agent_destructive_db_ops`).
 - Data corruption: write a fix-up migration; ship that.
 
@@ -866,7 +826,9 @@ If a migration **partially applies** and the job exits non-zero, the PRE_DEPLOY 
 | Surface | Where the logs live |
 |---|---|
 | GitHub Actions runs (all workflows) | `https://github.com/flamarion/pfv/actions` |
-| `release.yml` runs specifically | `https://github.com/flamarion/pfv/actions/workflows/release.yml` |
+| `release.yml` runs specifically | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml` |
+| Production rollout, Flux, backend/frontend logs, `migrate` init container logs | [aws-infra `docs/runbooks.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md), "Follow Flux and rollouts" |
+| Release published but not on the cluster | The `release-drift-probe` issue in aws-infra |
 | `deploy.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/deploy.yml` |
 | `apex-deploy.yml` runs (post-#267) | `https://github.com/flamarion/pfv/actions/workflows/apex-deploy.yml` |
 | `test.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/test.yml` |
@@ -886,12 +848,14 @@ Triage shortcuts:
 
 | Symptom | First look at |
 |---|---|
-| Merge to `main` happened, prod didn't update | `release.yml` -> did `release` set `release_created=true`? Only the merge of the release PR deploys; an ordinary merge just updates it |
+| Merge to `main` happened, prod didn't update | `release.yml` -> did `release` set `release_created=true`? Only the merge of the release PR cuts a release, and production only changes when the aws-infra bump PR is merged |
 | `release` job failed after the release PR merged | The Test run of the release PR's commit is red. Re-run that commit's failed Test jobs (not a `workflow_dispatch` run), then re-run the failed Release run (or wait for the next push to `main`) |
-| Release created but `deploy` failed | Re-running the whole Release run will not redeploy (the release already exists). Use `gh workflow run deploy.yml --ref main` |
+| Release created but `promote` or `release-smoke` failed | Re-run the failed jobs of that Release run; the release already exists, so a new push to `main` will not redo them |
+| Release published, no bump PR in aws-infra | Renovate, then the `release-drift-probe` issue |
+| `release` job red after release-please already published the GitHub Release | `promote` never ran and a re-run cannot recover it (release-please finds the release and reports no `release_created`). Retag that commit's `sha-<7>` images as `vX.Y.Z` by hand, as `promote-release.yml` does; otherwise `release-drift-probe` flags it after its grace days |
 | Drift probe reports AHEAD after a release | DO builds `main` HEAD, so a merge that landed between the release and the deploy ships with it; AHEAD clears at the next release |
-| Deploy went green, app still broken | Smoke-test job output, then DO Runtime Logs on the failing component |
-| Migrate job hung or failed | DO Activity -> latest deploy -> migrate job. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
+| Rollout done, app still broken | The `[post-deploy-smoke] tbd-prod` issue in aws-infra, or `scripts/smoke-test.sh` by hand (runbook above), then the backend/frontend pod logs |
+| `migrate` init container hung or failed | `kubectl -n tbd-prod logs deploy/backend -c migrate`. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
 | Apex site shows stale content | Confirm `apex-deploy.yml` ran for the SHA; check CloudFront invalidation completed; `curl https://thebetterdecision.com/_meta.json` (object is no-cache). If the apex hostname is itself unreachable, fall back to the TFC output `cloudfront_distribution_domain` to probe the distribution directly. |
 | Apex 404 on a known route | The CloudFront Function rewrites `/path/` -> `/path/index.html`. Check the function's invocation logs in CloudFront Functions console |
 | Apex deploy failed at OIDC step | Trust policy on `github-actions-apex-deploy` pinned to `repo:flamarion/pfv:ref:refs/heads/main`. PR-context, forks, non-main branches are rejected by design |
