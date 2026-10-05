@@ -1048,10 +1048,9 @@ roughly seven minutes of the 24-minute outage on 2026-08-19.
      (`main.py:726-727`): `auth_failed` is the expected value in this window,
      whereas `redis: unreachable` means Redis did not come back from the step-3
      restart — a different problem.
-   * **Rate limiting fails OPEN for the whole window.** `RedisError` is a
-     degraded-storage error (`backend/app/rate_limit_failopen.py:63-68`), so
-     login, register, refresh and forgot-password serve unthrottled. Keep the
-     window short and do not announce it publicly.
+   * **Login answers 503 for the whole window.** Rate limits live in MySQL
+     (INFRA-121), so they keep counting; login probes the session store first
+     and refuses with 503 while Redis is down. Keep the window short.
    * Sessions themselves survive the Redis restart (AOF is on), so users are
      not logged out once the credential is repaired.
 
