@@ -561,13 +561,27 @@ async def test_m3_per_user_bucket_counts_failed_step_ups(factory, client, monkey
     assert r.status_code == 201, r.text
 
 
-async def test_m3_bucket_fails_closed(factory, client, monkeypatch):
-    """FENCE M3. Wrong implementation: minting when Redis is unavailable."""
+async def test_m3_bucket_fails_closed(factory, client, monkeypatch, request):
+    """FENCE M3. Wrong implementation: minting when the limits DB is
+    unavailable (the route's own bucket, with the slowapi limit off)."""
     org = await _org(factory, "A")
     h = await _jwt(factory, await _user(factory, org, "m"))
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
+    monkeypatch.setattr(limiter, "enabled", False)
+    request.getfixturevalue("limits_db_down")
     r = await client.post(BASE, json=_mint_body(), headers=h)
     assert (r.status_code, r.json()["detail"]["code"]) == (503, "limits_unavailable")
+    async with factory() as s:
+        assert (await s.execute(select(ApiToken))).scalars().all() == []
+
+
+async def test_m3_full_outage_fails_the_route_limit_first(factory, limits_db_down):
+    """The route's own slowapi limit fails first (500), no token row."""
+    org = await _org(factory, "A")
+    h = await _jwt(factory, await _user(factory, org, "m"))
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.post(BASE, json=_mint_body(), headers=h)
+    assert r.status_code == 500
     async with factory() as s:
         assert (await s.execute(select(ApiToken))).scalars().all() == []
 
