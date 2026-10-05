@@ -31,7 +31,7 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 };
 
-const EFFECTIVE_DATE = "April 21, 2026";
+const EFFECTIVE_DATE = "October 5, 2026";
 const LAST_UPDATED = "October 5, 2026";
 
 export default function PrivacyPolicyPage() {
