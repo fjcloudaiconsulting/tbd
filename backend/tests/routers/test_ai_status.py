@@ -51,13 +51,13 @@ async def test_agent_entry_uses_the_chat_routing(monkeypatch):
 
 
 def test_endpoint_requires_auth():
-    """GET /api/v1/ai/status must return 403 (no credentials supplied)."""
+    """GET /api/v1/ai/status must return 401 (no credentials supplied)."""
     app = FastAPI()
     app.include_router(ai_status_router)
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/api/v1/ai/status")
-    # HTTPBearer returns 403 when the Authorization header is absent.
-    assert resp.status_code == 403
+    # HTTPBearer returns 401 when the Authorization header is absent.
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
