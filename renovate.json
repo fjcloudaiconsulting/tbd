@@ -21,19 +21,19 @@
       "groupName": "python non-major"
     },
     {
-      "description": "SQLAlchemy patches ride in the python group; minors get their own PR on dashboard approval. separateMultipleMinor (not separateMinorPatch, which moves the patch to a patch-python-non-major branch) splits the next minor from the patches. A minor can be a real migration (2.1 drops greenlet from the default install and changes autoflush), and 2.0.42 changed the MySQL DDL it emits (050_notifications).",
+      "description": "SQLAlchemy patches ride in the python group; minors (2.1 is a real migration) get their own PR on dashboard approval. separateMultipleMinor, not separateMinorPatch, which would move the patch to its own branch.",
       "matchPackageNames": ["sqlalchemy"],
       "separateMultipleMinor": true
     },
     {
-      "description": "See the rule above: the SQLAlchemy minor leaves the python group and waits for approval.",
+      "description": "The SQLAlchemy minor leaves the python group and waits for approval; keep this rule after the python group rule so its groupName wins.",
       "matchPackageNames": ["sqlalchemy"],
       "matchUpdateTypes": ["minor"],
       "groupName": "sqlalchemy minor",
       "dependencyDashboardApproval": true
     },
     {
-      "description": "npm non-major updates in one PR. recharts stays out and gets its own PR: any recharts move trips the TBD-528 version tripwire (frontend/tests/convention/chart-animation-gate.test.ts), so it lands with the TBD-528 work that re-measures the hard-off Line exceptions and updates the reduced-motion fences.",
+      "description": "npm non-major updates in one PR. recharts gets its own PR: any move trips the TBD-528 version tripwire (chart-animation-gate.test.ts).",
       "matchManagers": ["npm"],
       "matchUpdateTypes": ["minor", "patch"],
       "matchPackageNames": ["!recharts"],
