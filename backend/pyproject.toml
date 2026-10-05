@@ -10,7 +10,7 @@ dependencies = []
 [dependency-groups]
 app = [
     "fastapi==0.136.3",
-    "uvicorn[standard]==0.34.2",
+    "uvicorn[standard]==0.54.0",
     "pydantic[email]==2.11.3",
     "pydantic-settings==2.9.1",
     "sqlalchemy==2.0.41",
@@ -48,7 +48,7 @@ dev = [
 # Excluded on purpose: alembic, ofxtools, pyotp, qrcode, python-multipart.
 mcp = [
     "fastapi==0.136.3",
-    "uvicorn[standard]==0.34.2",
+    "uvicorn[standard]==0.54.0",
     "pydantic[email]==2.11.3",
     "pydantic-settings==2.9.1",
     "sqlalchemy==2.0.41",
