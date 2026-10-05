@@ -279,8 +279,9 @@ Tests run inside `backend/tests/conftest.py`, which sets `DATABASE_URL`,
 `APP_ENV=development`, and a fixture `JWT_SECRET_KEY` directly. CI does
 NOT consume `.env`.
 
-The deploy and smoke-tests jobs in `.github/workflows/release.yml` read
-from GitHub Actions secrets:
+`.github/workflows/release.yml` deploys nothing (see
+[`DEPLOYMENT.md`](DEPLOYMENT.md)). Only the manual, archived DigitalOcean
+path `.github/workflows/deploy.yml` reads these GitHub Actions secrets:
 
 - `DIGITALOCEAN_ACCESS_TOKEN` — `doctl` token for `digitalocean/app_action/deploy@v2`.
 - `SMOKE_USERNAME`, `SMOKE_PASSWORD` — credentials for post-deploy smoke
@@ -301,7 +302,7 @@ Any env var NOT listed in `.do/app.yaml` will be REMOVED from the live
 app on the next push. This is the same failure mode that took down
 production on 2026-04-25 when `JWT_SECRET_KEY` dropped to the placeholder.
 
-The deploy workflow (`.github/workflows/release.yml`) uses
+The manual deploy workflow (`.github/workflows/deploy.yml`) uses
 `app_spec_location: .do/app.yaml` and does NOT set `app_name` (see
 [Spec-sync hazards](#spec-sync-hazards-digitalocean-app-platform)).
 
@@ -396,11 +397,11 @@ path is one of:
 
 1. `doctl apps update <APP_ID> --spec .do/app.yaml` (manual, owner-run).
 2. `digitalocean/app_action/deploy@v2` with `app_spec_location: .do/app.yaml`
-   (release workflow).
+   (manual `deploy.yml`).
 
 The action silently prefers `app_name` over `app_spec_location` when both
-are set. `.github/workflows/deploy.yml` and `release.yml` intentionally
-set ONLY `app_spec_location` to avoid this trap. See
+are set. `.github/workflows/deploy.yml` intentionally sets ONLY
+`app_spec_location` to avoid this trap. See
 `reference_do_spec_sync.md` in agent memory for the full incident log.
 
 After merging any change to `.do/app.yaml`, the owner runs:
@@ -409,9 +410,8 @@ After merging any change to `.do/app.yaml`, the owner runs:
 doctl apps update <app-id> --spec .do/app.yaml
 ```
 
-Without that step, edits to `.do/app.yaml` do not take effect until the
-next release (release.yml's deploy job runs only when the release-please PR
-is merged and a release is created). Ordinary merges do not auto-deploy.
+Without that step, edits to `.do/app.yaml` never take effect: `release.yml`
+no longer deploys to DigitalOcean (k3s cutover, 2026-10-04).
 
 Any env var NOT present in `.do/app.yaml` is REMOVED from the live app
 on the next push. Treat the file as the complete env contract.
@@ -438,6 +438,6 @@ on the next push. Treat the file as the complete env contract.
 - `frontend/components/auth/GoogleSSOButton.tsx` — gates on
   `TBD_GOOGLE_SSO_ENABLED`.
 - `pfv` (CLI) — `PFV_DEPDRIFT_*` and `PFV_MIGRATE_OK_OFF_MAIN` consumers.
-- `.github/workflows/release.yml`, `.github/workflows/deploy.yml` — GH
-  Actions secrets and deploy invocation.
+- `.github/workflows/deploy.yml` — GH Actions secrets and the manual
+  (archived) DigitalOcean deploy invocation.
 - `CONTRIBUTING.md` — local-dev setup walkthrough.

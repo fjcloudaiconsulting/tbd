@@ -76,11 +76,11 @@ This repo uses `release-please`. Merging a `feat:`/`fix:` PR does not deploy; it
 
 | Prefix | Release? | Effect when the release PR is merged |
 |--------|----------|------------|
-| `feat:` | Yes (minor bump) | App Platform redeploy + smoke tests |
-| `fix:` | Yes (patch bump) | App Platform redeploy + smoke tests |
-| `perf:` | Yes (patch bump) | App Platform redeploy + smoke tests |
-| `revert:` | Yes (patch bump) | App Platform redeploy + smoke tests |
-| `feat!:`, `BREAKING CHANGE:` footer | Yes (minor bump below 1.0, `bump-minor-pre-major`; major after) | App Platform redeploy + smoke tests |
+| `feat:` | Yes (minor bump) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
+| `fix:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
+| `perf:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
+| `revert:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
+| `feat!:`, `BREAKING CHANGE:` footer | Yes (minor bump below 1.0, `bump-minor-pre-major`; major after) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
 | `chore:`, `docs:`, `refactor:`, `test:`, `style:`, `ci:`, `build:` | No | Nothing. CI runs `test.yml` only. |
 
 Scope is freeform (`feat(admin):`, `fix(frontend):`, `chore(.do):`). Scope does not change release behavior.
@@ -102,8 +102,8 @@ PR push (any branch):
 
 Merge to `main`:
 
-- `.github/workflows/release.yml` also runs on **every** push to `main`, deliberately with no `paths:` filter (TBD-424) — the filter only ever deferred the release tool's own commit-intent analysis and then misattributed the result. It runs `release-please`: on an ordinary merge it opens or updates the release PR and nothing ships. If (and only if) the merge is the release PR itself, a release is created and the gated jobs retag the GHCR images, smoke them, push `.do/app.yaml` to DO App Platform, then `scripts/smoke-test.sh` asserts the live app serves traffic.
-- Every other merge (including `chore:` / `docs:` / `refactor:`) still triggers `release.yml`, but only updates the release PR; the deploy job is skipped.
+- `.github/workflows/release.yml` also runs on **every** push to `main`, deliberately with no `paths:` filter (TBD-424) — the filter only ever deferred the release tool's own commit-intent analysis and then misattributed the result. It runs `release-please`: on an ordinary merge it opens or updates the release PR and nothing ships. If (and only if) the merge is the release PR itself, a release is created and the gated jobs retag the GHCR images as vX.Y.Z and smoke them. Nothing here deploys: Renovate opens a PR in aws-infra bumping the image tags, and merging it is the production deploy.
+- Every other merge (including `chore:` / `docs:` / `refactor:`) still triggers `release.yml`, but only updates the release PR; the gated jobs are skipped.
 - `.github/workflows/apex-deploy.yml` deploys the apex landing site (`thebetterdecision.com`) to AWS S3 + CloudFront on merges that touch the apex path filter. Independent of the DO release pipeline; landing-only commits never fire the DO redeploy.
 
 If you need to force a redeploy of the current production spec without merging a code change, use the manual workflow:
@@ -537,7 +537,7 @@ in a test can no longer merge green.
 
 ### Manual smoke testing
 
-Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. Production smoke tests live in `scripts/smoke-test.sh` and run automatically after `release.yml` deploys (see `docs/operations/DEPLOYMENT.md`).
+Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. The production smoke test is `scripts/smoke-test.sh`; aws-infra's post-deploy smoke runs it after every rollout (see `docs/operations/DEPLOYMENT.md`).
 
 ## Branching and pull requests
 
@@ -551,7 +551,8 @@ Swagger UI at http://localhost/api/docs is the fastest way to poke a single endp
 
 The full deployment pipeline (release gating, App Platform spec, smoke tests, manual escape hatches, apex pipeline) is in `docs/operations/DEPLOYMENT.md`. The short version contributors need to know:
 
-- Merges to `main` trigger `release.yml`. App Platform redeploys only when the release-please PR is merged (see [Conventional Commits and the release PR](#conventional-commits-and-the-release-pr)).
+- Merges to `main` trigger `release.yml`. A release (vX.Y.Z images on GHCR) is cut only when the release-please PR is merged (see [Conventional Commits and the release PR](#conventional-commits-and-the-release-pr)).
+- Production runs on a k3s cluster managed in [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra). A Renovate PR there bumps the image tags; merging it is the deploy. Production env and secrets (SOPS) live there too.
 - `.do/app.yaml` is the source of truth for App Platform config. Secrets are encrypted `EV[...]` blobs committed in-file; any secret missing from this file is removed from the live app on push.
 - Terraform (`infra/terraform/`) is VCS-driven via HCP Terraform Cloud (workspace `<tfc-org>/<data-workspace>`). PRs get speculative plans; merges create runs that require manual Confirm and Apply. CLI `terraform plan` / `apply` is debug-only.
 - Droplet bootstrap (`infra/ansible/`) handles MySQL, Redis, hardening, and nightly mysqldump.

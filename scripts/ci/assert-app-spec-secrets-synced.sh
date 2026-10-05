@@ -74,7 +74,7 @@ fi
 
 if ! python3 -c "import yaml" 2>/dev/null; then
   echo "assert-app-spec-secrets-synced: PyYAML is required but not importable." >&2
-  echo "In CI the calling step installs it (see release.yml / deploy.yml)." >&2
+  echo "In CI the calling step installs it (see deploy.yml)." >&2
   exit 2
 fi
 
