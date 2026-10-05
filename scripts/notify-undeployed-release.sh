@@ -2,8 +2,9 @@
 # Open or update a GitHub issue when a release was PUBLISHED but never
 # DEPLOYED.
 #
-# Runs from .github/workflows/release.yml (and .github/workflows/deploy.yml,
-# the manual escape hatch) in the `notify-undeployed-release` job.
+# Runs from .github/workflows/deploy.yml (the manual DigitalOcean escape
+# hatch) in the `notify-undeployed-release` job. release.yml no longer deploys
+# (k3s cutover), so its RELEASE_TAG / RELEASE_RESULT arm has no caller.
 #
 # WHY THIS EXISTS, AND WHY IT IS NOT notify-smoke-failure.sh:
 #   `smoke-tests` carries `needs: deploy`. A FAILED deploy therefore SKIPS
