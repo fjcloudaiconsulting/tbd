@@ -81,7 +81,7 @@ the env-var name (uppercased).
 | `SESSION_LIFETIME_DAYS` | no | `30` | `.env` | unset | inherit default | no | Session TTL in days — drives the refresh cookie `Max-Age`, the refresh JWT `exp` claim, the Redis primary-key TTL, AND the absolute-lifetime check, all in lockstep. Per-org override via `OrgSetting(key="session_lifetime_days")` (set from the Security settings page; 1-365, validated). Validator enforces `1 <= v <= 365`; out-of-range values refuse to boot. Unified into a single TTL by the 2026-05-18 session-stability refactor — previously split between `REFRESH_IDLE_TTL_DAYS` (idle) and `SESSION_LIFETIME_DAYS` (absolute), which left the org setting decorative for any value above the idle TTL. | Default 30. |
 | `COOKIE_SECURE` | yes for prod | `true` | `.env` set to `false` for HTTP | `false` via conftest | `.do/app.yaml` (`true`) | no | Marks refresh / step-up / sso-state cookies `Secure`. | If `true` on HTTP, browsers drop the cookie and login loops. |
 | `AUTH_DEBUG_LOGGING` | no | `false` | `.env` | `true` via conftest autouse | unset (defaults to `false`) | no | Gates the `auth.refresh.rejected` structlog events emitted at every terminal-401 raise site in `/auth/refresh`. Default `false` keeps INFO logs quiet under normal operation. Flip to `true` during incident triage to capture the `reason` enum, then back to `false` once the diagnosis is in hand. The 401 itself is NOT gated — only the diagnostic emission. | Operator can't distinguish the eleven 401 paths in logs until the flag is on. |
-| `REDIS_URL` | yes for prod | `""` | `.env` (`redis://redis:6379/0`) | unset (in-memory fallback) | `.do/app.yaml` SECRET | yes (prod) | Backing store for slowapi rate limiting (cross-replica) and MFA email-fallback codes. | **In production the backend refuses to boot** (TBD-438) — Redis is the auth session store, so every token-issue path would fail closed. Outside production the rate limiter falls back to per-replica in-memory and MFA email-fallback is unavailable. |
+| `REDIS_URL` | yes for prod | `""` | `.env` (`redis://redis:6379/0`) | unset (in-memory fallback) | `.do/app.yaml` SECRET | yes (prod) | Auth session store and MFA email-fallback codes. Rate limits do not use it: they count in MySQL (INFRA-121). | **In production the backend refuses to boot** (TBD-438) — Redis is the auth session store, so every token-issue path would fail closed. Outside production MFA email-fallback is unavailable. |
 | `MAILGUN_API_KEY` | no | `""` | `.env` (empty for console logging) | unset | `.do/app.yaml` SECRET | yes | Mailgun API key. When empty, `send_email` logs subject/recipient only. | Email sends are silently skipped (dev-mode logger). |
 | `MAILGUN_DOMAIN` | with `MAILGUN_API_KEY` | `""` | `.env` | unset | `.do/app.yaml` (`m.thebetterdecision.com`) | no | Mailgun sending domain. | Mailgun call URL is malformed; send fails. |
 | `MAILGUN_REGION` | no | `""` | `.env` (empty for US) | unset | `.do/app.yaml` (`eu`) | no | `eu` selects `api.eu.mailgun.net`. Empty selects the US endpoint. | Wrong region returns Mailgun 401 / 404. |
@@ -338,13 +338,12 @@ addresses. Cause: `CLIENT_IP_HEADER=cf-connecting-ip` is missing from the
 aws-infra `tbd-prod` backend manifest (or, for the frontend access log's
 `remote_addr`, from the frontend manifest).
 
-### "Rate limit returns 500 instead of allowing the request"
+### "Rate-limited endpoints return 500"
 
-Symptom: a hot endpoint (login, register, password reset) returns 500
-when Redis is unreachable. Cause: slowapi raises on storage failure and
-the current handler does not fail-open. Mitigation today: keep Redis
-healthy. A separate hotfix to make slowapi fail-open is pending
-coordinator decision. See PR #245 for context on the storage backend.
+Symptom: every rate-limited endpoint (login, register, password reset)
+returns 500. Cause: the limiter counts in the MySQL `rate_limits` table
+(INFRA-121), so MySQL is unreachable or the `rate_limits` table is missing
+(migration `085_rate_limits` not applied). The rest of the app fails with it.
 
 ### "Frontend can't reach the API in production"
 
