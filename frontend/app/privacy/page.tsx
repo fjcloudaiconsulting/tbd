@@ -32,6 +32,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";
+const LAST_UPDATED = "October 5, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -45,6 +46,9 @@ export default function PrivacyPolicyPage() {
           </h1>
           <p className="mt-2 text-sm text-text-muted">
             Effective {EFFECTIVE_DATE}
+          </p>
+          <p className="text-sm text-text-muted">
+            Last updated {LAST_UPDATED}
           </p>
         </header>
 
@@ -139,8 +143,16 @@ export default function PrivacyPolicyPage() {
             </p>
             <ul>
               <li>
-                <strong>DigitalOcean</strong> (hosting): stores your data at
-                rest in managed MySQL in the ams3 region (EU).
+                <strong>Amazon Web Services</strong> (hosting): runs the
+                service and stores your data at rest, including the database
+                and nightly encrypted backups, in the Frankfurt region
+                (eu-central-1, Germany, EU).
+              </li>
+              <li>
+                <strong>DigitalOcean</strong> (former hosting): holds an
+                archived copy of the database from before our move to Amazon
+                Web Services, in the Amsterdam region (EU). It no longer runs
+                the service and is scheduled for deletion.
               </li>
               <li>
                 <strong>Cloudflare</strong> (CDN / edge): handles TLS
@@ -252,7 +264,8 @@ export default function PrivacyPolicyPage() {
           <section>
             <h2>7. International transfers</h2>
             <p>
-              Your data is stored in the EU (DigitalOcean ams3 region).
+              Your data is stored in the EU (Amazon Web Services, Frankfurt
+              region, Germany), including our backups.
               Cloudflare may process requests at edge nodes globally as part
               of delivering the service. Mailgun operates in the EU region.
             </p>
