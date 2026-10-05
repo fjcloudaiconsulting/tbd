@@ -47,7 +47,8 @@ def test_fm6_dockerfile_copies_only_the_app_package():
     copies = [
         [re.sub(r"^(--from=ghcr\.io/astral-sh/uv):\d+\.\d+\.\d+(@sha256:[0-9a-f]{64})?$", r"\1", tok) for tok in ln.split()[1:]]
         for ln in text.splitlines()
-        if ln.startswith("COPY ")
+        # Instructions are case-insensitive and may be indented; ADD copies too.
+        if re.match(r"\s*(COPY|ADD)\s", ln, re.IGNORECASE)
     ]
     assert copies == [["--from=ghcr.io/astral-sh/uv", "/uv", "/uvx", "/bin/"], ["pyproject.toml", "uv.lock", "./"], ["app", "./app"]], copies
     assert "--no-default-groups --group mcp" in text
