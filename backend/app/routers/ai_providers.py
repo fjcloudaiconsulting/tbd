@@ -7,13 +7,14 @@ on every read/write path.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import redis_client
+from app import rate_limit_db
 from app.auth.org_permissions import require_org_admin
 from app.config import settings
 from app.database import get_db
@@ -600,15 +601,12 @@ async def validate_credential(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    # Per-(org, credential) 5 s cooldown. Spec §6 T10. Redis-backed
-    # SET NX EX; admin-gated path so dev-mode (no Redis) skip is OK.
-    # Acquired AFTER the 404 check so probing nonexistent credentials
-    # can't poison real cooldown slots; the look-up is a cheap DB read.
-    if not await redis_client.ai_validate_cooldown_acquire(
-        org_id=current_user.org_id,
-        credential_id=credential_id,
-        ttl_seconds=5,
-    ):
+    # Per-(org, credential) 5 s cooldown (spec §6 T10), counted in the limits
+    # DB (rate limits move to MySQL, INFRA-121). Acquired AFTER the 404 check
+    # so probing nonexistent credentials can't poison real cooldown slots.
+    if await asyncio.to_thread(
+        rate_limit_db.hit, f"ai_validate:{current_user.org_id}:{credential_id}", 5
+    ) > 1:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={

@@ -16,7 +16,7 @@ It must be an ``async`` dependency: FastAPI runs a sync one in a threadpool
 copy of the context, so the ``set`` would never reach the route.
 
 Failure stance: any loader error, or an unusable override string, means the
-static default applies (project-wide rate-limit fail-open posture).
+static default applies.
 
 Pre-auth routes (``PRE_AUTH_ENDPOINT_PATTERNS``) have no identity when the
 limiter runs and keep static string limits; tune them in code.

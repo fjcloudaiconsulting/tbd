@@ -12,16 +12,16 @@ from __future__ import annotations
 import asyncio
 import datetime
 import secrets
+import time
 from decimal import Decimal
 
 import pytest
 import pytest_asyncio
 from pydantic import BaseModel, ConfigDict
-from redis.exceptions import RedisError
 from sqlalchemy import event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app import redis_client
+from app import rate_limit_db
 from app.agent import actions, registry
 from app.agent.registry import Change, Preview, ToolError, ToolSpec, invoke
 from app.models import Account, AccountType, Category, Organization
@@ -254,10 +254,6 @@ async def _refused(coro) -> ToolError:
     with pytest.raises(ToolError) as exc:
         await coro
     return exc.value
-
-
-def _fake():
-    return redis_client.get_client()
 
 
 def _seed_pending(org_id, user_id, n, *, channel="in_app", token=None):
@@ -571,50 +567,41 @@ async def test_fp12_expired_and_decided_rows_do_not_count(factory, w):
 
 
 
-def _k(key: str) -> str:
-    """The live windowed Redis key for bucket ``key`` (window from its suffix)."""
+def _seed_bucket(key: str, n: int) -> None:
+    """Fill bucket ``key`` to ``n`` hits (window from its suffix)."""
     window = {"min": 60, "day": 86_400}.get(key.rsplit(":", 1)[1], 3_600)
-    return actions.window_key(key, window)
+    rate_limit_db.hit(key, window, amount=n)
 
 
 async def test_fp12_daily_preview_caps_fail_closed_at_the_boundary(factory, w):
     a = w["A"]
-    fake = _fake()
-    fake._kv[_k(f"agent:usr:{a['member']}:preview:day")] = 199
+    _seed_bucket(f"agent:usr:{a['member']}:preview:day", 199)
     await _stage(factory, w, "101.00")
     err = await _refused(_stage(factory, w, "102.00"))
     assert err.code == "preview_rate_limited"
-    fake._kv.clear()
-    fake._kv[_k(f"agent:org:{a['org']}:preview:day")] = 1000
+    rate_limit_db.reset()
+    _seed_bucket(f"agent:org:{a['org']}:preview:day", 1000)
     assert (await _refused(_stage(factory, w, "103.00"))).code == "preview_rate_limited"
-    fake._kv.clear()
-    fake._kv[_k(f"agent:tok:{a['t1']}:preview:day")] = 200
+    rate_limit_db.reset()
+    _seed_bucket(f"agent:tok:{a['t1']}:preview:day", 200)
     assert (await _refused(_stage(factory, w, "104.00", api_token_id=a["t1"], **MCP))
             ).code == "preview_rate_limited"
-    fake._kv.clear()
-    fake._kv[_k(f"agent:tok:{a['t1']}:preview:min")] = 20
+    rate_limit_db.reset()
+    _seed_bucket(f"agent:tok:{a['t1']}:preview:min", 20)
     assert (await _refused(_stage(factory, w, "105.00", api_token_id=a["t1"], **MCP))
             ).code == "preview_rate_limited"
-    fake._kv.clear()
+    rate_limit_db.reset()
     await _stage(factory, w, "106.00")
-    assert fake._ttls[_k(f"agent:usr:{a['member']}:preview:day")] == 86_400
+    left = rate_limit_db.get_expiry(f"agent:usr:{a['member']}:preview:day") - time.time()
+    assert 86_390 < left <= 86_400
 
 
-class _DownRedis:
-    async def incr(self, key):
-        raise RedisError("down")
-
-    async def expire(self, *a, **k):
-        raise RedisError("down")
-
-
-@pytest.mark.parametrize("client", [None, _DownRedis()], ids=["no-client", "redis-error"])
-async def test_fp12_limits_unavailable_fails_closed_everywhere(factory, w, monkeypatch, client):
+async def test_fp12_limits_unavailable_fails_closed_everywhere(factory, w, request):
     """FENCE F-P12 / F-A7. Wrong implementation: a daily cap (or any write
-    bucket) failing OPEN when Redis is absent or erroring."""
+    bucket) failing OPEN when the limits DB is unavailable."""
     a = w["A"]
     ok = await _stage(factory, w)
-    monkeypatch.setattr(redis_client, "get_client", lambda: client)
+    request.getfixturevalue("limits_db_down")
     assert (await _refused(_stage(factory, w, "150.00"))).code == "limits_unavailable"
     assert (await _refused(_confirm(factory, a["member"], ok["action_id"]))).code == "limits_unavailable"
     assert (await _row(factory, ok["action_id"])).status.value == "pending"
@@ -622,6 +609,14 @@ async def test_fp12_limits_unavailable_fails_closed_everywhere(factory, w, monke
             ).code == "limits_unavailable"
     assert len(await _rows(factory)) == 1
     assert (await _amount(factory, a["b1"])) == Decimal("100.00")
+
+
+async def test_a1_hit_and_every_call_gate_risk_fail_closed(limits_db_down):
+    """A1. Wrong implementation: gate 6 failing open for read tools."""
+    assert (await _refused(actions._hit("k", 5, 60, "x"))).code == "limits_unavailable"
+    for risk in ("read", "write", "sensitive"):
+        err = await _refused(actions.call_gate("mcp", 1, risk))
+        assert err.code == "limits_unavailable", risk
 
 
 async def test_fp12_stale_re_preview_at_the_ceiling_is_409_not_429(factory, w):
@@ -704,7 +699,7 @@ async def test_cancel_is_pending_only_unaudited_and_principal_bound(factory, w):
 async def test_confirm_bucket_is_30_per_hour_and_checked_before_the_claim(factory, w):
     a = w["A"]
     out = await _stage(factory, w)
-    _fake()._kv[_k(f"agent:usr:{a['member']}:confirm")] = 30
+    _seed_bucket(f"agent:usr:{a['member']}:confirm", 30)
     assert (await _refused(_confirm(factory, a["member"], out["action_id"]))).code == "confirm_rate_limited"
     assert (await _row(factory, out["action_id"])).status.value == "pending"
 
@@ -714,7 +709,7 @@ async def test_sensitive_confirm_over_mcp_has_its_own_daily_bucket(factory, w, s
     calls = scratch("sens_tool", risk="sensitive")
     out = await _invoke(factory, a["member"], "sens_tool", {"budget_id": a["b1"]},
                         api_token_id=a["t1"], **MCP)
-    _fake()._kv[_k(f"agent:tok:{a['t1']}:sensitive:day")] = 10
+    _seed_bucket(f"agent:tok:{a['t1']}:sensitive:day", 10)
     err = await _refused(_confirm(factory, a["member"], out["action_id"], api_token_id=a["t1"], **MCP))
     assert err.code == "sensitive_budget_exhausted"
     assert (await _row(factory, out["action_id"])).status.value == "failed"
@@ -785,8 +780,7 @@ async def test_fa7_auto_budget_exhausted_is_429_never_a_silent_preview(factory, 
     when the auto budget is spent; failing open when Redis is down (see the
     fail-closed test)."""
     a = w["A"]
-    fake = _fake()
-    fake._kv[_k(f"agent:tok:{a['t1']}:auto:day")] = 99
+    _seed_bucket(f"agent:tok:{a['t1']}:auto:day", 99)
     out = await _stage(factory, w, api_token_id=a["t1"], **AUTO)  # the 100th
     assert out["status"] == "done"
     err = await _refused(_stage(factory, w, "130.00", api_token_id=a["t1"], **AUTO))  # the 101st
@@ -794,15 +788,15 @@ async def test_fa7_auto_budget_exhausted_is_429_never_a_silent_preview(factory, 
     assert len(await _rows(factory)) == 1  # nothing staged
     assert (await _amount(factory, a["b1"])) == Decimal("120.00")
     # the per-user cap is separate
-    fake._kv.clear()
-    fake._kv[_k(f"agent:usr:{a['member']}:auto:day")] = 200
+    rate_limit_db.reset()
+    _seed_bucket(f"agent:usr:{a['member']}:auto:day", 200)
     assert (await _refused(_stage(factory, w, "131.00", api_token_id=a["t2"], **AUTO))
             ).code == "auto_budget_exhausted"
 
 
 async def test_auto_confirm_bucket_429_cancels_the_staged_row(factory, w):
     a = w["A"]
-    _fake()._kv[_k(f"agent:tok:{a['t1']}:confirm")] = 30
+    _seed_bucket(f"agent:tok:{a['t1']}:confirm", 30)
     err = await _refused(_stage(factory, w, api_token_id=a["t1"], **AUTO))
     assert err.code == "confirm_rate_limited"
     (row,) = await _rows(factory)
@@ -942,7 +936,7 @@ async def test_fp12_mcp_per_user_daily_preview_bucket(factory, w):
     """FENCE F-P12. Wrong implementation: no per-USER daily bucket over MCP
     (a user with several tokens escapes the 200/day)."""
     a = w["A"]
-    _fake()._kv[_k(f"agent:usr:{a['member']}:preview:day")] = 200
+    _seed_bucket(f"agent:usr:{a['member']}:preview:day", 200)
     err = await _refused(_stage(factory, w, api_token_id=a["t1"], **MCP))
     assert err.code == "preview_rate_limited"
 

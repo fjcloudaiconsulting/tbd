@@ -28,7 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
-from app import redis_client
 from app.agent.auth import authenticate_agent_token, www_authenticate
 from app.agent.registry import AGENT_SCOPES
 from app.database import get_db
@@ -561,13 +560,47 @@ async def test_m3_per_user_bucket_counts_failed_step_ups(factory, client, monkey
     assert r.status_code == 201, r.text
 
 
-async def test_m3_bucket_fails_closed(factory, client, monkeypatch):
-    """FENCE M3. Wrong implementation: minting when Redis is unavailable."""
+async def test_m3_bucket_fails_closed(factory, client, monkeypatch, request):
+    """FENCE M3. Wrong implementation: minting when the limits DB is
+    unavailable (the route's own bucket, with the slowapi limit off)."""
     org = await _org(factory, "A")
     h = await _jwt(factory, await _user(factory, org, "m"))
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
+    monkeypatch.setattr(limiter, "enabled", False)
+    request.getfixturevalue("limits_db_down")
     r = await client.post(BASE, json=_mint_body(), headers=h)
     assert (r.status_code, r.json()["detail"]["code"]) == (503, "limits_unavailable")
+    async with factory() as s:
+        assert (await s.execute(select(ApiToken))).scalars().all() == []
+
+
+async def test_m3_full_outage_fails_the_route_limit_first(factory, limits_db_down, monkeypatch):
+    """The route's own slowapi limit fails first (500); the handler body
+    (its own bucket, mint) never runs and no token row exists."""
+    from app.agent import actions
+
+    org = await _org(factory, "A")
+    h = await _jwt(factory, await _user(factory, org, "m"))
+    reached = []
+
+    async def spy(*a, **k):
+        reached.append(a)
+
+    monkeypatch.setattr(actions, "_hit", spy)
+
+    async def _db():
+        async with factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[get_session_factory] = lambda: factory
+    try:
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://t") as c:
+            r = await c.post(BASE, json=_mint_body(), headers=h)
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 500
+    assert reached == []
     async with factory() as s:
         assert (await s.execute(select(ApiToken))).scalars().all() == []
 

@@ -22,20 +22,20 @@ tools mirror are already last-write-wins.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
-import time
 from dataclasses import asdict
 from datetime import timedelta
 from typing import Any
 
 import structlog
-from redis.exceptions import RedisError
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import redis_client
+from app import rate_limit_db
 from app._time import utcnow_naive
 from app.agent import registry
 from app.agent.registry import (
@@ -84,25 +84,12 @@ def _scope_gate(ctx: ToolContext, scope: str | None, *, decide: frozenset[str] =
         raise ToolError("scope_denied", "not a valid agent principal")
 
 
-def window_key(key: str, window: int) -> str:
-    return f"{key}:{int(time.time()) // window}"
-
-
 async def _hit(key: str, limit: int, window: int, code: str) -> None:
-    """Fixed-window counter. Fails closed.
-
-    The window index is part of the key and EXPIRE runs on every hit, so a
-    lost EXPIRE (crash between the two calls) strands one window's key, never
-    the bucket: the next window is a new key.
-    """
-    client = redis_client.get_client()
-    if client is None:
-        raise ToolError("limits_unavailable", "rate limiting is unavailable")
-    key = window_key(key, window)
+    """Fixed-window counter in the limits DB (rate limits move to MySQL,
+    INFRA-121). Fails closed."""
     try:
-        n = await client.incr(key)
-        await client.expire(key, window)
-    except RedisError:
+        n = await asyncio.to_thread(rate_limit_db.hit, key, window)
+    except SQLAlchemyError:
         raise ToolError("limits_unavailable", "rate limiting is unavailable") from None
     if n > limit:
         raise ToolError(code, "limit reached, try again later")
@@ -116,20 +103,13 @@ CALLS_PER_MIN, CALLS_PER_DAY = 120, 2000
 
 async def call_gate(channel: str, api_token_id: int | None, risk: str) -> None:
     """Gate 6. A no-op in-app (its bounds are the turn meter and the chat
-    limits). Fails OPEN for ``read`` (as the read tools' limits always did),
-    CLOSED for anything else: during a Redis outage a write would be refused
-    below admission anyway, after spending the meter."""
+    limits). Fails CLOSED for every risk when the limits DB is unavailable."""
     if channel != "mcp":
         return
     if api_token_id is None:
         raise ToolError("scope_denied", "agent token required")
-    try:
-        await _hit(f"agent:tok:{api_token_id}:calls:min", CALLS_PER_MIN, MINUTE, "token_rate_limited")
-        await _hit(f"agent:tok:{api_token_id}:calls:day", CALLS_PER_DAY, DAY, "token_rate_limited")
-    except ToolError as exc:
-        if exc.code != "limits_unavailable" or risk != "read":
-            raise
-        logger.warning("rate_limit.degraded", where="agent.call_gate", api_token_id=api_token_id)
+    await _hit(f"agent:tok:{api_token_id}:calls:min", CALLS_PER_MIN, MINUTE, "token_rate_limited")
+    await _hit(f"agent:tok:{api_token_id}:calls:day", CALLS_PER_DAY, DAY, "token_rate_limited")
 
 
 def _preview_dict(pv: Preview) -> dict[str, Any]:

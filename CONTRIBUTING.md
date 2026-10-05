@@ -265,7 +265,7 @@ Google-SSO users have `password_set=False` until they explicitly set a password.
 
 ### Rate limiting
 
-All limits are per client IP via slowapi. Production and Docker Compose use Redis / Valkey-backed storage (shipped in K8S-1, see `backend/app/rate_limit.py`); in-memory storage is the fallback when `REDIS_URL` is empty. Storage errors fail open so a Redis blip never blocks legitimate traffic.
+All limits are per client IP via slowapi. Counters live in the MySQL `rate_limits` table (rate limits move to MySQL, INFRA-121; see `backend/app/rate_limit_db.py`), shared across replicas. A database error fails the request, like every other database-backed request.
 
 | Endpoint | Limit |
 |----------|-------|
