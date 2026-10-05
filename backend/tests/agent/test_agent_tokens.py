@@ -28,7 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
-from app import redis_client
 from app.agent.auth import authenticate_agent_token, www_authenticate
 from app.agent.registry import AGENT_SCOPES
 from app.database import get_db

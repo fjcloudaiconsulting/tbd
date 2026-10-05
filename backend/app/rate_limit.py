@@ -62,7 +62,6 @@ import structlog
 from slowapi import Limiter
 from starlette.requests import Request
 
-from app.config import settings
 from app import rate_limit_db  # noqa: F401  (registers tbd-db://)
 
 logger = structlog.stdlib.get_logger()
