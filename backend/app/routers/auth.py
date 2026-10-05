@@ -536,6 +536,15 @@ async def login(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
+    # ponytail: the probe can pass and session issue still 503 a correct
+    # password only if another writer fills Valkey in between.
+    try:
+        await redis_client.session_store_probe()
+    except (RedisRequired, RedisError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        ) from exc
     # Accept username or email
     result = await db.execute(
         select(User).where(

@@ -819,7 +819,7 @@ def test_tag_dictionary_contributors_is_excluded():
     assert not EXPORT_DISPOSITION["tag_dictionary_contributors"].included
 
 
-# ⚠ The 14 tables §5 ruled OUT of a data-subject export (TBD-585 added org_limit_overrides: operator configuration, like org_feature_overrides). Held as a literal on
+# ⚠ The 15 tables §5 ruled OUT of a data-subject export (TBD-585 added org_limit_overrides: operator configuration, like org_feature_overrides; INFRA-121 added rate_limits: operational counters). Held as a literal on
 # purpose: this is the ruling, restated independently of the registry.
 RULED_EXCLUDED: frozenset[str] = frozenset(
     {
@@ -832,6 +832,7 @@ RULED_EXCLUDED: frozenset[str] = frozenset(
         "org_limit_overrides",
         "plans",
         "rate_limit_overrides",
+        "rate_limits",
         "role_permissions",
         "roles",
         "system_settings",
@@ -841,7 +842,7 @@ RULED_EXCLUDED: frozenset[str] = frozenset(
 )
 
 
-def test_the_excluded_set_is_exactly_the_ruled_fourteen():
+def test_the_excluded_set_is_exactly_the_ruled_fifteen():
     """⚠ A DIRECT disclosure fence on the Exclude side.
 
     Flipping a table from Exclude to Include reddened only *incidentally*
@@ -863,7 +864,7 @@ def test_the_excluded_set_is_exactly_the_ruled_fourteen():
         f"is a disclosure decision and needs a §5 ruling, not just an edit."
     )
     assert included_tables() == set(Base.metadata.tables) - RULED_EXCLUDED, (
-        "every table that is not one of the ruled 14 must be INCLUDED — a new "
+        "every table that is not one of the ruled 15 must be INCLUDED — a new "
         "table is neither ruled in nor ruled out until §5 says so."
     )
 

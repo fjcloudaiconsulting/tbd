@@ -23,6 +23,7 @@ upgrade; 1.x adds four packages and a sub-app that answers every method under
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from typing import Any
@@ -31,16 +32,14 @@ import structlog
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict
 from pydantic import ValidationError as PydanticValidationError
-from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from app import redis_client
+from app import rate_limit_db, redis_client
 from app.agent import actions, registry
-from app.agent.actions import window_key
 from app.agent.auth import authenticate_agent_token, www_authenticate
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
 from app.database import async_session, engine
@@ -183,31 +182,31 @@ async def _ip_failures(ip: str, *, add: bool) -> int:
     whole IP before auth (no DB lookups), so one junk client behind a shared
     hosted egress IP can stall that IP's valid tokens for the minute; revisit
     with the OAuth ticket (authenticate first, refuse only failures).
-    Async client, fails OPEN (a Redis outage must not lock out every harness,
-    and the sync limiter would block the event loop per request)."""
-    client = redis_client.get_client()
-    if client is None:
-        return 0
-    key = window_key(f"mcp:authfail:ip:{ip}", 60)
-    try:
-        if not add:
-            return int(await client.get(key) or 0)
-        n = await client.incr(key)
-        await client.expire(key, 60)
-        return int(n)
-    except RedisError:
-        logger.warning("rate_limit.degraded", where="mcp.authfail")
-        return 0
+    Counted in the limits DB; a DB error propagates (callers answer 503)."""
+    key = f"mcp:authfail:ip:{ip}"
+    if add:
+        return await asyncio.to_thread(rate_limit_db.hit, key, 60)
+    return await asyncio.to_thread(rate_limit_db.get, key)
 
 
 async def mcp_endpoint(request: Request) -> Response:
     ip = rate_limit_key(request)
-    if await _ip_failures(ip, add=False) >= IP_AUTH_FAILURES_PER_MIN:
-        return _rpc_error(429, RATE_LIMITED, "too many failed attempts",
-                          headers={"Retry-After": "60"})
+    unavailable = _rpc_error(503, UNAVAILABLE, "temporarily unavailable")
+    try:
+        if await _ip_failures(ip, add=False) >= IP_AUTH_FAILURES_PER_MIN:
+            return _rpc_error(429, RATE_LIMITED, "too many failed attempts",
+                              headers={"Retry-After": "60"})
+    except SQLAlchemyError:
+        logger.exception("mcp.limits_unavailable")
+        return unavailable
 
     async def _refuse() -> JSONResponse:
-        await _ip_failures(ip, add=True)
+        # Never a 401 for a limits outage (the client would drop a good credential).
+        try:
+            await _ip_failures(ip, add=True)
+        except SQLAlchemyError:
+            logger.exception("mcp.limits_unavailable")
+            return unavailable
         return _unauthorized()
 
     raw = _bearer(request)
@@ -226,17 +225,17 @@ async def mcp_endpoint(request: Request) -> Response:
             return _rpc_error(503, UNAVAILABLE, "temporarily unavailable")
 
         # Every authenticated request draws on the token's request bucket
-        # (fails open), so a token spread over many IPs is bounded whatever it
+        # (fails closed), so a token spread over many IPs is bounded whatever it
         # sends. Separate from gate 6's call bucket, so tools/call is never
         # charged twice against one limit.
         try:
             await actions._hit(f"agent:tok:{token.id}:req:min", REQUESTS_PER_MIN, 60,
                                "token_rate_limited")
         except ToolError as exc:
-            if exc.code != "limits_unavailable":
-                return _rpc_error(429, RATE_LIMITED, "rate limited", headers={"Retry-After": "60"},
-                                  data={"code": exc.code, "detail": exc.detail, "data": {}})
-            logger.warning("rate_limit.degraded", where="mcp.requests", api_token_id=token.id)
+            if exc.code == "limits_unavailable":
+                return unavailable
+            return _rpc_error(429, RATE_LIMITED, "rate limited", headers={"Retry-After": "60"},
+                              data={"code": exc.code, "detail": exc.detail, "data": {}})
 
         try:
             ent = await feature_service.get_entitlements(db, user.org_id)
