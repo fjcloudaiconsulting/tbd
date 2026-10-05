@@ -32,7 +32,7 @@ app = [
     "slowapi==0.1.9",
     "pyotp==2.9.0",
     "qrcode[pil]==8.0",
-    "cryptography==44.0.3",
+    "cryptography==50.0.0",
     "redis==5.2.1",
     "ofxtools~=0.9.5",
 ]
@@ -60,7 +60,7 @@ mcp = [
     "python-dateutil==2.9.0.post0",
     "httpx==0.28.1",
     "slowapi==0.1.9",
-    "cryptography==44.0.3",
+    "cryptography==50.0.0",
     "redis==5.2.1",
 ]
 
