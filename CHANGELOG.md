@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.293.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.292.2...v0.293.0) (2026-10-05)
+
+
+### Features
+
+* **rate-limit:** rate limits move to MySQL (INFRA-121) ([#875](https://github.com/fjcloudaiconsulting/tbd/issues/875)) ([9a4da98](https://github.com/fjcloudaiconsulting/tbd/commit/9a4da98951e55580b0ced4ef6ed4809c91f84bda))
+
 ## [0.292.2](https://github.com/fjcloudaiconsulting/tbd/compare/v0.292.1...v0.292.2) (2026-10-05)
 
 
