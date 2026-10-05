@@ -123,9 +123,6 @@ class DbStorage(Storage):
     STORAGE_SCHEME = ["tbd-db"]
     base_exceptions = SQLAlchemyError
 
-    def __init__(self, uri: str | None = None, **_):
-        super().__init__()
-
     def incr(self, key: str, expiry: int, amount: int = 1) -> int:
         return hit(key, expiry, amount)
 
