@@ -1,0 +1,26 @@
+{
+  // INFRA-60: the apex static export (pnpm build:apex -> ../out-apex) as a Worker, same pattern as
+  // Ziftbook's landing. workers.dev preview only; INFRA-61 adds the custom domains and retires S3/CloudFront.
+  "name": "tbd-landing",
+  // Not a secret: account IDs identify an account but grant no access. The API token is the only secret.
+  "account_id": "fb5eb042529f2621c6de3f34c6801174",
+  "compatibility_date": "2026-09-01",
+  "main": "worker.js",
+  // No "routes" or custom domains, on purpose: INFRA-61 attaches the apex and www outside this file,
+  // so the CI token only needs the Editor role on this one Worker, never zone or DNS rights.
+  "workers_dev": true,
+  // No per-version preview hosts: one public preview URL is enough, and _headers only noindexes that one.
+  "preview_urls": false,
+  "assets": {
+    "directory": "../out-apex",
+    "binding": "ASSETS",
+    // CloudFront's directory index rewrite: /privacy/ serves privacy/index.html.
+    // Unlike CloudFront, /privacy (no slash) 307s to /privacy/ instead of serving it in place.
+    "html_handling": "auto-trailing-slash",
+    // CloudFront's 403/404 -> /404.html with status 404.
+    "not_found_handling": "404-page",
+    // Only the Google tag gateway runs worker.js; every other path is served straight from assets.
+    // Keep in sync with GA_GATEWAY_PATH in lib/analytics.ts.
+    "run_worker_first": ["/vd9r/*"]
+  }
+}
