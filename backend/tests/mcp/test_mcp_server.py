@@ -415,6 +415,9 @@ async def test_a2_limits_down_is_503_for_every_risk(client, w, factory, limits_h
         assert r.status_code == 503, (name, r.text)
         assert r.json()["error"]["code"] == mcp_main.UNAVAILABLE
     assert await _count(factory, w) == 0
+    # A method with no gate 6 behind it: only the request bucket can refuse.
+    r = await _post(client, _msg("ping"), token="write")
+    assert r.status_code == 503 and r.json()["error"]["code"] == mcp_main.UNAVAILABLE
 
 
 async def test_a2_bad_bearer_while_hit_is_down_is_503_not_401(client, w, limits_hit_down):
