@@ -600,10 +600,10 @@ async def dispatch_notification_to_org_members(
 def _encode_cursor(row: Notification) -> str:
     """Server-side opaque cursor token.
 
-    Encoded as ``"<created_at_iso>__<id>"``. Microsecond precision
-    is preserved (the column is ``DATETIME(6)`` on MySQL via the
-    ``func.now(6)`` server default) so two rows written in the same
-    transaction still order deterministically.
+    Encoded as ``"<created_at_iso>__<id>"``. The column is a plain
+    ``DATETIME`` (whole seconds) on MySQL, so rows written in the same
+    second share ``created_at``; the ``id`` half keeps the order
+    deterministic.
     """
     return f"{row.created_at.isoformat()}__{row.id}"
 
