@@ -438,6 +438,6 @@ on the next push. Treat the file as the complete env contract.
 - `frontend/components/auth/GoogleSSOButton.tsx` — gates on
   `TBD_GOOGLE_SSO_ENABLED`.
 - `pfv` (CLI) — `PFV_DEPDRIFT_*` and `PFV_MIGRATE_OK_OFF_MAIN` consumers.
-- `.github/workflows/deploy.yml` — GH Actions secrets and the manual
+- `.github/workflows/deploy.yml`: GH Actions secrets and the manual
   (archived) DigitalOcean deploy invocation.
 - `CONTRIBUTING.md` — local-dev setup walkthrough.
