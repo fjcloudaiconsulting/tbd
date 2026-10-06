@@ -12,12 +12,10 @@
 
 
 
-End-to-end infrastructure for The Better Decision (pfv). Two clouds, two TFC
-workspaces, one app.
+End-to-end infrastructure for The Better Decision (pfv). Two platforms, one app.
 
-- **AWS** owns the apex marketing landing site at `thebetterdecision.com`
-  (S3 + CloudFront + ACM + IAM OIDC). Managed by Terraform Cloud workspace
-  `<tfc-org>/<apex-workspace>` against `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex`.
+- **Cloudflare** owns the apex marketing landing site at `thebetterdecision.com`
+  (Worker `tbd-landing`, deployed by `apex-deploy.yml`; DNS in aws-infra `terraform/cloudflare`).
 - **DigitalOcean** owns the app itself at `app.thebetterdecision.com`
   (App Platform fronting the Next.js frontend and FastAPI backend) plus the
   self-hosted data plane (`<data-droplet>`: MySQL 8 + Valkey 8) inside a private
@@ -36,14 +34,10 @@ flowchart LR
     user([User browser])
 
     subgraph dns[DNS]
-        r53[Route 53 zone<br/>thebetterdecision.com]
-        cf_dns[Cloudflare zone<br/>app.thebetterdecision.com]
+        cf_dns[Cloudflare zone<br/>thebetterdecision.com]
     end
 
-    subgraph aws[AWS]
-        cfd[CloudFront distribution<br/>apex + www<br/>ACM cert in us-east-1]
-        s3[(S3 bucket<br/>private, OAC)]
-    end
+    worker[Cloudflare Worker<br/>tbd-landing]
 
     subgraph do[DigitalOcean]
         ing[App Platform ingress<br/>app.thebetterdecision.com]
@@ -58,10 +52,8 @@ flowchart LR
         end
     end
 
-    user -->|apex / www| r53
-    user -->|app subdomain| cf_dns
-    r53 -->|A ALIAS| cfd
-    cfd -->|OAC sigv4| s3
+    user --> cf_dns
+    cf_dns -->|apex / www| worker
     cf_dns -->|origin TLS| ing
     ing -->|/api, /health, /ready| be
     ing -->|/| fe
@@ -69,10 +61,9 @@ flowchart LR
     be -->|VPC private IPv4| valkey
 ```
 
-The boundary between AWS (apex landing) and DigitalOcean (app + data plane)
-is a hard one. Different cloud, different auth, different TFC workspace.
-The only thing they share is the `thebetterdecision.com` zone delegation
-target (Route 53 holds the apex, Cloudflare holds the `app.` subdomain).
+The boundary between the Worker (apex landing) and DigitalOcean (app + data plane)
+is a hard one. Different platform, different auth, different deploy path.
+Both hostnames are in the Cloudflare zone.
 
 ## What's here
 
@@ -85,145 +76,40 @@ infra/
 │   ├── outputs.tf
 │   ├── variables.tf
 │   ├── modules/                    # vpc/, droplet/, firewall/, project/
-│   └── (apex/ and backups/ now live in aws-infra: terraform/tbd-apex, terraform/tbd-backups)
+│   └── (backups/ lives in aws-infra: terraform/tbd-backups)
 └── ansible/                        # Ubuntu 24.04 bootstrap for <data-droplet>
 ```
 
 ## TFC workspaces
 
-Both workspaces are VCS-driven against this repo, both require manual
-Confirm & Apply on the TFC UI (no auto-apply), both run speculative plans
+The data workspace is VCS-driven against this repo, requires manual
+Confirm & Apply on the TFC UI (no auto-apply), and runs speculative plans
 on PRs. See `feedback_terraform_vcs_only`: local CLI plan/apply is
 debug-only.
 
 | Workspace | Cloud | Working dir | Trigger pattern | Auth |
 |---|---|---|---|---|
 | `<tfc-org>/<data-workspace>` | DigitalOcean | `infra/terraform/` | `infra/terraform/**`  | `do_token` workspace variable |
-| `<tfc-org>/<apex-workspace>` | AWS | `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex` | lives in aws-infra | OIDC workload identity (`TFC_AWS_PROVIDER_AUTH=true`, `TFC_AWS_RUN_ROLE_ARN=<tfc_role_arn output>`) |
-
-The two workspaces deliberately have non-overlapping working directories.
-A change under `infra/terraform/` triggers `<data-workspace>` only; the apex
-workspace lives in aws-infra. State is
-isolated.
 
 ## DNS
 
-The apex moved to Route 53 with PR #240 (L5.2a). The app subdomain stays
-on Cloudflare because it terminates origin TLS and proxies through to DO
-App Platform's ingress. Mixed-zone setup is intentional, not transitional.
+DNS for the domain is served by Cloudflare (aws-infra `terraform/cloudflare`).
+The app subdomain terminates origin TLS at Cloudflare and proxies through to
+DO App Platform's ingress.
 
 | Hostname | Authoritative DNS | Behind | Notes |
 |---|---|---|---|
-| `thebetterdecision.com` (apex) | Route 53 | CloudFront -> S3 | A + AAAA ALIAS records to CloudFront, provisioned by `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/main.tf`. |
-| `www.thebetterdecision.com` | Route 53 | CloudFront -> S3 | A + AAAA ALIAS records to the same CloudFront distribution. CloudFront viewer-request function 301-redirects www traffic to apex after the TLS handshake. |
+| `thebetterdecision.com` (apex) | Cloudflare | Worker `tbd-landing` | Static landing export, deployed by `apex-deploy.yml`. |
+| `www.thebetterdecision.com` | Cloudflare | Redirect rule | Proxied record; a Cloudflare redirect rule 301s it to the apex. |
 | `app.thebetterdecision.com` | Cloudflare | DO App Platform ingress | PRIMARY domain declared in `.do/app.yaml`. Cloudflare origin TLS handshake assumes this stays declared on the App Platform side; do not strip it from the spec. |
 | `m.thebetterdecision.com` | Cloudflare | Mailgun EU | Outbound email only. |
 
-Cloudflare was dropped from the apex (and only the apex) when L5.2a
-shipped. It is NOT gone from the project.
+## Apex landing (Cloudflare Worker)
 
-## Apex landing (AWS)
-
-Static-export marketing site at `https://thebetterdecision.com` and
-`https://www.thebetterdecision.com`. Built by the Next.js apex export
-(`out-apex/`), synced to S3 by GitHub Actions, served by CloudFront.
-
-```mermaid
-flowchart LR
-    user([User browser])
-    r53[Route 53<br/>A ALIAS]
-    cfd[CloudFront distribution<br/>HTTPS only, HSTS, security headers<br/>viewer-request function: www->apex, dir-index rewrite]
-    acm[ACM certificate<br/>us-east-1<br/>apex + www, DNS validated]
-    s3[(S3 bucket<br/>private, OAC, versioned, SSE-S3)]
-
-    subgraph oidc[IAM OIDC]
-        gh_role[github-actions-apex-deploy<br/>sub: refs/heads/main only]
-        tfc_role[tfc-apex-provisioner<br/>scoped to apex resources]
-    end
-
-    gha[GitHub Actions<br/>deploy workflow]
-    tfc[Terraform Cloud<br/><tfc-org>/<apex-workspace>]
-
-    user --> r53 --> cfd
-    cfd -. attaches .-> acm
-    cfd -->|OAC sigv4| s3
-    gha -->|AssumeRoleWithWebIdentity| gh_role
-    gh_role -->|s3 sync + invalidate| s3
-    gh_role -->|invalidate| cfd
-    tfc -->|workload identity| tfc_role
-    tfc_role -.->|manages| cfd
-    tfc_role -.->|manages| s3
-    tfc_role -.->|manages| acm
-```
-
-### Stack
-
-| Resource | Notes |
-|---|---|
-| `aws_s3_bucket` | Private (all four public-access-block flags on), versioned, SSE-S3, lifecycle expires noncurrent versions after 90 days. |
-| `aws_cloudfront_distribution` | `PriceClass_100` (NA + EU PoPs), HTTP/2 + HTTP/3, IPv6 on. CachingOptimized managed cache policy (hashed asset filenames are the cache-busting key). |
-| `aws_cloudfront_origin_access_control` | OAC, not legacy OAI. SigV4 to the bucket. |
-| `aws_cloudfront_function` | Viewer-request: www -> apex 301 redirect (runs first), then S3 directory-index rewrite (`/privacy/` -> `/privacy/index.html`). |
-| `aws_cloudfront_response_headers_policy` | HSTS (`max-age=63072000; includeSubDomains; preload`), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`, and `Content-Security-Policy` (`local.apex_csp`). CSP violations are reported **cross-origin** to the app's public sink `https://app.<domain>/api/v1/security/csp-report` via the legacy `report-uri` directive only, which is fire-and-forget (no CORS preflight, response ignored) and works in Chrome, Safari, and Firefox. The apex has no same-origin backend. The modern Reporting API (`report-to` + `Reporting-Endpoints`) is intentionally omitted because a cross-origin reporting endpoint is CORS-gated and would require adding the apex origin to the backend's `BACKEND_CORS_ORIGINS` allowlist. |
-| `aws_acm_certificate` | In `us-east-1`. CloudFront's API requires viewer-attached certs to live in `us-east-1` regardless of where the origin sits (see `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/providers.tf` for the alias-provider rationale). DNS validated. |
-| `aws_route53_record.apex_acm_validation` | ACM `_<token>.<domain>` validation CNAMEs in the existing zone. Does NOT touch the apex A record. |
-| `aws_iam_openid_connect_provider.github` | GitHub Actions OIDC trust. SHA-1 thumbprint computed at plan time via `tls_certificate` data source (AWS does not auto-rotate OIDC thumbprints). |
-| `aws_iam_openid_connect_provider.tfc` | Terraform Cloud workload identity trust. Same thumbprint pattern. |
-| `aws_iam_role.github_actions_apex_deploy` | Trust pinned via `StringEquals` to `repo:flamarion/pfv:ref:refs/heads/main`. PR-context tokens have a different `sub` and are rejected at the trust level (workflow `if:` guards alone are insufficient because PR authors can edit the workflow). Permissions scoped to this bucket + this distribution only. |
-| `aws_iam_role.tfc_apex_provisioner` | Trust pinned to the TFC org + apex workspace pattern. Manages apex bucket + distribution + ACM cert + IAM role chain + Route 53 records. Route 53 writes are split into two narrow IAM statements (each pairs `route53:ChangeResourceRecordSetsRecordTypes` with `route53:ChangeResourceRecordSetsNormalizedRecordNames`): `A`/`AAAA` on exactly apex + www, and `CNAME` on the exact ACM validation names from `domain_validation_options`. Any other record type or name in the zone is IAM-blocked. |
-
-### Why `us-east-1` for ACM
-
-CloudFront requires viewer certs in `us-east-1`. The bucket is in
-`var.aws_region` (default `eu-central-1`), but the cert provider in
-`terraform/tbd-apex/providers.tf` (aws-infra) uses the `aws.us_east_1` alias for the certificate
-resource only. No other resource is pinned to that region.
-
-### Why a separate TFC workspace
-
-`<tfc-org>/<apex-workspace>` is split from `<tfc-org>/<data-workspace>` because:
-
-- Different cloud (AWS vs DO) and different auth model (IAM OIDC vs DO
-  API token), so the workspace credentials don't overlap.
-- Smaller blast radius. An apex apply that breaks cannot affect MySQL or
-  the App Platform app, and vice versa.
-- The apex IAM role's permissions are tightly scoped; if everything sat
-  in one workspace those scopes would have to widen.
-- Independent run history makes apex incidents easier to triage on the
-  TFC timeline.
-
-### OIDC switchover
-
-The first `<apex-workspace>` apply needs static AWS credentials to bootstrap the
-OIDC providers themselves (the apex provisioner role doesn't exist
-until this module applies). The sequence:
-
-1. Create a short-lived `pfv-apex-bootstrap` IAM user with
-   `AdministratorAccess`. Set `AWS_ACCESS_KEY_ID` /
-   `AWS_SECRET_ACCESS_KEY` as sensitive env vars on the workspace.
-2. Run the first apply via TFC. Module creates both OIDC providers
-   (GitHub Actions, TFC), both roles (`github-actions-apex-deploy`,
-   `tfc-apex-provisioner`), and the S3 + CloudFront + ACM resources.
-3. Set `TFC_AWS_PROVIDER_AUTH=true` and
-   `TFC_AWS_RUN_ROLE_ARN=<tfc_role_arn output>` on the workspace.
-4. Delete `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from the
-   workspace. Delete (or deactivate) the `pfv-apex-bootstrap` IAM user.
-5. Trigger an empty plan to confirm TFC reaches AWS via OIDC.
-
-Full bootstrap detail (including the rationale for path B over a
-manual-OIDC-first path A) lives in `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/README.md`.
-
-### Cross-link
-
-`https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/README.md` is the canonical reference for:
-
-- Bootstrap path (above) with the full owner-side checklist.
-- Per-resource IAM scoping rationale.
-- S3 directory-index handling behaviour matrix (URL -> expected response).
-- Security notes (least privilege, OIDC thumbprint rotation, OAC vs OAI,
-  header rationale).
-- Module layout and rollback path.
-- Cost breakdown (currently ~$1.10/mo new spend).
+Static-export marketing site at `https://thebetterdecision.com`. Built by the
+Next.js apex export (`out-apex/`) and deployed as the Worker `tbd-landing`
+(`frontend/apex-worker/`) by the `deploy-worker` job of `apex-deploy.yml`. See
+`docs/operations/DEPLOYMENT.md` Section 5.
 
 ## DO App Platform
 
@@ -341,7 +227,7 @@ VPC CIDR only. ICMP from VPC.
 
 State and runs live in Terraform Cloud, workspace `<tfc-org>/<data-workspace>`,
 VCS-driven against this repo with the working directory and trigger
-paths both scoped to `infra/terraform/` (the apex workspace lives in aws-infra). Workflow:
+paths both scoped to `infra/terraform/` Workflow:
 
 1. Open a PR that touches `infra/terraform/**` . TFC
    posts a speculative plan on the run page.
@@ -408,46 +294,20 @@ See `MIGRATION.md` for the full data-move runbook (including rollback).
 
 ## OIDC overview
 
-Two OIDC trust relationships live in the apex AWS account:
-
-- **GitHub Actions -> AWS**: `github-actions-apex-deploy` is assumable
-  only by `flamarion/pfv` workflow runs whose token `sub` is exactly
-  `repo:flamarion/pfv:ref:refs/heads/main`. PR-context tokens have a
-  different `sub` and are rejected at the trust level, not just by
-  workflow-level `if:` guards. Scope: `s3:Put/Delete/List` on the apex
-  bucket and `cloudfront:CreateInvalidation` on the apex distribution.
-- **Terraform Cloud -> AWS**: `tfc-apex-provisioner` is assumable only
-  by TFC runs in `<tfc-org>/<apex-workspace>*` workspaces (any phase). Scope:
-  the apex resource graph (S3 bucket, CloudFront distribution, ACM in
-  `us-east-1`, the two IAM OIDC providers, the two IAM roles, Route 53
-  read-only plus CNAME-only writes for ACM validation).
-
-DO-side (`<tfc-org>/<data-workspace>`) does NOT use OIDC; it uses a long-lived
+The data workspace (`<tfc-org>/<data-workspace>`) does NOT use OIDC; it uses a long-lived
 `do_token` workspace variable. DO Terraform Cloud OIDC for the DO
 provider is not currently supported, so static-token auth is the path
-there until further notice.
-
-Full IAM trust-policy / scoping detail lives in
-`https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/README.md`. The bootstrap-to-OIDC switchover
-sequence above is the operator-side summary; the apex README documents
-why path B (static-key bootstrap then flip) won over path A (manual
-console OIDC setup).
+there until further notice. The AWS OIDC trust for the backups workspace
+lives in aws-infra.
 
 ## Day-2
 
 ### Apex landing
 
 - **Verify**: browse `https://thebetterdecision.com/` (or its
-  `_meta.json` probe for a no-cache deploy-SHA echo). The
-  CloudFront-assigned `dXXX.cloudfront.net` hostname from output
-  `cloudfront_distribution_domain` remains available as a diagnostic
-  / fallback path when the apex hostname is itself unreachable.
-- **Invalidate cache**: GitHub Actions workflow invalidates on every
-  deploy. Manual: `aws cloudfront create-invalidation
-  --distribution-id <id> --paths '/*'`.
-- **Cert rotation**: ACM auto-renews; DNS validation records stay in
-  the zone permanently.
-- **Cost**: ~$1.10/mo at current traffic.
+  `_meta.json` probe for a deploy-SHA echo).
+- **Rollback**: revert the merge commit and push to `main`, or
+  `wrangler rollback` from the dashboard (see `docs/operations/DEPLOYMENT.md`).
 
 ### DO App Platform
 
@@ -479,17 +339,6 @@ console OIDC setup).
 
 ## Teardown
 
-### Apex (`<tfc-org>/<apex-workspace>`)
-
-Every resource in the apex module is `terraform destroy`-able. A full
-teardown removes the apex / www `A` + `AAAA` ALIAS records, the ACM
-validation CNAMEs, the bucket and distribution, the IAM roles, and the
-OIDC providers. The apex hosted zone is data-sourced, not managed, so
-it survives untouched. After teardown DNS for apex and www returns to
-"no answer", and a fresh apply recreates everything end to end. Path:
-open a PR removing the resources, merge, Confirm & Apply in TFC. Or
-queue a Destroy plan from the TFC workspace UI.
-
 ### Data droplet (`<tfc-org>/<data-workspace>`)
 
 Terraform is VCS-driven via TFC; teardown follows the same path. Either:
@@ -508,8 +357,6 @@ destroy.
 
 ## See also
 
-- `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/README.md`: apex AWS workspace bootstrap,
-  per-resource IAM scoping, security notes, behaviour matrix.
 - `infra/MIGRATION.md`: managed-MySQL+Redis to droplet cutover (already
   executed; kept as the reference writeup).
 - `docs/operations/ENVIRONMENT.md`: authoritative per-env-var reference for
@@ -517,30 +364,20 @@ destroy.
 - `docs/operations/DEPLOYMENT.md`: GitHub Actions deploy walkthrough.
 - `~/.claude/projects/-Users-flamarion-src-tbd/memory/reference_digitalocean.md`:
   DO IDs, gotchas, and operational lore.
-- `~/.claude/projects/-Users-flamarion-src-tbd/memory/project_apex_s3_cloudfront.md`:
-  L5.2a direction lock and decision log.
 - `~/.claude/projects/-Users-flamarion-src-tbd/memory/feedback_terraform_vcs_only.md`:
   Terraform is VCS-driven; CLI is debug-only.
 
 ## AWS accounts and Terraform workspaces
 
-⚠ **This repository spans TWO AWS accounts.** Neither is recorded in the
-Terraform code, because `aws_account_id` is declared with no default and set
-only in the TFC workspace -- which is how the split went unnoticed until
-TBD-400. Recorded here so it is discoverable:
+Terraform workspaces that relate to this repo:
 
 | Workspace | Directory | Cloud | What it owns |
 |---|---|---|---|
 | `FlamaCorp/tbd` | `infra/terraform/` | DigitalOcean | data droplet, VPC, cloud firewall, data-plane credentials |
-| `FlamaCorp/tbd-apex` | `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex` | AWS (**older/personal account**) | landing-site S3 + CloudFront + ACM |
 | `FlamaCorp/tbd-backups` | `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-backups` | AWS (**company account `884686184019`**) | off-host MySQL backup bucket, CMK, put-only uploader, probe role |
 
-All three are VCS-driven with **manual Confirm & Apply**; auto-apply is off
+Both are VCS-driven with **manual Confirm & Apply**; auto-apply is off
 everywhere.
-
-⚠ Do not copy an `aws_account_id` between aws-infra `terraform/tbd-apex` and `terraform/tbd-backups`. They are
-different accounts, and `terraform/tbd-backups/main.tf` asserts the caller matches so a
-mistake dies at plan rather than creating a bucket in the wrong place.
 
 ⚠ `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/aws/bootstrap` holds the trust and provisioner documents for the
 backups workspace. They were applied once by hand with root at genesis (an empty

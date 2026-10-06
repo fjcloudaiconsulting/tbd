@@ -284,19 +284,19 @@ def test_apex_gates_its_deploy_but_never_the_manual_recovery():
     """Same interlock on the landing surface, with the dispatch bypass intact.
 
     ⚠ `needs:` on a SKIPPED job skips the dependent by default, so the explicit
-    `workflow_dispatch` arm in `build-and-deploy`'s `if:` is what keeps the
+    `workflow_dispatch` arm in `deploy-worker`'s `if:` is what keeps the
     documented stale-deploy recovery working. Without it the recovery path
     silently does nothing.
     """
     jobs = _yaml(APEX_WORKFLOW)["jobs"]
     assert "await-tests" in jobs, "apex-deploy.yml lost its await-tests gate"
-    assert "await-tests" in (jobs["build-and-deploy"].get("needs") or [])
+    assert "await-tests" in (jobs["deploy-worker"].get("needs") or [])
     assert "workflow_dispatch" in (jobs["await-tests"].get("if") or ""), (
         "the gate must skip on manual dispatch, which is the recovery path"
     )
-    guard = jobs["build-and-deploy"].get("if") or ""
+    guard = jobs["deploy-worker"].get("if") or ""
     assert "workflow_dispatch" in guard, (
-        "build-and-deploy needs an explicit dispatch arm: `needs:` on a "
+        "deploy-worker needs an explicit dispatch arm: `needs:` on a "
         "SKIPPED gate would otherwise skip the manual recovery deploy too."
     )
 

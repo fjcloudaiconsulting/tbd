@@ -1,13 +1,8 @@
 # Apex landing deploy.
 #
-# Builds the apex static export (`pnpm build:apex`) and pushes it to
-# the S3 bucket fronted by CloudFront at https://thebetterdecision.com.
-# Auth is via GitHub OIDC -> AWS IAM role (no long-lived AWS keys).
-#
-# The IAM role's trust policy (provisioned by PR #240) only accepts
-# tokens whose `sub` claim matches `repo:fjcloudaiconsulting/tbd:ref:refs/heads/main`.
-# That is the load-bearing security boundary; this workflow's
-# `branches: [main]` trigger is belt-and-suspenders.
+# Builds the apex static export (`pnpm build:apex`) and deploys it to the tbd-landing
+# Cloudflare Worker, which serves https://thebetterdecision.com (INFRA-61). The S3 +
+# CloudFront deploy it replaced was removed with the old stack (INFRA-62).
 #
 # ⚠ THE PATH FILTER BELOW NO LONGER MIRRORS ANYTHING (TBD-424,
 # 2026-08-20). It used to be the positive half of a two-sided split with a
@@ -35,32 +30,11 @@
 # `grep -q "frontend/app/features/"` over this whole file PASSED, because the
 # string appears in THIS COMMENT. The fence parses `on.push.paths`.
 #
-# ⚠ Do NOT "fix" the drift by deleting the filter the way release.yml's was
-# deleted. The two are not analogous. release.yml's filter was redundant with
-# its release gate; this one is the only thing bounding COST. Every run here
-# does an S3 sync plus a CloudFront `/*` invalidation, and invalidations past
-# 1,000/month are metered. Removing it buys one invalidation per merge to
-# main, forever.
-#
 # Shared paths (globals.css, lib/brand.ts, public/fonts/**) are listed here
 # AND still rebuild the DO app: a brand or token change legitimately affects
 # both surfaces.
 #
-# Required GitHub repository variables (Settings -> Secrets and variables
-# -> Actions -> Variables tab):
-#   AWS_APEX_DEPLOY_ROLE_ARN  ARN of github-actions-apex-deploy role
-#                             (Terraform output: github_actions_role_arn)
-#   AWS_APEX_BUCKET           S3 bucket name
-#                             (Terraform output: s3_bucket_name)
-#   AWS_APEX_DISTRIBUTION_ID  CloudFront distribution ID
-#                             (Terraform output: cloudfront_distribution_id)
-#
-# No AWS secrets are needed. The role ARN, bucket name, and distribution ID
-# are public-shaped identifiers.
-#
-# INFRA-60: the deploy-worker job also publishes the same export to the
-# tbd-landing Cloudflare Worker (workers.dev preview) until INFRA-61 moves the
-# apex onto it. It needs one secret, CLOUDFLARE_API_TOKEN, in the `landing`
+# The deploy-worker job needs one secret, CLOUDFLARE_API_TOKEN, in the `landing`
 # environment (deployment branches: main only): an account-owned token with the
 # Editor role scoped to the tbd-landing Worker alone. It skips with a notice
 # while that secret is unset.
@@ -149,9 +123,8 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
-# Serialize deploys; never cancel an in-flight S3 sync.
+# Serialize deploys; never cancel an in-flight one.
 concurrency:
   group: apex-deploy
   cancel-in-progress: false
@@ -160,7 +133,7 @@ jobs:
   # TBD-391. Same interlock as release.yml — the landing surface carried the
   # identical race (push to main, no dependency on the Test run).
   #
-  # ⚠ A SEPARATE JOB, not a step inside build-and-deploy. That job's
+  # ⚠ A SEPARATE JOB, not a step inside deploy-worker. That job's
   # `timeout-minutes: 15` is already largely consumed by `pnpm install` +
   # `build:apex`; adding an ~8 minute wait inside it would convert a healthy
   # deploy into a timeout failure. The wait gets its own budget.
@@ -175,9 +148,7 @@ jobs:
     timeout-minutes: 30
     if: github.event_name != 'workflow_dispatch'
     permissions:
-      # Job-level permissions REPLACE the workflow-level block, which is what
-      # we want here: it drops `id-token: write` for the wait, so the OIDC
-      # credential is never exposed to the polling step. `actions: read` is
+      # Job-level permissions REPLACE the workflow-level block. `actions: read` is
       # required to list workflow runs — omit it and the call 403s and the
       # gate fails closed for a reason that looks like a working gate.
       contents: read
@@ -192,167 +163,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: ./scripts/ci/await-test-run.sh "${{ github.sha }}"
 
-  build-and-deploy:
-    name: Build and deploy apex
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: await-tests
-    # ⚠ THE SHARPEST EDGE IN THIS CHANGE. `needs:` on a SKIPPED job skips the
-    # dependent by default, so without this clause a manual dispatch — the
-    # recovery path — would silently do nothing at all. `!cancelled()` keeps a
-    # real cancellation propagating; the explicit dispatch arm restores the
-    # bypass.
-    if: >-
-      ${{ !cancelled()
-          && (needs.await-tests.result == 'success'
-              || github.event_name == 'workflow_dispatch') }}
-
-    env:
-      # Region is a repo variable so a future TFC `aws_region` change does
-      # not require touching this workflow. Fallback keeps the workflow
-      # functional if the variable was forgotten during setup.
-      AWS_REGION: ${{ vars.AWS_APEX_REGION || 'eu-central-1' }}
-      S3_BUCKET: ${{ vars.AWS_APEX_BUCKET }}
-      CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.AWS_APEX_DISTRIBUTION_ID }}
-      DEPLOY_ROLE_ARN: ${{ vars.AWS_APEX_DEPLOY_ROLE_ARN }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: Setup Node
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: "22"
-
-      # pnpm version comes from packageManager in frontend/package.json.
-      - name: Enable pnpm
-        run: corepack enable
-
-      - name: Locate pnpm store
-        id: pnpm-store
-        working-directory: frontend
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache pnpm store
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
-          restore-keys: pnpm-${{ runner.os }}-
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: pnpm install --frozen-lockfile
-
-      - name: Build apex static export
-        working-directory: frontend
-        env:
-          TBD_BUILD_TARGET: apex
-          TBD_SITE_URL: https://thebetterdecision.com
-          TBD_APP_URL: https://app.thebetterdecision.com
-        run: pnpm build:apex
-
-      - name: Verify build output
-        working-directory: frontend
-        run: |
-          test -f out-apex/index.html || { echo "out-apex/index.html missing"; exit 1; }
-          test -f out-apex/_meta.json || { echo "out-apex/_meta.json missing"; exit 1; }
-          echo "Build output OK:"
-          ls -la out-apex/ | head -20
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
-        with:
-          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: github-actions-apex-deploy-${{ github.run_id }}
-
-      # Cache strategy + deploy order.
-      #
-      # Cache:
-      #   - Hashed assets under _next/static/** are content-addressed by
-      #     Next.js, safe to lock at max-age=31536000, immutable.
-      #   - Everything else lives under stable URLs (HTML, icons,
-      #     OG/apple images, fonts, JSON, txt, xml). Short cache so a
-      #     future change is visible to clients that already cached the
-      #     old object, regardless of CloudFront invalidation.
-      #
-      # Order: hashed chunks FIRST without --delete, then mutable assets
-      # with --delete. Two reasons:
-      #   1. The newly-published HTML references new hashed-asset URLs,
-      #      so those chunks must exist in S3 before the HTML is visible.
-      #   2. Browser-cached old HTML (5-min TTL) still references old
-      #      hashed-asset URLs; deleting those mid-flight produces 404s
-      #      for users who have not yet refetched the HTML.
-      #
-      # Trade-off: orphaned hashed chunks accumulate in the bucket. They
-      # are pennies of storage and the S3 lifecycle policy provisioned by
-      # PR #240 prunes noncurrent VERSIONS after 90 days, but NOT
-      # orphaned-by-rename objects. Periodic cleanup of stale objects
-      # under _next/static/** (older than N days, not referenced by any
-      # current HTML) is a follow-up via an S3 lifecycle rule or a
-      # scheduled GH Actions workflow. Tracked separately.
-
-      - name: Sync immutable hashed assets (long cache, NO --delete)
-        working-directory: frontend
-        run: |
-          aws s3 sync out-apex/_next/static/ "s3://${S3_BUCKET}/_next/static/" \
-            --no-progress \
-            --cache-control "public, max-age=31536000, immutable"
-
-      - name: Sync mutable assets (short cache, --delete)
-        working-directory: frontend
-        run: |
-          aws s3 sync out-apex/ "s3://${S3_BUCKET}/" \
-            --delete \
-            --no-progress \
-            --exclude "_next/static/*" \
-            --cache-control "public, max-age=300, s-maxage=3600"
-
-      - name: Override _meta.json with no-cache
-        working-directory: frontend
-        run: |
-          # _meta.json is the deploy-verification probe. It must never be
-          # cached so a curl against the apex returns the freshest SHA.
-          # aws s3 sync auto-detected content-type as application/json on
-          # the previous step; here we re-upload with the strict
-          # cache-control + explicit content-type to be unambiguous.
-          if [ -f out-apex/_meta.json ]; then
-            aws s3 cp out-apex/_meta.json "s3://${S3_BUCKET}/_meta.json" \
-              --no-progress \
-              --content-type "application/json" \
-              --cache-control "no-cache, no-store, must-revalidate"
-          fi
-
-      - name: Invalidate CloudFront
-        run: |
-          aws cloudfront create-invalidation \
-            --distribution-id "${CLOUDFRONT_DISTRIBUTION_ID}" \
-            --paths "/*" \
-            >/dev/null
-
-      - name: Print deploy summary
-        run: |
-          echo "Deployed apex landing"
-          echo "  Commit:        ${GITHUB_SHA}"
-          echo "  Bucket:        ${S3_BUCKET}"
-          echo "  Distribution:  ${CLOUDFRONT_DISTRIBUTION_ID}"
-          echo "  Verify via:    https://thebetterdecision.com/_meta.json"
-
-  # INFRA-60. The same export on the tbd-landing Worker, workers.dev preview only
-  # (https://tbd-landing.flamarion-fb5.workers.dev), until INFRA-61 moves the apex
-  # onto it and deletes build-and-deploy. A separate job, so the third-party
-  # wrangler steps never see the AWS deploy credentials or an OIDC token, and a
-  # Worker failure never touches the S3 deploy. Builds again rather than passing
-  # an artifact: a few runner minutes against one more moving part.
+  # INFRA-60/61. The export on the tbd-landing Worker, the apex's only origin. The smoke
+  # test below reads the workers.dev name, which serves the same deploy.
   deploy-worker:
-    name: Deploy tbd-landing Worker (preview)
+    name: Deploy tbd-landing Worker
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: await-tests
-    # Same dispatch bypass as build-and-deploy, but only from main: the S3 job is
-    # pinned to main by the AWS role trust, this one has nothing else holding it.
+    # Dispatch bypass (see await-tests), but only from main: nothing else pins this job to main.
     if: >-
       ${{ !cancelled()
           && github.ref == 'refs/heads/main'
