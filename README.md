@@ -40,7 +40,7 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 | Auth | JWT (access + refresh), bcrypt, TOTP (pyotp), Google OAuth2 (with step-up for sensitive flows) |
 | Email | Mailgun (production), structlog (development) |
 | Proxy | nginx (development), DO App Platform ingress (production) |
-| Landing (apex) | AWS S3 + CloudFront + ACM + IAM OIDC, separate from the app, see [`DEPLOYMENT.md`](docs/operations/DEPLOYMENT.md) |
+| Landing (apex) | Cloudflare Worker `tbd-landing`, separate from the app, see [`DEPLOYMENT.md`](docs/operations/DEPLOYMENT.md) |
 
 ## Quick Start
 
@@ -76,16 +76,15 @@ Every part of the project has a single authoritative document. Start with the ro
 
 | Doc | When you need it |
 |---|---|
-| [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) | What happens between `git push` and a live change. All CI/CD flows (PR lifecycle, automatic prod deploy, manual escape hatch, apex landing deploy), Terraform workspaces, migrations, what-triggers-what decision tree, per-pipeline rollback playbook, where to look when things break. Diagrams included. |
+| [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) | What happens between `git push` and a live change. All CI/CD flows (PR lifecycle, automatic prod deploy, manual escape hatch, Worker landing deploy), Terraform workspaces, migrations, what-triggers-what decision tree, per-pipeline rollback playbook, where to look when things break. Diagrams included. |
 
 ### Infrastructure
 
 | Doc | When you need it |
 |---|---|
-| [infra/README.md](infra/README.md) | End-to-end topology of both clouds. DigitalOcean App Platform + data droplet (MySQL + Redis) for the app surface, AWS (S3 + CloudFront + ACM + IAM OIDC) for the apex landing surface. TFC workspace layout, OIDC overview, DNS split between Cloudflare (app subdomain) and Route 53 (apex). |
+| [infra/README.md](infra/README.md) | End-to-end topology. DigitalOcean App Platform + data droplet (MySQL + Redis) for the app surface, a Cloudflare Worker for the apex landing surface. TFC workspace layout, OIDC overview, DNS on Cloudflare. |
 | [infra/MIGRATION.md](infra/MIGRATION.md) | Production data-plane migration runbook. Used during the move from DO managed services to the self-hosted droplet, retained as the reference for any future host migration. |
 | [infra/terraform/README.md](infra/terraform/README.md) | Day-2 reference for the `<tfc-org>/<data-workspace>` TFC workspace (DO data droplet). Variables, working dir, manual Confirm-and-Apply convention. |
-| [aws-infra terraform/tbd-apex/README.md](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/README.md) | Day-2 reference for the `<tfc-org>/<apex-workspace>` TFC workspace (AWS apex landing). Bootstrap path B (static keys for one apply, then flip to OIDC), GitHub Actions deploy role, ACM in `us-east-1` rationale. |
 | [infra/ansible/README.md](infra/ansible/README.md) | Configuration management for the data droplet (`<data-droplet>`). MySQL + Redis roles, cloud-firewall coexistence, common role tasks. |
 
 ### Product + design
@@ -104,14 +103,14 @@ Browser
         --> /api/*  --> backend  (FastAPI, port 8000)  --> MySQL  (<data-droplet>:3306)
         |                                              --> Redis (<data-droplet>:6379)
         --> /*      --> frontend (Next.js, port 3000)
-  --> thebetterdecision.com (Route 53 -> CloudFront -> S3)
+  --> thebetterdecision.com (Cloudflare Worker `tbd-landing`)
         --> static landing export (auth-free, no app code in bundle)
 ```
 
 - **App backend** serves a REST API under `/api/v1/`. Stateless, horizontally scalable, ready for K8s.
 - **App frontend** is a Next.js App Router build. All API calls use Bearer token auth with silent refresh.
-- **Apex landing** is a separate Next.js static export built by `pnpm build:apex`, deployed to S3 via GitHub Actions with OIDC role assume.
-- **nginx** routes traffic in development. DO App Platform handles ingress for the app in production; CloudFront handles ingress for the apex.
+- **Apex landing** is a separate Next.js static export built by `pnpm build:apex`, deployed as a Cloudflare Worker (`frontend/apex-worker/`) via GitHub Actions.
+- **nginx** routes traffic in development. DO App Platform handles ingress for the app in production; Cloudflare handles ingress for the apex.
 
 For the full pipeline mechanics, see [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md). For the cross-cloud topology, see [infra/README.md](infra/README.md).
 

@@ -4,13 +4,7 @@ Terraform Cloud workspace `<tfc-org>/<data-workspace>` managing the DigitalOcean
 infrastructure for the self-hosted MySQL + Redis pair behind `pfv`. State
 and runs live in TFC; this directory holds the configuration.
 
-> The apex landing (AWS S3 + CloudFront + ACM + IAM OIDC) lives in a
-> separate workspace `<tfc-org>/<apex-workspace>` with working directory
-> `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex` (now in aws-infra).
-> Keeping the AWS provisioning isolated from this DigitalOcean workspace
-> contains the blast radius and lets each workspace use its own auth
-> path (DO API token here, AWS OIDC there). See
-> [`apex/README.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/README.md) for the apex setup.
+> The apex landing is a Cloudflare Worker (`frontend/apex-worker/`), deployed by `apex-deploy.yml`; it has no Terraform workspace here.
 
 ## Resources managed
 

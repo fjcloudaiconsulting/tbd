@@ -104,7 +104,7 @@ Merge to `main`:
 
 - `.github/workflows/release.yml` also runs on **every** push to `main`, deliberately with no `paths:` filter (TBD-424) — the filter only ever deferred the release tool's own commit-intent analysis and then misattributed the result. It runs `release-please`: on an ordinary merge it opens or updates the release PR and nothing ships. If (and only if) the merge is the release PR itself, a release is created and the gated jobs retag the GHCR images as vX.Y.Z and smoke them. Nothing here deploys: Renovate opens a PR in aws-infra bumping the image tags, and merging it is the production deploy.
 - Every other merge (including `chore:` / `docs:` / `refactor:`) still triggers `release.yml`, but only updates the release PR; the gated jobs are skipped.
-- `.github/workflows/apex-deploy.yml` deploys the apex landing site (`thebetterdecision.com`) to AWS S3 + CloudFront on merges that touch the apex path filter. Independent of the release pipeline.
+- `.github/workflows/apex-deploy.yml` deploys the apex landing site (`thebetterdecision.com`) as the Cloudflare Worker `tbd-landing` on merges that touch the apex path filter. Independent of the release pipeline.
 
 `docs/operations/DEPLOYMENT.md` is the authoritative reference.
 
