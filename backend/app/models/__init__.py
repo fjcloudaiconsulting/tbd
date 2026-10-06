@@ -62,6 +62,7 @@ from app.models.org_ai_caps import (  # noqa: F401
 from app.models.org_ai_consent import OrgAIConsent  # noqa: F401
 from app.models.ai_usage_ledger import AIUsageLedger  # noqa: F401
 from app.models.rate_limit_override import RateLimitOverride  # noqa: F401
+from app.models.rate_limit import RateLimit  # noqa: F401
 from app.models.email_broadcast import (  # noqa: F401
     BroadcastStatus,
     RecipientStatus,
@@ -144,4 +145,5 @@ __all__ = [
     "EmailBroadcast",
     "EmailBroadcastRecipient",
     "ApiToken",
+    "RateLimit",
 ]

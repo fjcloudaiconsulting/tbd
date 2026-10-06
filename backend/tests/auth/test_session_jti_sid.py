@@ -738,7 +738,7 @@ async def test_login_503_on_multi_exec_abort(
     assert res.status_code == 503, res.json()
     assert _canonical_refresh_cookie(res.headers) is None
     # Belt-and-braces: nothing leaked into Redis either.
-    assert not fake_redis._kv
+    assert set(fake_redis._kv) <= {"auth:session_store_probe"}
     assert not fake_redis._sets
 
 

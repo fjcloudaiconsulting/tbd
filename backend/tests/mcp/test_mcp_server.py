@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app import mcp_main, redis_client
+from app import mcp_main, rate_limit_db
 from app._time import utcnow_naive
 from app.agent import registry
 from app.agent.registry import Change, Preview, ToolSpec
@@ -353,23 +353,20 @@ def frozen(monkeypatch):
     """Pin the fixed-window clock so a pre-filled bucket cannot roll over
     between the fill and the call."""
     import time as _time
-    from types import SimpleNamespace
 
-    from app.agent import actions
     now = _time.time()
-    monkeypatch.setattr(actions, "time", SimpleNamespace(time=lambda: now))
+    monkeypatch.setattr(rate_limit_db, "_clock", lambda: now)
 
 
-async def _exhaust_minute(fake, token_id: int) -> None:
-    from app.agent.actions import window_key
-    await fake.set(window_key(f"agent:tok:{token_id}:calls:min", 60), "120")
+def _exhaust_minute(token_id: int) -> None:
+    rate_limit_db.hit(f"agent:tok:{token_id}:calls:min", 60, amount=120)
 
 
-async def test_fm2_limits_are_keyed_on_the_token_not_the_ip(client, w, factory, _autouse_fake_redis, frozen):
+async def test_fm2_limits_are_keyed_on_the_token_not_the_ip(client, w, factory, frozen):
     """FENCE F-M2. Wrong implementation: the per-call limit keyed on the
     client IP, so one harness exhausting it locks out every token behind the
     same NAT (or one token rotates IPs to escape it)."""
-    await _exhaust_minute(_autouse_fake_redis, w["tok"]["write"])
+    _exhaust_minute(w["tok"]["write"])
     a = await _call(client, "accounts_list", {}, token="write")
     assert a.status_code == 429 and a.headers["retry-after"] == "60"
     assert a.json()["error"]["data"]["code"] == "token_rate_limited"
@@ -377,24 +374,21 @@ async def test_fm2_limits_are_keyed_on_the_token_not_the_ip(client, w, factory, 
     assert b.status_code == 200 and b.json()["result"]["isError"] is False
 
 
-async def test_one_call_draws_exactly_one_from_the_bucket(client, w, _autouse_fake_redis, frozen):
+async def test_one_call_draws_exactly_one_from_the_bucket(client, w, frozen):
     """FENCE. Wrong implementation: the front door also charging tools/call
     (the registry charges it), halving every token's real limit."""
-    from app.agent.actions import window_key
     assert (await _call(client, "accounts_list", {})).status_code == 200
-    key = window_key(f"agent:tok:{w['tok']['write']}:calls:min", 60)
-    assert int(await _autouse_fake_redis.get(key)) == 1
-    req = window_key(f"agent:tok:{w['tok']['write']}:req:min", 60)
-    assert int(await _autouse_fake_redis.get(req)) == 1
+    assert rate_limit_db.get(f"agent:tok:{w['tok']['write']}:calls:min") == 1
+    assert rate_limit_db.get(f"agent:tok:{w['tok']['write']}:req:min") == 1
 
 
 async def test_fq12_a_call_refused_at_gate_6_does_not_burn_the_meter(
-    client, w, factory, _autouse_fake_redis, frozen
+    client, w, factory, frozen
 ):
     """FENCE F-Q12 (rate-limit half). Wrong implementation: ``mcp.calls``
     admitted before the per-token limit, so a throttled harness still drains
     the org's monthly meter."""
-    await _exhaust_minute(_autouse_fake_redis, w["tok"]["write"])
+    _exhaust_minute(w["tok"]["write"])
     for name, args in [("accounts_list", {}),
                        ("budgets_update_amount", {"budget_id": w["budget"], "amount": "1.00"}),
                        ("confirm_action", {"action_id": "0" * 32}),
@@ -404,31 +398,67 @@ async def test_fq12_a_call_refused_at_gate_6_does_not_burn_the_meter(
     assert await _count(factory, w) == 0
 
 
-async def test_gate_6_daily_bucket(client, w, factory, _autouse_fake_redis, frozen):
-    from app.agent.actions import window_key
-    await _autouse_fake_redis.set(
-        window_key(f"agent:tok:{w['tok']['write']}:calls:day", 86_400), "2000")
+async def test_gate_6_daily_bucket(client, w, factory, frozen):
+    rate_limit_db.hit(f"agent:tok:{w['tok']['write']}:calls:day", 86_400, amount=2000)
     r = await _call(client, "accounts_list", {}, token="write")
     assert r.status_code == 429
     assert await _count(factory, w) == 0
 
 
-async def test_gate_6_redis_down_reads_open_writes_closed(client, w, factory, monkeypatch):
-    """FENCE gate-6 fail mode. Wrong implementation: gate 6 failing open for
-    writes, so during a Redis outage each write call is admitted (meter +1)
-    and only then refused by the preview bucket: one token drains the org's
-    monthly meter for as long as the outage lasts."""
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
-    r = await _call(client, "budgets_update_amount",
-                    {"budget_id": w["budget"], "amount": "1.00"}, token="write")
-    assert r.status_code == 503
-    assert r.json()["error"]["data"]["code"] == "limits_unavailable"
-    r = await _call(client, "confirm_action", {"action_id": "0" * 32}, token="write")
-    assert r.status_code == 503
+async def test_a2_request_bucket_down_is_503_before_any_tool(client, w, factory, limits_hit_down):
+    """A2. Wrong implementation: the request bucket (or gate 6) failing open,
+    so calls are admitted and spend the meter while limits are unavailable."""
+    for name, args in [("budgets_update_amount", {"budget_id": w["budget"], "amount": "1.00"}),
+                       ("confirm_action", {"action_id": "0" * 32}),
+                       ("accounts_list", {})]:
+        r = await _call(client, name, args, token="write")
+        assert r.status_code == 503, (name, r.text)
+        assert r.json()["error"]["code"] == mcp_main.UNAVAILABLE
     assert await _count(factory, w) == 0
-    r = await _call(client, "accounts_list", {}, token="write")
-    assert r.status_code == 200 and r.json()["result"]["isError"] is False
-    assert await _count(factory, w) == 1
+    # A method with no gate 6 behind it: only the request bucket can refuse.
+    r = await _post(client, _msg("ping"), token="write")
+    assert r.status_code == 503 and r.json()["error"]["code"] == mcp_main.UNAVAILABLE
+
+
+async def test_gate_6_down_is_503_limits_unavailable_for_every_risk(
+    client, w, factory, monkeypatch
+):
+    """Gate 6 alone is down (req:min still works). Wrong implementation:
+    gate 6 failing open for reads, mapped to isError 200, or the meter
+    admitted before the gate."""
+    from sqlalchemy.exc import OperationalError
+
+    real = rate_limit_db.hit
+
+    def hit(key, *a, **k):
+        if ":calls:" in key:
+            raise OperationalError("INSERT", {}, Exception("down"))
+        return real(key, *a, **k)
+
+    monkeypatch.setattr(rate_limit_db, "hit", hit)
+    for name, args in [("budgets_update_amount", {"budget_id": w["budget"], "amount": "1.00"}),
+                       ("confirm_action", {"action_id": "0" * 32}),
+                       ("accounts_list", {})]:
+        r = await _call(client, name, args, token="write")
+        assert r.status_code == 503, (name, r.text)
+        assert r.json()["error"]["data"]["code"] == "limits_unavailable", name
+    assert await _count(factory, w) == 0
+
+
+async def test_a2_bad_bearer_while_hit_is_down_is_503_not_401(client, w, limits_hit_down):
+    """A2. Wrong implementation: the failed-auth add path swallowing the
+    error and answering 401."""
+    r = await _post(client, _msg("ping"), token=None)
+    assert r.status_code == 503 and r.json()["error"]["code"] == mcp_main.UNAVAILABLE
+    r = await _post(client, _msg("ping"), token="not-a-token")
+    assert r.status_code == 503
+
+
+async def test_a2_limits_db_down_is_503_on_the_first_check(client, w, limits_db_down):
+    for token in ("write", None):
+        r = await _post(client, _msg("ping"), token=token)
+        assert r.status_code == 503, token
+        assert r.json()["error"]["code"] == mcp_main.UNAVAILABLE
 
 
 async def test_gate_6_is_a_no_op_in_app(factory, w, _autouse_fake_redis):
@@ -553,22 +583,14 @@ async def test_failed_auth_ceiling_is_per_ip_and_valid_tokens_do_not_count(clien
     assert (await _post(client, _msg("ping"), token=None, ip="198.51.100.10")).status_code == 401
 
 
-async def test_failed_auth_ceiling_fails_open_without_redis(client, w, monkeypatch):
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
-    assert (await _post(client, _msg("ping"))).status_code == 200
-    assert (await _post(client, _msg("ping"), token=None)).status_code == 401
-
-
 async def test_every_request_draws_on_the_token_request_bucket(
-    client, w, factory, _autouse_fake_redis, frozen
+    client, w, factory, frozen
 ):
     """FENCE (folded). Wrong implementation: only tools/call token-limited, so
     a token spread over many IPs runs unbounded auth + entitlement queries
     through initialize / ping / tools/list, notifications, bad bodies, or a
     non-entitled org."""
-    from app.agent.actions import window_key
-    await _autouse_fake_redis.set(
-        window_key(f"agent:tok:{w['tok']['write']}:req:min", 60), "300")
+    rate_limit_db.hit(f"agent:tok:{w['tok']['write']}:req:min", 60, amount=300)
     for m in ["initialize", "ping", "tools/list", "notifications/initialized", "tools/call"]:
         r = await _post(client, _msg(m), token="write", ip=f"192.0.2.{len(m)}")
         assert r.status_code == 429, m

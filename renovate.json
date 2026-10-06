@@ -21,9 +21,22 @@
       "groupName": "python non-major"
     },
     {
-      "description": "npm non-major updates in one PR.",
+      "description": "SQLAlchemy patches ride in the python group; minors (2.1 is a real migration) get their own PR on dashboard approval. separateMultipleMinor, not separateMinorPatch, which would move the patch to its own branch.",
+      "matchPackageNames": ["sqlalchemy"],
+      "separateMultipleMinor": true
+    },
+    {
+      "description": "The SQLAlchemy minor leaves the python group and waits for approval; keep this rule after the python group rule so its groupName wins.",
+      "matchPackageNames": ["sqlalchemy"],
+      "matchUpdateTypes": ["minor"],
+      "groupName": "sqlalchemy minor",
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "npm non-major updates in one PR. recharts gets its own PR: any move trips the TBD-528 version tripwire (chart-animation-gate.test.ts).",
       "matchManagers": ["npm"],
       "matchUpdateTypes": ["minor", "patch"],
+      "matchPackageNames": ["!recharts"],
       "groupName": "npm non-major"
     },
     {
