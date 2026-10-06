@@ -53,7 +53,7 @@ flowchart LR
     end
 
     user --> cf_dns
-    cf_dns -->|apex / www| worker
+    cf_dns -->|apex| worker
     cf_dns -->|origin TLS| ing
     ing -->|/api, /health, /ready| be
     ing -->|/| fe
@@ -227,7 +227,7 @@ VPC CIDR only. ICMP from VPC.
 
 State and runs live in Terraform Cloud, workspace `<tfc-org>/<data-workspace>`,
 VCS-driven against this repo with the working directory and trigger
-paths both scoped to `infra/terraform/` Workflow:
+paths both scoped to `infra/terraform/`. Workflow:
 
 1. Open a PR that touches `infra/terraform/**` . TFC
    posts a speculative plan on the run page.
@@ -306,8 +306,8 @@ lives in aws-infra.
 
 - **Verify**: browse `https://thebetterdecision.com/` (or its
   `_meta.json` probe for a deploy-SHA echo).
-- **Rollback**: revert the merge commit and push to `main`, or
-  `wrangler rollback` from the dashboard (see `docs/operations/DEPLOYMENT.md`).
+- **Rollback**: revert the merge commit (PR, merge), or
+  `wrangler rollback` (or the Workers dashboard) (see `docs/operations/DEPLOYMENT.md`).
 
 ### DO App Platform
 

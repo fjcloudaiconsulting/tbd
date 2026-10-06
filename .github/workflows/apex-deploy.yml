@@ -80,7 +80,7 @@ on:
       # in app/layout.tsx; both read from lib/analytics.ts). An analytics-only
       # change — e.g. swapping the GA tag-gateway path — must redeploy the apex
       # static export, otherwise the live HTML keeps the old path baked in and
-      # 404s once the matching CloudFront behavior is renamed (the /88x6/ ->
+      # 404s once the Worker's `run_worker_first` path is renamed (the /88x6/ ->
       # /vd9r/ incident, #465).
       - "frontend/components/analytics/**"
       - "frontend/lib/analytics.ts"
@@ -170,7 +170,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: await-tests
-    # Dispatch bypass (see await-tests), but only from main: nothing else pins this job to main.
+    # `needs:` on a SKIPPED job (await-tests skips on dispatch) skips the dependent by default, so
+    # `!cancelled()` and the explicit dispatch arm keep the manual recovery deploy working; a real
+    # cancellation still propagates. Only from main: nothing else pins this job to main.
     if: >-
       ${{ !cancelled()
           && github.ref == 'refs/heads/main'

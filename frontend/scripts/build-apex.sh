@@ -31,7 +31,7 @@
 # line iteration.
 #
 # Output: frontend/out-apex/
-# Consumed by: PR-B's GitHub Actions workflow (aws s3 sync).
+# Consumed by: apex-deploy.yml (wrangler deploy of the tbd-landing Worker).
 
 set -euo pipefail
 

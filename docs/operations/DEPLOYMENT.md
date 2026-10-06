@@ -8,7 +8,7 @@ For "how do I get my code ready to push", read [`CONTRIBUTING.md`](../../CONTRIB
 
 ## 1. Overview
 
-Four production surfaces. Each has its own pipeline. Some changes fan out across more than one.
+Three production surfaces. Each has its own pipeline. Some changes fan out across more than one.
 
 | Surface | URL | Hosted by | Updated by |
 |---|---|---|---|
@@ -413,7 +413,7 @@ Shared paths (`frontend/lib/brand.ts`, `frontend/public/**`, `frontend/package.j
 
 ### How to verify an apex deploy
 
-1. Watch the workflow run: `https://github.com/flamarion/pfv/actions/workflows/apex-deploy.yml`
+1. Watch the workflow run: `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/apex-deploy.yml`
 2. Confirm the deployed commit SHA: `curl -fsS https://thebetterdecision.com/_meta.json`
 
 Rollback is in Section 10.
@@ -463,7 +463,7 @@ After-droplet steps (one-time): Ansible playbook bootstraps the host. See `infra
 
 ## 7. Terraform: apex (removed)
 
-The AWS apex stack (S3, CloudFront, ACM, IAM, Route 53; workspace `tbd-apex`) was removed with INFRA-62. The apex is the Cloudflare Worker `tbd-landing` (Section 5); DNS lives in aws-infra `terraform/cloudflare`.
+The AWS apex stack (S3, CloudFront, ACM, IAM, Route 53; workspace `tbd-apex`) is removed by INFRA-62. The apex is the Cloudflare Worker `tbd-landing` (Section 5); DNS lives in aws-infra `terraform/cloudflare`.
 
 ## 8. Database migrations
 
@@ -616,9 +616,9 @@ Revert the image-bump PR in aws-infra and merge it; Flux rolls the previous tags
 
 ### Apex landing (`apex-deploy.yml`)
 
-Revert the merge commit and push to `main`; the path filter re-triggers `apex-deploy.yml`, which redeploys the Worker. Alternatively `wrangler rollback` (or the Workers dashboard -> `tbd-landing` -> Deployments) restores a prior Worker version immediately.
+Revert the merge commit (PR, merge); the path filter re-triggers `apex-deploy.yml`, which redeploys the Worker. Alternatively `wrangler rollback` (or the Workers dashboard -> `tbd-landing` -> Deployments) restores a prior Worker version immediately.
 
-### Terraform (either workspace)
+### Terraform
 
 Revert the merge commit in the repo. TFC plans the inverse change on the next merge. Operator clicks Confirm & Apply. State catches up.
 
@@ -640,13 +640,13 @@ If a migration **partially applies** and the container exits non-zero, the backe
 
 | Surface | Where the logs live |
 |---|---|
-| GitHub Actions runs (all workflows) | `https://github.com/flamarion/pfv/actions` |
+| GitHub Actions runs (all workflows) | `https://github.com/fjcloudaiconsulting/tbd/actions` |
 | `release.yml` runs specifically | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml` |
 | Production rollout, Flux, backend/frontend logs, `migrate` init container logs | [aws-infra `docs/runbooks.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md), "Follow Flux and rollouts" |
 | Release published but not on the cluster | The `release-drift-probe` issue in aws-infra |
-| `deploy.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/deploy.yml` |
-| `apex-deploy.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/apex-deploy.yml` |
-| `test.yml` runs | `https://github.com/flamarion/pfv/actions/workflows/test.yml` |
+| `deploy.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/deploy.yml` |
+| `apex-deploy.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/apex-deploy.yml` |
+| `test.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/test.yml` |
 | TFC `<data-workspace>` (DO data droplet) | `https://app.terraform.io/app/<tfc-org>/workspaces/<data-workspace>` |
 | DO App Platform deploys | DO console -> Apps -> `pfv` -> Activity |
 | Backend access logs (live) | DO console -> Apps -> `pfv` -> Runtime Logs -> backend component |
@@ -655,7 +655,7 @@ If a migration **partially applies** and the container exits non-zero, the backe
 | Apex Worker logs and versions | Cloudflare dashboard -> Workers & Pages -> `tbd-landing` |
 | MySQL slow query / error log | SSH to `<data-droplet>`: `journalctl -u mysql` or `/var/log/mysql/error.log` |
 | Nightly mysqldump | `<data-droplet>`: `ls -lh /var/backups/mysql/`; log at `/var/log/mysql-backup.log` |
-| Smoke-test failure GitHub issue | Auto-opened by `scripts/notify-smoke-failure.sh`; check open issues in `flamarion/pfv` |
+| Smoke-test failure GitHub issue | Auto-opened by `scripts/notify-smoke-failure.sh`; check open issues in `fjcloudaiconsulting/tbd` |
 
 Triage shortcuts:
 

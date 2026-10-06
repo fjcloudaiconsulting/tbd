@@ -295,6 +295,7 @@ def test_apex_gates_its_deploy_but_never_the_manual_recovery():
         "the gate must skip on manual dispatch, which is the recovery path"
     )
     guard = jobs["deploy-worker"].get("if") or ""
+    assert "!cancelled()" in guard and "needs.await-tests.result == 'success'" in guard
     assert "workflow_dispatch" in guard, (
         "deploy-worker needs an explicit dispatch arm: `needs:` on a "
         "SKIPPED gate would otherwise skip the manual recovery deploy too."
