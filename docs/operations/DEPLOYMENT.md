@@ -13,8 +13,7 @@ Three production surfaces. Each has its own pipeline. Some changes fan out acros
 | Surface | URL | Hosted by | Updated by |
 |---|---|---|---|
 | App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | Single-node k3s cluster, namespace `tbd-prod` (aws-infra) | `release.yml` publishes the `vX.Y.Z` images; merging the Renovate bump PR in aws-infra deploys them |
-| Apex landing (marketing, privacy, terms, docs) | `https://thebetterdecision.com` | AWS S3 + CloudFront | `apex-deploy.yml` (auto) |
-| Apex CDN + cert + IAM | n/a (control plane) | AWS (S3, CloudFront, ACM, IAM, Route 53) | TFC workspace `<tfc-org>/<apex-workspace>` (manual confirm), in aws-infra |
+| Apex landing (marketing, privacy, terms, docs) | `https://thebetterdecision.com` | Cloudflare Worker `tbd-landing` | `apex-deploy.yml` (auto) |
 
 ```mermaid
 flowchart LR
@@ -25,15 +24,14 @@ flowchart LR
   ghcr -->|Renovate bump PR in aws-infra, merged| flux[Flux on the k3s cluster]
   flux --> appurl[app.thebetterdecision.com]
 
-  apex -->|build + S3 sync + CF invalidate| s3[AWS S3]
-  s3 --> cf[CloudFront]
-  cf --> apexurl[thebetterdecision.com]
+  apex -->|build + wrangler deploy| worker[Cloudflare Worker tbd-landing]
+  worker --> apexurl[thebetterdecision.com]
 
   classDef pipe fill:#eef,stroke:#446
   class rel,apex pipe
 ```
 
-The apex CDN bucket is reached by GitHub Actions over the public AWS API using OIDC-issued credentials, not long-lived keys. The app, its MySQL and Valkey, and their backups are described in aws-infra (see [Where to look](#9-where-to-look-when-something-breaks)).
+The apex Worker is deployed by GitHub Actions through the Cloudflare API. The app, its MySQL and Valkey, and their backups are described in aws-infra (see [Where to look](#8-where-to-look-when-something-breaks)).
 
 ## 2. PR lifecycle (`test.yml`)
 
@@ -168,7 +166,7 @@ This is the load-bearing line (see `.github/workflows/release.yml` for the exact
 
 ### Production rollout (aws-infra)
 
-The bump PR changes the image tags of the backend, frontend, scheduler and migrations in `clusters/platform/tbd-prod/`. Migrations run as the `migrate` init container of the backend pod (`python /app/scripts/migrate.py`, `migrations` image), so a new version never serves on an old schema; see `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/tbd-prod/backend.yaml` and Section 6. Following a rollout: [aws-infra runbooks, "Follow Flux and rollouts"](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md).
+The bump PR changes the image tags of the backend, frontend, scheduler and migrations in `clusters/platform/tbd-prod/`. Migrations run as the `migrate` init container of the backend pod (`python /app/scripts/migrate.py`, `migrations` image), so a new version never serves on an old schema; see `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/tbd-prod/backend.yaml` and Section 5. Following a rollout: [aws-infra runbooks, "Follow Flux and rollouts"](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md).
 
 ### Smoke tests
 
@@ -230,187 +228,21 @@ aws-infra runbook above covers the password rotation. A rename is
 
 ## 4. Apex landing deploy (`apex-deploy.yml`)
 
-> Workflow is live on `main` (shipped in PR #267). It deploys to S3 + CloudFront on every push to `main` whose paths match the filter below. Public traffic reaches the distribution via the apex / www ALIAS records provisioned by PR #270.
+The apex landing (`thebetterdecision.com`) is a Next.js static export (`frontend/scripts/build-apex.sh` produces `frontend/out-apex/`) served by the Cloudflare Worker `tbd-landing` (code in `frontend/apex-worker/`). `www` is a proxied Cloudflare record that a redirect rule 301s to the apex (zone managed in aws-infra `terraform/cloudflare`).
 
-The apex landing (`thebetterdecision.com`) is a Next.js static export. `frontend/scripts/build-apex.sh` produces `frontend/out-apex/`. The workflow uploads that directory to an S3 bucket fronted by CloudFront in AWS, using **GitHub OIDC** to assume an IAM role (no long-lived AWS keys committed anywhere). The bucket, distribution, ACM cert, and IAM roles are provisioned by the `<tfc-org>/<apex-workspace>` TFC workspace (Section 5).
+The workflow runs on every push to `main` whose paths match the filter at the top of `.github/workflows/apex-deploy.yml` (and on `workflow_dispatch`). The `deploy-worker` job builds the export and runs `wrangler deploy`. It needs one secret, `CLOUDFLARE_API_TOKEN`, in the `landing` environment (deployment branches: `main` only), and skips with a notice while it is unset. No AWS credentials or repository variables are involved.
 
-### Trigger and path filter
-
-```yaml
-on:
-  push:
-    branches: [main]
-    paths:
-      # Landing surface
-      - "frontend/app/page.tsx"
-      - "frontend/app/privacy/**"
-      - "frontend/app/terms/**"
-      - "frontend/app/docs/**"
-      # Structural retained app files
-      - "frontend/app/layout.tsx"
-      - "frontend/app/not-found.tsx"
-      - "frontend/app/error.tsx"
-      - "frontend/app/loading.tsx"
-      - "frontend/app/global-error.tsx"
-      - "frontend/app/icon.svg"
-      - "frontend/app/globals.css"
-      # Landing components and apex-build helpers
-      - "frontend/components/landing/**"
-      - "frontend/components/auth/AuthProviderApex.tsx"
-      - "frontend/scripts/build-apex.sh"
-      - "frontend/next.config.apex.ts"
-      - "frontend/lib/links.ts"
-      # Shared brand and styling
-      - "frontend/lib/brand.ts"
-      - "frontend/lib/site.ts"
-      - "frontend/lib/styles.ts"
-      - "frontend/components/brand/**"
-      - "frontend/components/ThemeProvider.tsx"
-      - "frontend/components/tour/**"
-      - "frontend/components/ui/BackLink.tsx"
-      - "frontend/components/ui/CurrentYear.tsx"
-      - "frontend/components/ui/ThemeToggle.tsx"
-      - "frontend/public/**"
-      # Build inputs
-      - "frontend/package.json"
-      - "frontend/pnpm-lock.yaml"
-      - "frontend/pnpm-workspace.yaml"
-      # The workflow itself
-      - ".github/workflows/apex-deploy.yml"
-```
-
-`apex-deploy.yml` has its own `paths:` allowlist; `release.yml` has none (Section 3). A change to a shared path (`frontend/lib/brand.ts`, `frontend/public/**`, `frontend/package.json`, etc.) legitimately affects both surfaces and triggers both pipelines, while a landing-only change (`frontend/app/page.tsx`, `frontend/components/landing/**`, etc.) only deploys the apex unless its commit type warrants a release.
-
-### Permissions and concurrency
-
-```yaml
-permissions:
-  contents: read
-  id-token: write   # required for OIDC to AWS
-
-concurrency:
-  group: apex-deploy
-  cancel-in-progress: false   # never cancel an in-flight S3 sync
-```
-
-### Repository variables (Settings -> Secrets and variables -> Actions -> Variables tab)
-
-| Variable | Source | Purpose |
-|---|---|---|
-| `AWS_APEX_DEPLOY_ROLE_ARN` | TFC output `github_actions_role_arn` | Role assumed via OIDC |
-| `AWS_APEX_BUCKET` | TFC output `s3_bucket_name` | S3 sync target |
-| `AWS_APEX_DISTRIBUTION_ID` | TFC output `cloudfront_distribution_id` | CloudFront invalidation target |
-| `AWS_APEX_REGION` (optional) | n/a | Defaults to `eu-central-1` in the workflow |
-
-No secrets are needed. These are public-shaped identifiers.
-
-### Pipeline
-
-```mermaid
-sequenceDiagram
-  participant GH as GitHub Actions
-  participant Node as Node 22 runner
-  participant OIDC as GitHub OIDC -> AWS
-  participant S3 as S3 bucket (apex)
-  participant CF as CloudFront distribution
-
-  GH->>Node: actions/checkout, setup-node@22
-  Node->>Node: pnpm install --frozen-lockfile (frontend/)
-  Node->>Node: pnpm build:apex (build-apex.sh, TBD_BUILD_TARGET=apex)
-  Node->>Node: verify out-apex/index.html and _meta.json exist
-  Node->>OIDC: aws-actions/configure-aws-credentials@v4 (role-to-assume)
-  OIDC-->>Node: short-lived STS creds (sub claim must match repo:flamarion/pfv:ref:refs/heads/main)
-  Note over Node,S3: Order matters, see comments
-  Node->>S3: aws s3 sync out-apex/_next/static/ s3://BUCKET/_next/static/<br/>NO --delete, cache-control max-age=31536000 immutable
-  Node->>S3: aws s3 sync out-apex/ s3://BUCKET/<br/>--delete --exclude "_next/static/*"<br/>cache-control max-age=300 s-maxage=3600
-  Node->>S3: aws s3 cp out-apex/_meta.json s3://BUCKET/_meta.json<br/>cache-control no-cache no-store must-revalidate, content-type application/json
-  Node->>CF: aws cloudfront create-invalidation --paths "/*"
-  CF-->>Node: invalidation id
-  Node->>GH: print summary (commit, bucket, distribution, verify URL)
-```
-
-### Why the sync order is load-bearing
-
-1. **Immutable-first NO `--delete`**: hashed chunks under `_next/static/**` are content-addressed by Next.js. Locked at `max-age=31536000, immutable`. The newly-published HTML references new hashed-asset URLs; those chunks must exist in S3 **before** the HTML is visible to viewers.
-2. **Then mutable WITH `--delete`**: everything outside `_next/static/**` (HTML, icons, OG/apple images, fonts, JSON, txt, xml) gets short-cached and prunes deleted objects. Browser-cached old HTML (5-min TTL) still references old hashed-asset URLs; deleting those mid-flight would produce 404s for users who have not yet refetched the HTML.
-3. **Override `_meta.json` last**: `_meta.json` is the deploy-verification probe. It is re-uploaded with `Cache-Control: no-cache, no-store, must-revalidate` so a curl against the apex always returns the freshest SHA.
-4. **`/*` invalidation**: blanket. CloudFront invalidations are pennies per path; the simpler invariant beats the cost optimization.
-
-Trade-off: orphaned hashed chunks accumulate. PR #240's S3 lifecycle policy prunes noncurrent versions after 90 days, but **not** orphaned-by-rename objects. Periodic cleanup is a tracked follow-up.
-
-### Auth boundary
-
-The OIDC trust policy on `github-actions-apex-deploy` (provisioned by PR #240) uses `StringEquals` on the OIDC `sub` claim, pinned to exactly `repo:flamarion/pfv:ref:refs/heads/main`. PR-context tokens have a different `sub` and are rejected at the IAM trust level. Workflow `if:` guards alone would be insufficient since PR authors can edit the workflow file. The `branches: [main]` trigger is belt-and-suspenders.
+Shared paths (`frontend/lib/brand.ts`, `frontend/public/**`, `frontend/package.json`, etc.) are also built by `release.yml`, so a change to any of them legitimately fires both pipelines. Landing-only paths only fire `apex-deploy.yml`.
 
 ### How to verify an apex deploy
 
-1. Watch the workflow run: `https://github.com/flamarion/pfv/actions/workflows/apex-deploy.yml`
-2. Confirm the deployed commit SHA via `/_meta.json` (object is `no-cache`, so the response is always fresh):
-   ```bash
-   curl -fsS https://thebetterdecision.com/_meta.json
-   ```
-   If the apex hostname is unreachable for any reason (incident, DNS misconfiguration), the same probe works against the CloudFront-assigned hostname from the TFC output `cloudfront_distribution_domain`:
-   ```bash
-   curl -fsS https://<distribution>.cloudfront.net/_meta.json
-   ```
-3. CloudFront invalidation status: AWS console -> CloudFront -> Distributions -> select -> Invalidations tab.
+1. Watch the workflow run: `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/apex-deploy.yml`
+2. Confirm the deployed commit SHA: `curl -fsS https://thebetterdecision.com/_meta.json`
 
-## 5. Terraform: `<tfc-org>/<apex-workspace>` (AWS apex control plane)
+Rollback is in Section 7.
 
-Source: `https://github.com/fjcloudaiconsulting/aws-infra/tree/main/terraform/tbd-apex`, `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/README.md`.
 
-Its own TFC workspace (AWS OIDC auth), so the blast radius is contained.
-
-| Resource | Purpose |
-|---|---|
-| `aws_s3_bucket` (+ public-access-block, versioning, SSE, lifecycle, ownership) | Private origin bucket for the static export |
-| `aws_cloudfront_distribution` (+ OAC) | Edge distribution with HTTPS, HSTS, www -> apex redirect |
-| `aws_cloudfront_function` | Viewer-request: www -> apex 301 redirect, then S3 directory-index rewrite (`/privacy/` -> `/privacy/index.html`) |
-| `aws_cloudfront_response_headers_policy` | HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy |
-| `aws_acm_certificate` + `_validation` | DNS-validated cert in `us-east-1` for apex + www (CloudFront requirement) |
-| `aws_route53_record.apex_acm_validation` | ACM `_<token>` CNAME records in the existing zone (separate from the apex / www A + AAAA ALIAS records, which are also managed by this module). |
-| `aws_iam_openid_connect_provider.github` | Trust for GitHub Actions OIDC tokens |
-| `aws_iam_openid_connect_provider.tfc` | Trust for Terraform Cloud workload-identity tokens |
-| `aws_iam_role.github_actions_apex_deploy` | Deploy role: `s3:PutObject`/`s3:DeleteObject`/`s3:ListBucket` scoped to the apex bucket; `cloudfront:CreateInvalidation` scoped to the apex distribution |
-| `aws_iam_role.tfc_apex_provisioner` | TFC-assumed role for managing the resources above |
-
-### Workflow
-
-- Speculative plan on every PR that touches the apex Terraform (in aws-infra)
-- Apply on merge to `main`, **manual Confirm & Apply** in TFC
-- Local CLI plan-only is allowed for debug; never apply from CLI
-
-```mermaid
-flowchart LR
-  pr[PR touches apex Terraform in aws-infra] --> tfcsp[TFC apex speculative plan]
-  tfcsp -->|status check on PR| pr
-  pr --> merge[Merge to main]
-  merge --> tfcapp[TFC apex apply run]
-  tfcapp --> hold[Waiting on Confirm and Apply]
-  hold --> apply[Apply runs via OIDC -> tfc-apex-provisioner role]
-  apply --> done[AWS resources updated]
-  apply -.->|outputs| consumers[github_actions_role_arn -> apex-deploy.yml<br/>s3_bucket_name -> apex-deploy.yml<br/>cloudfront_distribution_id -> apex-deploy.yml<br/>cloudfront_distribution_domain -> diagnostic / fallback probe]
-```
-
-### Bootstrap (one-time)
-
-Because the OIDC providers and `tfc-apex-provisioner` role only exist after the first apply, the first run uses a single static-credential window:
-
-1. Create IAM user `pfv-apex-bootstrap` with `AdministratorAccess`. Generate an access-key pair.
-2. In TFC -> `<tfc-org>/<apex-workspace>` -> Variables: set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (both env, sensitive), `aws_account_id` (terraform).
-3. Merge the apex Terraform PR. Confirm & Apply.
-4. Switch TFC to OIDC: set `TFC_AWS_PROVIDER_AUTH=true`, `TFC_AWS_RUN_ROLE_ARN=<tfc_role_arn output>`. Delete `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
-5. Delete (or deactivate the access key of) the bootstrap IAM user within the hour.
-6. Trigger a no-op plan in TFC; an empty plan = OIDC works end-to-end.
-
-After bootstrap, TFC runs use workload identity. Long-lived AWS keys exist nowhere in the repo or in TFC.
-
-### What this workspace does **not** do
-
-- It does **not** manage the dashboard surface (`app.thebetterdecision.com`). That DNS lives on Cloudflare (`terraform/cloudflare` in aws-infra) and points at the k3s node.
-- Route 53 writes are split into two narrowly-scoped IAM statements: `A` and `AAAA` on exactly the apex and www FQDNs, and `CNAME` on the exact ACM validation names exposed by `aws_acm_certificate.apex.domain_validation_options`. Every other record type and every other name in the zone is IAM-blocked.
-
-## 6. Database migrations
+## 5. Database migrations
 
 `backend/Dockerfile` is multi-stage with two named targets, both built from a venv made in a separate `builder` stage:
 
@@ -482,12 +314,12 @@ sequenceDiagram
 
 ### Migration policy
 
-- **Forward-only in production.** `alembic downgrade` is forbidden in agent contexts per `feedback_agent_destructive_db_ops`. Rollback path is "write a new fix-up migration" (see Section 8).
+- **Forward-only in production.** `alembic downgrade` is forbidden in agent contexts per `feedback_agent_destructive_db_ops`. Rollback path is "write a new fix-up migration" (see Section 7).
 - Migrations land via the same PR that uses them. The `migrate` init container applies them on the next prod rollout, **before** the backend with the new code starts.
 
 For env var detail (`DATABASE_URL`, `APP_ENV`, etc.) on the migrate container, see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Migrate init container".
 
-## 7. What triggers what (decision tree)
+## 6. What triggers what (decision tree)
 
 ⚠ **`release.yml` has NO `paths:` filter (TBD-424, 2026-08-20).** Every push to
 `main` starts a Release run, whatever it touched, a README-only merge included.
@@ -517,11 +349,11 @@ flowchart TD
   semrel -- "no: ordinary merge" --> noship[Release PR opened or updated. No tag, no images retagged.]
 
   start --> apexq{P in the apex allowlist?<br/>app/page.tsx, app/privacy/**,<br/>app/terms/**, app/docs/**,<br/>components/landing/**, lib/brand.ts,<br/>globals.css, build-apex.sh, ...}
-  apexq -- yes --> apex[apex-deploy.yml also fires: S3 sync + CloudFront invalidation]
+  apexq -- yes --> apex[apex-deploy.yml also fires: deploys the tbd-landing Worker]
   apexq -- no --> apexno[apex-deploy.yml does not fire]
 ```
 
-Apex, backups and platform Terraform changes are made in the aws-infra repo.
+Backups and platform Terraform changes are made in the aws-infra repo.
 
 Concrete cases:
 
@@ -538,13 +370,11 @@ Concrete cases:
 ⚠ A landing-only commit does not skip `release.yml`: if its commit type
 warrants a version, it enters the release PR. That is the correct behaviour:
 the version line should reflect what shipped. `apex-deploy.yml` keeps its own
-`paths:` filter, for a cost reason and not a correctness one: every apex run does an S3
-sync plus a CloudFront `/*` invalidation, and invalidations past 1,000/month
-are metered. It is the only hand-maintained path allowlist in the repo, and
+`paths:` filter. It is the only hand-maintained path allowlist in the repo, and
 it is known to have drifted (`features/`, `compare/`, `vs/`,
 `lib/dataPolicy.ts`), tracked as **TBD-433**.
 
-## 8. Rollback playbook
+## 7. Rollback playbook
 
 Forward-only philosophy across the board. "Rollback" means "publish a new state that undoes the bad state", not "revert state in place".
 
@@ -554,19 +384,9 @@ Revert the image-bump PR in aws-infra and merge it; Flux rolls the previous tags
 
 ### Apex landing (`apex-deploy.yml`)
 
-Option A, revert the merge commit, push to `main`. The path filter re-triggers `apex-deploy.yml`, which rebuilds and re-syncs. CloudFront `/*` invalidation flushes the edge.
+Revert the merge commit (PR, merge); the path filter re-triggers `apex-deploy.yml`, which redeploys the Worker. Alternatively `wrangler rollback` (or the Workers dashboard -> `tbd-landing` -> Deployments) restores a prior Worker version immediately.
 
-Option B, restore prior S3 object versions. The apex bucket has versioning enabled (provisioned by PR-A). For a surgical undo (e.g. a single `privacy/index.html` regression):
-```bash
-aws s3api list-object-versions --bucket <AWS_APEX_BUCKET> --prefix privacy/index.html
-aws s3api copy-object \
-  --bucket <AWS_APEX_BUCKET> --key privacy/index.html \
-  --copy-source "<AWS_APEX_BUCKET>/privacy/index.html?versionId=<prior-version-id>"
-aws cloudfront create-invalidation --distribution-id <AWS_APEX_DISTRIBUTION_ID> --paths "/privacy/index.html" "/privacy/"
-```
-Prefer Option A for any rollback that affects more than one or two objects; the repo stays the source of truth.
-
-### Terraform (apex workspace)
+### Terraform
 
 Revert the merge commit in aws-infra. TFC plans the inverse change on the next merge. Operator clicks Confirm & Apply. State catches up.
 
@@ -584,7 +404,7 @@ If a migration **partially applies** and the container exits non-zero, the backe
 - Schema state matches a known earlier revision: stamp it (`alembic stamp <rev>`) via a one-shot ops session and ship a new revision that completes the work. Only the operator should do this; agents must not (`feedback_agent_destructive_db_ops`).
 - Data corruption: write a fix-up migration; ship that. Database restore: [`clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/data/RESTORE.md) in aws-infra.
 
-## 9. Where to look when something breaks
+## 8. Where to look when something breaks
 
 | Surface | Where the logs live |
 |---|---|
@@ -595,9 +415,8 @@ If a migration **partially applies** and the container exits non-zero, the backe
 | Production rollout, Flux, backend/frontend logs, `migrate` init container logs | [aws-infra `docs/runbooks.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md), "Follow Flux and rollouts" |
 | MySQL / Valkey (namespace `data`), backups and restore | [aws-infra `clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/data/RESTORE.md) |
 | Release published but not on the cluster | The `release-drift-probe` issue in aws-infra |
-| TFC `<apex-workspace>` (AWS apex) | `https://app.terraform.io/app/<tfc-org>/workspaces/<apex-workspace>` |
-| Apex CloudFront access logs | Not enabled today. `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/terraform/tbd-apex/main.tf` (`aws_cloudfront_distribution.apex`) does not configure `logging_config`. Post-launch follow-up: provision a separate S3 bucket for CloudFront standard logs and add the logging block. For real-time debugging until then, AWS console -> CloudFront -> distribution -> Monitoring tab. |
-| Apex S3 contents | AWS console -> S3 -> `thebetterdecision-com-apex` |
+| Apex Worker logs and versions | Cloudflare dashboard -> Workers & Pages -> `tbd-landing` |
+| Smoke-test failure GitHub issue | Auto-opened by `scripts/notify-smoke-failure.sh`; check open issues in `fjcloudaiconsulting/tbd` |
 
 Triage shortcuts:
 
@@ -610,9 +429,7 @@ Triage shortcuts:
 | `release` job red after release-please already published the GitHub Release | `promote` never ran and a re-run cannot recover it (release-please finds the release and reports no `release_created`). Retag that commit's `sha-<7>` images as `vX.Y.Z` by hand, as `promote-release.yml` does; otherwise `release-drift-probe` flags it after its grace days |
 | Rollout done, app still broken | Check the aws-infra `post-deploy-smoke.yml` run (INFRA-114) or run `scripts/smoke-test.sh` (runbook above), then the backend/frontend pod logs |
 | `migrate` init container hung or failed | `kubectl -n tbd-prod logs deploy/backend -c migrate`. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
-| Apex site shows stale content | Confirm `apex-deploy.yml` ran for the SHA; check CloudFront invalidation completed; `curl https://thebetterdecision.com/_meta.json` (object is no-cache). If the apex hostname is itself unreachable, fall back to the TFC output `cloudfront_distribution_domain` to probe the distribution directly. |
-| Apex 404 on a known route | The CloudFront Function rewrites `/path/` -> `/path/index.html`. Check the function's invocation logs in CloudFront Functions console |
-| Apex deploy failed at OIDC step | Trust policy on `github-actions-apex-deploy` pinned to `repo:flamarion/pfv:ref:refs/heads/main`. PR-context, forks, non-main branches are rejected by design |
+| Apex site shows stale content | Confirm the `deploy-worker` job of `apex-deploy.yml` ran for the SHA (it skips green while `CLOUDFLARE_API_TOKEN` is unset in the `landing` environment); `curl https://thebetterdecision.com/_meta.json` |
 | App can't reach MySQL or Valkey | Check the `data` namespace pods and the `DATABASE_URL` / `REDIS_URL` keys in the `tbd-prod` secret (aws-infra) |
 | Secret env var missing or wrong after a rollout | `clusters/platform/tbd-prod/*.secret.yaml` in aws-infra; the runbook's "Write or rotate a Kubernetes Secret" |
 

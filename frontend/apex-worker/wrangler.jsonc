@@ -1,6 +1,6 @@
 {
   // INFRA-60: the apex static export (pnpm build:apex -> ../out-apex) as a Worker, same pattern as
-  // Ziftbook's landing. workers.dev preview only; INFRA-61 adds the custom domains and retires S3/CloudFront.
+  // Ziftbook's landing. Serves thebetterdecision.com (custom domain attached by hand, INFRA-61).
   "name": "tbd-landing",
   // Not a secret: account IDs identify an account but grant no access. The API token is the only secret.
   "account_id": "fb5eb042529f2621c6de3f34c6801174",

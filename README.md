@@ -40,7 +40,7 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 | Auth | JWT (access + refresh), bcrypt, TOTP (pyotp), Google OAuth2 (with step-up for sensitive flows) |
 | Email | Mailgun (production), structlog (development) |
 | Proxy | nginx (development), Cloudflare in front of Traefik on k3s (production) |
-| Landing (apex) | AWS S3 + CloudFront + ACM + IAM OIDC, separate from the app, see [`DEPLOYMENT.md`](docs/operations/DEPLOYMENT.md) |
+| Landing (apex) | Cloudflare Worker `tbd-landing`, separate from the app, see [`DEPLOYMENT.md`](docs/operations/DEPLOYMENT.md) |
 
 ## Quick Start
 
@@ -76,11 +76,11 @@ Every part of the project has a single authoritative document. Start with the ro
 
 | Doc | When you need it |
 |---|---|
-| [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) | What happens between `git push` and a live change. All CI/CD flows (PR lifecycle, release and image promotion, apex landing deploy), migrations, what-triggers-what decision tree, per-pipeline rollback playbook, where to look when things break. Diagrams included. |
+| [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md) | What happens between `git push` and a live change. All CI/CD flows (PR lifecycle, release and image promotion, Worker landing deploy), migrations, what-triggers-what decision tree, per-pipeline rollback playbook, where to look when things break. Diagrams included. |
 
 ### Infrastructure
 
-Where and how TBD runs (k3s cluster, Flux, in-cluster MySQL and Valkey, backups, Cloudflare, the apex landing's AWS stack) lives in [fjcloudaiconsulting/aws-infra](https://github.com/fjcloudaiconsulting/aws-infra). Its `docs/runbooks.md` and `docs/configuration-map.md` are the operations entry points.
+Where and how TBD runs (k3s cluster, Flux, in-cluster MySQL and Valkey, backups, Cloudflare) lives in [fjcloudaiconsulting/aws-infra](https://github.com/fjcloudaiconsulting/aws-infra). Its `docs/runbooks.md` and `docs/configuration-map.md` are the operations entry points.
 
 ### Product + design
 
@@ -98,14 +98,14 @@ Browser
         --> /api/*  --> backend  (FastAPI, port 8000)  --> MySQL  (in-cluster)
         |                                              --> Valkey (in-cluster)
         --> /*      --> frontend (Next.js, port 3000)
-  --> thebetterdecision.com (CloudFront -> S3)
+  --> thebetterdecision.com (Cloudflare Worker `tbd-landing`)
         --> static landing export (auth-free, no app code in bundle)
 ```
 
 - **App backend** serves a REST API under `/api/v1/`. Stateless, horizontally scalable, ready for K8s.
 - **App frontend** is a Next.js App Router build. All API calls use Bearer token auth with silent refresh.
-- **Apex landing** is a separate Next.js static export built by `pnpm build:apex`, deployed to S3 via GitHub Actions with OIDC role assume.
-- **nginx** routes traffic in development. Traefik on the k3s cluster handles ingress for the app in production; CloudFront handles ingress for the apex.
+- **Apex landing** is a separate Next.js static export built by `pnpm build:apex`, deployed as a Cloudflare Worker (`frontend/apex-worker/`) via GitHub Actions.
+- **nginx** routes traffic in development. Traefik on the k3s cluster handles ingress for the app in production; Cloudflare handles ingress for the apex.
 
 For the full pipeline mechanics, see [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md). For the production topology, see [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra).
 
