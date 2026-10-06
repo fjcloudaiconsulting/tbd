@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Post-deploy smoke tests (L0.5).
 #
-# Verifies the live app can serve traffic after a deploy. Runs from
-# .github/workflows/deploy.yml after the DigitalOcean App Platform
-# deploy step succeeds — DO marking a deploy ACTIVE is necessary but
-# not sufficient. This script asserts the actual surface a real user
-# would touch first.
+# Verifies the live app can serve traffic after a deploy. Run by hand
+# after a production rollout (aws-infra docs/runbooks.md, "TBD smoke
+# account"): a rollout going Ready is necessary but not sufficient.
+# This script asserts the actual surface a real user would touch first.
 #
 # Surface (intentionally minimal — full E2E is project_functional_tests.md):
 #   1. GET  /health                     — liveness

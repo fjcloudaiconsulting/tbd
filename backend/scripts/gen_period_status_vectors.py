@@ -87,10 +87,10 @@ CASES: list[tuple[str, str | None]] = [
 
 
 def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
-    """Walk upward from `start` until a directory holding both
-    `.github/workflows/deploy.yml` and `.do/app.yaml` is found.
+    """Walk upward from `start` until a directory holding
+    `.github/workflows/release.yml` is found.
 
-    Same marker walk as `tests/test_deploy_workflow.py`, and here for the same
+    Same marker walk as `tests/test_release_workflow.py`, and here for the same
     reason: `parents[2]` is correct only from a host checkout and resolves to
     `/` when this file sits at `/app/scripts/…` inside the backend container.
 
@@ -99,13 +99,11 @@ def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
     already the repo root, so a revert here is green on every required check.
     """
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "deploy.yml").exists() and (
-            candidate / ".do" / "app.yaml"
-        ).exists():
+        if (candidate / ".github" / "workflows" / "release.yml").exists():
             return candidate
     raise RuntimeError(
-        "Could not locate repo root containing .github/workflows/deploy.yml "
-        "and .do/app.yaml. Run this generator from a checked-out repo."
+        "Could not locate repo root containing .github/workflows/release.yml. "
+        "Run this generator from a checked-out repo."
     )
 
 

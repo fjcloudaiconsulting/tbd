@@ -10,7 +10,7 @@ Anyone deploying, operating, or running pfv locally:
 
 - Local developers (`docker compose` + `./tbd`)
 - CI maintainers (GitHub Actions secrets, smoke tests)
-- Production operators (DigitalOcean App Platform, `doctl apps update`)
+- Production operators (aws-infra `clusters/platform/tbd-prod/`)
 
 ## Table of contents
 
@@ -20,8 +20,7 @@ Anyone deploying, operating, or running pfv locally:
 4. [Secrets vs non-secrets](#secrets-vs-non-secrets)
 5. [Deployment paths](#deployment-paths)
 6. [Common failure modes](#common-failure-modes)
-7. [Spec-sync hazards (DigitalOcean App Platform)](#spec-sync-hazards-digitalocean-app-platform)
-8. [Related files](#related-files)
+7. [Related files](#related-files)
 
 ---
 
@@ -40,18 +39,12 @@ cp .env.example .env
 
 The rest of `.env.example` is pre-populated with safe local-dev defaults.
 
-### Production (DigitalOcean App Platform)
+### Production
 
-Production env vars live in `.do/app.yaml` and are pushed with:
-
-```bash
-doctl apps update <APP_ID> --spec .do/app.yaml
-```
-
-The current production app ID is `<app-id>`.
-
-`SECRET`-scoped values are encrypted as `EV[...]` blobs and safe to commit.
-See [Spec-sync hazards](#spec-sync-hazards-digitalocean-app-platform) below.
+Production env vars live in aws-infra `clusters/platform/tbd-prod/` (plain
+env in the manifests, secrets in SOPS-encrypted `*.secret.yaml`); see
+[Secrets vs non-secrets](#secrets-vs-non-secrets). Merging a change there is
+the deploy.
 
 ---
 
@@ -68,52 +61,52 @@ the env-var name (uppercased).
 
 | Variable | Required | Default | Local | CI | Prod | Sensitive | Purpose | Failure mode if missing |
 |---|---|---|---|---|---|---|---|---|
-| `APP_NAME` | no | `"The Better Decision"` | `.env` | conftest | `.do/app.yaml` | no | Display name in emails and Swagger title. | Default used. |
-| `APP_ENV` | yes | `development` | `.env` | conftest | `.do/app.yaml` (`production`) | no | Selects dev vs prod code paths (CORS, cookies, MFA fallback, lifespan migrations). | Defaults to `development`. Prod-only code paths are skipped. |
-| `TBD_APP_VERSION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Release version reported by `/health` (`version`). Baked into the published GHCR images at build time from the Dockerfile `ARG`; DO builds without build args. | Falls back to `dev`. |
+| `APP_NAME` | no | `"The Better Decision"` | `.env` | conftest | tbd-prod manifest | no | Display name in emails and Swagger title. | Default used. |
+| `APP_ENV` | yes | `development` | `.env` | conftest | tbd-prod manifest (`production`) | no | Selects dev vs prod code paths (CORS, cookies, MFA fallback, lifespan migrations). | Defaults to `development`. Prod-only code paths are skipped. |
+| `TBD_APP_VERSION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Release version reported by `/health` (`version`). Baked into the published GHCR images at build time from the Dockerfile `ARG`; Builds without build args report `dev`. | Falls back to `dev`. |
 | `TBD_APP_REVISION` | no | `dev` | unset | unset | unset (reports `dev`) | no | Git revision reported by `/health` (`revision`). Baked at build time like `TBD_APP_VERSION`. | Falls back to `dev`. |
-| `LOG_LEVEL` | no | `INFO` | `.env` | conftest | `.do/app.yaml` | no | structlog level filter. | Defaults to `INFO`. |
-| `DATABASE_URL` | yes | `mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2` | `.env` | conftest sets a placeholder | `.do/app.yaml` (SECRET, also bound to migrate job) | yes (prod) | Async SQLAlchemy DSN. Alembic and the app share it. | Backend cannot reach MySQL; lifespan and Alembic fail. |
-| `DB_POOL_SIZE` | no | `5` | `.env` | unset | `.do/app.yaml` (optional override) | no | SQLAlchemy pool size per replica. See K8S-3 (PR #251). | Default 5 used. |
-| `DB_MAX_OVERFLOW` | no | `10` | `.env` | unset | `.do/app.yaml` (optional override) | no | SQLAlchemy max overflow per replica. See K8S-3 (PR #251). | Default 10 used. |
-| `JWT_SECRET_KEY` | yes | none (placeholder rejected) | `.env` | conftest sets a long fixture value | `.do/app.yaml` SECRET, also bound to migrate job | yes | HS256 key for access / refresh / reset / step-up / invite / verify-email tokens. Also keyed by recovery-code HMAC and MFA Fernet derivation. | Backend refuses to boot (`field_validator` rejects placeholder; min length 32). |
+| `LOG_LEVEL` | no | `INFO` | `.env` | conftest | tbd-prod manifest | no | structlog level filter. | Defaults to `INFO`. |
+| `DATABASE_URL` | yes | `mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2` | `.env` | conftest sets a placeholder | tbd-prod secret (also on the migrate init container) | yes (prod) | Async SQLAlchemy DSN. Alembic and the app share it. | Backend cannot reach MySQL; lifespan and Alembic fail. |
+| `DB_POOL_SIZE` | no | `5` | `.env` | unset | tbd-prod manifest (optional override) | no | SQLAlchemy pool size per replica. See K8S-3 (PR #251). | Default 5 used. |
+| `DB_MAX_OVERFLOW` | no | `10` | `.env` | unset | tbd-prod manifest (optional override) | no | SQLAlchemy max overflow per replica. See K8S-3 (PR #251). | Default 10 used. |
+| `JWT_SECRET_KEY` | yes | none (placeholder rejected) | `.env` | conftest sets a long fixture value | tbd-prod secret (also on the migrate init container) | yes | HS256 key for access / refresh / reset / step-up / invite / verify-email tokens. Also keyed by recovery-code HMAC and MFA Fernet derivation. | Backend refuses to boot (`field_validator` rejects placeholder; min length 32). |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | no | `15` | `.env` | unset | inherit default | no | Access-token lifetime. | Default 15. |
 | `SESSION_LIFETIME_DAYS` | no | `30` | `.env` | unset | inherit default | no | Session TTL in days — drives the refresh cookie `Max-Age`, the refresh JWT `exp` claim, the Redis primary-key TTL, AND the absolute-lifetime check, all in lockstep. Per-org override via `OrgSetting(key="session_lifetime_days")` (set from the Security settings page; 1-365, validated). Validator enforces `1 <= v <= 365`; out-of-range values refuse to boot. Unified into a single TTL by the 2026-05-18 session-stability refactor — previously split between `REFRESH_IDLE_TTL_DAYS` (idle) and `SESSION_LIFETIME_DAYS` (absolute), which left the org setting decorative for any value above the idle TTL. | Default 30. |
-| `COOKIE_SECURE` | yes for prod | `true` | `.env` set to `false` for HTTP | `false` via conftest | `.do/app.yaml` (`true`) | no | Marks refresh / step-up / sso-state cookies `Secure`. | If `true` on HTTP, browsers drop the cookie and login loops. |
+| `COOKIE_SECURE` | yes for prod | `true` | `.env` set to `false` for HTTP | `false` via conftest | tbd-prod manifest (`true`) | no | Marks refresh / step-up / sso-state cookies `Secure`. | If `true` on HTTP, browsers drop the cookie and login loops. |
 | `AUTH_DEBUG_LOGGING` | no | `false` | `.env` | `true` via conftest autouse | unset (defaults to `false`) | no | Gates the `auth.refresh.rejected` structlog events emitted at every terminal-401 raise site in `/auth/refresh`. Default `false` keeps INFO logs quiet under normal operation. Flip to `true` during incident triage to capture the `reason` enum, then back to `false` once the diagnosis is in hand. The 401 itself is NOT gated — only the diagnostic emission. | Operator can't distinguish the eleven 401 paths in logs until the flag is on. |
-| `REDIS_URL` | yes for prod | `""` | `.env` (`redis://redis:6379/0`) | unset (in-memory fallback) | `.do/app.yaml` SECRET | yes (prod) | Auth session store and MFA email-fallback codes. Rate limits do not use it: they count in MySQL (INFRA-121). | **In production the backend refuses to boot** (TBD-438) — Redis is the auth session store, so every token-issue path would fail closed. Outside production MFA email-fallback is unavailable. |
-| `MAILGUN_API_KEY` | no | `""` | `.env` (empty for console logging) | unset | `.do/app.yaml` SECRET | yes | Mailgun API key. When empty, `send_email` logs subject/recipient only. | Email sends are silently skipped (dev-mode logger). |
-| `MAILGUN_DOMAIN` | with `MAILGUN_API_KEY` | `""` | `.env` | unset | `.do/app.yaml` (`m.thebetterdecision.com`) | no | Mailgun sending domain. | Mailgun call URL is malformed; send fails. |
-| `MAILGUN_REGION` | no | `""` | `.env` (empty for US) | unset | `.do/app.yaml` (`eu`) | no | `eu` selects `api.eu.mailgun.net`. Empty selects the US endpoint. | Wrong region returns Mailgun 401 / 404. |
-| `EMAIL_FROM` | no | `"The Better Decision <noreply@thebetterdecision.com>"` | `.env` | unset | `.do/app.yaml` | no | RFC-5322 `From:` header for outbound mail. | Default sender used. |
-| `APP_URL` | yes | `http://localhost` | `.env` | unset | `.do/app.yaml` (`https://app.thebetterdecision.com`) | no | Base URL embedded in password-reset, email-verify, MFA, invite, and Google SSO callback links. | Email links point at localhost. |
-| `MFA_ENCRYPTION_KEY` | yes if MFA used | `""` | `.env` (Fernet key) | unset | `.do/app.yaml` SECRET | yes | Fernet key for `users.mfa_secret_encrypted` at rest. | TOTP enroll / verify returns 500. |
-| `MFA_RECOVERY_HMAC_KEY` | no | `""` | unset | unset | `.do/app.yaml` SECRET when adopted | no | Optional dedicated HMAC key for recovery-code hashing. Unset (default) = hash under the `JWT_SECRET_KEY`-derived key, fully backward compatible. When set, new/regenerated recovery hashes key off this secret so rotating `JWT_SECRET_KEY` no longer invalidates them; existing hashes still verify via permanent jwt-derived + raw-jwt fallbacks. Validated only when set: `>=32` chars and MUST differ from `JWT_SECRET_KEY` (rejected at boot otherwise). Decoupling is asymptotic — 0% of existing hashes protected on flip-on, growing only as users regenerate. See `specs/mfa-recovery-hmac-key-decouple.md`. | None (unset = today's behavior). |
-| `API_TOKEN_HMAC_KEY` | yes for prod | `""` | unset | unset | `.do/app.yaml` SECRET | yes | HMAC-SHA256 pepper for hashing superadmin Personal Access Tokens (`pat_…`) at rest, used DIRECTLY (never `derive_hmac_key`) so it is decoupled from `JWT_SECRET_KEY` rotation — the same lesson as `MFA_RECOVERY_HMAC_KEY`, but load-bearing here because a rotation would 401 the whole automation fleet. Validated when set: `>=32` chars and MUST differ from `JWT_SECRET_KEY`. **Required in production**: an explicit `model_validator` refuses to boot if unset when `APP_ENV=production`. Unset off-prod falls back to a `JWT_SECRET_KEY`-derived key for dev convenience only. See `specs/2026-07-21-superadmin-api-tokens-design.md`. | Prod: backend refuses to boot. Dev: PAT hashes key off the jwt-derived fallback. |
-| `API_TOKEN_HMAC_KEY_PREV` | no | `""` | unset | unset | `.do/app.yaml` SECRET during rotation | yes | Verify-only previous pepper for graceful `API_TOKEN_HMAC_KEY` rotation: a presented token is matched against the primary hash then this prev hash, so a two-deploy rotation (mint under new, verify under new-or-prev) never 401s live tokens. Clear once all tokens minted under the old key have expired or been re-minted. | Tokens minted under the old key stop verifying the moment the key rotates. |
+| `REDIS_URL` | yes for prod | `""` | `.env` (`redis://redis:6379/0`) | unset (in-memory fallback) | tbd-prod secret | yes (prod) | Auth session store and MFA email-fallback codes. Rate limits do not use it: they count in MySQL (INFRA-121). | **In production the backend refuses to boot** (TBD-438) — Redis is the auth session store, so every token-issue path would fail closed. Outside production MFA email-fallback is unavailable. |
+| `MAILGUN_API_KEY` | no | `""` | `.env` (empty for console logging) | unset | tbd-prod secret | yes | Mailgun API key. When empty, `send_email` logs subject/recipient only. | Email sends are silently skipped (dev-mode logger). |
+| `MAILGUN_DOMAIN` | with `MAILGUN_API_KEY` | `""` | `.env` | unset | tbd-prod manifest (`m.thebetterdecision.com`) | no | Mailgun sending domain. | Mailgun call URL is malformed; send fails. |
+| `MAILGUN_REGION` | no | `""` | `.env` (empty for US) | unset | tbd-prod manifest (`eu`) | no | `eu` selects `api.eu.mailgun.net`. Empty selects the US endpoint. | Wrong region returns Mailgun 401 / 404. |
+| `EMAIL_FROM` | no | `"The Better Decision <noreply@thebetterdecision.com>"` | `.env` | unset | tbd-prod manifest | no | RFC-5322 `From:` header for outbound mail. | Default sender used. |
+| `APP_URL` | yes | `http://localhost` | `.env` | unset | tbd-prod manifest (`https://app.thebetterdecision.com`) | no | Base URL embedded in password-reset, email-verify, MFA, invite, and Google SSO callback links. | Email links point at localhost. |
+| `MFA_ENCRYPTION_KEY` | yes if MFA used | `""` | `.env` (Fernet key) | unset | tbd-prod secret | yes | Fernet key for `users.mfa_secret_encrypted` at rest. | TOTP enroll / verify returns 500. |
+| `MFA_RECOVERY_HMAC_KEY` | no | `""` | unset | unset | tbd-prod secret when adopted | no | Optional dedicated HMAC key for recovery-code hashing. Unset (default) = hash under the `JWT_SECRET_KEY`-derived key, fully backward compatible. When set, new/regenerated recovery hashes key off this secret so rotating `JWT_SECRET_KEY` no longer invalidates them; existing hashes still verify via permanent jwt-derived + raw-jwt fallbacks. Validated only when set: `>=32` chars and MUST differ from `JWT_SECRET_KEY` (rejected at boot otherwise). Decoupling is asymptotic — 0% of existing hashes protected on flip-on, growing only as users regenerate. See `specs/mfa-recovery-hmac-key-decouple.md`. | None (unset = today's behavior). |
+| `API_TOKEN_HMAC_KEY` | yes for prod | `""` | unset | unset | tbd-prod secret | yes | HMAC-SHA256 pepper for hashing superadmin Personal Access Tokens (`pat_…`) at rest, used DIRECTLY (never `derive_hmac_key`) so it is decoupled from `JWT_SECRET_KEY` rotation — the same lesson as `MFA_RECOVERY_HMAC_KEY`, but load-bearing here because a rotation would 401 the whole automation fleet. Validated when set: `>=32` chars and MUST differ from `JWT_SECRET_KEY`. **Required in production**: an explicit `model_validator` refuses to boot if unset when `APP_ENV=production`. Unset off-prod falls back to a `JWT_SECRET_KEY`-derived key for dev convenience only. See `specs/2026-07-21-superadmin-api-tokens-design.md`. | Prod: backend refuses to boot. Dev: PAT hashes key off the jwt-derived fallback. |
+| `API_TOKEN_HMAC_KEY_PREV` | no | `""` | unset | unset | tbd-prod secret during rotation | yes | Verify-only previous pepper for graceful `API_TOKEN_HMAC_KEY` rotation: a presented token is matched against the primary hash then this prev hash, so a two-deploy rotation (mint under new, verify under new-or-prev) never 401s live tokens. Clear once all tokens minted under the old key have expired or been re-minted. | Tokens minted under the old key stop verifying the moment the key rotates. |
 | `MCP_JWT_SECRET_KEY` | yes for `./tbd prod` | none | dev compose hardcodes its own | unset | not yet (deploy follow-up) | yes | Feeds `JWT_SECRET_KEY` of the `mcp` component (TBD-561) in `docker-compose.prod.yml`. The component's OWN secret: it satisfies the boot validator and can neither verify nor mint a backend session. Never copy the backend's value. | `./tbd prod` refuses to start (compose `:?`). |
 | `MCP_MFA_RECOVERY_HMAC_KEY` | yes for `./tbd prod` | none | dev compose hardcodes its own | unset | not yet (deploy follow-up) | yes | Feeds `MFA_RECOVERY_HMAC_KEY` of the `mcp` component (unused there, required by the boot validator; `>=32` chars, differs from its JWT secret). Never copy the backend's value. | `./tbd prod` refuses to start (compose `:?`). |
 | `API_TOKEN_DEFAULT_EXPIRY_DAYS` | no | `30` | unset | unset | inherit default | no | Default token lifetime pre-selected in the mint UI. | Default 30. |
 | `API_TOKEN_MAX_EXPIRY_DAYS` | no | `90` | unset | unset | inherit default | no | Server-enforced hard cap on token lifetime at mint (`expires_in_days > max` → 422; never client-trusted). | Default 90. |
-| `AI_CREDENTIAL_ENCRYPTION_KEY` | yes when AI providers used | `""` | `.env` (Fernet key) | unset | `.do/app.yaml` SECRET | yes | Fernet key for `org_ai_credentials.encrypted_api_key` / `encrypted_bearer_token`. MUST differ from `MFA_ENCRYPTION_KEY`; lifespan KEK guard fatal-logs `config.ai_credential_key_reuses_mfa_key` and refuses to boot on collision (except `APP_ENV=test`). | All `/api/v1/settings/ai-providers` writes return 500. |
-| `AI_CREDENTIAL_ENCRYPTION_KEY_PREV` | no | `""` | unset | unset | `.do/app.yaml` SECRET during rotation | yes | Previous-rotation Fernet key. Decrypt falls back to it when current key fails. Clear after re-encrypting all rows. | Existing rows can't be decrypted post-rotation until cleared. |
+| `AI_CREDENTIAL_ENCRYPTION_KEY` | yes when AI providers used | `""` | `.env` (Fernet key) | unset | tbd-prod secret | yes | Fernet key for `org_ai_credentials.encrypted_api_key` / `encrypted_bearer_token`. MUST differ from `MFA_ENCRYPTION_KEY`; lifespan KEK guard fatal-logs `config.ai_credential_key_reuses_mfa_key` and refuses to boot on collision (except `APP_ENV=test`). | All `/api/v1/settings/ai-providers` writes return 500. |
+| `AI_CREDENTIAL_ENCRYPTION_KEY_PREV` | no | `""` | unset | unset | tbd-prod secret during rotation | yes | Previous-rotation Fernet key. Decrypt falls back to it when current key fails. Clear after re-encrypting all rows. | Existing rows can't be decrypted post-rotation until cleared. |
 | `AI_PROVIDER_ALLOW_PRIVATE_NETWORKS` | no | `false` | unset (set `true` only for a self-hosted Ollama on LAN/loopback) | unset | unset (stays `false`) | no | Escape hatch for the connect-time SSRF guard on org-configured AI provider endpoints (`ollama` / `openai_compatible` `base_url`). By default every outbound request resolves the hostname, validates all A/AAAA records against the egress denylist (loopback, RFC1918/ULA, link-local, cloud-metadata, multicast, reserved, non-global), and pins the connection to a validated IP (`backend/app/services/ai_providers/egress_guard.py`). Setting `true` permits private + loopback targets for the **ollama provider only**; link-local / metadata / multicast / reserved stay blocked regardless, and `openai_compatible` always gets the full denylist. | Ollama credentials pointing at a LAN/loopback address fail save-time validation and refuse to connect. |
-| `AI_NATIVE_ENABLED` | no | `false` | `.env` `false` | `.env` `false` | `.do/app.yaml` `false` | no | Master gate for the native (server-hosted) provider option. Flipped on with the native adapter + consent UI in PR4. | Native option hidden in the UI. |
-| `AI_NATIVE_CURRENT_CONSENT_VERSION` | no | `"ai-tos-2026-05-22"` | `.env` (same default) | `.env` (same default) | `.do/app.yaml` (same default) | no | Pinned ToS version for the native-provider consent flow. POSTs to `/api/v1/settings/ai-providers/consent` must carry this exact `consent_version` string — any mismatch (older OR newer) returns 400 `code=consent_version_outdated` with the current version in the response body. Bump to force every org to re-consent on the next admin-UI mount; existing rows are never auto-upgraded (spec §3.5). | A stale value would block all consent writes; a mistakenly-bumped value would force surprise re-prompts. |
-| `GOOGLE_CLIENT_ID` | yes for SSO | `""` | `.env` (OAuth client id) | unset | `.do/app.yaml` SECRET | yes | Google OAuth2 client id. | SSO endpoints 503; button (if forcibly shown) crashes the redirect. |
-| `CAPTCHA_REQUIRED` | no | `false` | `.env` `false` | unset (defaults to `false`) | `.do/app.yaml` `true` | no | Master switch for the register bot gate. When `true`, `/api/v1/auth/register` refuses any request without a token verified by the provider. Exposed to the frontend via `/api/v1/auth/status` so a backend flip is a real rollback on the next page load. First-run setup (`user_count == 0`) bypasses the gate so bootstrap stays usable. | Bot signups not blocked when `false`. When `true` with `CAPTCHA_SECRET=""` the verify call fails closed with `REASON_MISCONFIGURED` and all registrations are refused. |
-| `CAPTCHA_PROVIDER` | no | `"turnstile"` | `.env` | `.env` | `.do/app.yaml` | no | Label only today (no dispatch logic). Reserved for a second provider later. | Mislabeled events / metrics; no functional impact. |
-| `CAPTCHA_SECRET` | yes when `CAPTCHA_REQUIRED=true` | `""` | `.env` (Cloudflare test secret `1x0000000000000000000000000000000AA`) | unset | `.do/app.yaml` SECRET (real Cloudflare siteverify secret) | yes | The provider's siteverify shared secret. Never logged. The Turnstile dev test secret always returns success on any token. | Empty in prod with `CAPTCHA_REQUIRED=true` means every register attempt is refused; rollback by flipping `CAPTCHA_REQUIRED` to `false`. |
-| `CAPTCHA_VERIFY_URL` | no | `https://challenges.cloudflare.com/turnstile/v0/siteverify` | `.env` (default) | `.env` (default) | `.do/app.yaml` (same default) | no | Provider siteverify endpoint. Override only when swapping providers. | Wrong URL means 404 / 4xx and the gate fails closed. |
-| `CAPTCHA_VERIFY_TIMEOUT_S` | no | `5.0` | `.env` (5) | `.env` (5) | `.do/app.yaml` (5) | no | **Per-phase** httpx timeout for the siteverify POST — httpx expands the bare float to connect / write / read / pool, and `read` is charged per socket read, so on its own it bounds no total. Pair it with `CAPTCHA_VERIFY_TOTAL_TIMEOUT_S` below. Below ~3s risks false negatives under provider latency spikes; above ~10s holds the request worker too long. | Too low: legit signups fail closed under load. Too high: backend worker tied up. Must be `> 0` and `<=` `CAPTCHA_VERIFY_TOTAL_TIMEOUT_S` — **enforced at construction, so a violating pair is boot-fatal** rather than silently making the aggregate the binding bound. |
-| `CAPTCHA_VERIFY_TOTAL_TIMEOUT_S` | no | `20.0` | `.env` (20) | `.env` (20) | `.do/app.yaml` (20) | no | **Aggregate** ceiling for one siteverify call (TBD-328), wrapping only the awaited POST. Closes the gap `CAPTCHA_VERIFY_TIMEOUT_S` cannot: a provider dribbling one byte just under the per-phase read budget would otherwise hold a worker indefinitely on the synchronous, public, pre-auth `/api/v1/auth/register` path. Tripping it fails closed with `reason=timeout` and logs `captcha.verify.timeout` (with `timeout_s`, `total_timeout_s`, and `bound`), same event as a per-phase trip. **Read `bound` first when triaging:** `aggregate` means every phase stayed inside its budget while the call as a whole did not (the drip feed); `per_phase` means one phase stalled. Different Cloudflare remediations. | Must be `> 0` and `>=` `CAPTCHA_VERIFY_TIMEOUT_S`. **Enforced at construction — a violating pair refuses to boot**, because it would otherwise fail 100% of signups closed on a healthy-looking app whose only symptom is a captcha timeout an operator reads as a provider outage. Too high and the availability bound this exists for is toothless. |
-| `CAPTCHA_EXPECTED_HOSTNAME` | no | `""` | `.env` empty (skipped in dev) | unset | `.do/app.yaml` (`app.thebetterdecision.com`) | no | Pins the `hostname` field of the verify response. Empty disables the check (provider's widget-domain allowlist still applies). | Tokens issued from a different origin are still accepted when empty. |
-| `CAPTCHA_EXPECTED_ACTION` | no | `""` | `.env` empty | unset | `.do/app.yaml` (`register`) | no | Pins the `action` field of the verify response (set client-side via the Turnstile widget options). Defense-in-depth pairing for the hostname pin. | Tokens issued for a different action would be accepted when empty. |
-| `BILLING_UI_ENABLED` | no | `false` | `.env` `false` | unset (defaults to `false`) | `.do/app.yaml` `false` (flip to `true` when payment platform is wired) | no | Master switch for the customer-facing plan / trial / billing surface. When `false`, the trial banner, settings Billing tab, and `/settings/billing` plan grid are hidden; `/settings/billing` renders an explanatory empty state. Admin / operator views under `/admin/*` and `/system/*` are unaffected. Exposed via `/api/v1/auth/status` so a backend flip becomes a customer-facing change on the next page load. Backend API gating (`/api/v1/subscriptions`, `/api/v1/plans`) is NOT in scope; UI-only hide. | Trial / billing UI visible to customers when `true` before payment is live. Flip to `false` to hide. |
-| `FEATURE_REPORTS_V2` | no | `false` | `.env` `false` | unset (defaults to `false`) | `.do/app.yaml` `false` (flip to `true` in PR 4 once frontend + templates + sharing ship) | no | Master switch for the Reports v2 backend. When `false`, every route under `/api/v1/reports/*` returns 404 via a router-level dependency. Spec `specs/2026-05-22-reports-v2-flexible-canvas.md` §11. The frontend has no separate flag. | Reports surface unreachable from any client when `false`. Reports listing / CRUD / query unavailable. |
-| `TBD_CAPTCHA_SITE_KEY` | yes when `CAPTCHA_REQUIRED=true` | `1x00000000000000000000BB` (Turnstile always-pass test key) | `.env` (test key) | `.env` (test key) | `.do/app.yaml` (real Cloudflare site key) | no | Runtime site key the widget renders against. Changing the value needs a redeploy only. Widget render is gated on both `captcha_required` from `/api/v1/auth/status` AND a non-empty site key, so an empty value here means no widget renders even when the backend asks for one. | Empty in prod + `CAPTCHA_REQUIRED=true` → users can never obtain a token, every register attempt is rejected with `captcha_failed`. |
-| `GOOGLE_CLIENT_SECRET` | yes for SSO | `""` | `.env` | unset | `.do/app.yaml` SECRET | yes | Google OAuth2 client secret. | SSO token exchange fails with `invalid_client`. |
-| `BACKEND_CORS_ORIGINS` | yes | `http://localhost:3000` | `.env` (`http://localhost`) | unset | `.do/app.yaml` (`https://app.thebetterdecision.com`) | no | Comma-separated allowlist for `Access-Control-Allow-Origin`. | Browser blocks frontend XHR with CORS error. |
+| `AI_NATIVE_ENABLED` | no | `false` | `.env` `false` | `.env` `false` | tbd-prod manifest `false` | no | Master gate for the native (server-hosted) provider option. Flipped on with the native adapter + consent UI in PR4. | Native option hidden in the UI. |
+| `AI_NATIVE_CURRENT_CONSENT_VERSION` | no | `"ai-tos-2026-05-22"` | `.env` (same default) | `.env` (same default) | tbd-prod manifest (same default) | no | Pinned ToS version for the native-provider consent flow. POSTs to `/api/v1/settings/ai-providers/consent` must carry this exact `consent_version` string — any mismatch (older OR newer) returns 400 `code=consent_version_outdated` with the current version in the response body. Bump to force every org to re-consent on the next admin-UI mount; existing rows are never auto-upgraded (spec §3.5). | A stale value would block all consent writes; a mistakenly-bumped value would force surprise re-prompts. |
+| `GOOGLE_CLIENT_ID` | yes for SSO | `""` | `.env` (OAuth client id) | unset | tbd-prod secret | yes | Google OAuth2 client id. | SSO endpoints 503; button (if forcibly shown) crashes the redirect. |
+| `CAPTCHA_REQUIRED` | no | `false` | `.env` `false` | unset (defaults to `false`) | tbd-prod manifest `true` | no | Master switch for the register bot gate. When `true`, `/api/v1/auth/register` refuses any request without a token verified by the provider. Exposed to the frontend via `/api/v1/auth/status` so a backend flip is a real rollback on the next page load. First-run setup (`user_count == 0`) bypasses the gate so bootstrap stays usable. | Bot signups not blocked when `false`. When `true` with `CAPTCHA_SECRET=""` the verify call fails closed with `REASON_MISCONFIGURED` and all registrations are refused. |
+| `CAPTCHA_PROVIDER` | no | `"turnstile"` | `.env` | `.env` | tbd-prod manifest | no | Label only today (no dispatch logic). Reserved for a second provider later. | Mislabeled events / metrics; no functional impact. |
+| `CAPTCHA_SECRET` | yes when `CAPTCHA_REQUIRED=true` | `""` | `.env` (Cloudflare test secret `1x0000000000000000000000000000000AA`) | unset | tbd-prod secret (real Cloudflare siteverify secret) | yes | The provider's siteverify shared secret. Never logged. The Turnstile dev test secret always returns success on any token. | Empty in prod with `CAPTCHA_REQUIRED=true` means every register attempt is refused; rollback by flipping `CAPTCHA_REQUIRED` to `false`. |
+| `CAPTCHA_VERIFY_URL` | no | `https://challenges.cloudflare.com/turnstile/v0/siteverify` | `.env` (default) | `.env` (default) | tbd-prod manifest (same default) | no | Provider siteverify endpoint. Override only when swapping providers. | Wrong URL means 404 / 4xx and the gate fails closed. |
+| `CAPTCHA_VERIFY_TIMEOUT_S` | no | `5.0` | `.env` (5) | `.env` (5) | tbd-prod manifest (5) | no | **Per-phase** httpx timeout for the siteverify POST — httpx expands the bare float to connect / write / read / pool, and `read` is charged per socket read, so on its own it bounds no total. Pair it with `CAPTCHA_VERIFY_TOTAL_TIMEOUT_S` below. Below ~3s risks false negatives under provider latency spikes; above ~10s holds the request worker too long. | Too low: legit signups fail closed under load. Too high: backend worker tied up. Must be `> 0` and `<=` `CAPTCHA_VERIFY_TOTAL_TIMEOUT_S` — **enforced at construction, so a violating pair is boot-fatal** rather than silently making the aggregate the binding bound. |
+| `CAPTCHA_VERIFY_TOTAL_TIMEOUT_S` | no | `20.0` | `.env` (20) | `.env` (20) | tbd-prod manifest (20) | no | **Aggregate** ceiling for one siteverify call (TBD-328), wrapping only the awaited POST. Closes the gap `CAPTCHA_VERIFY_TIMEOUT_S` cannot: a provider dribbling one byte just under the per-phase read budget would otherwise hold a worker indefinitely on the synchronous, public, pre-auth `/api/v1/auth/register` path. Tripping it fails closed with `reason=timeout` and logs `captcha.verify.timeout` (with `timeout_s`, `total_timeout_s`, and `bound`), same event as a per-phase trip. **Read `bound` first when triaging:** `aggregate` means every phase stayed inside its budget while the call as a whole did not (the drip feed); `per_phase` means one phase stalled. Different Cloudflare remediations. | Must be `> 0` and `>=` `CAPTCHA_VERIFY_TIMEOUT_S`. **Enforced at construction — a violating pair refuses to boot**, because it would otherwise fail 100% of signups closed on a healthy-looking app whose only symptom is a captcha timeout an operator reads as a provider outage. Too high and the availability bound this exists for is toothless. |
+| `CAPTCHA_EXPECTED_HOSTNAME` | no | `""` | `.env` empty (skipped in dev) | unset | tbd-prod manifest (`app.thebetterdecision.com`) | no | Pins the `hostname` field of the verify response. Empty disables the check (provider's widget-domain allowlist still applies). | Tokens issued from a different origin are still accepted when empty. |
+| `CAPTCHA_EXPECTED_ACTION` | no | `""` | `.env` empty | unset | tbd-prod manifest (`register`) | no | Pins the `action` field of the verify response (set client-side via the Turnstile widget options). Defense-in-depth pairing for the hostname pin. | Tokens issued for a different action would be accepted when empty. |
+| `BILLING_UI_ENABLED` | no | `false` | `.env` `false` | unset (defaults to `false`) | tbd-prod manifest `false` (flip to `true` when payment platform is wired) | no | Master switch for the customer-facing plan / trial / billing surface. When `false`, the trial banner, settings Billing tab, and `/settings/billing` plan grid are hidden; `/settings/billing` renders an explanatory empty state. Admin / operator views under `/admin/*` and `/system/*` are unaffected. Exposed via `/api/v1/auth/status` so a backend flip becomes a customer-facing change on the next page load. Backend API gating (`/api/v1/subscriptions`, `/api/v1/plans`) is NOT in scope; UI-only hide. | Trial / billing UI visible to customers when `true` before payment is live. Flip to `false` to hide. |
+| `FEATURE_REPORTS_V2` | no | `false` | `.env` `false` | unset (defaults to `false`) | tbd-prod manifest `true` | no | Master switch for the Reports v2 backend. When `false`, every route under `/api/v1/reports/*` returns 404 via a router-level dependency. Spec `specs/2026-05-22-reports-v2-flexible-canvas.md` §11. The frontend has no separate flag. | Reports surface unreachable from any client when `false`. Reports listing / CRUD / query unavailable. |
+| `TBD_CAPTCHA_SITE_KEY` | yes when `CAPTCHA_REQUIRED=true` | `1x00000000000000000000BB` (Turnstile always-pass test key) | `.env` (test key) | `.env` (test key) | tbd-prod manifest (real Cloudflare site key) | no | Runtime site key the widget renders against. Changing the value needs a redeploy only. Widget render is gated on both `captcha_required` from `/api/v1/auth/status` AND a non-empty site key, so an empty value here means no widget renders even when the backend asks for one. | Empty in prod + `CAPTCHA_REQUIRED=true` → users can never obtain a token, every register attempt is rejected with `captcha_failed`. |
+| `GOOGLE_CLIENT_SECRET` | yes for SSO | `""` | `.env` | unset | tbd-prod secret | yes | Google OAuth2 client secret. | SSO token exchange fails with `invalid_client`. |
+| `BACKEND_CORS_ORIGINS` | yes | `http://localhost:3000` | `.env` (`http://localhost`) | unset | tbd-prod manifest (app, apex and `www` origins) | no | Comma-separated allowlist for `Access-Control-Allow-Origin`. | Browser blocks frontend XHR with CORS error. |
 | `DEFAULT_PLAN_SLUG` | no | `pro` | `.env` (optional) | unset | inherit default | no | Default subscription plan slug at first-user creation. | Default `pro` used (beta posture). |
 | `TRIAL_DURATION_DAYS` | no | `14` | `.env` (optional) | unset | inherit default | no | Trial duration assigned at first-user creation. | Default 14 used. |
 | `OFX_PARSE_MAX_CONCURRENT` | no | `4` | `.env` (optional) | unset | inherit default | no | Global ceiling on simultaneous OFX statement parses (child processes) in one backend process. OFX files parse in a hard-killable child process so a pathological / adversarial upload cannot pin a CPU core after the request returns; this bounds how many can run at once. Per-replica (compute-only isolation, horizontally-scale-safe). Over the ceiling → HTTP 429 after `OFX_PARSE_QUEUE_WAIT_S`. | Default 4. Raise for more import throughput at the cost of more peak CPU/RAM; lower to protect a small box. |
@@ -123,7 +116,7 @@ the env-var name (uppercased).
 | `OFX_MAX_ROWS` | no | `10000` | `.env` (optional) | unset | inherit default | no | Post-parse transaction-count cap for an OFX file → HTTP 413 on excess. Restored to 10 000 now that parsing is isolated + killable (was temporarily lowered to 2 000 as a pre-isolation DoS stopgap). | Default 10 000. Files above the cap must be split by date range. |
 | `EXPORT_MAX_ROWS` | no | `2000000` | `.env` (optional) | unset | inherit default | no | Pre-flight `COUNT(*)` ceiling across every table the export registry includes (TBD-222). Above it `scripts/export_org.py` refuses and points the operator at the `privacy@` email channel. | Default 2 000 000. A refusal is safe: no partial artifact is produced. |
 | `EXPORT_MAX_BYTES` | no | `1073741824` | `.env` (optional) | unset | inherit default | no | Cumulative encoded-output ceiling for one export, checked incrementally and aborted the moment it is crossed. A row count does NOT bound bytes (`transactions.description` is free text; several columns are unbounded JSON), and bytes is what exhausts a 512 MB single-instance box. | Default 1 GiB. On abort with `--out` the `.part` file is UNLINKED, so nothing is left at or beside the destination; with `--stdout` the bytes already redirected are trailer-less and fail verification by design. |
-| `PFV_RUNTIME` | yes for prod | unset | unset | unset | `.do/app.yaml` (`app_platform`) | no | Tells `rate_limit.get_client_ip` to read `do-connecting-ip` unconditionally. | `audit_events.ip_address` records the DO ingress IP, not the user's IP. |
+| `PFV_RUNTIME` | legacy | unset | unset | unset | unset | no | Legacy: `app_platform` made `rate_limit.get_client_ip` read `do-connecting-ip`. Leave unset on k3s; use `CLIENT_IP_HEADER`. | Unset is correct on k3s. |
 | `CLIENT_IP_HEADER` | yes for k3s prod | unset | unset | unset | `cf-connecting-ip` in the aws-infra `tbd-prod` backend and frontend manifests | no | Header `rate_limit.get_client_ip` trusts for the visitor's IP when it holds one valid IP; the frontend `proxy.ts` access log (`remote_addr`) follows the same rule. Set only where the origin accepts our Cloudflare zone exclusively (Authenticated Origin Pulls, INFRA-93). A Cloudflare-ranges firewall is not enough: a Worker on another zone can set `x-real-ip`, which Cloudflare forwards as `CF-Connecting-IP`. | Unset behind Cloudflare: rate limits and `audit_events.ip_address` key on Cloudflare edge IPs. Set without Authenticated Origin Pulls: callers can pick their own IP. |
 | `PFV_MIGRATE_OK_OFF_MAIN` | no | unset | shell / `.env` only when needed | unset | unset | no | Escape hatch for the lifespan + `./tbd migrate` branch guard. Allows migrations from a non-`main` checkout. | Without it, lifespan and `./tbd migrate` refuse to run on a feature branch. |
 
@@ -140,9 +133,9 @@ the Python backend. They must match the credentials embedded in
 | `MYSQL_USER` | yes | `pfv2` | `.env` | no | App-level MySQL user created at init. Must match `DATABASE_URL`. |
 | `MYSQL_PASSWORD` | yes | `pfv2_secret` | `.env` | yes (locally trivial) | `MYSQL_USER`'s password. Must match `DATABASE_URL`. |
 
-Production MySQL runs on the `<data-droplet>` droplet; credentials live in
-`DATABASE_URL` (SECRET) and not in any per-mysql-container env. See
-`infra/MIGRATION.md`.
+Production MySQL runs in-cluster (namespace `data`); credentials live in
+`DATABASE_URL` (a SOPS secret) and not in any per-mysql-container env. See
+[aws-infra `clusters/platform/data/`](https://github.com/fjcloudaiconsulting/aws-infra/tree/main/clusters/platform/data).
 
 #### Backend seed helpers (`./tbd seed`)
 
@@ -172,25 +165,27 @@ inputs are build-time by nature; `next.config.apex.ts` inlines them.
 
 | Variable | Required | Default | Local | CI | Prod | Sensitive | Purpose | Failure mode if missing |
 |---|---|---|---|---|---|---|---|---|
-| `TBD_API_URL` | no | `""` | `.env` (empty for same-origin via nginx) | unset | `.do/app.yaml` (empty for same-origin via ingress) | no | Prefix prepended to fetch URLs in `lib/api.ts`. Empty means same-origin. | Cross-origin deployments lose API access if missing and not same-origin. |
+| `TBD_API_URL` | no | `""` | `.env` (empty for same-origin via nginx) | unset | tbd-prod manifest (empty for same-origin via ingress) | no | Prefix prepended to fetch URLs in `lib/api.ts`. Empty means same-origin. | Cross-origin deployments lose API access if missing and not same-origin. |
 | `TBD_SITE_URL` | no | empty (no canonical headers emitted) | `.env` (`https://app.thebetterdecision.com`) | unset | inherit `.env.example` or set explicitly | no | Canonical URL used in SEO metadata (sitemap, robots, OG image URLs). | Canonical tags and OG URLs are omitted. |
-| `TBD_GOOGLE_SSO_ENABLED` | yes when SSO is wired | `false` | `.env` (`true` to show the button) | unset | `.do/app.yaml` (`true`) | no | `GoogleSSOButton`, `LoginPageBody`, and `RegisterPageBody` render the "Sign in with Google" button only when this is exactly the string `"true"`. | Button is hidden; users have no SSO entry point. |
+| `TBD_GOOGLE_SSO_ENABLED` | yes when SSO is wired | `false` | `.env` (`true` to show the button) | unset | tbd-prod manifest (`true`) | no | `GoogleSSOButton`, `LoginPageBody`, and `RegisterPageBody` render the "Sign in with Google" button only when this is exactly the string `"true"`. | Button is hidden; users have no SSO entry point. |
 | `TBD_APP_VERSION` | no | `dev` | unset | unset | unset | no | Stamped into feedback widget payloads as `app_version`. | Falls back to `dev`. |
-| `BACKEND_INTERNAL_URL` | yes for RSC | unset | `docker-compose.yml` (`http://backend:8000`) | unset | `.do/app.yaml` RUN_TIME (`${backend.PRIVATE_URL}`) | no | Server-side fetch base URL for React Server Components (`forecast-plans`, `import/reconcile`, `lib/auth-server.ts`). | RSC pages cannot reach the backend; pages 500. |
-| `HOSTNAME` | yes (DO) | unset | unset | unset | `.do/app.yaml` (`0.0.0.0`) | no | Forces Next standalone server to bind on all interfaces inside the container. | App Platform health check times out. |
+| `BACKEND_INTERNAL_URL` | yes for RSC | unset | `docker-compose.yml` (`http://backend:8000`) | unset | tbd-prod manifest (the `backend` Service URL) | no | Server-side fetch base URL for React Server Components (`forecast-plans`, `import/reconcile`, `lib/auth-server.ts`). | RSC pages cannot reach the backend; pages 500. |
+| `HOSTNAME` | yes | unset | unset | unset | tbd-prod manifest (`0.0.0.0`) | no | Forces Next standalone server to bind on all interfaces inside the container. | Next binds to the container hostname only and the pod's probes and Service cannot reach it. |
 | `NODE_ENV` | implicit | `production` in built image, `development` under `next dev` | container default | container default | container default | no | Switches CSP `unsafe-eval`, dev-only error logging, hot reload. | Production behavior assumed when unset (Next default). |
 
-### Migrate job (DO PRE_DEPLOY)
+### Migrate init container
 
-A separate App Platform job that runs `python /app/scripts/migrate.py`
-before any backend replica starts. Its env is independent from the
-backend service.
+The `migrate` init container of the backend pod (the `migrations` image) runs
+`python /app/scripts/migrate.py` before the backend starts. Its env is
+declared separately from the backend container in the same manifest.
 
 | Variable | Required | Where | Purpose |
 |---|---|---|---|
-| `APP_ENV` | yes | `.do/app.yaml` (`production`) | Selects prod code paths. |
-| `DATABASE_URL` | yes | `.do/app.yaml` SECRET | Migration target. Same encrypted `EV[...]` blob as the backend service. |
-| `JWT_SECRET_KEY` | yes | `.do/app.yaml` SECRET | Required because `backend/app/config.py` instantiates `Settings()` at import; the JWT validator refuses the placeholder. Without this the migrate job crashes before alembic runs. See PR #202. |
+| `APP_ENV` | yes | tbd-prod manifest (`production`) | Selects prod code paths. |
+| `DATABASE_URL` | yes | tbd-prod secret | Migration target. Same Secret key as the backend container. |
+| `REDIS_URL` | yes | tbd-prod secret | Required in production by `Settings()` at import (TBD-438); without it the migrate container crashes before alembic runs. |
+| `API_TOKEN_HMAC_KEY` | yes | tbd-prod secret | Required in production by `Settings()` at import, same reason. |
+| `JWT_SECRET_KEY` | yes | tbd-prod secret | Required because `backend/app/config.py` instantiates `Settings()` at import; the JWT validator refuses the placeholder. Without this the migrate container crashes before alembic runs. See PR #202. |
 
 ---
 
@@ -202,7 +197,6 @@ deploy contract.
 
 | Variable | Component | What it does | Reference |
 |---|---|---|---|
-| `PFV_RUNTIME=app_platform` | backend | `get_client_ip` uses `do-connecting-ip` unconditionally so `audit_events.ip_address` records the real user IP, not the DO ingress peer. | PR #233, `project_audit_log_client_ip_bug.md` |
 | `CLIENT_IP_HEADER=cf-connecting-ip` | backend, frontend | `get_client_ip` and the frontend access log read the visitor's IP from that header (k3s behind Cloudflare). Safe only with Authenticated Origin Pulls (INFRA-93). | INFRA-83, INFRA-97, `backend/app/rate_limit.py`, `frontend/proxy.ts` |
 | `PFV_MIGRATE_OK_OFF_MAIN=1` | backend (lifespan + `./tbd migrate`) | Escape hatch for the branch guard that refuses to run migrations from a non-`main` checkout. Off-by-default. | `tbd` CLI, `backend/app/main.py` |
 | `PFV_DEPDRIFT_SKIP=1` | `./tbd` CLI | Skips the host-vs-container `pnpm-lock.yaml` SHA check on `./tbd start`. | `tbd` CLI line 48, PR #249 |
@@ -211,19 +205,19 @@ deploy contract.
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | backend | SQLAlchemy engine pool sizing. Defaults safe for single-replica; override when scaling HPA so `replicas * (pool_size + max_overflow)` stays under the managed-DB connection cap. | PR #251 (K8S-3) |
 | `COOKIE_SECURE` | backend | When `true`, cookies are flagged `Secure` and browsers refuse to send them over HTTP. Must be `false` for local-dev HTTP and `true` for prod HTTPS. | `backend/app/config.py` |
 | `AUTH_DEBUG_LOGGING=true` | backend | Enables the `auth.refresh.rejected` structured log event at every terminal-401 raise site in `/auth/refresh`. Each event carries a stable `reason` enum and 8-char SHA-256 prefixes of jti/sid (raw values are never logged). Flip on during incident triage; disable when done. The 401 still fires regardless of the flag — only the diagnostic emission is gated. | `backend/app/routers/auth.py` (`_log_refresh_rejected`), `backend/app/config.py` |
-| `APP_ENV=production` | backend | Disables lifespan migrations (delegates to PRE_DEPLOY job), tightens MFA fallback (requires Redis), opens production-only auth paths. | `backend/app/main.py`, `backend/app/routers/auth.py` |
+| `APP_ENV=production` | backend | Disables lifespan migrations (delegates to the `migrate` init container), tightens MFA fallback (requires Redis), opens production-only auth paths. | `backend/app/main.py`, `backend/app/routers/auth.py` |
 | `MAILGUN_API_KEY=""` | backend | When empty, `send_email` logs the recipient and subject and returns without calling Mailgun. Use for local dev. | `backend/app/services/email_service.py` |
 
 ---
 
 ## Secrets vs non-secrets
 
-In DigitalOcean App Platform, the env-var entry's `type:` field controls
-encryption.
+Production values live in aws-infra `clusters/platform/tbd-prod/`: plain env
+in the manifests, secrets in SOPS-encrypted `*.secret.yaml` (see the aws-infra
+[runbook](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md),
+"Write or rotate a Kubernetes Secret").
 
-### `type: SECRET` (encrypted at rest, surfaced as `EV[...]`)
-
-These MUST be `SECRET` scope in `.do/app.yaml`:
+These are secrets (never plain env):
 
 - `DATABASE_URL`
 - `REDIS_URL`
@@ -235,25 +229,13 @@ These MUST be `SECRET` scope in `.do/app.yaml`:
 - `AI_CREDENTIAL_ENCRYPTION_KEY`
 - `AI_CREDENTIAL_ENCRYPTION_KEY_PREV` (when rotating)
 - `MAILGUN_API_KEY`
+- `MAILGUN_WEBHOOK_SIGNING_KEY`
+- `CAPTCHA_SECRET`
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
+- `FOUNDER_COUNT_EXCLUDE_USERNAMES` (names the smoke account, TBD-371)
 
-The `EV[...]` blob in `.do/app.yaml` is encrypted with the app's per-app
-key and is safe to commit. App Platform never surfaces plaintext after
-the value is first set; even `doctl apps spec get` returns the encrypted
-form. See the comment block in `.do/app.yaml`.
-
-### Plain (`scope: RUN_AND_BUILD_TIME`, no `type:`)
-
-These are committed as plaintext in `.do/app.yaml`:
-
-- `APP_ENV`, `APP_NAME`, `LOG_LEVEL`
-- `APP_URL`, `BACKEND_CORS_ORIGINS`
-- `COOKIE_SECURE`
-- `MAILGUN_DOMAIN`, `MAILGUN_REGION`, `EMAIL_FROM`
-- `PFV_RUNTIME`
-- `TBD_API_URL`, `TBD_GOOGLE_SSO_ENABLED`
-- `HOSTNAME`, `BACKEND_INTERNAL_URL`
+The manifests read each one they set through `secretKeyRef`. When adding a variable, check whether it is a secret before making it plain env.
 
 ---
 
@@ -280,33 +262,18 @@ Tests run inside `backend/tests/conftest.py`, which sets `DATABASE_URL`,
 NOT consume `.env`.
 
 `.github/workflows/release.yml` deploys nothing (see
-[`DEPLOYMENT.md`](DEPLOYMENT.md)). Only the manual, archived DigitalOcean
-path `.github/workflows/deploy.yml` reads these GitHub Actions secrets:
+[`DEPLOYMENT.md`](DEPLOYMENT.md)). No workflow uses smoke credentials and
+there are no GitHub secrets for them. The post-deploy smoke (aws-infra `post-deploy-smoke.yml`, INFRA-114)
+runs `scripts/smoke-test.sh` and reads the credentials from the cluster Secret
+`tbd-prod/tbd-smoke` (aws-infra `docs/runbooks.md`, "TBD smoke account").
 
-- `DIGITALOCEAN_ACCESS_TOKEN` — `doctl` token for `digitalocean/app_action/deploy@v2`.
-- `SMOKE_USERNAME`, `SMOKE_PASSWORD` — credentials for post-deploy smoke
-  tests against `https://app.thebetterdecision.com`.
+### Production
 
-Add or rotate these in the repo's GitHub Settings → Secrets and variables
-→ Actions.
+Production env and secrets live in aws-infra `clusters/platform/tbd-prod/`.
+Merging a change there is the deploy (Flux applies it); see
+[`DEPLOYMENT.md`](DEPLOYMENT.md).
 
-### Production (DigitalOcean App Platform)
-
-`.do/app.yaml` is the authoritative spec. Push with:
-
-```bash
-doctl apps update <app-id> --spec .do/app.yaml
-```
-
-Any env var NOT listed in `.do/app.yaml` will be REMOVED from the live
-app on the next push. This is the same failure mode that took down
-production on 2026-04-25 when `JWT_SECRET_KEY` dropped to the placeholder.
-
-The manual deploy workflow (`.github/workflows/deploy.yml`) uses
-`app_spec_location: .do/app.yaml` and does NOT set `app_name` (see
-[Spec-sync hazards](#spec-sync-hazards-digitalocean-app-platform)).
-
-Frontend `TBD_*` vars are RUN_TIME only: changing one redeploys the same
+Frontend `TBD_*` vars are runtime only: changing one rolls the same
 image with the new env, with no rebuild.
 
 ---
@@ -317,26 +284,22 @@ image with the new env, with no rebuild.
 
 Symptom: `/login` and `/register` render without the "Sign in with
 Google" button. Cause: `TBD_GOOGLE_SSO_ENABLED` is not set (or not exactly the
-string `"true"`) in the running frontend. Fix: confirm the variable is in
-`.do/app.yaml`'s `frontend` `envs` block (scope `RUN_TIME`, value `"true"`) and
-in the live spec (`doctl apps spec get <APP_ID>`), then re-deploy. No rebuild
-is needed. Right after the runtime-config release, also check the live spec has
+string `"true"`) in the running frontend. Fix: confirm the variable is in the
+`frontend` env of aws-infra `clusters/platform/tbd-prod/frontend.yaml` with
+value `"true"`, and on the running pod
+(`kubectl -n tbd-prod exec deploy/frontend -- printenv TBD_GOOGLE_SSO_ENABLED`),
+then merge the fix there. No rebuild is needed. Also check the manifest has
 `TBD_API_URL`, `TBD_GOOGLE_SSO_ENABLED` and `TBD_CAPTCHA_SITE_KEY` rather than
 the old `NEXT_PUBLIC_*` keys.
 
 ### "Audit log shows ingress IP not user IP in production"
 
-Symptom: `audit_events.ip_address` records `10.x.x.x` or DO ingress IPs.
-Cause: `PFV_RUNTIME` is not set, so `get_client_ip` cannot trust
-`do-connecting-ip`. Fix: confirm `PFV_RUNTIME=app_platform` is present
-in `.do/app.yaml`'s `backend` `envs` block, then redeploy. Verify by
-hitting any audited endpoint and inspecting the newest `audit_events`
-row in prod MySQL.
-
-On k3s behind Cloudflare the same symptom shows Cloudflare edge or `10.42.x.x`
+Symptom: `audit_events.ip_address` records Cloudflare edge or `10.42.x.x`
 addresses. Cause: `CLIENT_IP_HEADER=cf-connecting-ip` is missing from the
 aws-infra `tbd-prod` backend manifest (or, for the frontend access log's
-`remote_addr`, from the frontend manifest).
+`remote_addr`, from the frontend manifest). Fix it there, then verify by hitting
+any audited endpoint and inspecting the newest `audit_events` row in prod
+MySQL.
 
 ### "Rate-limited endpoints return 500"
 
@@ -350,24 +313,24 @@ returns 500. Cause: the limiter counts in the MySQL `rate_limits` table
 Symptom: every fetch returns 404 or hits the wrong host. Cause:
 `TBD_API_URL` is set to a value other than the empty string
 when the frontend is same-origin with the backend (the production
-default). Fix: leave `TBD_API_URL=""` in `.do/app.yaml` so
-fetch URLs become relative and route through the App Platform ingress
-back to the `backend` component.
+default). Fix: leave `TBD_API_URL=""` in the frontend manifest so
+fetch URLs become relative and route through Traefik
+back to the `backend` Service.
 
 ### "Server-side pages 500 with `ECONNREFUSED backend:8000`"
 
 Symptom: `/forecast-plans` or `/import/[id]/reconcile` 500 on the server
 side. Cause: `BACKEND_INTERNAL_URL` is missing or wrong. Fix: in dev,
 the value lives in `docker-compose.yml` (`http://backend:8000`); in
-prod, it MUST be `${backend.PRIVATE_URL}` with `scope: RUN_TIME` (App
-Platform substitutes the component's private URL at runtime).
+prod, it MUST point at the `backend` Service in the frontend manifest of
+aws-infra `clusters/platform/tbd-prod/`.
 
 ### "Email sending fails silently"
 
 Symptom: password reset / verify / invite emails never arrive. Cause:
 `MAILGUN_API_KEY` empty (dev-mode logger only), or
 `MAILGUN_DOMAIN` / `MAILGUN_REGION` mismatch. Fix in prod: confirm all
-three are populated in `.do/app.yaml` and that `MAILGUN_REGION=eu`
+three are populated in the `tbd-prod` backend manifest and secret and that `MAILGUN_REGION=eu`
 matches the configured Mailgun account region. A US-region key paired
 with `MAILGUN_REGION=eu` returns Mailgun 401.
 
@@ -377,8 +340,8 @@ Symptom: backend crashloops with `ValueError: JWT_SECRET_KEY must be set
 to a real secret`. Cause: the env var is missing, still equals the
 placeholder, or is shorter than 32 chars. Fix: regenerate
 (`python -c "import secrets; print(secrets.token_urlsafe(64))"`) and set
-in `.env` (local) or as a `SECRET` value in `.do/app.yaml` (prod). The
-migrate PRE_DEPLOY job also needs this variable bound (PR #202).
+in `.env` (local) or in the `tbd-prod` secret (prod). The
+`migrate` init container also needs this variable bound (PR #202).
 
 ### "Lifespan refuses to migrate on a feature branch"
 
@@ -389,44 +352,16 @@ switch to `main` for migrations, or set `PFV_MIGRATE_OK_OFF_MAIN=1` in
 
 ---
 
-## Spec-sync hazards (DigitalOcean App Platform)
-
-App Platform's live env is whatever `.do/app.yaml` last pushed. The push
-path is one of:
-
-1. `doctl apps update <APP_ID> --spec .do/app.yaml` (manual, owner-run).
-2. `digitalocean/app_action/deploy@v2` with `app_spec_location: .do/app.yaml`
-   (manual `deploy.yml`).
-
-The action silently prefers `app_name` over `app_spec_location` when both
-are set. `.github/workflows/deploy.yml` intentionally sets ONLY
-`app_spec_location` to avoid this trap. See
-`reference_do_spec_sync.md` in agent memory for the full incident log.
-
-After merging any change to `.do/app.yaml`, the owner runs:
-
-```bash
-doctl apps update <app-id> --spec .do/app.yaml
-```
-
-Without that step, edits to `.do/app.yaml` never take effect: `release.yml`
-no longer deploys to DigitalOcean (k3s cutover, 2026-10-04).
-
-Any env var NOT present in `.do/app.yaml` is REMOVED from the live app
-on the next push. Treat the file as the complete env contract.
-
----
-
 ## Related files
 
 - `.env.example` — copy-paste template with placeholder values and inline
   comments matching the Purpose column in this doc.
-- `.do/app.yaml` — DigitalOcean App Platform spec. Authoritative for
-  production env. Pushed via `doctl apps update`.
+- aws-infra `clusters/platform/tbd-prod/` — authoritative production env
+  (manifests plus SOPS `*.secret.yaml`).
 - `docker-compose.yml` — local-dev stack. Frontend env is inline; backend
   pulls from `.env` via `env_file`.
-- `docker-compose.prod.yml` — single-host production compose (alternate
-  to App Platform). Not used by the current production deploy.
+- `docker-compose.prod.yml` — single-host production compose. Not used by
+  the current production deploy.
 - `backend/app/config.py` — pydantic-settings `Settings` model. Source of
   truth for backend env names, defaults, and validators.
 - `backend/app/rate_limit.py` — `PFV_RUNTIME` consumer.
@@ -437,6 +372,6 @@ on the next push. Treat the file as the complete env contract.
 - `frontend/components/auth/GoogleSSOButton.tsx` — gates on
   `TBD_GOOGLE_SSO_ENABLED`.
 - `pfv` (CLI) — `PFV_DEPDRIFT_*` and `PFV_MIGRATE_OK_OFF_MAIN` consumers.
-- `.github/workflows/deploy.yml`: GH Actions secrets and the manual
-  (archived) DigitalOcean deploy invocation.
+- `.github/workflows/release.yml` — release-please and image promotion
+  (no deploy).
 - `CONTRIBUTING.md` — local-dev setup walkthrough.

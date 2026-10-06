@@ -8,7 +8,6 @@ const repoRoot = path.resolve(__dirname, "../../..");
 const SELF = "frontend/tests/convention/runtime-config-only.test.ts";
 const SCOPE = [
   "frontend",
-  ".do",
   ".github",
   ".env.example",
   "docker-compose.yml",
@@ -16,7 +15,7 @@ const SCOPE = [
 ];
 
 describe("runtime-only frontend config", () => {
-  it("no NEXT_PUBLIC_* in code, Dockerfiles, compose, CI or the DO spec", () => {
+  it("no NEXT_PUBLIC_* in code, Dockerfiles, compose or CI", () => {
     const files = execFileSync("git", ["ls-files", ...SCOPE], { cwd: repoRoot, encoding: "utf8" })
       .split("\n")
       .filter((f) => f && f !== SELF && !/\.(png|ico|jpe?g|woff2?|svg|lock)$|pnpm-lock\.yaml$/.test(f));

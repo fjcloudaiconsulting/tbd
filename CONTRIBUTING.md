@@ -6,8 +6,8 @@ Sibling docs you will end up at:
 
 - `README.md` for product overview and stack.
 - `docs/operations/ENVIRONMENT.md` for every env var, with scopes, defaults, and failure modes.
-- `docs/operations/DEPLOYMENT.md` for the full CI/CD pipeline (what fires when, how production deploys, smoke tests, apex domain).
-- `infra/README.md` and `infra/MIGRATION.md` for the production data plane and Terraform workflow.
+- `docs/operations/DEPLOYMENT.md` for the full CI/CD pipeline (what fires when, how a release reaches production, apex domain).
+- [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra) for where production runs (k3s cluster, databases, backups, runbooks).
 - `docs/product/BRAND.md` and `docs/design/DESIGN.md` for product copy and UI conventions.
 
 ## Prerequisites
@@ -54,7 +54,7 @@ flowchart TD
     B -->|backend/**| C[docker compose exec backend pytest]
     B -->|frontend/**| D[docker compose exec frontend pnpm test<br/>docker compose exec frontend pnpm exec tsc --noEmit]
     B -->|backend/alembic/versions/**| E[Restart backend so lifespan applies the migration<br/>./tbd restart]
-    B -->|nginx/** or .do/**| F[./tbd prod for a local prod-shaped run<br/>Smoke endpoints by hand]
+    B -->|nginx/**| F[./tbd prod for a local prod-shaped run<br/>Smoke: aws-infra `post-deploy-smoke.yml` (INFRA-114)]
     B -->|docs only| G[No tests required.<br/>Use chore: or docs: prefix so it stays out of the release notes.]
     C --> H[Commit with Conventional Commits prefix]
     D --> H
@@ -65,7 +65,7 @@ flowchart TD
     I --> J[Merge to main]
     J --> K{Commit prefix release-eligible?}
     K -->|feat, fix, perf, revert| L[Lands in the release PR. Merging that PR ships to production.]
-    K -->|chore, docs, refactor, test, style| M[No release PR entry. Use gh workflow run deploy.yml<br/>if you need to force a redeploy.]
+    K -->|chore, docs, refactor, test, style| M[No release PR entry.<br/>Ships with the next release.]
 ```
 
 If you touched migrations, run `docker compose exec backend alembic current` and `docker compose exec backend alembic upgrade head` inside the container to confirm. See [Database migrations](#database-migrations).
@@ -83,13 +83,13 @@ This repo uses `release-please`. Merging a `feat:`/`fix:` PR does not deploy; it
 | `feat!:`, `BREAKING CHANGE:` footer | Yes (minor bump below 1.0, `bump-minor-pre-major`; major after) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
 | `chore:`, `docs:`, `refactor:`, `test:`, `style:`, `ci:`, `build:` | No | Nothing. CI runs `test.yml` only. |
 
-Scope is freeform (`feat(admin):`, `fix(frontend):`, `chore(.do):`). Scope does not change release behavior.
+Scope is freeform (`feat(admin):`, `fix(frontend):`, `chore(nginx):`). Scope does not change release behavior.
 
 Rules in practice:
 
 - If your change should reach production with the next release, use `feat:`, `fix:`, or `perf:`.
 - If your change is internal only (refactor, test fix, doc edit, CI tweak, dependency bump), use `chore:` / `docs:` / `refactor:` / `test:`. It will not appear in the release PR. This is the right answer most of the time for non-product changes.
-- Infra-only changes (`chore(.do)`, `chore(infra)`, `chore(nginx)`) sometimes need to ship without a version bump. Use the manual escape hatch: `gh workflow run deploy.yml --ref main`. See `docs/operations/DEPLOYMENT.md` for when this is appropriate.
+- Production configuration (env, secrets, resources) is not in this repo: change it in [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra).
 
 Full pipeline detail (path filters, gating logic, smoke tests, apex deploy) lives in `docs/operations/DEPLOYMENT.md`. The short version is in [CI on your PR vs CI after merge](#ci-on-your-pr-vs-ci-after-merge) below.
 
@@ -188,7 +188,7 @@ Browser --> nginx (:80) --> /api/*  --> backend (FastAPI :8000) --> MySQL (:3306
                                         backend --> Redis (:6379)
 ```
 
-In production (DigitalOcean App Platform), nginx is replaced by DO's built-in ingress. MySQL and Redis are self-hosted on a single droplet (`<data-droplet>`) in a private VPC. Background and runbook: `infra/README.md`, `infra/MIGRATION.md`.
+In production (a k3s cluster run from [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra)), Cloudflare and Traefik replace nginx, and MySQL and Valkey run in-cluster.
 
 ### Backend layout
 
@@ -226,7 +226,7 @@ For the full router-by-router and service-by-service map, see the live file tree
 
 - **All config via env vars.** `pydantic-settings` in backend, `TBD_*` runtime env in frontend (never `NEXT_PUBLIC_*`: one image serves every env). See `docs/operations/ENVIRONMENT.md`.
 - **Stateless backend.** No in-memory state. JWT for auth. Ready for horizontal scaling.
-- **Migrations auto-run on startup in dev.** In production they run as a `PRE_DEPLOY` job (App Platform) before the app starts. See [Database migrations](#database-migrations).
+- **Migrations auto-run on startup in dev.** In production they run in the backend pod's `migrate` init container before the app starts. See [Database migrations](#database-migrations).
 - **First user is superadmin.** No bootstrap seed needed.
 - **Org-scoped data.** Every query filters by `org_id`.
 - **API versioned at `/api/v1/`.** Breaking changes ship as `/api/v2/` while v1 stays live.
@@ -447,9 +447,9 @@ Three execution paths, picked by environment:
 
 - **Local dev (`./tbd start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override).
 - **Local prod simulation (`./tbd prod`):** a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` (no lifespan migration).
-- **Production (DO App Platform):** a dedicated `PRE_DEPLOY` job runs the wrapper before any backend replica starts. Secrets (especially `DATABASE_URL`) must be configured against the `migrate` job in the DO console; App Platform does not auto-inherit secrets across components.
+- **Production (k3s):** the backend pod's `migrate` init container runs the wrapper from the `migrations` image before the backend starts. Its env (`DATABASE_URL`, `REDIS_URL`, `APP_ENV=production`) is set in aws-infra `clusters/platform/tbd-prod/backend.yaml`.
 
-The wrapper at `backend/scripts/migrate.py` does not replace alembic, it drives it. It runs `alembic upgrade <revision>` one revision at a time and emits structured JSON events around each step (grep `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`). Exit code matches alembic's, so a `PRE_DEPLOY` failure blocks the deploy.
+The wrapper at `backend/scripts/migrate.py` does not replace alembic, it drives it. It runs `alembic upgrade <revision>` one revision at a time and emits structured JSON events around each step (grep `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`). Exit code matches alembic's, so a failed migration blocks the rollout.
 
 ```bash
 # Create a new migration
@@ -531,7 +531,7 @@ in a test can no longer merge green.
 
 ### Manual smoke testing
 
-Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. The production smoke test is `scripts/smoke-test.sh`; aws-infra's post-deploy smoke runs it after every rollout (see `docs/operations/DEPLOYMENT.md`).
+Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. The production smoke test is `scripts/smoke-test.sh`, post-deploy smoke runs from aws-infra `post-deploy-smoke.yml` (INFRA-114); credentials per aws-infra `docs/runbooks.md`, "TBD smoke account".
 
 ## Branching and pull requests
 
@@ -543,13 +543,10 @@ Swagger UI at http://localhost/api/docs is the fastest way to poke a single endp
 
 ## Deployment
 
-The full deployment pipeline (release gating, App Platform spec, smoke tests, manual escape hatches, apex pipeline) is in `docs/operations/DEPLOYMENT.md`. The short version contributors need to know:
+The full pipeline (release gating, image promotion, apex pipeline) is in `docs/operations/DEPLOYMENT.md`. The short version contributors need to know:
 
 - Merges to `main` trigger `release.yml`. A release (vX.Y.Z images on GHCR) is cut only when the release-please PR is merged (see [Conventional Commits and the release PR](#conventional-commits-and-the-release-pr)).
 - Production runs on a k3s cluster managed in [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra). A Renovate PR there bumps the image tags; merging it is the deploy. Production env and secrets (SOPS) live there too.
-- `.do/app.yaml` is the source of truth for App Platform config. Secrets are encrypted `EV[...]` blobs committed in-file; any secret missing from this file is removed from the live app on push.
-- Terraform (`infra/terraform/`) is VCS-driven via HCP Terraform Cloud (workspace `<tfc-org>/<data-workspace>`). PRs get speculative plans; merges create runs that require manual Confirm and Apply. CLI `terraform plan` / `apply` is debug-only.
-- Droplet bootstrap (`infra/ansible/`) handles MySQL, Redis, hardening, and nightly mysqldump.
 
 ## API documentation
 

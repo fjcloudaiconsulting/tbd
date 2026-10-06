@@ -6,7 +6,7 @@ import type { NextConfig } from "next";
 // the apex host (thebetterdecision.com).
 //
 // The PRIMARY build (next.config.ts, `pnpm build`) still produces the
-// standalone Node bundle deployed to DigitalOcean App Platform on
+// standalone Node bundle deployed to the k3s cluster on
 // app.thebetterdecision.com. The two targets share the same Next.js app;
 // build-target selection is via TBD_BUILD_TARGET=apex.
 //

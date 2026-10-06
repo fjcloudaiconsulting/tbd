@@ -146,7 +146,7 @@ describe("AppShell — planning-tool nav gating (TBD-197)", () => {
   // false — exits before the insertion code runs and cannot see this at all.
   //
   // The state is production's own: FEATURE_REPORTS_V2 true and FEATURE_PLANS
-  // false (.do/app.yaml), plus one org admin switching Forecast off. With both
+  // false (the tbd-prod manifest), plus one org admin switching Forecast off. With both
   // anchors filtered out, a `forecastIdx + 1` fallback evaluates to 0 and
   // splices Reports ABOVE Dashboard on every page.
   it("F15c: keeps Dashboard first when Reports is on and BOTH insertion anchors are filtered out", () => {

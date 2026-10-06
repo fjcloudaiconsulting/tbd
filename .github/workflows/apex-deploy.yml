@@ -57,8 +57,8 @@ on:
       # TBD-433. These three shipped to the apex from 2026-06-09 (#421) and
       # were never mirrored here, so a change confined to any of them
       # published NOTHING to thebetterdecision.com for ~72 days while still
-      # triggering a full DigitalOcean redeploy of the authed app. Exactly
-      # inverted from the intent. `backend/tests/test_apex_deploy_paths.py`
+      # triggering a full redeploy of the authed app. Exactly inverted from
+      # the intent. `backend/tests/test_apex_deploy_paths.py`
       # now derives the required set from build-apex.sh and fails if they
       # diverge again.
       - "frontend/app/features/**"
@@ -141,7 +141,7 @@ jobs:
   # ⚠ SKIPPED for manual dispatch. This workflow's `workflow_dispatch` is the
   # documented recovery path for a stale deploy (see the trigger comment
   # above), and gating it on some unrelated commit's suite would defeat the
-  # recovery it exists for. Same treatment as deploy.yml.
+  # recovery it exists for.
   await-tests:
     name: Await post-merge tests
     runs-on: ubuntu-latest

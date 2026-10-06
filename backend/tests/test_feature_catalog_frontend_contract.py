@@ -71,7 +71,7 @@ Regenerate deliberately with :data:`REGEN` and review the diff.
 
 ⚠ **Path resolution is deliberately LAZY here**, unlike the sibling module,
 which builds its fixture path at import time and therefore raises at module
-scope — a *collection error*, not a skip — when the marker directories are
+scope — a *collection error*, not a skip — when the marker file is
 absent. TBD-337 records that exact shape as the leading hypothesis for a
 backend suite baseline that differs by 5 between agent stacks, which poisons
 every delta gate. Resolving inside the test turns the same condition into a
@@ -100,25 +100,23 @@ REGEN = "python scripts/regen_feature_catalog_fixture.py"
 
 
 def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
-    """Walk upward from `start` until a directory holding both
-    `.github/workflows/deploy.yml` and `.do/app.yaml` is found.
+    """Walk upward from `start` until a directory holding
+    `.github/workflows/release.yml` is found.
 
     Same marker walk, and the same rationale, as
     `tests/test_period_status_frontend_contract.py`: `parents[2]` is correct
     only from a host checkout. Inside the backend container this file lives at
     `/app/tests/...`, so `parents[2]` resolves to `/` and the fixture path
-    becomes `/frontend/tests/fixtures/...`. Both marker directories are
-    mounted at `/app` (see the `.github` / `.do` read-only mounts in
+    becomes `/frontend/tests/fixtures/...`. The marker directory is
+    mounted at `/app` (see the `.github` read-only mount in
     docker-compose.yml).
     """
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "deploy.yml").exists() and (
-            candidate / ".do" / "app.yaml"
-        ).exists():
+        if (candidate / ".github" / "workflows" / "release.yml").exists():
             return candidate
     raise RuntimeError(
-        "Could not locate repo root containing .github/workflows/deploy.yml "
-        "and .do/app.yaml. Run these tests from a checked-out repo."
+        "Could not locate repo root containing .github/workflows/release.yml. "
+        "Run these tests from a checked-out repo."
     )
 
 

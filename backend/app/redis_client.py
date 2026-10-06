@@ -400,7 +400,7 @@ def require_client() -> Redis:
     if client is None:
         raise RedisRequired(
             "REDIS_URL must be set for this operation. "
-            "Configure it in DO App Platform secrets or your local .env."
+            "Configure it in the production Secret or your local .env."
         )
     return client
 

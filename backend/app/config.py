@@ -189,9 +189,9 @@ class Settings(BaseSettings):
     # this is not a unique disclosure channel -- but guessing is not the
     # same as being handed the answer.
     #
-    # Supply it from the environment. In CI it is ``secrets.SMOKE_USERNAME``
-    # (deploy.yml, release.yml); in production it must come from an App
-    # Platform SECRET, never a plaintext ``value:`` in ``.do/app.yaml``.
+    # Supply it from the environment. In production it comes from the SOPS
+    # secret in aws-infra (clusters/platform/tbd-prod), never a plaintext
+    # value in a committed manifest.
     #
     # ⚠ Empty is SILENTLY WRONG in production, never loud: the endpoint
     # guards with ``if excluded:`` (routers/public_stats.py), so an empty list
@@ -548,12 +548,12 @@ class Settings(BaseSettings):
         # the PAT hashing pepper, so it gets the same treatment rather than a
         # new policy.
         #
-        # ⚠ COUPLED TO ``.do/app.yaml``. ``scripts/migrate.py`` imports
-        # ``app.logging``, which imports this module, which constructs
-        # ``Settings()`` at import — and the App Platform PRE_DEPLOY migrate
-        # job runs with ``APP_ENV=production``. That job MUST keep its
-        # ``REDIS_URL`` binding or no production deploy completes. Fenced by
-        # ``tests/test_redis_url_config.py::test_migrate_job_binds_redis_url``.
+        # ⚠ COUPLED TO THE PRODUCTION MIGRATE STEP. ``scripts/migrate.py``
+        # imports ``app.logging``, which imports this module, which constructs
+        # ``Settings()`` at import, and the production ``migrate`` init
+        # container runs with ``APP_ENV=production``. It MUST keep its
+        # ``REDIS_URL`` binding (aws-infra clusters/platform/tbd-prod/backend.yaml)
+        # or no rollout completes.
         #
         # Normalize before the check so downstream truthiness ("is it set?")
         # cannot be fooled by a whitespace-only value, which is truthy but
@@ -585,17 +585,14 @@ class Settings(BaseSettings):
         # Cloudflare outage. A typo, or a templating bug rendering an
         # unset var as the empty-ish "0", is enough.
         #
-        # Boot-fatal is the right severity here and is safe for the DO
-        # PRE_DEPLOY migrate job: that job binds APP_ENV, DATABASE_URL,
-        # JWT_SECRET_KEY, REDIS_URL and API_TOKEN_HMAC_KEY (see
-        # .do/app.yaml — there is no app-level ``envs:`` block, so no
-        # CAPTCHA_* value reaches it), and the defaults below satisfy
-        # this check. Contrast the 2026-07-21 break, where #558 made
-        # API_TOKEN_HMAC_KEY prod-required and the job HAD no binding for
-        # it. TBD-438 made REDIS_URL prod-required under exactly that
-        # precedent, which is why the binding is now fenced by
-        # tests/test_redis_url_config.py rather than trusted. Keep it that way: giving the migrate job a CAPTCHA_* value
-        # would put it back in this validator's blast radius for no gain.
+        # Boot-fatal is the right severity here and is safe for the
+        # production migrate step: it gets no CAPTCHA_* value, and the
+        # defaults below satisfy this check. Contrast the 2026-07-21 break,
+        # where #558 made API_TOKEN_HMAC_KEY prod-required and the job HAD
+        # no binding for it; TBD-438 made REDIS_URL prod-required under the
+        # same precedent. Keep it that way: giving the migrate job a
+        # CAPTCHA_* value would put it back in this validator's blast radius
+        # for no gain.
         per_phase = self.captcha_verify_timeout_s
         total = self.captcha_verify_total_timeout_s
         if per_phase <= 0:

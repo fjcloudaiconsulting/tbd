@@ -91,15 +91,7 @@ frontend=false
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   case "$f" in
-    # ── Shared: `backend/tests/test_rotation_runbook_credential_bindings.py`
-    # PARSES this runbook, so a prose-only edit to it IS a backend change.
-    # Matched ABOVE the `*.md` case deliberately: without this the fence is
-    # skipped on exactly the docs-only PR that drifts the runbook away from
-    # `.do/app.yaml`, which is the drift it exists to catch.
-    infra/MIGRATION.md)
-      backend=true
-      ;;
-    # ── Same class, frontend side (TBD-482):
+    # ── Shared, frontend side (TBD-482): matched ABOVE the `*.md` case.
     # `frontend/tests/convention/design-md-tokens.test.ts` PARSES DESIGN.md and
     # fails when its colours drift from globals.css. As prose, a docs-only PR
     # that drifts it would skip the frontend suite and merge green.
@@ -153,11 +145,11 @@ while IFS= read -r f; do
     backend/*)
       backend=true
       ;;
-    # ── Everything else -- repo root, .github/, scripts/, infra/,
-    # nginx/, docker-compose*.yml, tbd -- is unclassified and therefore
-    # EVERYTHING. Backend tests assert on several of these (.do/app.yaml,
-    # .github/workflows/*, scripts/ci/*, tbd), and an unknown new top-level
-    # path must never be silently inert.
+    # ── Everything else -- repo root, .github/, scripts/, nginx/,
+    # docker-compose*.yml, tbd -- is unclassified and therefore EVERYTHING.
+    # Backend tests assert on several of these (.github/workflows/*,
+    # scripts/ci/*, tbd), and an unknown new top-level path must never be
+    # silently inert.
     *)
       backend=true
       frontend=true

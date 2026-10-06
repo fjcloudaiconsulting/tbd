@@ -20,8 +20,9 @@ the error below says so.
 """
 # TBD-495: S4 and S5 fenced the Helm chart's ingress rule and readiness
 # probe. The chart was deleted as unused scaffolding -- it was named `pfv2`,
-# was never deployed, and production is DO App Platform. Restore both fences
-# alongside the chart if Kubernetes ever becomes a real target.
+# was never deployed. Production's routing now lives in
+# fjcloudaiconsulting/aws-infra (clusters/platform/tbd-prod). S7 fenced the
+# DigitalOcean App Platform ingress and went with it (INFRA-44).
 from __future__ import annotations
 
 import os
@@ -155,58 +156,6 @@ def test_s3_nginx_routes_the_endpoint_exactly():
     ]
     assert f"location = {ENDPOINT} {{" in directives, (
         f"no exact-match nginx location for {ENDPOINT}; found {directives}"
-    )
-
-
-def test_s7_do_app_spec_routes_the_endpoint_to_the_backend():
-    """S7 — the ONLY environment that is actually in production.
-
-    S3 fences dev nginx, S1/S2 fence CI and S6 the post-deploy smoke test.
-    Production is DO App Platform, driven by the committed ``.do/app.yaml``,
-    and it had no fence at all — the one place where losing this route means
-    the alarm silently stops existing.
-
-    ⚠ The route is INCIDENTAL, which is exactly why it needs a fence. Unlike
-    nginx's ``location =`` and the chart's ``pathType: Exact``, App Platform's
-    rules are PREFIXES, so ``/health/dependencies`` reaches the backend only
-    as a side effect of the ``prefix: /health`` rule that exists for
-    ``/health``. Nothing in the file names this endpoint. Delete or narrow
-    that rule and the request falls through to the ``prefix: /`` catch-all,
-    which points at the FRONTEND — so a monitor gets Next.js's 200 HTML or its
-    404 page instead of a dependency verdict, and the deploy gate in
-    ``scripts/smoke-test.sh`` starts measuring the wrong component.
-
-    Asserted under BOTH plausible matching semantics — longest-prefix wins,
-    and first-rule-in-document-order wins — so the fence does not rest on a
-    reading of App Platform's resolution order.
-    """
-    doc = yaml.safe_load(_artifact(".do/app.yaml").read_text())
-    rules = doc["ingress"]["rules"]
-
-    matching = [
-        r
-        for r in rules
-        if "prefix" in (r.get("match") or {}).get("path", {})
-        and ENDPOINT.startswith(r["match"]["path"]["prefix"])
-    ]
-    assert matching, (
-        f"no ingress rule in .do/app.yaml matches {ENDPOINT} at all; rules "
-        f"present: {[r.get('match') for r in rules]}"
-    )
-
-    longest = max(matching, key=lambda r: len(r["match"]["path"]["prefix"]))
-    assert longest["component"]["name"] == "backend", (
-        f"the most specific rule matching {ENDPOINT} is "
-        f"{longest['match']['path']['prefix']!r} -> "
-        f"{longest['component']['name']!r}. In production this endpoint must "
-        "reach the backend; anything else serves the frontend's HTML to the "
-        "uptime monitor and to scripts/smoke-test.sh."
-    )
-    assert matching[0]["component"]["name"] == "backend", (
-        f"the first rule matching {ENDPOINT} in document order is "
-        f"{matching[0]['match']['path']['prefix']!r} -> "
-        f"{matching[0]['component']['name']!r}; more specific rules must stay "
-        "above the catch-all."
     )
 
 

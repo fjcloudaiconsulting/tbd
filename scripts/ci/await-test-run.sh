@@ -9,7 +9,7 @@
 # #654 (SHA 1af0b388), both runs created at 18:30:38:
 #
 #   18:31:07  release job done -- git tag + GitHub Release PUBLISHED
-#   18:31:11  deploy job STARTED -- .do/app.yaml pushed to DO App Platform
+#   18:31:11  deploy job STARTED (the DigitalOcean deploy of that time)
 #   18:35:20  deploy done (DO ran the PRE_DEPLOY alembic migration)
 #   18:38:48  Test run completed          <- 7m41s after the tag was cut
 #
@@ -23,15 +23,14 @@
 # So this script is the interlock. Without it, the guard reports after the
 # thing it exists to prevent has already shipped.
 #
-# ⚠ IT GATES `release`, NOT `deploy`. release-please cuts an immutable git
-# tag and publishes a GitHub Release before `deploy` ever starts. Gating only
-# the deploy would still leave a published release for a commit whose suite
-# then goes red, permanently desynchronising the version line from production.
+# ⚠ IT GATES `release`. release-please cuts an immutable git tag and publishes
+# a GitHub Release, so gating any later job would still leave a published
+# release for a commit whose suite then goes red.
 #
 # ⚠ THIS DEPENDS ON `test.yml` HAVING NO `paths:` FILTER. That ban (TBD-347) is
 # what guarantees a Test run always exists for every push to `main`, which is
 # what makes this wait terminate. Reintroducing a filter there would no longer
-# just break PRs -- it would silently stop production deploys, one 25-minute
+# just break PRs -- it would silently stop releases, one 25-minute
 # timeout at a time.
 set -uo pipefail
 
@@ -125,8 +124,8 @@ else:
       # reachable: a pending post-merge run is cancelled when a newer one
       # supersedes it in the concurrency group.
       echo "await-test-run: Test run for ${SHA} concluded '${concl}'." >&2
-      echo "Refusing to release or deploy. To ship anyway after investigating:" >&2
-      echo "  gh workflow run deploy.yml --ref main" >&2
+      echo "Refusing to release. After investigating, re-run the Test run (or land a fix)," >&2
+      echo "then re-run this workflow." >&2
       exit 1
       ;;
     absent)
@@ -140,7 +139,7 @@ else:
   if [ "$(date +%s)" -ge "$DEADLINE" ]; then
     echo "await-test-run: timed out after ${TIMEOUT}s waiting for ${SHA}" >&2
     echo "Last observed status: '${status}'. Failing closed." >&2
-    echo "To ship anyway after investigating: gh workflow run deploy.yml --ref main" >&2
+    echo "After investigating, re-run this workflow once the Test run is green." >&2
     exit 1
   fi
   sleep "$INTERVAL"

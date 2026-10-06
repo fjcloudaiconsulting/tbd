@@ -63,13 +63,11 @@ def _find_repo_root(start: Path) -> Path:
     rather than a red.
     """
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "deploy.yml").exists() and (
-            candidate / ".do" / "app.yaml"
-        ).exists():
+        if (candidate / ".github" / "workflows" / "release.yml").exists():
             return candidate
     raise RuntimeError(
-        "Could not locate repo root containing .github/workflows/deploy.yml "
-        "and .do/app.yaml. Run these tests from a checked-out repo."
+        "Could not locate repo root containing .github/workflows/release.yml. "
+        "Run these tests from a checked-out repo."
     )
 
 

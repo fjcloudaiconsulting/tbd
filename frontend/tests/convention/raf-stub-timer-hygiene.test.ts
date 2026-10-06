@@ -128,8 +128,7 @@ describe("TBD-459: stubbing requestAnimationFrame requires fake timers", () => {
     // ⚠ Anti-vacuity floor. If the scan silently matches nothing (a moved
     // tests root, a renamed helper, an AST shape this visitor stopped
     // recognising), every assertion below passes over an empty set and the
-    // gate is decoration. Same posture as
-    // `scripts/ci/assert-app-spec-secrets-synced.sh`'s `len(committed) < 5`.
+    // gate is decoration.
     expect(files.length).toBeGreaterThan(100);
     expect(stubbing.length).toBeGreaterThan(0);
   });

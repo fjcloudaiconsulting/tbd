@@ -264,8 +264,8 @@ async def lifespan(app: FastAPI):
     # with the MFA KEK (covers _PREV rotation slots too). See
     # ``verify_ai_credential_kek_separation`` docstring.
     verify_ai_credential_kek_separation()
-    # Production runs migrations as a true init step (App Platform
-    # PRE_DEPLOY job in .do/app.yaml) so they don't gate uvicorn's
+    # Production runs migrations as a true init step (the `migrate` init
+    # container, aws-infra clusters/platform/tbd-prod) so they don't gate uvicorn's
     # port-bind. Dev runs them inline because the dev orchestrator
     # (docker-compose) has no PRE_DEPLOY equivalent. The alternative is a
     # manual `./tbd migrate` after every rebuild.
