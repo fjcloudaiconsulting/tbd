@@ -1,7 +1,7 @@
 // links.ts — single source of truth for cross-domain CTA URLs used by the
 // landing surface (TopNav, Hero, SecondCta, LandingFooter).
 //
-// The app build (target = DigitalOcean App Platform) serves the landing and
+// The app build (the standalone Node bundle) serves the landing and
 // the authed app from the same origin (`app.thebetterdecision.com`), so
 // `/register` and `/login` resolve correctly as relative paths.
 //

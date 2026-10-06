@@ -32,7 +32,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = "October 5, 2026";
-const LAST_UPDATED = "October 5, 2026";
+const LAST_UPDATED = "October 6, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -147,12 +147,6 @@ export default function PrivacyPolicyPage() {
                 service and stores your data at rest, including the database
                 and nightly encrypted backups, in the Frankfurt region
                 (eu-central-1, Germany, EU).
-              </li>
-              <li>
-                <strong>DigitalOcean</strong> (former hosting): holds archived
-                copies of the database and session cache from before our move
-                to Amazon Web Services, in the Amsterdam region (EU). It no
-                longer runs the service and is scheduled for deletion.
               </li>
               <li>
                 <strong>Cloudflare</strong> (CDN / edge): handles TLS
