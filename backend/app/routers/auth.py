@@ -527,6 +527,19 @@ async def register(
     return _user_response(user, org)
 
 
+async def _require_session_store() -> None:
+    """Probe the session store before any credential check, so every
+    branch answers the same 503 while it is down or full (INFRA-121,
+    INFRA-132)."""
+    try:
+        await redis_client.session_store_probe()
+    except (RedisRequired, RedisError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        ) from exc
+
+
 @router.post("/login", response_model=TokenResponse | MfaChallengeResponse)
 @limiter.limit("10/minute")
 async def login(
@@ -536,14 +549,7 @@ async def login(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
-    # Session store probed before the credential check (INFRA-121).
-    try:
-        await redis_client.session_store_probe()
-    except (RedisRequired, RedisError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
-        ) from exc
+    await _require_session_store()
     # Accept username or email
     result = await db.execute(
         select(User).where(
@@ -3435,6 +3441,7 @@ async def mfa_verify(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Verify TOTP code during login to complete authentication."""
+    await _require_session_store()
     user = await _resolve_mfa_user(body.mfa_token, db)
 
     if not user.totp_secret:
@@ -3464,6 +3471,7 @@ async def mfa_recovery(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Use a recovery code during login to complete authentication."""
+    await _require_session_store()
     user = await _resolve_mfa_user(body.mfa_token, db)
 
     if not user.recovery_codes:
@@ -3548,6 +3556,7 @@ async def mfa_email_verify(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Verify an email-based MFA code to complete authentication."""
+    await _require_session_store()
     user = await _resolve_mfa_user(body.mfa_token, db)
 
     # Validate the email_token and extract the code HMAC
