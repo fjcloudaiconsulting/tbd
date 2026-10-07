@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.293.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.293.0...v0.293.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **auth:** probe the session store before the MFA code check (INFRA-132) ([#882](https://github.com/fjcloudaiconsulting/tbd/issues/882)) ([b110e82](https://github.com/fjcloudaiconsulting/tbd/commit/b110e8231c4738401612b1f7c3fc6d57076beda1))
+
 ## [0.293.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.292.2...v0.293.0) (2026-10-05)
 
 
