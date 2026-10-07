@@ -98,11 +98,6 @@
       "matchPackageNames": ["mysql", "valkey/valkey", "redis"],
       "matchUpdateTypes": ["major"],
       "enabled": false
-    },
-    {
-      "description": "DigitalOcean-era infrastructure that INFRA-49 and INFRA-103 remove: no updates.",
-      "matchFileNames": ["infra/terraform/**", "infra/ansible/**"],
-      "enabled": false
     }
   ]
 }
