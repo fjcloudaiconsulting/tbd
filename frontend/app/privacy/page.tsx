@@ -9,6 +9,7 @@ import {
   BACKUP_ROTATION_WINDOW_DAYS,
   DATA_DELETION_WINDOW_DAYS,
   PRIVACY_CONTACT_EMAIL,
+  REQUEST_LOG_RETENTION_DAYS,
 } from "@/lib/dataPolicy";
 
 const description =
@@ -32,7 +33,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = "October 5, 2026";
-const LAST_UPDATED = "October 6, 2026";
+const LAST_UPDATED = "October 7, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -88,7 +89,7 @@ export default function PrivacyPolicyPage() {
               <li>
                 <strong>Operational telemetry:</strong> request logs
                 containing IP address, user agent, path, and timestamp for
-                up to 30 days, used for debugging and abuse prevention.
+                up to {REQUEST_LOG_RETENTION_DAYS} days, used for debugging and abuse prevention.
               </li>
               <li>
                 <strong>Cookies:</strong> an HTTP-only refresh-token cookie
@@ -163,6 +164,20 @@ export default function PrivacyPolicyPage() {
                 name, and profile picture from Google after you authorize
                 the sign-in.
               </li>
+              <li>
+                <strong>Google</strong> (Analytics, on our public marketing
+                pages only, and only if you accept analytics cookies):
+                Google Analytics 4 receives aggregate, anonymized visitor
+                traffic data, as described in section 1.
+              </li>
+              <li>
+                <strong>Your organization&rsquo;s AI provider</strong> (only
+                if your organization configures its own AI provider with its
+                own key): we send the content you submit to that AI feature
+                to that provider, under your organization&rsquo;s own
+                agreement with it. We do not send it anywhere if no provider
+                is configured.
+              </li>
             </ul>
           </section>
 
@@ -179,7 +194,7 @@ export default function PrivacyPolicyPage() {
                 {BACKUP_ROTATION_WINDOW_DAYS} days.
               </li>
               <li>
-                Request logs are kept for up to 30 days.
+                Request logs are kept for up to {REQUEST_LOG_RETENTION_DAYS} days.
               </li>
               <li>
                 Email delivery records at Mailgun follow their retention
