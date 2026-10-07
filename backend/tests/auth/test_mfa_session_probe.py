@@ -79,11 +79,13 @@ async def test_mfa_endpoints_answer_alike_when_session_store_fails(
     with TestClient(app) as client:
         for path, (right, wrong) in cases.items():
             seen = []
-            for extra in (right, wrong):
-                res = client.post(path, json={"mfa_token": mfa_token, **extra})
+            # An unknown mfa_token answers alike too: kills probing only after
+            # the token resolves.
+            for token, extra in ((mfa_token, right), (mfa_token, wrong), ("garbage", right)):
+                res = client.post(path, json={"mfa_token": token, **extra})
                 assert _canonical_refresh_cookie(res.headers) is None
                 seen.append((res.status_code, res.json()))
-            assert seen[0] == seen[1] == (
+            assert seen[0] == seen[1] == seen[2] == (
                 503,
                 {"detail": SESSION_REDIS_UNAVAILABLE_DETAIL},
             ), (path, seen)
