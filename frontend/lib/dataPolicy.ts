@@ -18,3 +18,6 @@ export const BACKUP_ROTATION_WINDOW_DAYS = 90;
 
 /** The address that erasure and portability requests are made to. */
 export const PRIVACY_CONTACT_EMAIL = "privacy@thebetterdecision.com";
+
+/** Maximum days request logs are kept before the platform deletes them (INFRA-130). */
+export const REQUEST_LOG_RETENTION_DAYS = 7;
