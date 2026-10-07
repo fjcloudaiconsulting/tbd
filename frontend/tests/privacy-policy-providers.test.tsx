@@ -26,4 +26,12 @@ describe("privacy policy recipients and retention", () => {
     expect(t.match(/up to 7 days/g)?.length).toBe(2);
     expect(t).not.toMatch(/up to 30 days/);
   });
+
+  it("states server backups containing request logs are deleted within 14 days", () => {
+    expect(text()).toContain("Backups of our servers that may contain these logs are deleted within 14 days.");
+  });
+
+  it("does not promise nothing is sent when no AI provider is configured", () => {
+    expect(text()).not.toMatch(/do not send it anywhere/);
+  });
 });

@@ -175,8 +175,7 @@ export default function PrivacyPolicyPage() {
                 if your organization configures its own AI provider with its
                 own key): we send the content you submit to that AI feature
                 to that provider, under your organization&rsquo;s own
-                agreement with it. We do not send it anywhere if no provider
-                is configured.
+                agreement with it.
               </li>
             </ul>
           </section>
@@ -195,6 +194,8 @@ export default function PrivacyPolicyPage() {
               </li>
               <li>
                 Request logs are kept for up to {REQUEST_LOG_RETENTION_DAYS} days.
+                Backups of our servers that may contain these logs are
+                deleted within 14 days.
               </li>
               <li>
                 Email delivery records at Mailgun follow their retention
