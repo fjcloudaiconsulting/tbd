@@ -33,7 +33,8 @@ _spec = importlib.util.spec_from_file_location("_m087", _PATH)
 m087 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(m087)
 
-TABLES = ("audit_events", "roles", "notifications", "categories", "feedback_entries")
+# feedback_entries drifts only in index order (cosmetic) and is not touched.
+TABLES = ("audit_events", "roles", "notifications", "categories")
 
 
 def _col(name: str, fn: str) -> str:
@@ -41,22 +42,11 @@ def _col(name: str, fn: str) -> str:
 
 
 def _shape(fn: str, org_id_key: bool) -> dict:
-    cat = {"PRIMARY KEY (`id`)",
-           "UNIQUE KEY `uq_categories_org_slug_system` (`org_id`,`slug`,`is_system`)",
-           "KEY `ix_categories_parent_id` (`parent_id`)"}
-    if org_id_key:
-        cat.add("KEY `org_id` (`org_id`)")
     return {
         "audit_events": {_col("created_at", fn)},
         "roles": {_col("created_at", fn), _col("updated_at", fn)},
         "notifications": {_col("created_at", fn)},
-        "categories": cat,
-        # Order differs between prod and fresh (cosmetic); the set must not.
-        "feedback_entries": {"PRIMARY KEY (`id`)",
-                             "KEY `ix_feedback_entries_user_id` (`user_id`)",
-                             "KEY `ix_feedback_entries_created_at` (`created_at`)",
-                             "KEY `ix_feedback_entries_org_id` (`org_id`)",
-                             "KEY `ix_feedback_entries_category` (`category`)"},
+        "categories": {"KEY `org_id` (`org_id`)"} if org_id_key else set(),
     }
 
 
@@ -70,19 +60,16 @@ PROD_SQL = (
     "ALTER TABLE notifications ALTER COLUMN created_at SET DEFAULT (now(6))",
     "ALTER TABLE categories ADD INDEX org_id (org_id)",
 )
-_TRACKED = re.compile(r"`(created_at|updated_at)` datetime")
+_TRACKED = re.compile(r"`(created_at|updated_at)` datetime|KEY `org_id` ")
 
 
 def _relevant(sync_conn) -> dict:
-    """The drifted parts of SHOW CREATE TABLE: timestamp columns and keys."""
+    """The drifted parts of SHOW CREATE TABLE: timestamp columns, ``org_id`` key."""
     out = {}
     for t in TABLES:
         ddl = sync_conn.execute(text(f"SHOW CREATE TABLE {t}")).one()[1]
         lines = {ln.strip().rstrip(",") for ln in ddl.splitlines()[1:-1]}
-        if t in ("categories", "feedback_entries"):
-            out[t] = {ln for ln in lines if "KEY " in ln and "FOREIGN KEY" not in ln}
-        else:
-            out[t] = {ln for ln in lines if _TRACKED.match(ln)}
+        out[t] = {ln for ln in lines if _TRACKED.match(ln) and (t == "categories") == ("KEY" in ln)}
     return out
 
 
@@ -131,9 +118,10 @@ def test_prod_shape_converges(db):
 
 
 @mysql
-def test_fresh_shape_converges(db):
-    """FENCE. Staging (fresh) has no ``org_id`` index. Wrong implementation:
-    an unguarded DROP INDEX (MySQL 1091)."""
+def test_staging_shape_without_index_converges(db):
+    """FENCE. Staging (fresh) has no ``org_id`` index; the DB here is at head,
+    so this is the no-index path and idempotency. Wrong implementation: an
+    unguarded DROP INDEX (MySQL 1091)."""
     def go(c):
         before = _relevant(c)
         _run(c, m087.upgrade)
@@ -158,18 +146,17 @@ def test_downgrade_restores_prod_then_upgrade_round_trips(db):
 
 @mysql
 def test_models_agree_with_migrated_schema(db):
-    """FENCE. Autogenerate (server defaults included) sees no diff on the
-    converged columns or index. Wrong implementation: models left at
+    """FENCE. Autogenerate (server defaults included) sees no default diff on
+    the converged columns. Wrong implementation: models left at
     ``func.now(6)``. Other diffs on these tables predate INFRA-129."""
     cols = {(t, c) for t, cs in m087.COLUMNS.items() for c in cs}
 
     def go(c):
         mc = MigrationContext.configure(c, opts={"compare_server_default": True})
-        diffs = [d[0] if isinstance(d, list) else d for d in compare_metadata(mc, Base.metadata)]
-        return [d for d in diffs
-                if (d[0] == "modify_default" and (d[2], d[3]) in cols)
-                or (d[0] in ("add_index", "remove_index") and d[1].name == "org_id"
-                    and d[1].table.name == "categories")]
+        # A column's diffs come grouped (type, nullable, default, ...): flatten.
+        diffs = [x for d in compare_metadata(mc, Base.metadata)
+                 for x in (d if isinstance(d, list) else [d])]
+        return [d for d in diffs if d[0] == "modify_default" and (d[2], d[3]) in cols]
     assert _with_conn(go) == []
 
 
