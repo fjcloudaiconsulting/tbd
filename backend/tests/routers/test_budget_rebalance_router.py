@@ -27,6 +27,7 @@ from app.routers.budgets import router as budgets_router
 from app.security import hash_password
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.feature_gate import Feature, org_preference_key
+from tests.app_routes import effective_routes
 
 
 @pytest_asyncio.fixture
@@ -129,10 +130,10 @@ def _make_app(factory, user_id: int) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_gb9_transfer_route_absent_from_the_app(session_factory):
-    """/api/v1/budgets/transfer is gone from app.routes, and the positive
+    """/api/v1/budgets/transfer is gone from the app's routes, and the positive
     control (/rebalance IS present) rules out a check aimed at an empty
     route table."""
-    paths = {getattr(r, "path", None) for r in full_app.routes}
+    paths = {getattr(r, "path", None) for r in effective_routes(full_app)}
     assert "/api/v1/budgets/transfer" not in paths
     assert "/api/v1/budgets/rebalance" in paths
 

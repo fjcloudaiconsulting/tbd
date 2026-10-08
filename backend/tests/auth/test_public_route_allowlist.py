@@ -60,14 +60,14 @@ Why the app import is safe
 ``_run_migrations()`` and the scheduler task are both created **inside** the
 FastAPI lifespan, never at module import; ``create_async_engine`` is lazy and
 does not connect. The one rule is therefore: **never enter the lifespan.**
-Read ``app.routes``; never ``with TestClient(app)``. ``from app.main import
+Read the routes; never ``with TestClient(app)``. ``from app.main import
 app`` stays inside the test bodies because ``main.py`` calls
 ``setup_logging()`` at import.
 
 Maintaining this file
 ---------------------
 :data:`PUBLIC_ROUTES` is typed by hand and must stay that way. Never seed it
-from app state (``[r for r in app.routes if not authed(r)]``) and never parse
+from app state (``[r for r in effective_routes(app) if not authed(r)]``) and never parse
 it out of CONTRIBUTING.md — both produce a tautologically green guard that
 enforces nothing. If this test goes red, the fix is a security review of the
 new route followed by an explicit edit here **and** to CONTRIBUTING.md's
@@ -239,18 +239,20 @@ def _enumerate() -> dict[str, Any]:
 
     Imports live in here, not at module scope: ``app.main`` runs
     ``setup_logging()`` on import. The lifespan is never entered — we only
-    read ``app.routes``.
+    read its routes.
     """
     from fastapi.routing import APIRoute
 
     from app.deps import get_current_user
     from app.main import app
+    from tests.app_routes import effective_routes
 
-    api_routes = [r for r in app.routes if isinstance(r, APIRoute)]
+    routes = effective_routes(app)
+    api_routes = [r for r in routes if isinstance(r.route, APIRoute)]
     # Partition rather than filter: an ``isinstance`` filter alone would also
     # silently swallow a future ``app.mount()`` or ``WebSocketRoute`` — a hole
     # of exactly the shape this guard exists to close. P5 asserts on these.
-    other_routes = [r for r in app.routes if not isinstance(r, APIRoute)]
+    other_routes = [r for r in routes if not isinstance(r.route, APIRoute)]
 
     public: set[tuple[str, str]] = set()
     authed: set[tuple[str, str]] = set()
@@ -385,7 +387,17 @@ def test_p5_non_apiroute_entries_are_known():
     Those carry no ``dependant`` and are invisible to the auth walk, so they
     are asserted against a known set instead of being filtered away.
     """
-    other = _enumerate()["other_routes"]
+    state = _enumerate()
+    # iter_route_contexts never yields frontend() routes (they live in
+    # _low_priority_routes), so they would escape the allowlist entirely.
+    from fastapi.routing import _IncludedRouter
+
+    low = list(state["app"].router._low_priority_routes)
+    for r in state["app"].router.routes:
+        if isinstance(r, _IncludedRouter):
+            low += r.effective_low_priority_routes()
+    assert not low, f"frontend() routes escape the allowlist: {low}"
+    other = state["other_routes"]
     paths = {getattr(r, "path", repr(r)) for r in other}
     unexpected = sorted(paths - KNOWN_NON_API_ROUTE_PATHS)
     assert not unexpected, (

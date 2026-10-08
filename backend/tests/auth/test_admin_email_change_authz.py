@@ -313,10 +313,11 @@ def test_both_routes_are_mounted_on_the_real_app():
     asserts the real app carries none.
     """
     from app.main import app as real_app
+    from tests.app_routes import effective_routes
 
     pairs = {
         (method, getattr(route, "path", None))
-        for route in real_app.routes
+        for route in effective_routes(real_app)
         for method in (getattr(route, "methods", None) or ())
     }
     assert ("POST", "/api/v1/admin/users/{user_id}/email-change") in pairs

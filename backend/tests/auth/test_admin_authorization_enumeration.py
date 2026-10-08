@@ -80,7 +80,7 @@ Why the app import is safe
 --------------------------
 ``_run_migrations()`` and the scheduler task are both created inside the FastAPI
 lifespan, never at module import. The one rule is: **never enter the real app's
-lifespan.** Read ``app.routes``; never ``with TestClient(app.main:app)``. That
+lifespan.** Read the routes; never ``with TestClient(app.main:app)``. That
 rule is scoped to the REAL app — Legs 2 and 3 build their own application via
 ``make_test_app`` and must use ``with TestClient(...)`` on it, as every sibling
 does.
@@ -453,8 +453,9 @@ def _api_routes():
     from fastapi.routing import APIRoute
 
     from app.main import app
+    from tests.app_routes import effective_routes
 
-    return [r for r in app.routes if isinstance(r, APIRoute)]
+    return [r for r in effective_routes(app) if isinstance(r.route, APIRoute)]
 
 
 def _observed_by_gate() -> dict[tuple[str, str], frozenset[str]]:
@@ -812,10 +813,12 @@ def test_c6_behavioural_app_covers_the_same_gated_surface(app):
     """
     from fastapi.routing import APIRoute
 
+    from tests.app_routes import effective_routes
+
     mounted = {
         (m, r.path)
-        for r in app.routes
-        if isinstance(r, APIRoute)
+        for r in effective_routes(app)
+        if isinstance(r.route, APIRoute)
         for m in sorted(r.methods - {"HEAD", "OPTIONS"})
     }
     missing = sorted(set(ROSTER) - mounted)

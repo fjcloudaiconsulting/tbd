@@ -299,7 +299,7 @@ def _path_param_routes_with_limits() -> dict[str, dict]:
     one of the five known routes carries its parameter in the prefix.
 
     So the inventory is taken from the two things that cannot disagree with
-    production: FastAPI's assembled ``app.routes`` (the real resolved path, all
+    production: FastAPI's effective routes (the real resolved path, all
     routers, all mount styles) and slowapi's own ``_route_limits`` / ``_dynamic_route_limits`` registries
     (populated by the decorator itself, whatever the module named it).
     ``Limit.scope`` is ``""`` for a plain ``limit`` and the scope string for a
@@ -310,10 +310,11 @@ def _path_param_routes_with_limits() -> dict[str, dict]:
 
     from app.main import app
     from app.rate_limit import limiter
+    from tests.app_routes import effective_routes
 
     out: dict[str, dict] = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or "{" not in route.path:
+    for route in effective_routes(app):
+        if not isinstance(route.route, APIRoute) or "{" not in route.path:
             continue
         name = f"{route.endpoint.__module__}.{route.endpoint.__name__}"
         for lim in limiter._route_limits.get(name, []):

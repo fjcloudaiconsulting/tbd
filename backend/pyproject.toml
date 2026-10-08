@@ -9,7 +9,7 @@ dependencies = []
 
 [dependency-groups]
 app = [
-    "fastapi==0.136.3",
+    "fastapi==0.143.0",
     "uvicorn[standard]==0.54.0",
     "pydantic[email]==2.13.5",
     "pydantic-settings==2.15.0",
@@ -47,7 +47,7 @@ dev = [
 # MCP server component (backend/Dockerfile.mcp): a subset of `app`, SAME pins.
 # Excluded on purpose: alembic, ofxtools, pyotp, qrcode, python-multipart.
 mcp = [
-    "fastapi==0.136.3",
+    "fastapi==0.143.0",
     "uvicorn[standard]==0.54.0",
     "pydantic[email]==2.13.5",
     "pydantic-settings==2.15.0",
