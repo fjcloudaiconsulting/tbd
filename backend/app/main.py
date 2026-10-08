@@ -313,9 +313,10 @@ async def lifespan(app: FastAPI):
 
 _is_dev = app_settings.app_env == "development"
 
-# FastAPI's native OpenTelemetry turns every signal on unless told otherwise,
-# and an omitted key keeps its default. All off until INFRA-105 turns metrics
-# on with an OTLP MeterProvider (aws-infra docs/architecture.md, Telemetry).
+# FastAPI's native OpenTelemetry defaults every signal flag to on (they emit
+# once a provider is configured), and an omitted key keeps its default. All
+# off until INFRA-105 turns metrics on with an OTLP MeterProvider (aws-infra
+# docs/architecture.md, Telemetry).
 TELEMETRY = {
     "tracing": False,
     "metrics": False,

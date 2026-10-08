@@ -80,7 +80,7 @@ Why the app import is safe
 --------------------------
 ``_run_migrations()`` and the scheduler task are both created inside the FastAPI
 lifespan, never at module import. The one rule is: **never enter the real app's
-lifespan.** Read the routes (``tests/app_routes.py``); never ``with TestClient(app.main:app)``. That
+lifespan.** Read the routes; never ``with TestClient(app.main:app)``. That
 rule is scoped to the REAL app — Legs 2 and 3 build their own application via
 ``make_test_app`` and must use ``with TestClient(...)`` on it, as every sibling
 does.

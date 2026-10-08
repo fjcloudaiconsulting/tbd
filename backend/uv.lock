@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 
 [[package]]
@@ -802,6 +802,7 @@ wheels = [
 name = "tbd-backend"
 version = "0.0.0"
 source = { virtual = "." }
+default-groups = ["app", "dev"]
 
 [package.dev-dependencies]
 app = [

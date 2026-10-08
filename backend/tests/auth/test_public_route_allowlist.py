@@ -60,7 +60,7 @@ Why the app import is safe
 ``_run_migrations()`` and the scheduler task are both created **inside** the
 FastAPI lifespan, never at module import; ``create_async_engine`` is lazy and
 does not connect. The one rule is therefore: **never enter the lifespan.**
-Read the routes (``tests/app_routes.py``); never ``with TestClient(app)``. ``from app.main import
+Read the routes; never ``with TestClient(app)``. ``from app.main import
 app`` stays inside the test bodies because ``main.py`` calls
 ``setup_logging()`` at import.
 
@@ -388,9 +388,7 @@ def test_p5_non_apiroute_entries_are_known():
     are asserted against a known set instead of being filtered away.
     """
     other = _enumerate()["other_routes"]
-    # FastAPI 0.143 leaves ``path`` empty on a websocket inside an included
-    # router; fall back to the declared route so the failure names it.
-    paths = {getattr(r, "path", None) or repr(r.route) for r in other}
+    paths = {getattr(r, "path", repr(r)) for r in other}
     unexpected = sorted(paths - KNOWN_NON_API_ROUTE_PATHS)
     assert not unexpected, (
         f"unrecognised non-APIRoute entries on the app: {unexpected}. These "
