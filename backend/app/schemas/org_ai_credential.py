@@ -196,3 +196,4 @@ class OrgAICredentialResponse(BaseModel):
     last_used_at: Optional[datetime] = None
     last_validated_at: Optional[datetime] = None
     validation_error: Optional[str] = None
+    platform_provider: Optional[str] = None

@@ -8,9 +8,11 @@ it.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, get_args
 
 from app.config import settings
+from app.models.org_ai_credential import AiProvider
+from app.services.ai_pricing import MODEL_PRICING
 from app.services.ai_providers import NativeNotAvailable
 from app.services.ai_providers.anthropic import AnthropicAdapter
 from app.services.ai_providers.openai import OpenAIAdapter
@@ -18,8 +20,44 @@ from app.services.ai_providers.openai_compatible import (
     OPENAI_COMPATIBLE_PRESETS,
     OpenAICompatibleAdapter,
 )
+from app.services.ai_token_estimate import _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL
 
-PLATFORM_PROVIDERS = ("openrouter", "openai", "anthropic", "gemini")
+PlatformProvider = Literal["openrouter", "openai", "anthropic", "gemini"]
+PLATFORM_PROVIDERS: tuple[str, ...] = get_args(PlatformProvider)
+
+# The stored ``provider`` column of a platform row (display only: the factory
+# below never reads it).
+PLATFORM_ADAPTER: dict[str, AiProvider] = {
+    "openrouter": AiProvider.OPENAI_COMPATIBLE,
+    "gemini": AiProvider.OPENAI_COMPATIBLE,
+    "openai": AiProvider.OPENAI,
+    "anthropic": AiProvider.ANTHROPIC,
+}
+PLATFORM_LABELS = {
+    "openrouter": "OpenRouter", "openai": "OpenAI",
+    "anthropic": "Anthropic", "gemini": "Google Gemini",
+}
+# The models each provider can serve on the house key. An allowlisted id
+# outside its provider's set is refused at the admin PUT, at routing writes
+# and at dispatch. OpenRouter and Gemini get theirs with their pricing rows.
+PLATFORM_MODELS: dict[str, set[str]] = {
+    "openai": {"gpt-4o", "gpt-4o-mini", "text-embedding-3-small", "text-embedding-3-large"},
+    "anthropic": {"claude-sonnet-4-7", "claude-haiku-4-5"},
+    "openrouter": set(),
+    "gemini": set(),
+}
+
+
+def offerable_model(platform_provider: str, model: str) -> bool:
+    """Owned by the provider, priced at an exact id (never ``_default``) and
+    with a known output ceiling (R8)."""
+    return (
+        model in PLATFORM_MODELS.get(platform_provider, ())
+        and model in MODEL_PRICING
+        and model != "_default"
+        and model in _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL
+    )
+
 
 _ALL = ["chat", "embed", "structured_output", "function_call", "stream"]
 # Fixed per provider; written by PR2's create action, never by the org.

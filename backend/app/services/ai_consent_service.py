@@ -90,6 +90,17 @@ async def get_current_consents(
     )
 
 
+async def has_current_consent(db: AsyncSession, *, org_id: int) -> bool:
+    """Platform AI's consent rule: the latest row is not revoked AND carries
+    the current ToS version (a version bump pauses platform AI until the org
+    re-consents)."""
+    snap = await get_current_consents(db, org_id=org_id)
+    return (
+        snap.has_consent
+        and snap.consent_version == settings.ai_native_current_consent_version
+    )
+
+
 async def write_consent_row(
     db: AsyncSession,
     *,

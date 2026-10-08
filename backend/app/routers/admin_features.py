@@ -16,17 +16,25 @@ GET  /api/v1/admin/orgs/{org_id}/features
     the PLATFORM effective resolution for every Feature.
 PUT  /api/v1/admin/orgs/{org_id}/features/{feature}
     Upsert / delete OrgSetting row; audit via ``feature.org.set``.
+GET  /api/v1/admin/platform-ai
+    The platform AI settings dispatch sees, plus which env keys exist.
+PUT  /api/v1/admin/platform-ai
+    Full replace of the three ``platform_ai.*`` rows in one commit; audit via
+    ``admin.platform_ai.updated``.
 """
 from __future__ import annotations
 
-from typing import Literal
+import json
+from dataclasses import asdict
+from typing import Annotated, Literal
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import settings
 from app.database import get_db
 from app.auth.pat import require_interactive_session
 from app.deps import get_current_user, get_session_factory
@@ -34,7 +42,7 @@ from app.models.settings import OrgSetting
 from app.models.system_setting import SystemSetting
 from app.models.user import Organization, User
 from app.rate_limit import get_client_ip
-from app.services import audit_service
+from app.services import audit_service, platform_ai, platform_ai_settings
 from app.services.feature_gate import (
     Feature,
     _resolve_platform_feature,
@@ -76,6 +84,20 @@ router = APIRouter(
 
 class FeatureValueBody(BaseModel):
     value: Literal["on", "off", "inherit"]
+
+
+_ModelId = Annotated[str, StringConstraints(min_length=1, max_length=120)]
+
+
+class PlatformAIBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: StrictBool
+    global_monthly_cents: StrictInt = Field(ge=0, le=2**53 - 1)
+    models: dict[
+        platform_ai.PlatformProvider,
+        Annotated[list[_ModelId], Field(max_length=50)],
+    ]
 
 
 # ─── misc helpers ─────────────────────────────────────────────────────────
@@ -334,3 +356,93 @@ async def set_org_feature(
         "org_preference": await _org_preference(db, org_id, feat),
         "effective": effective,
     }
+
+
+# ─── platform AI (TBD-586) ────────────────────────────────────────────────
+
+
+async def _platform_ai_view(db: AsyncSession) -> dict:
+    conf = await platform_ai_settings.load(db)
+    return {
+        **asdict(conf),
+        "env_floor": settings.ai_native_enabled,
+        "providers": [
+            {"key": p, "key_configured": bool(platform_ai.platform_key(p))}
+            for p in platform_ai.PLATFORM_PROVIDERS
+        ],
+    }
+
+
+@router.get("/platform-ai")
+async def get_platform_ai(db: AsyncSession = Depends(get_db)) -> dict:
+    """What dispatch sees. Never key material, only whether a key is set."""
+    return await _platform_ai_view(db)
+
+
+@router.put(
+    "/platform-ai",
+    dependencies=[Depends(require_interactive_session)],
+)
+async def set_platform_ai(
+    body: PlatformAIBody,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+) -> dict:
+    """Full replace. Empty and duplicate model ids are dropped. With
+    ``enabled`` true every model must be offerable and every listed provider
+    must have its env key; ``enabled: false`` always saves (kill switch)."""
+    models = {p: list(dict.fromkeys(ms)) for p, ms in body.models.items() if ms}
+    if body.enabled:
+        for p, ms in models.items():
+            for m in ms:
+                if not platform_ai.offerable_model(p, m):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "code": "platform_model_not_offerable",
+                            "message": f"{m!r} is not offerable on platform {p!r}",
+                            "provider": p,
+                            "model": m,
+                        },
+                    )
+        for p in models:
+            if not platform_ai.platform_key(p):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "platform_provider_key_missing",
+                        "message": f"no platform key is configured for {p!r}",
+                        "provider": p,
+                    },
+                )
+
+    actor_user_id = current_user.id
+    actor_email = current_user.email
+    old = asdict(await platform_ai_settings.load(db))
+    for key, value in (
+        (platform_ai_settings.ENABLED, "on" if body.enabled else "off"),
+        (platform_ai_settings.GLOBAL_MONTHLY_CENTS, str(body.global_monthly_cents)),
+        (platform_ai_settings.MODELS, json.dumps(models, sort_keys=True)),
+    ):
+        await _upsert_system_setting(db, key, value)
+    await db.commit()  # ONE commit: the three rows change together or not at all
+
+    view = await _platform_ai_view(db)
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="admin.platform_ai.updated",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=None,
+        target_org_name=None,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={
+            "old": old,
+            "new": {k: view[k] for k in ("enabled", "global_monthly_cents", "models")},
+        },
+    )
+    return view

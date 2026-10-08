@@ -239,6 +239,9 @@ async def stream_turn(
             except ai_dispatch.AIDispatchError as exc:
                 outcome = exc.code
                 break
+            except ai_dispatch.PlatformConsentRequired as exc:
+                outcome = exc.code  # same code as the pre-flight refusal
+                break
             except NativeNotAvailable:
                 outcome = "ai_native_not_available"
                 break

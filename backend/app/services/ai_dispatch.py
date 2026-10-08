@@ -83,6 +83,7 @@ from app.models.org_ai_caps import OrgAIDefaultCaps, OrgAIFeatureCaps
 from app.models.org_ai_credential import OrgAICredential
 from app.models.user import Role, User
 from app.services import (
+    ai_consent_service,
     ai_routing_service,
     notification_service,
     platform_ai,
@@ -90,7 +91,7 @@ from app.services import (
     platform_reserve,
 )
 from app.services.ai_credential_crypto import decrypt
-from app.services.ai_pricing import MODEL_PRICING, estimate_cost_cents
+from app.services.ai_pricing import estimate_cost_cents
 from app.services.ai_token_estimate import (
     _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL,
     default_max_output_tokens_for,
@@ -285,6 +286,15 @@ class AIPlatformProjectionFailed(AICapExceeded):
         self.args = (self.code,)
 
 
+class PlatformConsentRequired(NativeNotAvailable):
+    """A platform dispatch for an org whose consent is missing, revoked or on
+    an older ToS version. A ``NativeNotAvailable`` so every existing handler
+    still catches it; ``http_for_dispatch_error`` gives it its own 412 code."""
+
+    def __init__(self) -> None:
+        super().__init__("ai_consent_required")
+
+
 class AIDispatchFailed(AIDispatchError):
     """Adapter raised a typed error and we wrote the ledger row before
     re-raising. The router maps this to HTTP 502.
@@ -363,6 +373,14 @@ def http_for_dispatch_error(exc: AIDispatchError) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={"code": exc.code},
+        )
+    if isinstance(exc, PlatformConsentRequired):
+        return HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={
+                "code": exc.code,
+                "current_consent_version": settings.ai_native_current_consent_version,
+            },
         )
     if isinstance(exc, NativeNotAvailable):
         return HTTPException(
@@ -1148,13 +1166,11 @@ async def _prepare_platform(
     ):
         raise NativeNotAvailable("platform_disabled")
     model = model_override or routed_model
-    # Priced (an exact id, never ``_default``) and an output ceiling known
-    # (R8), allowlisted, and for OpenAI a model vetted for ``max_tokens``.
+    # Owned by the provider, priced and bounded (R8), allowlisted, and for
+    # OpenAI a model vetted for ``max_tokens``.
     if (
         model not in conf.models.get(platform, [])
-        or model not in MODEL_PRICING
-        or model == "_default"
-        or model not in _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL
+        or not platform_ai.offerable_model(platform, model)
         or (
             platform == "openai"
             and capability != "embed"
@@ -1162,6 +1178,15 @@ async def _prepare_platform(
         )
     ):
         raise NativeNotAvailable("platform_model_not_allowed")
+    # Consent is re-checked on every dispatch, AFTER the switch refusals so a
+    # dark platform never asks for consent.
+    try:
+        consented = await ai_consent_service.has_current_consent(db, org_id=org_id)
+    except SQLAlchemyError:
+        await db.rollback()
+        raise AIPlatformUnavailable() from None
+    if not consented:
+        raise PlatformConsentRequired()
     if conf.global_monthly_cents <= 0:
         raise AIPlatformUnavailable()
     ceiling = _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL[model]

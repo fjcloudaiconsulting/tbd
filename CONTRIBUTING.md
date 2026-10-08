@@ -371,7 +371,7 @@ The MCP component is its own image and process and never imports `app.main`, so 
 ### Platform-gated endpoints (authorization, not just authentication)
 
 Authentication says *who you are*; the set above is where that stops being
-required. This section is the other axis: **62** `(method, path)` pairs are
+required. This section is the other axis: **66** `(method, path)` pairs are
 reachable only by a platform operator, and being signed in is not enough.
 
 Two gate mechanisms are in live use, and neither can be matched by name:
@@ -391,13 +391,14 @@ The 17-descriptor vocabulary in use: `admin.view`, `analytics.view`,
 `subscriptions.view`, `users.delete`, `users.reset_credentials`, `users.view`,
 plus superadmin gates from the six modules above.
 
-**10 of the 62 sit outside `/api/v1/admin/`** — six `plans.manage` routes under
+**10 of the 66 sit outside `/api/v1/admin/`** — six `plans.manage` routes under
 `/api/v1/plans` and four superadmin routes under `/api/v1/system/api-tokens`.
 `/api/v1/admin/` is a routing convention, not a security boundary, and the fence
 enumerates by *gate* rather than by path so those are covered.
 
-⚠ **`require_interactive_session` is not an authorization gate.** It sits on 18
-admin routes and checks only that the caller used a browser session rather than
+⚠ **`require_interactive_session` is not an authorization gate.** It sits on many
+admin write routes (and on account and token routes outside `/api/v1/admin/`;
+the roster is `backend/tests/auth/test_interactive_session_enumeration.py`) and checks only that the caller used a browser session rather than
 a PAT — it authorizes nobody. A route carrying only that dependency is reachable
 by every authenticated user.
 
@@ -409,7 +410,7 @@ has two independent legs:
   directions. This catches an ungated route, an unreviewed one, a stale entry,
   and a *downgraded* gate.
 - **behavioural** — an authenticated org OWNER holding no platform role must get
-  **403** from all 62, with a refusal message from a closed allow-list. This is
+  **403** from all 66, with a refusal message from a closed allow-list. This is
   the leg that survives a gate which is wired in but no longer denies.
 
 Adding a platform-gated route without adding it to that file's
