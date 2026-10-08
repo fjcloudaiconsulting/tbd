@@ -519,6 +519,16 @@ async def test_c9_unknown_output_ceiling_refuses(db, sf, fake, spy, monkeypatch)
     assert spy == []
 
 
+async def test_c9_the_default_pricing_row_is_never_priced(db, sf, fake, spy, monkeypatch):
+    monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "_default", 100)
+    await set_platform(db, models={"gemini": ["_default"]})
+    org = await mk_org(db)
+    await mk_platform(db, org, "gemini", "_default")
+    with pytest.raises(NativeNotAvailable):
+        await _chat(db, org)
+    assert spy == []
+
+
 async def test_c12_a_priced_openai_model_not_vetted_for_max_tokens_is_refused(db, sf, fake, spy, monkeypatch):
     monkeypatch.setitem(MODEL_PRICING, "o3-mini", ModelPricing(1, 1))
     monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "o3-mini", 100)
