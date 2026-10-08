@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import base64
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -104,6 +106,13 @@ def _env(monkeypatch):
     monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "vendor/model-a", 2000)
     monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "gemini-x", 2000)
     monkeypatch.setattr(app_settings, "ai_dispatch_timeout_s", 5.0)
+    # BYOK rows are encrypted at rest; CI has no key in its env (the dev .env does).
+    monkeypatch.setattr(
+        app_settings,
+        "ai_credential_encryption_key",
+        base64.urlsafe_b64encode(os.urandom(32)).decode("ascii"),
+    )
+    monkeypatch.setattr(app_settings, "ai_credential_encryption_key_prev", "")
 
 
 class Fake:
