@@ -24,7 +24,9 @@ PLATFORM_PROVIDERS = ("openrouter", "openai", "anthropic", "gemini")
 _ALL = ["chat", "embed", "structured_output", "function_call", "stream"]
 # Fixed per provider; written by PR2's create action, never by the org.
 PLATFORM_CAPABILITIES: dict[str, list[str]] = {
-    "openrouter": list(_ALL),
+    # No embed: the embeddings body never carries ``extra_body``, so OpenRouter's
+    # data_collection=deny preference would not be sent (unverified there).
+    "openrouter": [c for c in _ALL if c != "embed"],
     "openai": list(_ALL),
     "gemini": list(_ALL),
     "anthropic": [c for c in _ALL if c != "embed"],

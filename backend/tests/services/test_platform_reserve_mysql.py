@@ -356,5 +356,10 @@ def test_each_reserve_update_carries_its_limit_predicate():
     src = (Path(__file__).resolve().parents[2] / "app/services/platform_reserve.py").read_text()
     fn = next(n for n in ast.walk(ast.parse(src))
               if isinstance(n, ast.AsyncFunctionDef) and n.name == "reserve")
-    le = [n for n in ast.walk(fn) if isinstance(n, ast.Compare) and isinstance(n.ops[0], ast.LtE)]
-    assert len(le) == 3
+    le = {ast.unparse(n) for n in ast.walk(fn)
+          if isinstance(n, ast.Compare) and isinstance(n.ops[0], ast.LtE)}
+    assert le == {
+        "UsageCounter.value + tokens <= lt.limit",        # tokens UPDATE, tokens limit
+        "UsageCounter.value + cents <= lc.limit",         # cents UPDATE, cents limit
+        "PlatformAISpend.cents + cents <= ceiling_cents",  # global UPDATE, ceiling
+    }

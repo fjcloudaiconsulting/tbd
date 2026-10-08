@@ -16,6 +16,7 @@ from datetime import date, datetime
 from typing import Any
 
 import structlog
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -91,6 +92,24 @@ def _keys(ent, now: datetime):
     )
 
 
+async def _resolve(db: AsyncSession, org_id: int, now: datetime):
+    """Entitlements and period keys, or ``PlatformAIUnavailable`` (session
+    rolled back). A platform meter with no limit (``None``) is never read as
+    unlimited: it spends platform money, so it fails CLOSED."""
+    try:
+        ent = await feature_service.get_entitlements(db, org_id, now=now)
+        out = _keys(ent, now)
+    except (SQLAlchemyError, ValidationError, KeyError) as exc:
+        await db.rollback()
+        logger.warning("platform_reserve.entitlements_failed", org_id=org_id, error=type(exc).__name__)
+        raise PlatformAIUnavailable("entitlements unavailable") from exc
+    if out[0].limit is None or out[1].limit is None:
+        await db.rollback()
+        logger.warning("platform_reserve.meter_without_limit", org_id=org_id)
+        raise PlatformAIUnavailable("platform meter has no limit")
+    return out
+
+
 def _plan_limit(lim, meter: str, now: datetime) -> PlanLimitReached:
     return PlanLimitReached(
         meter, lim.limit, lim.period,
@@ -107,9 +126,8 @@ async def check_headroom(
     caller that only gates (the agent-chat pre-flight) can refuse an
     exhausted org before it spends another meter."""
     now = now or utcnow_naive()
+    lt, lc, tkey, ckey, month = await _resolve(db, org_id, now)
     try:
-        ent = await feature_service.get_entitlements(db, org_id, now=now)
-        lt, lc, tkey, ckey, month = _keys(ent, now)
         tv = await db.scalar(select(UsageCounter.value).where(
             UsageCounter.org_id == org_id, UsageCounter.meter == TOKENS,
             UsageCounter.period == tkey[0], UsageCounter.period_start == tkey[1])) or 0
@@ -149,9 +167,8 @@ async def reserve(
         raise RuntimeError("platform_reserve.reserve: the session holds uncommitted ORM changes")
     provider = cred.platform_provider  # read before the first commit/rollback
     now = now or utcnow_naive()
+    lt, lc, tkey, ckey, month = await _resolve(db, org_id, now)
     try:
-        ent = await feature_service.get_entitlements(db, org_id, now=now)
-        lt, lc, tkey, ckey, month = _keys(ent, now)
         for meter, key in ((TOKENS, tkey), (CENTS, ckey)):
             await db.execute(_upsert(db, UsageCounter, dict(
                 org_id=org_id, meter=meter, period=key[0], period_start=key[1], value=0,

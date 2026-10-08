@@ -123,8 +123,9 @@ def test_factory_never_decrypts_or_reads_stored_columns():
 def test_anthropic_capability_set_excludes_embed():
     caps = platform_ai.PLATFORM_CAPABILITIES
     assert "embed" not in caps["anthropic"]
-    for p in ("openrouter", "openai", "gemini"):
+    for p in ("openai", "gemini"):
         assert set(caps[p]) == {"chat", "embed", "structured_output", "function_call", "stream"}
+    assert set(caps["openrouter"]) == {"chat", "structured_output", "function_call", "stream"}
     assert set(caps["anthropic"]) == {"chat", "structured_output", "function_call", "stream"}
 
 

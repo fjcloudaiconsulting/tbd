@@ -627,17 +627,19 @@ POST_SEND = [
 
 
 @pytest.mark.parametrize("exc", POST_SEND, ids=lambda e: type(e).__name__)
-@pytest.mark.parametrize("entry", ["call_llm", "function", "structured"])
+@pytest.mark.parametrize("entry", ["call_llm", "function", "structured", "stream", "embed"])
 async def test_k7_every_post_send_failure_keeps_the_reservation(db, sf, fake, spy, monkeypatch, exc, entry):
     org, _ = await setup(db)
-    method = {"call_llm": "chat", "function": "function_call", "structured": "chat_structured"}[entry]
+    method = {"call_llm": "chat", "function": "function_call", "structured": "chat_structured",
+              "stream": "stream", "embed": "embed"}[entry]
 
-    class A:
-        async def __getattr__(self, n):  # pragma: no cover
-            raise AttributeError
-
-    async def raiser(**kw):
-        raise exc
+    if entry == "stream":
+        async def raiser(**kw):
+            raise exc
+            yield  # pragma: no cover
+    else:
+        async def raiser(**kw):
+            raise exc
 
     adapter = SimpleNamespace(**{method: raiser})
     monkeypatch.setattr(platform_ai, "build_adapter", lambda _p: adapter)
@@ -783,7 +785,21 @@ async def test_anthropic_stream_message_start_alone_is_not_final(db, sf, fake, s
     assert (await counters(sf, org))["platform_ai.tokens"] == spy[0].tokens
 
 
-async def test_stream_consumer_closing_after_done_still_settles_once(db, sf, fake, spy):
+async def test_stream_full_consumption_attempts_settle_twice_and_applies_once(db, sf, fake, spy, monkeypatch):
+    org, _ = await setup(db)
+    real, attempts = platform_reserve.settle, []
+
+    async def counting(db_, handle, tokens, cents):
+        attempts.append(1)
+        await real(db_, handle, tokens, cents)
+
+    monkeypatch.setattr(platform_reserve, "settle", counting)
+    await _stream(db, org)  # success-path settle, then the generator finally
+    assert len(attempts) == 2
+    assert (await counters(sf, org))["platform_ai.tokens"] == 27
+
+
+async def test_stream_consumer_closing_after_done_still_settles(db, sf, fake, spy):
     org, _ = await setup(db)
     gen = ai_dispatch.call_llm_stream(db, org_id=org, feature_key="chat", messages=MSGS, max_tokens=100)
     async for chunk in gen:
@@ -793,12 +809,13 @@ async def test_stream_consumer_closing_after_done_still_settles_once(db, sf, fak
     assert (await counters(sf, org))["platform_ai.tokens"] == 27
 
 
-async def test_r10_finally_settle_survives_cancellation_during_aclose(db, sf, fake, spy, monkeypatch):
+@pytest.mark.parametrize("cancels", [1, 3], ids=["single", "repeated"])
+async def test_r10_finally_settle_survives_cancellation_during_aclose(db, sf, fake, spy, monkeypatch, cancels):
     org, _ = await setup(db)
     real, finished = platform_reserve.settle, asyncio.Event()
 
     async def slow(db_, handle, tokens, cents):
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.15)
         await real(db_, handle, tokens, cents)
         finished.set()
 
@@ -809,10 +826,12 @@ async def test_r10_finally_settle_survives_cancellation_during_aclose(db, sf, fa
             break
     task = asyncio.ensure_future(gen.aclose())
     await asyncio.sleep(0.02)
-    task.cancel()
+    for _ in range(cancels):  # a cancel scope re-delivers every tick
+        task.cancel()
+        await asyncio.sleep(0.02)
     with pytest.raises(asyncio.CancelledError):
         await task
-    await asyncio.wait_for(finished.wait(), 2)
+    assert finished.is_set()  # the settle finished BEFORE the cancel surfaced
     assert (await counters(sf, org))["platform_ai.tokens"] == 27
 
 
@@ -929,12 +948,140 @@ def test_k12_enforce_cap_is_called_exactly_once_and_call_llm_goes_through_prepar
     assert "_prepare_dispatch" in names and "_resolve_caps_and_cost" not in names
 
 
+def _enclosing(tree):
+    """node -> name of its enclosing function."""
+    out = {}
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            for n in ast.walk(fn):
+                out[n] = fn.name
+    return out
+
+
 def test_k7_only_settle_can_decrement_a_counter():
     tree = _tree("services/platform_reserve.py")
-    for fn in (n for n in ast.walk(tree) if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))):
-        subs = [n for n in ast.walk(fn) if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Sub)]
-        assert not subs or fn.name == "settle", fn.name
+    where = _enclosing(tree)
+    for n in ast.walk(tree):
+        bad = (
+            (isinstance(n, ast.BinOp) and isinstance(n.op, ast.Sub))
+            or (isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub))
+            or (isinstance(n, ast.AugAssign) and isinstance(n.op, ast.Sub))
+        )
+        assert not bad or where.get(n) == "settle", (type(n).__name__, getattr(n, "lineno", 0))
     d = _tree("services/ai_dispatch.py")
     used = {n.id for n in ast.walk(d) if isinstance(n, ast.Name)} | {
         a.name for n in ast.walk(d) if isinstance(n, ast.ImportFrom) for a in n.names}
     assert not used & {"UsageCounter", "PlatformAISpend"}
+    dw = _enclosing(d)
+    callers = {dw.get(n) for n in ast.walk(d) if isinstance(n, ast.Attribute) and n.attr == "settle"
+               and isinstance(n.value, ast.Name) and n.value.id == "platform_reserve"}
+    assert callers == {"_settle"}
+
+
+# ---- review round 1 -----------------------------------------------------------
+
+def _ent(tokens_limit, cents_limit=1000):
+    return SimpleNamespace(limits={
+        "platform_ai.tokens": SimpleNamespace(period="month", limit=tokens_limit),
+        "platform_ai.cents": SimpleNamespace(period="month", limit=cents_limit)})
+
+
+async def test_r1_blocking_a_meter_without_a_limit_fails_closed_not_unlimited_not_500(db, sf, fake, monkeypatch):
+    org, _ = await setup(db)
+
+    async def ge(*a, **k):
+        return _ent(None)
+
+    monkeypatch.setattr(platform_reserve.feature_service, "get_entitlements", ge)
+    with pytest.raises(AIPlatformUnavailable):  # headroom: no TypeError
+        await _chat(db, org)
+    with pytest.raises(platform_reserve.PlatformAIUnavailable):  # reserve: no `<= NULL`
+        await platform_reserve.reserve(db, org, SimpleNamespace(platform_provider="openai"), 1, 1, 100)
+    assert fake.reqs == [] and await counters(sf, org) == {}
+
+
+def _validation_error():
+    from pydantic import ValidationError
+    try:
+        PlanUsageLimits.model_validate({"platform_ai.tokens": {"period": "month", "limit": None}})
+    except ValidationError as e:
+        return e
+    raise AssertionError("expected a ValidationError")  # pragma: no cover
+
+
+@pytest.mark.parametrize("make", [lambda: KeyError("x"), _validation_error,
+                                  lambda: OperationalError("s", {}, Exception("d"))],
+                         ids=["KeyError", "ValidationError", "OperationalError"])
+async def test_item9_entitlement_failures_are_typed_refusals(db, sf, fake, monkeypatch, make):
+    org, _ = await setup(db)
+
+    async def boom(*a, **k):
+        raise make()
+
+    monkeypatch.setattr(platform_reserve.feature_service, "get_entitlements", boom)
+    with pytest.raises(AIPlatformUnavailable):
+        await _chat(db, org)
+    with pytest.raises(platform_reserve.PlatformAIUnavailable):
+        await platform_reserve.reserve(db, org, SimpleNamespace(platform_provider="openai"), 1, 1, 100)
+    assert fake.reqs == []
+
+
+async def test_item10_settings_read_db_error_is_a_402_not_a_500(db, sf, fake, monkeypatch):
+    org, _ = await setup(db)
+
+    async def boom(_db):
+        raise OperationalError("s", {}, Exception("d"))
+
+    monkeypatch.setattr(ai_dispatch.platform_ai_settings, "load", boom)
+    with pytest.raises(AIPlatformUnavailable) as ei:
+        await _chat(db, org)
+    assert http_for_dispatch_error(ei.value).status_code == 402
+
+
+async def test_item3_openrouter_embed_is_refused_before_reserve(db, sf, fake, spy):
+    org, _ = await setup(db, provider="openrouter")
+    with pytest.raises(AICapabilityNotSupported):
+        await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=["hi"])
+    assert spy == [] and fake.reqs == [] and await counters(sf, org) == {}
+
+
+async def test_item11_assistant_tool_call_arguments_are_projected(db, sf, fake, spy):
+    org, _ = await setup(db)
+    msgs = [{"role": "assistant", "content": "",
+             "tool_calls": [{"id": "c1", "name": "t", "arguments": {"q": "x" * 3500}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "ok"}]
+    await ai_dispatch.call_llm_function(db, org_id=org, feature_key="chat", messages=msgs,
+                                        tools=TOOLS, max_tokens=100)
+    assert spy[0].tokens >= 1000 + 100
+
+
+# ---- item 4: cents and global spend are not vacuous ----------------------------
+
+@pytest.fixture
+def big_prices(monkeypatch):
+    monkeypatch.setitem(MODEL_PRICING, "gemini-x", ModelPricing(1_000_000, 2_000_000))   # 1c / 2c per token
+    monkeypatch.setitem(MODEL_PRICING, "emb-x", ModelPricing(10_000_000, 0))              # 10c per token
+    monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "emb-x", 0)
+
+
+async def _embed_x(db, org, mt=None):
+    return await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=["hi"], model="emb-x")
+
+
+BIG = {**ENTRIES, "embed": _embed_x}
+
+
+@ALL
+async def test_item4_cents_meter_and_global_spend_settle_to_the_actual_cost(db, sf, fake, spy, big_prices, entry):
+    await set_platform(db, models={"gemini": ["gemini-x", "emb-x"]})
+    org = await mk_org(db)
+    await mk_platform(db, org, "gemini")
+    await BIG[entry](db, org)
+    expected = 150 if entry == "embed" else 34  # 15 tokens*10c ; 20*1c + 7*2c
+    assert spy[0].cents > 0 and spy[0].cents != expected  # reserved differs from actual
+    c = await counters(sf, org)
+    assert c["platform_ai.cents"] == expected and await spend(sf) == expected
+    rows = await ledger(sf)
+    assert rows[0].est_cost_cents == expected
+    if entry == "embed":
+        assert rows[0].model == "emb-x"  # R6: priced on the model sent, not response.model

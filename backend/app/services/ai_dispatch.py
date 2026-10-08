@@ -1137,7 +1137,11 @@ async def _prepare_platform(
     """Pure platform gate: refuses or returns (model, bound, reservation
     request). Reads settings and counters, writes nothing."""
     platform = cred.platform_provider
-    conf = await platform_ai_settings.load(db)
+    try:
+        conf = await platform_ai_settings.load(db)
+    except SQLAlchemyError:
+        await db.rollback()
+        raise AIPlatformUnavailable() from None
     if (
         not (settings.ai_native_enabled and conf.enabled)
         or not platform_ai.platform_key(platform)
@@ -1241,15 +1245,20 @@ async def _settle(
 
 
 async def _settle_shielded(*args: Any, **kwargs: Any) -> None:
-    """``_settle`` that a cancellation cannot interrupt mid-transaction: the
-    cancel is delivered after the settle finished (a half-run settle would
-    leave the connection mid-transaction)."""
+    """``_settle`` that cancellation cannot interrupt or orphan: every cancel
+    (a scope may re-deliver one each tick) is swallowed until the settle task
+    is DONE, then one CancelledError is re-raised. A half-run settle would
+    leave the connection mid-transaction; an orphaned one would share ``db``
+    with the next user of the session."""
     task = asyncio.ensure_future(_settle(*args, **kwargs))
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await asyncio.wait({task})
-        raise
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError()
 
 
 async def _prepare_dispatch(
