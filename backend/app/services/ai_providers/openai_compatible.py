@@ -102,9 +102,17 @@ def _has_version_segment(base_url: str) -> bool:
 
 class OpenAICompatibleAdapter:
     def __init__(
-        self, *, api_key: str, base_url: str, base_url_is_api_root: bool = False
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        base_url_is_api_root: bool = False,
+        extra_body: Optional[dict] = None,
     ) -> None:
         self.api_key = api_key
+        # TBD-586: request-level fields merged into every chat-completions
+        # body (OpenRouter's data-collection deny). Empty for BYOK.
+        self.extra_body = dict(extra_body or {})
         self.base_url = base_url.rstrip("/")
         self.base_url_is_api_root = base_url_is_api_root
         # Plain concat, never urljoin: legacy rows must stay byte-identical.
@@ -199,6 +207,7 @@ class OpenAICompatibleAdapter:
         body: dict = {"model": model, "messages": messages}
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        body.update(self.extra_body)
         url = f"{self.api_root}/chat/completions"
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
@@ -311,6 +320,7 @@ class OpenAICompatibleAdapter:
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        body.update(self.extra_body)
         url = f"{self.api_root}/chat/completions"
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
@@ -368,6 +378,7 @@ class OpenAICompatibleAdapter:
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        body.update(self.extra_body)
         url = f"{self.api_root}/chat/completions"
         try:
             async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
@@ -436,9 +447,11 @@ class OpenAICompatibleAdapter:
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        body.update(self.extra_body)
         url = f"{self.api_root}/chat/completions"
 
         final_usage: Optional[TokenUsage] = None
+        saw_done = False
         try:
             async with guarded_async_client(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
@@ -456,6 +469,7 @@ class OpenAICompatibleAdapter:
                             continue
                         data = line[len("data:"):].strip()
                         if data == "[DONE]":
+                            saw_done = True
                             break
                         try:
                             event = json.loads(data)
@@ -485,4 +499,9 @@ class OpenAICompatibleAdapter:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
-        yield StreamChunk(delta_text="", done=True, final_usage=final_usage)
+        yield StreamChunk(
+            delta_text="",
+            done=True,
+            final_usage=final_usage,
+            usage_final=saw_done and final_usage is not None,
+        )

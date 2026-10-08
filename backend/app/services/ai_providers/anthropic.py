@@ -481,6 +481,11 @@ class AnthropicAdapter:
 
         prompt_tokens = 0
         completion_tokens = 0
+        # message_start already reports output_tokens=1; only a
+        # message_delta usage is final, and a mid-stream ``error`` event
+        # (otherwise ignored) voids it.
+        usage_final = False
+        errored = False
         try:
             async with httpx.AsyncClient(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
@@ -518,7 +523,10 @@ class AnthropicAdapter:
                             completion_tokens = int(
                                 usage.get("output_tokens", 0) or 0
                             )
+                        elif etype == "error":
+                            errored = True
                         elif etype == "message_delta":
+                            usage_final = isinstance(event.get("usage"), dict)
                             usage = event.get("usage") or {}
                             completion_tokens = int(
                                 usage.get("output_tokens", completion_tokens)
@@ -537,4 +545,5 @@ class AnthropicAdapter:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
             ),
+            usage_final=usage_final and not errored,
         )

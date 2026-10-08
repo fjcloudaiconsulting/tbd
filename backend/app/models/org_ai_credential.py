@@ -35,11 +35,19 @@ class AiProvider(str, enum.Enum):
     NATIVE = "native"
 
 
+PLATFORM_PROVIDER = Enum(
+    "openrouter", "openai", "anthropic", "gemini", name="ai_platform_provider"
+)
+
+
 class OrgAICredential(Base):
     __tablename__ = "org_ai_credentials"
     __table_args__ = (
         UniqueConstraint(
             "org_id", "id", name="uq_org_ai_credentials_org_id_id"
+        ),
+        UniqueConstraint(
+            "org_id", "platform_provider", name="uq_org_ai_credentials_org_platform"
         ),
     )
 
@@ -59,6 +67,10 @@ class OrgAICredential(Base):
             values_callable=lambda x: [e.value for e in x],
         ),
         nullable=False,
+    )
+    # TBD-586: set only on a platform (house-key) row; NULL on every BYOK row.
+    platform_provider: Mapped[Optional[str]] = mapped_column(
+        PLATFORM_PROVIDER, nullable=True
     )
     encrypted_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     encrypted_bearer_token: Mapped[Optional[str]] = mapped_column(

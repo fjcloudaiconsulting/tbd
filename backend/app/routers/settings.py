@@ -83,10 +83,10 @@ router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 # The constant stays lowercase; the INPUT is what gets folded.  This applies
 # to BOTH entries above: "orgpref." inherits the same protection, and the
 # ``list_settings`` filter below folds for the same reason.
-RESERVED_SETTINGS_PREFIX = ("feature.", "orgpref.")
+RESERVED_SETTINGS_PREFIX = ("feature.", "orgpref.", "platform_ai.")
 _RESERVED_NAMESPACE_DETAIL = (
-    "The 'feature.' and 'orgpref.' settings namespaces are managed by "
-    "dedicated endpoints, not this one"
+    "The 'feature.', 'orgpref.' and 'platform_ai.' settings namespaces are "
+    "managed by dedicated endpoints, not this one"
 )
 
 # The allow-list behind PUT /settings/features/{feature}. Kept beside the

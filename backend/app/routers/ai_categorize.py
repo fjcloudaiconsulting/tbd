@@ -30,6 +30,7 @@ from app.services.ai_dispatch import (
     AICapExceeded,
     AIDispatchFailed,
     NoRoutingConfigured,
+    http_for_dispatch_error,
 )
 from app.services.ai_providers import NativeNotAvailable, StructuredOutputError
 
@@ -112,11 +113,10 @@ async def categorize_transaction(
             status_code=status.HTTP_412_PRECONDITION_FAILED,
             detail={"code": "ai_native_not_available"},
         )
-    except AICapExceeded:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={"code": "ai_hard_cap_exceeded"},
-        )
+    except AICapExceeded as exc:
+        # Also the platform refusals (plan limit, ceiling, projection):
+        # the shared mapper owns each one's 402 detail.
+        raise http_for_dispatch_error(exc)
     except (StructuredOutputError, SuggestionRejected) as exc:
         # Both surface as a 502: we got an answer from the provider
         # but it wasn't usable. Distinguish the codes so the frontend
