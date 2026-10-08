@@ -204,8 +204,13 @@ def test_f_s2_generic_writer_refuses_the_namespace_in_any_case(key):
 
 
 async def test_f_s2_reader_ignores_an_org_scoped_row(db):
-    db.add(OrgSetting(org_id=1, key="platform_ai.enabled", value="on"))
-    db.add(OrgSetting(org_id=1, key="platform_ai.global_monthly_cents", value="999"))
+    from app.models.user import Organization
+
+    org = Organization(name="Acme", billing_cycle_day=1)
+    db.add(org)
+    await db.commit()
+    db.add(OrgSetting(org_id=org.id, key="platform_ai.enabled", value="on"))
+    db.add(OrgSetting(org_id=org.id, key="platform_ai.global_monthly_cents", value="999"))
     await db.commit()
     s = await platform_ai_settings.load(db)
     assert (s.enabled, s.global_monthly_cents) == (False, 0)
