@@ -19,6 +19,8 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text-summary"],
       reportsDirectory: "./coverage",
+      // Vitest 4 dropped coverage.all: without include, files no test imports go uncounted.
+      include: ["**/*.{ts,tsx,js,jsx,mjs}"],
       exclude: ["node_modules/**", "tests/**", ".next/**", "out-apex/**", "**/*.config.*", "**/*.d.ts"],
     },
   },
