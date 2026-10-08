@@ -504,13 +504,14 @@ async def revert_action(db: AsyncSession, user: User, action_id: str) -> dict[st
             raise _not_revertible("not_write", "only a write can be reverted")
         spec = get_tool(row.tool)
         if spec is None:
-            raise ToolError("tool_retired", row.tool)
+            raise ToolError("tool_retired", "this action's tool is no longer available")
         if spec.risk != "write":
             raise _not_revertible("not_write", "only a write can be reverted")
-        original = row.preview_json["changes"]
+        rid = row.id  # the stored id: a _ci collation may match a differently-cased path id
+        original = wrap_untrusted(row.preview_json["changes"])
         inverse = actions.inverse_args(spec, row.args_json, row.preview_json)
         staged = (await invoke(
-            db, user, spec.name, inverse, channel="in_app", reverts=action_id
+            db, user, spec.name, inverse, channel="in_app", reverts=rid
         ))["data"]
         p = original[0]
         expected = {
@@ -532,15 +533,16 @@ async def revert_action(db: AsyncSession, user: User, action_id: str) -> dict[st
     except ToolError as exc:
         await logger.ainfo(
             "agent.action.revert", channel="in_app", org_id=org_id, user_id=user_id,
-            outcome=exc.code,
+            action_id=action_id, staged_action_id=exc.data.get("action_id"), outcome=exc.code,
         )
         exc.data = wrap_untrusted(exc.data)
         raise
     except Exception:
         await logger.aexception("agent.action.revert.failed", org_id=org_id)
         await db.rollback()
-        raise ToolError("internal_error", "the revert failed") from None
+        raise ToolError("internal", "the revert failed") from None
     await logger.ainfo(
-        "agent.action.revert", channel="in_app", org_id=org_id, user_id=user_id, outcome="ok",
+        "agent.action.revert", channel="in_app", org_id=org_id, user_id=user_id,
+        action_id=action_id, staged_action_id=staged["action_id"], outcome="ok",
     )
     return {"data": staged}

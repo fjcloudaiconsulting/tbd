@@ -313,7 +313,7 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
     tool, args_json, preview_json = row.tool, row.args_json, row.preview_json
     fingerprint, args_sha, risk, mode = row.fingerprint, row.args_sha256, row.risk.value, row.mode
     token_id = row.api_token_id
-    reverts = preview_json["context"].get("reverts")  # TBD-589: the action this undoes
+    reverts = (preview_json.get("context") or {}).get("reverts")  # TBD-589: the action this undoes
 
     status: ActionStatus = ActionStatus.FAILED
     error_code: str | None = "internal"

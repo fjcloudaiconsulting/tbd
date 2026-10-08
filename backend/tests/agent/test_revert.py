@@ -25,7 +25,7 @@ from app.models.transaction import Transaction
 from app.models.user import User
 
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
-    AUTO, MCP, _amount, _audits, _confirm, _invoke, _refused, _row, _rows, _set_amount, _stage,
+    AUTO, MCP, _BOOKKEEPING, _NATURAL_KEY, _WRITE_CASES, _amount, _snapshot, _audits, _confirm, _invoke, _refused, _row, _rows, _set_amount, _stage,
     engine, factory, scratch, w,
 )
 from tests.agent.test_agent_routes import _as, _reset_limiter, client  # noqa: F401
@@ -119,14 +119,12 @@ async def test_f5_post_revert_stages_a_new_in_app_confirm_row(factory, w, client
 # ── F1: end to end through the production path ────────────────────────────
 
 @pytest.mark.parametrize("auto", [False, True], ids=["confirm", "auto"])
-@pytest.mark.parametrize("tool", ["budgets_update_amount", "transactions_set_category"])
+@pytest.mark.parametrize("tool", sorted(_WRITE_CASES))
 async def test_f1_revert_then_confirm_restores_the_primary_entity(factory, w, tool, auto):
     """FENCE F1. Apply, ``revert_action``, ``confirm_action``: the primary
     entity equals the original. Wrong implementations: an inverse built from
     ``after``; the test and production builders drifting apart; a direct
     execute."""
-    from tests.agent.test_actions import _WRITE_CASES, _NATURAL_KEY, _snapshot
-
     a = w["A"]
     kw = {"api_token_id": a["t1"], **AUTO} if auto else {}
     args = _WRITE_CASES[tool](a)
@@ -137,6 +135,12 @@ async def test_f1_revert_then_confirm_restores_the_primary_entity(factory, w, to
     assert out["status"] == "done"
     [primary] = [c for c in out["changes"] if c["entity"] not in _NATURAL_KEY]
     assert primary["before"] != primary["after"]
+    if auto:
+        # No derived row is written in auto mode: every other table is untouched.
+        mid = await _snapshot(factory)
+        for table in start:
+            if table not in _BOOKKEEPING and table != primary["entity"]:
+                assert mid[table] == start[table], table
 
     staged = await _revert(factory, a["member"], out["action_id"])
     assert staged["context"]["reverts"] == out["action_id"]
@@ -354,5 +358,5 @@ async def test_g5_a_malformed_stored_preview_is_an_opaque_internal_error(factory
     orig = await _done_budget(factory, w)
     await _set_row(factory, orig, preview_json={"summary": "x", "warnings": [], "context": {}})
     err = await _refused(_revert(factory, a["member"], orig))
-    assert err.code == "internal_error"
+    assert err.code == "internal"
     assert "changes" not in err.detail and "Error" not in err.detail

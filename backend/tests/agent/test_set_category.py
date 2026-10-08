@@ -185,7 +185,7 @@ async def test_fp6_description_edit_between_preview_and_confirm_is_stale(factory
 
 
 async def test_auto_previews_and_learns_no_rule(factory, w):
-    """GUARD (F-A4 has the fence). An ``agent:auto`` principal lists no rule
+    """GUARD (test_revert F1 has the fence). An ``agent:auto`` principal lists no rule
     and writes none, on a row that would teach one on the confirm path."""
     a = w["A"]
     out = await _stage(factory, a, api_token_id=a["t1"], **AUTO)

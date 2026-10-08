@@ -422,6 +422,7 @@ _NEVER = [
     ("POST", "/api/v1/agent/tokens"),
     ("POST", "/api/v1/agent/actions/{action_id}/confirm"),
     ("POST", "/api/v1/agent/actions/{action_id}/cancel"),
+    ("POST", "/api/v1/agent/actions/{action_id}/revert"),
     ("GET", "/api/v1/agent/actions"),
     ("GET", "/api/v1/settings/ai-providers"),
     ("PUT", "/api/v1/settings/ai-providers/routing/default"),
