@@ -185,12 +185,14 @@ async def test_k3_two_orgs_race_at_ceiling_minus_one_exactly_one_admitted(factor
 
 # ── K4 ────────────────────────────────────────────────────────────────────
 
-async def test_k4_settle_after_midnight_moves_only_the_reserved_period(factory):
+async def test_k4_settle_after_midnight_moves_only_the_reserved_period(factory, monkeypatch):
     org = await _org(factory, _limits(tperiod="day", cperiod="month"))
     last = datetime(2026, 10, 31, 23, 59, 59)
     async with factory() as db:
         r = await pr.reserve(db, org, 100, 10, 1000, _Adapter(), now=last)
-    # "after midnight": settle takes no clock; the handle carries the keys.
+    # The app clock is past midnight at settle time, so a settle that
+    # re-resolves the period from the clock lands on November and fails here.
+    monkeypatch.setattr(pr, "utcnow_naive", lambda: datetime(2026, 11, 1, 0, 0, 1))
     async with factory() as db:
         await pr.settle(db, r.handle, 40, 4)
     counters, spend = await _state(factory, org)
