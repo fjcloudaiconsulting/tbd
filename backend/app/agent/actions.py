@@ -179,11 +179,32 @@ async def _check_ceiling(ctx: ToolContext, user_id: int) -> None:
         raise ToolError("too_many_pending_actions", "cancel or confirm pending actions first")
 
 
+def inverse_args(spec: ToolSpec, args_json: dict[str, Any], preview_json: dict[str, Any]) -> dict:
+    """The args that restore a done write: the stored args with every field of
+    the PRIMARY entity (``changes[0]``) put back to its ``before``. Derived
+    changes (a learned rule) are not inverted; the revert's own preview
+    re-discloses them."""
+    changes = preview_json["changes"]
+    p = changes[0]
+    restore = {
+        c["field"]: c["before"] for c in changes
+        if (c["entity"], c["id"]) == (p["entity"], p["id"])
+    }
+    if not restore.keys() <= spec.args.model_fields.keys():
+        raise ToolError(
+            "not_revertible", "this action cannot be inverted", data={"reason": "no_inverse"}
+        )
+    return {**args_json, **restore}
+
+
 # ── propose ───────────────────────────────────────────────────────────────
 
-async def propose(ctx: ToolContext, spec: ToolSpec, args: Any, *, scope: str | None) -> dict:
+async def propose(
+    ctx: ToolContext, spec: ToolSpec, args: Any, *, scope: str | None, reverts: str | None = None,
+) -> dict:
     """Stage ``spec`` with ``args``; for ``agent:auto`` on a ``write`` tool,
-    then confirm it in this request."""
+    then confirm it in this request. ``reverts`` (TBD-589) records the action
+    this one undoes, in the preview's context."""
     db = ctx.db
     user_id, org_id = ctx.user.id, ctx.org_id
     if ctx.channel == "mcp" and ctx.api_token_id is None:
@@ -204,6 +225,8 @@ async def propose(ctx: ToolContext, spec: ToolSpec, args: Any, *, scope: str | N
     await _check_ceiling(ctx, user_id)
 
     pv = _preview_dict(await registry.call_mapped(spec.preview, ctx, args))
+    if reverts is not None:
+        pv["context"]["reverts"] = reverts
     row = _new_row(
         ctx, user_id, spec, args.model_dump(mode="json"), pv,
         ActionMode.AUTO if auto else ActionMode.CONFIRM,
@@ -290,6 +313,7 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
     tool, args_json, preview_json = row.tool, row.args_json, row.preview_json
     fingerprint, args_sha, risk, mode = row.fingerprint, row.args_sha256, row.risk.value, row.mode
     token_id = row.api_token_id
+    reverts = (preview_json.get("context") or {}).get("reverts")  # TBD-589: the action this undoes
 
     status: ActionStatus = ActionStatus.FAILED
     error_code: str | None = "internal"
@@ -317,6 +341,7 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
                 "action_id": action_id, "tool": tool, "channel": ctx.channel, "risk": risk,
                 "mode": mode.value, "args_sha256": args_sha, "status": status.value,
                 "error_code": error_code,
+                **({"reverts": reverts} if reverts is not None else {}),
             },
         )
         audit.api_token_id = token_id
@@ -337,6 +362,8 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
             except Exception:
                 raise ToolError("invalid_arguments", "stored arguments no longer validate") from None
             new_preview = _preview_dict(await registry.call_mapped(spec.preview, ctx, args))
+            if reverts is not None:
+                new_preview["context"]["reverts"] = reverts
             if _fingerprint(tool, args_json, new_preview) != fingerprint:
                 # The world moved since the preview: nothing runs. A fresh
                 # preview replaces this row (exempt from the live ceiling: this

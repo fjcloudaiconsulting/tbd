@@ -861,6 +861,9 @@ async def test_fa3_rows_written_are_a_subset_of_the_disclosed_changes(factory, w
     out = await _invoke(factory, a["member"], tool, args)
     disclosed = {(c["entity"], _disclosed_key(a["org"], c)) for c in out["changes"]}
     assert disclosed
+    # FENCE F2 (TBD-589): ``changes[0]`` is the primary entity, the one a revert
+    # inverts. Wrong implementation: a tool listing its derived row first.
+    assert out["changes"][0]["entity"] not in _NATURAL_KEY
     before = await _snapshot(factory)
     await _confirm(factory, a["member"], out["action_id"])
     after = await _snapshot(factory)
@@ -874,46 +877,8 @@ async def test_fa3_rows_written_are_a_subset_of_the_disclosed_changes(factory, w
     assert disclosed <= touched, "a disclosed change was not written"
 
 
-# ── F-A4 ──────────────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("auto", [False, True], ids=["confirm", "auto"])
-@pytest.mark.parametrize("tool", sorted(_WRITE_CASES))
-async def test_fa4_the_inverse_built_from_before_restores_the_entity(factory, w, tool, auto):
-    """FENCE F-A4. Apply, then apply the inverse built from the preview's
-    ``before``: the primary entity equals the original. In auto mode every
-    other table (the derived ``category_rules`` included) is byte-identical.
-    Wrong implementations: a non-invertible tool declared ``write``; auto
-    ``transactions_set_category`` still learning a rule."""
-    a = w["A"]
-    kw = {"api_token_id": a["t1"], **AUTO} if auto else {}
-
-    async def apply(args):
-        out = await _invoke(factory, a["member"], tool, args, **kw)
-        if not auto:
-            out = await _confirm(factory, a["member"], out["action_id"])
-        assert out["status"] == "done"
-        return out
-
-    args = _WRITE_CASES[tool](a)
-    start = await _snapshot(factory)
-    out = await apply(args)
-    [primary] = [c for c in out["changes"] if c["entity"] not in _NATURAL_KEY]
-    assert primary["before"] != primary["after"]
-    if tool == "transactions_set_category":
-        assert len(out["changes"]) == (1 if auto else 2)
-    await apply({**args, primary["field"]: primary["before"]})
-    end = await _snapshot(factory)
-
-    def entity(snap):
-        row = dict(snap[primary["entity"]][(primary["id"],)])
-        row.pop("updated_at", None)
-        return row
-
-    assert entity(end) == entity(start)
-    if auto:
-        for table in start:
-            if table not in _BOOKKEEPING and table != primary["entity"]:
-                assert end[table] == start[table], table
+# F-A4 (the inverse restores the primary entity) moved to tests/agent/test_revert.py
+# as F1, driving the production ``revert_action`` path.
 
 
 # ── review round 1 ────────────────────────────────────────────────────────
