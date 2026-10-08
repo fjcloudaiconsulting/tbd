@@ -145,7 +145,7 @@ def test_routes_carry_the_interactive_and_entitlement_guards():
 
             walk(r.dependant)
             seen[(tuple(sorted(r.methods)), r.path)] = calls
-    assert len(seen) == 3, seen
+    assert len(seen) == 4, seen
     for key, calls in seen.items():
         assert "app.auth.pat.require_interactive_session" in calls, key
         assert "app.auth.feature_deps.require_feature.<locals>._dep" in calls, key

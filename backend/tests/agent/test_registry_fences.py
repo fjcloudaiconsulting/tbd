@@ -568,7 +568,7 @@ async def test_principal_scope_gate(entitled, scratch_tool, monkeypatch, channel
     engine (stubbed here) and never runs from ``invoke``."""
     from app.agent import actions
 
-    async def _propose(ctx, spec, args, *, scope):
+    async def _propose(ctx, spec, args, *, scope, reverts=None):
         return {"staged": spec.name}
 
     monkeypatch.setattr(actions, "propose", _propose)

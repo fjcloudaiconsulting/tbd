@@ -36,8 +36,10 @@ from typing import Any, Literal
 import structlog
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent_pending_action import ActionStatus, AgentPendingAction as Action
 from app.models.user import Role, User
 from app.services import feature_service, usage_service
 from app.services.exceptions import NotFoundError, ValidationError
@@ -195,7 +197,8 @@ class Change:
 class Preview:
     """What a write tool says it will do. ``summary`` never embeds a
     user-writable string (it is not wrapped): user text goes in ``context``
-    under a key in :data:`UNTRUSTED_KEYS`.
+    under a key in :data:`UNTRUSTED_KEYS`. ``changes[0]`` is the primary entity
+    (what a revert inverts); a derived row, if any, comes after it.
 
     A ``preview`` hook must read fresh (``populate_existing``): the auto path
     re-previews in the same session, whose identity map may hold a stale row."""
@@ -311,6 +314,7 @@ async def invoke(
     channel: Channel,
     scope: str | None = None,
     api_token_id: int | None = None,
+    reverts: str | None = None,
 ) -> dict[str, Any]:
     """Run tool ``name`` for the authenticated ``user``; return ``{"data": ...}``.
 
@@ -324,7 +328,9 @@ async def invoke(
     # the log call would raise MissingGreenlet.
     org_id, user_id = user.org_id, user.id
     try:
-        data = await _gate_and_run(db, user, name, raw_args, channel, scope, api_token_id)
+        data = await _gate_and_run(
+            db, user, name, raw_args, channel, scope, api_token_id, reverts
+        )
     except ToolError as exc:
         await logger.ainfo(
             "agent.tool.invoked", tool=name, channel=channel, org_id=org_id,
@@ -386,7 +392,7 @@ def _is_auto(channel: str, scope: str | None) -> bool:
 
 async def _gate_and_run(
     db: AsyncSession, user: User, name: str, raw_args: dict[str, Any] | None,
-    channel: Channel, scope: str | None, api_token_id: int | None,
+    channel: Channel, scope: str | None, api_token_id: int | None, reverts: str | None,
 ) -> Any:
     spec = _TOOLS.get(name)
     if spec is None:
@@ -416,7 +422,7 @@ async def _gate_and_run(
     )
     if spec.risk == "read":
         return await call_mapped(spec.run, ctx, args)
-    return await actions.propose(ctx, spec, args, scope=scope)
+    return await actions.propose(ctx, spec, args, scope=scope, reverts=reverts)
 
 
 async def _decide(
@@ -467,3 +473,74 @@ async def cancel_action(
     channel: Channel, scope: str | None, api_token_id: int | None,
 ) -> dict[str, Any]:
     return await _decide("cancel", db, user, action_id, channel, scope, api_token_id)
+
+
+def _not_revertible(reason: str, detail: str) -> ToolError:
+    return ToolError("not_revertible", detail, data={"reason": reason})
+
+
+async def revert_action(db: AsyncSession, user: User, action_id: str) -> dict[str, Any]:
+    """Stage the inverse of one of the caller's executed writes (TBD-589).
+
+    Looks the row up by id, org and user only (not ``_mine``: an MCP or auto
+    original is revertible), then stages the inverse through ``invoke`` as a
+    NEW pending in-app action. Nothing executes: the user confirms it. If the
+    entity moved since (its current value is not the original's ``after``) the
+    staged row stays pending but the call is a 409 ``revert_drift``."""
+    from app.agent import actions  # deferred: actions imports this module
+
+    org_id, user_id = user.org_id, user.id
+    try:
+        row = (await db.execute(
+            select(Action).where(
+                Action.id == action_id, Action.org_id == org_id, Action.user_id == user_id
+            ).execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if row is None:
+            raise ToolError("action_not_found")
+        if row.status != ActionStatus.DONE:
+            raise _not_revertible("not_done", "only an executed action can be reverted")
+        if row.risk.value != "write":
+            raise _not_revertible("not_write", "only a write can be reverted")
+        spec = get_tool(row.tool)
+        if spec is None:
+            raise ToolError("tool_retired", row.tool)
+        if spec.risk != "write":
+            raise _not_revertible("not_write", "only a write can be reverted")
+        original = row.preview_json["changes"]
+        inverse = actions.inverse_args(spec, row.args_json, row.preview_json)
+        staged = (await invoke(
+            db, user, spec.name, inverse, channel="in_app", reverts=action_id
+        ))["data"]
+        p = original[0]
+        expected = {
+            c["field"]: c["after"] for c in original
+            if (c["entity"], c["id"]) == (p["entity"], p["id"])
+        }
+        drift = [
+            {"entity": c["entity"], "id": c["id"], "field": c["field"],
+             "expected": expected[c["field"]], "current": c["before"]}
+            for c in staged["changes"]
+            if (c["entity"], c["id"]) == (p["entity"], p["id"])
+            and c["field"] in expected and c["before"] != expected[c["field"]]
+        ]
+        if drift:
+            raise ToolError(
+                "revert_drift", "the data changed since the action ran",
+                data={**staged, "drift": drift},
+            )
+    except ToolError as exc:
+        await logger.ainfo(
+            "agent.action.revert", channel="in_app", org_id=org_id, user_id=user_id,
+            outcome=exc.code,
+        )
+        exc.data = wrap_untrusted(exc.data)
+        raise
+    except Exception:
+        await logger.aexception("agent.action.revert.failed", org_id=org_id)
+        await db.rollback()
+        raise ToolError("internal_error", "the revert failed") from None
+    await logger.ainfo(
+        "agent.action.revert", channel="in_app", org_id=org_id, user_id=user_id, outcome="ok",
+    )
+    return {"data": staged}

@@ -2,7 +2,7 @@
 assistant chat turn (TBD-560): ``POST /api/v1/agent/chat`` on ``chat_router``,
 streamed as server-sent events (``app.services.agent_chat``).
 
-``POST /api/v1/agent/actions/{id}/confirm`` and ``/cancel``, and
+``POST /api/v1/agent/actions/{id}/confirm``, ``/cancel`` and ``/revert``, and
 ``GET /api/v1/agent/actions`` (the review list). Interactive sessions only: a
 PAT can never confirm, and there is no model-facing confirm tool. Confirm takes
 NO request body: the action runs with the arguments stored at preview time.
@@ -42,6 +42,7 @@ _STATUS: dict[str, int] = {
     "action_not_found": 404,
     "action_expired": 410, "tool_retired": 410,
     "action_already_decided": 409, "action_in_progress": 409, "preview_stale": 409,
+    "not_revertible": 409, "revert_drift": 409,
     "feature_not_entitled": 403, "feature_disabled": 403, "insufficient_role": 403,
     "scope_denied": 403,
     "invalid_arguments": 422, "no_change": 422, "unsupported_in_v1": 422,
@@ -91,6 +92,21 @@ async def cancel(
     db: AsyncSession = Depends(get_db),
 ):
     return await _decide(registry.cancel_action, db, user, action_id)
+
+
+@router.post("/{action_id}/revert", dependencies=[Depends(load_rate_limit_overrides)])
+@limiter.shared_limit(dynamic_limit("agent.revert", "10/minute"), scope="agent.revert")
+async def revert(
+    request: Request,
+    action_id: str,
+    user: User = Depends(require_interactive_session),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stage the inverse of an executed write as a NEW pending action (TBD-589)."""
+    try:
+        return (await registry.revert_action(db, user, action_id))["data"]
+    except ToolError as exc:
+        raise _http(exc) from None
 
 
 @router.get("")

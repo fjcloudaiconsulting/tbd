@@ -76,6 +76,7 @@ DECORATOR_PATTERNS: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("agent", "confirm"): ("agent.confirm", "30/minute"),
     ("agent", "cancel"): ("agent.cancel", "30/minute"),
+    ("agent", "revert"): ("agent.revert", "10/minute"),
     ("agent", "chat_turn"): ("agent.chat", "20/minute"),
     ("agent_tokens", "mint_agent_token"): ("agent_tokens.mint", "10/hour"),
     ("agent_tokens", "downgrade_agent_token"): ("agent_tokens.update", "30/minute"),
