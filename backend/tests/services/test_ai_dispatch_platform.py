@@ -118,6 +118,7 @@ class Fake:
         self.status = 200
         self.delay = 0.0
         self.stream_usage = True
+        self.stream_done = True
         self.embed_tokens = 15
 
     @property
@@ -152,6 +153,7 @@ class Fake:
             lines = ['data: {"choices":[{"delta":{"content":"he"}}]}']
             if self.stream_usage:
                 lines.append('data: ' + json.dumps({"choices": [], "usage": {"prompt_tokens": p, "completion_tokens": c}}))
+            if self.stream_done:
                 lines.append("data: [DONE]")
             return httpx.Response(200, content=("\n\n".join(lines) + "\n\n").encode())
         return httpx.Response(200, json={
@@ -738,6 +740,14 @@ async def test_anthropic_platform_row_cannot_embed(db, sf, fake, spy):
 async def test_stream_without_a_final_usage_chunk_keeps_the_reservation(db, sf, fake, spy):
     org, _ = await setup(db)
     fake.stream_usage = False
+    await _stream(db, org)
+    assert (await counters(sf, org))["platform_ai.tokens"] == spy[0].tokens
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "openai", "gemini"])
+async def test_r5_openai_shape_usage_without_done_is_not_final(db, sf, fake, spy, provider):
+    org, _ = await setup(db, provider=provider)
+    fake.stream_done = False  # connection dropped after the usage chunk
     await _stream(db, org)
     assert (await counters(sf, org))["platform_ai.tokens"] == spy[0].tokens
 
