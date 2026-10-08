@@ -2,11 +2,11 @@ import { render, screen } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 
 // Recharts uses ResizeObserver which is not available in jsdom
-global.ResizeObserver = vi.fn().mockImplementation(() => ({
+global.ResizeObserver = vi.fn().mockImplementation(function () { return {
   observe: vi.fn(),
   unobserve: vi.fn(),
   disconnect: vi.fn(),
-}));
+}; }) as unknown as typeof ResizeObserver;
 
 import PieWidgetChart from "@/components/reports/widgets/PieWidgetChart";
 

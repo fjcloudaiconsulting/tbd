@@ -15,7 +15,7 @@
  * Runtime detection is via `process.env.NEXT_RUNTIME`
  * (`"nodejs"` | `"edge"`) plus the `typeof window` check.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 const realRuntime = process.env.NEXT_RUNTIME;
 const realWindow = (globalThis as { window?: unknown }).window;
@@ -24,7 +24,7 @@ const realWindow = (globalThis as { window?: unknown }).window;
 // return type for ``process.stdout.write`` (itself overloaded) confuses
 // TS. Use ``MockInstance`` directly — the test only ever reads
 // ``mock.calls`` and ``toHaveBeenCalled`` matchers off these.
-type Spy = ReturnType<typeof vi.spyOn<any, any>>; // eslint-disable-line @typescript-eslint/no-explicit-any
+type Spy = MockInstance<any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 describe("logger runtime detection", () => {
   let stdoutSpy: Spy;

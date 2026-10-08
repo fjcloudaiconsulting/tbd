@@ -18,7 +18,7 @@
       "CustomDashboard": 2
     },
     "tests/app/forecast-plans-page.test.tsx": {
-      "ForecastPlansClient": 2
+      "ForecastPlansClient": 1
     },
     "tests/app/recurring-demotion-notice.test.tsx": {
       "RecurringPage": 6

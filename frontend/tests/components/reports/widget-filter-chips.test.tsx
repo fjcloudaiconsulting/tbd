@@ -12,6 +12,11 @@ import { buildPresetRanges } from "@/lib/reports/date-presets";
 import type { BarWidget, WidgetFilters } from "@/lib/reports/types";
 import type { Account, Category } from "@/lib/types";
 
+// The chips read the source catalog via SWR; unmocked, its fetch rejection lands after the test and escapes act().
+vi.mock("@/lib/reports/use-report-sources", () => ({
+  useReportSources: () => ({ sources: [], isLoading: false }),
+}));
+
 const NOW = new Date(2026, 5, 15); // 2026-06-15 (stable)
 
 function barWith(filters: WidgetFilters): BarWidget {
