@@ -288,7 +288,7 @@ async def dispatch_notification(
         return None
 
     # Set created_at explicitly in Python rather than relying on the
-    # server_default (``(now(6))`` on MySQL, plain CURRENT_TIMESTAMP
+    # server_default (``(now())`` on MySQL, plain CURRENT_TIMESTAMP
     # on SQLite). The dialect mismatch matters for cursor pagination:
     # SQLite stores timestamps without fractional seconds when the
     # default fires, but SQLAlchemy renders bound DateTime values

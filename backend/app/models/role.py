@@ -76,13 +76,13 @@ class PlatformRole(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False),
-        server_default=func.now(6),
+        server_default=func.now(),
         nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False),
-        server_default=func.now(6),
-        onupdate=func.now(6),
+        server_default=func.now(),
+        onupdate=func.now(),
         nullable=False,
     )
 

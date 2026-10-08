@@ -1,9 +1,9 @@
 """TBD-586 PR1 kernel fences K2-K6 on REAL MySQL.
 
 Run with PLATFORM_RESERVE_MYSQL_URL=mysql+aiomysql://... pointing at a
-disposable database already at ``alembic upgrade head`` (``create_all`` does
-not work on MySQL: ``roles.created_at DEFAULT now(6)`` on a DATETIME is error
-1067). The fixture deletes the rows these tests write.
+disposable database already at ``alembic upgrade head`` (the fences need the
+migrated schema, not ``create_all``). The fixture deletes the rows these tests
+write.
 """
 from __future__ import annotations
 
