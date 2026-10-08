@@ -8,7 +8,7 @@ it.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, get_args
 
 from app.config import settings
 from app.models.org_ai_credential import AiProvider
@@ -22,7 +22,8 @@ from app.services.ai_providers.openai_compatible import (
 )
 from app.services.ai_token_estimate import _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL
 
-PLATFORM_PROVIDERS = ("openrouter", "openai", "anthropic", "gemini")
+PlatformProvider = Literal["openrouter", "openai", "anthropic", "gemini"]
+PLATFORM_PROVIDERS: tuple[str, ...] = get_args(PlatformProvider)
 
 # The stored ``provider`` column of a platform row (display only: the factory
 # below never reads it).

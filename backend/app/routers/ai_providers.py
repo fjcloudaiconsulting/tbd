@@ -8,7 +8,7 @@ on every read/write path.
 from __future__ import annotations
 
 import asyncio
-from typing import Literal, Optional
+from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -190,7 +190,7 @@ async def create_credential(
 # Platform AI switch (TBD-586). Declared BEFORE /{credential_id}.
 # --------------------------------------------------------------------
 
-PlatformProvider = Literal["openrouter", "openai", "anthropic", "gemini"]
+PlatformProvider = platform_ai.PlatformProvider
 
 
 @router.post(

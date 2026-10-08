@@ -95,7 +95,7 @@ class PlatformAIBody(BaseModel):
     enabled: StrictBool
     global_monthly_cents: StrictInt = Field(ge=0, le=2**53 - 1)
     models: dict[
-        Literal["openrouter", "openai", "anthropic", "gemini"],
+        platform_ai.PlatformProvider,
         Annotated[list[_ModelId], Field(max_length=50)],
     ]
 
