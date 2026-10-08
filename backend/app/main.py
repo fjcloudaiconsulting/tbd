@@ -317,6 +317,10 @@ _is_dev = app_settings.app_env == "development"
 # once a provider is configured), and an omitted key keeps its default. All
 # off until INFRA-105 turns metrics on with an OTLP MeterProvider (aws-infra
 # docs/architecture.md, Telemetry).
+# `tracing` must stay False: FastAPI's native tracing redacts only cloud-signature query
+# params (fastapi/telemetry/_asgi.py) and secrets travel in query strings (invitations
+# preview ?token=, Google OAuth callback ?code=); INFRA-105 uses tbd's own allowlisted
+# SERVER-span middleware instead.
 TELEMETRY = {
     "tracing": False,
     "metrics": False,

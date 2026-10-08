@@ -387,7 +387,17 @@ def test_p5_non_apiroute_entries_are_known():
     Those carry no ``dependant`` and are invisible to the auth walk, so they
     are asserted against a known set instead of being filtered away.
     """
-    other = _enumerate()["other_routes"]
+    state = _enumerate()
+    # iter_route_contexts never yields frontend() routes (they live in
+    # _low_priority_routes), so they would escape the allowlist entirely.
+    from fastapi.routing import _IncludedRouter
+
+    low = list(state["app"].router._low_priority_routes)
+    for r in state["app"].router.routes:
+        if isinstance(r, _IncludedRouter):
+            low += r.effective_low_priority_routes()
+    assert not low, f"frontend() routes escape the allowlist: {low}"
+    other = state["other_routes"]
     paths = {getattr(r, "path", repr(r)) for r in other}
     unexpected = sorted(paths - KNOWN_NON_API_ROUTE_PATHS)
     assert not unexpected, (
