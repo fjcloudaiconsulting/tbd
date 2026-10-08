@@ -33,8 +33,7 @@ URL = os.environ.get("PLATFORM_RESERVE_MYSQL_URL")
 if not URL:
     # R18: CI sets REQUIRED=1, so a missing URL there is red, never a skip.
     if os.environ.get("PLATFORM_RESERVE_MYSQL_REQUIRED") == "1":
-        pytest.fail("PLATFORM_RESERVE_MYSQL_URL is required here", pytrace=False,
-                    allow_module_level=True)
+        raise RuntimeError("PLATFORM_RESERVE_MYSQL_URL is required here")
     pytestmark = pytest.mark.skipif(True, reason="PLATFORM_RESERVE_MYSQL_URL not set")
 
 NOW = datetime(2026, 10, 15, 12, 0, 0)

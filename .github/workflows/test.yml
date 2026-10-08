@@ -785,6 +785,32 @@ jobs:
           cat /tmp/uvicorn.log
           exit 1
 
+      # TBD-586 (R12, R16, R18). The platform reserve/settle race fences need a
+      # real InnoDB: two connections, row locks, rowcount semantics. They live in
+      # tests/services/test_platform_reserve_mysql.py and are not run anywhere
+      # else. This step runs them against the migrated database above.
+      #
+      # ⚠ MUST STAY THE LAST STEP of this job. The fixture only deletes what it
+      # created, but a step after it would still be running against a database
+      # other tests have touched.
+      # ⚠ REQUIRED=1 turns the module's missing-URL guard into a collection
+      # failure, and the `^SKIPPED` check below fails the step if any test in
+      # the file did not run (`-rs` prints one such line per test): a collected
+      # race fence that did not execute is a silent hole, not a pass.
+      # ⚠ `set -o pipefail`: `pytest | tee` would otherwise report tee's exit.
+      - name: Run the platform reserve fences against MySQL
+        working-directory: backend
+        env:
+          PLATFORM_RESERVE_MYSQL_URL: ${{ env.DATABASE_URL }}
+          PLATFORM_RESERVE_MYSQL_REQUIRED: "1"
+        run: |
+          set -o pipefail
+          python -m pytest tests/services/test_platform_reserve_mysql.py -q -rs -p no:cacheprovider 2>&1 | tee /tmp/platform-reserve.log
+          if grep -q '^SKIPPED' /tmp/platform-reserve.log; then
+            echo "a platform reserve fence did not run"
+            exit 1
+          fi
+
 
   # ── Frontend (TBD-404, TBD-422) ──────────────────────────────────────────
   # SPLIT INTO WORK + AGGREGATE, deliberately.
