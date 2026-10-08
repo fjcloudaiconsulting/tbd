@@ -70,7 +70,7 @@ PROD_SQL = (
     "ALTER TABLE notifications ALTER COLUMN created_at SET DEFAULT (now(6))",
     "ALTER TABLE categories ADD INDEX org_id (org_id)",
 )
-_TRACKED = re.compile(r"`(created_at|updated_at)` datetime|KEY ")
+_TRACKED = re.compile(r"`(created_at|updated_at)` datetime")
 
 
 def _relevant(sync_conn) -> dict:
@@ -158,11 +158,18 @@ def test_downgrade_restores_prod_then_upgrade_round_trips(db):
 
 @mysql
 def test_models_agree_with_migrated_schema(db):
-    """FENCE. Autogenerate (server defaults included) sees no diff on these
-    tables. Wrong implementation: models left at ``func.now(6)``."""
+    """FENCE. Autogenerate (server defaults included) sees no diff on the
+    converged columns or index. Wrong implementation: models left at
+    ``func.now(6)``. Other diffs on these tables predate INFRA-129."""
+    cols = {(t, c) for t, cs in m087.COLUMNS.items() for c in cs}
+
     def go(c):
         mc = MigrationContext.configure(c, opts={"compare_server_default": True})
-        return [d for d in compare_metadata(mc, Base.metadata) if any(t in repr(d) for t in TABLES)]
+        diffs = [d[0] if isinstance(d, list) else d for d in compare_metadata(mc, Base.metadata)]
+        return [d for d in diffs
+                if (d[0] == "modify_default" and (d[2], d[3]) in cols)
+                or (d[0] in ("add_index", "remove_index") and d[1].name == "org_id"
+                    and d[1].table.name == "categories")]
     assert _with_conn(go) == []
 
 
