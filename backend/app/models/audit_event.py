@@ -302,7 +302,7 @@ class AuditEvent(Base):
     detail: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False),
-        server_default=func.now(6),
+        server_default=func.now(),
         nullable=False,
         index=True,
     )

@@ -115,7 +115,7 @@ class Notification(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
-        server_default=func.now(6),
+        server_default=func.now(),
         nullable=False,
     )
 

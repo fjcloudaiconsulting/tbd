@@ -785,6 +785,23 @@ jobs:
           cat /tmp/uvicorn.log
           exit 1
 
+      # INFRA-129. Migration 087 converges prod's and a fresh database's DDL on
+      # audit_events, roles, notifications and categories. Runs 087's own
+      # upgrade/downgrade from both starting states on real MySQL and leaves
+      # the schema at head. A skip is red, as below.
+      - name: Run the schema convergence fences against MySQL
+        working-directory: backend
+        env:
+          SCHEMA_CONVERGENCE_MYSQL_URL: ${{ env.DATABASE_URL }}
+          SCHEMA_CONVERGENCE_MYSQL_REQUIRED: "1"
+        run: |
+          set -o pipefail
+          python -m pytest tests/migrations/test_087_schema_convergence_mysql.py -q -rs -p no:cacheprovider 2>&1 | tee /tmp/schema-convergence.log
+          if grep -q '^SKIPPED' /tmp/schema-convergence.log; then
+            echo "a schema convergence fence did not run"
+            exit 1
+          fi
+
       # TBD-586 (R12, R16, R18). The platform reserve/settle race fences need a
       # real InnoDB: two connections, row locks, rowcount semantics. They live in
       # tests/services/test_platform_reserve_mysql.py and are not run anywhere
