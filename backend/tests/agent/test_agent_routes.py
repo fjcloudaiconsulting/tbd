@@ -23,6 +23,7 @@ from app.rate_limit import limiter
 from tests.agent.test_actions import (  # noqa: F401  (fixtures)
     _amount, _row, _set_amount, _stage, engine, factory, w,
 )
+from tests.app_routes import effective_routes
 
 
 @pytest.fixture(autouse=True)
@@ -132,7 +133,7 @@ async def test_list_is_own_rows_newest_first_with_filters(factory, w, client):
 def test_routes_carry_the_interactive_and_entitlement_guards():
     """A PAT must never confirm (F-L7 shape) and the plan key gates the surface."""
     seen = {}
-    for r in app.routes:
+    for r in effective_routes(app):
         if getattr(r, "path", "").startswith("/api/v1/agent/actions"):
             calls = []
 

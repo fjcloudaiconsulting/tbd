@@ -289,9 +289,11 @@ async def test_loader_ignores_unusable_sql_written_rows(factory):
 def _dynamic_groups():
     from fastapi.routing import APIRoute
 
+    from tests.app_routes import effective_routes
+
     out = []  # (route, group)
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
+    for route in effective_routes(app):
+        if not isinstance(route.route, APIRoute):
             continue
         name = f"{route.endpoint.__module__}.{route.endpoint.__name__}"
         for g in limiter._dynamic_route_limits.get(name, []):

@@ -245,12 +245,14 @@ def _enumerate() -> dict[str, Any]:
 
     from app.deps import get_current_user
     from app.main import app
+    from tests.app_routes import effective_routes
 
-    api_routes = [r for r in app.routes if isinstance(r, APIRoute)]
+    routes = effective_routes(app)
+    api_routes = [r for r in routes if isinstance(r.route, APIRoute)]
     # Partition rather than filter: an ``isinstance`` filter alone would also
     # silently swallow a future ``app.mount()`` or ``WebSocketRoute`` — a hole
     # of exactly the shape this guard exists to close. P5 asserts on these.
-    other_routes = [r for r in app.routes if not isinstance(r, APIRoute)]
+    other_routes = [r for r in routes if not isinstance(r.route, APIRoute)]
 
     public: set[tuple[str, str]] = set()
     authed: set[tuple[str, str]] = set()

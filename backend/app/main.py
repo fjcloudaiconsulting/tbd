@@ -313,7 +313,19 @@ async def lifespan(app: FastAPI):
 
 _is_dev = app_settings.app_env == "development"
 
+# FastAPI's native OpenTelemetry turns every signal on unless told otherwise,
+# and an omitted key keeps its default. All off until INFRA-105 turns metrics
+# on with an OTLP MeterProvider (aws-infra docs/architecture.md, Telemetry).
+TELEMETRY = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "operation_spans": False,
+    "auto_configure": False,
+}
+
 app = FastAPI(
+    telemetry=TELEMETRY,
     title=app_settings.app_name,
     lifespan=lifespan,
     # Swagger UI moved under /api/ so the frontend can own /docs as the

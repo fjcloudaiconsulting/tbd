@@ -157,9 +157,10 @@ def test_fr2_toolcontext_is_built_only_in_the_registry():
 
 def _live_routes() -> dict[tuple[str, str], object]:
     from app.main import app
+    from tests.app_routes import effective_routes
 
     out = {}
-    for r in app.routes:
+    for r in effective_routes(app):
         for m in getattr(r, "methods", None) or ():
             out[(m, r.path)] = r
     return out

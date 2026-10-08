@@ -453,8 +453,9 @@ def _api_routes():
     from fastapi.routing import APIRoute
 
     from app.main import app
+    from tests.app_routes import effective_routes
 
-    return [r for r in app.routes if isinstance(r, APIRoute)]
+    return [r for r in effective_routes(app) if isinstance(r.route, APIRoute)]
 
 
 def _observed_by_gate() -> dict[tuple[str, str], frozenset[str]]:
@@ -812,10 +813,12 @@ def test_c6_behavioural_app_covers_the_same_gated_surface(app):
     """
     from fastapi.routing import APIRoute
 
+    from tests.app_routes import effective_routes
+
     mounted = {
         (m, r.path)
-        for r in app.routes
-        if isinstance(r, APIRoute)
+        for r in effective_routes(app)
+        if isinstance(r.route, APIRoute)
         for m in sorted(r.methods - {"HEAD", "OPTIONS"})
     }
     missing = sorted(set(ROSTER) - mounted)

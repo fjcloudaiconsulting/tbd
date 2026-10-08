@@ -310,10 +310,11 @@ def _path_param_routes_with_limits() -> dict[str, dict]:
 
     from app.main import app
     from app.rate_limit import limiter
+    from tests.app_routes import effective_routes
 
     out: dict[str, dict] = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or "{" not in route.path:
+    for route in effective_routes(app):
+        if not isinstance(route.route, APIRoute) or "{" not in route.path:
             continue
         name = f"{route.endpoint.__module__}.{route.endpoint.__name__}"
         for lim in limiter._route_limits.get(name, []):
