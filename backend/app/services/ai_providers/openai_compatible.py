@@ -451,6 +451,7 @@ class OpenAICompatibleAdapter:
         url = f"{self.api_root}/chat/completions"
 
         final_usage: Optional[TokenUsage] = None
+        saw_done = False
         try:
             async with guarded_async_client(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
@@ -468,6 +469,7 @@ class OpenAICompatibleAdapter:
                             continue
                         data = line[len("data:"):].strip()
                         if data == "[DONE]":
+                            saw_done = True
                             break
                         try:
                             event = json.loads(data)
@@ -497,4 +499,9 @@ class OpenAICompatibleAdapter:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
-        yield StreamChunk(delta_text="", done=True, final_usage=final_usage)
+        yield StreamChunk(
+            delta_text="",
+            done=True,
+            final_usage=final_usage,
+            usage_final=saw_done and final_usage is not None,
+        )

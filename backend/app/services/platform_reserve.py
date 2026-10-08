@@ -13,10 +13,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Callable
+from typing import Any
 
 import structlog
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app._time import utcnow_naive
 from app.models.platform_ai_spend import PlatformAISpend
 from app.models.usage_counter import UsageCounter
-from app.services import feature_service
+from app.services import feature_service, platform_ai
 from app.services.usage_service import PlanLimitReached, period_start, resets_at
 
 logger = structlog.stdlib.get_logger()
@@ -81,29 +81,77 @@ def _spend(start: date):
     ).execution_options(synchronize_session=False)
 
 
+def _keys(ent, now: datetime):
+    lt, lc = ent.limits[TOKENS], ent.limits[CENTS]
+    return (
+        lt, lc,
+        (lt.period, period_start(lt.period, now)),
+        (lc.period, period_start(lc.period, now)),
+        period_start("month", now),
+    )
+
+
+def _plan_limit(lim, meter: str, now: datetime) -> PlanLimitReached:
+    return PlanLimitReached(
+        meter, lim.limit, lim.period,
+        None if lim.limit == 0 else resets_at(lim.period, now),
+    )
+
+
+async def check_headroom(
+    db: AsyncSession, org_id: int, tokens: int, cents: int, ceiling_cents: int,
+    *, now: datetime | None = None,
+) -> None:
+    """READ-ONLY pre-flight: raise what ``reserve`` would raise for a quiet
+    system (current value + projection above a limit). Writes nothing, so a
+    caller that only gates (the agent-chat pre-flight) can refuse an
+    exhausted org before it spends another meter."""
+    now = now or utcnow_naive()
+    try:
+        ent = await feature_service.get_entitlements(db, org_id, now=now)
+        lt, lc, tkey, ckey, month = _keys(ent, now)
+        tv = await db.scalar(select(UsageCounter.value).where(
+            UsageCounter.org_id == org_id, UsageCounter.meter == TOKENS,
+            UsageCounter.period == tkey[0], UsageCounter.period_start == tkey[1])) or 0
+        cv = await db.scalar(select(UsageCounter.value).where(
+            UsageCounter.org_id == org_id, UsageCounter.meter == CENTS,
+            UsageCounter.period == ckey[0], UsageCounter.period_start == ckey[1])) or 0
+        sv = await db.scalar(
+            select(PlatformAISpend.cents).where(PlatformAISpend.period_start == month)) or 0
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        logger.warning("platform_reserve.headroom_failed", org_id=org_id, error=type(exc).__name__)
+        raise PlatformAIUnavailable("headroom check failed") from exc
+    if tv + tokens > lt.limit:
+        raise _plan_limit(lt, TOKENS, now)
+    if cv + cents > lc.limit:
+        raise _plan_limit(lc, CENTS, now)
+    if sv + cents > ceiling_cents:
+        raise PlatformAIUnavailable("global ceiling reached")
+
+
 async def reserve(
     db: AsyncSession,
     org_id: int,
+    cred: Any,
     tokens: int,
     cents: int,
     ceiling_cents: int,
-    make_adapter: Callable[[], Any],
     *,
     now: datetime | None = None,
 ) -> Reservation:
     """Reserve ``tokens``/``cents`` or raise. COMMITS the caller's session
-    (like ``usage_service.admit``), so call it before any write of the unit
-    of work. ``make_adapter`` runs only after the reservation committed."""
+    (like ``usage_service.admit``) and ROLLS IT BACK on refusal, which expires
+    the caller's ORM objects: do not touch them after a refusal. Call it before
+    any write of the unit of work. The adapter is built (from
+    ``cred.platform_provider`` alone) only after the reservation committed."""
     if db.new or db.dirty or db.deleted:
         raise RuntimeError("platform_reserve.reserve: the session holds uncommitted ORM changes")
+    provider = cred.platform_provider  # read before the first commit/rollback
     now = now or utcnow_naive()
-    ent = await feature_service.get_entitlements(db, org_id, now=now)
-    lt, lc = ent.limits[TOKENS], ent.limits[CENTS]
-    tkey = (lt.period, period_start(lt.period, now))
-    ckey = (lc.period, period_start(lc.period, now))
-    month = period_start("month", now)
-
     try:
+        ent = await feature_service.get_entitlements(db, org_id, now=now)
+        lt, lc, tkey, ckey, month = _keys(ent, now)
         for meter, key in ((TOKENS, tkey), (CENTS, ckey)):
             await db.execute(_upsert(db, UsageCounter, dict(
                 org_id=org_id, meter=meter, period=key[0], period_start=key[1], value=0,
@@ -127,11 +175,7 @@ async def reserve(
                 await db.rollback()
                 if meter is None:
                     raise PlatformAIUnavailable("global ceiling reached")
-                lim = lt if meter == TOKENS else lc
-                raise PlanLimitReached(
-                    meter, lim.limit, lim.period,
-                    None if lim.limit == 0 else resets_at(lim.period, now),
-                )
+                raise _plan_limit(lt if meter == TOKENS else lc, meter, now)
         await db.commit()
     except SQLAlchemyError as exc:
         await db.rollback()
@@ -139,7 +183,7 @@ async def reserve(
         raise PlatformAIUnavailable("reservation failed") from exc
 
     return Reservation(
-        adapter=make_adapter(),
+        adapter=platform_ai.build_adapter(provider),
         handle=SettleHandle(org_id, tkey, ckey, month, tokens, cents),
     )
 

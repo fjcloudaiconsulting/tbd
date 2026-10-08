@@ -150,6 +150,10 @@ class StreamChunk:
     delta_text: str
     done: bool
     final_usage: Optional[TokenUsage] = None
+    # TBD-586 R5: True only when ``final_usage`` is the provider's FINAL
+    # count (anthropic: after ``message_delta``; openai-shape: usage followed
+    # by ``[DONE]``). Platform settle trusts it; BYOK ignores it.
+    usage_final: bool = False
 
 
 class NativeNotAvailable(Exception):

@@ -382,6 +382,7 @@ class OpenAIAdapter:
             body["max_tokens"] = max_tokens
 
         final_usage: Optional[TokenUsage] = None
+        saw_done = False
         try:
             async with httpx.AsyncClient(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
@@ -399,6 +400,7 @@ class OpenAIAdapter:
                             continue
                         data = line[len("data:"):].strip()
                         if data == "[DONE]":
+                            saw_done = True
                             break
                         try:
                             event = json.loads(data)
@@ -429,4 +431,9 @@ class OpenAIAdapter:
             raise AIProviderError(
                 code=f"network_{type(exc).__name__}"
             ) from None
-        yield StreamChunk(delta_text="", done=True, final_usage=final_usage)
+        yield StreamChunk(
+            delta_text="",
+            done=True,
+            final_usage=final_usage,
+            usage_final=saw_done and final_usage is not None,
+        )

@@ -15,6 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings as app_settings
 from app.models import Base
+from app.models.settings import OrgSetting
 from app.models.system_setting import SystemSetting
 from app.services import platform_ai, platform_ai_settings
 from app.services.ai_pricing import MODEL_PRICING
@@ -175,3 +176,36 @@ def test_reserved_prefix_blocks_platform_ai_in_the_generic_writer():
     assert "platform_ai." in sr.RESERVED_SETTINGS_PREFIX
     assert "Platform_AI.enabled".casefold().startswith(sr.RESERVED_SETTINGS_PREFIX)
     assert "platform_ai." in sr._RESERVED_NAMESPACE_DETAIL
+
+
+# ---- F-S2: an org-scoped platform_ai.* is refused at write, ignored at read --
+
+@pytest.mark.parametrize("key", ["platform_ai.enabled", "Platform_AI.enabled", "PLATFORM_AI.models"])
+def test_f_s2_generic_writer_refuses_the_namespace_in_any_case(key):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.database import get_db
+    from app.deps import get_current_user
+    from app.models.user import Role
+    from app.routers.settings import router
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        id=1, org_id=1, role=Role.ADMIN, is_superadmin=False)
+    app.dependency_overrides[get_db] = lambda: None  # refused before any query
+    with TestClient(app) as c:
+        put = c.put("/api/v1/settings", json={"key": key, "value": "on"})
+        assert put.status_code == 403 and "platform_ai." in put.json()["detail"]
+        assert c.delete(f"/api/v1/settings/{key}").status_code == 403
+
+
+async def test_f_s2_reader_ignores_an_org_scoped_row(db):
+    db.add(OrgSetting(org_id=1, key="platform_ai.enabled", value="on"))
+    db.add(OrgSetting(org_id=1, key="platform_ai.global_monthly_cents", value="999"))
+    await db.commit()
+    s = await platform_ai_settings.load(db)
+    assert (s.enabled, s.global_monthly_cents) == (False, 0)

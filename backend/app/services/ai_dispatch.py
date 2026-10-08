@@ -71,6 +71,7 @@ from typing import Any, Optional
 import structlog
 from fastapi import HTTPException, status
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import redis_client
@@ -81,10 +82,17 @@ from app.models.notification import NotificationCategory
 from app.models.org_ai_caps import OrgAIDefaultCaps, OrgAIFeatureCaps
 from app.models.org_ai_credential import OrgAICredential
 from app.models.user import Role, User
-from app.services import ai_routing_service, notification_service
+from app.services import (
+    ai_routing_service,
+    notification_service,
+    platform_ai,
+    platform_ai_settings,
+    platform_reserve,
+)
 from app.services.ai_credential_crypto import decrypt
-from app.services.ai_pricing import estimate_cost_cents
+from app.services.ai_pricing import MODEL_PRICING, estimate_cost_cents
 from app.services.ai_token_estimate import (
+    _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL,
     default_max_output_tokens_for,
     estimate_prompt_tokens_from_messages,
 )
@@ -102,6 +110,7 @@ from app.services.ai_providers import (
     get_adapter,
 )
 from app.services.notification_templates import ai_cap_soft_warning
+from app.services.usage_service import PlanLimitReached
 
 
 # Architect lock #13 (StructuredOutputCapable retry cap): max 2 retries
@@ -243,6 +252,39 @@ class AICapExceeded(AIDispatchError):
         super().__init__("ai_hard_cap_exceeded")
 
 
+class AIPlanLimitReached(AICapExceeded):
+    """A platform reservation (or its pre-flight) found a plan meter used up.
+    A 402 like the hard cap; carries the facts ``app.main``'s
+    ``PlanLimitReached`` handler returns."""
+
+    def __init__(self, exc: PlanLimitReached) -> None:
+        super().__init__()
+        self.code = "plan_limit_reached"
+        self.args = (self.code,)
+        self.meter, self.limit = exc.meter, exc.limit
+        self.period, self.resets_at = exc.period, exc.resets_at
+
+
+class AIPlatformUnavailable(AICapExceeded):
+    """Platform AI refused: global ceiling reached or the reservation could
+    not be written. 402."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.code = "platform_ai_unavailable"
+        self.args = (self.code,)
+
+
+class AIPlatformProjectionFailed(AICapExceeded):
+    """The platform cost projection raised; a platform dispatch never
+    projects 0. 402."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.code = "platform_projection_failed"
+        self.args = (self.code,)
+
+
 class AIDispatchFailed(AIDispatchError):
     """Adapter raised a typed error and we wrote the ledger row before
     re-raising. The router maps this to HTTP 502.
@@ -300,6 +342,22 @@ def http_for_dispatch_error(exc: AIDispatchError) -> HTTPException:
                     "a provider that supports it."
                 ),
             },
+        )
+    if isinstance(exc, AIPlanLimitReached):
+        return HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": exc.code,
+                "meter": exc.meter,
+                "limit": exc.limit,
+                "period": exc.period,
+                "resets_at": exc.resets_at.isoformat() if exc.resets_at else None,
+            },
+        )
+    if isinstance(exc, (AIPlatformUnavailable, AIPlatformProjectionFailed)):
+        return HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={"code": exc.code},
         )
     if isinstance(exc, AICapExceeded):
         return HTTPException(
@@ -756,6 +814,7 @@ async def _write_ledger_row(
     success: bool,
     error_class: Optional[str],
     retries_used: int = 0,
+    billing_source: str = "org_key",
 ) -> AIUsageLedger:
     row = AIUsageLedger(
         org_id=org_id,
@@ -770,6 +829,7 @@ async def _write_ledger_row(
         success=success,
         error_class=error_class,
         retries_used=retries_used,
+        billing_source=billing_source,
         dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     db.add(row)
@@ -830,85 +890,22 @@ async def call_llm(
             f"capability={capability!r} not wired in PR2; chat only"
         )
 
-    # 1. Resolve routing.
-    routing = await ai_routing_service.get_routing_for_feature(
-        db, org_id=org_id, feature_name=feature_key
-    )
-    if routing is None:
-        logger.info(
-            "ai.dispatch.routing.missing",
-            org_id=org_id,
-            feature_key=feature_key,
-        )
-        raise NoRoutingConfigured()
-    credential_id, model = routing
-
-    # Pull the credential row (we need provider, base_url, encrypted
-    # key/bearer). The routing FK structurally pins it to org_id, but
-    # check belt-and-suspenders anyway.
-    cred = (
-        await db.execute(
-            select(OrgAICredential).where(
-                OrgAICredential.id == credential_id,
-                OrgAICredential.org_id == org_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if cred is None:
-        # Defensive: routing FK should make this unreachable.
-        logger.error(
-            "ai.dispatch.routing.dangling",
-            org_id=org_id,
-            feature_key=feature_key,
-            credential_id=credential_id,
-        )
-        raise NoRoutingConfigured()
-
-    # 2. Pre-check caps (exhausted + projected-overspend gate).
-    resolved, cost_so_far = await _resolve_caps_and_cost(
-        db, org_id=org_id, feature_key=feature_key
-    )
-    _enforce_cap(
-        resolved=resolved,
-        cost_so_far=cost_so_far,
-        model=model,
-        messages=(request_payload.get("messages") or []),
-        max_tokens=request_payload.get("max_tokens"),
-        retry_multiplier=1,
-        org_id=org_id,
-        feature_key=feature_key,
-        capability=capability,
-    )
-
-    # 3. Soft-cap warning (first-time-in-period).
-    await _maybe_warn_soft_cap(
+    # 1-4. Routing, credential, caps (exhausted + projected-overspend gate),
+    # soft-cap warning and adapter, shared with every other entry point.
+    messages = request_payload.get("messages") or []
+    prepared = await _prepare_dispatch(
         db,
         org_id=org_id,
         feature_key=feature_key,
-        resolved=resolved,
-        cost_before_call=cost_so_far,
-        period=_current_period(),
+        capability=capability,
+        messages=messages,
+        max_tokens=request_payload.get("max_tokens"),
     )
-
-    # 4. Build adapter.
-    api_key = (
-        decrypt(cred.encrypted_api_key) if cred.encrypted_api_key else None
-    )
-    bearer = (
-        decrypt(cred.encrypted_bearer_token)
-        if cred.encrypted_bearer_token
-        else None
-    )
-    adapter = get_adapter(
-        cred.provider,
-        api_key=api_key,
-        bearer_token=bearer,
-        base_url=cred.base_url,
-        base_url_is_api_root=cred.base_url_is_api_root,
-    )
-
-    messages = request_payload.get("messages") or []
-    max_tokens = request_payload.get("max_tokens")
+    adapter, handle = await _reserve(db, org_id, prepared)
+    credential_id = prepared.credential_id
+    model = prepared.model
+    resolved, cost_so_far = prepared.resolved, prepared.cost_so_far
+    bs = prepared.billing_source
 
     # 5. Time + dispatch.
     start = time.perf_counter()
@@ -917,7 +914,7 @@ async def call_llm(
             adapter.chat(  # type: ignore[attr-defined]
                 model=model,
                 messages=messages,
-                max_tokens=max_tokens,
+                max_tokens=prepared.max_tokens,
             )
         )
     except NativeNotAvailable:
@@ -945,6 +942,7 @@ async def call_llm(
             latency_ms=latency_ms,
             success=False,
             error_class=exc.code,
+            billing_source=bs,
         )
         logger.info(
             "ai.dispatch.adapter.failed",
@@ -968,6 +966,7 @@ async def call_llm(
             latency_ms=latency_ms,
             success=False,
             error_class=type(exc).__name__,
+            billing_source=bs,
         )
         logger.warning(
             "ai.dispatch.unexpected_error",
@@ -984,6 +983,13 @@ async def call_llm(
         prompt_tokens=response.prompt_tokens,
         completion_tokens=response.completion_tokens,
     )
+    await _settle(
+        db,
+        handle,
+        prompt=response.prompt_tokens,
+        completion=response.completion_tokens,
+        cost=cost,
+    )
 
     # 6. Success ledger row.
     ledger = await _write_ledger_row(
@@ -998,28 +1004,23 @@ async def call_llm(
         latency_ms=latency_ms,
         success=True,
         error_class=None,
+        billing_source=bs,
     )
 
     # 7. Post-write boundary check: catch the very first call that
-    # CROSSES the soft cap. The pre-call check (step 3) only fires when
+    # CROSSES the soft cap. The pre-call check only fires when
     # ``cost_so_far`` is already at-or-above the cap, so the call that
-    # takes us from below to at-or-above the cap was previously missed.
-    # The Redis dedupe marker shared with ``_maybe_warn_soft_cap``
-    # ensures we don't double-fire when both checks would otherwise
-    # match (pre-call already set the marker -> post-write SET NX
-    # returns False -> warning skipped).
-    if (
-        resolved.soft_cap_cents is not None
-        and cost_so_far < resolved.soft_cap_cents <= cost_so_far + cost
-    ):
-        await _maybe_warn_soft_cap(
-            db,
-            org_id=org_id,
-            feature_key=feature_key,
-            resolved=resolved,
-            cost_before_call=cost_so_far + cost,
-            period=_current_period(),
-        )
+    # takes us from below to at-or-above the cap would be missed. The
+    # Redis dedupe marker shared with ``_maybe_warn_soft_cap`` keeps both
+    # checks from double-firing.
+    await _post_write_soft_cap_crossing(
+        db,
+        org_id=org_id,
+        feature_key=feature_key,
+        resolved=resolved,
+        cost_so_far=cost_so_far,
+        cost_this_call=cost,
+    )
 
     logger.info(
         "ai.dispatch.success",
@@ -1035,7 +1036,7 @@ async def call_llm(
 
     # Best-effort last_used_at refresh — same fire-and-forget posture
     # as the unwrap path in PR1's credential_service.
-    asyncio.create_task(_touch_last_used(cred.id))  # noqa: RUF006
+    asyncio.create_task(_touch_last_used(prepared.credential_pk_id))  # noqa: RUF006
 
     return DispatchResult(response=response, ledger_id=ledger.id)
 
@@ -1088,11 +1089,24 @@ async def _touch_last_used(credential_id: int) -> None:
 
 
 @dataclass(frozen=True)
+class _PlatformReq:
+    """What ``_reserve`` needs to reserve a platform dispatch. Plain ints
+    plus the credential row (read once, for ``platform_provider``)."""
+
+    cred: Any
+    tokens: int
+    cents: int
+    ceiling_cents: int
+
+
+@dataclass(frozen=True)
 class _PreparedDispatch:
     """Output of ``_prepare_dispatch``.
 
     Carries everything ``call_llm_*`` wrappers need to talk to the
-    adapter and write the ledger row at the end.
+    adapter and write the ledger row at the end. For a platform row
+    ``adapter`` is None: only ``_reserve`` hands out a platform adapter, and
+    only after the reservation committed.
     """
 
     adapter: Any
@@ -1101,6 +1115,141 @@ class _PreparedDispatch:
     model: str
     resolved: _ResolvedCaps
     cost_so_far: int
+    # The value every wrapper sends: the caller's own for BYOK (bytes
+    # unchanged), min(caller or ceiling, ceiling) for a platform row.
+    max_tokens: Optional[int] = None
+    billing_source: str = "org_key"
+    platform: Optional[_PlatformReq] = None
+
+
+async def _prepare_platform(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    cred: OrgAICredential,
+    capability: str,
+    routed_model: str,
+    model_override: Optional[str],
+    messages: list[dict],
+    max_tokens: Optional[int],
+    retry_multiplier: int,
+) -> tuple[str, Optional[int], _PlatformReq]:
+    """Pure platform gate: refuses or returns (model, bound, reservation
+    request). Reads settings and counters, writes nothing."""
+    platform = cred.platform_provider
+    conf = await platform_ai_settings.load(db)
+    if (
+        not (settings.ai_native_enabled and conf.enabled)
+        or not platform_ai.platform_key(platform)
+    ):
+        raise NativeNotAvailable("platform_disabled")
+    model = model_override or routed_model
+    # Priced (an exact id, never ``_default``) and an output ceiling known
+    # (R8), allowlisted, and for OpenAI a model vetted for ``max_tokens``.
+    if (
+        model not in conf.models.get(platform, [])
+        or model not in MODEL_PRICING
+        or model == "_default"
+        or model not in _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL
+        or (
+            platform == "openai"
+            and capability != "embed"
+            and model not in platform_ai.OPENAI_ACCEPTS_MAX_TOKENS
+        )
+    ):
+        raise NativeNotAvailable("platform_model_not_allowed")
+    if conf.global_monthly_cents <= 0:
+        raise AIPlatformUnavailable()
+    ceiling = _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL[model]
+    bound = None if capability == "embed" else min(max_tokens or ceiling, ceiling)
+    try:
+        prompt = estimate_prompt_tokens_from_messages(messages)
+        completion = bound or 0
+        tokens = (prompt + completion) * retry_multiplier
+        cents = retry_multiplier * estimate_cost_cents(
+            model=model, prompt_tokens=prompt, completion_tokens=completion
+        )
+    except Exception as exc:  # noqa: BLE001 - a platform dispatch never projects 0
+        logger.warning(
+            "ai.dispatch.platform.projection_failed",
+            org_id=org_id,
+            error_class=type(exc).__name__,
+        )
+        raise AIPlatformProjectionFailed() from None
+    try:
+        await platform_reserve.check_headroom(
+            db, org_id, tokens, cents, conf.global_monthly_cents
+        )
+    except PlanLimitReached as exc:
+        raise AIPlanLimitReached(exc) from None
+    except platform_reserve.PlatformAIUnavailable:
+        raise AIPlatformUnavailable() from None
+    return (
+        model,
+        bound,
+        _PlatformReq(
+            cred=cred, tokens=tokens, cents=cents, ceiling_cents=conf.global_monthly_cents
+        ),
+    )
+
+
+async def _reserve(
+    db: AsyncSession, org_id: int, prepared: _PreparedDispatch
+) -> tuple[Any, Optional[platform_reserve.SettleHandle]]:
+    """BYOK: the prepared adapter, no handle. Platform: reserve (commits the
+    session, rolls it back on refusal) and return the freshly built adapter
+    with its one-shot settle handle."""
+    req = prepared.platform
+    if req is None:
+        return prepared.adapter, None
+    try:
+        res = await platform_reserve.reserve(
+            db, org_id, req.cred, req.tokens, req.cents, req.ceiling_cents
+        )
+    except PlanLimitReached as exc:
+        raise AIPlanLimitReached(exc) from None
+    except platform_reserve.PlatformAIUnavailable:
+        raise AIPlatformUnavailable() from None
+    return res.adapter, res.handle
+
+
+async def _settle(
+    db: AsyncSession,
+    handle: Optional[platform_reserve.SettleHandle],
+    *,
+    prompt: int,
+    completion: int,
+    cost: int,
+    embed: bool = False,
+    final: bool = True,
+) -> None:
+    """Swap a platform reservation for the actual usage, ONLY when the usage
+    is complete (prompt and completion both > 0; embed: prompt > 0; stream:
+    the adapter marked it final). Otherwise the reservation stays. A DB
+    failure keeps the reservation too: it is logged, never raised, so the
+    response and the ledger row still land."""
+    if handle is None or not final or prompt <= 0 or (completion <= 0 and not embed):
+        return
+    try:
+        await platform_reserve.settle(db, handle, prompt + completion, cost)
+    except SQLAlchemyError as exc:
+        logger.warning(
+            "ai.dispatch.platform.settle_failed",
+            org_id=handle.org_id,
+            error_class=type(exc).__name__,
+        )
+
+
+async def _settle_shielded(*args: Any, **kwargs: Any) -> None:
+    """``_settle`` that a cancellation cannot interrupt mid-transaction: the
+    cancel is delivered after the settle finished (a half-run settle would
+    leave the connection mid-transaction)."""
+    task = asyncio.ensure_future(_settle(*args, **kwargs))
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.wait({task})
+        raise
 
 
 async def _prepare_dispatch(
@@ -1112,6 +1261,8 @@ async def _prepare_dispatch(
     messages: list[dict],
     max_tokens: Optional[int],
     retry_multiplier: int = 1,
+    model_override: Optional[str] = None,
+    platform_gate_extra: Optional[list[dict]] = None,
 ) -> _PreparedDispatch:
     """Resolve routing + credential + caps for one dispatch.
 
@@ -1130,6 +1281,12 @@ async def _prepare_dispatch(
     credential row (populated by the validate() probe) — if the
     credential doesn't list the capability we refuse with a 412 so
     the caller routes to a different provider.
+
+    PURE with respect to platform spend (the agent-chat pre-flight calls it
+    as a dry gate): a platform row is checked (switch, key, allowlist,
+    pricing, headroom) but never reserved and never given an adapter.
+    ``model_override`` (embed only) is the model the caller will actually
+    send; a platform row projects and allowlists THAT model.
     """
     routing = await ai_routing_service.get_routing_for_feature(
         db, org_id=org_id, feature_name=feature_key
@@ -1167,9 +1324,15 @@ async def _prepare_dispatch(
     # do this check for backcompat); other capabilities check the
     # credential's ``discovered_capabilities`` array. An empty/None
     # array on a legacy credential row falls through to "no
-    # capabilities known" → refuse so the user re-runs validate.
+    # capabilities known" → refuse so the user re-runs validate. A platform
+    # row's set is fixed by its provider (never the stored column).
+    platform_provider = cred.platform_provider
     if capability != "chat":
-        capabilities = cred.discovered_capabilities or []
+        capabilities = (
+            platform_ai.PLATFORM_CAPABILITIES.get(platform_provider, [])
+            if platform_provider is not None
+            else cred.discovered_capabilities or []
+        )
         if capability not in capabilities:
             logger.info(
                 "ai.dispatch.capability.unsupported",
@@ -1183,6 +1346,22 @@ async def _prepare_dispatch(
                 capability=capability, feature_key=feature_key
             )
 
+    req: Optional[_PlatformReq] = None
+    gate_messages = messages
+    if platform_provider is not None:
+        gate_messages = messages + (platform_gate_extra or [])
+        model, max_tokens, req = await _prepare_platform(
+            db,
+            org_id=org_id,
+            cred=cred,
+            capability=capability,
+            routed_model=model,
+            model_override=model_override,
+            messages=gate_messages,
+            max_tokens=max_tokens,
+            retry_multiplier=retry_multiplier,
+        )
+
     resolved, cost_so_far = await _resolve_caps_and_cost(
         db, org_id=org_id, feature_key=feature_key
     )
@@ -1190,7 +1369,7 @@ async def _prepare_dispatch(
         resolved=resolved,
         cost_so_far=cost_so_far,
         model=model,
-        messages=messages,
+        messages=gate_messages,
         max_tokens=max_tokens,
         retry_multiplier=retry_multiplier,
         org_id=org_id,
@@ -1207,21 +1386,23 @@ async def _prepare_dispatch(
         period=_current_period(),
     )
 
-    api_key = (
-        decrypt(cred.encrypted_api_key) if cred.encrypted_api_key else None
-    )
-    bearer = (
-        decrypt(cred.encrypted_bearer_token)
-        if cred.encrypted_bearer_token
-        else None
-    )
-    adapter = get_adapter(
-        cred.provider,
-        api_key=api_key,
-        bearer_token=bearer,
-        base_url=cred.base_url,
-        base_url_is_api_root=cred.base_url_is_api_root,
-    )
+    adapter = None
+    if req is None:
+        api_key = (
+            decrypt(cred.encrypted_api_key) if cred.encrypted_api_key else None
+        )
+        bearer = (
+            decrypt(cred.encrypted_bearer_token)
+            if cred.encrypted_bearer_token
+            else None
+        )
+        adapter = get_adapter(
+            cred.provider,
+            api_key=api_key,
+            bearer_token=bearer,
+            base_url=cred.base_url,
+            base_url_is_api_root=cred.base_url_is_api_root,
+        )
 
     return _PreparedDispatch(
         adapter=adapter,
@@ -1230,6 +1411,9 @@ async def _prepare_dispatch(
         model=model,
         resolved=resolved,
         cost_so_far=cost_so_far,
+        max_tokens=max_tokens,
+        billing_source="platform" if req is not None else "org_key",
+        platform=req,
     )
 
 
@@ -1331,7 +1515,13 @@ async def call_llm_structured(
         # aggregates token spend across every attempt, so project the
         # worst case: all attempts billed.
         retry_multiplier=STRUCTURED_OUTPUT_MAX_RETRIES + 1,
+        # R9: a platform dispatch bills the schema as prompt, so its
+        # projection (and reservation) folds it in. BYOK is unchanged.
+        platform_gate_extra=[
+            {"role": "user", "content": json.dumps(response_schema)}
+        ],
     )
+    adapter, handle = await _reserve(db, org_id, prepared)
 
     retry_message = {
         "role": "system",
@@ -1352,15 +1542,18 @@ async def call_llm_structured(
     # last-attempt-only ledger row silently dropped.
     total_prompt_tokens = 0
     total_completion_tokens = 0
+    # Platform settle needs EVERY attempt's usage complete; one incomplete
+    # attempt keeps the (3x) reservation.
+    all_complete = True
 
     for attempt in range(STRUCTURED_OUTPUT_MAX_RETRIES + 1):
         try:
             response: LLMResponse = await _with_dispatch_timeout(
-                prepared.adapter.chat_structured(
+                adapter.chat_structured(
                     model=prepared.model,
                     messages=attempt_messages,
                     schema=response_schema,
-                    max_tokens=max_tokens,
+                    max_tokens=prepared.max_tokens,
                 )
             )
         except NativeNotAvailable:
@@ -1389,6 +1582,7 @@ async def call_llm_structured(
             )
             await _write_ledger_row(
                 db,
+                billing_source=prepared.billing_source,
                 org_id=org_id,
                 credential_id=prepared.credential_id,
                 feature_key=feature_key,
@@ -1414,6 +1608,11 @@ async def call_llm_structured(
         # whether downstream JSON parse / schema validation passes.
         total_prompt_tokens += response.prompt_tokens
         total_completion_tokens += response.completion_tokens
+        all_complete = (
+            all_complete
+            and response.prompt_tokens > 0
+            and response.completion_tokens > 0
+        )
 
         try:
             parsed = json.loads(response.content)
@@ -1429,8 +1628,17 @@ async def call_llm_structured(
                 prompt_tokens=total_prompt_tokens,
                 completion_tokens=total_completion_tokens,
             )
+            await _settle(
+                db,
+                handle,
+                prompt=total_prompt_tokens,
+                completion=total_completion_tokens,
+                cost=cost,
+                final=all_complete,
+            )
             ledger = await _write_ledger_row(
                 db,
+                billing_source=prepared.billing_source,
                 org_id=org_id,
                 credential_id=prepared.credential_id,
                 feature_key=feature_key,
@@ -1486,8 +1694,17 @@ async def call_llm_structured(
         prompt_tokens=total_prompt_tokens,
         completion_tokens=total_completion_tokens,
     )
+    await _settle(
+        db,
+        handle,
+        prompt=total_prompt_tokens,
+        completion=total_completion_tokens,
+        cost=cost,
+        final=all_complete,
+    )
     ledger = await _write_ledger_row(
         db,
+        billing_source=prepared.billing_source,
         org_id=org_id,
         credential_id=prepared.credential_id,
         feature_key=feature_key,
@@ -1561,13 +1778,15 @@ async def call_llm_embed(
         messages=gate_messages,
         max_tokens=None,
         retry_multiplier=1,
+        model_override=model,
     )
+    adapter, handle = await _reserve(db, org_id, prepared)
     embed_model = model or prepared.model
 
     start = time.perf_counter()
     try:
         response: EmbedResponse = await _with_dispatch_timeout(
-            prepared.adapter.embed(texts=texts, model=embed_model)
+            adapter.embed(texts=texts, model=embed_model)
         )
     except NativeNotAvailable:
         raise
@@ -1577,6 +1796,7 @@ async def call_llm_embed(
         latency_ms = int((time.perf_counter() - start) * 1000)
         await _write_ledger_row(
             db,
+            billing_source=prepared.billing_source,
             org_id=org_id,
             credential_id=prepared.credential_id,
             feature_key=feature_key,
@@ -1593,6 +1813,7 @@ async def call_llm_embed(
         latency_ms = int((time.perf_counter() - start) * 1000)
         await _write_ledger_row(
             db,
+            billing_source=prepared.billing_source,
             org_id=org_id,
             credential_id=prepared.credential_id,
             feature_key=feature_key,
@@ -1607,17 +1828,24 @@ async def call_llm_embed(
         raise AIDispatchFailed(exc.code) from None
 
     latency_ms = int((time.perf_counter() - start) * 1000)
+    # R6: a platform row prices and ledgers the model WE sent, never the name
+    # the provider echoes back. BYOK keeps the echoed model.
+    billed_model = embed_model if prepared.platform is not None else response.model
     cost = estimate_cost_cents(
-        model=response.model,
+        model=billed_model,
         prompt_tokens=response.prompt_tokens,
         completion_tokens=0,
     )
+    await _settle(
+        db, handle, prompt=response.prompt_tokens, completion=0, cost=cost, embed=True
+    )
     ledger = await _write_ledger_row(
         db,
+        billing_source=prepared.billing_source,
         org_id=org_id,
         credential_id=prepared.credential_id,
         feature_key=feature_key,
-        model=response.model,
+        model=billed_model,
         prompt_tokens=response.prompt_tokens,
         completion_tokens=0,
         est_cost_cents_value=cost,
@@ -1683,15 +1911,16 @@ async def call_llm_function(
         max_tokens=max_tokens,
         retry_multiplier=1,
     )
+    adapter, handle = await _reserve(db, org_id, prepared)
 
     start = time.perf_counter()
     try:
         response: FunctionCallResponse = await _with_dispatch_timeout(
-            prepared.adapter.function_call(
+            adapter.function_call(
                 model=prepared.model,
                 messages=messages,
                 tools=tools,
-                max_tokens=max_tokens,
+                max_tokens=prepared.max_tokens,
             )
         )
     except NativeNotAvailable:
@@ -1703,6 +1932,7 @@ async def call_llm_function(
         latency_ms = int((time.perf_counter() - start) * 1000)
         await _write_ledger_row(
             db,
+            billing_source=prepared.billing_source,
             org_id=org_id,
             credential_id=prepared.credential_id,
             feature_key=feature_key,
@@ -1727,6 +1957,7 @@ async def call_llm_function(
         latency_ms = int((time.perf_counter() - start) * 1000)
         await _write_ledger_row(
             db,
+            billing_source=prepared.billing_source,
             org_id=org_id,
             credential_id=prepared.credential_id,
             feature_key=feature_key,
@@ -1746,8 +1977,16 @@ async def call_llm_function(
         prompt_tokens=response.prompt_tokens,
         completion_tokens=response.completion_tokens,
     )
+    await _settle(
+        db,
+        handle,
+        prompt=response.prompt_tokens,
+        completion=response.completion_tokens,
+        cost=cost,
+    )
     ledger = await _write_ledger_row(
         db,
+        billing_source=prepared.billing_source,
         org_id=org_id,
         credential_id=prepared.credential_id,
         feature_key=feature_key,
@@ -1808,87 +2047,118 @@ async def call_llm_stream(
         max_tokens=max_tokens,
         retry_multiplier=1,
     )
+    adapter, handle = await _reserve(db, org_id, prepared)
 
     accumulated: list[str] = []
     final_usage: Optional[TokenUsage] = None
+    usage_final = False
     start = time.perf_counter()
     try:
-        async for chunk in _stream_with_dispatch_timeout(
-            prepared.adapter.stream(
-                model=prepared.model,
-                messages=messages,
-                max_tokens=max_tokens,
-            )
-        ):
-            if chunk.done:
-                final_usage = chunk.final_usage
+        try:
+            async for chunk in _stream_with_dispatch_timeout(
+                adapter.stream(
+                    model=prepared.model,
+                    messages=messages,
+                    max_tokens=prepared.max_tokens,
+                )
+            ):
+                if chunk.done:
+                    final_usage = chunk.final_usage
+                    usage_final = chunk.usage_final
+                    yield chunk
+                    break
+                accumulated.append(chunk.delta_text)
                 yield chunk
-                break
-            accumulated.append(chunk.delta_text)
-            yield chunk
-    except NativeNotAvailable:
-        raise
-    except AIProviderError as exc:
+        except NativeNotAvailable:
+            raise
+        except AIProviderError as exc:
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            await _write_ledger_row(
+                db,
+                billing_source=prepared.billing_source,
+                org_id=org_id,
+                credential_id=prepared.credential_id,
+                feature_key=feature_key,
+                model=prepared.model,
+                prompt_tokens=0,
+                completion_tokens=0,
+                est_cost_cents_value=0,
+                latency_ms=latency_ms,
+                success=False,
+                error_class=exc.code,
+            )
+            raise AIDispatchFailed(exc.code) from None
+
         latency_ms = int((time.perf_counter() - start) * 1000)
-        await _write_ledger_row(
+        if final_usage is None:
+            # Fallback estimate when the provider doesn't emit usage at
+            # end-of-stream. Prompt tokens we can't estimate without the
+            # original messages, so 0; completion tokens via char/4 of the
+            # accumulated text. Never settled: a platform reservation stays.
+            full_text = "".join(accumulated)
+            final_usage = TokenUsage(
+                prompt_tokens=0,
+                completion_tokens=max(0, len(full_text) // 4),
+            )
+        cost = estimate_cost_cents(
+            model=prepared.model,
+            prompt_tokens=final_usage.prompt_tokens,
+            completion_tokens=final_usage.completion_tokens,
+        )
+        await _settle_shielded(
             db,
+            handle,
+            prompt=final_usage.prompt_tokens,
+            completion=final_usage.completion_tokens,
+            cost=cost,
+            final=usage_final,
+        )
+        ledger = await _write_ledger_row(
+            db,
+            billing_source=prepared.billing_source,
             org_id=org_id,
             credential_id=prepared.credential_id,
             feature_key=feature_key,
             model=prepared.model,
-            prompt_tokens=0,
-            completion_tokens=0,
-            est_cost_cents_value=0,
+            prompt_tokens=final_usage.prompt_tokens,
+            completion_tokens=final_usage.completion_tokens,
+            est_cost_cents_value=cost,
             latency_ms=latency_ms,
-            success=False,
-            error_class=exc.code,
+            success=True,
+            error_class=None,
         )
-        raise AIDispatchFailed(exc.code) from None
-
-    latency_ms = int((time.perf_counter() - start) * 1000)
-    if final_usage is None:
-        # Fallback estimate when the provider doesn't emit usage at
-        # end-of-stream. Prompt tokens we can't estimate without the
-        # original messages, so 0; completion tokens via char/4 of the
-        # accumulated text.
-        full_text = "".join(accumulated)
-        final_usage = TokenUsage(
-            prompt_tokens=0,
-            completion_tokens=max(0, len(full_text) // 4),
+        await _post_write_soft_cap_crossing(
+            db,
+            org_id=org_id,
+            feature_key=feature_key,
+            resolved=prepared.resolved,
+            cost_so_far=prepared.cost_so_far,
+            cost_this_call=cost,
         )
-    cost = estimate_cost_cents(
-        model=prepared.model,
-        prompt_tokens=final_usage.prompt_tokens,
-        completion_tokens=final_usage.completion_tokens,
-    )
-    ledger = await _write_ledger_row(
-        db,
-        org_id=org_id,
-        credential_id=prepared.credential_id,
-        feature_key=feature_key,
-        model=prepared.model,
-        prompt_tokens=final_usage.prompt_tokens,
-        completion_tokens=final_usage.completion_tokens,
-        est_cost_cents_value=cost,
-        latency_ms=latency_ms,
-        success=True,
-        error_class=None,
-    )
-    await _post_write_soft_cap_crossing(
-        db,
-        org_id=org_id,
-        feature_key=feature_key,
-        resolved=prepared.resolved,
-        cost_so_far=prepared.cost_so_far,
-        cost_this_call=cost,
-    )
-    logger.info(
-        "ai.dispatch.stream.success",
-        org_id=org_id,
-        feature_key=feature_key,
-        model=prepared.model,
-        ledger_id=ledger.id,
-        prompt_tokens=final_usage.prompt_tokens,
-        completion_tokens=final_usage.completion_tokens,
-    )
-    asyncio.create_task(_touch_last_used(prepared.credential_pk_id))  # noqa: RUF006
+        logger.info(
+            "ai.dispatch.stream.success",
+            org_id=org_id,
+            feature_key=feature_key,
+            model=prepared.model,
+            ledger_id=ledger.id,
+            prompt_tokens=final_usage.prompt_tokens,
+            completion_tokens=final_usage.completion_tokens,
+        )
+        asyncio.create_task(_touch_last_used(prepared.credential_pk_id))  # noqa: RUF006
+    finally:
+        # A consumer that stops after the done chunk (or is cancelled) never
+        # reaches the settle above; the handle is one-shot, so this is a
+        # no-op when the success path already settled. Shielded from
+        # cancellation; a DB error is swallowed inside ``_settle``.
+        if handle is not None and final_usage is not None and usage_final:
+            await _settle_shielded(
+                db,
+                handle,
+                prompt=final_usage.prompt_tokens,
+                completion=final_usage.completion_tokens,
+                cost=estimate_cost_cents(
+                    model=prepared.model,
+                    prompt_tokens=final_usage.prompt_tokens,
+                    completion_tokens=final_usage.completion_tokens,
+                ),
+            )
