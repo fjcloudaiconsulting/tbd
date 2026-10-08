@@ -13,12 +13,21 @@ from typing import Optional
 
 import structlog
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import settings
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.schemas.org_ai_credential import OrgAICredentialCreate
-from app.services import audit_service
+from app.services import (
+    ai_consent_service,
+    audit_service,
+    feature_service,
+    platform_ai,
+    platform_ai_settings,
+)
 from app.services.ai_credential_crypto import (
     decrypt,
     encrypt,
@@ -27,6 +36,8 @@ from app.services.ai_credential_crypto import (
 )
 from app.services.ai_providers import ValidateResult, get_adapter
 from app.services.list_query import resolve_order_by
+from app.services.platform_reserve import CENTS, TOKENS
+from app.services.usage_service import PlanLimitReached
 
 
 # Closed sort whitelist for the settings/ai-providers credentials table.
@@ -392,3 +403,154 @@ async def delete_credential(
         outcome="success",
         detail={"credential_id": credential_id, "provider": provider},
     )
+
+
+# --------------------------------------------------------------------
+# Platform AI (TBD-586): an org turns a house-key provider on and off.
+# A platform row is keyless; the key routes below refuse it.
+# --------------------------------------------------------------------
+
+
+def assert_not_platform(credential: OrgAICredential) -> None:
+    """F-S3: PATCH / rotate / validate / DELETE by id refuse a platform row.
+    Called after the org-scoped 404 lookup, so another org's id stays 404."""
+    if credential.platform_provider is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "platform_credential",
+                "message": "Platform AI is turned on and off from its own switch, not managed as a key.",
+            },
+        )
+
+
+def _platform_exists() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "platform_credential_exists",
+            "message": "Platform AI is already turned on for this provider.",
+        },
+    )
+
+
+async def get_platform_credential(
+    db: AsyncSession, *, org_id: int, platform_provider: str
+) -> Optional[OrgAICredential]:
+    return await db.scalar(
+        select(OrgAICredential).where(
+            OrgAICredential.org_id == org_id,
+            OrgAICredential.platform_provider == platform_provider,
+        )
+    )
+
+
+async def create_platform_credential(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    platform_provider: str,
+    session_factory: async_sessionmaker[AsyncSession],
+    actor_user_id: int,
+    actor_email: str,
+    request_id: Optional[str],
+    ip_address: Optional[str],
+) -> OrgAICredential:
+    conf = await platform_ai_settings.load(db)
+    if platform_provider not in platform_ai_settings.offered(conf):
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={"code": "ai_native_not_available"},
+        )
+    # Plan + active overrides (never the plan row alone); both meters must
+    # be open, the reservation needs both.
+    try:
+        ent = await feature_service.get_entitlements(db, org_id)
+        lims = [(m, ent.limits[m]) for m in (TOKENS, CENTS)]
+    except (SQLAlchemyError, ValidationError, KeyError):
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={"code": "platform_ai_unavailable"},
+        ) from None
+    for meter, lim in lims:
+        if not lim.limit:
+            raise PlanLimitReached(meter, lim.limit or 0, lim.period, None)
+    if not await ai_consent_service.has_current_consent(db, org_id=org_id):
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={
+                "code": "ai_consent_required",
+                "current_consent_version": settings.ai_native_current_consent_version,
+            },
+        )
+    if await get_platform_credential(
+        db, org_id=org_id, platform_provider=platform_provider
+    ) is not None:
+        raise _platform_exists()
+    row = OrgAICredential(
+        org_id=org_id,
+        provider=platform_ai.PLATFORM_ADAPTER[platform_provider],
+        platform_provider=platform_provider,
+        discovered_capabilities=list(platform_ai.PLATFORM_CAPABILITIES[platform_provider]),
+    )
+    db.add(row)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise _platform_exists() from None
+    await db.refresh(row)
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="ai.platform.enabled",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=org_id,
+        target_org_name=None,
+        request_id=request_id,
+        ip_address=ip_address,
+        outcome="success",
+        detail={
+            "credential_id": row.id,
+            "platform_provider": platform_provider,
+            "consent_version": settings.ai_native_current_consent_version,
+        },
+    )
+    return row
+
+
+async def delete_platform_credential(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    platform_provider: str,
+    session_factory: async_sessionmaker[AsyncSession],
+    actor_user_id: int,
+    actor_email: str,
+    request_id: Optional[str],
+    ip_address: Optional[str],
+) -> bool:
+    """No flag, plan or consent check: an org can always turn it off. Routing
+    rows cascade; ledger rows keep ``billing_source='platform'``."""
+    row = await get_platform_credential(
+        db, org_id=org_id, platform_provider=platform_provider
+    )
+    if row is None:
+        return False
+    credential_id = row.id
+    await db.delete(row)
+    await db.commit()
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="ai.platform.disabled",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=org_id,
+        target_org_name=None,
+        request_id=request_id,
+        ip_address=ip_address,
+        outcome="success",
+        detail={"credential_id": credential_id, "platform_provider": platform_provider},
+    )
+    return True

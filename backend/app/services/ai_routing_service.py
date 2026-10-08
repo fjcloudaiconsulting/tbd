@@ -29,7 +29,7 @@ from app.models.org_ai_routing import (
     OrgAIDefaultRouting,
     OrgAIFeatureRouting,
 )
-from app.services import audit_service
+from app.services import audit_service, platform_ai, platform_ai_settings
 
 
 logger = structlog.stdlib.get_logger()
@@ -46,6 +46,22 @@ class CrossOrgRoutingDenied(Exception):
 
 class UnknownFeatureName(Exception):
     """Refuse routing writes for feature_names outside the closed set."""
+
+
+class PlatformModelNotAllowed(Exception):
+    """Routing a platform row to a model its provider does not offer or the
+    operator has not allowlisted. BYOK rows are never checked."""
+
+
+async def _assert_platform_model(
+    db: AsyncSession, cred: OrgAICredential, model: str
+) -> None:
+    p = cred.platform_provider
+    if p is None:
+        return
+    conf = await platform_ai_settings.load(db)
+    if not (platform_ai.offerable_model(p, model) and model in conf.models.get(p, ())):
+        raise PlatformModelNotAllowed(model)
 
 
 def assert_known_feature(feature_name: str) -> None:
@@ -101,9 +117,10 @@ async def set_default_routing(
     request_id: Optional[str],
     ip_address: Optional[str],
 ) -> OrgAIDefaultRouting:
-    await _assert_credential_in_org(
+    cred = await _assert_credential_in_org(
         db, org_id=org_id, credential_id=credential_id
     )
+    await _assert_platform_model(db, cred, model)
 
     existing = await get_default_routing(db, org_id=org_id)
     if existing is None:
@@ -147,9 +164,10 @@ async def set_feature_routing(
     ip_address: Optional[str],
 ) -> OrgAIFeatureRouting:
     assert_known_feature(feature_name)
-    await _assert_credential_in_org(
+    cred = await _assert_credential_in_org(
         db, org_id=org_id, credential_id=credential_id
     )
+    await _assert_platform_model(db, cred, model)
 
     res = await db.execute(
         select(OrgAIFeatureRouting).where(

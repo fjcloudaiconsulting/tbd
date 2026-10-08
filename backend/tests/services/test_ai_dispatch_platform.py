@@ -28,6 +28,7 @@ from app.config import settings as app_settings
 from app.models import Base
 from app.models.ai_usage_ledger import AIUsageLedger
 from app.models.org_ai_caps import OrgAIDefaultCaps
+from app.models.org_ai_consent import OrgAIConsent
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.org_ai_routing import OrgAIDefaultRouting
 from app.models.platform_ai_spend import PlatformAISpend
@@ -37,7 +38,9 @@ from app.models.usage_counter import UsageCounter
 from app.models.user import Organization
 from app.services import agent_chat, ai_dispatch, platform_ai, platform_reserve
 from app.services.ai_credential_crypto import encrypt
+from app._time import utcnow_naive
 from app.services.ai_dispatch import (
+    PlatformConsentRequired,
     AICapabilityNotSupported,
     AIDispatchFailed,
     AIPlanLimitReached,
@@ -105,6 +108,8 @@ def _env(monkeypatch):
     monkeypatch.setitem(MODEL_PRICING, "gemini-x", ModelPricing(100, 400))
     monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "vendor/model-a", 2000)
     monkeypatch.setitem(_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, "gemini-x", 2000)
+    monkeypatch.setitem(platform_ai.PLATFORM_MODELS, "openrouter", {"vendor/model-a"})
+    monkeypatch.setitem(platform_ai.PLATFORM_MODELS, "gemini", {"gemini-x", "emb-x"})
     monkeypatch.setattr(app_settings, "ai_dispatch_timeout_s", 5.0)
     # BYOK rows are encrypted at rest; CI has no key in its env (the dev .env does).
     monkeypatch.setattr(
@@ -237,6 +242,7 @@ async def mk_platform(db, org_id, platform="openai", model=None, **cols):
     db.add(cred)
     await db.flush()
     db.add(OrgAIDefaultRouting(org_id=org_id, credential_id=cred.id, model=model or MODELS[platform]))
+    db.add(OrgAIConsent(org_id=org_id, consent_version=app_settings.ai_native_current_consent_version))
     await db.commit()
     return cred
 
@@ -1094,3 +1100,45 @@ async def test_item4_cents_meter_and_global_spend_settle_to_the_actual_cost(db, 
     assert rows[0].est_cost_cents == expected
     if entry == "embed":
         assert rows[0].model == "emb-x"  # R6: priced on the model sent, not response.model
+
+
+# ---- TBD-586 PR2: consent at dispatch (D2 / C1), provider ownership (B2) -----
+
+async def _revoke(db, org):
+    db.add(OrgAIConsent(org_id=org, consent_version=app_settings.ai_native_current_consent_version,
+                        revoked_at=utcnow_naive()))
+    await db.commit()
+
+
+@pytest.mark.parametrize("how", ["revoked", "version_bump"])
+async def test_c1_platform_dispatch_rechecks_consent(db, sf, fake, spy, monkeypatch, how):
+    org, _ = await setup(db)
+    if how == "revoked":
+        await _revoke(db, org)
+    else:
+        monkeypatch.setattr(app_settings, "ai_native_current_consent_version", "ai-tos-2099-01-01")
+    with pytest.raises(PlatformConsentRequired) as ei:
+        await _chat(db, org)
+    http = http_for_dispatch_error(ei.value)
+    assert http.status_code == 412 and http.detail["code"] == "ai_consent_required"
+    assert fake.reqs == [] and spy == [] and await counters(sf, org) == {} and await spend(sf) == 0
+
+
+async def test_r2_2_dark_platform_answers_not_available_before_consent(db, sf, fake, monkeypatch):
+    org, _ = await setup(db)
+    await _revoke(db, org)
+    monkeypatch.setattr(app_settings, "ai_native_enabled", False)
+    with pytest.raises(NativeNotAvailable) as ei:
+        await _chat(db, org)
+    assert not isinstance(ei.value, PlatformConsentRequired)
+    assert http_for_dispatch_error(ei.value).detail["code"] == "ai_native_not_available"
+
+
+async def test_b2a_a_model_outside_the_provider_is_refused_before_reserve(db, sf, fake, spy):
+    await set_platform(db, models={"anthropic": ["gpt-4o"]})
+    org = await mk_org(db)
+    await mk_platform(db, org, "anthropic", "gpt-4o")
+    with pytest.raises(NativeNotAvailable):
+        await _chat(db, org)
+    assert fake.reqs == [] and spy == [] and await counters(sf, org) == {} and await spend(sf) == 0
+

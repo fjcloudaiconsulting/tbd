@@ -8,7 +8,7 @@ on every read/write path.
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Literal, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import rate_limit_db
 from app.auth.org_permissions import require_org_admin
+from app.auth.pat import require_interactive_session
 from app.config import settings
 from app.database import get_db
 from app.deps import get_session_factory
@@ -52,12 +53,15 @@ from app.services import (
     ai_consent_service,
     ai_credential_service,
     ai_routing_service,
+    platform_ai,
+    platform_ai_settings,
 )
 from app.services.ai_providers.openai_compatible import (
     OPENAI_COMPATIBLE_PRESETS,
 )
 from app.services.ai_routing_service import (
     CrossOrgRoutingDenied,
+    PlatformModelNotAllowed,
     UnknownFeatureName,
 )
 from app.services.exceptions import ValidationError
@@ -77,6 +81,7 @@ def _request_id() -> Optional[str]:
 
 @router.get("/options")
 async def get_provider_options(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_org_admin),
 ) -> dict:
     """Provider picker metadata for the admin UI.
@@ -108,6 +113,13 @@ async def get_provider_options(
             for preset in OPENAI_COMPATIBLE_PRESETS
         ],
         "ai_native_enabled": settings.ai_native_enabled,
+        # Platform AI providers this org can turn on right now (TBD-586).
+        "platform_providers": [
+            {"key": p, "label": platform_ai.PLATFORM_LABELS[p], "models": models}
+            for p, models in platform_ai_settings.offered(
+                await platform_ai_settings.load(db)
+            ).items()
+        ],
     }
 
 
@@ -175,6 +187,70 @@ async def create_credential(
 
 
 # --------------------------------------------------------------------
+# Platform AI switch (TBD-586). Declared BEFORE /{credential_id}.
+# --------------------------------------------------------------------
+
+PlatformProvider = Literal["openrouter", "openai", "anthropic", "gemini"]
+
+
+@router.post(
+    "/platform/{platform_provider}",
+    response_model=OrgAICredentialResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_interactive_session)],
+)
+async def enable_platform(
+    platform_provider: PlatformProvider,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
+    current_user: User = Depends(require_org_admin),
+) -> OrgAICredentialResponse:
+    row = await ai_credential_service.create_platform_credential(
+        db,
+        org_id=current_user.org_id,
+        platform_provider=platform_provider,
+        session_factory=session_factory,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+    )
+    return OrgAICredentialResponse.model_validate(row)
+
+
+@router.delete(
+    "/platform/{platform_provider}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def disable_platform(
+    platform_provider: PlatformProvider,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
+    current_user: User = Depends(require_org_admin),
+):
+    deleted = await ai_credential_service.delete_platform_credential(
+        db,
+        org_id=current_user.org_id,
+        platform_provider=platform_provider,
+        session_factory=session_factory,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+    )
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------
 # Routing endpoints (PR1). Declared BEFORE the /{credential_id}
 # endpoints so the literal /routing prefix wins the route match.
 # Service-layer cross-org check + DB composite FK both refuse
@@ -192,6 +268,16 @@ def _cross_org_denied() -> HTTPException:
         detail={
             "code": "cross_org_routing_denied",
             "message": "credential does not belong to this organization",
+        },
+    )
+
+
+def _platform_model_not_allowed() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "platform_model_not_allowed",
+            "message": "this model is not offered on platform AI",
         },
     )
 
@@ -255,6 +341,8 @@ async def put_default_routing(
         )
     except CrossOrgRoutingDenied:
         raise _cross_org_denied()
+    except PlatformModelNotAllowed:
+        raise _platform_model_not_allowed()
     return DefaultRoutingResponse.model_validate(row)
 
 
@@ -289,6 +377,8 @@ async def put_feature_routing(
         raise _unknown_feature(feature_name)
     except CrossOrgRoutingDenied:
         raise _cross_org_denied()
+    except PlatformModelNotAllowed:
+        raise _platform_model_not_allowed()
     return FeatureRoutingResponse.model_validate(row)
 
 
@@ -535,6 +625,7 @@ async def update_credential(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    ai_credential_service.assert_not_platform(row)
     updated = await ai_credential_service.update_credential_label(
         db,
         credential=row,
@@ -568,6 +659,7 @@ async def rotate_credential(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    ai_credential_service.assert_not_platform(row)
     updated = await ai_credential_service.rotate_credential(
         db,
         credential=row,
@@ -601,6 +693,7 @@ async def validate_credential(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    ai_credential_service.assert_not_platform(row)
     # Per-(org, credential) 5 s cooldown (spec §6 T10), counted in the limits
     # DB (rate limits move to MySQL, INFRA-121). Acquired AFTER the 404 check
     # so probing nonexistent credentials can't poison real cooldown slots.
@@ -647,6 +740,7 @@ async def delete_credential(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    ai_credential_service.assert_not_platform(row)
     await ai_credential_service.delete_credential(
         db,
         credential=row,

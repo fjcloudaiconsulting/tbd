@@ -222,6 +222,8 @@ PLATFORM_GATED_ROUTES: tuple[tuple[str, str, frozenset[str]], ...] = (
         "/api/v1/admin/orgs/{org_id}/features/{feature}",
         frozenset({"superadmin:admin_features"}),
     ),
+    ("GET", "/api/v1/admin/platform-ai", frozenset({"superadmin:admin_features"})),
+    ("PUT", "/api/v1/admin/platform-ai", frozenset({"superadmin:admin_features"})),
     # ── admin_orgs.py ───────────────────────────────────────────────────────
     ("GET", "/api/v1/admin/orgs", frozenset({"perm:orgs.view"})),
     (
@@ -344,7 +346,7 @@ PLATFORM_GATED_ROUTES: tuple[tuple[str, str, frozenset[str]], ...] = (
     ("DELETE", "/api/v1/system/api-tokens/{token_id}", frozenset({"superadmin:api_tokens"})),
 )
 
-EXPECTED_ROUTE_COUNT = 64
+EXPECTED_ROUTE_COUNT = 66
 
 # Routes under /api/v1/admin/ deliberately exempt from carrying a platform gate.
 # EMPTY, and it must stay that way without an explicit security review. An entry

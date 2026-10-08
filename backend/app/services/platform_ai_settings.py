@@ -11,8 +11,9 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.system_setting import SystemSetting
-from app.services.platform_ai import PLATFORM_PROVIDERS
+from app.services.platform_ai import PLATFORM_PROVIDERS, platform_key
 
 ENABLED = "platform_ai.enabled"
 GLOBAL_MONTHLY_CENTS = "platform_ai.global_monthly_cents"
@@ -55,3 +56,11 @@ async def load(db: AsyncSession) -> PlatformAISettings:
         global_monthly_cents=int(cents) if cents.isascii() and cents.isdigit() else 0,
         models=_models(rows.get(MODELS)),
     )
+
+
+def offered(conf: PlatformAISettings) -> dict[str, list[str]]:
+    """Providers an org can turn on now: env floor, the operator switch, an
+    env key and a non-empty allowlist, all four."""
+    if not (settings.ai_native_enabled and conf.enabled):
+        return {}
+    return {p: m for p, m in conf.models.items() if m and platform_key(p)}
