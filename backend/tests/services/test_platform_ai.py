@@ -113,7 +113,8 @@ def test_factory_missing_key_is_native_not_available(monkeypatch):
 def test_factory_never_decrypts_or_reads_stored_columns():
     tree = ast.parse((APP / "services/platform_ai.py").read_text())
     used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {
-        n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} | {
+        a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
     assert not used & {"decrypt", "encrypted_api_key", "base_url_is_api_root_col", "get_adapter"}
     assert "encrypted_bearer_token" not in used
 
