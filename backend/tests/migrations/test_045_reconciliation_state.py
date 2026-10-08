@@ -21,7 +21,7 @@ import os
 import pytest
 from sqlalchemy import text
 
-from app.database import get_db
+from app.database import _session
 
 
 pytestmark = pytest.mark.skipif(
@@ -36,7 +36,7 @@ async def test_reconciliation_state_backfilled_to_accepted_for_every_row():
     migration. The post-DDL UPDATE backstops the column-level
     ``DEFAULT 'accepted'`` in case any dialect leaves the new column NULL
     on existing rows."""
-    async for db in get_db():
+    async for db in _session():
         # No NULLs anywhere.
         null_result = await db.execute(
             text(
@@ -72,7 +72,7 @@ async def test_reconciliation_state_backfilled_to_accepted_for_every_row():
 @pytest.mark.asyncio
 async def test_transaction_columns_have_correct_shape():
     """Schema-level sanity check on the three new columns."""
-    async for db in get_db():
+    async for db in _session():
         result = await db.execute(
             text(
                 "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT "
@@ -103,7 +103,7 @@ async def test_transaction_columns_have_correct_shape():
 async def test_import_batches_table_exists():
     """The new ``import_batches`` table is present with the expected
     header + counter columns."""
-    async for db in get_db():
+    async for db in _session():
         result = await db.execute(
             text(
                 "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
@@ -137,7 +137,7 @@ async def test_import_batches_table_exists():
 async def test_recon_indexes_exist():
     """Indexes the recon UI relies on: (import_batch_id, state) for
     per-batch grouping, (org_id, fitid) for OFX cross-batch dedup."""
-    async for db in get_db():
+    async for db in _session():
         result = await db.execute(
             text(
                 "SELECT INDEX_NAME FROM information_schema.STATISTICS "

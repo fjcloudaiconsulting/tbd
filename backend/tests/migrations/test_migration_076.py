@@ -21,7 +21,7 @@ import os
 import pytest
 from sqlalchemy import text
 
-from app.database import get_db
+from app.database import _session
 
 
 pytestmark = pytest.mark.skipif(
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_notifications_category_enum_includes_cc_statement():
-    async for db in get_db():
+    async for db in _session():
         result = await db.execute(
             text("SHOW COLUMNS FROM notifications LIKE 'category'")
         )
@@ -53,7 +53,7 @@ async def test_notifications_category_enum_includes_cc_statement():
 
 @pytest.mark.asyncio
 async def test_preference_columns_exist_not_null_default_on():
-    async for db in get_db():
+    async for db in _session():
         result = await db.execute(
             text(
                 "SELECT COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT "
@@ -81,7 +81,7 @@ async def test_existing_preference_rows_backfilled_to_default_on():
     new columns land TRUE (opt-out, not opt-in) — the ``server_default
     '1'`` is what MySQL applies to existing rows on ``ADD COLUMN``.
     """
-    async for db in get_db():
+    async for db in _session():
         result = await db.execute(
             text(
                 "SELECT COUNT(*) AS n FROM user_notification_preferences "

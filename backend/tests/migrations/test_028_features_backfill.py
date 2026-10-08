@@ -14,7 +14,7 @@ import os
 from sqlalchemy import select, text
 import pytest
 
-from app.database import get_db
+from app.database import _session
 from app.models.subscription import Plan
 
 pytestmark = pytest.mark.skipif(
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_seeded_plans_have_canonical_features():
-    async for db in get_db():
+    async for db in _session():
         plans = (await db.execute(select(Plan).order_by(Plan.slug))).scalars().all()
         assert len(plans) >= 2, "expected Free + Pro seed plans"
 
@@ -48,7 +48,7 @@ async def test_seeded_plans_have_canonical_features():
 @pytest.mark.asyncio
 async def test_features_stored_as_json_object_not_string():
     """MySQL-only: JSON_TYPE must report OBJECT, not STRING."""
-    async for db in get_db():
+    async for db in _session():
         result = await db.execute(text(
             "SELECT id, JSON_TYPE(features) AS json_type FROM plans"
         ))

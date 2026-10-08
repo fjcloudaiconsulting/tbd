@@ -1,6 +1,7 @@
 from urllib.parse import urlparse
 
 import structlog
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -89,9 +90,21 @@ logger.debug(
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
-async def get_db():
+async def _session():
     async with async_session() as session:
         try:
             yield session
         finally:
             await session.close()
+
+
+# INFRA-128: since FastAPI 0.118 a request-scoped yield dependency exits only
+# after the response has run its BackgroundTasks, so the session (and an open
+# transaction's pooled connection) stayed checked out during a background email
+# send. scope="function" closes it when the handler returns. get_db itself is a
+# plain coroutine so every `Depends(get_db)` shares one cached session per
+# request; nothing else may `Depends(_session)` (another key, another session).
+# The session is closed once the handler returns: a yield dependency or streaming body that
+# needs the DB after that must open its own session from `async_session`.
+async def get_db(session: AsyncSession = Depends(_session, scope="function")) -> AsyncSession:
+    return session
