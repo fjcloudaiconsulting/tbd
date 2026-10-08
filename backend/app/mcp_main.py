@@ -42,6 +42,7 @@ from app import rate_limit_db, redis_client
 from app.agent import actions, registry
 from app.agent.auth import authenticate_agent_token, www_authenticate
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
+from app.config import settings
 from app.database import async_session, engine
 from app.logging import setup_logging
 from app.rate_limit import rate_limit_key
@@ -57,6 +58,22 @@ METER = "mcp.calls"
 MAX_BODY = 64 * 1024
 IP_AUTH_FAILURES_PER_MIN = 300
 REQUESTS_PER_MIN = 300  # per token, every request (tools/call also draws gate 6)
+
+
+def refuse_platform_ai_keys() -> None:
+    """TBD-586 F-N3: the MCP process never dispatches AI, so a house key in
+    its environment is a misconfiguration. Refuse to boot, naming the variable
+    (never the value)."""
+    for name in (
+        "platform_ai_openrouter_api_key", "platform_ai_openai_api_key",
+        "platform_ai_anthropic_api_key", "platform_ai_gemini_api_key",
+    ):
+        if getattr(settings, name):
+            raise RuntimeError(f"{name.upper()} must not be set on the mcp component")
+
+
+refuse_platform_ai_keys()
+
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")  # latest first
 SERVER_INFO = {"name": "the-better-decision", "version": "1"}
 
