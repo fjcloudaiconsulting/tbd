@@ -168,6 +168,7 @@ def _live_routes() -> dict[tuple[str, str], object]:
 
 _BENIGN = {
     ("app.database", "get_db"),
+    ("app.database", "_session"),
     ("app.deps", "get_current_user"),
     ("app.deps", "get_session_factory"),
 }
