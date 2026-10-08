@@ -130,7 +130,7 @@ def _make_app(factory, user_id: int) -> FastAPI:
 
 @pytest.mark.asyncio
 async def test_gb9_transfer_route_absent_from_the_app(session_factory):
-    """/api/v1/budgets/transfer is gone from app.routes, and the positive
+    """/api/v1/budgets/transfer is gone from the app's routes, and the positive
     control (/rebalance IS present) rules out a check aimed at an empty
     route table."""
     paths = {getattr(r, "path", None) for r in effective_routes(full_app)}

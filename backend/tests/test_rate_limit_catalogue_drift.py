@@ -299,7 +299,7 @@ def _path_param_routes_with_limits() -> dict[str, dict]:
     one of the five known routes carries its parameter in the prefix.
 
     So the inventory is taken from the two things that cannot disagree with
-    production: FastAPI's assembled ``app.routes`` (the real resolved path, all
+    production: the app's effective routes (``tests/app_routes.py``: the real resolved path, all
     routers, all mount styles) and slowapi's own ``_route_limits`` / ``_dynamic_route_limits`` registries
     (populated by the decorator itself, whatever the module named it).
     ``Limit.scope`` is ``""`` for a plain ``limit`` and the scope string for a

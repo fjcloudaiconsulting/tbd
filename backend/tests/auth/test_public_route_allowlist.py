@@ -60,14 +60,14 @@ Why the app import is safe
 ``_run_migrations()`` and the scheduler task are both created **inside** the
 FastAPI lifespan, never at module import; ``create_async_engine`` is lazy and
 does not connect. The one rule is therefore: **never enter the lifespan.**
-Read ``app.routes``; never ``with TestClient(app)``. ``from app.main import
+Read the routes (``tests/app_routes.py``); never ``with TestClient(app)``. ``from app.main import
 app`` stays inside the test bodies because ``main.py`` calls
 ``setup_logging()`` at import.
 
 Maintaining this file
 ---------------------
 :data:`PUBLIC_ROUTES` is typed by hand and must stay that way. Never seed it
-from app state (``[r for r in app.routes if not authed(r)]``) and never parse
+from app state (``[r for r in effective_routes(app) if not authed(r)]``) and never parse
 it out of CONTRIBUTING.md — both produce a tautologically green guard that
 enforces nothing. If this test goes red, the fix is a security review of the
 new route followed by an explicit edit here **and** to CONTRIBUTING.md's
@@ -239,7 +239,7 @@ def _enumerate() -> dict[str, Any]:
 
     Imports live in here, not at module scope: ``app.main`` runs
     ``setup_logging()`` on import. The lifespan is never entered — we only
-    read ``app.routes``.
+    read its routes.
     """
     from fastapi.routing import APIRoute
 
@@ -388,7 +388,9 @@ def test_p5_non_apiroute_entries_are_known():
     are asserted against a known set instead of being filtered away.
     """
     other = _enumerate()["other_routes"]
-    paths = {getattr(r, "path", repr(r)) for r in other}
+    # FastAPI 0.143 leaves ``path`` empty on a websocket inside an included
+    # router; fall back to the declared route so the failure names it.
+    paths = {getattr(r, "path", None) or repr(r.route) for r in other}
     unexpected = sorted(paths - KNOWN_NON_API_ROUTE_PATHS)
     assert not unexpected, (
         f"unrecognised non-APIRoute entries on the app: {unexpected}. These "
