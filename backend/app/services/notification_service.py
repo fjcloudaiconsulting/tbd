@@ -786,8 +786,7 @@ async def get_preferences(
     Auto-creates the row on first read with the default values when
     no row exists. Commits the insert through the request's session
     so the row survives the request even though the caller doesn't
-    explicitly commit (FastAPI's ``get_db`` dep commits at request
-    end on success).
+    explicitly commit (``get_db`` never commits; it only closes).
     """
     stmt = select(UserNotificationPreferences).where(
         UserNotificationPreferences.user_id == user_id

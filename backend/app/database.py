@@ -98,13 +98,10 @@ async def _session():
             await session.close()
 
 
-# INFRA-128: since FastAPI 0.118 a request-scoped yield dependency exits only
-# after the response has run its BackgroundTasks, so the session (and an open
-# transaction's pooled connection) stayed checked out during a background email
-# send. scope="function" closes it when the handler returns. get_db itself is a
-# plain coroutine so every `Depends(get_db)` shares one cached session per
-# request; nothing else may `Depends(_session)` (another key, another session).
-# The session is closed once the handler returns: a yield dependency or streaming body that
-# needs the DB after that must open its own session from `async_session`.
+# A request-scoped yield dependency exits only after BackgroundTasks have run,
+# so the session closes when the handler returns instead (INFRA-128). get_db is
+# a plain coroutine so every `Depends(get_db)` shares one cached session; never
+# `Depends(_session)` elsewhere (another cache key, another session). Code that
+# needs the DB after the handler returns opens its own session.
 async def get_db(session: AsyncSession = Depends(_session, scope="function")) -> AsyncSession:
     return session
