@@ -342,7 +342,8 @@ async def test_byok_dispatch_never_reserves_and_is_org_key(db, sf, fake, spy):
 async def test_k13_byok_bodies_are_byte_identical_no_bound_no_extras(db, sf, fake, spy, entry):
     await set_platform(db)
     org = await mk_org(db)
-    cred = OrgAICredential(org_id=org, provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-byok"))
+    cred = OrgAICredential(org_id=org, provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-byok"),
+                           discovered_capabilities=["chat", "structured_output", "function_call", "stream"])
     db.add(cred)
     await db.flush()
     db.add(OrgAIDefaultRouting(org_id=org, credential_id=cred.id, model="gpt-4o-mini"))
