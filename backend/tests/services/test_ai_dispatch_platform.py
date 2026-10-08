@@ -423,8 +423,8 @@ async def test_f_q3_byok_spend_does_not_reduce_the_platform_allowance(db, sf, fa
     org, cred = await setup(db)
     for cid in (cred.id, None):
         db.add(AIUsageLedger(org_id=org, credential_id=cid, feature_key="chat", model="gpt-4o",
-                             prompt_tokens=1, completion_tokens=1, total_tokens=2,
-                             est_cost_cents=500, latency_ms=1, success=True, billing_source="org_key"))
+                             prompt_tokens=1, completion_tokens=1, total_tokens=10**6,
+                             est_cost_cents=600, latency_ms=1, success=True, billing_source="org_key"))
     await db.commit()
     await _chat(db, org)
     assert len(fake.reqs) == 1
