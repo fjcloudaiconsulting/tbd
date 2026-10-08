@@ -52,6 +52,7 @@ from app.routers.plans import router as plans_router
 from app.routers.admin_roles import router as admin_roles_router
 from app.routers.admin_users import router as admin_users_router
 from app.routers.agent_tokens import router as agent_tokens_router
+from app.routers.ai_providers import router as ai_providers_router
 from app.routers.api_tokens import router as api_tokens_router
 from app.routers.auth import router as auth_router
 from app.routers.org_data import router as org_data_router
@@ -132,6 +133,10 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/admin/broadcasts/1/resume"),   # resume_broadcast
     ("POST", "/api/v1/admin/broadcasts/1/dry-run"),  # dry_run_broadcast (sends real email)
     ("DELETE", "/api/v1/admin/broadcasts/1"),        # delete_broadcast (draft-only)
+    # TBD-586. Platform AI spends platform money: the operator settings and an
+    # org turning a provider on. Turning it off stays PAT-reachable on purpose.
+    ("PUT", "/api/v1/admin/platform-ai"),            # set_platform_ai
+    ("POST", "/api/v1/settings/ai-providers/platform/openai"),  # enable_platform
     # ── Follow-up: 3 more routes (Task-5 review, defense-in-depth) ──────────
     ("PATCH", "/api/v1/orgs/1/rename"),              # rename_org_endpoint
     ("POST", "/api/v1/orgs/invitations"),            # create_invitation (grants a role)
@@ -208,6 +213,7 @@ def app(factory):
             orgs_router,
             org_members_router,
             plans_router,
+            ai_providers_router,
         ],
         override_session_factory=True,
     )

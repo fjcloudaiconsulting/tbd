@@ -23,6 +23,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app._time import utcnow_naive
 from app.auth.feature_catalog import PlanUsageLimits
 from app.config import settings as app_settings
 from app.models import Base
@@ -36,16 +37,15 @@ from app.models.subscription import Plan, Subscription, SubscriptionStatus
 from app.models.system_setting import SystemSetting
 from app.models.usage_counter import UsageCounter
 from app.models.user import Organization
-from app.services import agent_chat, ai_dispatch, platform_ai, platform_reserve
+from app.services import agent_chat, ai_consent_service, ai_dispatch, platform_ai, platform_reserve
 from app.services.ai_credential_crypto import encrypt
-from app._time import utcnow_naive
 from app.services.ai_dispatch import (
-    PlatformConsentRequired,
     AICapabilityNotSupported,
     AIDispatchFailed,
     AIPlanLimitReached,
     AIPlatformProjectionFailed,
     AIPlatformUnavailable,
+    PlatformConsentRequired,
     http_for_dispatch_error,
 )
 from app.services.ai_pricing import MODEL_PRICING, ModelPricing, estimate_cost_cents
@@ -1138,7 +1138,35 @@ async def test_b2a_a_model_outside_the_provider_is_refused_before_reserve(db, sf
     await set_platform(db, models={"anthropic": ["gpt-4o"]})
     org = await mk_org(db)
     await mk_platform(db, org, "anthropic", "gpt-4o")
-    with pytest.raises(NativeNotAvailable):
+    await _revoke(db, org)  # the model refusal answers before the consent read
+    with pytest.raises(NativeNotAvailable) as ei:
+        await _chat(db, org)
+    assert ei.value.code == "platform_model_not_allowed"
+    assert fake.reqs == [] and spy == [] and await counters(sf, org) == {} and await spend(sf) == 0
+
+
+
+async def test_consent_read_db_error_is_platform_unavailable(db, sf, fake, spy, monkeypatch):
+    org, _ = await setup(db)
+
+    async def boom(*a, **k):
+        raise OperationalError("select", {}, Exception("db down"))
+
+    monkeypatch.setattr(ai_consent_service, "has_current_consent", boom)
+    with pytest.raises(AIPlatformUnavailable):
         await _chat(db, org)
     assert fake.reqs == [] and spy == [] and await counters(sf, org) == {} and await spend(sf) == 0
 
+
+async def test_r2_3_mid_chat_consent_refusal_reports_its_own_code(db, sf, fake, monkeypatch, chat_env):
+    org, _ = await setup(db, extra={"assistant.turns": {"period": "day", "limit": 5}})
+    answers = iter([True, False])
+
+    async def consent(*a, **k):
+        return next(answers)
+
+    monkeypatch.setattr(ai_consent_service, "has_current_consent", consent)
+    monkeypatch.setattr(agent_chat, "release_lock", lambda *a, **k: asyncio.sleep(0))
+    await agent_chat.preflight(db, SimpleNamespace(org_id=org), MSGS, TOOLS)
+    body = "".join([ev async for ev in agent_chat.stream_turn(lambda: db, 1, org, "n", MSGS, TOOLS)])
+    assert '"code":"ai_consent_required"' in body and "ai_native_not_available" not in body

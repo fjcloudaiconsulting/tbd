@@ -31,7 +31,7 @@ from app.models.subscription import Plan, Subscription, SubscriptionStatus
 from app.models.system_setting import SystemSetting
 from app.models.user import Organization, Role, User
 from app.routers import ai_providers
-from app.services import ai_credential_service, platform_ai
+from app.services import ai_credential_service, feature_service, platform_ai
 from app.services.ai_providers import ValidateResult
 from app.services.usage_service import PlanLimitReached
 
@@ -247,6 +247,17 @@ async def test_p1_second_post_is_409(sf, org):
 
 async def test_p1_unknown_provider_is_422(sf, org):
     assert client(sf, org[1]).post(f"{BASE}/platform/native").status_code == 422
+
+
+async def test_p1_entitlements_error_is_402_not_500(sf, org, monkeypatch):
+    async def boom(*a, **k):
+        raise KeyError("platform_ai.tokens")
+
+    monkeypatch.setattr(feature_service, "get_entitlements", boom)
+    r = client(sf, org[1]).post(f"{BASE}/platform/openai")
+    assert r.status_code == 402, r.text
+    assert r.json()["detail"]["code"] == "platform_ai_unavailable"
+    assert await platform_rows(sf) == []
 
 
 # ---- P2 --------------------------------------------------------------------

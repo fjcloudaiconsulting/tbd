@@ -34,13 +34,13 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, String
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import settings
 from app.database import get_db
 from app.auth.pat import require_interactive_session
 from app.deps import get_current_user, get_session_factory
 from app.models.settings import OrgSetting
 from app.models.system_setting import SystemSetting
 from app.models.user import Organization, User
-from app.config import settings
 from app.rate_limit import get_client_ip
 from app.services import audit_service, platform_ai, platform_ai_settings
 from app.services.feature_gate import (

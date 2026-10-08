@@ -221,6 +221,7 @@ async def enable_platform(
     return OrgAICredentialResponse.model_validate(row)
 
 
+# Deliberately no interactive-session requirement: an org can always turn platform AI off.
 @router.delete(
     "/platform/{platform_provider}",
     status_code=status.HTTP_204_NO_CONTENT,
