@@ -72,7 +72,7 @@ function highlighted(): string[] {
     .map((el) => `${el.getAttribute("data-testid")}:${el.getAttribute("data-description")}`);
 }
 
-let scrollIntoView: ReturnType<typeof vi.fn>;
+let scrollIntoView: ReturnType<typeof vi.fn<(arg?: boolean | ScrollIntoViewOptions) => void>>;
 
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();

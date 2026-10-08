@@ -128,7 +128,7 @@ function listUrlsAfter(
 
 describe("TransactionsPage — dashboard deep links", () => {
   const useAuthMock = vi.mocked(useAuth);
-  let scrollIntoView: ReturnType<typeof vi.fn>;
+  let scrollIntoView: ReturnType<typeof vi.fn<(arg?: boolean | ScrollIntoViewOptions) => void>>;
 
   beforeEach(() => {
     searchParamsState.value = new URLSearchParams();

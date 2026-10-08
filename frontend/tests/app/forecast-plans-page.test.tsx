@@ -1,6 +1,7 @@
 import React from "react";
 import {
   renderWithSWR,
+  act,
   fireEvent,
   screen,
   waitFor,
@@ -381,12 +382,12 @@ describe("ForecastPlansClient — rosters where the period rules diverge (TBD-24
     });
   });
 
-  it("guard: does not label a calendar-containing CLOSED stub as current", () => {
+  it("guard: does not label a calendar-containing CLOSED stub as current", async () => {
     // Kills: deciding `isCurrentPeriod` by calendar containment
     // (`start <= today && (!end || end >= today)`) instead of the classifier's
     // `open` branch. This stub calendar-contains today but is closed, so the
     // backend would open a fresh period rather than write here.
-    mockApiFetch(makePlan());
+    mockApiFetchWithRoster(makePlan(), [CONTAINING_STUB]);
     renderWithSWR(
       <ForecastPlansClient
         initialPeriods={[CONTAINING_STUB]}
@@ -394,13 +395,14 @@ describe("ForecastPlansClient — rosters where the period rules diverge (TBD-24
         initialPlan={null}
       />,
     );
+    await act(async () => {}); // let the mount-fired ensure-future settle inside act
     expect(screen.queryByText("current")).toBeNull();
   });
 
-  it("guard: still labels a genuinely open row as current", () => {
+  it("guard: still labels a genuinely open row as current", async () => {
     // The other half of the pair above: without it, that test would also pass
     // against a component that never renders the pill at all.
-    mockApiFetch(makePlan());
+    mockApiFetchWithRoster(makePlan(), [LAPSED_OPEN]);
     renderWithSWR(
       <ForecastPlansClient
         initialPeriods={[LAPSED_OPEN]}
@@ -408,6 +410,7 @@ describe("ForecastPlansClient — rosters where the period rules diverge (TBD-24
         initialPlan={null}
       />,
     );
+    await act(async () => {});
     expect(screen.getByText("current")).toBeTruthy();
   });
 

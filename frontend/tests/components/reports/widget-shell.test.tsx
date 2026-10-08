@@ -12,6 +12,11 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import WidgetShell from "@/components/reports/WidgetShell";
 import type { BarWidget, WidgetFilters } from "@/lib/reports/types";
 
+// The chips read the source catalog via SWR; unmocked, its fetch rejection lands after the test and escapes act().
+vi.mock("@/lib/reports/use-report-sources", () => ({
+  useReportSources: () => ({ sources: [], isLoading: false }),
+}));
+
 function barWith(filters: WidgetFilters): BarWidget {
   return {
     id: "w1",

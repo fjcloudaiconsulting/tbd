@@ -38,7 +38,8 @@ console.error = function patchedConsoleError(this: unknown, ...args: unknown[]) 
 // Hand this file's tally to the main process. `task.meta` is serialised back
 // by Vitest; the reporter keys it by module path. Module state is per test
 // file under the default `isolate: true`, which is exactly the scope wanted.
-afterAll((suite) => {
+// eslint-disable-next-line no-empty-pattern -- Vitest 4 requires a destructured 1st arg; the suite is the 2nd
+afterAll(({}, suite) => {
   if (counts.size === 0) return;
   // Vitest types `meta` as its own TaskMeta interface; widening it here rather
   // than annotating the parameter, because annotating it does not satisfy
