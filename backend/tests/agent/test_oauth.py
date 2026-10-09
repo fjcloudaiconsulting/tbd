@@ -495,7 +495,7 @@ async def test_f_o7_consent_needs_an_interactive_session(factory, client):
     "javascript:alert(1)", "data:text/html,x", "file:///etc/passwd", "http://evil.com/cb",
     "https://claude.ai/cb#frag", "https://user:pw@claude.ai/cb", "http://127.0.0.1.evil.com/cb",
     "http://localhost.evil.com/cb", "https:///cb", "ftp://x.example/cb", "myapp:/cb",
-    "https://claude.ai/" + "a" * 512, "https://claude.ai/c b",
+    "https://claude.ai/" + "a" * 512, "https://claude.ai/c b", "https://claude.ai/\u00e9",
 ])
 async def test_f_o9_dcr_refuses_unsafe_redirects(client, uri):
     """FENCE F-O9 (+S13). Wrong implementation: scheme check absent, or a
@@ -995,3 +995,18 @@ async def test_expired_oauth_access_is_not_audited(factory, client):
     await _lapse_access(factory, g["uid"])
     await _dead(factory, g["access_token"])
     assert await _audits(factory, "api_token.auth_rejected") == []
+
+
+async def test_state_must_be_printable_ascii_and_short(factory, client):
+    """RFC 6749 state is VSCHAR: a longer or non-ASCII state is refused and
+    never echoed (the error redirect still carries ``iss``)."""
+    org = await _org(factory, "A")
+    h = await _jwt(factory, await _user(factory, org, "m"))
+    cid = await _cid(client)
+    _, challenge = _pkce()
+    for state in ("été", "s" * 1025):
+        r = await client.get(CTX, params=_params(cid, challenge, state=state), headers=h)
+        assert (r.status_code, r.json()["detail"]["code"]) == (400, "invalid_request")
+        assert _q(r.json()["detail"]["redirect_to"]) == {"error": "invalid_request", "iss": APP}
+    r = await client.get(CTX, params=_params(cid, challenge, state="s" * 1024), headers=h)
+    assert r.status_code == 200

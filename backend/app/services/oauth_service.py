@@ -148,10 +148,10 @@ def classify_redirect(uri: Any) -> tuple[str, str]:
 
     https needs a host; http only on an exact loopback host, any port
     (RFC 8252 7.3); a private-use scheme must contain a dot (RFC 8252 7.1).
-    No fragment, no userinfo, no whitespace or control characters."""
+    No fragment, no userinfo, ASCII only, no whitespace or control characters."""
     if (
         not isinstance(uri, str) or not uri or len(uri) > MAX_URI_LEN or "#" in uri
-        or any(ord(c) <= 0x20 or ord(c) == 0x7F for c in uri)
+        or not uri.isascii() or any(ord(c) <= 0x20 or ord(c) == 0x7F for c in uri)
     ):
         raise _bad_uri()
     try:
@@ -299,7 +299,11 @@ async def validate_consent(
     if not _redirect_registered(client, redirect):
         raise ConsentError("invalid_redirect_uri")
     state = p.get("state")
-    echo = state if isinstance(state, str) and len(state) <= MAX_STATE_LEN else None
+    # RFC 6749 state is printable ASCII (VSCHAR); anything else is not echoed.
+    echo = state if (
+        isinstance(state, str) and len(state) <= MAX_STATE_LEN
+        and all(0x20 <= ord(c) <= 0x7E for c in state)
+    ) else None
 
     def fail(code: str) -> ConsentError:
         return ConsentError(code, build_redirect(redirect, {"error": code}, echo))
