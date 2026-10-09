@@ -168,7 +168,12 @@ def test_promote_retags_exactly_the_images_test_yml_publishes():
     assert promoted == published
     assert promoted >= {"backend", "frontend", "migrations", "mcp"}
     assert test_jobs["backend-images"]["with"]["file"] == "${{ matrix.file }}"
-    assert {e["image"]: e.get("file") for e in matrix}["mcp"] == "backend/Dockerfile.mcp"
+    # Only mcp names a file; a `file` on backend/migrations publishes another image under their name.
+    assert {e["image"]: e.get("file") for e in matrix} == {
+        "backend": None,
+        "migrations": None,
+        "mcp": "backend/Dockerfile.mcp",
+    }
 
 
 def test_release_runs_are_serialised_and_never_cancelled():
