@@ -3,10 +3,8 @@ state_db contract on SQLite. The races run on real MySQL in
 tests/test_state_db_mysql.py."""
 from __future__ import annotations
 
-from sqlalchemy import func, text
-
 from app import state_db as s
-from tests.conftest import expire_family, expire_grace, expire_lease, expire_token, state_family, state_jtis
+from tests.conftest import seconds_until, expire_family, expire_grace, expire_lease, expire_token, state_family, state_jtis
 
 TTL = 3600
 
@@ -130,19 +128,39 @@ def test_f10_family_keeps_at_most_keep_members(monkeypatch):
         assert s._rotate(f"j{i}", f"j{i + 1}", "sid1", 7, TTL) == s.SESSION_ROTATE_OK
     assert state_jtis("sid1") == {"j3", "j4", "j5"}
     expire_grace("sid1")
-    assert s._detect_reuse_and_revoke("j0", "sid1") == (s.SESSION_REUSE_UNKNOWN,)
-    assert s._detect_reuse_and_revoke("j3", "sid1") == (s.SESSION_REUSE_REUSED, 3)
+    # j0 was pruned: still reuse (an attacker cannot rotate a victim's jti out of detection)
+    assert s._detect_reuse_and_revoke("j0", "sid1") == (s.SESSION_REUSE_REUSED, 6)
+    assert state_family("sid1") is None
+
+
+def test_f10b_non_member_of_an_unpruned_family_is_unknown(monkeypatch):
+    monkeypatch.setattr(s, "_KEEP_MEMBERS", 3)
+    _new(jti="j0")
+    s._rotate("j0", "j1", "sid1", 7, TTL)
+    assert s._detect_reuse_and_revoke("never-issued", "sid1") == (s.SESSION_REUSE_UNKNOWN,)
+    assert state_family("sid1") is not None
+
+
+def test_f12_families_per_user_are_capped(monkeypatch):
+    monkeypatch.setattr(s, "_MAX_FAMILIES_PER_USER", 2)
+    s._issue("a", "s1", 7, 100)
+    s._issue("b", "s2", 7, 200)
+    s._issue("x", "other", 8, 50)
+    s._issue("c", "s3", 7, 300)
+    assert state_family("s1") is None and state_jtis("s1") == set()
+    assert state_family("s2") is not None and state_family("s3") is not None
+    assert state_family("other") is not None
+
+
+def test_f12b_sign_in_never_evicts_its_own_family(monkeypatch):
+    monkeypatch.setattr(s, "_MAX_FAMILIES_PER_USER", 1)
+    s._issue("a", "s1", 7, 5000)
+    s._issue("b", "s2", 7, 100)  # shorter TTL than the older family
+    assert state_family("s2") is not None
 
 
 def _seconds_left(sid):
-    from sqlalchemy import select
-
-    with s._engine.connect() as c:
-        if c.dialect.name == "sqlite":
-            q = select((func.julianday(s._F.c.expires_at) - func.julianday(s.db_now())) * 86400)
-        else:
-            q = select(func.timestampdiff(text("SECOND"), s.db_now(), s._F.c.expires_at))
-        return c.execute(q.where(s._F.c.sid == sid)).scalar()
+    return seconds_until(s._F.c.expires_at, s._F.c.sid == sid)
 
 
 def test_f11_issue_and_rotate_set_the_family_ttl():

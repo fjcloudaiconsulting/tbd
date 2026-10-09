@@ -1,13 +1,11 @@
-"""Refresh sessions, single-use tokens and leases in MySQL: sessions move to
-MySQL (INFRA-122).
+"""Refresh sessions, single-use tokens and leases in MySQL (INFRA-122).
 
 The only place this SQL lives. Sync, short transactions on an own engine (same
-builder as the rate limits, own pool); async callers await the public
-coroutines, which run the sync core in ``asyncio.to_thread``. Every expiry is
-the database clock (``db_now``), never the app clock.
+builder as the rate limits, own pool) and an own executor; async callers await
+the public coroutines. Every expiry is the database clock (``db_now``), never
+the app clock.
 
-Session families (spec 2026-05-17 backend session model, formerly Lua):
-the family row (sid) is locked FOR UPDATE first by every write, so two
+Session families: the family row (sid) is locked FOR UPDATE first by every write, so two
 refreshes, a logout and a reuse detection on one family serialize on it; every
 guard after that lock is a locking read. The revoke is the family row being
 gone; a rotated-out jti's 30 s grace is bounded by its successor's insert time.
@@ -110,9 +108,12 @@ SESSION_REUSE_REUSED = "reused"
 # A revoked family larger than this is logged (the revoke still happens).
 REUSE_REVOKE_FAMILY_SIZE_WARN_THRESHOLD = 10000
 # Members kept per family. /refresh is unlimited (TBD-353), so without a cap
-# a looping client grows one family without bound. A jti rotated out more than
-# this many rotations ago reads as unknown (401, no revoke) instead of reuse.
+# a looping client grows one family without bound. A pruned jti presented again
+# is still reuse (see _detect_reuse_and_revoke).
 _KEEP_MEMBERS = 1000
+# Live families kept per user (one per sign-in); older ones are evicted on the
+# next sign-in, which bounds the rows one account can hold.
+_MAX_FAMILIES_PER_USER = 50
 
 _live = _F.c.expires_at > db_now()
 _S = _M.alias("successor")
@@ -148,6 +149,11 @@ def _member_seq(c: Connection, sid: str, jti: str) -> int | None:
     ).scalar()
 
 
+def _drop_families(c: Connection, sids: list[str]) -> None:
+    c.execute(delete(_M).where(_M.c.sid.in_(sids)))
+    c.execute(delete(_F).where(_F.c.sid.in_(sids)))
+
+
 def _purge_families() -> None:
     try:
         with _engine.begin() as c:
@@ -158,8 +164,7 @@ def _purge_families() -> None:
                 .with_for_update(skip_locked=True)
             ).scalars().all()
             if stale:
-                c.execute(delete(_M).where(_M.c.sid.in_(stale)))
-                c.execute(delete(_F).where(_F.c.sid.in_(stale)))
+                _drop_families(c, stale)
     except SQLAlchemyError as exc:  # the session itself is committed
         logger.warning("auth.session.purge_failed", error_class=type(exc).__name__)
 
@@ -172,6 +177,18 @@ def _issue(jti: str, sid: str, user_id: int, ttl_seconds: int) -> None:
             )
         )
         c.execute(insert(_M).values(jti=jti, sid=sid, seq=0, created_at=db_now()))
+        evict = c.execute(
+            select(_F.c.sid)
+            # skip-locked families (mid-rotation) drop out of the count: at worst a
+            # live session is evicted early and signs in again
+            .where(_F.c.user_id == user_id, _F.c.sid != sid)
+            .order_by(_F.c.expires_at.desc())
+            .offset(_MAX_FAMILIES_PER_USER - 1)  # the new family is the other one kept
+            .limit(20)
+            .with_for_update(skip_locked=True)
+        ).scalars().all()
+        if evict:
+            _drop_families(c, evict)
     _purge_families()
 
 
@@ -280,14 +297,16 @@ def _detect_reuse_and_revoke(jti: str, sid: str) -> tuple[str, int] | tuple[str]
             return (SESSION_REUSE_UNKNOWN,)
         if fam.head_jti == jti:
             return (SESSION_REUSE_LIVE,)
-        if _member_seq(c, sid, jti) is None:
+        if _member_seq(c, sid, jti) is None and fam.rotations < _KEEP_MEMBERS:
             return (SESSION_REUSE_UNKNOWN,)
+        # past this point a non-member is a pruned jti (consumed long ago): reuse
         graced = c.execute(
             select(1).select_from(_M.join(_F, _M.c.sid == _F.c.sid)).where(_M.c.jti == jti, _graced())
         ).first()
         if graced is not None:
             return (SESSION_REUSE_GRACE,)
-        count = len(_delete_family(c, sid))
+        _delete_family(c, sid)
+        count = fam.rotations + 1  # every jti ever issued, pruned ones included
     if count > REUSE_REVOKE_FAMILY_SIZE_WARN_THRESHOLD:
         logger.warning(
             "auth.session.reuse_revoke.large_family",

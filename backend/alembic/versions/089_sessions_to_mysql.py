@@ -40,6 +40,7 @@ def upgrade() -> None:
         sa.Column("expires_at", _ts(), nullable=False),
     )
     op.create_index("ix_auth_session_families_expires_at", "auth_session_families", ["expires_at"])
+    op.create_index("ix_auth_session_families_user_id", "auth_session_families", ["user_id"])
     op.create_table(
         "auth_session_members",
         sa.Column("jti", _id(), primary_key=True),

@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from app import state_db
+from app.routers import auth as auth_module
 from app.database import get_db
 from app.deps import get_session_factory
 from app.models import Base
@@ -61,6 +62,7 @@ from app.routers.auth import (
 from app.security import create_refresh_token, decode_refresh_jti_sid, hash_password
 
 from tests.conftest import expire_grace, set_refresh_cookie
+from tests.routers.test_refresh_logging_and_precedence import _LogRecorder
 
 
 PASSWORD = "starting-password-1"
@@ -464,12 +466,14 @@ async def test_refresh_grace_branch_rejects_when_family_deleted(
 
 
 async def test_refresh_grace_branch_rejects_on_sid_mismatch(
-    session_factory
+    session_factory, monkeypatch
 ):
     """Defence against an attacker minting a JWT with someone else's
     jti + their own sid. The graced jti's stored sid must match the
     JWT's sid claim."""
     seeded = await _seed_user(session_factory)
+    recorder = _LogRecorder()
+    monkeypatch.setattr(auth_module, "_LOGGER", recorder)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         token = _login(client)
@@ -478,7 +482,10 @@ async def test_refresh_grace_branch_rejects_on_sid_mismatch(
         set_refresh_cookie(client, token)
         r1 = client.post("/api/v1/auth/refresh")
         assert r1.status_code == 200
-        # A JWT with the graced jti but another sid.
+        # A JWT with the graced jti but the sid of ANOTHER live family, so
+        # the grace branch's family check passes and only the binding
+        # check can reject.
+        state_db._issue("other-family-jti", "deadbeef-not-the-real-sid", seeded["user_id"], 3600)
         token, _, _ = create_refresh_token(
             seeded["user_id"], sid="deadbeef-not-the-real-sid", jti=old_jti
         )
@@ -486,6 +493,10 @@ async def test_refresh_grace_branch_rejects_on_sid_mismatch(
         set_refresh_cookie(client, token)
         res = client.post("/api/v1/auth/refresh")
     assert res.status_code == 401
+    reasons = [
+        ev["reason"] for ev in recorder.events if ev.get("event") == "auth.refresh.rejected"
+    ]
+    assert reasons == ["row_binding_mismatch"], reasons
 
 
 # ── 8. jti_collision: forced single-collision RNG retries and succeeds ──────

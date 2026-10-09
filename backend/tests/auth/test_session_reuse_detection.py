@@ -48,6 +48,7 @@ from app.models import Base
 from app.models.audit_event import AuditEvent
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
+from app.routers import auth as auth_module
 from app.routers.auth import (
     LEGACY_REFRESH_COOKIE_PATH,
     SESSION_EXPIRED_DETAIL,
@@ -61,6 +62,7 @@ from app.security import (
 )
 
 from tests.conftest import expire_grace, set_refresh_cookie, state_family, state_jtis
+from tests.routers.test_refresh_logging_and_precedence import _LogRecorder
 
 
 PASSWORD = "starting-password-1"
@@ -382,6 +384,8 @@ async def test_non_both_miss_401_does_not_revoke(
     monkeypatch.setattr(state_db, "session_detect_reuse_and_revoke", _spy)
 
     seeded = await _seed_user(session_factory)
+    recorder = _LogRecorder()
+    monkeypatch.setattr(auth_module, "_LOGGER", recorder)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         token = _login(client)
@@ -400,6 +404,10 @@ async def test_non_both_miss_401_does_not_revoke(
 
     assert res.status_code == 401, res.text
     assert res.json()["detail"] == "Session has been invalidated"
+    reasons = [
+        ev["reason"] for ev in recorder.events if ev.get("event") == "auth.refresh.rejected"
+    ]
+    assert reasons == ["row_binding_mismatch"], reasons
     # Reuse detection was NEVER called.
     assert calls["n"] == 0
     # Family intact, no reuse audit.
@@ -561,7 +569,17 @@ async def test_concurrent_both_miss_reuse_is_exactly_once(
     outcomes: list[tuple] = []
     real_wrapper = state_db.session_detect_reuse_and_revoke
 
+    n = 5
+    arrived = {"n": 0}
+    all_here = asyncio.Event()
+
     async def _spy_wrapper(jti, sid):
+        # Hold every caller until all N have reached the detection, so the
+        # requests truly overlap. Event gating only, never ``asyncio.sleep``.
+        arrived["n"] += 1
+        if arrived["n"] >= n:
+            all_here.set()
+        await asyncio.wait_for(all_here.wait(), timeout=5)
         result = await real_wrapper(jti, sid)
         outcomes.append(result)
         return result
@@ -594,7 +612,6 @@ async def test_concurrent_both_miss_reuse_is_exactly_once(
     expire_grace(sid)
     assert old_jti in state_jtis(sid)
 
-    n = 5
     async with _httpx_app_client(app) as ac:
         set_refresh_cookie(ac, token)
 

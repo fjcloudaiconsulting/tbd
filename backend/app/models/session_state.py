@@ -35,7 +35,10 @@ class AuthSessionFamily(Base):
     rotations: Mapped[int] = mapped_column(sa.Integer, nullable=False, server_default="0")
     expires_at: Mapped[datetime] = mapped_column(ts6(), nullable=False)
 
-    __table_args__ = (sa.Index("ix_auth_session_families_expires_at", "expires_at"),)
+    __table_args__ = (
+        sa.Index("ix_auth_session_families_expires_at", "expires_at"),
+        sa.Index("ix_auth_session_families_user_id", "user_id"),
+    )
 
 
 class AuthSessionMember(Base):

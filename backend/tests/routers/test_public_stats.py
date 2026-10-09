@@ -276,3 +276,32 @@ async def test_whitespace_only_exclusions_count_as_empty(
 
     assert res.status_code == 200, res.text
     assert "public.founder_count.no_exclusions" in log_recorder.errors
+
+
+@pytest.mark.asyncio
+async def test_founder_count_cache_hit_skips_db_and_expiry_requeries(
+    session_factory, monkeypatch, exclude_smoke
+):
+    # Miss fills the cache; with the DB then broken a hit still answers from
+    # the cache; once the entry is older than the TTL the DB is queried again
+    # (and its failure degrades to 0).
+    await _seed(session_factory)
+    app = make_test_app(session_factory, routers=public_stats_router)
+    with TestClient(app) as client:
+        assert client.get("/api/v1/public/founder-count").json() == {"count": 2}
+
+        class _BoomDB:
+            async def scalar(self, *args, **kwargs):
+                raise RuntimeError("db down")
+
+        async def _boom_db() -> AsyncIterator[_BoomDB]:
+            yield _BoomDB()
+
+        app.dependency_overrides[get_db] = _boom_db
+        assert client.get("/api/v1/public/founder-count").json() == {"count": 2}
+
+        stamp, count = public_stats._cache
+        monkeypatch.setattr(
+            public_stats, "_cache", (stamp - public_stats._CACHE_TTL_S - 1, count)
+        )
+        assert client.get("/api/v1/public/founder-count").json() == {"count": 0}

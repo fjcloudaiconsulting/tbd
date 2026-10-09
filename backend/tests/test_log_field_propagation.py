@@ -58,52 +58,39 @@ def _parse_lines(buf: io.StringIO) -> list[dict]:
     return [json.loads(line) for line in buf.getvalue().strip().splitlines() if line.strip()]
 
 
-def test_state_db_logger_emits_op_and_request_id(captured_stream) -> None:
-    """Contract: a structured state-store breadcrumb must include both the
-    operator-visible op field and the request_id from contextvars in
-    the rendered JSON. If either is missing in production, the
-    breadcrumbs are useless for correlation."""
-    import app.state_db as rc
+def test_state_db_purge_failure_emits_error_class_and_request_id(
+    captured_stream, state_db_down
+) -> None:
+    """Contract, driven by a real ``state_db`` log: a structured warning
+    carries both its own field (``error_class``) and the ``request_id`` from
+    contextvars in the rendered JSON. The purge swallows the store error and
+    logs it, so a dead engine produces the event."""
+    import app.state_db as sd
 
     structlog.contextvars.bind_contextvars(request_id="req-test-1234")
-    rc.logger.info("state.call.start", op="session_validate")
-    rc.logger.info(
-        "state.call.ok",
-        op="session_validate",
-        duration_ms=2.3,
-    )
-
-    events = _parse_lines(captured_stream)
-    assert len(events) == 2
-    for event in events:
-        assert event["op"] == "session_validate", (
-            f"op field missing from rendered output: {event}"
-        )
-        assert event["request_id"] == "req-test-1234", (
-            f"request_id field missing from rendered output: {event}"
-        )
-    assert events[0]["event"] == "state.call.start"
-    assert events[1]["event"] == "state.call.ok"
-    assert events[1]["duration_ms"] == 2.3
-
-
-def test_state_db_warning_emits_reason_and_request_id(captured_stream) -> None:
-    """Same contract for a ``state.client.retired`` warning
-    — the ``reason`` field must reach the rendered JSON. This was
-    silently broken before the 2026-05-20 logger switch because the
-    stdlib-style ``extra={"reason": ...}`` was dropped by
-    ProcessorFormatter."""
-    import app.state_db as rc
-
-    structlog.contextvars.bind_contextvars(request_id="req-retired-7")
-    rc.logger.warning("state.client.retired", reason="OSError: BrokenPipeError: ...")
+    sd._purge_used_tokens()
 
     events = _parse_lines(captured_stream)
     assert len(events) == 1
     event = events[0]
-    assert event["event"] == "state.client.retired"
-    assert event["reason"] == "OSError: BrokenPipeError: ...", (
-        f"reason field missing from rendered output: {event}"
-    )
-    assert event["request_id"] == "req-retired-7"
+    assert event["event"] == "used_tokens.purge_failed"
+    assert event["error_class"] == "OperationalError", event
+    assert event["request_id"] == "req-test-1234", event
     assert event["level"] == "warning"
+
+
+def test_state_db_family_purge_failure_emits_error_class_and_request_id(
+    captured_stream, state_db_down
+) -> None:
+    """Same contract for the session-family purge warning."""
+    import app.state_db as sd
+
+    structlog.contextvars.bind_contextvars(request_id="req-retired-7")
+    sd._purge_families()
+
+    events = _parse_lines(captured_stream)
+    assert len(events) == 1
+    event = events[0]
+    assert event["event"] == "auth.session.purge_failed"
+    assert event["error_class"] == "OperationalError", event
+    assert event["request_id"] == "req-retired-7", event

@@ -625,6 +625,11 @@ async def test_real_disconnect_waits_for_the_dispatch_then_releases(
             await asyncio.sleep(0.02)
         assert ledger_at_release == ["provider_timeout"]
         assert len(adapter.seen) == 1
+        # the release is a store round trip; the session closes right after it
+        for _ in range(200):
+            if factory.made and factory.made[-1].ledger_at_close is not None:
+                break
+            await asyncio.sleep(0.02)
         assert factory.made and all(s.closed for s in factory.made)
         assert factory.made[-1].ledger_at_close == 1  # closed only after the dispatch landed
     finally:

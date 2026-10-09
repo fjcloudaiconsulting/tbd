@@ -8,7 +8,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app import state_db
-from app.security import create_mfa_challenge_token, create_mfa_email_token
+from tests.conftest import seconds_until
+from app.security import (
+    MFA_EMAIL_TOKEN_TTL_SECONDS,
+    create_mfa_challenge_token,
+    create_mfa_email_token,
+)
 
 from tests.auth.test_session_jti_sid import (  # noqa: F401  (fixtures + helpers)
     _make_app,
@@ -56,6 +61,9 @@ async def test_verify_claims_the_jti_and_a_replay_is_401(session_factory) -> Non
         first = client.post("/api/v1/auth/mfa/email-verify", json={**body, "code": "123456"})
         assert first.status_code == 200, first.text
         assert _claims() == 1
+        # The claim outlives the email token's own expiry by 60 s.
+        left = seconds_until(state_db._U.c.expires_at, state_db._U.c.scope == "mfa_email")
+        assert MFA_EMAIL_TOKEN_TTL_SECONDS + 60 - 5 <= left <= MFA_EMAIL_TOKEN_TTL_SECONDS + 60
 
         replay = client.post("/api/v1/auth/mfa/email-verify", json={**body, "code": "123456"})
     assert replay.status_code == 401

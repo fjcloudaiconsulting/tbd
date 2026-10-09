@@ -434,6 +434,20 @@ def expire_grace(sid: str) -> None:
         )
 
 
+def seconds_until(column, *where) -> float:
+    """Seconds from the DB clock to a state_db time column (SQLite or MySQL)."""
+    from sqlalchemy import func, select, text
+
+    from app import state_db
+
+    with state_db._engine.connect() as c:
+        if c.dialect.name == "sqlite":
+            q = select((func.julianday(column) - func.julianday(state_db.db_now())) * 86400)
+        else:
+            q = select(func.timestampdiff(text("SECOND"), state_db.db_now(), column))
+        return float(c.execute(q.where(*where)).scalar())
+
+
 def expire_family(sid: str) -> None:
     from sqlalchemy import update
 
