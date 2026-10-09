@@ -25,7 +25,7 @@ class TestRefreshHandlerTimeout:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """If ``_refresh_impl`` exceeds the route ceiling the public
-        ``refresh()`` must surface a 503 with the Redis-unavailable
+        ``refresh()`` must surface a 503 with the session-store-unavailable
         detail string (so the frontend treats it as transient and
         retries on a fresh state) — NOT propagate the
         ``asyncio.TimeoutError`` as a 500. The structured
@@ -113,7 +113,7 @@ class TestRefreshHandlerTimeout:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """HTTPException raised by ``_refresh_impl`` (the normal 401 path
-        for an expired refresh token, 503 for Redis-down, etc.) must
+        for an expired refresh token, 503 for store-down, etc.) must
         propagate unchanged. The timeout wrapper must NOT catch them
         and convert them to its own 503."""
         import app.routers.auth as auth_mod
@@ -150,7 +150,7 @@ class TestRefreshHandlerTimeout:
         it surfaces as a 500 with a complete traceback in logs. The
         timeout wrapper must NOT swallow it and convert to a 503 —
         that would mask the actual bug under a misleading
-        Redis-unavailable detail."""
+        session-store-unavailable detail."""
         import app.routers.auth as auth_mod
 
         # See sibling test for why this targets ``auth_mod.app_settings``.

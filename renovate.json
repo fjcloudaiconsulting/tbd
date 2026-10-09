@@ -95,7 +95,7 @@
     {
       "description": "Datastore image majors are never proposed: production versions are owned by aws-infra (clusters/platform/data), and local and CI images must not run ahead of them.",
       "matchDatasources": ["docker"],
-      "matchPackageNames": ["mysql", "valkey/valkey", "redis"],
+      "matchPackageNames": ["mysql"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     }

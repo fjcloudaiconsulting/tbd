@@ -38,7 +38,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from app import rate_limit_db, redis_client
+from app import rate_limit_db
 from app.agent import actions, registry
 from app.agent.auth import authenticate_agent_token, www_authenticate
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
@@ -335,7 +335,6 @@ async def health(request: Request) -> Response:
 @asynccontextmanager
 async def lifespan(app: Starlette):
     yield
-    await redis_client.close_client()
     await engine.dispose()
 
 

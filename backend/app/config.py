@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     # derivation already separates recovery codes from JWT signing.
     mfa_recovery_hmac_key: str = ""
     # Session TTL (days) — drives the refresh cookie ``Max-Age``, the
-    # refresh JWT ``exp`` claim, the Redis primary-key TTL, AND the
+    # refresh JWT ``exp`` claim, the session row TTL, AND the
     # absolute-lifetime check. Single TTL since the 2026-05-18 session-
     # stability refactor: the previous split between ``refresh_idle_ttl_days``
     # and ``session_lifetime_days`` left the org-configurable setting
@@ -75,24 +75,18 @@ class Settings(BaseSettings):
     # of jti/sid (PII guard — raw values never leave the process).
     # Default OFF in production to keep INFO-level logs quiet under
     # normal operation; flip to True during incident triage and back
-    # off once the diagnosis is in hand. Does NOT gate the warn-level
-    # ``redis.client.retired`` event — that is a real ops signal worth
-    # keeping on regardless.
+    # off once the diagnosis is in hand.
     auth_debug_logging: bool = False
 
     # Absolute ceiling on the wall-clock time the ``/auth/refresh``
-    # handler may spend before the route returns 503. The honest
-    # worst-case Redis budget for the deepest /refresh branch is
-    # ~22 s (see ``redis_client._build_auth_redis_client`` docstring);
-    # this ceiling sits above that so normal slow paths still
+    # handler may spend before the route returns 503. Each session-store
+    # call is bounded by 2 s socket timeouts and a 1 s lock wait
+    # (``rate_limit_db._build_engine``); this ceiling sits above the
+    # deepest /refresh branch so normal slow paths still
     # complete, and below the frontend's 45 s reactive-recovery
     # abort so a wedged handler always surfaces as a clean 503 the
     # browser can retry on instead of a silent hang with no log.
     refresh_handler_timeout_s: float = 25.0
-
-    # Redis — the auth SESSION STORE. Optional outside production;
-    # REQUIRED in production (see _validate_redis_url below, TBD-438).
-    redis_url: str = ""
 
     # Email (Mailgun)
     mailgun_api_key: str = ""
@@ -543,35 +537,6 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _validate_redis_url(self) -> "Settings":
-        # Redis is the auth SESSION STORE. Every token-issue path in
-        # ``routers/auth.py`` fails closed without it, so a production
-        # instance booted with this unset comes up looking healthy and then
-        # refuses every login (TBD-438).
-        #
-        # This earns a boot refusal under the criterion already stated above
-        # for ``founder_count_exclude_usernames``: a refusal is justified when
-        # losing the value breaks a SECURITY PRIMITIVE, not when the blast
-        # radius is cosmetic. Interactive session auth is the same class as
-        # the PAT hashing pepper, so it gets the same treatment rather than a
-        # new policy.
-        #
-        # ⚠ COUPLED TO THE PRODUCTION MIGRATE STEP. ``scripts/migrate.py``
-        # imports ``app.logging``, which imports this module, which constructs
-        # ``Settings()`` at import, and the production ``migrate`` init
-        # container runs with ``APP_ENV=production``. It MUST keep its
-        # ``REDIS_URL`` binding (aws-infra clusters/platform/tbd-prod/backend.yaml)
-        # or no rollout completes.
-        #
-        # Normalize before the check so downstream truthiness ("is it set?")
-        # cannot be fooled by a whitespace-only value, which is truthy but
-        # unusable as a connection string.
-        self.redis_url = self.redis_url.strip()
-        if not self.redis_url and self.app_env == "production":
-            raise ValueError("REDIS_URL is required in production")
-        return self
-
-    @model_validator(mode="after")
     def _validate_captcha_timeouts(self) -> "Settings":
         # Enforce ``0 < per_phase <= total`` on the LIVE values, not on the
         # field defaults (TBD-328 review). Both are operator-tunable env
@@ -597,8 +562,7 @@ class Settings(BaseSettings):
         # production migrate step: it gets no CAPTCHA_* value, and the
         # defaults below satisfy this check. Contrast the 2026-07-21 break,
         # where #558 made API_TOKEN_HMAC_KEY prod-required and the job HAD
-        # no binding for it; TBD-438 made REDIS_URL prod-required under the
-        # same precedent. Keep it that way: giving the migrate job a
+        # no binding for it. Keep it that way: giving the migrate job a
         # CAPTCHA_* value would put it back in this validator's blast radius
         # for no gain.
         per_phase = self.captcha_verify_timeout_s

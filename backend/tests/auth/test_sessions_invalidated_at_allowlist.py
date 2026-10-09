@@ -8,7 +8,7 @@ triggers enumerated in spec §6. The 2026-05-16 false-logout incident
 class was caused by ``/auth/logout`` using this global-cutoff
 mechanism for what should have been a per-session revoke; PR 4
 removed the logout write and replaced it with per-``sid`` family
-revocation in Redis.
+revocation in the session store.
 
 This test fails if a future PR ever:
 
@@ -80,7 +80,7 @@ BACKEND_APP = Path(__file__).resolve().parents[2] / "app"
 #       service removal above; the admin path is a separate function.
 #
 # ``routers/auth.py::logout`` was REMOVED from this set in PR 4 —
-# per-session logout via Redis family revoke replaced it. That
+# per-session logout via session family revoke replaced it. That
 # removal is the load-bearing change this regression pins.
 #
 # ``routers/users.py::update_profile`` was MOVED to
@@ -244,7 +244,7 @@ def test_sessions_invalidated_at_writes_match_spec_section_6():
       * UNEXPECTED — a new write appeared in a function outside the
         allowlist. The 2026-05-16 false-logout incident class. Either
         remove the write (the per-session revoke in
-        ``redis_client.session_revoke_family`` is the right answer
+        ``state_db.session_revoke_family`` is the right answer
         for non-credential-grade flows) OR extend the allowlist with
         a justification comment.
     """
@@ -278,7 +278,7 @@ def test_sessions_invalidated_at_writes_match_spec_section_6():
             f"{details}\n"
             "Per spec §5.3 + §6, only the enumerated global-invalidation "
             "triggers may use this cutoff. Per-session revoke goes through "
-            "``redis_client.session_revoke_family`` instead. If this "
+            "``state_db.session_revoke_family`` instead. If this "
             "addition is intentional, extend ALLOWED_WRITE_SITES with a "
             "justification comment citing the new trigger's purpose."
         )
@@ -325,6 +325,6 @@ def test_auth_logout_handler_no_longer_writes_cutoff():
     ), (
         "POST /auth/logout must NOT touch ``sessions_invalidated_at`` — "
         "that is the global-cutoff mechanism reserved for spec §6 "
-        "triggers. Per-session logout revokes the Redis ``sid`` family "
-        "via ``redis_client.session_revoke_family`` (spec §5.3)."
+        "triggers. Per-session logout revokes the ``sid`` family "
+        "via ``state_db.session_revoke_family`` (spec §5.3)."
     )

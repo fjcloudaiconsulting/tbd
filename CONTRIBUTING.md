@@ -27,7 +27,7 @@ cp .env.example .env
 python -c "import secrets; print(secrets.token_urlsafe(64))"
 # Paste that value into JWT_SECRET_KEY in .env
 
-# 3. Start the dev stack (MySQL + Redis + backend + frontend + nginx)
+# 3. Start the dev stack (MySQL + backend + frontend + nginx)
 ./tbd start
 
 # 4. Open the app
@@ -113,7 +113,7 @@ Merge to `main`:
 If you dispatch Claude Code agents (or any parallel-process helpers) against this repo, never let them run backend tests or migrations against the default `tbd` Docker Compose project (compose names it after the checkout directory). They will write to your local MySQL volume. Use an isolated compose project name on every command:
 
 ```bash
-docker compose -p team-<unique-name> up -d backend mysql redis
+docker compose -p team-<unique-name> up -d backend mysql
 docker compose -p team-<unique-name> exec backend pytest tests/...
 ```
 
@@ -175,7 +175,7 @@ Before each login attempt the script marks that user's email verified with a dir
 | `./tbd reset` | Destroy all data, rotate JWT secret, start fresh |
 | `./tbd prod` | Build and start a local prod-shaped stack |
 | `./tbd migrate` | Run pending DB migrations (local only) |
-| `./tbd logs [svc]` | Tail logs (`backend`, `frontend`, `nginx`, `mysql`, `redis`) |
+| `./tbd logs [svc]` | Tail logs (`backend`, `frontend`, `nginx`, `mysql`) |
 | `./tbd status` | Container status |
 | `./tbd shell [svc]` | Shell into a service (default: `backend`) |
 | `./tbd seed` | Populate with mock data |
@@ -185,10 +185,9 @@ Before each login attempt the script marks that user's email verified with a dir
 ```
 Browser --> nginx (:80) --> /api/*  --> backend (FastAPI :8000) --> MySQL (:3306)
                         --> /*      --> frontend (Next.js :3000)
-                                        backend --> Redis (:6379)
 ```
 
-In production (a k3s cluster run from [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra)), Cloudflare and Traefik replace nginx, and MySQL and Valkey run in-cluster.
+In production (a k3s cluster run from [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra)), Cloudflare and Traefik replace nginx, and MySQL runs in-cluster.
 
 ### Backend layout
 
@@ -293,7 +292,7 @@ pattern has no live decorator, or when a limit value changes without review.
 
 The three `/logout`, `/google/callback` and `/sso-stepup/callback` limits are
 deliberately loose. On those routes a 429 is worse than the traffic it stops:
-a rate-limited logout leaves the refresh cookie and the Redis session family
+a rate-limited logout leaves the refresh cookie and the stored session family
 alive while the client clears its own state, and a 429 on an OAuth callback
 renders bare JSON in the middle of a browser navigation. The anonymous
 `audit_events` writes those routes used to permit are bounded by suppressing
@@ -321,7 +320,7 @@ Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`
 | --- | --- |
 | `GET /health` | Platform liveness probe. |
 | `GET /ready` | Platform readiness probe. **Database only**, deliberately — it is the rotation gate a platform readiness probe pulls replicas out on. |
-| `GET /health/dependencies` | Per-dependency readiness (TBD-413): database **and** Redis, 503 when a required one is unusable. Anonymous because an uptime monitor holds no bearer token. Reports a closed vocabulary of coarse states and never exception text, hostnames or ports. |
+| `GET /health/dependencies` | Per-dependency readiness (TBD-413): the database (which also holds sessions), 503 when it is unusable. Anonymous because an uptime monitor holds no bearer token. Reports a closed vocabulary of coarse states and never exception text, hostnames or ports. |
 | `GET /api/v1/auth/status` | Serves feature flags to anonymous and authenticated callers alike. Uses `get_current_user_optional`, which returns `None` rather than raising. |
 | `GET /api/v1/auth/check-username` | Signup-time availability probe; runs before any account exists. |
 | `POST /api/v1/auth/register` | Account creation. Nothing to authenticate yet. |
@@ -452,7 +451,7 @@ Three execution paths, picked by environment:
 
 - **Local dev (`./tbd start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override).
 - **Local prod simulation (`./tbd prod`):** a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` (no lifespan migration).
-- **Production (k3s):** the backend pod's `migrate` init container runs the wrapper from the `migrations` image before the backend starts. Its env (`DATABASE_URL`, `REDIS_URL`, `APP_ENV=production`) is set in aws-infra `clusters/platform/tbd-prod/backend.yaml`.
+- **Production (k3s):** the backend pod's `migrate` init container runs the wrapper from the `migrations` image before the backend starts. Its env (`DATABASE_URL`, `APP_ENV=production`) is set in aws-infra `clusters/platform/tbd-prod/backend.yaml`.
 
 The wrapper at `backend/scripts/migrate.py` does not replace alembic, it drives it. It runs `alembic upgrade <revision>` one revision at a time and emits structured JSON events around each step (grep `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`). Exit code matches alembic's, so a failed migration blocks the rollout.
 

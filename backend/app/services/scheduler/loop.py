@@ -6,7 +6,7 @@ import datetime
 import structlog
 from opentelemetry.trace import SpanKind
 
-from app import redis_client, tracing
+from app import state_db, tracing
 from app.services.scheduler.jobs.api_token_expiry import run_api_token_expiry_reminders
 from app.services.scheduler.jobs.oauth_client_purge import run_oauth_client_purge
 from app.services.scheduler.runner import run_all_due
@@ -17,12 +17,8 @@ LOCK_KEY = "scheduler:tick:lock"
 
 
 async def acquire_tick_lock(ttl_seconds: int) -> bool:
-    client = redis_client.get_client()
-    if client is None:
-        # Dev / no-redis: single process, no contention to guard against.
-        return True
-    got = await client.set(LOCK_KEY, "1", nx=True, ex=ttl_seconds)
-    return bool(got)
+    # A lease row, never released: the TTL also spaces ticks across replicas.
+    return await state_db.acquire_lease(LOCK_KEY, ttl_seconds) is not None
 
 
 async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | None = None) -> bool:

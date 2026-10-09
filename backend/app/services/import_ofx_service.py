@@ -30,7 +30,7 @@ owned ``multiprocessing.Process`` can. Spawn startup (~100-300 ms of fresh
 interpreter + module import) is negligible against a multi-second parse,
 and OFX imports are user-initiated and concurrency-capped, so the cost is
 paid rarely and is bounded. We deliberately use the ``spawn`` start method
-(not ``fork``): forking a running asyncio + aiomysql + redis process risks
+(not ``fork``): forking a running asyncio + aiomysql process risks
 child deadlock on inherited locks; ``spawn`` starts a clean interpreter.
 
 Because the isolation is *compute* isolation (no shared mutable state

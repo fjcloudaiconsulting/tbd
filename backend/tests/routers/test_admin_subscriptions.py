@@ -431,9 +431,9 @@ async def test_detail_audit_not_suppressed_after_recent_list_view(session_factor
 
 
 @pytest.mark.asyncio
-async def test_audit_throttle_skips_durable_row_when_redis_says_no(session_factory):
-    """When the throttle helper returns False (Redis SET NX failed
-    because the key was already set inside the 60s window), the
+async def test_audit_throttle_skips_durable_row_when_the_window_claim_fails(session_factory):
+    """When the throttle helper returns False (the used_tokens claim failed
+    because the key was already claimed inside the 60s window), the
     durable audit row is skipped — structlog event still fires
     elsewhere as the fallback channel."""
     await _seed(session_factory)
@@ -451,3 +451,25 @@ async def test_audit_throttle_skips_durable_row_when_redis_says_no(session_facto
             res2 = client.get("/api/v1/admin/subscriptions")
             assert res2.status_code == 200
         assert record.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_should_persist_audit_throttles_per_event_type_and_actor():
+    """The real throttle is a 60 s used_tokens claim: the first hit per
+    (event_type, actor) persists, repeats inside the window do not, and a
+    different event type or actor is its own window."""
+    from app.routers.admin_subscriptions import _should_persist_audit
+
+    assert await _should_persist_audit(actor_user_id=1, event_type="a.viewed") is True
+    assert await _should_persist_audit(actor_user_id=1, event_type="a.viewed") is False
+    assert await _should_persist_audit(actor_user_id=1, event_type="a.detail.viewed") is True
+    assert await _should_persist_audit(actor_user_id=2, event_type="a.viewed") is True
+
+
+@pytest.mark.asyncio
+async def test_should_persist_audit_fails_open_on_store_error(state_db_down):
+    """A store error must not lose audit evidence: persist every row."""
+    from app.routers.admin_subscriptions import _should_persist_audit
+
+    assert await _should_persist_audit(actor_user_id=1, event_type="a.viewed") is True
+    assert await _should_persist_audit(actor_user_id=1, event_type="a.viewed") is True

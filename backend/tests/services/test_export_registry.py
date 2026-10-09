@@ -128,8 +128,8 @@ def test_table_count_is_what_the_spec_measured():
     drift (44 → 49 → "37 files" → 35). Not a correctness gate — legs 1 and 2
     are — but a loud signal when the surface moves.
     """
-    assert len(Base.metadata.tables) == 55
-    assert len(EXPORT_DISPOSITION) == 55
+    assert len(Base.metadata.tables) == 59
+    assert len(EXPORT_DISPOSITION) == 59
 
 
 # ══ Fixtures for the data-path legs ═══════════════════════════════════════
@@ -819,13 +819,16 @@ def test_tag_dictionary_contributors_is_excluded():
     assert not EXPORT_DISPOSITION["tag_dictionary_contributors"].included
 
 
-# ⚠ The 17 tables §5 ruled OUT of a data-subject export (TBD-585 added org_limit_overrides: operator configuration, like org_feature_overrides; INFRA-121 added rate_limits: operational counters; TBD-586 added platform_ai_spend: platform-global counter; TBD-587 added oauth_clients: the platform-global OAuth client registry). Held as a literal on
+# ⚠ The 21 tables §5 ruled OUT of a data-subject export (TBD-585 added org_limit_overrides: operator configuration, like org_feature_overrides; INFRA-121 added rate_limits: operational counters; TBD-586 added platform_ai_spend: platform-global counter; TBD-587 added oauth_clients: the platform-global OAuth client registry; INFRA-122 added auth_session_families, auth_session_members, used_tokens and leases: operational state). Held as a literal on
 # purpose: this is the ruling, restated independently of the registry.
 RULED_EXCLUDED: frozenset[str] = frozenset(
     {
         "announcements",
         "api_tokens",
+        "auth_session_families",
+        "auth_session_members",
         "email_broadcasts",
+        "leases",
         "merchant_dictionary",
         "oauth_clients",
         "org_data_reset_locks",
@@ -840,11 +843,12 @@ RULED_EXCLUDED: frozenset[str] = frozenset(
         "system_settings",
         "tag_dictionary",
         "tag_dictionary_contributors",
+        "used_tokens",
     }
 )
 
 
-def test_the_excluded_set_is_exactly_the_ruled_sixteen():
+def test_the_excluded_set_is_exactly_the_ruled_twenty():
     """⚠ A DIRECT disclosure fence on the Exclude side.
 
     Flipping a table from Exclude to Include reddened only *incidentally*
@@ -866,7 +870,7 @@ def test_the_excluded_set_is_exactly_the_ruled_sixteen():
         f"is a disclosure decision and needs a §5 ruling, not just an edit."
     )
     assert included_tables() == set(Base.metadata.tables) - RULED_EXCLUDED, (
-        "every table that is not one of the ruled 15 must be INCLUDED — a new "
+        "every table that is not one of the ruled 20 must be INCLUDED — a new "
         "table is neither ruled in nor ruled out until §5 says so."
     )
 

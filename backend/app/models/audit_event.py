@@ -148,7 +148,7 @@ even before the emitting code arrives.
   login. actor=superadmin, target_org_id=target.org_id. REQUIRED
   ``detail.reason`` (free text, max 200).
 * ``admin.impersonation.entered`` — read-only impersonation session
-  starts; 15-min Redis-backed jti. actor=superadmin,
+  starts; 15-min single-use jti. actor=superadmin,
   target_org_id=target.org_id.
 * ``admin.impersonation.exited`` — read-only impersonation session
   ends (manual exit or natural expiry). actor=superadmin,

@@ -17,9 +17,8 @@ POST /api/v1/webhooks/mailgun — covers the required matrix (spec
 - ``v:broadcast_id`` arrives as a STRING and is parsed.
 
 Signatures are computed with the same HMAC formula the verifier uses. No
-real HTTP to Mailgun; Redis is unconfigured in tests so the replay-token
-helper fails open (every token is first-sight) and precedence is what makes
-duplicates idempotent.
+real HTTP to Mailgun; each test uses a fresh token (the used_tokens table is
+cleared per test), and precedence is what makes duplicates idempotent.
 """
 from __future__ import annotations
 

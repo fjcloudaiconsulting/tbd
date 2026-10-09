@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  Activity,
   Building2,
   CheckCircle2,
   ChevronRight,
@@ -38,7 +37,6 @@ type DashboardPayload = {
   };
   health: {
     db: HealthCell;
-    redis: HealthCell;
   };
 };
 
@@ -110,31 +108,20 @@ type HealthSummary = {
 };
 
 function summarizeHealth(health: DashboardPayload["health"]): HealthSummary {
-  const downCells: string[] = [];
-  if (!health.db.ok) downCells.push("Database");
-  if (!health.redis.ok) downCells.push("Redis");
-
-  if (downCells.length === 0) {
+  // Sessions live in the database too, so a down database is a down platform.
+  if (health.db.ok) {
     return {
       tone: "ok",
       label: "All systems ok",
-      description: "Database and Redis healthy.",
+      description: "Database healthy.",
       Icon: CheckCircle2,
     };
   }
-  if (downCells.length === 2) {
-    return {
-      tone: "down",
-      label: "Platform down",
-      description: "Database and Redis unreachable.",
-      Icon: XCircle,
-    };
-  }
   return {
-    tone: "warn",
-    label: "Degraded",
-    description: `${downCells[0]} unreachable.`,
-    Icon: Activity,
+    tone: "down",
+    label: "Platform down",
+    description: "Database unreachable.",
+    Icon: XCircle,
   };
 }
 
@@ -452,7 +439,6 @@ export default function AdminDashboardPage() {
             <section className={`${card} p-5`}>
               <h2 className={`${cardTitle} mb-2`}>System health</h2>
               <HealthRow name="Database" cell={data.health.db} />
-              <HealthRow name="Redis" cell={data.health.redis} />
             </section>
 
             {/* Recent activity. Gated on audit.view so the panel only

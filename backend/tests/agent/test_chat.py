@@ -21,11 +21,10 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from redis.exceptions import RedisError
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app import redis_client
+from app import state_db
 from app.agent import registry
 from app.services import agent_chat as chat
 from app.config import settings as app_settings
@@ -154,9 +153,10 @@ async def w(factory):
         return {"org": org.id, "user": user.id, "budget": budget.id, "cred": cred.id}
 
 
-@pytest.fixture
-def fake_redis(_autouse_fake_redis):
-    return _autouse_fake_redis
+def _lease_holder(name: str):
+    """The holder token of lease ``name``, or None when it is not held."""
+    with state_db._engine.connect() as c:
+        return c.execute(select(state_db._L.c.holder).where(state_db._L.c.name == name)).scalar()
 
 
 def _as(factory, uid, *, auth_method="jwt"):
@@ -249,7 +249,7 @@ async def _add(factory, *rows):
 # ── the loop ──────────────────────────────────────────────────────────────
 
 async def test_read_round_transcript_own_session_and_held_lock(
-    factory, w, client, provider, fake_redis, monkeypatch,
+    factory, w, client, provider, monkeypatch,
 ):
     """FENCE T-2 + F-L8 (session, user, lock). Wrong implementations: one merged
     tool result or dropped ids; the generator using the request's ``get_db``
@@ -263,7 +263,7 @@ async def test_read_round_transcript_own_session_and_held_lock(
         seen["db_from_factory"] = ctx.db in factory.made
         seen["not_request_session"] = all(ctx.db is not s for s in request_sessions)
         seen["user_in_session"] = ctx.user in ctx.db
-        seen["lock_held"] = await fake_redis.get(chat.lock_key(w["org"])) is not None
+        seen["lock_held"] = _lease_holder(chat.lock_key(w["org"])) is not None
         return await spec.run(ctx, args)
 
     monkeypatch.setitem(registry._TOOLS, "accounts_list", dataclasses.replace(spec, run=spy))
@@ -293,12 +293,12 @@ async def test_read_round_transcript_own_session_and_held_lock(
     assert [(m["role"], m["tool_call_id"]) for m in second[3:]] == [("tool", "c1"), ("tool", "c2")]
     assert json.loads(second[3]["content"])[0]["name"] == {"untrusted": "Main"}
     assert json.loads(second[4]["content"]) == {"error": "unknown_tool"}
-    assert await fake_redis.get(chat.lock_key(w["org"])) is None
+    assert _lease_holder(chat.lock_key(w["org"])) is None
     assert all(s.closed for s in factory.made)
     assert await _turns(factory, w["org"]) == 1
 
 
-async def test_round_limit_is_six_dispatches(factory, w, client, provider, fake_redis):
+async def test_round_limit_is_six_dispatches(factory, w, client, provider):
     """FENCE F-L1. Wrong implementation: a loop bounded by the client
     transcript, or not at all."""
     _as(factory, w["user"])
@@ -307,7 +307,7 @@ async def test_round_limit_is_six_dispatches(factory, w, client, provider, fake_
     ev = _events(r.text)
     assert len(adapter.seen) == 6
     assert ev[-2:] == [("error", {"code": "round_limit"}), ("done", {})]
-    assert await fake_redis.get(chat.lock_key(w["org"])) is None
+    assert _lease_holder(chat.lock_key(w["org"])) is None
 
 
 async def test_write_call_previews_and_ends_the_turn(factory, w, client, provider, monkeypatch):
@@ -367,7 +367,7 @@ async def test_cap_reached_mid_turn_is_in_band(factory, w, client, provider):
     assert ev[-2:] == [("error", {"code": "ai_hard_cap_exceeded"}), ("done", {})]
 
 
-async def test_turn_deadline(factory, w, client, provider, fake_redis, monkeypatch):
+async def test_turn_deadline(factory, w, client, provider, monkeypatch):
     """GUARD F-L6 (turn bound): no round starts with less than one dispatch
     timeout left, and a dispatch is ended by its own timeout (ledgered),
     never cancelled by the turn."""
@@ -392,7 +392,7 @@ async def test_turn_deadline(factory, w, client, provider, fake_redis, monkeypat
     async with factory._f() as db:
         failed = (await db.scalars(select(AIUsageLedger).where(AIUsageLedger.success.is_(False)))).all()
         assert [r.error_class for r in failed] == ["provider_timeout"]
-    assert await fake_redis.get(chat.lock_key(w["org"])) is None
+    assert _lease_holder(chat.lock_key(w["org"])) is None
 
 
 async def test_real_anthropic_adapter_two_rounds(factory, w, client, monkeypatch):
@@ -440,7 +440,7 @@ async def test_real_anthropic_adapter_two_rounds(factory, w, client, monkeypatch
     "case", ["no_routing", "no_function_call", "ollama", "cap_exhausted", "cap_projected"],
 )
 async def test_preflight_refusals_are_http_and_never_count(
-    case, factory, w, client, provider, fake_redis,
+    case, factory, w, client, provider,
 ):
     """GUARD F-L6 + FENCE T-1. Wrong implementation: admitting the turn before
     the checks (the counter moves on a refusal), or leaking the lock."""
@@ -472,42 +472,53 @@ async def test_preflight_refusals_are_http_and_never_count(
     assert (r.status_code, r.json()["detail"]["code"]) == want
     assert adapter.seen == []
     assert await _turns(factory, w["org"]) == 0
-    assert await fake_redis.get(chat.lock_key(w["org"])) is None
+    assert _lease_holder(chat.lock_key(w["org"])) is None
 
 
-async def test_lock_busy_and_redis_down_fail_closed(factory, w, client, provider, fake_redis, monkeypatch):
+async def test_lock_busy_and_store_down_fail_closed(factory, w, client, provider, request, monkeypatch):
     """FENCE F-L2. Wrong implementation: a lock that fails open."""
     _as(factory, w["user"])
     adapter = provider([_resp(content="hi")] * 3)
     calls = []
-    real_set = fake_redis.set
+    real_acquire = state_db.acquire_lease
 
-    async def spy_set(key, value, **kw):
-        calls.append((key, kw))
-        return await real_set(key, value, **kw)
+    async def spy_acquire(name, ttl):
+        calls.append((name, ttl))
+        return await real_acquire(name, ttl)
 
-    monkeypatch.setattr(fake_redis, "set", spy_set)
+    monkeypatch.setattr(state_db, "acquire_lease", spy_acquire)
     assert (await client.post(URL, json=ASK)).status_code == 200
-    assert calls == [(chat.lock_key(w["org"]), {"nx": True, "ex": chat.LOCK_TTL_SECONDS})]
+    assert calls == [(chat.lock_key(w["org"]), chat.LOCK_TTL_SECONDS)]
     assert chat.LOCK_TTL_SECONDS >= chat.TURN_SECONDS + app_settings.ai_dispatch_timeout_s
-    await real_set(chat.lock_key(w["org"]), "other-turn")
+    other = await real_acquire(chat.lock_key(w["org"]), chat.LOCK_TTL_SECONDS)
+    assert other is not None
     r = await client.post(URL, json=ASK)
     assert (r.status_code, r.json()["detail"]["code"]) == (409, "agent_busy")
-    assert await fake_redis.get(chat.lock_key(w["org"])) == "other-turn"
+    assert _lease_holder(chat.lock_key(w["org"])) == other
 
-    async def broken_set(*a, **k):
-        raise RedisError("down")
-
-    monkeypatch.setattr(fake_redis, "set", broken_set)
-    r = await client.post(URL, json=ASK)
-    assert (r.status_code, r.json()["detail"]["code"]) == (503, "agent_unavailable")
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
+    request.getfixturevalue("state_db_down")
     r = await client.post(URL, json=ASK)
     assert (r.status_code, r.json()["detail"]["code"]) == (503, "agent_unavailable")
     assert len(adapter.seen) == 1 and await _turns(factory, w["org"]) == 1
 
 
-async def test_plan_meter(factory, w, client, provider, fake_redis):
+async def test_release_is_compare_and_delete(w):
+    """FENCE F-L2b. Wrong implementation: a release that deletes by name, so
+    an expired turn's late release frees the lease a newer turn holds."""
+    from tests.conftest import expire_lease
+
+    key = chat.lock_key(w["org"])
+    old = await chat.acquire_lock(w["org"])
+    expire_lease(key)
+    new = await chat.acquire_lock(w["org"])
+    assert new != old
+    await chat.release_lock(w["org"], old)
+    assert _lease_holder(key) == new
+    await chat.release_lock(w["org"], new)
+    assert _lease_holder(key) is None
+
+
+async def test_plan_meter(factory, w, client, provider):
     """FENCE F-E4 + 402: ``assistant.turns`` limit 1 serves one turn then
     402s; limit 0 closes the surface (403); ``ai.agent`` off is 403."""
     await _add(factory, OrgLimitOverride(org_id=w["org"], meter="assistant.turns",
@@ -518,7 +529,7 @@ async def test_plan_meter(factory, w, client, provider, fake_redis):
     r = await client.post(URL, json=ASK)
     assert (r.status_code, r.json()["detail"]["code"]) == (402, "plan_limit_reached")
     assert r.json()["detail"]["meter"] == "assistant.turns"
-    assert await fake_redis.get(chat.lock_key(w["org"])) is None
+    assert _lease_holder(chat.lock_key(w["org"])) is None
     async with factory._f() as db:
         row = await db.scalar(select(OrgLimitOverride))
         row.limit_value = 0
@@ -573,7 +584,7 @@ async def _ledger(factory) -> list[AIUsageLedger]:
 
 
 async def test_real_disconnect_waits_for_the_dispatch_then_releases(
-    factory, w, provider, fake_redis, monkeypatch,
+    factory, w, provider, monkeypatch,
 ):
     """FENCE F-L8 (disconnect). An in-process uvicorn server; the client
     closes the connection while round 1 is in flight. The dispatch is not
@@ -605,10 +616,10 @@ async def test_real_disconnect_waits_for_the_dispatch_then_releases(
             async with c.stream("POST", URL, json=ASK) as r:
                 assert r.status_code == 200
                 await asyncio.wait_for(started.wait(), 5)
-        assert await fake_redis.get(chat.lock_key(w["org"])) is not None  # dispatch still running
+        assert _lease_holder(chat.lock_key(w["org"])) is not None  # dispatch still running
         ledger_at_release = None
         for _ in range(200):
-            if await fake_redis.get(chat.lock_key(w["org"])) is None:
+            if _lease_holder(chat.lock_key(w["org"])) is None:
                 ledger_at_release = [r.error_class for r in await _ledger(factory)]
                 break
             await asyncio.sleep(0.02)
@@ -621,7 +632,7 @@ async def test_real_disconnect_waits_for_the_dispatch_then_releases(
         await serving
 
 
-async def test_disconnect_before_the_first_byte_releases_the_lock(factory, w, provider, fake_redis):
+async def test_disconnect_before_the_first_byte_releases_the_lock(factory, w, provider):
     """FENCE F-L8 (never-started stream). Starlette sees ``http.disconnect``
     at once and cancels the stream before the generator starts, so only the
     response can release. Wrong implementation: release only in the
@@ -652,7 +663,7 @@ async def test_disconnect_before_the_first_byte_releases_the_lock(factory, w, pr
     await app(scope, receive, send)
     assert [m["type"] for m in sent] == ["http.response.start"]  # no body byte was produced
     assert sent[0]["status"] == 200
-    assert await fake_redis.get(chat.lock_key(w["org"])) is None
+    assert _lease_holder(chat.lock_key(w["org"])) is None
     assert await _turns(factory, w["org"]) == 1
 
 
@@ -730,7 +741,7 @@ async def test_keepalive_while_a_dispatch_runs(factory, w, client, provider, mon
 
 
 async def test_disconnect_at_a_keepalive_reaps_the_dispatch_first(
-    factory, w, provider, fake_redis, monkeypatch,
+    factory, w, provider, monkeypatch,
 ):
     """FENCE: the cancel lands in ``send`` while the generator is parked at a
     keepalive with a dispatch in flight. Wrong implementation: the response
@@ -767,12 +778,12 @@ async def test_disconnect_at_a_keepalive_reaps_the_dispatch_first(
                     (b"content-length", str(len(body)).encode())],
     }
     await app(scope, receive, send)
-    assert await fake_redis.get(chat.lock_key(w["org"])) is None
+    assert _lease_holder(chat.lock_key(w["org"])) is None
     assert [r.error_class for r in await _ledger(factory)] == ["provider_timeout"]
     assert factory.made[-1].closed and factory.made[-1].ledger_at_close == 1
 
 
-async def test_lock_is_free_when_done_arrives(factory, w, provider, fake_redis):
+async def test_lock_is_free_when_done_arrives(factory, w, provider):
     """FENCE: the org lock is released before ``done`` is sent, so a client
     that sends its next turn on ``done`` is not refused ``agent_busy``."""
     _as(factory, w["user"])
@@ -788,7 +799,7 @@ async def test_lock_is_free_when_done_arrives(factory, w, provider, fake_redis):
 
     async def send(message):
         if b"event: done" in message.get("body", b""):
-            held_at_done.append(await fake_redis.get(chat.lock_key(w["org"])))
+            held_at_done.append(_lease_holder(chat.lock_key(w["org"])))
 
     scope = {
         "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",

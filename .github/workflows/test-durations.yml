@@ -86,16 +86,6 @@ jobs:
         # ⚠ Must equal test.yml's backend-shard matrix. Fenced by
         # backend/tests/test_ci_shard_config.py.
         group: [1, 2, 3, 4, 5, 6]
-    services:
-      redis:
-        image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -116,8 +106,6 @@ jobs:
 
       - name: Harvest this shard's durations
         working-directory: backend
-        env:
-          TEST_REAL_REDIS_URL: redis://localhost:6379/0
         # ⚠ `--clean-durations` is LOAD-BEARING here, not cosmetic. Without it
         # PytestSplitCachePlugin merges this shard's fresh values on top of the
         # whole committed file, so every artifact would carry all 4000+ entries

@@ -315,6 +315,10 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
     "plans": Exclude("platform-global price list"),
     "platform_ai_spend": Exclude("platform-global operational counter, no org data"),
     "rate_limits": Exclude("operational counters, no org data"),
+    "auth_session_families": Exclude("operational state, no org data"),
+    "auth_session_members": Exclude("operational state, no org data"),
+    "used_tokens": Exclude("operational state, no org data"),
+    "leases": Exclude("operational state, no org data"),
     "rate_limit_overrides": Exclude(
         "operator configuration (nullable org_id, operator-authored note)"
     ),

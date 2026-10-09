@@ -7,11 +7,8 @@ import pyotp
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
-from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import ResponseError
 from sqlalchemy import select
 
-from app import redis_client
 from app.config import settings as app_settings
 from app.models.user import User
 from app.routers.auth import SESSION_REDIS_UNAVAILABLE_DETAIL
@@ -26,21 +23,13 @@ from tests.auth.test_session_jti_sid import (  # noqa: F401  (fixtures + helpers
     _canonical_refresh_cookie,
     _make_app,
     _seed_user,
-    fake_redis,
     reset_limiter,
     session_factory,
 )
 
-FAILURES = [
-    RedisConnectionError("down"),
-    ResponseError("OOM command not allowed when used memory > 'maxmemory'."),
-]
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize("exc", FAILURES, ids=["down", "oom"])
 async def test_mfa_endpoints_answer_alike_when_session_store_fails(
-    session_factory, fake_redis, monkeypatch, exc
+    session_factory, monkeypatch, state_db_down
 ) -> None:
     monkeypatch.setattr(
         app_settings, "mfa_encryption_key", Fernet.generate_key().decode()
@@ -58,11 +47,6 @@ async def test_mfa_endpoints_answer_alike_when_session_store_fails(
 
     mfa_token = create_mfa_challenge_token(seed["user_id"])
     email_token, _ = create_mfa_email_token(seed["user_id"], "123456")
-
-    async def boom() -> None:
-        raise exc
-
-    monkeypatch.setattr(redis_client, "session_store_probe", boom)
 
     cases = {
         "/api/v1/auth/mfa/verify": (

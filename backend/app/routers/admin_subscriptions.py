@@ -16,10 +16,8 @@ per event-type per minute. List and detail use distinct event types
 so a recent list view does not suppress the detail audit row (the
 detail row carries ``target_org_id`` and must not be lost). Otherwise
 an admin paging through 5,000 subscriptions would write 100 audit
-rows for the same intent. The throttle uses Redis ``SET NX EX 60``;
-when Redis is unconfigured (dev / tests) we fall **open** — emit
-every call — so test assertions can pin the event without depending
-on Redis being up.
+rows for the same intent. The throttle is a 60 s ``used_tokens`` claim;
+on a store error we fall **open** and write every row.
 
 Privacy: the raw search ``q`` is NEVER stored in the durable audit
 detail. Only ``query_length`` (and ``has_query``) go in, mirroring
@@ -38,7 +36,7 @@ from app.database import get_db
 from app.deps import get_session_factory
 from app.models.user import User
 from app.rate_limit import get_client_ip
-from app.redis_client import get_client as get_redis_client
+from app import state_db
 from app.schemas.admin_subscriptions import (
     SubscriptionDetail,
     SubscriptionKPIs,
@@ -78,32 +76,24 @@ async def _should_persist_audit(
 
     Fail-open semantics:
 
-    - No Redis configured → return True every call (dev / unit tests
-      where the stub Redis client is absent). The structlog event
-      still emits unconditionally, so triage information is never
-      lost; only the durable row is gated.
-    - Redis error → return True (don't lose audit evidence because of
-      a Redis blip).
-    - Successful ``SET NX EX``: this is the first hit in the window,
-      return True.
-    - ``SET NX`` returned None (already set): we already wrote an
-      audit row in the window, return False.
+    - No actor → True.
+    - Store error → True (don't lose audit evidence because of a
+      database blip). The structlog event still emits unconditionally.
+    - First hit in the window (the ``used_tokens`` claim lands) → True.
+    - Already claimed in the window → False.
     """
-    client = get_redis_client()
-    if client is None or actor_user_id is None:
+    if actor_user_id is None:
         return True
-    key = f"admin.subscriptions.audit:{event_type}:{actor_user_id}"
+    key = f"{event_type}:{actor_user_id}"
     try:
-        result = await client.set(key, "1", nx=True, ex=AUDIT_THROTTLE_SECONDS)
-    except Exception as exc:  # noqa: BLE001 — defensive, never block on Redis.
+        return await state_db.claim_token("admin_sub_audit", key, AUDIT_THROTTLE_SECONDS)
+    except Exception as exc:  # noqa: BLE001 — defensive, never block on the throttle.
         await logger.awarning(
             "admin.subscriptions.audit_throttle.error",
             error=str(exc),
             error_type=type(exc).__name__,
         )
         return True
-    # Redis returns True when SET NX takes effect, None / False otherwise.
-    return bool(result)
 
 
 async def _emit_view_audit(
@@ -118,7 +108,7 @@ async def _emit_view_audit(
 ) -> None:
     """Emit both the structlog event (always) and the durable audit row
     (rate-throttled). Never raises — failures are logged and swallowed
-    so a Redis or audit-write blip never reaches the caller."""
+    so a throttle or audit-write blip never reaches the caller."""
     await logger.ainfo(
         event_type,
         actor_user_id=actor.id,

@@ -606,7 +606,7 @@ def render(roster: CompleteRoster) -> int:
     ),
     (
         "`exc.__class__.__name__` — an attribute read, not a call",
-        "redis_client.py",
+        "state_db.py",
         """
 def describe(exc):
     return exc.__class__.__name__

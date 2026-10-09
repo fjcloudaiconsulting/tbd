@@ -36,7 +36,6 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2 |
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS, Recharts |
 | Database | MySQL 8.4 LTS everywhere; in production a StatefulSet on the k3s cluster run from [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra) |
-| Cache | Redis 7 in dev (`redis:7-alpine`), Valkey 8 on the same cluster in production |
 | Auth | JWT (access + refresh), bcrypt, TOTP (pyotp), Google OAuth2 (with step-up for sensitive flows) |
 | Email | Mailgun (production), structlog (development) |
 | Proxy | nginx (development), Cloudflare in front of Traefik on k3s (production) |
@@ -80,7 +79,7 @@ Every part of the project has a single authoritative document. Start with the ro
 
 ### Infrastructure
 
-Where and how TBD runs (k3s cluster, Flux, in-cluster MySQL and Valkey, backups, Cloudflare) lives in [fjcloudaiconsulting/aws-infra](https://github.com/fjcloudaiconsulting/aws-infra). Its `docs/runbooks.md` and `docs/configuration-map.md` are the operations entry points.
+Where and how TBD runs (k3s cluster, Flux, in-cluster MySQL, backups, Cloudflare) lives in [fjcloudaiconsulting/aws-infra](https://github.com/fjcloudaiconsulting/aws-infra). Its `docs/runbooks.md` and `docs/configuration-map.md` are the operations entry points.
 
 ### Product + design
 
@@ -96,7 +95,6 @@ Where and how TBD runs (k3s cluster, Flux, in-cluster MySQL and Valkey, backups,
 Browser
   --> app.thebetterdecision.com (Cloudflare -> Traefik on k3s)
         --> /api/*  --> backend  (FastAPI, port 8000)  --> MySQL  (in-cluster)
-        |                                              --> Valkey (in-cluster)
         --> /*      --> frontend (Next.js, port 3000)
   --> thebetterdecision.com (Cloudflare Worker `tbd-landing`)
         --> static landing export (auth-free, no app code in bundle)
@@ -118,7 +116,7 @@ For the full pipeline mechanics, see [DEPLOYMENT.md](docs/operations/DEPLOYMENT.
 ./tbd rebuild           # force rebuild (no cache)
 ./tbd reset             # destroy all data and start fresh
 ./tbd migrate           # run pending migrations (refuses off main without PFV_MIGRATE_OK_OFF_MAIN=1)
-./tbd logs [service]    # view logs (backend, frontend, nginx, mysql, redis)
+./tbd logs [service]    # view logs (backend, frontend, nginx, mysql)
 ./tbd status            # container status
 ./tbd shell [service]   # shell into a container (default: backend)
 ./tbd seed              # populate with mock data

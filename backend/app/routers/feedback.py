@@ -4,7 +4,7 @@ Mounted at ``/api/v1/feedback``. Single POST endpoint — submission.
 Admin read endpoints are out of scope for v1 (separate L4.x slice
 when prioritized).
 
-Rate limit: 5/hour per client IP. The K8S-1 Redis-backed slowapi
+Rate limit: 5/hour per client IP. The K8S-1 MySQL-backed slowapi
 storage (PR #245) makes this cross-replica accurate; before that,
 each replica enforced its own private bucket. 5/hour is loose enough
 that real users won't trip it but tight enough to swallow accidental

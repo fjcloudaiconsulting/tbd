@@ -50,7 +50,7 @@ from app.services.mailgun_webhook import (
     map_event,
     verify_signature,
 )
-from app.redis_client import mark_webhook_token_seen
+from app.state_db import mark_webhook_token_seen
 
 
 logger = structlog.stdlib.get_logger()

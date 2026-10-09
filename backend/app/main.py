@@ -19,12 +19,6 @@ from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 
 from app.config import settings as app_settings
-from app import redis_client
-from redis.exceptions import AuthenticationError as RedisAuthenticationError
-from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import NoPermissionError as RedisNoPermissionError
-from redis.exceptions import RedisError
-from redis.exceptions import TimeoutError as RedisTimeoutError
 from app.database import engine
 from app.logging import setup_logging
 from app.rate_limit import limiter
@@ -308,7 +302,6 @@ async def lifespan(app: FastAPI):
         except asyncio.TimeoutError:
             app.state.scheduler_task.cancel()
     shutdown_ofx_executor()
-    await redis_client.close_client()
     await engine.dispose()
     await logger.ainfo("shutdown complete")
 
@@ -616,20 +609,16 @@ async def health():
 #
 # ``/ready`` is the ROTATION gate: "should traffic be sent to this instance".
 # It checks the database and NOTHING else, and its response contract is
-# frozen. The platform readiness probe points at it, and Redis is a
-# single shared instance — so making a Redis failure non-200 here
-# would fail every replica's readiness at once and evict the entire
-# deployment, including the data plane, which does not need Redis at all
-# (``app/deps.py`` has zero Redis references; access tokens live 15 minutes).
-# ``.github/workflows/test.yml``'s ``Migration Checks`` also boots the app
-# with no ``REDIS_URL`` and asserts this endpoint returns 200, and it feeds
-# the REQUIRED ``Backend Checks`` gate.
+# frozen. The platform readiness probe points at it.
+# ``.github/workflows/test.yml``'s ``Migration Checks`` boots the app and
+# asserts this endpoint returns 200, and it feeds the REQUIRED
+# ``Backend Checks`` gate.
 #
 # ``/health/dependencies`` is the TRUTH surface: per-dependency state, 503
 # when a required dependency is unusable. That is what a monitor and a human
-# read. On 2026-08-19 Redis was enforcing a stale password, every login
-# returned 503, and ``/ready`` still said ``{"status":"ready"}`` — the whole
-# reason this split exists.
+# read. On 2026-08-19 the session store (then Valkey) enforced a stale
+# password, every login returned 503, and ``/ready`` still said
+# ``{"status":"ready"}``: the reason this split exists.
 #
 # ⚠ SCOPE RULE for ``/health/dependencies``: every check on it is REQUIRED by
 # construction. A dependency whose failure does not change the status code
@@ -645,34 +634,8 @@ async def health():
 # takes seconds, and a false alarm on a deploy gate is the expensive failure.
 _DB_PROBE_TIMEOUT_S = 3.0
 
-# DERIVED, not picked, and deliberately NOT derived tightly.
-#
-#   documented worst case = 1.0 + 1 * (1.0 + 1.0 + 0.2) = 3.2s
-#     socket_timeout 1.0 (first PING) + one retry of
-#     (connect 1.0 + PING 1.0 + backoff cap 0.2)
-#
-# per ``redis_client.get_client()``'s own docstring. The infrastructure is
-# documented to produce idle-dropped pooled sockets (App Platform NAT / VPC
-# router, the 2026-05-19 trace), and ``_build_auth_redis_client``'s single
-# retry exists to absorb exactly that. A bound BELOW 3.2s would cancel the
-# probe mid-retry and report a healthy Redis as failing while every real login
-# absorbed the same blip.
-#
-# ⚠ 3.2s is a bound on the LIBRARY's own waits, not on wall clock. This
-# coroutine also shares an event loop with the concurrent database probe and
-# with real traffic, so scheduling delay lands on top of it. 3.5s left only
-# 0.3s of headroom, which makes the single most common real event — an
-# idle-dropped socket, the one every login absorbs transparently — report
-# ``timeout`` + 503 under load. ``scripts/smoke-test.sh`` turns that 503 into
-# a FAILED DEPLOY, so the cost of being 1.5s slow on a genuinely dead Redis is
-# far below the cost of flapping.
-#
-# 5.0 still fits under ``_DEPS_PROBE_TOTAL_TIMEOUT_S`` because the two probes
-# run CONCURRENTLY under one ``gather``: the total is max(3.0, 5.0) = 5.0, not
-# 3.0 + 5.0. ``test_f17b_probe_bounds_fit_under_the_backstop`` fences that.
-_REDIS_PROBE_TIMEOUT_S = 5.0
 
-# Pure backstop above both per-probe bounds. If it ever fires, something
+# Pure backstop above the probe's own bound. If it ever fires, something
 # pathological happened outside the probes; it must still degrade into the
 # normal body with the unfinished checks reported as "timeout" — never a 500,
 # never an empty body.
@@ -690,20 +653,6 @@ _DEPS_PROBE_TOTAL_TIMEOUT_S = 6.0
 # A new state string has to be added here before it can be returned, and the
 # endpoint's public contract cannot widen silently.
 _DB_STATES: frozenset[str] = frozenset({"ok", "timeout", "unreachable"})
-_REDIS_STATES: frozenset[str] = frozenset(
-    {
-        "ok",
-        "timeout",
-        "auth_failed",
-        "unreachable",
-        "disabled",
-        "not_configured",
-    }
-)
-# The subset of ``_REDIS_STATES`` that does NOT make the endpoint unhealthy.
-# ``disabled`` is a supported mode outside production; ``not_configured`` is
-# the same observation IN production and is deliberately absent here.
-_REDIS_HEALTHY_STATES: frozenset[str] = frozenset({"ok", "disabled"})
 _STATUS_VALUES: frozenset[str] = frozenset({"ok", "unhealthy"})
 
 
@@ -721,10 +670,9 @@ async def _select_one() -> None:
 async def _probe_database() -> str:
     """``ok`` | ``timeout`` | ``unreachable``. Never raises.
 
-    No ``auth_failed`` here, deliberately, and the asymmetry with the Redis
-    probe is intentional: MySQL's 1045 is reachable only through
-    ``exc.orig.args[0]``, two wrapper layers deep, which is too fragile to
-    claim in a contract.
+    No ``auth_failed`` here, deliberately: MySQL's 1045 is reachable only
+    through ``exc.orig.args[0]``, two wrapper layers deep, which is too
+    fragile to claim in a contract.
     """
     try:
         await asyncio.wait_for(_select_one(), _DB_PROBE_TIMEOUT_S)
@@ -735,74 +683,12 @@ async def _probe_database() -> str:
     return "ok"
 
 
-async def _probe_redis() -> str:
-    """``ok`` | ``timeout`` | ``auth_failed`` | ``unreachable`` |
-    ``disabled`` | ``not_configured``. Never raises.
-
-    ``disabled`` and ``not_configured`` are the SAME observation — an empty
-    ``redis_url`` — named by environment, so the body explains itself without
-    the reader knowing ``app_env``. Outside production, running without Redis
-    is a supported mode; in production it means nobody can log in.
-
-    ⚠ Probes the SHARED singleton with a raw ``ping()``. Never
-    ``Redis.from_url()`` (a pool per scrape of an unauthenticated endpoint,
-    measuring a path production never takes), never ``require_client()``, and
-    never a ``@_normalize_transport_errors``-wrapped helper — that decorator
-    calls ``_retire_poisoned_client``, so a monitor scrape against a blipping
-    Redis would tear down the pool real auth traffic is using.
-
-    Cancellation safety (redis==5.2.1, verified 2026-08-22): both
-    ``AbstractConnection.send_packed_command`` and ``.read_response`` carry
-    ``except BaseException: await self.disconnect(nowait=True); raise``, and
-    ``CancelledError`` is a ``BaseException`` — so a timed-out ping closes its
-    socket before propagating and cannot leave a half-read reply in the pool.
-    ``ConnectionPool.ensure_connection`` re-verifies with
-    ``can_read_destructive()`` on every checkout as a second layer.
-    ``tests/test_readiness_dependencies.py::test_f14_*`` fences that default.
-
-    ⚠ EXCEPT ORDER IS LOAD-BEARING. ``AuthenticationError`` SUBCLASSES
-    ``ConnectionError``, so catching ConnectionError first would collapse a
-    credential incident into "unreachable" and send an operator hunting a
-    network fault. The 2026-08-19 outage was a credential failure.
-
-    ⚠ ``NoPermissionError`` sits with it, and does NOT fall out of the same
-    subclassing. It is a ``ResponseError`` -> ``RedisError`` (asserted in
-    ``test_f4d_*``, exercised end-to-end by ``test_f4c_*``), so without naming
-    it explicitly a lost/narrowed Redis ACL
-    grant reports ``unreachable`` — the same misdiagnosis F4 exists to
-    prevent, one rung over: the credential is accepted, the command is not.
-    """
-    client = redis_client.get_client()
-    if client is None:
-        return (
-            "not_configured"
-            if app_settings.app_env == "production"
-            else "disabled"
-        )
-    try:
-        await asyncio.wait_for(client.ping(), _REDIS_PROBE_TIMEOUT_S)
-    except asyncio.TimeoutError:
-        return "timeout"
-    except (RedisAuthenticationError, RedisNoPermissionError):
-        return "auth_failed"
-    except RedisTimeoutError:
-        return "timeout"
-    except (RedisConnectionError, RedisError, OSError):
-        return "unreachable"
-    except Exception:  # noqa: BLE001 - incl. uvloop's bare RuntimeError, which
-        # must not turn a monitoring endpoint into a 500
-        return "unreachable"
-    return "ok"
-
-
 @app.get("/ready")
 async def ready():
     """Rotation gate. Database only — see the block comment above.
 
     ⚠ The response contract is FROZEN: same body, same two status codes.
-    Do NOT add a Redis check here; ``/health/dependencies`` is where that
-    belongs, and ``test_f10_ready_is_unchanged_when_redis_is_down`` will go
-    red if you try.
+    Do NOT add checks here; ``/health/dependencies`` is where they belong.
 
     The ``wait_for`` is the only bound on this query (see
     ``_DB_PROBE_TIMEOUT_S``); without it a wedged-but-established socket
@@ -832,53 +718,28 @@ async def ready():
 async def health_dependencies():
     """Per-dependency truth. 503 when a required dependency is unusable.
 
-    200 iff ``database == "ok"`` AND ``redis in {"ok", "disabled"}``.
-
-    Both probes ALWAYS run and are ALWAYS reported — never short-circuit on
-    the first failure. Mid-incident, "is Redis also gone?" is precisely the
-    question this endpoint exists to answer, and an early return erases it.
+    200 iff ``database == "ok"``. Sessions, single-use tokens and leases live
+    in the same database (INFRA-122), so it is the one required dependency.
 
     ⚠ Coarse strings only. This endpoint is unauthenticated, so no exception
     text, hostname, port or driver message ever reaches the body.
     """
-    results = await _gather_dependency_checks()
-    database, redis_state = results
-    healthy = database == "ok" and redis_state in _REDIS_HEALTHY_STATES
-    checks = {"database": database, "redis": redis_state}
-    if healthy:
+    database = await _gather_dependency_checks()
+    checks = {"database": database}
+    if database == "ok":
         return {"status": "ok", "checks": checks}
     # Structured, and deliberately NOT silenced in logging.py: the access log
-    # line carries only the 503, while this names which dependency failed and
-    # in what state. Together they are the "when did Redis go away" timeline
-    # that did not exist on 2026-08-19.
-    logger.error(
-        "readiness.dependencies.unhealthy",
-        database=database,
-        redis=redis_state,
-    )
+    # line carries only the 503, while this names the state.
+    logger.error("readiness.dependencies.unhealthy", database=database)
     return JSONResponse(
         status_code=503,
         content={"status": "unhealthy", "checks": checks},
     )
 
 
-async def _gather_dependency_checks() -> tuple[str, str]:
-    """Run both probes concurrently under a total backstop.
-
-    ``return_exceptions=True`` so a bug in one probe cannot take out the
-    other's already-computed answer; anything that is not a string is
-    reported as ``unreachable`` rather than crashing the endpoint.
-    """
+async def _gather_dependency_checks() -> str:
+    """Run the probe under a total backstop; never raises."""
     try:
-        raw = await asyncio.wait_for(
-            asyncio.gather(
-                _probe_database(), _probe_redis(), return_exceptions=True
-            ),
-            _DEPS_PROBE_TOTAL_TIMEOUT_S,
-        )
+        return await asyncio.wait_for(_probe_database(), _DEPS_PROBE_TOTAL_TIMEOUT_S)
     except asyncio.TimeoutError:
-        return "timeout", "timeout"
-    return (
-        raw[0] if isinstance(raw[0], str) else "unreachable",
-        raw[1] if isinstance(raw[1], str) else "unreachable",
-    )
+        return "timeout"

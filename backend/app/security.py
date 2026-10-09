@@ -31,7 +31,7 @@ MFA_EMAIL_CODE_PURPOSE = b"mfa-email-code-v1"
 def mfa_email_code_hmac(code: str) -> str:
     """HMAC an MFA email code with the purpose-bound email-code key.
 
-    Email codes live only inside a 10-minute signed token (plus a Redis
+    Email codes live only inside a 10-minute signed token (plus a used_tokens
     jti nonce with the same TTL), so unlike recovery codes there is no
     long-lived stored hash and no legacy-key fallback is needed: codes
     issued before a deploy of this scheme simply fail and the user
@@ -70,7 +70,7 @@ def default_session_ttl_seconds() -> int:
     Single source of truth for the fallback used when an org has no
     ``OrgSetting(key="session_lifetime_days")`` row, or the row is
     malformed / out of bounds. Drives the refresh cookie ``Max-Age``,
-    the refresh JWT ``exp``, the Redis primary-key TTL, AND the
+    the refresh JWT ``exp``, the session expiry, AND the
     absolute-lifetime check — unified by the 2026-05-18 session-
     stability refactor so the UI-configurable "Maximum session
     duration" setting actually controls the session length end-to-end.
@@ -93,7 +93,7 @@ async def get_org_session_ttl_seconds(
 
     Returns seconds (days × 86400). This single value is what the
     caller passes to :func:`create_refresh_token` (drives JWT ``exp``),
-    to the refresh cookie's ``Max-Age``, to the Redis primary-key TTL,
+    to the refresh cookie's ``Max-Age``, to the session expiry,
     and to the absolute-lifetime check in ``_validate_single_refresh_token``.
     """
     # Lazy import so security.py stays importable from models bootstrapping
@@ -127,8 +127,8 @@ def create_refresh_token(
     """Create a refresh token.
 
     Returns ``(token, jti, sid)``. The caller is responsible for writing
-    the corresponding Redis primary key (``auth:session:{jti}``) and
-    family-set entry (``auth:session:by_sid:{sid}``) before emitting the
+    the corresponding session family row and its first member
+    (``state_db.session_issue``) before emitting the
     ``Set-Cookie`` — see ``specs/2026-05-17-backend-session-model.md`` §5.4.
 
     ``session_created_at`` tracks when the original login happened. It is set
@@ -143,16 +143,16 @@ def create_refresh_token(
     logout (PR 4) revoke every successor.
 
     ``jti`` is normally freshly minted via ``secrets.token_urlsafe(16)``
-    (128 bits of entropy). It rotates on every issue and serves as the
-    Redis primary-key suffix. Catch-up cookie issuance (the grace-path
+    (128 bits of entropy). It rotates on every issue and is the member
+    key. Catch-up cookie issuance (the grace-path
     fix) passes the EXISTING successor jti so the new cookie points at
-    a primary key that is already live in Redis; that path must NOT
-    write Redis again, because the row already exists from the winning
+    a head jti that is already live in the session store; that path must NOT
+    write the store again, because the row already exists from the winning
     rotation. All other callers leave this ``None``.
 
     ``ttl_seconds`` is the session TTL in seconds — drives the JWT
-    ``exp`` claim AND must match the cookie ``Max-Age`` AND the Redis
-    primary-key TTL at the caller's set_cookie / session_issue sites.
+    ``exp`` claim AND must match the cookie ``Max-Age`` AND the family expiry
+    at the caller's set_cookie / session_issue sites.
     Callers that know the org context should pass
     ``await get_org_session_ttl_seconds(db, org_id)``. When ``None``
     the system default applies — only useful for tests or contexts
@@ -231,10 +231,9 @@ def create_mfa_email_token(user_id: int, code: str) -> tuple[str, str]:
     jwt_secret_key so the code hash cannot be brute-forced offline even
     though JWT payloads are readable.
 
-    Returns (token, jti). The caller stores the jti in Redis (key with the
-    same TTL) and deletes it on first successful verify to enforce
-    single-use semantics. Without Redis bookkeeping the token is replayable
-    within its TTL.
+    Returns (token, jti). The caller claims the jti in ``used_tokens`` on the first
+    successful verify to enforce single-use semantics. Without that
+    bookkeeping the token is replayable within its TTL.
     """
     expire = datetime.now(timezone.utc) + timedelta(seconds=MFA_EMAIL_TOKEN_TTL_SECONDS)
     code_hmac = mfa_email_code_hmac(code)

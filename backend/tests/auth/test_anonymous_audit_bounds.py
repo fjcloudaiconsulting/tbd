@@ -43,7 +43,7 @@ What each group fences, and the wrong implementation it kills:
   ⚠ It carries a POSITIVE CONTROL: ``assert calls == []`` is a no-op-shaped
   assertion that a detached spy satisfies for free, so the same test drives a
   LIVE cookie through and asserts the spy fires. Without it, rewriting
-  ``auth.py`` to ``from app.redis_client import session_revoke_family`` would
+  ``auth.py`` to ``from app.state_db import session_revoke_family`` would
   make this test vacuously green AND silently disarm its documented mutant.
 
 * **F6 — the step-up callback's four POST-``state_ok`` suppressions.** The
@@ -71,8 +71,7 @@ Rate-limiter notes. The singleton bleeds between tests, so ``reset_limiter``
 runs before AND after. Under ``TestClient`` the peer is the literal
 ``"testclient"`` (it fails ``_is_trusted_proxy``, so ``get_client_ip`` returns
 it unchanged), giving one deterministic key per module. Storage is
-``MemoryStorage`` in CI (``REDIS_URL`` unset) and Redis in the dev container;
-both count identically and ``reset()`` works on both.
+the rate-limit database (a per-worker SQLite file in tests); ``reset()`` clears it.
 
 ⚠ The limiter is a PROCESS SINGLETON, so ``sso-stepup/callback``'s ``60/hour``
 is effectively per test SESSION, not per test. This module burns 61 of the 60
@@ -97,6 +96,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app import state_db
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_session_factory
@@ -126,11 +126,6 @@ RESET_PASSWORD_LIMIT = 10
 GOOGLE_LIMIT = 60
 GOOGLE_CALLBACK_LIMIT = 60
 STEPUP_CALLBACK_LIMIT = 60
-
-
-@pytest.fixture
-def fake_redis(_autouse_fake_redis):
-    yield _autouse_fake_redis
 
 
 @pytest_asyncio.fixture
@@ -260,7 +255,7 @@ def _delete_cookies(headers) -> list[str]:
 # ══════════════════════════════════════════════════════════════════════════
 
 
-async def test_f1_logout_rate_limited_at_exact_boundary(session_factory, fake_redis):
+async def test_f1_logout_rate_limited_at_exact_boundary(session_factory):
     """Calls 1..120 return 200; call 121 returns 429.
 
     Kills: the decorator deleted, and the number loosened.
@@ -346,7 +341,7 @@ async def test_f1_stepup_callback_rate_limited_at_exact_boundary(
 
 
 async def test_f2_leg1_anonymous_logout_writes_no_row_but_still_clears(
-    session_factory, fake_redis
+    session_factory
 ):
     """No cookie, no bearer -> 200, both delete-cookie headers, ZERO rows.
 
@@ -362,7 +357,7 @@ async def test_f2_leg1_anonymous_logout_writes_no_row_but_still_clears(
     assert await _terminated(session_factory) == []
 
 
-async def test_f2_leg2_corrupt_cookie_logout_writes_no_row(session_factory, fake_redis):
+async def test_f2_leg2_corrupt_cookie_logout_writes_no_row(session_factory):
     """Garbage cookie, no bearer -> 200, ZERO rows.
 
     Proves the decode-failure path writes nothing. It exercises no term the
@@ -377,7 +372,7 @@ async def test_f2_leg2_corrupt_cookie_logout_writes_no_row(session_factory, fake
     assert await _terminated(session_factory) == []
 
 
-async def test_f2_leg3_bearer_only_logout_writes_row(session_factory, fake_redis):
+async def test_f2_leg3_bearer_only_logout_writes_row(session_factory):
     """Valid bearer, no cookie -> ONE row with sid_count == 0.
 
     Kills the over-tight mutant ``if sids:``, which would silently drop the
@@ -397,8 +392,8 @@ async def test_f2_leg3_bearer_only_logout_writes_row(session_factory, fake_redis
     assert rows[0].actor_user_id == seeded["user_id"]
 
 
-async def test_f2_leg4_valid_cookie_no_bearer_writes_row(session_factory, fake_redis):
-    """Signature-valid cookie, empty Redis, no bearer -> ONE row, sid_count 1.
+async def test_f2_leg4_valid_cookie_no_bearer_writes_row(session_factory):
+    """Signature-valid cookie, empty store, no bearer -> ONE row, sid_count 1.
 
     ⚠ This leg does NOT kill ``if actor_user_id is not None:``, and an earlier
     docstring here claimed it did. Measured: the row comes back with
@@ -409,7 +404,7 @@ async def test_f2_leg4_valid_cookie_no_bearer_writes_row(session_factory, fake_r
     its docstring explains why. Do not delete leg 5 as redundant with this one.
 
     What this leg genuinely pins is the cookie-only path's detail payload:
-    a decodable cookie yields ``sid_count == 1`` while an empty Redis family
+    a decodable cookie yields ``sid_count == 1`` while an empty family
     yields ``jti_count == 0``. That pair is what a "count the jtis, not the
     sids" mutant breaks.
     """
@@ -432,7 +427,7 @@ async def test_f2_leg4_valid_cookie_no_bearer_writes_row(session_factory, fake_r
 
 
 async def test_f2_leg5_sid_without_resolvable_actor_writes_row(
-    session_factory, fake_redis
+    session_factory
 ):
     """A revoked family with NO resolvable actor still writes its row.
 
@@ -751,7 +746,7 @@ async def test_f3_leg9_retained_row_truncates_attacker_text(
 
 
 async def test_f4_expired_refresh_cookie_logout_does_not_revoke_family(
-    session_factory, fake_redis, monkeypatch
+    session_factory, monkeypatch
 ):
     """An EXPIRED but signature-valid refresh cookie does not revoke a family.
 
@@ -760,10 +755,10 @@ async def test_f4_expired_refresh_cookie_logout_does_not_revoke_family(
     KEEPS, so that a future "fix" implementing the old comment's claim with
     ``options={"verify_exp": False}`` cannot land as a silent no-op.
 
-    Why we keep it: the JWT ``exp``, the cookie ``Max-Age``, the Redis primary
-    TTL and the family-set TTL are all the same ``ttl_seconds`` set together,
-    so a jti whose JWT has expired has no live primary key to revoke, and any
-    family still alive is named by an unexpired head cookie that decodes fine.
+    Why we keep it: the JWT ``exp``, the cookie ``Max-Age``, the family's
+    ``expires_at`` are all the same ``ttl_seconds`` set together, so a jti
+    whose JWT has expired has no live family to revoke, and any family
+    still alive is named by an unexpired head cookie that decodes fine.
 
     Mutant that turns it red: give ``decode_refresh_jti_sid`` the
     ``verify_exp: False`` option.
@@ -771,7 +766,7 @@ async def test_f4_expired_refresh_cookie_logout_does_not_revoke_family(
     ⚠ ``assert calls == []`` is a no-op-shaped assertion: a spy that was never
     wired satisfies it for free. The second half of this test is the POSITIVE
     CONTROL — the same spy, a LIVE cookie, and an assertion that it fires. If
-    ``auth.py`` ever switches to ``from app.redis_client import
+    ``auth.py`` ever switches to ``from app.state_db import
     session_revoke_family``, the monkeypatch stops intercepting and the
     control goes red, instead of this test going vacuously green and its
     documented mutant going quietly undetectable.
@@ -792,7 +787,7 @@ async def test_f4_expired_refresh_cookie_logout_does_not_revoke_family(
     )
 
     calls: list[str] = []
-    from app import redis_client as rc
+    rc = state_db
 
     async def _spy(sid: str):
         calls.append(sid)

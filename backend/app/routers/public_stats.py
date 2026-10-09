@@ -6,19 +6,19 @@ the public bundle and protect nothing, so this endpoint is intentionally
 PUBLIC and returns only a single non-sensitive integer — the
 founding-members count the landing page advertises.
 
-Hardened: cached in Redis (5 min) to absorb read volume, rate-limited,
-and it never 500s — a Redis or DB hiccup degrades to a best-effort
-direct count. Excludes the configured non-real usernames (smoke / seed
+Hardened: cached in process (5 min) to absorb read volume, rate-limited,
+and it never 500s: a DB hiccup degrades to 0. Excludes the configured non-real usernames (smoke / seed
 accounts) so the public number reflects real founders only.
 """
 from __future__ import annotations
+
+import time
 
 import structlog
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import redis_client
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
@@ -27,6 +27,10 @@ from app.rate_limit import limiter
 logger = structlog.stdlib.get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/public", tags=["public"])
+
+# In-process cache (per worker): (monotonic time, count).
+_CACHE_TTL_S = 300
+_cache: tuple[float, int] | None = None
 
 
 @router.get("/founder-count")
@@ -38,12 +42,9 @@ async def founder_count(
     """Return ``{"count": <int>}`` — the number of active founding members,
     excluding the configured non-real usernames. Public, cached, never 500s.
     """
-    try:
-        cached = await redis_client.founder_count_cache_get()
-    except Exception:  # noqa: BLE001 — cache is best-effort
-        cached = None
-    if cached is not None:
-        return {"count": cached}
+    global _cache
+    if _cache is not None and time.monotonic() - _cache[0] < _CACHE_TTL_S:
+        return {"count": _cache[1]}
 
     stmt = (
         select(func.count())
@@ -69,8 +70,5 @@ async def founder_count(
         logger.warning("public.founder_count.db_failed")
         return {"count": 0}
 
-    try:
-        await redis_client.founder_count_cache_set(count)
-    except Exception:  # noqa: BLE001 — caching failure must not 500 the read
-        pass
+    _cache = (time.monotonic(), count)
     return {"count": count}

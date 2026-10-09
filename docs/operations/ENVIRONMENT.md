@@ -71,10 +71,9 @@ the env-var name (uppercased).
 | `DB_MAX_OVERFLOW` | no | `10` | `.env` | unset | tbd-prod manifest (optional override) | no | SQLAlchemy max overflow per replica. See K8S-3 (PR #251). | Default 10 used. |
 | `JWT_SECRET_KEY` | yes | none (placeholder rejected) | `.env` | conftest sets a long fixture value | tbd-prod secret (also on the migrate init container) | yes | HS256 key for access / refresh / reset / step-up / invite / verify-email tokens. Also keyed by recovery-code HMAC and MFA Fernet derivation. | Backend refuses to boot (`field_validator` rejects placeholder; min length 32). |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | no | `15` | `.env` | unset | inherit default | no | Access-token lifetime. | Default 15. |
-| `SESSION_LIFETIME_DAYS` | no | `30` | `.env` | unset | inherit default | no | Session TTL in days — drives the refresh cookie `Max-Age`, the refresh JWT `exp` claim, the Redis primary-key TTL, AND the absolute-lifetime check, all in lockstep. Per-org override via `OrgSetting(key="session_lifetime_days")` (set from the Security settings page; 1-365, validated). Validator enforces `1 <= v <= 365`; out-of-range values refuse to boot. Unified into a single TTL by the 2026-05-18 session-stability refactor — previously split between `REFRESH_IDLE_TTL_DAYS` (idle) and `SESSION_LIFETIME_DAYS` (absolute), which left the org setting decorative for any value above the idle TTL. | Default 30. |
+| `SESSION_LIFETIME_DAYS` | no | `30` | `.env` | unset | inherit default | no | Session TTL in days — drives the refresh cookie `Max-Age`, the refresh JWT `exp` claim, the session row TTL, AND the absolute-lifetime check, all in lockstep. Per-org override via `OrgSetting(key="session_lifetime_days")` (set from the Security settings page; 1-365, validated). Validator enforces `1 <= v <= 365`; out-of-range values refuse to boot. Unified into a single TTL by the 2026-05-18 session-stability refactor — previously split between `REFRESH_IDLE_TTL_DAYS` (idle) and `SESSION_LIFETIME_DAYS` (absolute), which left the org setting decorative for any value above the idle TTL. | Default 30. |
 | `COOKIE_SECURE` | yes for prod | `true` | `.env` set to `false` for HTTP | `false` via conftest | tbd-prod manifest (`true`) | no | Marks refresh / step-up / sso-state cookies `Secure`. | If `true` on HTTP, browsers drop the cookie and login loops. |
 | `AUTH_DEBUG_LOGGING` | no | `false` | `.env` | `true` via conftest autouse | unset (defaults to `false`) | no | Gates the `auth.refresh.rejected` structlog events emitted at every terminal-401 raise site in `/auth/refresh`. Default `false` keeps INFO logs quiet under normal operation. Flip to `true` during incident triage to capture the `reason` enum, then back to `false` once the diagnosis is in hand. The 401 itself is NOT gated — only the diagnostic emission. | Operator can't distinguish the eleven 401 paths in logs until the flag is on. |
-| `REDIS_URL` | yes for prod | `""` | `.env` (`redis://redis:6379/0`) | unset (in-memory fallback) | tbd-prod secret | yes (prod) | Auth session store and MFA email-fallback codes. Rate limits do not use it: they count in MySQL (INFRA-121). | **In production the backend refuses to boot** (TBD-438) — Redis is the auth session store, so every token-issue path would fail closed. Outside production MFA email-fallback is unavailable. |
 | `MAILGUN_API_KEY` | no | `""` | `.env` (empty for console logging) | unset | tbd-prod secret | yes | Mailgun API key. When empty, `send_email` logs subject/recipient only. | Email sends are silently skipped (dev-mode logger). |
 | `MAILGUN_DOMAIN` | with `MAILGUN_API_KEY` | `""` | `.env` | unset | tbd-prod manifest (`m.thebetterdecision.com`) | no | Mailgun sending domain. | Mailgun call URL is malformed; send fails. |
 | `MAILGUN_REGION` | no | `""` | `.env` (empty for US) | unset | tbd-prod manifest (`eu`) | no | `eu` selects `api.eu.mailgun.net`. Empty selects the US endpoint. | Wrong region returns Mailgun 401 / 404. |
@@ -183,7 +182,6 @@ declared separately from the backend container in the same manifest.
 |---|---|---|---|
 | `APP_ENV` | yes | tbd-prod manifest (`production`) | Selects prod code paths. |
 | `DATABASE_URL` | yes | tbd-prod secret | Migration target. Same Secret key as the backend container. |
-| `REDIS_URL` | yes | tbd-prod secret | Required in production by `Settings()` at import (TBD-438); without it the migrate container crashes before alembic runs. |
 | `API_TOKEN_HMAC_KEY` | yes | tbd-prod secret | Required in production by `Settings()` at import, same reason. |
 | `JWT_SECRET_KEY` | yes | tbd-prod secret | Required because `backend/app/config.py` instantiates `Settings()` at import; the JWT validator refuses the placeholder. Without this the migrate container crashes before alembic runs. See PR #202. |
 
@@ -205,7 +203,7 @@ deploy contract.
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | backend | SQLAlchemy engine pool sizing. Defaults safe for single-replica; override when scaling HPA so `replicas * (pool_size + max_overflow)` stays under the managed-DB connection cap. | PR #251 (K8S-3) |
 | `COOKIE_SECURE` | backend | When `true`, cookies are flagged `Secure` and browsers refuse to send them over HTTP. Must be `false` for local-dev HTTP and `true` for prod HTTPS. | `backend/app/config.py` |
 | `AUTH_DEBUG_LOGGING=true` | backend | Enables the `auth.refresh.rejected` structured log event at every terminal-401 raise site in `/auth/refresh`. Each event carries a stable `reason` enum and 8-char SHA-256 prefixes of jti/sid (raw values are never logged). Flip on during incident triage; disable when done. The 401 still fires regardless of the flag — only the diagnostic emission is gated. | `backend/app/routers/auth.py` (`_log_refresh_rejected`), `backend/app/config.py` |
-| `APP_ENV=production` | backend | Disables lifespan migrations (delegates to the `migrate` init container), tightens MFA fallback (requires Redis), opens production-only auth paths. | `backend/app/main.py`, `backend/app/routers/auth.py` |
+| `APP_ENV=production` | backend | Disables lifespan migrations (delegates to the `migrate` init container), opens production-only auth paths. | `backend/app/main.py`, `backend/app/routers/auth.py` |
 | `MAILGUN_API_KEY=""` | backend | When empty, `send_email` logs the recipient and subject and returns without calling Mailgun. Use for local dev. | `backend/app/services/email_service.py` |
 
 ---
@@ -220,7 +218,6 @@ in the manifests, secrets in SOPS-encrypted `*.secret.yaml` (see the aws-infra
 These are secrets (never plain env):
 
 - `DATABASE_URL`
-- `REDIS_URL`
 - `JWT_SECRET_KEY`
 - `MFA_ENCRYPTION_KEY`
 - `MFA_RECOVERY_HMAC_KEY` (only when adopted; optional)

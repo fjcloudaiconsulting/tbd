@@ -62,8 +62,8 @@ PASSWORD = "S3cret-Pass-1!"
 # engine and the request 500s — a failure that looks exactly like a fence
 # going red for the right reason but is not), `RequestContextMiddleware`, the
 # `Plan` row `subscription_service.create_trial` requires, and `limiter.reset()`.
-# Login's `_issue_refresh_session` needs Redis; `tests/conftest.py`'s autouse
-# `_autouse_fake_redis` supplies it.
+# Login's `_issue_refresh_session` needs the session store; `tests/conftest.py`'s autouse
+# `_state_engine` supplies it.
 
 
 @pytest_asyncio.fixture

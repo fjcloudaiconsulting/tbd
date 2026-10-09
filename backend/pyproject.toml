@@ -33,7 +33,6 @@ app = [
     "pyotp==2.10.0",
     "qrcode[pil]==8.2",
     "cryptography==50.0.2",
-    "redis==5.3.1",
     "ofxtools~=0.9.5",
     # INFRA-105: own spans (app/tracing.py) and the MeterProvider FastAPI's native HTTP
     # metrics record on. Same pins as Ziftbook; no contrib instrumentation packages.
@@ -66,7 +65,6 @@ mcp = [
     "httpx==0.28.1",
     "slowapi==0.1.10",
     "cryptography==50.0.2",
-    "redis==5.3.1",
 ]
 
 [tool.uv]

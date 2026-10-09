@@ -76,14 +76,6 @@ def _set_ai_key(monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
-def _stub_redis(monkeypatch):
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client",
-        lambda: None,
-    )
-
-
 @pytest_asyncio.fixture
 async def seeded_org(db_session: AsyncSession) -> Organization:
     """Minimal org with a user + routing so the service can resolve a model."""

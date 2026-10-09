@@ -17,7 +17,7 @@ import { logger } from "./logger";
 //     below). Direct callers tend to log `err`, which on a fetch failure
 //     can contain request headers including cookies and bearer tokens.
 //   - Native `fetch` has no built-in timeout, and Next.js does not inject
-//     one. When the backend wedges (e.g. Redis socket half-broken cascading
+//     one. When the backend wedges (e.g. a session-store socket half-broken cascading
 //     through the rate-limit path) an awaited fetch inside an RSC never
 //     resolves, the render never completes, and the page stays on its
 //     loading.tsx Suspense fallback forever. This helper bounds every

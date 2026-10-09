@@ -58,17 +58,17 @@ def _parse_lines(buf: io.StringIO) -> list[dict]:
     return [json.loads(line) for line in buf.getvalue().strip().splitlines() if line.strip()]
 
 
-def test_redis_client_logger_emits_op_and_request_id(captured_stream) -> None:
-    """Contract: a structured Redis breadcrumb must include both the
+def test_state_db_logger_emits_op_and_request_id(captured_stream) -> None:
+    """Contract: a structured state-store breadcrumb must include both the
     operator-visible op field and the request_id from contextvars in
     the rendered JSON. If either is missing in production, the
     breadcrumbs are useless for correlation."""
-    import app.redis_client as rc
+    import app.state_db as rc
 
     structlog.contextvars.bind_contextvars(request_id="req-test-1234")
-    rc.logger.info("redis.call.start", op="session_validate")
+    rc.logger.info("state.call.start", op="session_validate")
     rc.logger.info(
-        "redis.call.ok",
+        "state.call.ok",
         op="session_validate",
         duration_ms=2.3,
     )
@@ -82,26 +82,26 @@ def test_redis_client_logger_emits_op_and_request_id(captured_stream) -> None:
         assert event["request_id"] == "req-test-1234", (
             f"request_id field missing from rendered output: {event}"
         )
-    assert events[0]["event"] == "redis.call.start"
-    assert events[1]["event"] == "redis.call.ok"
+    assert events[0]["event"] == "state.call.start"
+    assert events[1]["event"] == "state.call.ok"
     assert events[1]["duration_ms"] == 2.3
 
 
-def test_redis_retired_warning_emits_reason_and_request_id(captured_stream) -> None:
-    """Same contract for the existing ``redis.client.retired`` warning
+def test_state_db_warning_emits_reason_and_request_id(captured_stream) -> None:
+    """Same contract for a ``state.client.retired`` warning
     — the ``reason`` field must reach the rendered JSON. This was
     silently broken before the 2026-05-20 logger switch because the
     stdlib-style ``extra={"reason": ...}`` was dropped by
     ProcessorFormatter."""
-    import app.redis_client as rc
+    import app.state_db as rc
 
     structlog.contextvars.bind_contextvars(request_id="req-retired-7")
-    rc.logger.warning("redis.client.retired", reason="OSError: BrokenPipeError: ...")
+    rc.logger.warning("state.client.retired", reason="OSError: BrokenPipeError: ...")
 
     events = _parse_lines(captured_stream)
     assert len(events) == 1
     event = events[0]
-    assert event["event"] == "redis.client.retired"
+    assert event["event"] == "state.client.retired"
     assert event["reason"] == "OSError: BrokenPipeError: ...", (
         f"reason field missing from rendered output: {event}"
     )

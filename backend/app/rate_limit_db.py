@@ -37,7 +37,7 @@ def _build_engine(url: str | None = None) -> Engine:
             "read_timeout": 2,
             "write_timeout": 2,
             # server-side lock wait ends with the client's
-            "init_command": "SET SESSION innodb_lock_wait_timeout=1",
+            "init_command": "SET SESSION innodb_lock_wait_timeout=1, time_zone='+00:00'",
         },
         isolation_level="READ COMMITTED",
         pool_size=2,

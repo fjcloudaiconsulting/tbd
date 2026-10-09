@@ -16,16 +16,11 @@ services:
     # ⚠ Production is 8.4.11 specifically; this pin floats within 8.4.
     restart: unless-stopped
 
-  redis:
-    restart: unless-stopped
-
   migrate:
     build:
       context: ./backend
       dockerfile: Dockerfile
     env_file: .env
-    environment:
-      - REDIS_URL=redis://redis:6379/0
     depends_on:
       mysql:
         condition: service_healthy
@@ -36,13 +31,10 @@ services:
     restart: unless-stopped
     environment:
       - APP_ENV=production
-      - REDIS_URL=redis://redis:6379/0
       # TBD-561: no dev default in production; the shared pepper must be set.
       - API_TOKEN_HMAC_KEY=${API_TOKEN_HMAC_KEY:?set API_TOKEN_HMAC_KEY in .env}
     depends_on:
       mysql:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully

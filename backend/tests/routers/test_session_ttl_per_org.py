@@ -2,7 +2,7 @@
 
 Before this fix, ``session_lifetime_days`` on ``OrgSetting`` only acted as
 an absolute-lifetime cap, while the cookie ``Max-Age``, the refresh JWT
-``exp``, and the Redis primary-key TTL were independently driven by
+``exp``, and the family expiry were independently driven by
 ``refresh_idle_ttl_days`` (system-only). The org-level "Maximum session
 duration" UI control was therefore decorative for any value above the
 system idle TTL (30 days default) — the user's session died at 30 days
@@ -324,7 +324,7 @@ async def test_refresh_rotation_uses_current_per_org_session_lifetime_days(
 ) -> None:
     """When the admin changes the org's setting mid-session, the NEXT
     /refresh rotation must apply the new TTL to the rotated cookie /
-    JWT / Redis row — not the value baked into the prior token."""
+    JWT / family row — not the value baked into the prior token."""
     seed = await _seed_user(session_factory, org_session_lifetime_days=7)
     refresh = issue_test_refresh_token(
         seed["user_id"], ttl_seconds=7 * 86400

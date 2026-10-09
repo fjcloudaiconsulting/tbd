@@ -51,3 +51,17 @@ async def test_platform_pat_job_runs_under_the_tick_lock(monkeypatch):
     second = await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600)
     assert second is False
     assert calls["n"] == 1  # lock held -> platform job skipped too
+
+
+async def test_tick_runs_again_once_the_lease_expires(monkeypatch):
+    from tests.conftest import expire_lease
+
+    ran = {"n": 0}
+    async def _sweep(today, **k): ran["n"] += 1
+    monkeypatch.setattr(L, "run_all_due", _sweep)
+    await _patch_platform_job(monkeypatch)
+    assert await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is True
+    assert await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is False
+    expire_lease(L.LOCK_KEY)
+    assert await L.run_one_tick(datetime.date(2026, 7, 4), lock_ttl=600) is True
+    assert ran["n"] == 2

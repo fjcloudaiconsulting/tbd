@@ -47,17 +47,16 @@ def _mint_refresh_at(user_id: int, iat: datetime) -> str:
     ``session_created_at``) so tests can place tokens above or below
     ``token_cutoff`` deterministically without real sleeps.
 
-    PR 2: stamp a fresh ``jti`` + ``sid`` AND seed the autouse fake
-    Redis so the validation chain's primary-key probe accepts the
-    token. Without the seed every legacy/current-cookie test in this
-    file would 401 on ``"Session has been invalidated"`` regardless of
-    the iat-vs-cutoff outcome.
+    PR 2: stamp a fresh ``jti`` + ``sid`` AND seed the session family so
+    the validation chain's head probe accepts the token. Without the seed
+    every legacy/current-cookie test in this file would 401 on
+    ``"Session has been invalidated"`` regardless of the iat-vs-cutoff
+    outcome.
     """
-    import json
     import secrets as _secrets
     import uuid as _uuid
 
-    from app import redis_client as _rc
+    from app import state_db
 
     expire = iat + timedelta(days=app_settings.session_lifetime_days)
     jti = _secrets.token_urlsafe(16)
@@ -74,12 +73,7 @@ def _mint_refresh_at(user_id: int, iat: datetime) -> str:
     token = _pyjwt.encode(
         payload, app_settings.jwt_secret_key, algorithm=app_settings.jwt_algorithm
     )
-    client = _rc.get_client()
-    if client is not None and hasattr(client, "_kv"):
-        client._kv[f"auth:session:{jti}"] = json.dumps(
-            {"user_id": user_id, "sid": sid}, separators=(",", ":")
-        )
-        client._sets[f"auth:session:by_sid:{sid}"].add(jti)
+    state_db._issue(jti, sid, user_id, app_settings.session_lifetime_days * 86400)
     return token
 
 
@@ -556,10 +550,9 @@ async def test_issue_tokens_helper_emits_legacy_cleanup():
     Pinning the helper directly avoids the cost of a full MFA-setup
     fixture while still proving the cleanup is wired.
 
-    PR 2 made ``_issue_tokens`` async because it now writes the Redis
-    primary key + family set before returning. The autouse fake-Redis
-    fixture in ``conftest.py`` keeps this test working without a real
-    Redis dependency.
+    PR 2 made ``_issue_tokens`` async because it now writes the session
+    family before returning. The autouse state engine in ``conftest.py``
+    keeps this test working without a real MySQL.
     """
     from fastapi import Response
     from app.routers.auth import _issue_tokens
