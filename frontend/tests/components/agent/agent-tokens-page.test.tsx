@@ -172,6 +172,14 @@ describe("tokens", () => {
     await waitFor(() => expect(body("PATCH /api/v1/agent/tokens/5")).toEqual({ scope: "agent:read" }));
   });
 
+  it("F-581-DOWN: a write token can only drop to read, never rise to auto", async () => {
+    routes["GET /api/v1/agent/tokens"] = () => json(200, { items: [token({ scope: "agent:write" })], total: 1, limit: 1, offset: 0 });
+    renderWithSWR(<AgentTokensPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Lower access for Claude Desktop" }));
+    const options = within(screen.getByRole("dialog")).getAllByRole("radio").map((r) => (r as HTMLInputElement).value);
+    expect(options).toEqual(["agent:read"]);
+  });
+
   it("a read token offers no lowering", async () => {
     routes["GET /api/v1/agent/tokens"] = () => json(200, { items: [token({ scope: "agent:read" })], total: 1, limit: 1, offset: 0 });
     renderWithSWR(<AgentTokensPage />);
