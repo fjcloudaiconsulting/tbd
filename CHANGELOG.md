@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.295.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.294.0...v0.295.0) (2026-10-09)
+
+
+### Features
+
+* **oauth:** MCP OAuth 2.1 authorization server (TBD-587) ([#898](https://github.com/fjcloudaiconsulting/tbd/issues/898)) ([6771f9e](https://github.com/fjcloudaiconsulting/tbd/commit/6771f9ee7672124c8f33ded1dbccca18b8f16a5b))
+* **telemetry:** own allowlisted spans and native HTTP metrics (INFRA-105) ([#897](https://github.com/fjcloudaiconsulting/tbd/issues/897)) ([4289b8d](https://github.com/fjcloudaiconsulting/tbd/commit/4289b8d92ed20e02ba5b5268a9a10facc0fe5c46))
+
+
+### Bug Fixes
+
+* **telemetry:** give the OAuth client purge its own job span (TBD-587) ([#903](https://github.com/fjcloudaiconsulting/tbd/issues/903)) ([2ba94cc](https://github.com/fjcloudaiconsulting/tbd/commit/2ba94cce0799ba098044abd41a4049241d2974cb))
+
 ## [0.294.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.293.1...v0.294.0) (2026-10-09)
 
 
