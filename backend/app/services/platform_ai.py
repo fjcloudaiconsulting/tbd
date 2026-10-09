@@ -72,7 +72,7 @@ PLATFORM_CAPABILITIES: dict[str, list[str]] = {
 
 # OpenAI chat models vetted to accept ``max_tokens`` (reasoning models need
 # ``max_completion_tokens`` and would 400). C12: a forcing test pins every
-# priced OpenAI chat model into this set.
+# OpenAI chat model in ``PLATFORM_MODELS`` into this set.
 OPENAI_ACCEPTS_MAX_TOKENS = frozenset({"gpt-4o", "gpt-4o-mini"})
 
 _PRESET_URL = {p["key"]: p["base_url"] for p in OPENAI_COMPATIBLE_PRESETS}
