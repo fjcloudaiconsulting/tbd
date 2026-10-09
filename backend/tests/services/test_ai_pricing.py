@@ -15,6 +15,7 @@ import pytest
 
 from app.services.ai_pricing import (
     MODEL_PRICING,
+    OPENROUTER_IDS,
     estimate_cost_cents,
     get_pricing,
 )
@@ -157,3 +158,16 @@ def test_ids_match_exactly_never_by_prefix(model, cheaper_sibling):
     cheaper id it happens to start with."""
     assert cheaper_sibling in MODEL_PRICING
     assert get_pricing(model) is MODEL_PRICING["_default"]
+
+
+def test_openrouter_ids_share_the_row_of_the_same_model():
+    """OpenRouter names Anthropic models with dots (``claude-sonnet-5.5``) and
+    OpenAI/Google models as-is, behind a vendor prefix. Each alias must point
+    at that same model's first-party row, not a sibling with another price."""
+    for or_id, first_party in OPENROUTER_IDS.items():
+        vendor, name = or_id.split("/")
+        assert vendor in ("anthropic", "openai", "google"), or_id
+        assert first_party == (
+            name.replace(".", "-") if vendor == "anthropic" else name
+        ), or_id
+        assert MODEL_PRICING[or_id] is MODEL_PRICING[first_party], or_id
