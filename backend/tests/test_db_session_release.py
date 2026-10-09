@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import BackgroundTasks, Depends, FastAPI
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import object_session
 from sqlalchemy.pool import AsyncAdaptedQueuePool
@@ -76,6 +77,26 @@ async def test_forgot_password_releases_connection_before_email_task(engine, mon
         resp = await client.post(
             "/api/v1/auth/forgot-password", json={"email": "alice@acme.io"}
         )
+
+    assert resp.status_code == 200
+    assert seen == [0]
+
+
+async def test_read_only_route_releases_connection_before_background_task(engine):
+    # Same check without depending on forgot-password staying read-only: a
+    # commit there would release the connection under the old timing too.
+    app = FastAPI()
+    seen: list[int] = []
+
+    @app.get("/read")
+    async def read(background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+        await db.execute(text("SELECT 1"))
+        background_tasks.add_task(lambda: seen.append(engine.pool.checkedout()))
+        return {}
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/read")
 
     assert resp.status_code == 200
     assert seen == [0]

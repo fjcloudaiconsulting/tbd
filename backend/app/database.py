@@ -100,8 +100,9 @@ async def _session():
 
 # A request-scoped yield dependency exits only after BackgroundTasks have run,
 # so the session closes when the handler returns instead (INFRA-128). get_db is
-# a plain coroutine so every `Depends(get_db)` shares one cached session; never
-# `Depends(_session)` elsewhere (another cache key, another session). Code that
+# a plain coroutine so every `Depends(get_db)` shares one cached session.
+# Use _session only via get_db: its cache key includes the scope, so another
+# scope on `Depends(_session)` gives the request a second session. Code that
 # needs the DB after the handler returns opens its own session.
 async def get_db(session: AsyncSession = Depends(_session, scope="function")) -> AsyncSession:
     return session
