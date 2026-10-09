@@ -109,8 +109,17 @@ def test_cost_integer_only_math_avoids_float_truncation():
         ("gpt-4o", 500_000, 500_000, 625),
         # claude-sonnet-4-7 (300/1500): 1_000_000 + 0 = 300 cents.
         ("claude-sonnet-4-7", 1_000_000, 0, 300),
-        # claude-haiku-4-5 (80/400): 0 + 1_000_000 = 400 cents.
-        ("claude-haiku-4-5", 0, 1_000_000, 400),
+        # claude-haiku-4-5 (100/500, TBD-618 correction): 0 + 1_000_000 = 500.
+        ("claude-haiku-4-5", 0, 1_000_000, 500),
+        # TBD-618: the current Claude models at their verified prices.
+        ("claude-sonnet-5-5", 1_000_000, 1_000_000, 200 + 1000),
+        ("claude-opus-5-5", 1_000_000, 1_000_000, 400 + 2000),
+        ("claude-fable-5-1", 1_000_000, 1_000_000, 1000 + 5000),
+        # Haiku 5.5 is priced by prompt size; the table holds the higher
+        # (>100K-token prompt) rate so a long prompt never under-meters.
+        ("claude-haiku-5-5", 1_000_000, 1_000_000, 50 + 250),
+        # OpenRouter spells the same model with dots and a vendor prefix.
+        ("anthropic/claude-sonnet-5.5", 1_000_000, 1_000_000, 200 + 1000),
     ],
 )
 def test_cost_table_values(model, p_tokens, c_tokens, expected):
@@ -122,3 +131,29 @@ def test_cost_table_values(model, p_tokens, c_tokens, expected):
         )
         == expected
     )
+
+
+def test_tbd618_demo_ledger_cost_for_claude_sonnet_5_5():
+    """The 2026-10-09 demo turn: 62,342 in / 1,898 out on claude-sonnet-5-5
+    ($2 / $10 per 1M) costs 14,366,400 / 1M = 14.37 -> 15 cents, not the
+    ``_default`` 105."""
+    cents = estimate_cost_cents(
+        model="claude-sonnet-5-5", prompt_tokens=62_342, completion_tokens=1_898
+    )
+    assert cents == 15
+
+
+@pytest.mark.parametrize(
+    "model,cheaper_sibling",
+    [
+        ("claude-sonnet-5-5-20260101", "claude-sonnet-5-5"),
+        ("gpt-6-sol-pro", "gpt-6-sol"),
+        ("anthropic/claude-sonnet-5.5:batch", "anthropic/claude-sonnet-5.5"),
+    ],
+)
+def test_ids_match_exactly_never_by_prefix(model, cheaper_sibling):
+    """A suffixed id (dated snapshot, ``-pro`` tier, OpenRouter variant) is a
+    different price. It must fall to ``_default``, never borrow the row of a
+    cheaper id it happens to start with."""
+    assert cheaper_sibling in MODEL_PRICING
+    assert get_pricing(model) is MODEL_PRICING["_default"]
