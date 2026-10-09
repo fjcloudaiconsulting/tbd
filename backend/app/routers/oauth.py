@@ -18,15 +18,18 @@ from typing import Optional
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.routing import Match
 
 from app.agent import actions
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
 from app.auth.feature_deps import require_feature, require_meter_open
 from app.auth.pat import require_interactive_session
 from app.auth.stepup import consume_stepup
+from app.config import settings
 from app.database import get_db
 from app.deps import get_session_factory
 from app.models.notification import NotificationCategory
@@ -44,7 +47,19 @@ from app.services.oauth_service import ConsentError, OAuthError
 
 logger = structlog.stdlib.get_logger(__name__)
 
-router = APIRouter(tags=["oauth"])
+
+class _OffSwitchRoute(APIRoute):
+    """Off (``MCP_OAUTH_ENABLED`` unset), these routes do not match: the
+    request falls through to the plain 404 of an unknown path, never a 405,
+    422 or 401 that says the route exists. Read per request."""
+
+    def matches(self, scope):
+        if not settings.mcp_oauth_enabled:
+            return Match.NONE, {}
+        return super().matches(scope)
+
+
+router = APIRouter(tags=["oauth"], route_class=_OffSwitchRoute)
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _CONSENT_GATES = [
