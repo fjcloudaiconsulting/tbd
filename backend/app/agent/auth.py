@@ -36,9 +36,8 @@ logger = structlog.stdlib.get_logger(__name__)
 def www_authenticate() -> str:
     """Every MCP 401 points at the protected-resource metadata (RFC 9728) so
     an OAuth client can discover the authorization server (F-O8). Derived from
-    ``app_url`` so a branch deploy advertises its own origin. The metadata
-    route itself ships with the OAuth authorization server; until then a
-    client that follows the header gets a 404 and falls back to its token."""
+    ``app_url`` so a branch deploy advertises its own origin. The backend
+    serves that document (``app.routers.oauth``, TBD-587)."""
     url = f"{settings.app_url.rstrip('/')}/.well-known/oauth-protected-resource/mcp"
     return f'Bearer resource_metadata="{url}"'
 
@@ -78,7 +77,10 @@ async def authenticate_agent_token(
         raise _reject()
     if _aware(row.expires_at) <= now:
         logger.info("agent_token.auth_rejected", reason="expired", api_token_id=row.id)
-        await _record_auth_rejected(session_factory, request, row, "expired")
+        # An OAuth access token lapses every hour by design (the client
+        # refreshes): no audit row for that, only for a manual token.
+        if row.oauth_client_id is None:
+            await _record_auth_rejected(session_factory, request, row, "expired")
         raise _reject()
     if row.scope not in AGENT_SCOPE_RANK:
         # A superadmin REST PAT is not an agent credential.

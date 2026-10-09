@@ -141,6 +141,16 @@ PUBLIC_ROUTES: tuple[tuple[str, str], ...] = (
         # way to attach a bearer token; wired in via ``report-uri``/
         # ``report-to``. Always answers 204.
         ("POST", "/api/v1/security/csp-report"),
+        # MCP OAuth discovery (TBD-587). RFC 9728 / RFC 8414 fix these paths
+        # outside ``/api/v1``; an MCP client reads them before it holds any
+        # credential. Static documents derived from ``app_url``.
+        ("GET", "/.well-known/oauth-protected-resource/mcp"),
+        ("GET", "/.well-known/oauth-authorization-server"),
+        # RFC 7591 dynamic client registration (open DCR, operator ruling).
+        # Public clients only, no secret issued; idempotent on the metadata;
+        # new clients bounded per https host, per loopback pool, per IP, and
+        # by a global row ceiling (all fail closed).
+        ("POST", "/api/v1/oauth/register"),
         # ── Credential-bearing: authenticated outside the dependency graph ──
         # Verifies username + password. The credential IS the request body;
         # there is no prior session to present.
@@ -199,6 +209,11 @@ PUBLIC_ROUTES: tuple[tuple[str, str], ...] = (
         # Mailgun delivery/bounce webhook. Signature-verified against the
         # signing key on every call — not open, just not bearer-authenticated.
         ("POST", "/api/v1/webhooks/mailgun"),
+        # OAuth token endpoint (TBD-587). The credential is the authorization
+        # code plus its PKCE verifier, or a refresh token; an MCP client has
+        # no bearer token yet by construction. Limits are keyed on the
+        # credential, with a coarse IP ceiling.
+        ("POST", "/api/v1/oauth/token"),
 )
 
 # The comparison form. Derived from the literal above and nowhere else — never
@@ -413,14 +428,14 @@ def test_p6_allowlist_literal_is_the_expected_size():
     The count is asserted separately from the set so a diff that quietly
     reshapes the literal cannot land without touching this number.
     """
-    assert len(PUBLIC_ROUTES) == 26, (
-        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 26. If a "
+    assert len(PUBLIC_ROUTES) == 30, (
+        f"PUBLIC_ROUTES holds {len(PUBLIC_ROUTES)} entries, expected 30. If a "
         "route was legitimately added to or removed from the public surface, "
         "update this number, CONTRIBUTING.md, and record the security review."
     )
     # Deduped count must match too: a duplicated (method, path) line would
     # otherwise inflate the literal while the comparison set stayed the same.
-    assert len(_PUBLIC_ROUTE_SET) == 26, (
+    assert len(_PUBLIC_ROUTE_SET) == 30, (
         "PUBLIC_ROUTES contains duplicate entries: "
         f"{sorted({e for e in PUBLIC_ROUTES if PUBLIC_ROUTES.count(e) > 1})}"
     )

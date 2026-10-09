@@ -57,6 +57,7 @@ from app.routers.api_tokens import router as api_tokens_router
 from app.routers.auth import router as auth_router
 from app.routers.org_data import router as org_data_router
 from app.routers.org_members import router as org_members_router
+from app.routers.oauth import router as oauth_router
 from app.routers.orgs import router as orgs_router
 from app.routers.users import router as users_router
 
@@ -85,6 +86,9 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/agent/tokens/revoke-all"),     # revoke_all_agent_tokens
     ("GET", "/api/v1/agent/tokens/org"),             # list_org_agent_tokens
     ("DELETE", "/api/v1/agent/tokens/org/1"),        # revoke_org_agent_token
+    # TBD-587 OAuth consent: approving it creates an agent credential.
+    ("GET", "/api/v1/oauth/authorize/context"),      # authorize_context
+    ("POST", "/api/v1/oauth/authorize"),             # authorize_decision
     # ── B. Account-takeover surface (spec §7B) ──────────────────────────────
     ("PUT", "/api/v1/users/me"),                     # update_profile (email change)
     ("POST", "/api/v1/users/me/password"),           # change_password
@@ -202,6 +206,7 @@ def app(factory):
         routers=[
             api_tokens_router,
             agent_tokens_router,
+            oauth_router,
             users_router,
             auth_router,
             admin_users_router,

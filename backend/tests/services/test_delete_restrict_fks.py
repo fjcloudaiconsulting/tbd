@@ -151,6 +151,11 @@ def test_every_restrict_fk_is_accounted_for():
         ("dashboard_layouts", "owner_user_id", "users.id"): {"user", "org"},
         ("org_ai_credentials", "org_id", "organizations.id"): {"org"},
         ("ai_usage_ledger", "org_id", "organizations.id"): {"org"},
+        # TBD-587. Neither path deletes the parent: an OAuth client is
+        # platform-global and only the purge deletes it, and only once no
+        # api_tokens row points at it. A user/org delete leaves grant rows
+        # (owner SET NULL), which the token endpoint refuses.
+        ("api_tokens", "oauth_client_id", "oauth_clients.id"): set(),
     }
     assert found == set(expected), (
         "RESTRICT foreign keys changed.\n"
@@ -171,6 +176,7 @@ def test_every_restrict_fk_is_accounted_for():
         "dashboard_layouts": "DashboardLayout",
         "org_ai_credentials": "OrgAICredential",
         "ai_usage_ledger": "AIUsageLedger",
+        "api_tokens": "ApiToken",
     }
     for (table_name, _holder, _target), paths in expected.items():
         model = MODEL_FOR[table_name]
