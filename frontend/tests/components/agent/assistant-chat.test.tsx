@@ -156,6 +156,23 @@ describe("preview card", () => {
     expect(card.textContent).toContain("categorization rule");
   });
 
+  it("F-581-UNTRUSTED: a category the server did not name shows by id, never by position", async () => {
+    const ruleElsewhere: StagedAction = {
+      ...TX_ACTION,
+      changes: [TX_ACTION.changes[0], { ...TX_ACTION.changes[1], before: 9 }],
+    };
+    fetchMock.mockResolvedValueOnce(sse([
+      ["tool_call", { name: "transactions_set_category" }],
+      ["preview", { action: ruleElsewhere }],
+    ]));
+    render(<AssistantChat />);
+    await ask("go");
+    const rows = screen.getByTestId("preview-card").querySelectorAll("dd");
+    expect(rows[0].textContent).toContain("Food");
+    expect(rows[1].textContent).toContain("category #9");
+    expect(rows[1].textContent).not.toContain("Food");
+  });
+
   it("F-581-DBL: a double click applies once", async () => {
     fetchMock.mockResolvedValueOnce(sse([["tool_call", { name: "budgets_update_amount" }], ["preview", { action: BUDGET_ACTION }]]));
     render(<AssistantChat />);
