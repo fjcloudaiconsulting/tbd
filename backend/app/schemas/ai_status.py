@@ -10,13 +10,13 @@ class AIFeatureState(BaseModel):
 
 
 class MeterUsage(BaseModel):
-    """This period's use of one usage meter; ``limit`` None is unlimited."""
+    """This period's use of one usage meter; ``limit`` None is unlimited, 0 is
+    closed (and never resets)."""
 
-    meter: str
     used: int
     limit: Optional[int]
     period: Literal["day", "month"]
-    resets_at: datetime
+    resets_at: Optional[datetime]
 
 
 class AIStatusResponse(BaseModel):
@@ -24,4 +24,4 @@ class AIStatusResponse(BaseModel):
     forecast: AIFeatureState
     budget: AIFeatureState
     agent: AIFeatureState
-    meters: list[MeterUsage] = []
+    usage: dict[str, MeterUsage] = {}

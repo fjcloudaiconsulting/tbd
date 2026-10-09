@@ -32,9 +32,10 @@ async def get_ai_feature_status(
     return out
 
 
-async def get_ai_status(db: AsyncSession, *, org_id: int) -> dict:
-    """``GET /ai/status``: the feature states plus this period's meter usage."""
+async def get_ai_status(db: AsyncSession, *, org_id: int, is_admin: bool) -> dict:
+    """``GET /ai/status``: the feature states plus this period's meter usage
+    (platform spend meters for org admins only)."""
     return {
         **await get_ai_feature_status(db, org_id=org_id),
-        "meters": await usage_service.current_usage(db, org_id),
+        "usage": await usage_service.current_usage(db, org_id, include_platform=is_admin),
     }

@@ -120,25 +120,33 @@ async def admit(
         )
 
 
+
 async def current_usage(
-    db: AsyncSession, org_id: int, *, now: datetime | None = None
-) -> list[dict]:
-    """This period's use of every meter the org has (TBD-581): ``used``,
-    ``limit`` (None = unlimited), ``period`` and ``resets_at``. A meter whose
-    limit is 0 is left out: the org does not have it (platform AI ships dark)."""
+    db: AsyncSession, org_id: int, *, include_platform: bool, now: datetime | None = None
+) -> dict[str, dict]:
+    """This period's use of each meter (TBD-581), keyed by meter: ``used``,
+    ``limit`` (None = unlimited, 0 = closed), ``period`` and ``resets_at``
+    (None for a 0 limit, which never resets). ``platform_ai.*`` is the org's
+    platform spend: only for admins (``include_platform``), and left out at a 0
+    limit so dark platform AI stays dark."""
     now = now or utcnow_naive()
     ent = await feature_service.get_entitlements(db, org_id, now=now)
-    meters = sorted(m for m in ALL_METER_KEYS if ent.limits[m].limit != 0)
-    keys = {m: (ent.limits[m].period, period_start(ent.limits[m].period, now)) for m in meters}
+    lims = {
+        m: ent.limits[m] for m in sorted(ALL_METER_KEYS)
+        if not m.startswith("platform_ai.") or (include_platform and ent.limits[m].limit != 0)
+    }
     rows = (await db.execute(
         select(UsageCounter.meter, UsageCounter.period, UsageCounter.period_start, UsageCounter.value)
-        .where(UsageCounter.org_id == org_id, UsageCounter.meter.in_(meters))
-    )).all() if meters else []
-    used = {r.meter: r.value for r in rows if keys[r.meter] == (r.period, r.period_start)}
-    return [
-        {
-            "meter": m, "used": used.get(m, 0), "limit": ent.limits[m].limit,
-            "period": ent.limits[m].period, "resets_at": resets_at(ent.limits[m].period, now),
+        .where(UsageCounter.org_id == org_id, UsageCounter.meter.in_(lims))
+    )).all()
+    used = {
+        r.meter: r.value for r in rows
+        if (r.period, r.period_start) == (lims[r.meter].period, period_start(lims[r.meter].period, now))
+    }
+    return {
+        m: {
+            "used": used.get(m, 0), "limit": lim.limit, "period": lim.period,
+            "resets_at": None if lim.limit == 0 else resets_at(lim.period, now),
         }
-        for m in meters
-    ]
+        for m, lim in lims.items()
+    }

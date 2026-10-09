@@ -90,11 +90,14 @@ async def test_status_carries_meter_usage(monkeypatch):
     async def fake_features(db, org_id):
         return {}
 
-    async def fake_usage(db, org_id):
-        return [{"meter": "mcp.calls", "used": 2, "limit": None, "period": "month",
-                 "resets_at": datetime(2026, 11, 1, tzinfo=timezone.utc)}]
+    async def fake_usage(db, org_id, *, include_platform):
+        assert include_platform is False
+        return {"mcp.calls": {"used": 2, "limit": None, "period": "month",
+                              "resets_at": datetime(2026, 11, 1, tzinfo=timezone.utc)}}
 
     monkeypatch.setattr(ai_status_service.feature_service, "get_features", fake_features)
     monkeypatch.setattr(ai_status_service.usage_service, "current_usage", fake_usage)
-    out = AIStatusResponse.model_validate(await ai_status_service.get_ai_status(None, org_id=1))
-    assert [(m.meter, m.used, m.limit) for m in out.meters] == [("mcp.calls", 2, None)]
+    out = AIStatusResponse.model_validate(
+        await ai_status_service.get_ai_status(None, org_id=1, is_admin=False)
+    )
+    assert out.usage["mcp.calls"].used == 2 and out.usage["mcp.calls"].limit is None

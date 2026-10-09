@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.deps import get_current_user
-from app.models.user import User
+from app.models.user import Role, User
 from app.schemas.ai_status import AIStatusResponse
 from app.services.ai_status_service import get_ai_status
 
@@ -21,4 +21,7 @@ async def ai_status(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await get_ai_status(db, org_id=current_user.org_id)
+    return await get_ai_status(
+        db, org_id=current_user.org_id,
+        is_admin=current_user.role in (Role.OWNER, Role.ADMIN),
+    )
