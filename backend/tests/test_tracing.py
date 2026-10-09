@@ -588,6 +588,40 @@ async def test_the_oauth_client_purge_is_a_job_span(spans, monkeypatch):
     assert inside == [job.context.span_id]
 
 
+async def test_a_swallowed_oauth_client_purge_failure_ends_its_job_span_as_an_error(
+    spans, monkeypatch
+):
+    from sqlalchemy.exc import OperationalError
+
+    from app.services.scheduler.jobs.oauth_client_purge import run_oauth_client_purge
+
+    async def acquire(ttl):
+        return True
+
+    async def run_all_due(today, *, max_orgs=None):
+        return None
+
+    async def reminders(*, now):
+        return None
+
+    def broken():
+        raise OperationalError("DELETE ... code_hash = %s", (SECRET,), Exception(SECRET))
+
+    async def purge():
+        return await run_oauth_client_purge(broken)
+
+    monkeypatch.setattr(scheduler_loop_module, "acquire_tick_lock", acquire)
+    monkeypatch.setattr(scheduler_loop_module, "run_all_due", run_all_due)
+    monkeypatch.setattr(scheduler_loop_module, "run_api_token_expiry_reminders", reminders)
+    monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
+    assert await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
+    (job,) = [s for s in spans() if s.name == "job oauth_client_purge"]
+    assert job.status.status_code.name == "ERROR"
+    assert job.status.description == "OperationalError"
+    assert job.attributes["error.type"] == "OperationalError"
+    _assert_absent([job], SECRET)
+
+
 @pytest.mark.parametrize(
     "env, root",
     [
