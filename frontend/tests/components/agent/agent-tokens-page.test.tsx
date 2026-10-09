@@ -210,6 +210,7 @@ describe("activity", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^Revert: / }));
     const dialog = await screen.findByRole("dialog");
     const drift = within(dialog).getByTestId("drift");
+    expect(within(drift).getByRole("cell", { name: "Budget amount" })).toBeInTheDocument();
     expect(drift.textContent).toMatch(/€450\.00/);
     expect(drift.textContent).toMatch(/€470\.00/);
     fireEvent.click(within(dialog).getByRole("button", { name: "Revert anyway" }));
@@ -228,6 +229,27 @@ describe("activity", () => {
     renderWithSWR(<AgentTokensPage />);
     fireEvent.click(await screen.findByRole("button", { name: /^Revert: / }));
     expect(await screen.findByText(text)).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("F-581-REVERT-ERR: a read action offers no revert", async () => {
+    routes["GET /api/v1/agent/actions?status=done&limit=20"] = () =>
+      json(200, { items: [{ ...DONE, action_id: "r0", risk: "read", mode: "confirm" }], limit: 20, offset: 0 });
+    renderWithSWR(<AgentTokensPage />);
+    await screen.findByText("Change a budget amount");
+    expect(screen.queryByRole("button", { name: /^Revert: / })).toBeNull();
+  });
+
+  it("closing a staged revert without deciding discards it", async () => {
+    routes["POST /api/v1/agent/actions/x1/revert"] = () => json(200, {
+      action_id: "r5", summary: "", changes: DONE.preview.changes, warnings: [], context: {},
+      expires_at: "2026-10-09T12:10:00", requires_confirmation: true,
+    });
+    routes["POST /api/v1/agent/actions/r5/cancel"] = () => json(200, { action_id: "r5", status: "cancelled" });
+    renderWithSWR(<AgentTokensPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Revert: / }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => u === "/api/v1/agent/actions/r5/cancel")).toBe(true));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

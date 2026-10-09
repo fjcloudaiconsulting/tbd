@@ -101,3 +101,25 @@ async def test_status_carries_meter_usage(monkeypatch):
         await ai_status_service.get_ai_status(None, org_id=1, is_admin=False)
     )
     assert out.usage["mcp.calls"].used == 2 and out.usage["mcp.calls"].limit is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role,admin", [("owner", True), ("admin", True), ("member", False)])
+async def test_route_gives_platform_usage_to_org_admins_only(monkeypatch, role, admin):
+    """FENCE. Wrong implementations killed: the route passing is_admin=True for
+    every role (a member reads the org's platform spend) or False for all
+    (admins lose it)."""
+    from types import SimpleNamespace
+
+    from app.models.user import Role
+    from app.routers import ai_status as route
+
+    seen = {}
+
+    async def fake_status(db, *, org_id, is_admin):
+        seen["is_admin"] = is_admin
+        return {}
+
+    monkeypatch.setattr(route, "get_ai_status", fake_status)
+    await route.ai_status(current_user=SimpleNamespace(org_id=1, role=Role(role)), db=None)
+    assert seen["is_admin"] is admin

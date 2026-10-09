@@ -285,6 +285,7 @@ async def test_f581_meter_current_usage_reads_only_this_periods_row(factory):
         "mcp.calls": {"period": "month", "limit": 5},
         "assistant.turns": {"period": "day", "limit": 3},
     })
+    other = await _org(factory, None)
     async with factory() as db:
         db.add_all([
             UsageCounter(org_id=org, meter="mcp.calls", period="month",
@@ -297,6 +298,9 @@ async def test_f581_meter_current_usage_reads_only_this_periods_row(factory):
                          period_start=date(2026, 9, 30), value=1),
             UsageCounter(org_id=org, meter="assistant.turns", period="day",
                          period_start=date(2026, 9, 29), value=3),
+            # Another org's counter for the same meter and period must never count.
+            UsageCounter(org_id=other, meter="mcp.calls", period="month",
+                         period_start=date(2026, 9, 1), value=40),
             # Left from when the plan metered turns monthly; sorts after the day row.
             UsageCounter(org_id=org, meter="assistant.turns", period="month",
                          period_start=date(2026, 9, 1), value=5),

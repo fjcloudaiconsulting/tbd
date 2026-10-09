@@ -83,7 +83,7 @@ const ERRORS: Record<string, string> = {
   round_limit: "The assistant could not finish this one. Try asking in smaller steps.",
   turn_timeout: "The assistant took too long to answer. Try again.",
   stream_interrupted: "The connection dropped before the reply finished. Try again.",
-  plan_limit_reached: "You have used this period's assistant messages for your plan.",
+  plan_limit_reached: "Your plan's limit for this period is reached.",
   feature_not_enabled: "The assistant is not part of your plan.",
   user_inactive: "Your account is no longer active.",
   ai_routing_not_configured: "The assistant needs an AI provider. An admin can set one up in Settings, AI providers.",

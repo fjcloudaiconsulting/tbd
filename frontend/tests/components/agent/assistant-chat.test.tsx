@@ -307,6 +307,40 @@ describe("transport and accessibility", () => {
     expect(chatBodies().at(-1).messages).toEqual([{ role: "user", content: "hello" }]);
   });
 
+  it("F-U4: an event renders while the stream is still open (read incrementally, not buffered)", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => { finish = r; });
+    fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({
+      async start(c) {
+        c.enqueue(enc.encode('event: message\ndata: {"text":"first"}\n\n'));
+        await gate;
+        c.enqueue(enc.encode("event: done\ndata: {}\n\n"));
+        c.close();
+      },
+    }), { status: 200 }));
+    render(<AssistantChat />);
+    fireEvent.change(screen.getByLabelText("Message the assistant"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(screen.getByTestId("assistant-text").textContent).toBe("first"));
+    expect(screen.getByRole("button", { name: "Stop response" })).toBeInTheDocument();
+    await act(async () => finish());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument());
+  });
+
+  it("Stop before the stream opens still cancels it, so the turn frees the org lock", async () => {
+    let respond!: (r: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((r) => { respond = r; }));
+    const cancel = vi.fn();
+    render(<AssistantChat />);
+    fireEvent.change(screen.getByLabelText("Message the assistant"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(respond).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: "Stop response" }));
+    await act(async () => respond(new Response(new ReadableStream({ start() {}, cancel }), { status: 200 })));
+    await waitFor(() => expect(cancel).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument());
+  });
+
   it("a stream that ends without done reports the dropped connection", async () => {
     fetchMock.mockResolvedValueOnce(sse([["tool_call", { name: "budgets_list" }]], { done: false }));
     render(<AssistantChat />);

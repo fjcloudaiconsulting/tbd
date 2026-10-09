@@ -126,7 +126,7 @@ export default function AgentTokensPage() {
           name: pending.name,
           scope: pending.scope,
           expires_in_days: pending.expiresInDays,
-          ...(pending.scope === "agent:auto" ? { acknowledge_auto: true } : {}),
+          ...(pending.scope === "agent:auto" ? { acknowledge_auto: pending.acknowledgeAuto } : {}),
           ...proof,
         }),
       });
@@ -136,8 +136,14 @@ export default function AgentTokensPage() {
       await mutate();
     } catch (err) {
       if (err instanceof ApiResponseError && err.status === 401) {
-        setStepUpError(ssoToken ? "That confirmation expired. Verify with Google again." : err.message);
-        setSsoToken(null);
+        // With MFA on, a mistyped code also 401s and leaves the Google proof
+        // unspent; keep it so the user can retry the code.
+        if (ssoToken && !user?.mfa_enabled) {
+          setStepUpError("That confirmation expired. Verify with Google again.");
+          setSsoToken(null);
+        } else {
+          setStepUpError(ssoToken ? "Verification failed. Check the code and try again." : err.message);
+        }
       } else {
         setPending(null);
         setSsoToken(null);

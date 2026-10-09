@@ -36,6 +36,10 @@ it("joins an event split across chunks, skips keepalives, accepts CRLF", async (
   ]);
 });
 
+it("a CRLF split across two chunks is one line break, not an event boundary", async () => {
+  expect(await all(["event: preview\r", "\ndata: {}\r\n\r\n"])).toEqual([{ event: "preview", data: "{}" }]);
+});
+
 it("drops an unterminated trailing block", async () => {
   expect(await all(["event: message\ndata: {}"])).toEqual([]);
 });

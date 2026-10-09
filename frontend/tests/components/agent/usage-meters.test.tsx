@@ -39,6 +39,7 @@ it("a reset at UTC midnight shows that date, not the local day before", () => {
   try {
     expect(meterLine("mcp.calls", day(1, 5))).toMatch(/16 Oct|Oct 16/);
   } finally {
-    process.env.TZ = tz;
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
   }
 });

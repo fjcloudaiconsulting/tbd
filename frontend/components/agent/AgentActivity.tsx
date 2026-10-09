@@ -54,7 +54,17 @@ function RevertDialog({ staged, onClose }: { staged: Staged; onClose: (applied: 
   const ref = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const [applied, setApplied] = useState(false);
+  const decided = useRef(false);
   useFocusTrap({ active: true, containerRef: ref, initialFocusRef: titleRef });
+  // Closing without a decision discards the staged revert, so it does not sit
+  // pending (and count against the live-preview ceiling) until it expires.
+  const close = () => {
+    if (!decided.current) {
+      void apiFetch(`/api/v1/agent/actions/${encodeURIComponent(staged.action.action_id)}/cancel`, { method: "POST" })
+        .catch(() => {});
+    }
+    onClose(applied);
+  };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4">
       <div
@@ -62,14 +72,14 @@ function RevertDialog({ staged, onClose }: { staged: Staged; onClose: (applied: 
         role="dialog"
         aria-modal="true"
         aria-labelledby="revert-title"
-        onKeyDown={(e) => e.key === "Escape" && onClose(applied)}
+        onKeyDown={(e) => e.key === "Escape" && close()}
         className="max-h-[90vh] w-full max-w-[min(36rem,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-border bg-surface p-5 shadow-xl"
       >
         <div className="mb-4 flex items-start justify-between gap-4">
           <h2 id="revert-title" ref={titleRef} tabIndex={-1} className="text-lg font-semibold text-text-primary">
             Revert this change
           </h2>
-          <button type="button" onClick={() => onClose(applied)} className="rounded-md p-1 text-text-secondary hover:text-text-primary"
+          <button type="button" onClick={close} className="rounded-md p-1 text-text-secondary hover:text-text-primary"
             aria-label="Close">
             <X aria-hidden className="h-5 w-5" strokeWidth={1.75} />
           </button>
@@ -79,7 +89,10 @@ function RevertDialog({ staged, onClose }: { staged: Staged; onClose: (applied: 
           action={staged.action}
           drift={staged.drift}
           applyLabel="Revert change"
-          onDecided={(o) => setApplied(o === "done")}
+          onDecided={(o) => {
+            decided.current = true;
+            setApplied(o === "done");
+          }}
         />
       </div>
     </div>
@@ -212,9 +225,9 @@ export default function AgentActivity() {
       {staged && (
         <RevertDialog
           staged={staged}
-          onClose={(applied) => {
+          onClose={() => {
             setStaged(null);
-            if (applied) void mutate();
+            void mutate(); // also covers a revert applied while the dialog was closing
           }}
         />
       )}

@@ -29,10 +29,13 @@ export async function* readSse(
 ): AsyncGenerator<SseEvent> {
   const decoder = new TextDecoder();
   let buffer = "";
+  let carry = ""; // a trailing CR may be the first half of a CRLF split across chunks
   for (;;) {
     const { value, done } = await reader.read();
     if (done) return;
-    buffer += decoder.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
+    const text = carry + decoder.decode(value, { stream: true });
+    carry = text.endsWith("\r") ? "\r" : "";
+    buffer += (carry ? text.slice(0, -1) : text).replace(/\r\n?/g, "\n");
     let end: number;
     while ((end = buffer.indexOf("\n\n")) !== -1) {
       const parsed = parseSseBlock(buffer.slice(0, end));

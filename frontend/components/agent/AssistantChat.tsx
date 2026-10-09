@@ -61,7 +61,11 @@ export default function AssistantChat() {
 
   // Cancel a running turn when the page goes away, so it frees the org's
   // turn lock instead of running on unseen.
-  useEffect(() => () => turnRef.current?.cancel(), []);
+  const unmounted = useRef(false);
+  useEffect(() => () => {
+    unmounted.current = true;
+    turnRef.current?.cancel();
+  }, []);
 
   useEffect(() => {
     const last = entries[entries.length - 1];
@@ -89,6 +93,9 @@ export default function AssistantChat() {
     try {
       const turn = await openTurn(outgoing(history));
       turnRef.current = turn;
+      // Stop (or leaving the page) during the pre-stream window had nothing
+      // to cancel yet; cancel now so the turn frees the org's lock.
+      if (stoppedRef.current || unmounted.current) turn.cancel();
       for await (const ev of turn.events) {
         let data: Record<string, unknown>;
         try {
@@ -140,6 +147,8 @@ export default function AssistantChat() {
       turnRef.current = null;
       turnBusy.current = false;
       setStreaming(false);
+      // A lookup the turn never answered did not finish; do not leave it "working".
+      setEntries((prev) => prev.map((e) => (e.kind === "tool" && e.ok === undefined ? { ...e, ok: false } : e)));
     }
     if (stoppedRef.current && !produced) {
       setEntries((prev) => prev.map((e) => (e.id === user.id ? { ...user, failed: true } : e)));

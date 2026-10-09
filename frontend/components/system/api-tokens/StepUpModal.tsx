@@ -7,12 +7,10 @@
 // proof with a generic 401 — this modal just gathers the inputs.
 //
 // SSO operators (`passwordRequired === false`, i.e. `password_set === false`)
-// are a known v1 gap: the backend's step-up path for them requires a fresh
-// `stepup_token` (spec §8) that nothing in this UI obtains, so any submit for
-// that account shape is unconditionally rejected with a 401 regardless of
-// MFA state. Rather than let the operator click a doomed "Verify & mint",
-// this modal is honest about the gap and points them at setting a password
-// instead of collecting proofs it cannot use.
+// need a fresh `stepup_token` (spec §8). A caller that runs the Google step-up
+// passes `sso` (the agent token page, TBD-581); without it (the PAT page) this
+// modal is honest about the gap and points them at setting a password instead
+// of collecting proofs it cannot use.
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -165,7 +163,7 @@ export default function StepUpModal({
               </div>
             )
           ) : (
-            // Known v1 gap: an SSO account (no password set) has no way to
+            // Without the opt-in `sso` prop (the PAT page): an SSO account (no password set) has no way to
             // supply the fresh `stepup_token` the backend requires here, so
             // any mint attempt would 401 unconditionally. Say so plainly
             // instead of collecting proofs that can't work.

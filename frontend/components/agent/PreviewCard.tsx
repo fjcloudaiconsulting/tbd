@@ -115,12 +115,17 @@ export default function PreviewCard({
         focusCard();
       } else if (code === "action_expired") {
         finish("expired", action);
+      } else if (code === "action_in_progress") {
+        finish("decided", action);
       } else if (code === "action_already_decided") {
         const s = detail?.status;
         finish(s === "done" ? "done" : s === "cancelled" ? "cancelled" : "decided", action);
       } else {
-        setFailure(extractErrorMessage(err, "The change was not applied."));
-        if (err instanceof ApiResponseError && err.status === 403) finish("failed", action);
+        setFailure(extractErrorMessage(err) || "The change was not applied.");
+        // Rate limits and an unavailable store refuse before the action is
+        // claimed, so it can still be applied; any other failure is final.
+        const status = err instanceof ApiResponseError ? err.status : 0;
+        if (kind === "confirm" && status !== 429 && status !== 503 && status !== 0) finish("failed", action);
       }
     } finally {
       busyRef.current = false;
@@ -180,7 +185,7 @@ export default function PreviewCard({
         {action.warnings.map((w) => (
           <p key={w} className={`${warningCls} flex gap-2`}>
             <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} />
-            <span>{w}</span>
+            <span>{text(w)}</span>
           </p>
         ))}
 
