@@ -772,17 +772,29 @@ async def test_f_o12_purge(factory, client):
     await _auth(factory, g["access_token"])
 
 
-async def test_purge_never_raises(factory, monkeypatch):
-    """GUARD: a purge failure is logged, never raised (the ticker must not die)."""
+async def test_purge_never_raises_and_logs_only_the_error_class(factory, monkeypatch):
+    """FENCE: a purge failure is logged, never raised (the ticker must not die). Wrong
+    implementation: logging ``str(exc)``, which quotes the statement and its bound values."""
     from sqlalchemy.exc import OperationalError
 
-    from app.services.scheduler.jobs.oauth_client_purge import run_oauth_client_purge
+    from app.services.scheduler.jobs import oauth_client_purge as purge_module
+
+    secret = "c0de" * 16
+    logged = []
+
+    class _Recorder:
+        async def aerror(self, event, **kw):
+            logged.append((event, kw))
 
     class Broken:
         def __call__(self):
-            raise OperationalError("x", {}, Exception("db down"))
+            raise OperationalError(
+                "DELETE FROM api_tokens WHERE code_hash = %s", (secret,), Exception(secret)
+            )
 
-    await run_oauth_client_purge(Broken(), now=_naive_now())
+    monkeypatch.setattr(purge_module, "logger", _Recorder())
+    assert await purge_module.run_oauth_client_purge(Broken(), now=_naive_now()) == 0
+    assert logged == [("scheduler.oauth_client_purge.failed", {"error": "OperationalError"})]
 
 
 # ── F-O14: every advertised URL follows app_url ─────────────────────────────

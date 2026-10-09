@@ -18,8 +18,10 @@ from __future__ import annotations
 import datetime
 
 import structlog
+from opentelemetry import trace
 from sqlalchemy import delete, func, select
 
+from app import tracing
 from app.database import async_session
 from app.models.api_token import ApiToken
 from app.models.oauth_client import OAuthClient
@@ -50,7 +52,10 @@ async def run_oauth_client_purge(
             ))
             await db.commit()
     except Exception as exc:  # noqa: BLE001 -- never let the ticker die
-        await logger.aerror("scheduler.oauth_client_purge.failed", error=str(exc))
+        # Swallowed here, so the job span is marked by hand. Class only: str(exc) quotes
+        # the statement and its bound values (client ids, code hashes).
+        tracing.mark_error(trace.get_current_span(), exc)
+        await logger.aerror("scheduler.oauth_client_purge.failed", error=type(exc).__name__)
         return 0
     if codes.rowcount or clients.rowcount:
         await logger.ainfo("scheduler.oauth_client_purge.complete",

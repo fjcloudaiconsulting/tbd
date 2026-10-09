@@ -549,13 +549,82 @@ async def test_the_api_token_expiry_reminder_is_a_job_span(spans, monkeypatch):
     async def reminders(*, now):
         calls.append(now)
 
+    async def purge():
+        return None
+
     monkeypatch.setattr(scheduler_loop_module, "acquire_tick_lock", acquire)
     monkeypatch.setattr(scheduler_loop_module, "run_all_due", run_all_due)
     monkeypatch.setattr(scheduler_loop_module, "run_api_token_expiry_reminders", reminders)
+    monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
     await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
     assert len(calls) == 1
     (job,) = [s for s in spans() if s.name == "job api_token_expiry"]
     assert dict(job.attributes) == {"job.kind": "api_token_expiry"}
+
+
+async def test_the_oauth_client_purge_is_a_job_span(spans, monkeypatch):
+    inside = []
+
+    async def acquire(ttl):
+        return True
+
+    async def run_all_due(today, *, max_orgs=None):
+        return None
+
+    async def reminders(*, now):
+        return None
+
+    async def purge():
+        inside.append(tracing.trace.get_current_span().get_span_context().span_id)
+
+    monkeypatch.setattr(scheduler_loop_module, "acquire_tick_lock", acquire)
+    monkeypatch.setattr(scheduler_loop_module, "run_all_due", run_all_due)
+    monkeypatch.setattr(scheduler_loop_module, "run_api_token_expiry_reminders", reminders)
+    monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
+    await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
+    (job,) = [s for s in spans() if s.name == "job oauth_client_purge"]
+    assert dict(job.attributes) == {"job.kind": "oauth_client_purge"}
+    # The purge runs inside its own span, not beside it.
+    assert inside == [job.context.span_id]
+
+
+async def test_a_swallowed_oauth_client_purge_failure_ends_its_job_span_as_an_error(
+    spans, monkeypatch
+):
+    from app.services.scheduler.jobs.oauth_client_purge import run_oauth_client_purge
+
+    # No tables: the first DELETE fails at a real cursor execute, so its SQL span exists and
+    # has ended before the purge swallows the error.
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool)
+
+    async def acquire(ttl):
+        return True
+
+    async def run_all_due(today, *, max_orgs=None):
+        return None
+
+    async def reminders(*, now):
+        return None
+
+    async def purge():
+        return await run_oauth_client_purge(async_sessionmaker(engine, class_=AsyncSession))
+
+    monkeypatch.setattr(scheduler_loop_module, "acquire_tick_lock", acquire)
+    monkeypatch.setattr(scheduler_loop_module, "run_all_due", run_all_due)
+    monkeypatch.setattr(scheduler_loop_module, "run_api_token_expiry_reminders", reminders)
+    monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
+    try:
+        assert await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
+    finally:
+        await engine.dispose()
+    finished = spans()
+    (job,) = [s for s in finished if s.name == "job oauth_client_purge"]
+    (delete_,) = [s for s in finished if s.name == "DELETE"]
+    assert delete_.parent.span_id == job.context.span_id
+    assert delete_.status.status_code.name == "ERROR"
+    assert job.status.status_code.name == "ERROR"
+    assert job.status.description == "OperationalError"
+    assert job.attributes["error.type"] == "OperationalError"
 
 
 @pytest.mark.parametrize(

@@ -34,7 +34,8 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
     with tracing.span("job api_token_expiry", SpanKind.INTERNAL, {"job.kind": "api_token_expiry"}):
         await run_api_token_expiry_reminders(now=datetime.datetime.now(datetime.timezone.utc))
     # TBD-587: expired OAuth codes, then idle OAuth clients. Never raises.
-    await run_oauth_client_purge()
+    with tracing.span("job oauth_client_purge", SpanKind.INTERNAL, {"job.kind": "oauth_client_purge"}):
+        await run_oauth_client_purge()
     await logger.ainfo("scheduler.tick.complete")
     return True
 
