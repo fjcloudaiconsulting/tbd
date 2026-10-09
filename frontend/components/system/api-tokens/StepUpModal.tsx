@@ -22,6 +22,16 @@ import { btnPrimary, btnSecondary, input, label } from "@/lib/styles";
 export interface StepUpProof {
   current_password?: string;
   mfa_code?: string;
+  stepup_token?: string;
+}
+
+// Opt-in Google step-up for a password-less account (TBD-581, agent tokens):
+// `token` is the proof the SSO round trip brought back, `onVerify` starts it.
+// Without it the modal keeps its honest "set a password" note.
+export interface SsoStepUp {
+  token: string | null;
+  onVerify: () => void;
+  busy?: boolean;
 }
 
 interface Props {
@@ -32,6 +42,7 @@ interface Props {
   errorMessage: string | null;
   onSubmit: (proof: StepUpProof) => void;
   onCancel: () => void;
+  sso?: SsoStepUp;
 }
 
 export default function StepUpModal({
@@ -42,6 +53,7 @@ export default function StepUpModal({
   errorMessage,
   onSubmit,
   onCancel,
+  sso,
 }: Props) {
   const [password, setPassword] = useState("");
   const [mfaCode, setMfaCode] = useState("");
@@ -57,14 +69,37 @@ export default function StepUpModal({
 
   if (!open) return null;
 
+  // A password-less account can only prove itself with a fresh SSO token.
+  const ssoReady = !passwordRequired && !!sso?.token;
+  const canSubmit = passwordRequired || ssoReady;
+
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!passwordRequired) return; // no honest proof to send — see banner note above
+    if (!canSubmit) return; // no honest proof to send — see banner note above
     const proof: StepUpProof = {};
-    proof.current_password = password;
+    if (passwordRequired) proof.current_password = password;
+    else proof.stepup_token = sso!.token!;
     if (mfaRequired) proof.mfa_code = mfaCode;
     onSubmit(proof);
   }
+
+  const mfaField = mfaRequired && (
+    <div>
+      <label htmlFor="stepup-mfa-input" className={label}>
+        Authenticator code
+      </label>
+      <input
+        ref={passwordRequired ? undefined : firstFieldRef}
+        id="stepup-mfa-input"
+        inputMode="numeric"
+        value={mfaCode}
+        onChange={(e) => setMfaCode(e.target.value)}
+        className={input}
+        autoComplete="one-time-code"
+        data-testid="stepup-mfa"
+      />
+    </div>
+  );
 
   return (
     <div
@@ -105,23 +140,30 @@ export default function StepUpModal({
                 />
               </div>
 
-              {mfaRequired && (
-                <div>
-                  <label htmlFor="stepup-mfa-input" className={label}>
-                    Authenticator code
-                  </label>
-                  <input
-                    id="stepup-mfa-input"
-                    inputMode="numeric"
-                    value={mfaCode}
-                    onChange={(e) => setMfaCode(e.target.value)}
-                    className={input}
-                    autoComplete="one-time-code"
-                    data-testid="stepup-mfa"
-                  />
-                </div>
-              )}
+              {mfaField}
             </>
+          ) : sso ? (
+            ssoReady ? (
+              <>
+                <p className="text-sm text-text-secondary" data-testid="stepup-sso-verified">
+                  Google confirmed it&apos;s you.
+                </p>
+                {mfaField}
+              </>
+            ) : (
+              <div className="text-sm text-text-secondary">
+                <p>Your account signs in with Google. Confirm with Google to continue.</p>
+                <button
+                  type="button"
+                  onClick={sso.onVerify}
+                  disabled={sso.busy}
+                  className={`${btnSecondary} mt-3 min-h-[44px] sm:min-h-0`}
+                  data-testid="stepup-sso-verify"
+                >
+                  {sso.busy ? "Opening Google…" : "Verify with Google"}
+                </button>
+              </div>
+            )
           ) : (
             // Known v1 gap: an SSO account (no password set) has no way to
             // supply the fresh `stepup_token` the backend requires here, so
@@ -159,9 +201,9 @@ export default function StepUpModal({
               className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
               data-testid="stepup-cancel"
             >
-              {passwordRequired ? "Cancel" : "Close"}
+              {canSubmit ? "Cancel" : "Close"}
             </button>
-            {passwordRequired && (
+            {canSubmit && (
               <button
                 type="submit"
                 disabled={submitting}

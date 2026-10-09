@@ -307,6 +307,10 @@ export class ApiTimeoutError extends Error {
 // 10s server-side parser cap).
 export type ApiFetchOptions = RequestInit & {
   timeoutMs?: number;
+  // Return the Response on success instead of parsing JSON, for a streamed
+  // body (the assistant turn, TBD-581). The timeout only covers the headers;
+  // the caller cancels the body with its reader.
+  raw?: boolean;
 };
 
 async function fetchWithTimeout(
@@ -477,7 +481,7 @@ export async function apiFetch<T>(
   // Pull timeoutMs out of options BEFORE passing the rest to native fetch
   // so it doesn't pollute the RequestInit. The same caller-provided value
   // applies to both the primary request and the retry-after-refresh.
-  const { timeoutMs, ...fetchInit } = options;
+  const { timeoutMs, raw, ...fetchInit } = options;
   // Path-specific default: recovery routes get 45s, everything else 10s.
   // An explicit per-call timeoutMs override always wins. Same effective
   // budget is reused for the retry-after-refresh below.
@@ -690,6 +694,10 @@ export async function apiFetch<T>(
       if (typeof d.code === "string") code = d.code;
     } else {
       message = "Request failed";
+      // A code with no message (agent_busy, feature_not_enabled,
+      // plan_limit_reached, the AI dispatch errors) is still a code.
+      const c = (body.detail as { code?: unknown } | null)?.code;
+      if (typeof c === "string") code = c;
     }
     // Flat machine code: several handlers return the code as a SIBLING of
     // `detail` rather than nested inside it — e.g. main.py's ConflictError
@@ -704,6 +712,8 @@ export async function apiFetch<T>(
     }
     throw new ApiResponseError(res.status, message, code, body.detail);
   }
+
+  if (raw) return res as unknown as T;
 
   // 204 No Content
   if (res.status === 204) {
