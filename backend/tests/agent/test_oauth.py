@@ -387,14 +387,21 @@ async def test_f_o3_refresh_keeps_the_row_and_its_pending_actions(factory, clien
 async def test_f_o4_cutoff_kills_refresh_and_unredeemed_codes(factory, client, column):
     """FENCE F-O4. Wrong implementations: the cutoff checked only at ``/mcp``
     (the token endpoint mints a fresh access token after a sign out
-    everywhere); ``created_at`` bumped on refresh/exchange."""
+    everywhere); ``created_at`` bumped on refresh/exchange (the refreshed
+    grant would then post-date the cutoff and survive it)."""
     g = await _connected(factory, client)
     g2 = await _grant(factory, client, uid=g["uid"], cid=g["cid"])  # unredeemed code
-    created = {r.id: r.created_at for r in await _rows(factory, g["uid"])}
-    await _set_cutoff(factory, g["uid"], column, _naive_now().replace(microsecond=0) + timedelta(seconds=1))
-    assert _err(await _refresh(client, g["refresh_token"])) == (400, "invalid_grant")
+    hour_ago = _naive_now().replace(microsecond=0) - timedelta(hours=1)
+    async with factory() as s:
+        await s.execute(update(ApiToken).values(created_at=hour_ago))
+        await s.commit()
+    r = await _refresh(client, g["refresh_token"])
+    assert r.status_code == 200, r.text
+    assert {row.created_at for row in await _rows(factory, g["uid"])} == {hour_ago}
+    await _set_cutoff(factory, g["uid"], column, hour_ago + timedelta(minutes=30))
+    assert _err(await _refresh(client, r.json()["refresh_token"])) == (400, "invalid_grant")
     assert _err(await _exchange(client, g2)) == (400, "invalid_grant")
-    assert {r.id: r.created_at for r in await _rows(factory, g["uid"])} == created
+    assert {row.created_at for row in await _rows(factory, g["uid"])} == {hour_ago}
 
 
 # ── F-O5: refresh reuse detection ──────────────────────────────────────────
