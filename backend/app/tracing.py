@@ -28,6 +28,13 @@ from opentelemetry.sdk.metrics.view import View
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.sampling import (
+    ALWAYS_OFF,
+    ALWAYS_ON,
+    ParentBased,
+    Sampler,
+    TraceIdRatioBased,
+)
 from opentelemetry.trace import Span, SpanKind
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from sqlalchemy import Engine, event
@@ -69,8 +76,25 @@ def _resource(service: str) -> Resource:
     return Resource({"service.version": settings.tbd_app_version}).merge(Resource.create())
 
 
+def _sampler() -> Sampler:
+    """OTEL_TRACES_SAMPLER(_ARG) as the SDK reads them, except that a remote parent's not-sampled flag
+    is ignored: the root sampler decides, so a client sending ``traceparent ...-00`` cannot hide its
+    own request. A local parent still decides for its children (the SQL spans follow the request)."""
+    name = os.environ.get("OTEL_TRACES_SAMPLER", "").strip().lower()
+    if name.endswith("always_off"):
+        root: Sampler = ALWAYS_OFF
+    elif name.endswith("traceidratio"):
+        try:
+            root = TraceIdRatioBased(float(os.environ.get("OTEL_TRACES_SAMPLER_ARG", "1.0")))
+        except ValueError:
+            root = ALWAYS_ON
+    else:
+        root = ALWAYS_ON
+    return ParentBased(root, remote_parent_not_sampled=root)
+
+
 def _provider(service: str) -> TracerProvider:
-    provider = TracerProvider(resource=_resource(service))
+    provider = TracerProvider(resource=_resource(service), sampler=_sampler())
     # Gated: without an endpoint the exporter would fall back to localhost:4318.
     if _enabled("TRACES"):
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))

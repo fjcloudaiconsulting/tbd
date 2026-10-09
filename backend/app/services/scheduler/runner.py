@@ -76,7 +76,7 @@ async def run_all_due(
                     await record_run(job_type=job.job_type, outcome="failure", org=org,
                                      detail={"error": str(exc)})
                     await logger.aerror("scheduler.job.failure", job=job.job_type,
-                                        org_id=org.id, error=str(exc))
+                                        org_id=org.id, error=type(exc).__name__)
         if org_did_work:
             worked_orgs += 1
             if max_orgs is not None and max_orgs > 0 and worked_orgs >= max_orgs:

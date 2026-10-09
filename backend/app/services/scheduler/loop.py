@@ -49,7 +49,7 @@ async def scheduler_loop(
             with tracing.span("scheduler.tick", SpanKind.INTERNAL, {}):
                 await run_one_tick(datetime.date.today(), lock_ttl=lock_ttl, max_orgs=max_orgs)
         except Exception as exc:  # noqa: BLE001 — never let the ticker die
-            await logger.aerror("scheduler.tick.error", error=str(exc))
+            await logger.aerror("scheduler.tick.error", error=type(exc).__name__)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=tick_seconds)
         except asyncio.TimeoutError:

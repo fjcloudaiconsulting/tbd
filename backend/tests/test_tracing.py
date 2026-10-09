@@ -278,8 +278,10 @@ def test_importing_the_app_registers_sdk_providers():
     code = (
         "import app.main\n"
         "from opentelemetry import metrics, trace\n"
-        "print('PROVIDERS', type(trace.get_tracer_provider()).__module__,"
-        " type(metrics.get_meter_provider()).__module__)"
+        "from opentelemetry.sdk.metrics import MeterProvider\n"
+        "from opentelemetry.sdk.trace import TracerProvider\n"
+        "print('PROVIDERS', isinstance(trace.get_tracer_provider(), TracerProvider),"
+        " isinstance(metrics.get_meter_provider(), MeterProvider))"
     )
     env = {k: v for k, v in __import__("os").environ.items() if not k.startswith("OTEL_")}
     out = subprocess.run(
@@ -287,7 +289,7 @@ def test_importing_the_app_registers_sdk_providers():
         cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
     ).stdout.splitlines()
     providers = [line.split()[1:] for line in out if line.startswith("PROVIDERS ")]
-    assert providers == [["opentelemetry.sdk.trace", "opentelemetry.sdk.metrics._internal"]]
+    assert providers == [["True", "True"]]
 
 
 def test_a_handled_5xx_is_an_error_named_by_its_status(spans):
@@ -332,6 +334,17 @@ def test_only_traceparent_is_read_from_the_request(spans):
     assert format(server.parent.span_id, "016x") == parent_id
     assert len(server.context.trace_state) == 0
     _assert_absent([server], SECRET)
+
+
+def test_a_not_sampled_remote_parent_cannot_hide_the_request(spans):
+    """flags=00 from a client must not drop the SERVER span and its SQL: the root sampler decides."""
+    trace_id = "0af7651916cd43dd8448eb211c80319c"
+    TestClient(_mini_app()).get(
+        "/items/1", headers={"traceparent": f"00-{trace_id}-b7ad6b7169203331-00"}
+    )
+    server = _server(spans())
+    assert format(server.context.trace_id, "032x") == trace_id  # still stitched (residual)
+    assert server.context.trace_flags.sampled
 
 
 # ── SQL spans ──────────────────────────────────────────────────────────────
@@ -429,6 +442,7 @@ def test_nothing_is_exported_without_an_endpoint(monkeypatch, env, exported):
     provider = tracing._provider("tbd-api")
     meter_provider = tracing._meter_provider("tbd-api")
     try:
+        # Private reads: neither SDK provider has a public API that lists its processors or readers.
         assert len(provider._active_span_processor._span_processors) == int(exported)
         assert len(meter_provider._metric_readers) == int(exported)
     finally:
@@ -542,3 +556,24 @@ async def test_the_api_token_expiry_reminder_is_a_job_span(spans, monkeypatch):
     assert len(calls) == 1
     (job,) = [s for s in spans() if s.name == "job api_token_expiry"]
     assert dict(job.attributes) == {"job.kind": "api_token_expiry"}
+
+
+@pytest.mark.parametrize(
+    "env, root",
+    [
+        ({}, "AlwaysOnSampler"),
+        ({"OTEL_TRACES_SAMPLER": "parentbased_traceidratio", "OTEL_TRACES_SAMPLER_ARG": "0.25"},
+         "TraceIdRatioBased{0.25}"),
+        ({"OTEL_TRACES_SAMPLER": "parentbased_traceidratio", "OTEL_TRACES_SAMPLER_ARG": "x"},
+         "AlwaysOnSampler"),
+        ({"OTEL_TRACES_SAMPLER": "always_off"}, "AlwaysOffSampler"),
+    ],
+)
+def test_the_sampler_follows_the_env_and_its_root_decides_for_a_not_sampled_remote(
+    monkeypatch, env, root
+):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    description = tracing._sampler().get_description()
+    assert f"root:{root}" in description
+    assert f"remoteParentNotSampled:{root}" in description
