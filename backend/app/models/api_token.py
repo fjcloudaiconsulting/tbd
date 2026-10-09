@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import (
+    CHAR,
     BigInteger,
     DateTime,
     ForeignKey,
@@ -81,3 +82,24 @@ class ApiToken(Base):
     reminder_stage: Mapped[int] = mapped_column(
         SmallInteger, default=0, server_default=text("0"), nullable=False
     )
+    # ── OAuth grants (TBD-587). A grant IS one row; all NULL on manual tokens.
+    # A row with ``oauth_client_id`` set and ``refresh_hash`` NULL is a
+    # placeholder: an issued, not yet redeemed, authorization code.
+    oauth_client_id: Mapped[Optional[str]] = mapped_column(
+        CHAR(32),
+        ForeignKey("oauth_clients.id", ondelete="RESTRICT", name="fk_api_tokens_oauth_client"),
+        nullable=True,
+        index=True,
+    )
+    refresh_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), unique=True, index=True, nullable=True
+    )
+    refresh_prev_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), index=True, nullable=True
+    )
+    refresh_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    code_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), unique=True, index=True, nullable=True
+    )
+    code_challenge: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    code_redirect_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)

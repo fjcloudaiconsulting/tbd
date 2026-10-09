@@ -313,9 +313,9 @@ recovery — reload — re-issues the request. Tracked separately.
 
 ### Public endpoints (no auth required)
 
-Exactly **26** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 11 are genuinely **open**, and 15 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "26 public routes" is not 26 unauthenticated ones.
+Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 14 are genuinely **open**, and 16 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "30 public routes" is not 30 unauthenticated ones.
 
-**Open — no identity check at all (11)**
+**Open — no identity check at all (14)**
 
 | Route | Why it cannot carry auth |
 | --- | --- |
@@ -330,8 +330,11 @@ Exactly **26** `(method, path)` pairs reach a handler without `get_current_user`
 | `GET /api/v1/auth/google` | Starts the Google OAuth redirect; the caller is anonymous at this point by construction. |
 | `GET /api/v1/public/founder-count` | Single aggregate integer rendered on the signup surface, before any account exists. |
 | `POST /api/v1/security/csp-report` | Browsers post CSP violation reports with no auth context and no way to attach a bearer token. Always answers 204. |
+| `GET /.well-known/oauth-protected-resource/mcp` | MCP OAuth discovery (RFC 9728, TBD-587): read by an MCP client before it holds any credential. Static document derived from `APP_URL`. Its path is fixed by the RFC, outside `/api/v1`. |
+| `GET /.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414), same reasons as the line above. |
+| `POST /api/v1/oauth/register` | Open dynamic client registration (RFC 7591, operator ruling). Public clients only, no secret issued; idempotent on identical metadata; new clients capped per https host, per loopback pool and IP, per IP per hour, and by a global row ceiling, all failing closed. |
 
-**Credential-bearing — authenticated, but no bearer token by construction (15)**
+**Credential-bearing — authenticated, but no bearer token by construction (16)**
 
 | Route | Credential, and why not a bearer token |
 | --- | --- |
@@ -350,6 +353,7 @@ Exactly **26** `(method, path)` pairs reach a handler without `get_current_user`
 | `GET /api/v1/orgs/invitations/preview` | The invitee has no account yet, so there is no credential to present. Gated by a signed, 7-day, email-bound invitation JWT; every failure mode returns one uniform `410` so the response cannot distinguish "not yours" from "does not exist". |
 | `POST /api/v1/orgs/invitations/accept` | Creates the account, so it necessarily runs before the caller has one. The signed invitation JWT is the credential: `org_id` and `role` are read from the locked DB row and never from the request body, the role can never be OWNER, and the token is consumed single-use under `SELECT ... FOR UPDATE`. |
 | `POST /api/v1/webhooks/mailgun` | HMAC signature-verified against the signing key on every call. Not open, just not bearer-authenticated. |
+| `POST /api/v1/oauth/token` | OAuth token endpoint (TBD-587). The credential is the authorization code plus its PKCE verifier, or a refresh token; an MCP client has no bearer token yet by construction. Limits are keyed on the credential, under a coarse per-IP ceiling. |
 
 The four MFA routes above are the **pre-auth challenge** legs only. `mfa/setup`, `mfa/enable`, `mfa/disable` and `mfa/recovery-codes` are authenticated *and* interactive-session-gated — never write this set as an `mfa/*` glob, or it blesses the whole account-takeover surface.
 
@@ -359,13 +363,13 @@ The table documents **reachability**, not a claim that every listed route is ful
 
 All other endpoints require a Bearer access token via the `get_current_user` dependency.
 
-**MCP server component (separate app, `backend/app/mcp_main.py`, not part of the 26 above)**
+**MCP server component (separate app, `backend/app/mcp_main.py`, not part of the 30 above)**
 
 The MCP component is its own image and process and never imports `app.main`, so the allowlist test cannot see it. Its route set is exactly these two pairs, fenced by `backend/tests/mcp/test_mcp_server.py` (F-M1).
 
 | Route | Credential |
 | --- | --- |
-| `POST /mcp` | An agent access token (`pat_` bearer with an `agent:*` scope), checked by `authenticate_agent_token` outside the dependency graph, before any JSON-RPC method is parsed or dispatched (`initialize` and `ping` included). Every 401 carries `WWW-Authenticate: Bearer resource_metadata=...` (the metadata route ships with the OAuth authorization server). Failed auth is capped at 300/minute per client IP, which then refuses the whole IP for the minute; valid tokens are limited per token. The org also needs `ai.agent` and a non-zero `mcp.calls` limit (403 otherwise). |
+| `POST /mcp` | An agent access token (`pat_` bearer with an `agent:*` scope), checked by `authenticate_agent_token` outside the dependency graph, before any JSON-RPC method is parsed or dispatched (`initialize` and `ping` included). Every 401 carries `WWW-Authenticate: Bearer resource_metadata=...`, pointing at `/.well-known/oauth-protected-resource/mcp`, which the backend serves (the OAuth authorization server, TBD-587). OAuth access tokens and manual agent tokens both authenticate here. Failed auth is capped at 300/minute per client IP, which then refuses the whole IP for the minute; valid tokens are limited per token. The org also needs `ai.agent` and a non-zero `mcp.calls` limit (403 otherwise). |
 | `GET /health` | Open. The component's liveness probe; not routed through the public ingress. |
 
 ### Platform-gated endpoints (authorization, not just authentication)

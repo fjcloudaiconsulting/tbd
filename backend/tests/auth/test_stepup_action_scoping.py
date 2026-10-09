@@ -41,10 +41,12 @@ from app.models import Base
 from app.models.api_token import ApiToken
 from app.models.audit_event import AuditEvent
 from app.models.feature_override import OrgFeatureOverride
+from app.models.oauth_client import OAuthClient
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers import agent_tokens as agent_tokens_module
 from app.routers import api_tokens as api_tokens_module
+from app.routers import oauth as oauth_module
 from app.routers import auth as auth_module
 from app.routers import users as users_module
 from app.security import create_access_token, hash_password, verify_password
@@ -108,6 +110,7 @@ def _client(factory) -> TestClient:
     app.include_router(users_module.router)
     app.include_router(api_tokens_module.router)
     app.include_router(agent_tokens_module.router)
+    app.include_router(oauth_module.router)
     app.include_router(auth_module.router)
     return TestClient(app)
 
@@ -135,7 +138,22 @@ async def _seed(factory) -> int:
         )
         s.add(u)
         await s.commit()
+        # TBD-587: the oauth_consent consumer needs a registered client.
+        s.add(OAuthClient(id=f"{u.id:032d}", client_name="Claude",
+                          redirect_uris=[OAUTH_REDIRECT], metadata_key=f"{u.id:064d}"))
+        await s.commit()
         return u.id
+
+
+OAUTH_REDIRECT = "https://claude.ai/api/mcp/auth_callback"
+
+
+def _oauth_consent_body(tok: str, uid: int) -> dict:
+    return {
+        "client_id": f"{uid:032d}", "redirect_uri": OAUTH_REDIRECT, "response_type": "code",
+        "code_challenge": "A" * 43, "code_challenge_method": "S256", "scope": "agent:read",
+        "approve": True, "granted_scope": "agent:read", "stepup_token": tok,
+    }
 
 
 async def _issue(factory, uid: int, action: str) -> str:
@@ -232,6 +250,17 @@ CONSUMERS: dict[str, Consumer] = {
         401,
         "Step-up verification required",
         agent_tokens_module,
+    ),
+    # TBD-587. Own action: a consent proof must not mint a manual agent token
+    # (which could carry agent:auto), nor a mint proof approve a consent.
+    "oauth_consent": Consumer(
+        "POST",
+        "/api/v1/oauth/authorize",
+        _oauth_consent_body,
+        200,
+        401,
+        "Step-up verification required",
+        oauth_module,
     ),
 }
 
@@ -513,7 +542,8 @@ async def _side_effect_free(factory, uid: int, action: str) -> None:
             r
             for r in await _all_audit_rows(factory)
             if r.event_type
-            == ("agent_token.created" if action == "agent_token_mint" else "api_token.created")
+            == ("agent_token.created" if action in ("agent_token_mint", "oauth_consent")
+                else "api_token.created")
             and r.outcome == "failure"
             and r.actor_user_id == uid
         ]

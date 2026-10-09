@@ -8,6 +8,7 @@ from opentelemetry.trace import SpanKind
 
 from app import redis_client, tracing
 from app.services.scheduler.jobs.api_token_expiry import run_api_token_expiry_reminders
+from app.services.scheduler.jobs.oauth_client_purge import run_oauth_client_purge
 from app.services.scheduler.runner import run_all_due
 
 logger = structlog.get_logger(__name__)
@@ -36,6 +37,8 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
     # job. A tz-aware ``now`` drives the day-granularity threshold math.
     with tracing.span("job api_token_expiry", SpanKind.INTERNAL, {"job.kind": "api_token_expiry"}):
         await run_api_token_expiry_reminders(now=datetime.datetime.now(datetime.timezone.utc))
+    # TBD-587: expired OAuth codes, then idle OAuth clients. Never raises.
+    await run_oauth_client_purge()
     await logger.ainfo("scheduler.tick.complete")
     return True
 

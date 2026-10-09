@@ -71,6 +71,7 @@ from app.models.email_broadcast import (  # noqa: F401
     EmailBroadcastRecipient,
 )
 from app.models.api_token import ApiToken  # noqa: F401
+from app.models.oauth_client import OAuthClient  # noqa: F401
 
 __all__ = [
     "Base",
@@ -146,6 +147,7 @@ __all__ = [
     "EmailBroadcast",
     "EmailBroadcastRecipient",
     "ApiToken",
+    "OAuthClient",
     "RateLimit",
     "PlatformAISpend",
 ]
