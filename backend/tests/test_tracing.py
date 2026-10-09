@@ -549,9 +549,13 @@ async def test_the_api_token_expiry_reminder_is_a_job_span(spans, monkeypatch):
     async def reminders(*, now):
         calls.append(now)
 
+    async def purge():
+        return None
+
     monkeypatch.setattr(scheduler_loop_module, "acquire_tick_lock", acquire)
     monkeypatch.setattr(scheduler_loop_module, "run_all_due", run_all_due)
     monkeypatch.setattr(scheduler_loop_module, "run_api_token_expiry_reminders", reminders)
+    monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
     await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
     assert len(calls) == 1
     (job,) = [s for s in spans() if s.name == "job api_token_expiry"]
