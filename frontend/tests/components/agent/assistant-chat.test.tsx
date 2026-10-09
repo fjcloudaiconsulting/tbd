@@ -8,6 +8,7 @@
  * Drives the REAL apiFetch over a mocked global fetch, so the Bearer header
  * and the body reader are the production path.
  */
+import { StrictMode } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import axe from "axe-core";
 
@@ -339,6 +340,14 @@ describe("transport and accessibility", () => {
     await act(async () => respond(new Response(new ReadableStream({ start() {}, cancel }), { status: 200 })));
     await waitFor(() => expect(cancel).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument());
+  });
+
+  it("under StrictMode (effects mount twice) a turn still streams to the end", async () => {
+    fetchMock.mockResolvedValueOnce(sse([["message", { text: "strict ok" }]]));
+    render(<StrictMode><AssistantChat /></StrictMode>);
+    await ask("hi");
+    expect(screen.getByTestId("assistant-text").textContent).toBe("strict ok");
+    expect(screen.queryByText("Not sent")).toBeNull();
   });
 
   it("a stream that ends without done reports the dropped connection", async () => {
