@@ -213,6 +213,7 @@ export default function PreviewCard({
             {link && (
               <Link
                 href={link.href}
+                prefetch={false}
                 className="inline-flex min-h-6 items-center text-sm text-text-primary underline underline-offset-2 hover:text-accent"
               >
                 {link.label}

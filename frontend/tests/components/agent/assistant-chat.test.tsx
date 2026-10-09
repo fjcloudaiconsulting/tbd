@@ -242,7 +242,10 @@ describe("transport and accessibility", () => {
     expect(screen.getByRole("log").getAttribute("aria-live")).toBe("polite");
     expect(document.activeElement).toBe(within(screen.getByTestId("preview-card")).getByRole("heading", { level: 3 }));
 
-    const result = await axe.run(container, { rules: { "color-contrast": { enabled: false } } });
+    let result!: axe.AxeResults;
+    await act(async () => {
+      result = await axe.run(container, { rules: { "color-contrast": { enabled: false } } });
+    });
     expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`)).toEqual([]);
     getReader.mockRestore();
   });
