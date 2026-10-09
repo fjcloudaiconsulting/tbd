@@ -13,6 +13,7 @@ import axe from "axe-core";
 
 import AssistantChat from "@/components/agent/AssistantChat";
 import { setAccessToken } from "@/lib/api";
+import { setBalancesHidden } from "@/lib/format";
 import type { StagedAction } from "@/lib/agent/types";
 
 const enc = new TextEncoder();
@@ -189,6 +190,30 @@ describe("preview card", () => {
 
     const confirms = fetchMock.mock.calls.filter(([u]) => String(u).includes("/confirm"));
     expect(confirms).toHaveLength(1);
+    await waitFor(() => expect(screen.getByText("Applied")).toBeInTheDocument());
+  });
+
+  it("F-581-BLIND: with balances hidden a money change cannot be applied unseen; showing them re-enables it", async () => {
+    fetchMock.mockResolvedValueOnce(sse([["tool_call", { name: "budgets_update_amount" }], ["preview", { action: BUDGET_ACTION }]]));
+    render(<AssistantChat />);
+    await ask("go");
+    act(() => setBalancesHidden(true));
+    try {
+      const card = screen.getByTestId("preview-card");
+      expect(card.textContent).not.toMatch(/1,234/);
+      const apply = screen.getByRole("button", { name: "Apply change" });
+      expect(apply).toHaveAttribute("aria-disabled", "true");
+      expect(card.textContent).toMatch(/Amounts are hidden/);
+      fireEvent.click(apply);
+      await act(async () => {});
+      expect(fetchMock.mock.calls.filter(([u]) => String(u).includes("/confirm"))).toHaveLength(0);
+      // Discard stays live.
+      expect(screen.getByRole("button", { name: "Discard" })).not.toHaveAttribute("aria-disabled", "true");
+    } finally {
+      act(() => setBalancesHidden(false));
+    }
+    fetchMock.mockResolvedValueOnce(json(200, { action_id: "a1", status: "done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
     await waitFor(() => expect(screen.getByText("Applied")).toBeInTheDocument());
   });
 

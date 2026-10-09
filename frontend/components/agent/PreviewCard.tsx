@@ -62,7 +62,7 @@ function timeOf(iso: string): string {
 export default function PreviewCard({
   tool, action: initial, drift, autoFocus, emphasis = true, applyLabel = "Apply change", onDecided,
 }: Props) {
-  useBalancesHidden(); // repaint amounts on Hide balances (TBD-527)
+  const hidden = useBalancesHidden(); // repaints amounts on Hide balances (TBD-527)
   const [action, setAction] = useState(initial);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [busy, setBusy] = useState<"confirm" | "cancel" | null>(null);
@@ -88,8 +88,13 @@ export default function PreviewCard({
     onDecided?.(o, a);
   };
 
+  // Hidden balances mask every amount; applying a money change unseen would be
+  // blind consent to a ledger write, so Apply waits until balances are shown.
+  const headline = actionHeadline(tool, action.summary, action.changes);
+  const blind = hidden && (action.changes.some((c) => c.currency) || maskMoneyText(headline) !== headline);
+
   async function decide(kind: "confirm" | "cancel") {
-    if (busyRef.current || (kind === "confirm" && Date.now() < armedAt.current)) return;
+    if (busyRef.current || (kind === "confirm" && (blind || Date.now() < armedAt.current))) return;
     busyRef.current = true;
     setBusy(kind);
     setFailure("");
@@ -145,7 +150,7 @@ export default function PreviewCard({
           id={headingId}
           className="mt-1 text-base font-semibold text-text-primary"
         >
-          {maskMoneyText(actionHeadline(tool, action.summary, action.changes))}
+          {maskMoneyText(headline)}
         </h3>
         {about && (
           <p className="mt-0.5 text-sm text-text-secondary [overflow-wrap:anywhere]">
@@ -213,6 +218,11 @@ export default function PreviewCard({
         )}
 
         {notice && !outcome && <p role="status" className="text-sm text-info">{notice}</p>}
+        {blind && !outcome && (
+          <p id={`${headingId}-hidden`} className="text-sm text-text-secondary">
+            Amounts are hidden. Show balances to review this change before applying it.
+          </p>
+        )}
         {failure && <p role="alert" className={errorCls}>{failure}</p>}
 
         <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -248,7 +258,8 @@ export default function PreviewCard({
               <button
                 type="button"
                 onClick={() => decide("confirm")}
-                aria-disabled={busy !== null}
+                aria-disabled={busy !== null || blind}
+                aria-describedby={blind ? `${headingId}-hidden` : undefined}
                 className={`${emphasis ? btnPrimary : btnSecondary} min-h-[44px] aria-disabled:opacity-60 sm:min-h-0`}
               >
                 {busy === "confirm" ? "Applying…" : drift?.length ? "Revert anyway" : applyLabel}
