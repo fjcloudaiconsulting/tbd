@@ -155,6 +155,22 @@ def test_release_workflow_has_exactly_the_gated_release_jobs():
     assert "promote" in ([needs] if isinstance(needs, str) else needs)
 
 
+def test_promote_retags_exactly_the_images_test_yml_publishes():
+    """INFRA-147. aws-infra deploys tbd/<image>:vX.Y.Z for each of these, so
+    each must be published as sha-<7> by test.yml AND retagged by promote.
+    Wrong implementations: an image published but never promoted (no vX.Y.Z,
+    the deploy pins a tag that does not exist), promoted but never published
+    (promote fails the release), or mcp built from the backend Dockerfile."""
+    test_jobs = _yaml(REPO_ROOT / ".github" / "workflows" / "test.yml")["jobs"]
+    matrix = test_jobs["backend-images"]["strategy"]["matrix"]["include"]
+    published = {e["image"] for e in matrix} | {test_jobs["frontend-image"]["with"]["image"]}
+    promoted = set(_yaml(RELEASE_WORKFLOW)["jobs"]["promote"]["with"]["images"].split())
+    assert promoted == published
+    assert promoted >= {"backend", "frontend", "migrations", "mcp"}
+    assert test_jobs["backend-images"]["with"]["file"] == "${{ matrix.file }}"
+    assert {e["image"]: e.get("file") for e in matrix}["mcp"] == "backend/Dockerfile.mcp"
+
+
 def test_release_runs_are_serialised_and_never_cancelled():
     """TBD-391 / INFRA-42. One Release run at a time, and never
     `cancel-in-progress`: a run cancelled after release-please tagged leaves a

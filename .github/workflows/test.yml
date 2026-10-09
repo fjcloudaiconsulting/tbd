@@ -235,7 +235,7 @@ jobs:
   # starts importing (at module load) a package the image excludes (alembic,
   # ofxtools, pyotp, qrcode) fails here, not at deploy. The pin-parity half is a backend test.
   # Throwaway secrets: Settings refuses to import without real-looking ones.
-  # Nothing is pushed: no consumer of a registry image exists yet.
+  # Nothing is pushed here: `backend-images` publishes the same file (INFRA-147).
   mcp-image:
     name: MCP Image
     runs-on: ubuntu-latest
@@ -309,7 +309,8 @@ jobs:
   # push to `main` publishes sha-<7>, which release.yml's promote retags as
   # vX.Y.Z and never rebuilds. detect-changed-areas.sh reports every area as
   # changed on any non-PR event, so every `main` commit (the release-please
-  # commit included) gets all three images.
+  # commit included) gets all four images. mcp is promoted too (INFRA-147):
+  # aws-infra deploys it.
   backend-images:
     name: Publish Image (${{ matrix.image }})
     needs: changes
@@ -319,6 +320,7 @@ jobs:
         include:
           - { image: backend, target: prod }
           - { image: migrations, target: migrations }
+          - { image: mcp, file: backend/Dockerfile.mcp }
     permissions:
       contents: read
       packages: write
@@ -326,6 +328,7 @@ jobs:
     with:
       image: ${{ matrix.image }}
       context: backend
+      file: ${{ matrix.file }}
       target: ${{ matrix.target }}
 
   frontend-image:
@@ -462,7 +465,7 @@ jobs:
           "${{ needs.changes.outputs.backend }}"
           "Backend Image"
 
-      - name: Verify the backend and migrations images built (and published on main)
+      - name: Verify the backend, migrations and MCP images built (and published on main)
         run: >-
           bash scripts/ci/assert-gate.sh
           "${{ needs.backend-images.result }}"
