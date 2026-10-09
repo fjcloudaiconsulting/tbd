@@ -57,6 +57,8 @@ METER = "mcp.calls"
 # OAuth never grants ``agent:auto`` (A1.2): it exists on manual tokens only.
 OAUTH_SCOPES = ("agent:read", "agent:write")
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+# Keys we append to a redirect; a registered URI may not carry them.
+RESERVED_QUERY_KEYS = frozenset({"code", "state", "iss", "error", "error_description"})
 DEFAULT_CLIENT_NAME = "MCP client"
 MAX_REDIRECT_URIS, MAX_URI_LEN, MAX_NAME_LEN, MAX_STATE_LEN = 5, 512, 100, 1024
 MAX_CLIENTS = 20_000
@@ -177,9 +179,6 @@ def classify_redirect(uri: Any) -> tuple[str, str]:
     if parts.scheme not in ("http", "https") and "." in parts.scheme:
         return "private", parts.scheme
     raise _bad_uri()
-
-
-RESERVED_QUERY_KEYS = frozenset({"code", "state", "iss", "error", "error_description"})
 
 
 def match_key(uri: str) -> str:
