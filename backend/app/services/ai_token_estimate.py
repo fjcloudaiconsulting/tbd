@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import math
 
-from app.services.ai_pricing import MODEL_PRICING
+from app.services.ai_pricing import MODEL_PRICING, OPENROUTER_IDS
 
 # Char-per-token heuristic. The stack has no tokenizer; this is
 # deliberately rough. Shared with ``ai_forecast_refine_token_estimate``
@@ -35,14 +35,42 @@ _GLOBAL_DEFAULT_MAX_OUTPUT_TOKENS = 4096
 _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL: dict[str, int] = {
     "gpt-4o": 4096,
     "gpt-4o-mini": 4096,
+    "gpt-6-astra": 4096,
+    "gpt-6.1-sol": 4096,
+    "gpt-6-sol": 4096,
+    "gpt-6-luna": 4096,
+    "gpt-5.6-sol": 4096,
+    "gpt-5.6-terra": 4096,
+    "gpt-5.6-luna": 4096,
+    "claude-fable-5-1": 8192,
+    "claude-fable-5": 8192,
+    "claude-opus-5-5": 8192,
+    "claude-opus-5": 8192,
+    "claude-opus-4-8": 8192,
+    "claude-opus-4-7": 8192,
+    "claude-opus-4-6": 8192,
+    "claude-sonnet-5-5": 8192,
+    "claude-sonnet-5": 8192,
+    "claude-sonnet-4-6": 8192,
     "claude-sonnet-4-7": 8192,
+    "claude-haiku-5-5": 8192,
     "claude-haiku-4-5": 8192,
+    "claude-haiku-4-5-20251001": 8192,
+    "gemini-3.8-flash": 8192,
+    "gemini-3.6-flash": 8192,
+    "gemini-3.5-flash": 8192,
+    "gemini-3.5-flash-lite": 8192,
+    "gemini-3.1-pro-preview": 8192,
+    "gemini-3.1-flash-lite": 8192,
     # Embedding models never produce completion tokens; keep a token
     # floor so projection arithmetic stays defined (embedding pricing
     # zeroes the completion column anyway).
     "text-embedding-3-small": 0,
     "text-embedding-3-large": 0,
 }
+_DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL.update(
+    {k: _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL[v] for k, v in OPENROUTER_IDS.items()}
+)
 
 
 def estimate_prompt_tokens_from_messages(messages: list[dict]) -> int:
