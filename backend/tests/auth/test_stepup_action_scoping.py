@@ -87,6 +87,7 @@ def _mock_email(monkeypatch):
     monkeypatch.setattr(
         notification_service, "send_notification_email", AsyncMock(return_value=None)
     )
+    monkeypatch.setattr(app_settings, "mcp_oauth_enabled", True)  # oauth_consent consumer
 
 
 @pytest.fixture

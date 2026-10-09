@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app.config import settings
 from app.models import Base
 from app.models.api_token import ApiToken
 from app.models.feature_override import OrgFeatureOverride
@@ -199,8 +200,10 @@ async def superadmin(factory) -> User:
 
 
 @pytest.fixture
-def app(factory):
+def app(factory, monkeypatch):
     """Real routers behind the real ``get_current_user`` — no auth override."""
+    # Off, the OAuth routes 404 and the != 403 check below passes vacuously.
+    monkeypatch.setattr(settings, "mcp_oauth_enabled", True)
     application = make_test_app(
         factory,
         routers=[
