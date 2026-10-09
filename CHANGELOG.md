@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.294.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.293.1...v0.294.0) (2026-10-09)
+
+
+### Features
+
+* **agent:** revert an executed agent write (TBD-589) ([#887](https://github.com/fjcloudaiconsulting/tbd/issues/887)) ([dfd127b](https://github.com/fjcloudaiconsulting/tbd/commit/dfd127b2ca72a5d3db93098225528b8051d51f2d))
+* **ai:** platform AI control plane, shipped dark (TBD-586) ([#894](https://github.com/fjcloudaiconsulting/tbd/issues/894)) ([28d27ec](https://github.com/fjcloudaiconsulting/tbd/commit/28d27ecc627e65f2e68a984c975a2553d791504f))
+* **ai:** platform AI dispatch kernel, shipped dark (TBD-586) ([#889](https://github.com/fjcloudaiconsulting/tbd/issues/889)) ([03d92e7](https://github.com/fjcloudaiconsulting/tbd/commit/03d92e74b4fdbc5ef2c50b6667844a2562ab4521))
+
+
+### Bug Fixes
+
+* **db:** release the request DB session before background tasks run (INFRA-128) ([#896](https://github.com/fjcloudaiconsulting/tbd/issues/896)) ([0043858](https://github.com/fjcloudaiconsulting/tbd/commit/0043858b71abfdf896c5178ec9a592c195819d70))
+* **deps:** update npm non-major ([#886](https://github.com/fjcloudaiconsulting/tbd/issues/886)) ([5370fb8](https://github.com/fjcloudaiconsulting/tbd/commit/5370fb8746a6477bd6b9e0c4e9e2b178af7b95fd))
+* **migrations:** converge prod and fresh schemas on timestamp defaults and the categories org_id index (INFRA-129) ([#893](https://github.com/fjcloudaiconsulting/tbd/issues/893)) ([89113f8](https://github.com/fjcloudaiconsulting/tbd/commit/89113f8eebc2c3ccaac8c35ca6a0d4813511542b))
+
 ## [0.293.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.293.0...v0.293.1) (2026-10-07)
 
 
