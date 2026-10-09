@@ -10,7 +10,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app import tracing
 from app.middleware.request_context import RequestContextMiddleware
+from app.middleware.tracing import TracingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -313,20 +315,26 @@ async def lifespan(app: FastAPI):
 
 _is_dev = app_settings.app_env == "development"
 
-# FastAPI's native OpenTelemetry defaults every signal flag to on (they emit
-# once a provider is configured), and an omitted key keeps its default. All
-# off until INFRA-105 turns metrics on with an OTLP MeterProvider (aws-infra
-# docs/architecture.md, Telemetry).
+# The telemetry standard (aws-infra docs/architecture.md, Telemetry): the global providers before
+# FastAPI(). Without them FastAPI records no HTTP metric. Exports nothing unless OTEL_* env sets an
+# endpoint.
+tracing.configure("tbd-api")
+
+# FastAPI's native OpenTelemetry defaults every signal flag to on, and an omitted key keeps its
+# default, so every flag is passed. Native metrics only, recorded on tracing's MeterProvider (its
+# View is the attribute allowlist).
 # `tracing` must stay False: FastAPI's native tracing redacts only cloud-signature query
 # params (fastapi/telemetry/_asgi.py) and secrets travel in query strings (invitations
-# preview ?token=, Google OAuth callback ?code=); INFRA-105 uses tbd's own allowlisted
-# SERVER-span middleware instead.
+# preview ?token=, Google OAuth callback ?code=); TracingMiddleware is tbd's own allowlisted
+# SERVER span instead. Native logs export exception messages, and auto_configure would add a
+# second exporter to our providers.
 TELEMETRY = {
     "tracing": False,
-    "metrics": False,
+    "metrics": True,
     "logs": False,
     "operation_spans": False,
     "auto_configure": False,
+    "exclude": lambda scope: scope["path"] in tracing.HEALTH_PATHS,
 }
 
 app = FastAPI(
@@ -382,6 +390,10 @@ def _build_middleware_stack_with_security_headers():
 
 
 app.build_middleware_stack = _build_middleware_stack_with_security_headers  # type: ignore[method-assign]
+
+# INFRA-105: the SERVER span. Inside RequestContextMiddleware (added next, so outer), outside CORS
+# so preflights get a span too.
+app.add_middleware(TracingMiddleware)
 
 # L4.9: bind a per-request correlation id (and clear any leftover
 # structlog contextvars from a previous request) at the very edge of

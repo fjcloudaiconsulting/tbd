@@ -3,7 +3,10 @@ from __future__ import annotations
 import datetime
 
 import structlog
+from opentelemetry.trace import SpanKind
 from sqlalchemy import select
+
+from app import tracing
 
 from app.database import async_session
 from app.models.user import Organization
@@ -59,7 +62,11 @@ async def run_all_due(
                         continue
                     if not await job.is_due(db, org, today):
                         continue
-                    result = await job.run(db, org, today)
+                    # Only real runs get a span; the org-setting and is_due SQL sits under the tick.
+                    with tracing.span(
+                        f"job {job.job_type}", SpanKind.INTERNAL, {"job.kind": job.job_type}
+                    ):
+                        result = await job.run(db, org, today)
                     if result.outcome == OUTCOME_SUCCESS:
                         org_did_work = True
                     await logger.ainfo("scheduler.job.%s" % result.outcome,
@@ -69,7 +76,7 @@ async def run_all_due(
                     await record_run(job_type=job.job_type, outcome="failure", org=org,
                                      detail={"error": str(exc)})
                     await logger.aerror("scheduler.job.failure", job=job.job_type,
-                                        org_id=org.id, error=str(exc))
+                                        org_id=org.id, error=type(exc).__name__)
         if org_did_work:
             worked_orgs += 1
             if max_orgs is not None and max_orgs > 0 and worked_orgs >= max_orgs:

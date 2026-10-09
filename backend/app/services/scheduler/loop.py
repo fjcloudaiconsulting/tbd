@@ -4,8 +4,9 @@ import asyncio
 import datetime
 
 import structlog
+from opentelemetry.trace import SpanKind
 
-from app import redis_client
+from app import redis_client, tracing
 from app.services.scheduler.jobs.api_token_expiry import run_api_token_expiry_reminders
 from app.services.scheduler.jobs.oauth_client_purge import run_oauth_client_purge
 from app.services.scheduler.runner import run_all_due
@@ -34,7 +35,8 @@ async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | N
     # They are NOT part of the per-org registry (PAT tokens have no org
     # dimension) and are gated on their own global SystemSetting flag inside the
     # job. A tz-aware ``now`` drives the day-granularity threshold math.
-    await run_api_token_expiry_reminders(now=datetime.datetime.now(datetime.timezone.utc))
+    with tracing.span("job api_token_expiry", SpanKind.INTERNAL, {"job.kind": "api_token_expiry"}):
+        await run_api_token_expiry_reminders(now=datetime.datetime.now(datetime.timezone.utc))
     # TBD-587: expired OAuth codes, then idle OAuth clients. Never raises.
     await run_oauth_client_purge()
     await logger.ainfo("scheduler.tick.complete")
@@ -46,9 +48,11 @@ async def scheduler_loop(
 ) -> None:
     while not stop_event.is_set():
         try:
-            await run_one_tick(datetime.date.today(), lock_ttl=lock_ttl, max_orgs=max_orgs)
+            # Inside the try: the span records the error class, then the loop swallows it.
+            with tracing.span("scheduler.tick", SpanKind.INTERNAL, {}):
+                await run_one_tick(datetime.date.today(), lock_ttl=lock_ttl, max_orgs=max_orgs)
         except Exception as exc:  # noqa: BLE001 — never let the ticker die
-            await logger.aerror("scheduler.tick.error", error=str(exc))
+            await logger.aerror("scheduler.tick.error", error=type(exc).__name__)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=tick_seconds)
         except asyncio.TimeoutError:

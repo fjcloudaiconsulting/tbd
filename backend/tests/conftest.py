@@ -23,6 +23,53 @@ os.environ.setdefault(
 )
 os.environ.setdefault("APP_ENV", "development")
 
+# INFRA-105: tests never export telemetry, whatever the shell sets. configure() must run before
+# app.main is imported (it builds FastAPI() at import, which looks the MeterProvider up then).
+for _otel in [name for name in os.environ if name.startswith("OTEL_")]:
+    del os.environ[_otel]
+
+from opentelemetry import metrics as _otel_metrics  # noqa: E402
+from opentelemetry import trace as _otel_trace  # noqa: E402
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader  # noqa: E402
+from opentelemetry.sdk.trace import SpanProcessor  # noqa: E402
+
+from app import tracing as _tracing  # noqa: E402
+
+_tracing.configure("tbd-api")
+
+
+class _SpanRecorder(SpanProcessor):
+    """Keeps finished spans only while the ``spans`` fixture is active: an always-on in-memory
+    exporter would hold every span of the session in each xdist worker."""
+
+    finished: list | None = None
+
+    def on_end(self, span) -> None:
+        if self.finished is not None:
+            self.finished.append(span)
+
+
+_SPAN_RECORDER = _SpanRecorder()
+_otel_trace.get_tracer_provider().add_span_processor(_SPAN_RECORDER)
+
+
+@pytest.fixture
+def spans():
+    """Finished spans recorded since this fixture started, oldest first."""
+    _SPAN_RECORDER.finished = []
+    yield lambda: list(_SPAN_RECORDER.finished)
+    _SPAN_RECORDER.finished = None
+
+
+@pytest.fixture
+def metric_reader():
+    """A reader on the global MeterProvider: sees only what is recorded after it was added."""
+    provider = _otel_metrics.get_meter_provider()
+    reader = InMemoryMetricReader()
+    provider.add_metric_reader(reader)
+    yield reader
+    provider.remove_metric_reader(reader)
+
 # INFRA-51: bcrypt cost 12 (the production default) makes every hash_password
 # call in a fixture cost ~250ms; 149 test files do it. Use cost 4 (bcrypt's
 # minimum) in tests only. Production hashing is untouched: app/security.py
