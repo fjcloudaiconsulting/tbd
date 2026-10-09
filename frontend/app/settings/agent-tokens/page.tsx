@@ -17,6 +17,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import RevealOncePanel from "@/components/system/api-tokens/RevealOncePanel";
 import StepUpModal, { type StepUpProof } from "@/components/system/api-tokens/StepUpModal";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import Spinner from "@/components/ui/Spinner";
 import { ApiResponseError, apiFetch, extractErrorMessage } from "@/lib/api";
 import { SCOPE_INFO, lowerScopes } from "@/lib/agent/present";
 import type { AgentScope, AgentToken } from "@/lib/agent/types";
@@ -89,9 +90,7 @@ export default function AgentTokensPage() {
   if (loading || !user) {
     return (
       <SettingsLayout activeTab="/settings/agent-tokens">
-        <div className="flex justify-center py-12">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
-        </div>
+        <Spinner />
       </SettingsLayout>
     );
   }

@@ -11,7 +11,7 @@ import { AlertTriangle, ArrowRight, Check } from "lucide-react";
 
 import { ApiResponseError, apiFetch, extractErrorMessage } from "@/lib/api";
 import {
-  actionHeadline, changeLabel, changeValue, drillDown, text,
+  actionHeadline, changeLabel, changeValue, drillDown, text, utcDate,
 } from "@/lib/agent/present";
 import type { ActionChange, DriftRow, StagedAction } from "@/lib/agent/types";
 import { maskMoneyText } from "@/lib/format";
@@ -58,8 +58,7 @@ function subject(tool: string, ctx: Record<string, unknown>): string {
 }
 
 function timeOf(iso: string): string {
-  const d = new Date(/Z|[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`);
-  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return utcDate(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 export default function PreviewCard({

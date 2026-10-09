@@ -6,6 +6,11 @@ import { scopeLabel } from "@/components/system/api-tokens/expiry";
 import { formatMoney } from "@/lib/format";
 import type { ActionChange, AgentScope, Wire } from "./types";
 
+// The backend serializes naive UTC datetimes without an offset.
+export function utcDate(iso: string): Date {
+  return new Date(/Z|[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`);
+}
+
 export function text(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "object" && typeof (v as { untrusted?: unknown }).untrusted === "string") {

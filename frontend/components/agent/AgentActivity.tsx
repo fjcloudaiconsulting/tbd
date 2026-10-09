@@ -9,7 +9,7 @@ import useSWR from "swr";
 import { Undo2, X, Zap } from "lucide-react";
 
 import { ApiResponseError, apiFetch } from "@/lib/api";
-import { actionHeadline, changeLabel, changeValue, text } from "@/lib/agent/present";
+import { actionHeadline, changeLabel, changeValue, text, utcDate } from "@/lib/agent/present";
 import type { AgentActionRow, DriftRow, StagedAction } from "@/lib/agent/types";
 import { maskMoneyText } from "@/lib/format";
 import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
@@ -40,8 +40,7 @@ function revertError(err: unknown): string {
 }
 
 function when(iso: string): string {
-  const d = new Date(/Z|[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`);
-  return d.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return utcDate(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 interface Staged {
@@ -166,7 +165,7 @@ export default function AgentActivity() {
         for you to review before it applies.
       </p>
 
-      {error && !(error instanceof ApiResponseError && error.status === 403) && (
+      {error && (
         <p role="alert" className="px-6 py-4 text-sm text-danger">Agent activity could not be loaded.</p>
       )}
       {!data && !error && <p className="px-6 py-6 text-sm text-text-secondary">Loading…</p>}

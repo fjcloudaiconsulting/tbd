@@ -24,14 +24,13 @@ const AUTO_MAX_DAYS = 30;
 interface Props {
   onSubmit: (values: AgentMintValues) => void;
   submitting?: boolean;
-  initial?: AgentMintValues | null;
 }
 
-export default function AgentMintForm({ onSubmit, submitting = false, initial }: Props) {
-  const [name, setName] = useState(initial?.name ?? "");
-  const [scope, setScope] = useState<AgentScope>(initial?.scope ?? "agent:read");
-  const [days, setDays] = useState<number>(initial?.expiresInDays ?? 30);
-  const [ack, setAck] = useState(initial?.acknowledgeAuto ?? false);
+export default function AgentMintForm({ onSubmit, submitting = false }: Props) {
+  const [name, setName] = useState("");
+  const [scope, setScope] = useState<AgentScope>("agent:read");
+  const [days, setDays] = useState(30);
+  const [ack, setAck] = useState(false);
   const [nameError, setNameError] = useState(false);
 
   const auto = scope === "agent:auto";

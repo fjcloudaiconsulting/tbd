@@ -95,7 +95,7 @@ const ERRORS: Record<string, string> = {
 
 export function errorText(code: string, status?: number): string {
   if (ERRORS[code]) return ERRORS[code];
-  if (status === 412) return "The assistant needs an AI provider. An admin can set one up in Settings, AI providers.";
-  if (status === 402) return "Your organization's AI spending limit is reached for now.";
+  if (status === 412) return ERRORS.ai_routing_not_configured;
+  if (status === 402) return ERRORS.ai_hard_cap_exceeded;
   return "Something went wrong. Try again.";
 }

@@ -4,6 +4,7 @@
 // only edits: a token can never be raised, a new one is minted instead.
 
 import { expiryView, scopeLabel, shortDate } from "@/components/system/api-tokens/expiry";
+import { TONE_CLASS } from "@/components/system/api-tokens/TokenList";
 import { lowerScopes } from "@/lib/agent/present";
 import type { AgentToken } from "@/lib/agent/types";
 import { badgeError, badgeNeutral, badgeSuccess, badgeWarning } from "@/lib/styles";
@@ -13,12 +14,6 @@ const STATUS: Record<AgentToken["status"], { label: string; cls: string }> = {
   expired: { label: "Expired", cls: badgeNeutral },
   revoked: { label: "Revoked", cls: badgeError },
   invalidated: { label: "Signed out", cls: badgeWarning },
-};
-
-const TONE: Record<string, string> = {
-  normal: "text-text-secondary",
-  warning: "text-warning",
-  danger: "text-danger",
 };
 
 const TH = "px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-secondary";
@@ -68,7 +63,7 @@ export default function AgentTokenList({ tokens, nowMs, onLower, onRevoke }: Pro
                 </td>
                 <td className="px-4 py-3 text-text-primary">{scopeLabel(t.scope)}</td>
                 <td className="px-4 py-3 text-text-secondary tabular-nums">{shortDate(t.created_at)}</td>
-                <td className={`px-4 py-3 tabular-nums ${active ? TONE[expiry.tone] : "text-text-secondary"}`}>
+                <td className={`px-4 py-3 tabular-nums ${active ? TONE_CLASS[expiry.tone] : "text-text-secondary"}`}>
                   {active ? expiry.label : shortDate(t.expires_at)}
                 </td>
                 <td className="px-4 py-3 text-text-secondary tabular-nums">

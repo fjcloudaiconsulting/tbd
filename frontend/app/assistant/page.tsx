@@ -7,6 +7,7 @@ import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import AssistantChat from "@/components/agent/AssistantChat";
+import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { isAdmin } from "@/lib/auth";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
@@ -20,11 +21,7 @@ export default function AssistantPage() {
 
   let body: React.ReactNode;
   if (!ai) {
-    body = (
-      <div className="flex justify-center py-12">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
-      </div>
-    );
+    body = <Spinner />;
   } else if (closed) {
     body = (
       <p className={`${card} max-w-2xl p-6 text-sm text-text-secondary`}>
