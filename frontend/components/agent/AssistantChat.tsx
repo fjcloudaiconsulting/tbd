@@ -29,18 +29,20 @@ const EXAMPLES = [
 
 function ToolLine({ e }: { e: Extract<Entry, { kind: "tool" }> }) {
   const pending = e.ok === undefined;
-  const Icon = pending ? Search : e.ok ? Check : CircleAlert;
+  const stopped = e.code === "stopped"; // the turn ended before this lookup answered
+  const failed = e.ok === false && !stopped;
+  const Icon = pending || stopped ? Search : e.ok ? Check : CircleAlert;
   const detail = pending
     ? "working"
     : e.ok
       ? typeof e.rows === "number" ? `${e.rows} ${e.rows === 1 ? "result" : "results"}` : "done"
-      : "failed";
+      : stopped ? "stopped" : "failed";
   return (
     <p className="flex items-center gap-2 text-xs text-text-secondary">
-      <Icon aria-hidden className={`h-3.5 w-3.5 shrink-0 ${e.ok === false ? "text-danger" : ""}`} strokeWidth={1.75} />
+      <Icon aria-hidden className={`h-3.5 w-3.5 shrink-0 ${failed ? "text-danger" : ""}`} strokeWidth={1.75} />
       <span>{toolLabel(e.name)}</span>
       <span aria-hidden className="text-text-muted">·</span>
-      <span className={e.ok === false ? "text-danger" : "text-text-muted"}>{detail}</span>
+      <span className={failed ? "text-danger" : "text-text-muted"}>{detail}</span>
     </p>
   );
 }
@@ -151,7 +153,7 @@ export default function AssistantChat() {
       turnBusy.current = false;
       setStreaming(false);
       // A lookup the turn never answered did not finish; do not leave it "working".
-      setEntries((prev) => prev.map((e) => (e.kind === "tool" && e.ok === undefined ? { ...e, ok: false } : e)));
+      setEntries((prev) => prev.map((e) => (e.kind === "tool" && e.ok === undefined ? { ...e, ok: false, code: "stopped" } : e)));
     }
     if (stoppedRef.current && !produced) {
       setEntries((prev) => prev.map((e) => (e.id === user.id ? { ...user, failed: true } : e)));

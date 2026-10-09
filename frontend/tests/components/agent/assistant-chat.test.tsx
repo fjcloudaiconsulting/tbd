@@ -218,6 +218,27 @@ describe("preview card", () => {
     await waitFor(() => expect(screen.getByText("Applied")).toBeInTheDocument());
   });
 
+  it.each([
+    [500, "internal", "Not applied", true],
+    [410, "action_expired", "Expired", true],
+    [409, "action_in_progress", "Already decided", true],
+    [429, "confirm_rate_limited", null, false],
+    [503, "limits_unavailable", null, false],
+  ])("a %s %s confirm is %s", async (status, code, badge, final) => {
+    fetchMock.mockResolvedValueOnce(sse([["tool_call", { name: "budgets_update_amount" }], ["preview", { action: BUDGET_ACTION }]]));
+    render(<AssistantChat />);
+    await ask("go");
+    fetchMock.mockResolvedValueOnce(json(status as number, { detail: { code, message: "" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
+    if (final) {
+      await waitFor(() => expect(screen.getByText(badge as string)).toBeInTheDocument());
+      expect(screen.queryByRole("button", { name: "Apply change" })).toBeNull();
+    } else {
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("The change was not applied."));
+      expect(screen.getByRole("button", { name: "Apply change" })).not.toHaveAttribute("aria-disabled", "true");
+    }
+  });
+
   it("F-581-STALE: a stale preview swaps in the fresh action and the next apply posts its id", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

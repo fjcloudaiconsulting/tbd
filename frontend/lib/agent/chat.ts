@@ -31,6 +31,7 @@ function previewNote(e: Extract<Entry, { kind: "preview" }>): string {
   const state =
     e.outcome === "done" ? "The user confirmed it and it was applied."
       : e.outcome === "cancelled" ? "The user cancelled it."
+        : e.outcome === "decided" ? "It was decided elsewhere."
         : e.outcome ? "It was not applied."
           : "The user has not decided yet.";
   return `Proposed: ${e.action.summary}. ${state}`;

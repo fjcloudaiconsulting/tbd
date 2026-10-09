@@ -34,6 +34,9 @@ interface Props {
   emphasis?: boolean;
   applyLabel?: string;
   onDecided?: (outcome: Outcome, action: StagedAction) => void;
+  // The action the card currently holds (a stale swap replaces it) and
+  // whether a decision is in flight, for a host that may close the card.
+  onState?: (state: { actionId: string; busy: boolean }) => void;
 }
 
 const TH = "pb-1 text-left text-xs font-semibold uppercase tracking-[0.08em] text-text-secondary";
@@ -60,7 +63,7 @@ function timeOf(iso: string): string {
 }
 
 export default function PreviewCard({
-  tool, action: initial, drift, autoFocus, emphasis = true, applyLabel = "Apply change", onDecided,
+  tool, action: initial, drift, autoFocus, emphasis = true, applyLabel = "Apply change", onDecided, onState,
 }: Props) {
   const hidden = useBalancesHidden(); // repaints amounts on Hide balances (TBD-527)
   const [action, setAction] = useState(initial);
@@ -81,6 +84,10 @@ export default function PreviewCard({
   useEffect(() => {
     if (autoFocus) focusCard();
   }, [autoFocus]);
+
+  useEffect(() => {
+    onState?.({ actionId: action.action_id, busy: busy !== null });
+  }, [onState, action.action_id, busy]);
 
   const finish = (o: Outcome, a: StagedAction) => {
     setOutcome(o);
@@ -121,7 +128,7 @@ export default function PreviewCard({
         const s = detail?.status;
         finish(s === "done" ? "done" : s === "cancelled" ? "cancelled" : "decided", action);
       } else {
-        setFailure(extractErrorMessage(err) || "The change was not applied.");
+        setFailure(extractErrorMessage(err, "") || "The change was not applied.");
         // Rate limits and an unavailable store refuse before the action is
         // claimed, so it can still be applied; any other failure is final.
         const status = err instanceof ApiResponseError ? err.status : 0;

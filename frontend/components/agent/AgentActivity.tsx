@@ -4,7 +4,7 @@
 // revert ruling of 2026-10-08). Auto-applied rows are marked. Revert stages
 // the inverse as a new preview, which applies only on an explicit click.
 
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import useSWR from "swr";
 import { Undo2, X, Zap } from "lucide-react";
 
@@ -50,20 +50,25 @@ interface Staged {
   drift?: DriftRow[];
 }
 
-function RevertDialog({ staged, onClose }: { staged: Staged; onClose: (applied: boolean) => void }) {
+function RevertDialog({
+  staged, onClose, onDecided,
+}: { staged: Staged; onClose: () => void; onDecided: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
-  const [applied, setApplied] = useState(false);
   const decided = useRef(false);
+  // The card's current action (a stale swap replaces it) and whether a
+  // decision is in flight: closing then must not cancel what is being applied.
+  const card = useRef({ actionId: staged.action.action_id, busy: false });
+  const onState = useCallback((s: { actionId: string; busy: boolean }) => { card.current = s; }, []);
   useFocusTrap({ active: true, containerRef: ref, initialFocusRef: titleRef });
   // Closing without a decision discards the staged revert, so it does not sit
   // pending (and count against the live-preview ceiling) until it expires.
   const close = () => {
-    if (!decided.current) {
-      void apiFetch(`/api/v1/agent/actions/${encodeURIComponent(staged.action.action_id)}/cancel`, { method: "POST" })
+    if (!decided.current && !card.current.busy) {
+      void apiFetch(`/api/v1/agent/actions/${encodeURIComponent(card.current.actionId)}/cancel`, { method: "POST" })
         .catch(() => {});
     }
-    onClose(applied);
+    onClose();
   };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4">
@@ -89,9 +94,10 @@ function RevertDialog({ staged, onClose }: { staged: Staged; onClose: (applied: 
           action={staged.action}
           drift={staged.drift}
           applyLabel="Revert change"
-          onDecided={(o) => {
+          onState={onState}
+          onDecided={() => {
             decided.current = true;
-            setApplied(o === "done");
+            onDecided(); // runs even if the dialog closed while the decision was in flight
           }}
         />
       </div>
@@ -225,10 +231,8 @@ export default function AgentActivity() {
       {staged && (
         <RevertDialog
           staged={staged}
-          onClose={() => {
-            setStaged(null);
-            void mutate(); // also covers a revert applied while the dialog was closing
-          }}
+          onClose={() => setStaged(null)}
+          onDecided={() => void mutate()}
         />
       )}
       <div className="h-2" />
