@@ -496,6 +496,8 @@ async def test_f_o7_consent_needs_an_interactive_session(factory, client):
     "https://claude.ai/cb#frag", "https://user:pw@claude.ai/cb", "http://127.0.0.1.evil.com/cb",
     "http://localhost.evil.com/cb", "https:///cb", "ftp://x.example/cb", "myapp:/cb",
     "https://claude.ai/" + "a" * 512, "https://claude.ai/c b", "https://claude.ai/\u00e9",
+    "https://evil.com\\.claude.ai/cb", "http://127.0.0.1%2eevil.com/cb",
+    "http://evil.com\\@127.0.0.1/cb",
 ])
 async def test_f_o9_dcr_refuses_unsafe_redirects(client, uri):
     """FENCE F-O9 (+S13). Wrong implementation: scheme check absent, or a
@@ -706,10 +708,13 @@ async def test_f_o12_registration_fails_closed(client, limits_db_down, monkeypat
     assert _err(await _register(client)) == (503, "temporarily_unavailable")
 
 
-async def test_f_o12_junk_codes_do_not_lock_out_a_client(factory, client):
+async def test_f_o12_junk_codes_do_not_lock_out_a_client(factory, client, monkeypatch):
     """FENCE F-O12. Wrong implementation: the code limit keyed on
     ``client_id`` (junk codes sent under a hosted client's shared public id
-    lock its users out). A found code never consults the failure buckets."""
+    lock its users out). A found code never consults the failure buckets.
+    The limits clock is frozen: a slow runner must not roll the 60 s window."""
+    frozen = rate_limit_db._clock()
+    monkeypatch.setattr(rate_limit_db, "_clock", lambda: frozen)
     g = await _grant(factory, client)
     for i in range(1000):
         r = await _exchange(client, g, code=secrets.token_urlsafe(32),
@@ -1010,3 +1015,177 @@ async def test_state_must_be_printable_ascii_and_short(factory, client):
         assert _q(r.json()["detail"]["redirect_to"]) == {"error": "invalid_request", "iss": APP}
     r = await client.get(CTX, params=_params(cid, challenge, state="s" * 1024), headers=h)
     assert r.status_code == 200
+
+
+# ── review round 1 folds ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("presented", [
+    "http://evil.com\\@127.0.0.1/cb", "http://evil.com\\@127.0.0.1:5555/cb",
+    "http://user@127.0.0.1:5555/cb", "http://127.0.0.1:5555/cb#x",
+])
+async def test_presented_redirect_is_classified_before_matching(factory, client, presented):
+    """FENCE (review B1). Wrong implementation: the presented redirect only
+    compared by its port-less match key (a ``\\@`` userinfo smuggle parses to
+    host 127.0.0.1 here and to evil.com in a browser, which gets the code)."""
+    org = await _org(factory, "A")
+    h = await _jwt(factory, await _user(factory, org, "m"))
+    cid = await _cid(client, ["http://127.0.0.1:5555/cb"], "Claude Code")
+    _, challenge = _pkce()
+    params = _params(cid, challenge, redirect=presented)
+    for r in (await client.get(CTX, params=params, headers=h),
+              await client.post(AUTHZ, json={**params, "approve": True, "granted_scope": "agent:write",
+                                             "current_password": PASSWORD}, headers=h)):
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == {"code": "invalid_redirect_uri"}
+
+
+async def test_non_loopback_redirect_is_an_exact_member(factory, client):
+    """FENCE (review B1). Wrong implementation: normalising a non-loopback
+    redirect before comparing (case, default port, path)."""
+    org = await _org(factory, "A")
+    h = await _jwt(factory, await _user(factory, org, "m"))
+    cid = await _cid(client)
+    _, challenge = _pkce()
+    for variant in ("https://CLAUDE.ai/api/mcp/auth_callback", "https://claude.ai:443/api/mcp/auth_callback",
+                    CB + "/", "com.example.app:/cb"):
+        r = await client.get(CTX, params=_params(cid, challenge, redirect=variant), headers=h)
+        assert r.json()["detail"] == {"code": "invalid_redirect_uri"}, variant
+    assert (await client.get(CTX, params=_params(cid, challenge), headers=h)).status_code == 200
+
+
+async def test_exchange_loser_issues_nothing(factory, client, monkeypatch):
+    """FENCE F-O1 (review B2). A concurrent exchange redeems the code between
+    our read and our UPDATE (simulated). Wrong implementation: SELECT-then-
+    unconditional UPDATE (the loser also gets tokens, overwriting the winner's)."""
+    g = await _grant(factory, client)
+    rid = (await _one(factory, g["uid"])).id
+    _on_entitlements(monkeypatch, factory, update(ApiToken).where(ApiToken.id == rid).values(
+        refresh_hash="w" * 64, token_hash="t" * 64))
+    r = await _exchange(client, g)
+    assert _err(r) == (400, "invalid_grant") and "access_token" not in r.text
+    row = await _one(factory, g["uid"])
+    assert (row.refresh_hash, row.token_hash) == ("w" * 64, "t" * 64)
+
+
+async def test_client_name_refuses_control_and_format_characters(client):
+    """FENCE (review nit). Wrong implementation: a bidi override or control
+    character in the claimed name reaching the consent screen."""
+    for name in ("Claude\u202eedualC", "Claude\u0007", "Cl\u200baude", "Claude\n"):
+        assert _err(await _register(client, name=name)) == (400, "invalid_client_metadata"), name
+    assert (await _register(client, name="Cl\u00e1ude")).status_code == 201
+
+
+async def test_redirect_keeps_the_registered_query_byte_for_byte(factory, client):
+    """FENCE (review nit, RFC 6749 3.1.2). Wrong implementation: re-encoding
+    the registered query (``flag`` -> ``flag=``, ``%20`` -> ``+``)."""
+    org = await _org(factory, "A")
+    h = await _jwt(factory, await _user(factory, org, "m"))
+    uri = "https://claude.ai/cb?flag&x=a%20b"
+    cid = await _cid(client, [uri])
+    r, _ = await _consent(client, h, cid, redirect=uri)
+    assert r.status_code == 200, r.text
+    assert r.json()["redirect_to"].startswith(uri + "&code=")
+    r, _ = await _consent(client, h, cid, redirect=uri, approve=False)
+    assert r.json()["redirect_to"].startswith(uri + "&error=access_denied&state=st8&iss=")
+
+
+async def test_listed_expiry_of_a_live_grant_is_its_refresh_expiry(factory, client):
+    """FENCE (review nit). Wrong implementation: listing the 1 h access
+    expiry, so a live grant shows a past ``expires_at``."""
+    g = await _connected(factory, client)
+    await _lapse_access(factory, g["uid"])
+    [item] = (await client.get("/api/v1/agent/tokens", headers=g["h"])).json()["items"]
+    row = await _one(factory, g["uid"])
+    assert item["status"] == "active"
+    assert datetime.fromisoformat(item["expires_at"]).replace(tzinfo=None) == row.refresh_expires_at
+
+
+async def test_client_purged_mid_consent_is_invalid_client(factory, client, monkeypatch):
+    """FENCE (review nit). The purge deletes the client between validation and
+    the grant insert: the FK refuses the insert. Wrong implementation: the
+    IntegrityError escapes as a 500."""
+    from sqlalchemy import delete, text
+
+    from app.services import api_token_service as svc
+
+    org = await _org(factory, "A")
+    uid = await _user(factory, org, "m")
+    h = await _jwt(factory, uid)
+    cid = await _cid(client)
+    async with factory() as s:
+        await s.execute(text("PRAGMA foreign_keys=ON"))
+    real = svc._lock_owner_under_cap
+
+    async def purge_first(db, user, cutoff_seen):
+        async with factory() as other:
+            await other.execute(delete(OAuthClient).where(OAuthClient.id == cid))
+            await other.commit()
+        return await real(db, user, cutoff_seen)
+
+    monkeypatch.setattr(svc, "_lock_owner_under_cap", purge_first)
+    r, _ = await _consent(client, h, cid)
+    assert (r.status_code, r.json()["detail"]) == (400, {"code": "invalid_client"})
+    assert await _rows(factory, uid) == []
+
+
+async def test_expired_code_is_invalid_grant(factory, client):
+    g = await _grant(factory, client)
+    async with factory() as s:
+        await s.execute(update(ApiToken).values(expires_at=_naive_now() - timedelta(seconds=1)))
+        await s.commit()
+    assert _err(await _exchange(client, g)) == (400, "invalid_grant")
+
+
+async def test_expired_refresh_and_wrong_client_are_invalid_grant(factory, client):
+    g = await _connected(factory, client)
+    other = await _cid(client, ["https://other.example/cb"], "Other")
+    assert _err(await _refresh(client, g["refresh_token"], client_id=other)) == (400, "invalid_grant")
+    assert (await _one(factory, g["uid"])).revoked_at is None
+    async with factory() as s:
+        await s.execute(update(ApiToken).values(refresh_expires_at=_naive_now() - timedelta(seconds=1)))
+        await s.commit()
+    assert _err(await _refresh(client, g["refresh_token"])) == (400, "invalid_grant")
+
+
+async def test_refresh_expiry_is_capped_at_ninety_days_from_consent(factory, client):
+    """Wrong implementation: refresh expiry ``now + 30 d`` forever (a grant
+    that never has to re-consent)."""
+    g = await _connected(factory, client)
+    created = _naive_now().replace(microsecond=0) - timedelta(days=89)
+    async with factory() as s:
+        await s.execute(update(ApiToken).values(created_at=created))
+        await s.commit()
+    assert (await _refresh(client, g["refresh_token"])).status_code == 200
+    assert (await _one(factory, g["uid"])).refresh_expires_at == created + timedelta(days=90)
+
+
+@pytest.mark.parametrize("step", ["exchange", "refresh"])
+async def test_inactive_owner_is_invalid_grant(factory, client, step):
+    g = await (_connected if step == "refresh" else _grant)(factory, client)
+    async with factory() as s:
+        (await s.get(User, g["uid"])).is_active = False
+        await s.commit()
+    r = await (_refresh(client, g["refresh_token"]) if step == "refresh" else _exchange(client, g))
+    assert _err(r) == (400, "invalid_grant")
+
+
+async def test_token_endpoint_fails_closed(factory, client, limits_db_down, monkeypatch):
+    """Wrong implementation: issuing tokens when the limits DB is down."""
+    monkeypatch.setattr(limiter, "enabled", False)
+    assert _err(await _exchange(client, {"code": "c", "cid": "x", "v": "v"})) == (
+        503, "temporarily_unavailable")
+    assert _err(await _refresh(client, "rt_x")) == (503, "temporarily_unavailable")
+
+
+async def test_f_o4_exchange_keeps_created_at(factory, client):
+    """FENCE F-O4 (exchange half). Wrong implementation: ``created_at``
+    bumped at exchange (the grant would post-date a later cutoff check's
+    anchor and outlive a sign out everywhere landed before the exchange)."""
+    g = await _grant(factory, client)
+    hour_ago = _naive_now().replace(microsecond=0) - timedelta(hours=1)
+    async with factory() as s:
+        await s.execute(update(ApiToken).values(created_at=hour_ago))
+        await s.commit()
+    assert (await _exchange(client, g)).status_code == 200
+    assert (await _one(factory, g["uid"])).created_at == hour_ago

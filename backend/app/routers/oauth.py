@@ -19,7 +19,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent import actions
@@ -205,6 +205,10 @@ async def authorize_decision(
             db, user=current_user, cutoff_seen=cutoff_seen, client_id=cid, client_name=cname,
             scope=granted, code_challenge=body.code_challenge, redirect_uri=redirect,
         )
+    except IntegrityError:
+        # The purge deleted the client between validation and the insert.
+        await db.rollback()
+        raise _consent_400(ConsentError("invalid_client")) from None
     except svc.SessionCutoffMoved:
         raise HTTPException(status_code=401, detail="Session has been invalidated") from None
     except svc.AgentTokenCapReached:
