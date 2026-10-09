@@ -298,6 +298,7 @@ EXPORT_DISPOSITION: dict[str, Disposition] = {
             {"encrypted_api_key", "encrypted_bearer_token", "key_fingerprint", "base_url"}
         ),
     ),
+    "oauth_clients": Exclude("platform-global OAuth client registry, no org data"),
     "org_ai_default_caps": Include(OrgColumn(), "spend caps the org set"),
     "org_ai_default_routing": Include(OrgColumn(), "provider routing the org set"),
     "org_ai_feature_caps": Include(OrgColumn(), "per-feature spend caps the org set"),

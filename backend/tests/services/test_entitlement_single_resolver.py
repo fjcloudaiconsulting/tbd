@@ -203,6 +203,9 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("mcp_main.py", "mcp_endpoint"):
         "the MCP front door reads Entitlements.features/limits (resolver output) once "
         "per request for the F-E4 door; reads no plan column or override row.",
+    ("services/oauth_service.py", "_owner_ok"):
+        "the OAuth token endpoint re-checks Entitlements.features/limits (resolver "
+        "output) at every exchange and refresh (F-O19); reads no plan column or override row.",
     ("routers/admin_orgs.py", "get_feature_state"):
         "display fields of the override rows + Entitlements.features; what is in "
         "force comes from ent.overridden.",

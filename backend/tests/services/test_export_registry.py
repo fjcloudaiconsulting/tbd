@@ -128,8 +128,8 @@ def test_table_count_is_what_the_spec_measured():
     drift (44 → 49 → "37 files" → 35). Not a correctness gate — legs 1 and 2
     are — but a loud signal when the surface moves.
     """
-    assert len(Base.metadata.tables) == 54
-    assert len(EXPORT_DISPOSITION) == 54
+    assert len(Base.metadata.tables) == 55
+    assert len(EXPORT_DISPOSITION) == 55
 
 
 # ══ Fixtures for the data-path legs ═══════════════════════════════════════
@@ -819,7 +819,7 @@ def test_tag_dictionary_contributors_is_excluded():
     assert not EXPORT_DISPOSITION["tag_dictionary_contributors"].included
 
 
-# ⚠ The 16 tables §5 ruled OUT of a data-subject export (TBD-585 added org_limit_overrides: operator configuration, like org_feature_overrides; INFRA-121 added rate_limits: operational counters; TBD-586 added platform_ai_spend: platform-global counter). Held as a literal on
+# ⚠ The 17 tables §5 ruled OUT of a data-subject export (TBD-585 added org_limit_overrides: operator configuration, like org_feature_overrides; INFRA-121 added rate_limits: operational counters; TBD-586 added platform_ai_spend: platform-global counter; TBD-587 added oauth_clients: the platform-global OAuth client registry). Held as a literal on
 # purpose: this is the ruling, restated independently of the registry.
 RULED_EXCLUDED: frozenset[str] = frozenset(
     {
@@ -827,6 +827,7 @@ RULED_EXCLUDED: frozenset[str] = frozenset(
         "api_tokens",
         "email_broadcasts",
         "merchant_dictionary",
+        "oauth_clients",
         "org_data_reset_locks",
         "org_feature_overrides",
         "org_limit_overrides",

@@ -137,7 +137,8 @@ async def _flag_enabled(session_factory) -> bool:
 
 
 async def _due_token_ids(session_factory, now: datetime.datetime) -> list[int]:
-    """Candidate tokens: not revoked, not fully reminded, non-null owner.
+    """Candidate tokens: not revoked, not fully reminded, non-null owner, not
+    an OAuth grant.
 
     Returns only ids; each token is then re-read and mutated in its own
     session so the stage-advance commits independently and idempotently.
@@ -150,6 +151,9 @@ async def _due_token_ids(session_factory, now: datetime.datetime) -> list[int]:
                     ApiToken.revoked_at.is_(None),
                     ApiToken.created_by_user_id.isnot(None),
                     ApiToken.reminder_stage < FULLY_REMINDED_STAGE,
+                    # OAuth grants (TBD-587): a 1 h access token would fire
+                    # every stage; the client refreshes or the user re-connects.
+                    ApiToken.oauth_client_id.is_(None),
                 )
                 .order_by(ApiToken.id)
             )
@@ -176,6 +180,7 @@ async def _process_token(session_factory, token_id: int, now: datetime.datetime)
                 token.revoked_at is not None
                 or token.created_by_user_id is None
                 or token.reminder_stage >= FULLY_REMINDED_STAGE
+                or token.oauth_client_id is not None
             ):
                 return False
 

@@ -105,6 +105,9 @@ OVERRIDABLE_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.sso_stepup_initiate",
     # feedback router
     "feedback.submit",
+    # oauth router (TBD-587). The consent decision is a credential mint,
+    # JWT + interactive session; no path param, so a plain ``limit``.
+    "oauth.authorize",
     # org_members router. Backfilled by TBD-353: the decorator has
     # existed without a pattern, so no override for it could be stored.
     "org_members.remove_member",
@@ -153,6 +156,11 @@ PRE_AUTH_ENDPOINT_PATTERNS: frozenset[str] = frozenset({
     "auth.sso_stepup_callback",
     "auth.verify",
     "auth.verify_email",
+    # oauth router (TBD-587): open DCR and the token endpoint. Coarse IP
+    # ceilings only; the real limits are keyed on the host/pool and on the
+    # credential inside the handlers.
+    "oauth.register",
+    "oauth.token",
     "org_members.accept_invitation",
     "org_members.preview_invitation",
     # Backfilled by TBD-353. These three decorators pre-date this

@@ -15,7 +15,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
@@ -90,11 +90,25 @@ def token_status(row: ApiToken, *, now: datetime | None = None) -> str:
     if row.revoked_at is not None:
         return "revoked"
     ref = now if now is not None else _naive_utc_now()
-    exp = row.expires_at
-    exp = exp.replace(tzinfo=None) if exp.tzinfo else exp
-    if exp <= ref:
-        return "expired"
-    return "active"
+    # An OAuth grant (TBD-587) stays live between 1 h access refreshes.
+    for exp in (row.expires_at, row.refresh_expires_at):
+        if exp is not None and (exp.replace(tzinfo=None) if exp.tzinfo else exp) > ref:
+            return "active"
+    return "expired"
+
+
+def live_clause(now: datetime):
+    """SQL for "live": not revoked and the access OR the refresh token is
+    unexpired. Used by the agent-token cap (manual mint and OAuth consent)."""
+    return and_(
+        ApiToken.revoked_at.is_(None),
+        or_(ApiToken.expires_at > now, ApiToken.refresh_expires_at > now),
+    )
+
+
+# A placeholder: an OAuth code issued at consent and not yet redeemed. Never
+# listed; the purge deletes it once the code expires.
+NOT_PLACEHOLDER = or_(ApiToken.oauth_client_id.is_(None), ApiToken.refresh_hash.isnot(None))
 
 
 async def mint(
@@ -143,7 +157,7 @@ async def list_for(db: AsyncSession, user: User) -> list[ApiToken]:
     """
     result = await db.execute(
         select(ApiToken)
-        .where(ApiToken.created_by_user_id == user.id)
+        .where(ApiToken.created_by_user_id == user.id, NOT_PLACEHOLDER)
         .order_by(ApiToken.created_at.desc(), ApiToken.id.desc())
     )
     return list(result.scalars().all())
@@ -256,16 +270,10 @@ def agent_token_status(row: ApiToken, cutoff: datetime) -> str:
     return status
 
 
-async def mint_agent(
-    db: AsyncSession,
-    *,
-    user: User,
-    name: str,
-    scope: str,
-    expires_in_days: int,
-    cutoff_seen: datetime,
-) -> tuple[str, ApiToken]:
-    """Mint an agent token under the owner-row lock.
+async def _lock_owner_under_cap(
+    db: AsyncSession, user: User, cutoff_seen: datetime
+) -> User:
+    """Lock the owner row and check the live-token cap; return the fresh user.
 
     Both reads LOCK. Under MySQL REPEATABLE READ the request already read the
     user (``get_current_user``), which fixed its snapshot; a plain count after
@@ -273,7 +281,8 @@ async def mint_agent(
     the cap. ``cutoff_seen`` is ``token_cutoff(user)`` when the request
     started: if it moved, a logout-everywhere or password change ran in
     between and must win. On refusal the session is rolled back first, so the
-    lock is gone before the caller writes its out-of-band audit row.
+    lock is gone before the caller writes its out-of-band audit row. Shared by
+    the manual mint and the OAuth consent (one cap, one lock discipline).
     """
     fresh = (
         await db.execute(
@@ -293,8 +302,7 @@ async def mint_agent(
             .where(
                 ApiToken.created_by_user_id == fresh.id,
                 ApiToken.scope.in_(AGENT_SCOPE_RANK),
-                ApiToken.revoked_at.is_(None),
-                ApiToken.expires_at > _naive_utc_now(),
+                live_clause(_naive_utc_now()),
             )
             .with_for_update()
         )
@@ -302,9 +310,72 @@ async def mint_agent(
     if sum(1 for r in rows if _aware(r.created_at) > cutoff) >= MAX_LIVE_AGENT_TOKENS:
         await db.rollback()
         raise AgentTokenCapReached()
+    return fresh
+
+
+async def mint_agent(
+    db: AsyncSession,
+    *,
+    user: User,
+    name: str,
+    scope: str,
+    expires_in_days: int,
+    cutoff_seen: datetime,
+) -> tuple[str, ApiToken]:
+    """Mint an agent token under the owner-row lock (``_lock_owner_under_cap``)."""
+    fresh = await _lock_owner_under_cap(db, user, cutoff_seen)
     return await mint(
         db, user=fresh, name=name, scope=scope, expires_in_days=expires_in_days
     )
+
+
+OAUTH_CODE_TTL = timedelta(seconds=60)
+
+
+def sha256_hex(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+async def create_oauth_grant(
+    db: AsyncSession,
+    *,
+    user: User,
+    cutoff_seen: datetime,
+    client_id: str,
+    client_name: str,
+    scope: str,
+    code_challenge: str,
+    redirect_uri: str,
+) -> tuple[str, ApiToken]:
+    """Create an OAuth grant row at consent; return ``(code, row)``.
+
+    Same lock and cap as the manual mint, then ONE insert: the row holds the
+    code (hashed), its PKCE challenge and redirect hash, and lives for the
+    code's 60 s until the token endpoint redeems it. Its ``token_hash`` is
+    the hash of a random value nobody ever sees, so the row cannot
+    authenticate before the exchange.
+    """
+    fresh = await _lock_owner_under_cap(db, user, cutoff_seen)
+    code = secrets.token_urlsafe(32)
+    now = _naive_utc_now()
+    row = ApiToken(
+        token_hash=hash_api_token("pat_" + secrets.token_urlsafe(32)),
+        token_prefix="oauth_" + secrets.token_hex(4),
+        name=client_name,
+        scope=scope,
+        created_by_user_id=fresh.id,
+        created_by_email=fresh.email,
+        expires_at=now + OAUTH_CODE_TTL,
+        created_at=now.replace(microsecond=0),
+        oauth_client_id=client_id,
+        code_hash=hash_api_token(code),
+        code_challenge=code_challenge,
+        code_redirect_hash=sha256_hex(redirect_uri),
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return code, row
 
 
 async def list_agent_for(db: AsyncSession, user: User) -> list[ApiToken]:
@@ -314,6 +385,7 @@ async def list_agent_for(db: AsyncSession, user: User) -> list[ApiToken]:
         .where(
             ApiToken.created_by_user_id == user.id,
             ApiToken.scope.in_(AGENT_SCOPE_RANK),
+            NOT_PLACEHOLDER,
         )
         .order_by(ApiToken.created_at.desc(), ApiToken.id.desc())
     )
@@ -337,7 +409,7 @@ async def list_agent_for_org(db: AsyncSession, org_id: int) -> list[tuple[ApiTok
     result = await db.execute(
         select(ApiToken, User)
         .join(User, User.id == ApiToken.created_by_user_id)
-        .where(User.org_id == org_id, ApiToken.scope.in_(AGENT_SCOPE_RANK))
+        .where(User.org_id == org_id, ApiToken.scope.in_(AGENT_SCOPE_RANK), NOT_PLACEHOLDER)
         .order_by(ApiToken.created_at.desc(), ApiToken.id.desc())
     )
     return list(result.tuples())

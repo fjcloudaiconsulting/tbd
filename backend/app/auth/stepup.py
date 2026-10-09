@@ -28,6 +28,10 @@ STEPUP_ACTIONS: dict[str, str] = {
     # TBD-578. Own action, never ``pat_mint``: a proof issued for the agent
     # token must not mint the superadmin credential, nor the reverse.
     "agent_token_mint": "/settings/agent-tokens",
+    # TBD-587. Own action: a consent proof must not mint a manual agent token
+    # (which can carry agent:auto), nor a mint proof approve a consent. The
+    # consent page stashes its query before initiate and re-validates after.
+    "oauth_consent": "/oauth/authorize",
 }
 
 

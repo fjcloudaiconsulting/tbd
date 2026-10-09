@@ -78,7 +78,9 @@ def _out(row: ApiToken, cutoff) -> dict[str, Any]:
         prefix=row.token_prefix,
         scope=row.scope,
         created_at=row.created_at,
-        expires_at=row.expires_at,
+        # An OAuth grant (TBD-587) lives until its refresh token expires; its
+        # 1 h access expiry would show a live grant as past due.
+        expires_at=max(row.expires_at, row.refresh_expires_at or row.expires_at),
         last_used_at=row.last_used_at,
         last_used_ip=row.last_used_ip,
         status=svc.agent_token_status(row, cutoff),
