@@ -1,4 +1,4 @@
-"""PR 2 — Refresh ``jti`` + ``sid`` + primary key + family set tests.
+"""PR 2 — Refresh ``jti`` + ``sid`` + session family rows tests.
 
 Pins every architect-emphasized review risk in
 ``specs/2026-05-17-backend-session-model.md`` §8 PR 2:
@@ -7,17 +7,16 @@ Pins every architect-emphasized review risk in
    (login, ``/refresh`` rotation, MFA branches via ``_issue_tokens``,
    Google callback, ``org_members.py`` invitation accept).
 2. ``sid`` is preserved across the rotation chain; only ``jti`` changes.
-3. Every issue site writes ``auth:session:{jti}`` AND
-   ``auth:session:by_sid:{sid}`` to Redis BEFORE emitting the cookie.
+3. Every issue site writes the family row AND its first member to the
+   session store BEFORE emitting the cookie.
 4. Legacy (no-jti or no-sid) refresh JWTs are rejected with 401
    ``"Session has been invalidated"``.
-5. Manual ``DEL auth:session:{jti}`` produces 401 on next ``/refresh``.
-6. Family set membership matches the issued ``jti`` chain after
+5. Deleting the session family produces 401 on next ``/refresh``.
+6. Family membership matches the issued ``jti`` chain after
    rotation.
-7. Redis unreachable => 503 on every issue path, no Set-Cookie emitted.
-8. ``MULTI/EXEC`` abort => 503, no Set-Cookie emitted.
-9. Grep-style guard: every ``create_refresh_token`` call site is
-   co-located with a paired Redis write within the same source file.
+7. Session store unreachable => 503 on every issue path, no Set-Cookie emitted.
+8. Grep-style guard: every ``create_refresh_token`` call site is
+   co-located with a paired session-store write within the same source file.
 """
 from __future__ import annotations
 
@@ -39,7 +38,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
-from app import redis_client
+from app import state_db
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_session_factory
@@ -61,19 +60,11 @@ from app.services.mfa_service import (
     hash_recovery_code,
 )
 
-from tests.conftest import set_refresh_cookie
+from tests.conftest import set_refresh_cookie, state_jtis
+from tests.routers.test_refresh_logging_and_precedence import _LogRecorder
 
 
 PASSWORD = "starting-password-1"
-
-
-@pytest.fixture
-def fake_redis(_autouse_fake_redis):
-    """Local alias for the autouse fake-Redis defined in
-    ``tests/conftest.py``. Tests assert against its in-memory dicts
-    (``_kv``, ``_sets``) and flip ``abort_pipeline`` to simulate
-    ``MULTI/EXEC`` failures."""
-    yield _autouse_fake_redis
 
 
 # ── DB fixture ──────────────────────────────────────────────────────────────
@@ -248,7 +239,7 @@ def google_config(monkeypatch):
     yield
 
 
-# ── 1. Every issue site stamps jti + sid in the JWT AND in Redis ────────────
+# ── 1. Every issue site stamps jti + sid in the JWT AND in the store ──────────
 
 
 def _decode_unverified(token: str) -> dict:
@@ -259,10 +250,10 @@ def _decode_unverified(token: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_login_password_branch_writes_primary_and_family(
-    session_factory, fake_redis
+    session_factory
 ) -> None:
-    """Login password branch: JWT carries jti+sid AND Redis has both keys
-    before the cookie is set."""
+    """Login password branch: JWT carries jti+sid AND the store has the
+    family and its first member before the cookie is set."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
 
@@ -280,14 +271,14 @@ async def test_login_password_branch_writes_primary_and_family(
     assert payload.get("jti"), "refresh JWT must carry jti claim"
     assert payload.get("sid"), "refresh JWT must carry sid claim"
 
-    assert f"auth:session:{payload['jti']}" in fake_redis._kv
-    assert payload["jti"] in fake_redis._sets[f"auth:session:by_sid:{payload['sid']}"]
+    assert state_db._validate(payload["jti"]) is not None
+    assert payload["jti"] in state_jtis(payload["sid"])
 
 
 @pytest.mark.asyncio
-async def test_refresh_rotation_preserves_sid(session_factory, fake_redis) -> None:
+async def test_refresh_rotation_preserves_sid(session_factory) -> None:
     """``/refresh`` rotation: new JWT has new jti but SAME sid; new
-    primary key is in Redis, new jti is in the family set."""
+    new jti is the head, new jti is in the family."""
     seed = await _seed_user(session_factory)
     # Establish a session through the real login flow so the predecessor
     # JWT has the new shape (jti + sid).
@@ -315,17 +306,17 @@ async def test_refresh_rotation_preserves_sid(session_factory, fake_redis) -> No
     assert new_jti != original_jti, "rotation must mint a fresh jti"
     assert new_sid == original_sid, "rotation must preserve the family sid"
 
-    # New primary key present, old one gone.
-    assert f"auth:session:{new_jti}" in fake_redis._kv
-    assert f"auth:session:{original_jti}" not in fake_redis._kv
-    # Family set carries the new jti.
-    assert new_jti in fake_redis._sets[f"auth:session:by_sid:{new_sid}"]
+    # New head present, old one no longer the head.
+    assert state_db._validate(new_jti) is not None
+    assert state_db._validate(original_jti) is None
+    # Family carries the new jti.
+    assert new_jti in state_jtis(new_sid)
     _ = seed
 
 
 @pytest.mark.asyncio
 async def test_sid_preserved_across_five_rotations(
-    session_factory, fake_redis
+    session_factory
 ) -> None:
     """The architect-pinned 5-rotation invariant: every rotation issues a
     fresh jti but reuses the original sid verbatim."""
@@ -356,16 +347,16 @@ async def test_sid_preserved_across_five_rotations(
             assert new_jti not in seen_jtis, "jti must rotate every refresh"
             seen_jtis.append(new_jti)
 
-    # Last successor's primary key is alive in Redis.
-    assert f"auth:session:{seen_jtis[-1]}" in fake_redis._kv
+    # Last successor is the live head.
+    assert state_db._validate(seen_jtis[-1]) is not None
 
 
 @pytest.mark.asyncio
 async def test_mfa_recovery_branch_writes_primary_and_family(
-    session_factory, fake_redis
+    session_factory
 ) -> None:
     """MFA recovery branch (one of the ``_issue_tokens`` callers) stamps
-    jti + sid and writes both Redis keys."""
+    jti + sid and writes the family."""
     codes = generate_recovery_codes(count=3)
     seed = await _seed_user(
         session_factory,
@@ -385,16 +376,16 @@ async def test_mfa_recovery_branch_writes_primary_and_family(
     assert raw is not None
     token = _refresh_token_from_set_cookie(raw)
     jti, sid = decode_refresh_jti_sid(token)
-    assert f"auth:session:{jti}" in fake_redis._kv
-    assert jti in fake_redis._sets[f"auth:session:by_sid:{sid}"]
+    assert state_db._validate(jti) is not None
+    assert jti in state_jtis(sid)
 
 
 @pytest.mark.asyncio
 async def test_google_callback_writes_primary_and_family(
-    session_factory, fake_redis, google_config, monkeypatch
+    session_factory, google_config, monkeypatch
 ) -> None:
     """Google SSO callback (fifth issue site) stamps jti + sid and writes
-    both Redis keys before its RedirectResponse goes out."""
+    the family before its RedirectResponse goes out."""
     await _seed_default_plan(session_factory)
     _patch_httpx(monkeypatch, userinfo_email="brand-new-sso@example.com")
     app = _make_app(session_factory)
@@ -412,16 +403,16 @@ async def test_google_callback_writes_primary_and_family(
     assert raw is not None
     token = _refresh_token_from_set_cookie(raw)
     jti, sid = decode_refresh_jti_sid(token)
-    assert f"auth:session:{jti}" in fake_redis._kv
-    assert jti in fake_redis._sets[f"auth:session:by_sid:{sid}"]
+    assert state_db._validate(jti) is not None
+    assert jti in state_jtis(sid)
 
 
 @pytest.mark.asyncio
 async def test_invitation_accept_writes_primary_and_family(
-    session_factory, fake_redis
+    session_factory
 ) -> None:
     """``routers/org_members.py`` invitation accept (the issue site PR 1
-    missed) stamps jti + sid and writes both Redis keys."""
+    missed) stamps jti + sid and writes the family."""
     from app.services import invitation_service
 
     # Seed org + owner so the invitation belongs to a real org.
@@ -470,8 +461,8 @@ async def test_invitation_accept_writes_primary_and_family(
     assert raw is not None
     refresh = _refresh_token_from_set_cookie(raw)
     jti, sid = decode_refresh_jti_sid(refresh)
-    assert f"auth:session:{jti}" in fake_redis._kv
-    assert jti in fake_redis._sets[f"auth:session:by_sid:{sid}"]
+    assert state_db._validate(jti) is not None
+    assert jti in state_jtis(sid)
 
 
 # ── 2. Legacy tokens rejected ───────────────────────────────────────────────
@@ -479,7 +470,7 @@ async def test_invitation_accept_writes_primary_and_family(
 
 @pytest.mark.asyncio
 async def test_legacy_no_jti_no_sid_token_rejected(
-    session_factory, fake_redis
+    session_factory
 ) -> None:
     """A pre-PR2 refresh JWT (no jti, no sid) is rejected with 401
     ``Session has been invalidated`` — the planned reauth break."""
@@ -513,11 +504,11 @@ async def test_legacy_no_jti_no_sid_token_rejected(
 
 
 @pytest.mark.asyncio
-async def test_manual_redis_del_invalidates_session(
-    session_factory, fake_redis
+async def test_manual_family_delete_invalidates_session(
+    session_factory
 ) -> None:
-    """Manual ``DEL auth:session:{jti}`` produces 401 on next /refresh
-    — the per-session-revocation primitive PR 4 will use."""
+    """Deleting the session family produces 401 on next /refresh
+    — the per-session-revocation primitive."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -526,10 +517,10 @@ async def test_manual_redis_del_invalidates_session(
             json={"login": "alice", "password": PASSWORD},
         )
         token = _refresh_token_from_set_cookie(_canonical_refresh_cookie(login.headers))
-        jti, _sid = decode_refresh_jti_sid(token)
+        jti, sid = decode_refresh_jti_sid(token)
 
-        # Operator yanks the row out of Redis.
-        del fake_redis._kv[f"auth:session:{jti}"]
+        # Operator yanks the family out of the store.
+        state_db._revoke_family(sid)
 
         set_refresh_cookie(client, token)
         res = client.post(
@@ -542,11 +533,10 @@ async def test_manual_redis_del_invalidates_session(
 
 @pytest.mark.asyncio
 async def test_family_set_membership_matches_rotation_chain(
-    session_factory, fake_redis
+    session_factory
 ) -> None:
-    """After N rotations the family set ``auth:session:by_sid:{sid}``
-    holds exactly the union of every issued jti (PR 2: we never remove
-    entries from the family; PR 4 introduces the revoke-by-sid path)."""
+    """After N rotations the family holds every issued jti (rotation never
+    removes members; the revoke-by-sid path deletes the whole family)."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -568,22 +558,21 @@ async def test_family_set_membership_matches_rotation_chain(
             jti, _ = decode_refresh_jti_sid(token)
             issued.append(jti)
 
-    # Every jti ever issued for this sid sits in the family set.
+    # Every jti ever issued for this sid sits in the family.
     assert set(issued).issubset(
-        fake_redis._sets[f"auth:session:by_sid:{sid}"]
-    ), "family set must accumulate every issued jti"
+        state_jtis(sid)
+    ), "family must accumulate every issued jti"
 
 
-# ── 3. Redis unreachable => 503 at every issue site ─────────────────────────
+# ── 3. Session store unreachable => 503 at every issue site ─────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_login_503_when_redis_unreachable(
-    session_factory, monkeypatch
+async def test_login_503_when_store_unreachable(
+    session_factory, state_db_down
 ) -> None:
-    """Redis unreachable at login => 503, NO Set-Cookie."""
+    """Session store unreachable at login => 503, NO Set-Cookie."""
     await _seed_user(session_factory)
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         res = client.post(
@@ -595,10 +584,10 @@ async def test_login_503_when_redis_unreachable(
 
 
 @pytest.mark.asyncio
-async def test_refresh_503_when_redis_unreachable(
-    session_factory, fake_redis, monkeypatch
+async def test_refresh_503_when_store_unreachable(
+    session_factory, request
 ) -> None:
-    """Redis unreachable at /refresh => 503, NO Set-Cookie."""
+    """Session store unreachable at /refresh => 503, NO Set-Cookie."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -608,8 +597,8 @@ async def test_refresh_503_when_redis_unreachable(
         )
         token = _refresh_token_from_set_cookie(_canonical_refresh_cookie(login.headers))
 
-    # Now make redis disappear and try to rotate.
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
+    # Now make the store disappear and try to rotate.
+    request.getfixturevalue("state_db_down")
     with TestClient(app) as client:
         set_refresh_cookie(client, token)
         res = client.post(
@@ -620,13 +609,12 @@ async def test_refresh_503_when_redis_unreachable(
 
 
 @pytest.mark.asyncio
-async def test_google_callback_503_when_redis_unreachable(
-    session_factory, google_config, monkeypatch
+async def test_google_callback_503_when_store_unreachable(
+    session_factory, google_config, monkeypatch, state_db_down
 ) -> None:
-    """Google SSO callback fails closed when Redis is unreachable."""
+    """Google SSO callback fails closed when the session store is unreachable."""
     await _seed_default_plan(session_factory)
     _patch_httpx(monkeypatch, userinfo_email="brand-new-sso@example.com")
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         client.cookies.set("oauth_state", "matching-state")
@@ -635,7 +623,7 @@ async def test_google_callback_503_when_redis_unreachable(
             params={"code": "dummy", "state": "matching-state"},
             follow_redirects=False,
         )
-    # The callback would normally return 302; on Redis fail it raises
+    # The callback would normally return 302; on store failure it raises
     # 503 from inside _issue_refresh_session. The handler does not
     # special-case it, so FastAPI emits the 503 JSON.
     assert res.status_code == 503, res.text
@@ -643,8 +631,8 @@ async def test_google_callback_503_when_redis_unreachable(
 
 
 @pytest.mark.asyncio
-async def test_mfa_recovery_503_when_redis_unreachable(
-    session_factory, monkeypatch
+async def test_mfa_recovery_503_when_store_unreachable(
+    session_factory, state_db_down
 ) -> None:
     """MFA recovery (one of the _issue_tokens callers) fails closed."""
     codes = generate_recovery_codes(count=3)
@@ -654,7 +642,6 @@ async def test_mfa_recovery_503_when_redis_unreachable(
         recovery_codes_plaintext=codes,
     )
     mfa_token = create_mfa_challenge_token(seed["user_id"])
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         res = client.post(
@@ -666,8 +653,8 @@ async def test_mfa_recovery_503_when_redis_unreachable(
 
 
 @pytest.mark.asyncio
-async def test_invitation_accept_503_when_redis_unreachable(
-    session_factory, monkeypatch
+async def test_invitation_accept_503_when_store_unreachable(
+    session_factory, state_db_down
 ) -> None:
     """org_members.py invitation accept fails closed — the architect
     explicitly enumerated this as the missed fifth site."""
@@ -702,7 +689,6 @@ async def test_invitation_accept_503_when_redis_unreachable(
         await db.commit()
         token = create_invitation_token(inv.id, inv.email)
 
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         res = client.post(
@@ -717,39 +703,14 @@ async def test_invitation_accept_503_when_redis_unreachable(
     assert _canonical_refresh_cookie(res.headers) is None
 
 
-# ── 4. MULTI/EXEC abort => 503, no Set-Cookie ───────────────────────────────
+# ── 4. Grep-style guard: every create_refresh_token site has a store write ──
 
 
-@pytest.mark.asyncio
-async def test_login_503_on_multi_exec_abort(
-    session_factory, fake_redis
-) -> None:
-    """If the MULTI/EXEC issue pipeline raises, the router must 503 and
-    NOT emit a Set-Cookie. This pins the architect's atomicity rule —
-    no half-written session may surface as a cookie to the browser."""
-    await _seed_user(session_factory)
-    fake_redis.abort_pipeline = True
-    app = _make_app(session_factory)
-    with TestClient(app) as client:
-        res = client.post(
-            "/api/v1/auth/login",
-            json={"login": "alice", "password": PASSWORD},
-        )
-    assert res.status_code == 503, res.json()
-    assert _canonical_refresh_cookie(res.headers) is None
-    # Belt-and-braces: nothing leaked into Redis either.
-    assert set(fake_redis._kv) <= {"auth:session_store_probe"}
-    assert not fake_redis._sets
-
-
-# ── 5. Grep-style guard: every create_refresh_token site has Redis writes ───
-
-
-def test_every_create_refresh_token_site_pairs_with_redis_write() -> None:
+def test_every_create_refresh_token_site_pairs_with_store_write() -> None:
     """Pin the architect's structural defense: every file that calls
     ``create_refresh_token`` must also call ``session_issue`` (or
     ``session_rotate``) within the same file. If a future PR adds a
-    new issue site without the Redis write, this test fails loudly.
+    new issue site without the store write, this test fails loudly.
 
     Mirrors ``test_no_hardcoded_seven_day_refresh_cookie_literals_remain``
     in shape — guard tests beat code review for this class of trap.
@@ -759,16 +720,16 @@ def test_every_create_refresh_token_site_pairs_with_redis_write() -> None:
     for py in app_dir.rglob("*.py"):
         text = py.read_text(encoding="utf-8")
         # Skip the helpers themselves — security.py DEFINES the function;
-        # redis_client.py implements session_issue/session_rotate.
+        # state_db.py implements session_issue/session_rotate.
         rel = py.relative_to(app_dir.parent)
-        if py.name in {"security.py", "redis_client.py"}:
+        if py.name in {"security.py", "state_db.py"}:
             continue
         if "create_refresh_token(" not in text:
             continue
         # The function must be paired with a session_issue / session_rotate
         # call OR with a wrapper that does so. ``routers/auth.py`` defines
         # ``_issue_refresh_session`` / ``_rotate_refresh_session`` which
-        # are the in-router wrappers; both expand to the Redis writes.
+        # are the in-router wrappers; both expand to the store writes.
         # ``routers/org_members.py`` calls ``_issue_refresh_session``.
         pairing_signals = (
             "session_issue",
@@ -783,22 +744,22 @@ def test_every_create_refresh_token_site_pairs_with_redis_write() -> None:
                 "_rotate_refresh_session"
             )
     assert offenders == [], (
-        "Every create_refresh_token call site must pair with the Redis "
-        "primary-key + family-set write before the cookie is set "
+        "Every create_refresh_token call site must pair with the session "
+        "store write before the cookie is set "
         "(specs/2026-05-17-backend-session-model.md §5.4). Offenders: "
         + "; ".join(offenders)
     )
 
 
-# ── 6. /verify accepts a valid jti + sid token ──────────────────────────────
+# ── 5. /verify accepts a valid jti + sid token ──────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_verify_accepts_session_with_redis_row(
-    session_factory, fake_redis
+async def test_verify_accepts_session_with_store_row(
+    session_factory
 ) -> None:
     """``/auth/verify`` shares the same validation chain as ``/refresh``
-    so the Redis probe lands automatically — pin it explicitly so a
+    so the store probe lands automatically — pin it explicitly so a
     future refactor cannot bypass."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
@@ -819,10 +780,10 @@ async def test_verify_accepts_session_with_redis_row(
 
 
 @pytest.mark.asyncio
-async def test_verify_rejects_token_with_missing_redis_row(
-    session_factory, fake_redis
+async def test_verify_rejects_token_with_missing_store_row(
+    session_factory
 ) -> None:
-    """``/auth/verify`` rejects a JWT whose primary key has been wiped."""
+    """``/auth/verify`` rejects a JWT whose family has been wiped."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -831,8 +792,8 @@ async def test_verify_rejects_token_with_missing_redis_row(
             json={"login": "alice", "password": PASSWORD},
         )
         token = _refresh_token_from_set_cookie(_canonical_refresh_cookie(login.headers))
-        jti, _sid = decode_refresh_jti_sid(token)
-        del fake_redis._kv[f"auth:session:{jti}"]
+        jti, sid = decode_refresh_jti_sid(token)
+        state_db._revoke_family(sid)
 
         set_refresh_cookie(client, token)
         res = client.post(
@@ -841,21 +802,21 @@ async def test_verify_rejects_token_with_missing_redis_row(
     assert res.status_code == 401, res.json()
 
 
-# ── Architect P1 (PR #306 re-review): Redis-failure must not leave durable
+# ── Architect P1 (PR #306 re-review): store failure must not leave durable
 #    one-time state committed without a session. ────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_invitation_accept_503_leaves_invitation_unconsumed(
-    session_factory, monkeypatch
+    session_factory, state_db_down
 ) -> None:
     """Architect P1.1 on PR #306: invitation accept used to commit the
-    invitation BEFORE calling ``_issue_refresh_session``. A Redis 503
+    invitation BEFORE calling ``_issue_refresh_session``. A store 503
     therefore returned an error to the user while the invitation was
     already marked accepted — permanent lockout, no retry possible.
 
     After the fix: ``accept_invitation`` flushes (so ``user.id`` is
-    available for the JWT), the Redis write runs, and ONLY THEN
+    available for the JWT), the store write runs, and ONLY THEN
     ``db.commit()`` fires. A 503 must leave the invitation row with
     ``accepted_at IS NULL`` so the invitee can retry.
     """
@@ -885,7 +846,6 @@ async def test_invitation_accept_503_leaves_invitation_unconsumed(
         inv_id = inv.id
         token = create_invitation_token(inv.id, inv.email)
 
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         res = client.post(
@@ -904,7 +864,7 @@ async def test_invitation_accept_503_leaves_invitation_unconsumed(
         assert row is not None
         assert row.accepted_at is None, (
             "Architect P1 regression: invitation was marked accepted "
-            "despite the 503 — Redis failure must not consume one-time state"
+            "despite the 503 — store failure must not consume one-time state"
         )
         # And no user row should have been created.
         any_user = await db.scalar(
@@ -917,10 +877,10 @@ async def test_invitation_accept_503_leaves_invitation_unconsumed(
 
 @pytest.mark.asyncio
 async def test_google_callback_503_does_not_commit_new_user(
-    session_factory, monkeypatch, google_config
+    session_factory, monkeypatch, google_config, state_db_down
 ) -> None:
     """Architect P1.2 on PR #306: first-run Google SSO used to commit
-    the new user + trial BEFORE the Redis-backed session-issue. A 503
+    the new user + trial BEFORE the store-backed session-issue. A 503
     therefore created the user durably but returned an error; on retry
     the user was treated as EXISTING (no ``created_user=true``), so
     the first-run privacy disclosure (Team E) was silently skipped.
@@ -930,7 +890,6 @@ async def test_google_callback_503_does_not_commit_new_user(
     correctly re-enters the new-user branch.
     """
     await _seed_default_plan(session_factory)
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
     _patch_httpx(monkeypatch, userinfo_email="brand-new-sso@example.com")
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -950,20 +909,20 @@ async def test_google_callback_503_does_not_commit_new_user(
         )
         assert any_user is None, (
             "Architect P1 regression: new SSO user was committed "
-            "despite the Redis 503 — next SSO attempt would skip the "
+            "despite the store 503 — next SSO attempt would skip the "
             "first-run disclosure branch"
         )
 
 
 @pytest.mark.asyncio
 async def test_mfa_recovery_503_preserves_recovery_code(
-    session_factory, monkeypatch
+    session_factory, state_db_down
 ) -> None:
     """Architect P1.3 on PR #306: MFA recovery used to commit the
-    consumed code BEFORE issuing the Redis-backed session. A 503
+    consumed code BEFORE issuing the store-backed session. A 503
     burned one of the user's finite recovery codes without giving
     them a session, forcing them to burn another on retry. After
-    the fix the commit happens after Redis confirms — on a 503 the
+    the fix the commit happens after the store confirms — on a 503 the
     transaction rolls back and the code is still usable.
     """
     from app.security import create_mfa_challenge_token
@@ -981,7 +940,6 @@ async def test_mfa_recovery_503_preserves_recovery_code(
     )
     mfa_token = create_mfa_challenge_token(seed["user_id"])
 
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         res = client.post(
@@ -1006,21 +964,21 @@ async def test_mfa_recovery_503_preserves_recovery_code(
         assert len(stored_hashes) == 3, stored_hashes
 
 
-# ── Architect P2 (PR #306 re-review): Redis row must bind back to JWT
+# ── Architect P2 (PR #306 re-review): the stored family must bind back to JWT
 #    claims, not just exist. ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_refresh_rejects_jti_with_mismatched_user_id_in_redis(
-    session_factory, fake_redis
+async def test_refresh_rejects_jti_with_mismatched_user_id_in_store(
+    session_factory
 ) -> None:
-    """Architect P2 on PR #306: existence of ``auth:session:{jti}`` is
-    not sufficient — the row stores ``{user_id, sid}`` precisely so
-    the resolver can verify the JWT still binds to it. Forge the row
-    to carry a different user_id; the refresh must reject as
-    invalidated/corrupt, NOT happily accept and rotate.
+    """Architect P2 on PR #306: existence of the jti is not sufficient —
+    the family row stores ``user_id`` and ``sid`` precisely so the
+    resolver can verify the JWT still binds to it. Forge the row to carry
+    a different user_id; the refresh must reject as invalidated/corrupt,
+    NOT happily accept and rotate.
     """
-    import json
+    from sqlalchemy import update
 
     await _seed_user(session_factory)
     app = _make_app(session_factory)
@@ -1032,11 +990,12 @@ async def test_refresh_rejects_jti_with_mismatched_user_id_in_redis(
         token = _refresh_token_from_set_cookie(_canonical_refresh_cookie(login.headers))
         jti, sid = decode_refresh_jti_sid(token)
 
-        # Forge the Redis row to point at a different user_id (simulates
-        # key corruption / overwrite / impossible jti collision).
-        fake_redis._kv[f"auth:session:{jti}"] = json.dumps(
-            {"user_id": 999999, "sid": sid}
-        )
+        # Forge the family row to point at a different user_id (simulates
+        # corruption / overwrite / impossible jti collision).
+        with state_db._engine.begin() as c:
+            c.execute(
+                update(state_db._F).where(state_db._F.c.sid == sid).values(user_id=999999)
+            )
 
         set_refresh_cookie(client, token)
         res = client.post(
@@ -1047,18 +1006,20 @@ async def test_refresh_rejects_jti_with_mismatched_user_id_in_redis(
 
 
 @pytest.mark.asyncio
-async def test_refresh_rejects_jti_with_mismatched_sid_in_redis(
-    session_factory, fake_redis
+async def test_refresh_rejects_jti_with_mismatched_sid_in_store(
+    session_factory, monkeypatch
 ) -> None:
     """Architect P2 on PR #306 — sister case to the user_id mismatch.
-    The JWT carries one ``sid``, the Redis row carries a different
+    The JWT carries one ``sid``, the stored family carries a different
     ``sid``. Could arise from a leaked refresh cookie reused after the
-    session family was reissued under a fresh ``sid``, or from key-
-    level corruption. Resolver must reject.
+    session family was reissued under a fresh ``sid``, or from
+    corruption. Resolver must reject.
     """
-    import json
+    from app.security import create_refresh_token
 
-    await _seed_user(session_factory)
+    seed = await _seed_user(session_factory)
+    recorder = _LogRecorder()
+    monkeypatch.setattr(auth_module, "_LOGGER", recorder)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         login = client.post(
@@ -1068,10 +1029,9 @@ async def test_refresh_rejects_jti_with_mismatched_sid_in_redis(
         token = _refresh_token_from_set_cookie(_canonical_refresh_cookie(login.headers))
         jti, sid = decode_refresh_jti_sid(token)
 
-        # Same user_id (good) but a different sid (bad).
-        row = json.loads(fake_redis._kv[f"auth:session:{jti}"])
-        fake_redis._kv[f"auth:session:{jti}"] = json.dumps(
-            {"user_id": row["user_id"], "sid": "deadbeef-not-the-real-sid"}
+        # Same user_id (good) and jti, but a different sid (bad).
+        token, _, _ = create_refresh_token(
+            seed["user_id"], sid="deadbeef-not-the-real-sid", jti=jti
         )
 
         set_refresh_cookie(client, token)
@@ -1079,3 +1039,7 @@ async def test_refresh_rejects_jti_with_mismatched_sid_in_redis(
             "/api/v1/auth/refresh"
         )
     assert res.status_code == 401, res.json()
+    reasons = [
+        ev["reason"] for ev in recorder.events if ev.get("event") == "auth.refresh.rejected"
+    ]
+    assert reasons == ["row_binding_mismatch"], reasons

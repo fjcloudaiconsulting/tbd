@@ -33,7 +33,7 @@ BIG = 2**53 - 1
 
 @pytest.fixture(autouse=True)
 def _fresh_limiter():
-    # The 60/hour shared bucket lives in Redis and outlasts a test.
+    # The 60/hour shared bucket lives in the limits DB and outlasts a test.
     limiter.reset()
     yield
     limiter.reset()

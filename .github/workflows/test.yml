@@ -120,15 +120,10 @@ jobs:
   # specs/ci-test-sharding.md for the original audit (superseded on the shard
   # count and the target; still accurate on why pytest-split over xdist).
   #
-  # The suite is self-contained: tests use in-process aiosqlite + a fake
-  # Redis (see backend/tests/conftest.py), so shards need NO MySQL and the
-  # fake covers the whole suite. The ONE exception is the reuse-detection
-  # real-Lua regression tests (tests/auth/test_session_reuse_detection.py),
-  # which must execute the shipped DETECT_REUSE_LUA against a real server to
-  # catch a Lua-string bug the fake would mask. We give each shard a Redis
-  # service and expose it ONLY via TEST_REAL_REDIS_URL (a dedicated var, not
-  # REDIS_URL) so those opt-in tests run while the rest of the suite and the
-  # app's rate-limiter config stay on the fake / in-memory path unchanged.
+  # The suite is self-contained: tests use in-process aiosqlite (sessions,
+  # tokens and leases on a per-worker SQLite file, see backend/tests/conftest.py),
+  # so shards need NO MySQL. The row-lock races run on real MySQL in the
+  # `migrations` job.
   #
   # The allowlist regression (tests/auth/test_sessions_invalidated_at_allowlist.py)
   # AST-scans backend/app/ source, not test files, so it works correctly in
@@ -165,18 +160,6 @@ jobs:
       fail-fast: false
       matrix:
         group: [1, 2, 3, 4, 5, 6]
-    services:
-      # Only the reuse-detection real-Lua tests use this, via TEST_REAL_REDIS_URL
-      # below; the rest of the suite runs on the in-process fake Redis.
-      redis:
-        image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -198,9 +181,6 @@ jobs:
       - name: Run backend tests (shard ${{ matrix.group }}/${{ strategy.job-total }})
         working-directory: backend
         env:
-          # Dedicated var (NOT REDIS_URL) so only the opt-in real-Lua
-          # reuse-detection tests use real Redis; app config stays unchanged.
-          TEST_REAL_REDIS_URL: redis://localhost:6379/0
           # Per-shard coverage data file, combined by the `backend` aggregate
           # below (TBD-498). Six shards writing the default `.coverage` would
           # clobber each other; this keeps each shard's data file distinct.
@@ -746,15 +726,9 @@ jobs:
               # implementation detail this job should not depend on.
               #
               # This is the ONLY place in the system where a real uvicorn
-              # boot, a real MySQL and a genuinely empty REDIS_URL coincide.
-              # The pytest shards run in-process on aiosqlite with an autouse
-              # fake Redis, so they cannot reach this state except by
-              # hand-building it.
-              #
-              # ⚠ Deliberately NO REDIS_URL and no Redis service in this job.
-              # This asserts the NON-PRODUCTION branch: an unconfigured Redis
-              # is a supported mode outside production and must stay 200, or
-              # this required gate goes red on every run.
+              # boot and a real MySQL coincide. The pytest shards run
+              # in-process on aiosqlite, so they cannot reach this state
+              # except by hand-building it.
               #
               # ⚠ PARSE the JSON, never grep the body — a grep for a key is
               # satisfied by a comment mentioning it. Assert the whole tuple:
@@ -767,8 +741,7 @@ jobs:
           import json
           d = json.load(open("/tmp/deps.json"))
           assert d["status"] == "ok", d
-          assert d["checks"]["database"] == "ok", d
-          assert d["checks"]["redis"] == "disabled", d
+          assert d["checks"] == {"database": "ok"}, d
           PYCHECK
               [ "$dcode" = "200" ] || {
                 echo "expected 200 from /health/dependencies, got $dcode"
@@ -801,6 +774,25 @@ jobs:
             echo "a schema convergence fence did not run"
             exit 1
           fi
+
+      # INFRA-122: sessions, single-use tokens and leases live in MySQL. The
+      # row-lock race fences (two refreshes of one token, exactly one wins)
+      # need a real InnoDB, so they run here, with the INFRA-121 rate-limit
+      # fences; then the session suites run once with the session store on
+      # this MySQL. A skip is red, as above.
+      - name: Run the session store and rate limit fences against MySQL
+        working-directory: backend
+        env:
+          RATE_LIMIT_MYSQL_URL: ${{ env.DATABASE_URL }}
+          STATE_DB_TEST_URL: ${{ env.DATABASE_URL }}
+        run: |
+          set -o pipefail
+          python -m pytest tests/test_state_db_mysql.py tests/test_rate_limit_mysql.py -q -rs -p no:cacheprovider -p no:xdist 2>&1 | tee /tmp/state-db-fences.log
+          if grep -q '^SKIPPED' /tmp/state-db-fences.log; then
+            echo "a session store fence did not run"
+            exit 1
+          fi
+          python -m pytest tests/test_state_db.py tests/auth tests/routers/test_refresh_cookie_catchup.py -q -p no:cacheprovider -p no:xdist
 
       # TBD-586 (R12, R16, R18). The platform reserve/settle race fences need a
       # real InnoDB: two connections, row locks, rowcount semantics. They live in

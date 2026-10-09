@@ -103,7 +103,6 @@ describe("/admin page", () => {
       },
       health: {
         db: { ok: true, latency_ms: 1.2 },
-        redis: { ok: true, latency_ms: 0.4 },
       },
     });
 
@@ -127,8 +126,7 @@ describe("/admin page", () => {
         signups_last_7d: 3,
       },
       health: {
-        db: { ok: true, latency_ms: 1.9 },
-        redis: { ok: false, error: "timeout" },
+        db: { ok: false, error: "timeout" },
       },
     });
 
@@ -142,8 +140,9 @@ describe("/admin page", () => {
     expect(screen.getByText("System health")).toBeInTheDocument();
     expect(screen.getByText("Audit log")).toBeInTheDocument();
     expect(screen.getByText("Database")).toBeInTheDocument();
-    expect(screen.getByText("Redis")).toBeInTheDocument();
     expect(screen.getByText("timeout")).toBeInTheDocument();
+    expect(screen.getByText("Platform down")).toBeInTheDocument();
+    expect(screen.queryByText("Redis")).not.toBeInTheDocument();
     expect(apiFetch).toHaveBeenCalledWith("/api/v1/admin/dashboard");
   });
 
@@ -179,7 +178,6 @@ describe("/admin page", () => {
       },
       health: {
         db: { ok: true, latency_ms: 1 },
-        redis: { ok: true, latency_ms: 1 },
       },
     });
 
@@ -213,7 +211,6 @@ describe("/admin page", () => {
       },
       health: {
         db: { ok: true, latency_ms: 1 },
-        redis: { ok: true, latency_ms: 1 },
       },
     });
 

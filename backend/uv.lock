@@ -892,18 +892,6 @@ pil = [
 ]
 
 [[package]]
-name = "redis"
-version = "5.3.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyjwt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6a/cf/128b1b6d7086200c9f387bd4be9b2572a30b90745ef078bd8b235042dc9f/redis-5.3.1.tar.gz", hash = "sha256:ca49577a531ea64039b5a36db3d6cd1a0c7a60c34124d46924a45b956e8cf14c", size = 4626200, upload-time = "2025-07-25T08:06:27.778Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7f/26/5c5fa0e83c3621db835cfc1f1d789b37e7fa99ed54423b5f519beb931aa7/redis-5.3.1-py3-none-any.whl", hash = "sha256:dc1909bd24669cc31b5f67a039700b16ec30571096c5f1f0d9d2324bff31af97", size = 272833, upload-time = "2025-07-25T08:06:26.317Z" },
-]
-
-[[package]]
 name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1007,7 +995,6 @@ app = [
     { name = "python-dateutil" },
     { name = "python-multipart" },
     { name = "qrcode", extra = ["pil"] },
-    { name = "redis" },
     { name = "slowapi" },
     { name = "sqlalchemy" },
     { name = "structlog" },
@@ -1032,7 +1019,6 @@ mcp = [
     { name = "pyjwt", extra = ["crypto"] },
     { name = "pymysql" },
     { name = "python-dateutil" },
-    { name = "redis" },
     { name = "slowapi" },
     { name = "sqlalchemy" },
     { name = "structlog" },
@@ -1061,7 +1047,6 @@ app = [
     { name = "python-dateutil", specifier = "==2.9.0.post0" },
     { name = "python-multipart", specifier = "==0.0.32" },
     { name = "qrcode", extras = ["pil"], specifier = "==8.2" },
-    { name = "redis", specifier = "==5.3.1" },
     { name = "slowapi", specifier = "==0.1.10" },
     { name = "sqlalchemy", specifier = "==2.0.54" },
     { name = "structlog", specifier = "==25.5.0" },
@@ -1086,7 +1071,6 @@ mcp = [
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.15.1" },
     { name = "pymysql", specifier = "==1.2.3" },
     { name = "python-dateutil", specifier = "==2.9.0.post0" },
-    { name = "redis", specifier = "==5.3.1" },
     { name = "slowapi", specifier = "==0.1.10" },
     { name = "sqlalchemy", specifier = "==2.0.54" },
     { name = "structlog", specifier = "==25.5.0" },

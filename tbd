@@ -21,7 +21,7 @@ Commands:
   reset        Destroy all data and start fresh
   prod         Build and start in production mode (standalone frontend, no reload)
   migrate      Run pending database migrations
-  logs [svc]   View logs (optional: backend, frontend, nginx, mysql, redis)
+  logs [svc]   View logs (optional: backend, frontend, nginx, mysql)
   status       Show container status
   shell [svc]  Open a shell in a service (default: backend)
   seed [--yes] Populate with mock data; asks before replacing existing data

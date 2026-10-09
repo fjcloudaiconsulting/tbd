@@ -1,21 +1,14 @@
-"""End-to-end coverage for the Redis transport-normalizer fix.
+"""``/refresh`` structured rejection logging, 503-over-401 precedence across
+the cookie list, and the 500 for a genuine programmer bug.
 
-Tests in ``test_redis_transport_normalizer.py`` pin the decorator's
-contract in isolation. These tests pin the integrated behaviour: when
-``redis_client.session_validate`` raises the closed-transport
-``RuntimeError`` from inside FastAPI's request-handling stack, the
-router returns **503**, not **500** — the canonical fix for the
-2026-05-19T07:10:52 production trace.
-
-Also covered: the structured ``auth.refresh.rejected`` log event fires
-on every terminal 401 path with the correct ``reason`` enum.
+Restored from the Redis transport integration file (INFRA-122); only the
+store injection changed: ``state_db.session_validate`` now raises a
+``sqlalchemy.exc.OperationalError`` where the Redis client used to raise.
 """
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -23,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -30,6 +24,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app import state_db
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_session_factory
@@ -38,7 +33,7 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers import auth as auth_module
 from app.routers.auth import router as auth_router
-from app.security import hash_password
+from app.security import decode_refresh_jti_sid, hash_password
 from tests.conftest import issue_test_refresh_token, set_refresh_cookie
 
 
@@ -141,119 +136,21 @@ async def _seed_user(factory) -> dict[str, Any]:
         return {"org_id": org.id, "user_id": user.id}
 
 
-# ── The canonical 2026-05-19T07:10 production trace, end-to-end ─────────
+def _fail_validate(monkeypatch, exc, only_jtis=None):
+    """Make ``state_db.session_validate`` raise ``exc`` (for ``only_jtis``,
+    or for every jti when None); other jtis use the real store."""
+    real = state_db.session_validate
+
+    async def _validate(jti):
+        if only_jtis is None or jti in only_jtis:
+            raise exc
+        return await real(jti)
+
+    monkeypatch.setattr(state_db, "session_validate", _validate)
 
 
-class TestRefreshReturns503OnClosedTransport:
-    """When the underlying Redis client raises a closed-transport
-    ``RuntimeError``, the ``_normalize_transport_errors`` wrapper
-    translates it to ``RedisConnectionError`` so the router's existing
-    ``except (RedisRequired, RedisError)`` handler catches it and
-    returns **503** — not 500.
-
-    The MOCK strategy: patch the inner Redis client's ``get`` method
-    so the wrapped ``session_validate`` function actually runs (and
-    the decorator's try/except fires). Patching ``session_validate``
-    directly would bypass the wrapper entirely — the test would tell
-    us nothing about the integrated behaviour.
-    """
-
-    def _patch_client_get(self, side_effect):
-        """Context manager: patch the inner Redis client's ``.get``
-        method on the autouse fake-Redis instance that's already
-        installed by tests/conftest.py. Returns the patch object."""
-        # The fake Redis client lives in app.redis_client._client after
-        # the autouse fixture runs. Patch its .get to raise the desired
-        # exception when called.
-        import app.redis_client as rc
-
-        # Force the fake client to materialize if it hasn't.
-        client = rc.get_client()
-        if client is None:
-            pytest.skip(
-                "Autouse fake-Redis fixture didn't install a client"
-            )
-        return patch.object(client, "get", side_effect=side_effect)
-
-    @pytest.mark.asyncio
-    async def test_refresh_returns_503_on_closed_transport_runtime_error(
-        self, session_factory
-    ) -> None:
-        seed = await _seed_user(session_factory)
-        token = issue_test_refresh_token(seed["user_id"])
-        app = _make_app(session_factory)
-
-        # The exact production trace from 2026-05-19T07:10:52.
-        closed_transport_error = RuntimeError(
-            "unable to perform operation on <TCPTransport closed=True "
-            "reading=False 0x55a57d2583e0>; the handler is closed"
-        )
-
-        with self._patch_client_get(side_effect=closed_transport_error):
-            with TestClient(app) as client:
-                set_refresh_cookie(client, token)
-                res = client.post(
-                    "/api/v1/auth/refresh"
-                )
-
-        # The contract: 503, not 500. The frontend reactive-recovery
-        # path then treats this as transient and retries.
-        assert res.status_code == 503, (
-            f"Expected 503, got {res.status_code}: {res.json()}"
-        )
-        body = res.json()
-        # User-facing constant, not the raw transport message.
-        assert "temporarily unavailable" in body["detail"].lower()
-
-    @pytest.mark.asyncio
-    async def test_refresh_returns_503_on_broken_pipe(
-        self, session_factory
-    ) -> None:
-        """Same property for the OSError class. ``BrokenPipeError``
-        derives from ``OSError``; the wrapper catches the whole
-        family."""
-        seed = await _seed_user(session_factory)
-        token = issue_test_refresh_token(seed["user_id"])
-        app = _make_app(session_factory)
-
-        with self._patch_client_get(
-            side_effect=BrokenPipeError(32, "Broken pipe")
-        ):
-            with TestClient(app) as client:
-                set_refresh_cookie(client, token)
-                res = client.post(
-                    "/api/v1/auth/refresh"
-                )
-        assert res.status_code == 503
-
-    @pytest.mark.asyncio
-    async def test_refresh_returns_500_on_genuine_programmer_bug(
-        self, session_factory
-    ) -> None:
-        """CRITICAL safety property of the narrow filter: a bare
-        ``RuntimeError`` whose message doesn't match a transport
-        marker MUST still propagate as 500. If this test ever passes
-        with status 503, the filter has been widened too far and
-        real programmer bugs would be silently swallowed as
-        "Service Unavailable" in production."""
-        seed = await _seed_user(session_factory)
-        token = issue_test_refresh_token(seed["user_id"])
-        app = _make_app(session_factory)
-
-        with self._patch_client_get(
-            side_effect=RuntimeError("programmer bug: list index out of range")
-        ):
-            # raise_server_exceptions=False so TestClient returns the
-            # 500 response instead of re-raising the inner exception —
-            # we want to assert on the response, not catch the bug.
-            with TestClient(app, raise_server_exceptions=False) as client:
-                set_refresh_cookie(client, token)
-                res = client.post(
-                    "/api/v1/auth/refresh"
-                )
-        assert res.status_code == 500, (
-            f"Genuine RuntimeError must stay a 500; got {res.status_code}"
-        )
+def _store_error():
+    return OperationalError("SELECT", {}, Exception("mysql down"))
 
 
 # ── Structured rejection logging ────────────────────────────────────────
@@ -352,7 +249,7 @@ class TestRefreshRejectedLogging:
         seed = await _seed_user(session_factory)
         # Hand-mint a token with known jti/sid we can grep for.
         # ``create_refresh_token`` returns ``(token, jti, sid)`` but does
-        # NOT insert the primary key into Redis — so the validation
+        # NOT insert the session family — so the validation
         # chain hits the "redis_primary_and_grace_missing" path.
         token, jti, sid = create_refresh_token(
             seed["user_id"], ttl_seconds=3600
@@ -431,7 +328,7 @@ class TestRefreshRejectedLogging:
 class TestRefreshPrefersTransientOverTerminal:
     """When the browser sends BOTH a legacy and a current
     ``refresh_token`` cookie, the validator walks them in arrival
-    order. If the FIRST one hits a Redis transport failure (503) and
+    order. If the FIRST one hits a store failure (503) and
     the SECOND one is invalid (401), the response MUST be 503, not
     401 — otherwise a transient infra blip on the live cookie would
     force a real logout because the stale cookie's 401 overwrote the
@@ -442,53 +339,36 @@ class TestRefreshPrefersTransientOverTerminal:
     across the cookie list.
     """
 
-    def _patch_client_get(self, side_effect):
-        """Same client-level patch trick as the parent file: patch
-        the inner Redis client's ``.get`` so the wrapper actually
-        runs. ``side_effect`` may be a callable for per-call values."""
-        import app.redis_client as rc
-
-        client = rc.get_client()
-        if client is None:
-            pytest.skip(
-                "Autouse fake-Redis fixture didn't install a client"
-            )
-        return patch.object(client, "get", side_effect=side_effect)
-
     @pytest.mark.asyncio
     async def test_first_cookie_503_beats_second_cookie_401(
-        self, session_factory
+        self, session_factory, monkeypatch
     ) -> None:
         """Two refresh_token cookies in the header. The first hits a
-        closed-transport RuntimeError → 503; the second is a
-        malformed JWT → 401 before it ever touches Redis. Final
+        store error → 503; the second is a
+        malformed JWT → 401 before it ever touches the store. Final
         status MUST be 503."""
         seed = await _seed_user(session_factory)
         good_token = issue_test_refresh_token(seed["user_id"])
         app = _make_app(session_factory)
 
-        # Closed-transport RuntimeError only on the first .get call;
-        # the second cookie ("not.a.jwt") fails JWT decode before
-        # any Redis call, so .get is never called for it.
-        with self._patch_client_get(
-            side_effect=RuntimeError(
-                "unable to perform operation on <TCPTransport closed=True "
-                "reading=False 0x0>; the handler is closed"
-            ),
-        ):
-            with TestClient(app) as client:
-                res = client.post(
-                    "/api/v1/auth/refresh",
-                    headers={
-                        # Two cookies, same name, in arrival order: the
-                        # valid JWT first (will hit Redis → 503), the
-                        # malformed one second (would 401 on decode).
-                        "cookie": (
-                            f"refresh_token={good_token}; "
-                            f"refresh_token=not.a.jwt"
-                        ),
-                    },
-                )
+        # Store error only for the first cookie's jti; the second cookie
+        # ("not.a.jwt") fails JWT decode before any store call.
+        _fail_validate(
+            monkeypatch, _store_error(), {decode_refresh_jti_sid(good_token)[0]}
+        )
+        with TestClient(app) as client:
+            res = client.post(
+                "/api/v1/auth/refresh",
+                headers={
+                    # Two cookies, same name, in arrival order: the
+                    # valid JWT first (will hit the store → 503), the
+                    # malformed one second (would 401 on decode).
+                    "cookie": (
+                        f"refresh_token={good_token}; "
+                        f"refresh_token=not.a.jwt"
+                    ),
+                },
+            )
 
         # The contract: 503 wins. A 401 here would be the regression.
         assert res.status_code == 503, (
@@ -498,7 +378,7 @@ class TestRefreshPrefersTransientOverTerminal:
 
     @pytest.mark.asyncio
     async def test_single_invalid_cookie_still_401(
-        self, session_factory
+        self, session_factory, monkeypatch
     ) -> None:
         """Sanity guard: the transient-preferral logic must NOT
         upgrade a single-cookie 401 to a 503. When only one cookie is
@@ -514,7 +394,7 @@ class TestRefreshPrefersTransientOverTerminal:
 
     @pytest.mark.asyncio
     async def test_503_first_then_503_returns_503(
-        self, session_factory
+        self, session_factory, monkeypatch
     ) -> None:
         """Belt-and-braces: two cookies, both produce 503. Result is
         still 503 (transient_exc captured from the first; last_exc
@@ -523,16 +403,14 @@ class TestRefreshPrefersTransientOverTerminal:
         a = issue_test_refresh_token(seed["user_id"])
         b = issue_test_refresh_token(seed["user_id"])
         app = _make_app(session_factory)
-        with self._patch_client_get(
-            side_effect=RuntimeError("the handler is closed"),
-        ):
-            with TestClient(app) as client:
-                res = client.post(
-                    "/api/v1/auth/refresh",
-                    headers={
-                        "cookie": f"refresh_token={a}; refresh_token={b}"
-                    },
-                )
+        _fail_validate(monkeypatch, _store_error())
+        with TestClient(app) as client:
+            res = client.post(
+                "/api/v1/auth/refresh",
+                headers={
+                    "cookie": f"refresh_token={a}; refresh_token={b}"
+                },
+            )
         assert res.status_code == 503
 
 
@@ -547,8 +425,7 @@ class TestRefreshLuaRotationLogging:
     Architect P2 on PR #314: 'all terminal 401 paths are logged' is the
     contract these tests pin. Tests stub ``_rotate_refresh_session`` at
     the auth-module level so the validation chain succeeds and we land
-    inside the rotation outcome branches without spinning up a real
-    Lua-capable Redis."""
+    inside the rotation outcome branches against the real SQLite state engine."""
 
     @pytest.mark.asyncio
     async def test_lua_session_revoked_logs_reason(
@@ -558,7 +435,7 @@ class TestRefreshLuaRotationLogging:
         /logout deleted the family set), the rotation handler emits
         ``lua_session_revoked`` and raises 401."""
         from app.routers import auth as auth_module
-        from app.redis_client import SESSION_ROTATE_REVOKED
+        from app.state_db import SESSION_ROTATE_REVOKED
 
         seed = await _seed_user(session_factory)
         token = issue_test_refresh_token(seed["user_id"])
@@ -609,7 +486,7 @@ class TestRefreshLuaRotationLogging:
         or concurrent logout), emit
         ``already_rotated_grace_revalidation_failed`` and 401."""
         from app.routers import auth as auth_module
-        from app.redis_client import SESSION_ROTATE_ALREADY_ROTATED
+        from app.state_db import SESSION_ROTATE_ALREADY_ROTATED
 
         seed = await _seed_user(session_factory)
         token = issue_test_refresh_token(seed["user_id"])
@@ -630,10 +507,10 @@ class TestRefreshLuaRotationLogging:
             auth_module, "_rotate_refresh_session", _stub_rotate
         )
         monkeypatch.setattr(
-            auth_module.redis_client, "session_grace", _stub_grace_missing
+            state_db, "session_grace", _stub_grace_missing
         )
         monkeypatch.setattr(
-            auth_module.redis_client,
+            state_db,
             "session_family_exists",
             _stub_family_alive,
         )
@@ -663,3 +540,35 @@ class TestRefreshLuaRotationLogging:
         assert ev["grace_row_missing"] is True
         assert ev["family_alive"] is True
         assert ev["sub"] == seed["user_id"]
+
+
+# ── Programmer bugs stay 500 ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_refresh_returns_500_on_genuine_programmer_bug(
+    session_factory, monkeypatch
+) -> None:
+    """CRITICAL safety property of the narrow filter: a bare
+    ``RuntimeError`` (not a ``SQLAlchemyError``) MUST still propagate as
+    500. If this test ever passes with status 503, the filter has been
+    widened too far and real programmer bugs would be silently swallowed
+    as "Service Unavailable" in production."""
+    seed = await _seed_user(session_factory)
+    token = issue_test_refresh_token(seed["user_id"])
+    app = _make_app(session_factory)
+
+    _fail_validate(monkeypatch, RuntimeError("programmer bug: list index out of range"))
+    # raise_server_exceptions=False so TestClient returns the
+    # 500 response instead of re-raising the inner exception —
+    # we want to assert on the response, not catch the bug.
+    with TestClient(app, raise_server_exceptions=False) as client:
+        set_refresh_cookie(client, token)
+        res = client.post(
+            "/api/v1/auth/refresh"
+        )
+    assert res.status_code == 500, (
+        f"Genuine RuntimeError must stay a 500; got {res.status_code}"
+    )
+
+

@@ -100,7 +100,6 @@ async def db(sf):
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    monkeypatch.setattr("app.services.ai_dispatch.redis_client.get_client", lambda: None)
     monkeypatch.setattr(app_settings, "ai_native_enabled", True)
     for p in HOSTS:
         monkeypatch.setattr(app_settings, f"platform_ai_{p}_api_key", f"env-key-{p}")
@@ -875,17 +874,9 @@ async def test_k1_prepare_dispatch_is_pure_and_returns_no_platform_adapter(db, s
     assert await counters(sf, org) == {} and await spend(sf) == 0
 
 
-class _Redis:
-    async def set(self, *a, **k):
-        return True
-
-    async def eval(self, *a, **k):
-        return 1
-
-
 @pytest.fixture
-def chat_env(monkeypatch):
-    monkeypatch.setattr(agent_chat.redis_client, "get_client", lambda: _Redis())
+def chat_env():
+    return None  # the turn lease runs on the real (SQLite) state engine
 
 
 async def test_r7_r15_preflight_on_an_exhausted_platform_org_is_402_with_detail(db, sf, fake, chat_env):

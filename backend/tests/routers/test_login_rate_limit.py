@@ -3,9 +3,6 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from redis.exceptions import RedisError, ResponseError
-
-from app import redis_client
 from app.routers import auth as auth_router
 from tests.routers.test_auth import (  # noqa: F401  (fixtures + helpers)
     _make_app,
@@ -15,38 +12,12 @@ from tests.routers.test_auth import (  # noqa: F401  (fixtures + helpers)
 )
 
 
-class _DeadClient:
-    def __init__(self, exc: Exception):
-        self._exc = exc
-
-    async def ping(self):
-        return True
-
-    async def set(self, *a, **k):
-        raise self._exc
-
-    async def get(self, *a, **k):
-        raise self._exc
-
-
-_MODES = {
-    "no_client": lambda: None,
-    "redis_error": lambda: _DeadClient(RedisError("down")),
-    "closed_transport": lambda: _DeadClient(RuntimeError("Transport is closed")),
-    "oom_on_set": lambda: _DeadClient(
-        ResponseError("OOM command not allowed when used memory > 'maxmemory'")
-    ),
-}
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", list(_MODES))
-async def test_l1_login_is_uniform_while_valkey_is_down(session_factory, monkeypatch, mode):
+async def test_l1_login_is_uniform_while_the_session_store_is_down(session_factory, state_db_down):
     await _seed_user(session_factory, username="alice", email="alice@acme.io", password="pw-alice-1")
     await _seed_user(
         session_factory, username="bob", email="bob@acme.io", password="pw-bob-1", mfa_enabled=True
     )
-    monkeypatch.setattr(redis_client, "get_client", _MODES[mode])
     attempts = [
         ("alice", "pw-alice-1"),
         ("alice", "wrong"),
@@ -67,9 +38,8 @@ async def test_l1_login_is_uniform_while_valkey_is_down(session_factory, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_l2_attempts_are_counted_while_valkey_is_down(session_factory, monkeypatch):
+async def test_l2_attempts_are_counted_while_the_session_store_is_down(session_factory, state_db_down):
     await _seed_user(session_factory)
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
     with TestClient(_make_app(session_factory)) as client:
         codes = [
             client.post("/api/v1/auth/login", json={"login": "alice", "password": "x"}).status_code

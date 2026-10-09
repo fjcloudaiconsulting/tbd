@@ -20,11 +20,11 @@ Flow (spec §3, PR2 scope):
    for the first time in the period, enqueue a notification via
    ``notification_service.dispatch_notification`` for every owner /
    admin of the org. Idempotent per (org, feature_key, period) via
-   a Redis marker with a 35-day TTL. The warning fires from two
+   a ``used_tokens`` marker with a 35-day TTL. The warning fires from two
    sites: a pre-call check (catches usage that was already at-or-above
    the cap going in — e.g., marker expired, retroactive ledger rows)
    and a post-write check (catches the boundary call that takes usage
-   from below to at-or-above the cap for the first time). The Redis
+   from below to at-or-above the cap for the first time). The
    marker dedupes across both sites.
 4. Decrypt credentials via ``ai_credential_crypto.decrypt``, build
    the adapter via ``ai_providers.get_adapter``, dispatch.
@@ -37,7 +37,7 @@ Flow (spec §3, PR2 scope):
 
 Soft-cap warning idempotence — design note:
 
-The Redis marker ``ai_soft_cap_warned:{org_id}:{feature_key}:{period}``
+The ``used_tokens`` marker ``ai_soft_cap_warned:{org_id}:{feature_key}:{period}``
 is keyed on ``feature_key="__default__"`` when the soft cap that
 fired was the org-wide default rather than a per-feature soft-cap
 override. This keeps a default-only soft-cap from re-firing once per
@@ -74,7 +74,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import redis_client
+from app import state_db
 from app.config import settings
 from app.database import async_session
 from app.models.ai_usage_ledger import AIUsageLedger
@@ -402,7 +402,7 @@ class _ResolvedCaps:
     hard_cap_cents: Optional[int]
     # ``True`` iff the EFFECTIVE soft cap (the one ``soft_cap_cents``
     # holds) came from the per-feature override row. This is used to
-    # shape the Redis dedupe marker for soft-cap warnings.
+    # shape the dedupe marker for soft-cap warnings.
     #
     # IMPORTANT: this tracks the source of the SOFT cap only. The hard
     # cap's source is intentionally not tracked here — it does not
@@ -696,7 +696,7 @@ async def _list_org_admin_user_ids(
     PR2 dispatches the warning to every owner+admin of the org. The
     notification service is per-user, so a single soft-cap event
     fans out to N rows. Idempotence (per org+feature+period) lives
-    in the Redis marker that wraps this whole branch.
+    in the ``used_tokens`` marker that wraps this whole branch.
     """
     res = await db.execute(
         select(User.id).where(
@@ -719,7 +719,7 @@ async def _maybe_warn_soft_cap(
     """Fire the first-time soft-cap warning for this period if needed.
 
     Returns ``True`` if a warning was dispatched (or attempted), else
-    ``False``. Idempotence is guarded by a Redis marker; if Redis is
+    ``False``. Idempotence is guarded by a ``used_tokens`` marker; if the store is
     unavailable the warning still fires (degrades to "warn every call"
     rather than skipping silently).
     """
@@ -740,28 +740,22 @@ async def _maybe_warn_soft_cap(
         f"ai_soft_cap_warned:{org_id}:{marker_feature}:{period}"
     )
 
-    redis = redis_client.get_client()
-    if redis is not None:
-        try:
-            # SET NX + EX guarantees a single warning per period.
-            set_ok = await redis.set(
-                marker_key,
-                "1",
-                ex=SOFT_CAP_WARNED_TTL_SECONDS,
-                nx=True,
-            )
-            if not set_ok:
-                return False
-        except Exception as exc:  # pragma: no cover - resilience path
-            # Don't let a Redis blip suppress the warning. Worst case
-            # the org sees the warning more than once per period; the
-            # ops signal still surfaces.
-            logger.warning(
-                "ai.dispatch.soft_cap_marker.redis_error",
-                error_class=type(exc).__name__,
-                org_id=org_id,
-                feature_key=feature_key,
-            )
+    try:
+        # A used_tokens claim guarantees a single warning per period.
+        if not await state_db.claim_token(
+            "ai_soft_cap", marker_key, SOFT_CAP_WARNED_TTL_SECONDS
+        ):
+            return False
+    except Exception as exc:  # pragma: no cover - resilience path
+        # Don't let a store blip suppress the warning. Worst case
+        # the org sees the warning more than once per period; the
+        # ops signal still surfaces.
+        logger.warning(
+            "ai.dispatch.soft_cap_marker.store_error",
+            error_class=type(exc).__name__,
+            org_id=org_id,
+            feature_key=feature_key,
+        )
 
     percent = 0
     if resolved.soft_cap_cents > 0:
@@ -1029,7 +1023,7 @@ async def call_llm(
     # CROSSES the soft cap. The pre-call check only fires when
     # ``cost_so_far`` is already at-or-above the cap, so the call that
     # takes us from below to at-or-above the cap would be missed. The
-    # Redis dedupe marker shared with ``_maybe_warn_soft_cap`` keeps both
+    # dedupe marker shared with ``_maybe_warn_soft_cap`` keeps both
     # checks from double-firing.
     await _post_write_soft_cap_crossing(
         db,

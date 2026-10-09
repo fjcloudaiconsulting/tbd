@@ -5,7 +5,6 @@ import pytest
 import app.services.admin_dashboard_service as admin_dashboard_service
 from app.services.admin_dashboard_service import (
     _probe_db,
-    _probe_redis,
     build_dashboard_payload,
 )
 
@@ -38,11 +37,6 @@ class SlowExecuteSession:
         await asyncio.sleep(0.01)
 
 
-class SlowRedisClient:
-    async def ping(self):
-        await asyncio.sleep(0.01)
-
-
 @pytest.mark.asyncio
 async def test_probe_db_returns_error_name_when_query_raises() -> None:
     result = await _probe_db(ExecuteRaisesSession())
@@ -60,40 +54,13 @@ async def test_probe_db_reports_timeout(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_probe_redis_reports_not_configured_when_client_missing(monkeypatch) -> None:
-    monkeypatch.setattr(admin_dashboard_service, "get_redis_client", lambda: None)
-
-    result = await _probe_redis()
-
-    assert result == {"ok": False, "error": "not_configured"}
-
-
-@pytest.mark.asyncio
-async def test_probe_redis_reports_timeout(monkeypatch) -> None:
-    monkeypatch.setattr(
-        admin_dashboard_service,
-        "get_redis_client",
-        lambda: SlowRedisClient(),
-    )
-    monkeypatch.setattr(admin_dashboard_service, "PROBE_TIMEOUT_SECONDS", 0.001)
-
-    result = await _probe_redis()
-
-    assert result == {"ok": False, "error": "timeout"}
-
-
-@pytest.mark.asyncio
 async def test_build_dashboard_payload_collects_kpis_and_health(monkeypatch) -> None:
     db = FakeAsyncSession([17, 42, 12, 3])
 
     async def fake_probe_db(_db):
         return {"ok": True, "latency_ms": 4.2}
 
-    async def fake_probe_redis():
-        return {"ok": False, "error": "timeout"}
-
     monkeypatch.setattr(admin_dashboard_service, "_probe_db", fake_probe_db)
-    monkeypatch.setattr(admin_dashboard_service, "_probe_redis", fake_probe_redis)
 
     payload = await build_dashboard_payload(db)
 
@@ -106,7 +73,6 @@ async def test_build_dashboard_payload_collects_kpis_and_health(monkeypatch) -> 
         },
         "health": {
             "db": {"ok": True, "latency_ms": 4.2},
-            "redis": {"ok": False, "error": "timeout"},
         },
     }
     assert db.scalar_calls == 4
@@ -122,11 +88,7 @@ async def test_build_dashboard_payload_coerces_missing_scalar_results_to_zero(
     async def fake_probe_db(_db):
         return {"ok": True, "latency_ms": 1.1}
 
-    async def fake_probe_redis():
-        return {"ok": True, "latency_ms": 2.2}
-
     monkeypatch.setattr(admin_dashboard_service, "_probe_db", fake_probe_db)
-    monkeypatch.setattr(admin_dashboard_service, "_probe_redis", fake_probe_redis)
 
     payload = await build_dashboard_payload(db)
 

@@ -1,17 +1,17 @@
-"""PR 3 — Rotation grace window + Lua rotation + verify fallback tests.
+"""PR 3 — Rotation grace window + rotation + verify fallback tests.
 
 Pins every architect-emphasized risk in
 ``specs/2026-05-17-backend-session-model.md`` §8 PR 3:
 
 1. Cross-tab race produces exactly one rotation + one grace acceptance
-   (the canonical no-double-issue pin — the Lua ``EXISTS old_primary``
-   guard is what makes this pass).
+   (the canonical no-double-issue pin — the head check under the family
+   row lock is what makes this pass).
 2. Replay of an already-rotated jti AFTER the 30s grace window fails.
-3. ``jti_collision`` path: under a forced-collision RNG the first Lua
-   call returns ``jti_collision``, the router regenerates, the second
+3. ``jti_collision`` path: under a forced-collision RNG the first
+   rotate call returns ``jti_collision``, the router regenerates, the second
    call succeeds; under always-collide RNG the router returns 503
    with the ``auth.session.rotated.failed`` audit row.
-4. Grace branch family-set check: if logout deletes the family set
+4. Grace branch family check: if logout deletes the family
    inside the grace window, the grace branch rejects (architect
    P1.1 — closes the logout-vs-rotation race).
 5. ``/verify`` mirrors ``/refresh`` — accepts a grace ticket when the
@@ -21,7 +21,7 @@ Pins every architect-emphasized risk in
    ``auth.session.grace_accept {via_already_rotated: true}``.
 7. ``sid`` mismatch on the grace branch rejects.
 8. Replay-after-logout class — within the 30s grace window, if logout
-   has deleted the family set, the grace branch must reject.
+   has deleted the family, the grace branch must reject.
 
 Concurrency tests use ``asyncio.gather`` + ``asyncio.Event`` gating,
 NEVER ``asyncio.sleep`` — the architect's #1 named concern for flake.
@@ -29,7 +29,6 @@ NEVER ``asyncio.sleep`` — the architect's #1 named concern for flake.
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -48,6 +47,8 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app import state_db
+from app.routers import auth as auth_module
 from app.database import get_db
 from app.deps import get_session_factory
 from app.models import Base
@@ -58,17 +59,13 @@ from app.routers.auth import (
     LEGACY_REFRESH_COOKIE_PATH,
     router as auth_router,
 )
-from app.security import decode_refresh_jti_sid, hash_password
+from app.security import create_refresh_token, decode_refresh_jti_sid, hash_password
 
-from tests.conftest import set_refresh_cookie
+from tests.conftest import expire_grace, set_refresh_cookie
+from tests.routers.test_refresh_logging_and_precedence import _LogRecorder
 
 
 PASSWORD = "starting-password-1"
-
-
-@pytest.fixture
-def fake_redis(_autouse_fake_redis):
-    yield _autouse_fake_redis
 
 
 @pytest_asyncio.fixture
@@ -198,31 +195,65 @@ async def _httpx_app_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
         yield client
 
 
+@pytest.fixture
+def rotate_barrier(monkeypatch):
+    """Hold every ``session_rotate`` call until two have arrived, so both
+    racing ``/refresh`` requests have validated the old head before either
+    rotates. The loser is then held until the winner's audit write is done:
+    the in-memory test DB is a single shared connection, so two concurrent
+    audit sessions would collide (a harness artifact, not production
+    behavior). Event gating only, never ``asyncio.sleep``."""
+    from app.routers import auth as auth_module
+
+    real = state_db.session_rotate
+    real_record = auth_module._record_session_rotated
+    state = {"arrived": 0, "release": asyncio.Event(), "winner_done": asyncio.Event()}
+
+    async def _gated(*args, **kwargs):
+        state["arrived"] += 1
+        if state["arrived"] >= 2:
+            state["release"].set()
+        await asyncio.wait_for(state["release"].wait(), timeout=5)
+        result = await real(*args, **kwargs)
+        if result == state_db.SESSION_ROTATE_ALREADY_ROTATED:
+            await asyncio.wait_for(state["winner_done"].wait(), timeout=5)
+        return result
+
+    async def _record(*args, **kwargs):
+        try:
+            return await real_record(*args, **kwargs)
+        finally:
+            state["winner_done"].set()
+
+    monkeypatch.setattr(state_db, "session_rotate", _gated)
+    monkeypatch.setattr(auth_module, "_record_session_rotated", _record)
+
+
 # ── 1. Replay AFTER the grace window (manual expiry) ─────────────────────────
 
 
-async def test_replay_after_grace_window_returns_401(session_factory, fake_redis):
-    """Grace window is 30s. Once both the primary key and the grace key
-    are gone, the old jti must 401.
+async def test_replay_after_grace_window_returns_401(session_factory):
+    """Grace window is 30s. Once the old jti is neither the head nor
+    graced, it must 401.
 
-    We can't wait 31s in unit tests; instead we manually delete the
-    grace key (equivalent to TTL expiry) after the rotation.
+    We can't wait 31s in unit tests; instead we age the members past the
+    window (equivalent to the grace expiring) after the rotation.
     """
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         token = _login(client)
-        old_jti, _sid = decode_refresh_jti_sid(token)
+        old_jti, sid = decode_refresh_jti_sid(token)
 
         # First refresh rotates.
         set_refresh_cookie(client, token)
         first = client.post("/api/v1/auth/refresh")
         assert first.status_code == 200
-        # Grace key should exist now.
-        assert f"auth:session:grace:{old_jti}" in fake_redis._kv
+        # old_jti is graced now.
+        assert state_db._grace(old_jti) is not None
 
-        # Simulate TTL expiry: delete the grace key.
-        del fake_redis._kv[f"auth:session:grace:{old_jti}"]
+        # Simulate the window expiring.
+        expire_grace(sid)
 
         # Replay the old cookie.
         set_refresh_cookie(client, token)
@@ -234,24 +265,22 @@ async def test_replay_after_grace_window_returns_401(session_factory, fake_redis
 # ── 2. Cross-tab race — gated concurrent /refresh produces 1 + 1 ─────────────
 
 
-async def test_concurrent_refresh_one_winner_one_grace(session_factory, fake_redis):
+async def test_concurrent_refresh_one_winner_one_grace(session_factory, rotate_barrier):
     """Two concurrent ``/refresh`` calls with the same pre-rotation cookie
-    produce exactly: one Lua-rotation winner and one grace-path loser,
+    produce exactly: one rotation winner and one grace-path loser,
     both 200, both emitting a Set-Cookie whose JWT decodes to the SAME
     successor jti (2026-05-19 catch-up fix). Zero 401s. The loser's
     Set-Cookie comes from ``_issue_catchup_refresh_cookie`` reading
     ``grace_row["successor_jti"]`` — NOT from the loser's locally-minted
-    candidate jti, which has no Redis row.
+    candidate jti, which was never stored.
 
-    Implementation: gate BOTH coroutines at the Lua entry with an
-    ``asyncio.Event``, release them simultaneously. The serialization
-    lock inside the fake's ``eval`` makes the second call observe the
-    winner's writes (primary gone, grace written, family extended)
-    and return ``already_rotated``. The router then enters the
+    Implementation: gate BOTH coroutines at ``session_rotate`` with an
+    ``asyncio.Event``, release them simultaneously. The family row lock
+    makes the second call observe the winner's write (new head) and
+    return ``already_rotated``. The router then enters the
     already_rotated re-probe path and issues the catch-up cookie.
 
-    Without the Lua ``EXISTS old_primary`` guard (spec §4.2 check 2),
-    both calls would pass ``SISMEMBER`` and both rotate — the test
+    Without the head check under the lock, both calls would rotate — the test
     would observe two DISTINCT successor jtis instead of two identical
     ones. This is the canonical no-double-issue pin AND the
     catch-up-cookie-convergence pin in one test.
@@ -265,10 +294,6 @@ async def test_concurrent_refresh_one_winner_one_grace(session_factory, fake_red
         token = _login(client)
     old_jti, sid = decode_refresh_jti_sid(token)
 
-    # Arm the Lua barrier so BOTH coroutines reach the script body
-    # before either runs the guards. Release simultaneously.
-    fake_redis.eval_barrier_target = 2
-
     async with _httpx_app_client(app) as ac:
         set_refresh_cookie(ac, token)
 
@@ -277,14 +302,7 @@ async def test_concurrent_refresh_one_winner_one_grace(session_factory, fake_red
 
         task_a = asyncio.create_task(_do_refresh())
         task_b = asyncio.create_task(_do_refresh())
-        # Wait deterministically until both coroutines have arrived at
-        # the barrier. No ``asyncio.sleep`` — pure event signaling.
-        await fake_redis._eval_arrival_event.wait()
-        fake_redis._eval_release_event.set()
         res_a, res_b = await asyncio.gather(task_a, task_b)
-
-    # Reset barrier for any later tests.
-    fake_redis.eval_barrier_target = None
 
     statuses = sorted([res_a.status_code, res_b.status_code])
     assert statuses == [200, 200], (
@@ -317,18 +335,18 @@ async def test_concurrent_refresh_one_winner_one_grace(session_factory, fake_red
     )
     winner_jti = decoded_jtis[0]
     assert winner_jti != old_jti
-    assert f"auth:session:{winner_jti}" in fake_redis._kv
-    # Grace key for old_jti is alive.
-    assert f"auth:session:grace:{old_jti}" in fake_redis._kv
-    # Old primary is gone.
-    assert f"auth:session:{old_jti}" not in fake_redis._kv
+    assert state_db._validate(winner_jti) is not None
+    # old_jti is graced.
+    assert state_db._grace(old_jti) is not None
+    # old_jti is no longer the head.
+    assert state_db._validate(old_jti) is None
 
 
 # ── 3. Audit shape on the cross-tab race ─────────────────────────────────────
 
 
 async def test_concurrent_refresh_emits_one_rotated_and_one_grace_accept(
-    session_factory, fake_redis
+    session_factory, rotate_barrier
 ):
     """The race in the previous test must emit BOTH audit events:
     one ``auth.session.rotated`` (winner) AND one
@@ -340,8 +358,6 @@ async def test_concurrent_refresh_emits_one_rotated_and_one_grace_accept(
         token = _login(client)
     old_jti, sid = decode_refresh_jti_sid(token)
 
-    fake_redis.eval_barrier_target = 2
-
     async with _httpx_app_client(app) as ac:
         set_refresh_cookie(ac, token)
 
@@ -350,11 +366,7 @@ async def test_concurrent_refresh_emits_one_rotated_and_one_grace_accept(
 
         task_a = asyncio.create_task(_do_refresh())
         task_b = asyncio.create_task(_do_refresh())
-        await fake_redis._eval_arrival_event.wait()
-        fake_redis._eval_release_event.set()
         await asyncio.gather(task_a, task_b)
-
-    fake_redis.eval_barrier_target = None
 
     rotated = await _list_audit(session_factory, "auth.session.rotated")
     grace = await _list_audit(session_factory, "auth.session.grace_accept")
@@ -369,7 +381,7 @@ async def test_concurrent_refresh_emits_one_rotated_and_one_grace_accept(
 
 
 async def test_verify_accepts_grace_ticket_when_family_alive(
-    session_factory, fake_redis
+    session_factory
 ):
     """``/verify`` mirrors ``/refresh`` grace fallback (spec §5.2)."""
     await _seed_user(session_factory)
@@ -378,13 +390,13 @@ async def test_verify_accepts_grace_ticket_when_family_alive(
         token = _login(client)
         old_jti, sid = decode_refresh_jti_sid(token)
 
-        # Rotate once to land the grace key.
+        # Rotate once so old_jti is graced.
         set_refresh_cookie(client, token)
         r1 = client.post("/api/v1/auth/refresh")
         assert r1.status_code == 200
-        assert f"auth:session:grace:{old_jti}" in fake_redis._kv
+        assert state_db._grace(old_jti) is not None
 
-        # /verify with the OLD cookie — primary gone, grace alive, family alive.
+        # /verify with the OLD cookie — not the head, graced, family alive.
         set_refresh_cookie(client, token)
         res = client.post("/api/v1/auth/verify")
     assert res.status_code == 200, res.text
@@ -396,10 +408,10 @@ async def test_verify_accepts_grace_ticket_when_family_alive(
 
 
 async def test_verify_rejects_grace_ticket_when_family_deleted(
-    session_factory, fake_redis
+    session_factory
 ):
-    """Grace key alive BUT the family set has been deleted (concurrent
-    logout) — ``/verify`` must reject. Without the family-set check
+    """Inside the grace window BUT the family has been deleted (concurrent
+    logout) — ``/verify`` must reject. Without the family check
     ``/verify`` would accept while ``/refresh`` would reject — exactly
     the inconsistency the architect called out."""
     await _seed_user(session_factory)
@@ -412,8 +424,8 @@ async def test_verify_rejects_grace_ticket_when_family_deleted(
         r1 = client.post("/api/v1/auth/refresh")
         assert r1.status_code == 200
 
-        # Simulate concurrent logout: wipe the family set.
-        del fake_redis._sets[f"auth:session:by_sid:{sid}"]
+        # Simulate concurrent logout: revoke the family.
+        state_db._revoke_family(sid)
 
         set_refresh_cookie(client, token)
         res = client.post("/api/v1/auth/verify")
@@ -424,10 +436,10 @@ async def test_verify_rejects_grace_ticket_when_family_deleted(
 
 
 async def test_refresh_grace_branch_rejects_when_family_deleted(
-    session_factory, fake_redis
+    session_factory
 ):
     """Architect P1.1 — even within the 30s grace window, if logout has
-    deleted the family set the grace branch must reject. Replay-after-
+    deleted the family the grace branch must reject. Replay-after-
     logout class."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
@@ -435,14 +447,14 @@ async def test_refresh_grace_branch_rejects_when_family_deleted(
         token = _login(client)
         old_jti, sid = decode_refresh_jti_sid(token)
 
-        # Rotate so old_jti has only a grace key.
+        # Rotate so old_jti is only graced.
         set_refresh_cookie(client, token)
         r1 = client.post("/api/v1/auth/refresh")
         assert r1.status_code == 200
-        assert f"auth:session:grace:{old_jti}" in fake_redis._kv
+        assert state_db._grace(old_jti) is not None
 
-        # Concurrent logout: wipe the family set.
-        del fake_redis._sets[f"auth:session:by_sid:{sid}"]
+        # Concurrent logout: revoke the family.
+        state_db._revoke_family(sid)
 
         set_refresh_cookie(client, token)
         res = client.post("/api/v1/auth/refresh")
@@ -454,12 +466,14 @@ async def test_refresh_grace_branch_rejects_when_family_deleted(
 
 
 async def test_refresh_grace_branch_rejects_on_sid_mismatch(
-    session_factory, fake_redis
+    session_factory, monkeypatch
 ):
     """Defence against an attacker minting a JWT with someone else's
-    jti + their own sid. The grace row's stored sid must match the
+    jti + their own sid. The graced jti's stored sid must match the
     JWT's sid claim."""
-    await _seed_user(session_factory)
+    seeded = await _seed_user(session_factory)
+    recorder = _LogRecorder()
+    monkeypatch.setattr(auth_module, "_LOGGER", recorder)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         token = _login(client)
@@ -468,25 +482,32 @@ async def test_refresh_grace_branch_rejects_on_sid_mismatch(
         set_refresh_cookie(client, token)
         r1 = client.post("/api/v1/auth/refresh")
         assert r1.status_code == 200
-        # Corrupt the grace row so its sid mismatches the JWT's sid.
-        fake_redis._kv[f"auth:session:grace:{old_jti}"] = json.dumps(
-            {"user_id": 1, "sid": "deadbeef-not-the-real-sid", "successor_jti": "x"}
+        # A JWT with the graced jti but the sid of ANOTHER live family, so
+        # the grace branch's family check passes and only the binding
+        # check can reject.
+        state_db._issue("other-family-jti", "deadbeef-not-the-real-sid", seeded["user_id"], 3600)
+        token, _, _ = create_refresh_token(
+            seeded["user_id"], sid="deadbeef-not-the-real-sid", jti=old_jti
         )
 
         set_refresh_cookie(client, token)
         res = client.post("/api/v1/auth/refresh")
     assert res.status_code == 401
+    reasons = [
+        ev["reason"] for ev in recorder.events if ev.get("event") == "auth.refresh.rejected"
+    ]
+    assert reasons == ["row_binding_mismatch"], reasons
 
 
 # ── 8. jti_collision: forced single-collision RNG retries and succeeds ──────
 
 
 async def test_jti_collision_retries_and_succeeds(
-    session_factory, fake_redis, monkeypatch
+    session_factory, monkeypatch
 ):
     """Forced-collision RNG returns the SAME jti for two successive calls.
-    First Lua call returns ``jti_collision`` (the NX guard fires because
-    that jti is already a live primary). Router regenerates and the
+    First rotate call returns ``jti_collision`` (the member insert hits
+    the primary key because that jti is already a member). Router regenerates and the
     second attempt succeeds. Audit ``auth.session.rotated`` emitted ONCE.
 
     We rig the collision by patching ``secrets.token_urlsafe`` inside
@@ -497,7 +518,7 @@ async def test_jti_collision_retries_and_succeeds(
 
     real_token_urlsafe = _secrets.token_urlsafe
     # First call to create_refresh_token returns the colliding jti
-    # (first Lua attempt -> jti_collision). Second call gets a fresh
+    # (first rotate attempt -> jti_collision). Second call gets a fresh
     # value from the real RNG so the retry succeeds.
     sequence = iter(["collide-with-existing-primary"])
 
@@ -512,11 +533,9 @@ async def test_jti_collision_retries_and_succeeds(
     with TestClient(app) as client:
         token = _login(client)
 
-    # Seed a primary key that will collide with the first patched jti
-    # we hand to the rotate call.
-    fake_redis._kv["auth:session:collide-with-existing-primary"] = json.dumps(
-        {"user_id": 999999, "sid": "unrelated"}
-    )
+    # Seed a member that will collide with the first patched jti we hand
+    # to the rotate call.
+    state_db._issue("collide-with-existing-primary", "unrelated", 999999, 3600)
 
     monkeypatch.setattr(
         "app.security.secrets.token_urlsafe", _patched_token_urlsafe
@@ -538,7 +557,7 @@ async def test_jti_collision_retries_and_succeeds(
 
 
 async def test_jti_collision_double_failure_returns_503(
-    session_factory, fake_redis, monkeypatch
+    session_factory, monkeypatch
 ):
     """If the RNG collides on BOTH attempts the router returns 503 and
     emits ``auth.session.rotated.failed`` exactly once."""
@@ -551,9 +570,7 @@ async def test_jti_collision_double_failure_returns_503(
     with TestClient(app) as client:
         token = _login(client)
 
-    fake_redis._kv["auth:session:collide-with-existing-primary"] = json.dumps(
-        {"user_id": 999999, "sid": "unrelated"}
-    )
+    state_db._issue("collide-with-existing-primary", "unrelated", 999999, 3600)
 
     monkeypatch.setattr(
         "app.security.secrets.token_urlsafe", _always_collide
@@ -575,11 +592,11 @@ async def test_jti_collision_double_failure_returns_503(
 
 
 async def test_refresh_direct_grace_path_emits_catchup_cookie_and_audit(
-    session_factory, fake_redis
+    session_factory
 ):
     """The "boring" cross-tab race: tab A rotates first, tab B's
     ``/refresh`` arrives later still carrying the old cookie. The
-    primary is already gone, the grace key is alive, the family set
+    old jti is already rotated out and graced, the family
     is alive — the validator hands us ``redis_state == "grace"``.
 
     2026-05-19 catch-up fix: the router now emits a catch-up
@@ -605,7 +622,7 @@ async def test_refresh_direct_grace_path_emits_catchup_cookie_and_audit(
         winner_token = _refresh_token_from_set_cookie(winner_raw)
         winner_jti, _ = decode_refresh_jti_sid(winner_token)
 
-        # At this point primary {old_jti} is gone, grace alive, family alive.
+        # At this point old_jti is rotated out, graced, family alive.
         # Tab B replays the old cookie.
         set_refresh_cookie(client, token)
         res = client.post("/api/v1/auth/refresh")
@@ -619,7 +636,7 @@ async def test_refresh_direct_grace_path_emits_catchup_cookie_and_audit(
     catchup_jti, catchup_sid = decode_refresh_jti_sid(catchup_token)
     assert catchup_sid == sid
     # Critical: the catch-up cookie points at the WINNER's successor
-    # jti — the live primary in Redis — not a freshly-minted random.
+    # jti — the live head — not a freshly-minted random.
     assert catchup_jti == winner_jti, (
         f"catch-up cookie must point at winner's successor; "
         f"got {catchup_jti!r}, expected {winner_jti!r}"

@@ -13,7 +13,7 @@ that has left ``pending`` is never run again.
 ``agent:auto`` on a ``write`` tool over MCP stages and then calls the very same
 ``confirm`` in the same request. There is no second execute path.
 
-Every write bucket fails CLOSED: no Redis client, or any Redis error, is
+Every write bucket fails CLOSED: no store connection, or any store error, is
 ``limits_unavailable`` (503), never an unmetered write.
 
 Known ceiling: services commit internally, so the re-preview and the execute

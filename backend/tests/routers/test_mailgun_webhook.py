@@ -17,9 +17,8 @@ POST /api/v1/webhooks/mailgun — covers the required matrix (spec
 - ``v:broadcast_id`` arrives as a STRING and is parsed.
 
 Signatures are computed with the same HMAC formula the verifier uses. No
-real HTTP to Mailgun; Redis is unconfigured in tests so the replay-token
-helper fails open (every token is first-sight) and precedence is what makes
-duplicates idempotent.
+real HTTP to Mailgun; each test uses a fresh token (the used_tokens table is
+cleared per test), and precedence is what makes duplicates idempotent.
 """
 from __future__ import annotations
 
@@ -462,3 +461,24 @@ async def test_handler_never_logs_raw_email(client, session_factory, monkeypatch
     for rec in captured:
         for value in rec.values():
             assert "secret@person.io" not in str(value)
+
+
+@pytest.mark.asyncio
+async def test_replay_marker_outlives_a_future_timestamp_window(client, session_factory):
+    """A signed event stamped `tolerance` s in the future stays acceptable for
+    2 x tolerance; its replay marker must last at least that long."""
+    from app import state_db
+    from tests.conftest import seconds_until
+
+    tol = app_settings.mailgun_webhook_timestamp_tolerance_s
+    bid, _rid = await _seed(session_factory)
+    resp = await client.post(
+        "/api/v1/webhooks/mailgun",
+        json=_body(
+            _event_data(event="delivered", broadcast_id=str(bid)),
+            timestamp=str(int(time.time()) + tol),
+        ),
+    )
+    assert resp.status_code == 200
+    left = seconds_until(state_db._U.c.expires_at, state_db._U.c.scope == "mailgun_webhook")
+    assert left >= 2 * tol

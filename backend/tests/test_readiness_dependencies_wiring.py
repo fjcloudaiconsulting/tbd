@@ -119,26 +119,8 @@ def test_s1_ci_asserts_the_endpoint_by_parsing_json_not_grepping():
         "the assertion must PARSE the response body. A grep can be satisfied "
         "by a comment mentioning the key."
     )
-    for pinned in ('d["status"]', '"ok"', '"disabled"', '"database"'):
+    for pinned in ('d["status"]', '"ok"', '"database"'):
         assert pinned in run, f"assertion does not pin {pinned}: {run}"
-
-
-def test_s2_migration_checks_still_has_no_redis():
-    """S2 — the CI branch under test is 'Redis genuinely absent'.
-
-    If a future change adds ``REDIS_URL`` or a Redis service to this job, the
-    step above silently stops testing the unconfigured branch and starts
-    testing the connected one, while still passing. That is the whole reason
-    the assertion pins ``redis == "disabled"``.
-    """
-    job = _migrations_job()
-    assert "REDIS_URL" not in (job.get("env") or {}), (
-        "Migration Checks now sets REDIS_URL, so it no longer exercises the "
-        "unconfigured-Redis branch; update the assertion deliberately."
-    )
-    assert "redis" not in (job.get("services") or {}), (
-        "Migration Checks now runs a Redis service; same problem."
-    )
 
 
 def test_s3_nginx_routes_the_endpoint_exactly():
@@ -160,11 +142,11 @@ def test_s3_nginx_routes_the_endpoint_exactly():
 
 
 def test_s6_smoke_test_checks_the_endpoint_and_no_longer_lies_about_ready():
-    """S6 — the post-deploy gate must cover Redis, and must stop claiming
-    ``/ready`` already does.
+    """S6 — the post-deploy gate must check the dependency endpoint, and
+    must stop claiming ``/ready`` covers more than the database.
 
-    That comment was the only place the Redis check was documented on
-    2026-08-19, and the script passed a deploy on which login was 100% broken.
+    A comment once claimed ``/ready`` covered a dependency it did not, and the
+    script passed a deploy on which login was 100% broken.
     """
     script = _artifact("scripts/smoke-test.sh").read_text()
 
@@ -189,7 +171,8 @@ def test_s6_smoke_test_checks_the_endpoint_and_no_longer_lies_about_ready():
     assert surface, "could not find the /ready entry in smoke-test.sh's surface list"
     for line in surface:
         assert "redis" not in line.lower(), (
-            "the surface list still claims /ready covers Redis. It does not: "
+            "the surface list still claims /ready covers Redis. Redis is gone, and "
+            "/ready covers the database only: "
             f"it runs SELECT 1 and nothing else. {line!r}"
         )
 
@@ -201,4 +184,4 @@ def test_s6_smoke_test_checks_the_endpoint_and_no_longer_lies_about_ready():
     assert deps_surface, (
         f"{ENDPOINT} is checked but missing from the header surface list"
     )
-    assert any("redis" in line.lower() for line in deps_surface), deps_surface
+    assert not any("redis" in line.lower() for line in deps_surface), deps_surface

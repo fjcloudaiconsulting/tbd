@@ -486,7 +486,7 @@ export default async function DocsPage() {
               When something feels off (slow loads, missing data,
               dashboard not updating), superadmins can check the Admin
               dashboard&#39;s System health card. It reports the live
-              status of the database and Redis, including latency.
+              status of the database, including latency.
               Failures there usually explain whatever the rest of the
               app is doing.
             </p>
@@ -734,7 +734,7 @@ export default async function DocsPage() {
             <p>
               The Admin area is the platform-ops hub, visible only to
               users with platform permissions. The header summarizes
-              live database and Redis health; the totals strip tracks
+              live database health; the totals strip tracks
               orgs, users, active subscriptions, and recent signups. The
               tiles below open the Organizations browser, the Audit log,
               and the Roles editor. Most destructive actions

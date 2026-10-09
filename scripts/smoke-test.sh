@@ -9,16 +9,15 @@
 # Surface (intentionally minimal — full E2E is project_functional_tests.md):
 #   1. GET  /health                     — liveness
 #   2. GET  /ready                      — rotation readiness (DATABASE only)
-#   3. GET  /health/dependencies        — per-dependency: DB AND Redis
+#   3. GET  /health/dependencies        — per-dependency truth
 #   4. POST /api/v1/auth/login          — authenticated round-trip
 #   5. GET  /api/v1/categories          — one authenticated read
 #
-# ⚠ Line 2 used to claim /ready covered "DB + Redis reachable". It never
-# did — it runs SELECT 1 and nothing else. On 2026-08-19 that comment was
-# the only place the Redis check was documented, and this script passed a
-# deploy on which no user could log in. /health/dependencies (TBD-413) is
-# the check that actually covers Redis; /ready stays database-only on
-# purpose, because it is what the platform pulls replicas out of rotation on.
+# ⚠ /ready runs SELECT 1 and nothing else. On 2026-08-19 this script passed
+# a deploy on which no user could log in (the session store, then Valkey,
+# was down). /health/dependencies (TBD-413) is the per-dependency check;
+# /ready stays database-only on purpose, because it is what the platform
+# pulls replicas out of rotation on.
 #
 # Inputs (env vars):
 #   SMOKE_BASE_URL     — public URL, e.g. https://app.thebetterdecision.com
@@ -127,8 +126,7 @@ echo
 check_status "GET /health"  200 GET "/health"  || true
 check_status "GET /ready"   200 GET "/ready"   || true
 # TBD-413: the check that would have caught the 2026-08-19 outage.
-# 503 here means a required dependency (database or Redis) is unusable,
-# which for Redis means login is 100% broken however green /ready looks.
+# 503 here means a required dependency is unusable.
 check_status "GET /health/dependencies" 200 GET "/health/dependencies" || true
 
 # Login. Verifies three things end-to-end:

@@ -777,7 +777,7 @@ async def test_fa2_auto_re_runs_the_gates_at_confirm(factory, w, scratch):
 
 async def test_fa7_auto_budget_exhausted_is_429_never_a_silent_preview(factory, w):
     """FENCE F-A7. Wrong implementations: falling back to a pending preview
-    when the auto budget is spent; failing open when Redis is down (see the
+    when the auto budget is spent; failing open when the budget store is down (see the
     fail-closed test)."""
     a = w["A"]
     _seed_bucket(f"agent:tok:{a['t1']}:auto:day", 99)

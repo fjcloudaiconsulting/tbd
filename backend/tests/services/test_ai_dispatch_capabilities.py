@@ -116,14 +116,6 @@ def _set_ai_key(monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
-def _stub_redis(monkeypatch):
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client",
-        lambda: None,
-    )
-
-
 @pytest_asyncio.fixture
 async def org(db: AsyncSession) -> Organization:
     org = Organization(name="Acme", billing_cycle_day=1)

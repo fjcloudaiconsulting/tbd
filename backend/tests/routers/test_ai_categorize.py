@@ -97,15 +97,6 @@ def _set_ai_key(monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
-def _stub_redis(monkeypatch):
-    """Redis disabled in tests; the dispatch soft-cap path tolerates None."""
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client",
-        lambda: None,
-    )
-
-
 def _make_app(session_factory, resolver):
     app = FastAPI()
 

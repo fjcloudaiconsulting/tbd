@@ -5,7 +5,6 @@
 x-backend-env: &backend-env
   APP_ENV: production
   DATABASE_URL: mysql+aiomysql://tbd:smoke@mysql:3306/tbd
-  REDIS_URL: redis://valkey:6379/0
   JWT_SECRET_KEY: smoke-jwt-key-not-a-real-secret-0000000000
   API_TOKEN_HMAC_KEY: smoke-pat-key-not-a-real-secret-11111111111
 
@@ -23,14 +22,6 @@ services:
       timeout: 5s
       retries: 60
 
-  valkey:
-    image: valkey/valkey:8.1.10-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
-    healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-
   # One-shot, profile migrate: `up --wait` never sees an exited service.
   migrations:
     image: ${IMAGE_PREFIX}/migrations:${TAG}
@@ -38,16 +29,12 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-      valkey:
-        condition: service_healthy
     environment: *backend-env
 
   backend:
     image: ${IMAGE_PREFIX}/backend:${TAG}
     depends_on:
       mysql:
-        condition: service_healthy
-      valkey:
         condition: service_healthy
     environment: *backend-env
     ports:

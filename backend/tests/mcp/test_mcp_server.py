@@ -1,7 +1,7 @@
 """TBD-561: the MCP server component (``app.mcp_main``).
 
 Driven over HTTP through the REAL ``mcp_main.app`` (httpx ASGITransport) on a
-file-backed SQLite and the suite's fake Redis, so every request takes the path
+file-backed SQLite and the suite's SQLite state engine, so every request takes the path
 production takes: IP limit, agent-token auth, the entitlement door, JSON-RPC
 dispatch, then ``registry.invoke`` with its gates and meter admission.
 
@@ -461,7 +461,7 @@ async def test_a2_limits_db_down_is_503_on_the_first_check(client, w, limits_db_
         assert r.json()["error"]["code"] == mcp_main.UNAVAILABLE
 
 
-async def test_gate_6_is_a_no_op_in_app(factory, w, _autouse_fake_redis):
+async def test_gate_6_is_a_no_op_in_app(factory, w):
     """GUARD: the in-app channel carries no token, so gate 6 never refuses it
     (its bounds are the turn meter and the chat limits)."""
     async with factory() as db:

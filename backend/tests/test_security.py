@@ -63,7 +63,7 @@ def test_refresh_token_preserves_original_session_created_at() -> None:
     assert payload["sub"] == "5"
     assert payload["session_created_at"] == session_start.timestamp()
     # PR 2: every refresh JWT carries jti + sid; both stamped on the
-    # token AND surfaced from the helper for the caller's Redis write.
+    # token AND surfaced from the helper for the caller's session write.
     assert payload["jti"] == jti
     assert payload["sid"] == sid
 

@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.subscription import Subscription, SubscriptionStatus
 from app.models.user import Organization, User
-from app.redis_client import get_client as get_redis_client
 
 
 # Short enough that a dead dependency can't gate the page, long enough
@@ -40,22 +39,6 @@ async def _probe_db(db: AsyncSession) -> dict[str, Any]:
     except Exception as exc:
         # Truncate any driver-side error — we never want a stack trace
         # or credential fragment leaking into the response body.
-        return {"ok": False, "error": type(exc).__name__}
-    latency_ms = round((time.perf_counter() - start) * 1000, 1)
-    return {"ok": True, "latency_ms": latency_ms}
-
-
-async def _probe_redis() -> dict[str, Any]:
-    """PING Redis if configured; report `not_configured` otherwise."""
-    client = get_redis_client()
-    if client is None:
-        return {"ok": False, "error": "not_configured"}
-    start = time.perf_counter()
-    try:
-        await asyncio.wait_for(client.ping(), timeout=PROBE_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        return {"ok": False, "error": "timeout"}
-    except Exception as exc:
         return {"ok": False, "error": type(exc).__name__}
     latency_ms = round((time.perf_counter() - start) * 1000, 1)
     return {"ok": True, "latency_ms": latency_ms}
@@ -91,13 +74,9 @@ async def build_dashboard_payload(db: AsyncSession) -> dict[str, Any]:
         .where(User.created_at >= seven_days_ago)
     )
 
-    # Probes CAN run concurrently: _probe_db touches the shared session
-    # but _probe_redis uses an independent Redis client. Gathering only
-    # these two does not violate the AsyncSession single-task rule.
-    # Each coroutine catches its own exceptions so one hanging dependency
-    # can't tank the whole response — at worst the corresponding cell
-    # renders `ok: false`.
-    db_health, redis_health = await asyncio.gather(_probe_db(db), _probe_redis())
+    # The probe catches its own exceptions, so a hanging database renders
+    # `ok: false` instead of failing the whole response.
+    db_health = await _probe_db(db)
 
     return {
         "kpis": {
@@ -108,6 +87,5 @@ async def build_dashboard_payload(db: AsyncSession) -> dict[str, Any]:
         },
         "health": {
             "db": db_health,
-            "redis": redis_health,
         },
     }

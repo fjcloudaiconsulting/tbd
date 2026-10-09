@@ -6,7 +6,7 @@ Pins the ``call_llm`` chokepoint:
 - Missing routing raises ``NoRoutingConfigured``.
 - Hard cap raises ``AICapExceeded``; the adapter is NEVER called and
   NO ledger row is written for the rejected call.
-- Soft cap crossing first time -> notification dispatched + Redis
+- Soft cap crossing first time -> notification dispatched + used_tokens
   marker set; second call same period does NOT re-dispatch.
 - Adapter failure -> ledger row with success=false, error_class set,
   exception re-raised as AIDispatchFailed.
@@ -43,6 +43,7 @@ from app.models.org_ai_routing import (
     OrgAIFeatureRouting,
 )
 from app.models.user import Organization, Role, User
+from app import state_db
 from app.services import ai_dispatch
 from app.services.ai_credential_crypto import encrypt
 from app.services.ai_dispatch import (
@@ -100,16 +101,22 @@ def _set_ai_key(monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
-def _stub_redis(monkeypatch):
-    """Default: Redis disabled so the soft-cap path falls through to
-    "warn every call". Tests that care about marker behavior install
-    their own MagicMock client.
-    """
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client",
-        lambda: None,
-    )
+class _SoftCapMarkers:
+    """The ``ai_soft_cap`` used_tokens rows, queried by plain marker key."""
+
+    @staticmethod
+    def _rows() -> set[str]:
+        with state_db._engine.connect() as c:
+            return set(c.execute(select(state_db._U.c.token).where(state_db._U.c.scope == "ai_soft_cap")).scalars())
+
+    def __contains__(self, key: str) -> bool:
+        return state_db._token_hash(key) in self._rows()
+
+    def any(self) -> bool:
+        return bool(self._rows())
+
+    def count(self) -> int:
+        return len(self._rows())
 
 
 @pytest_asyncio.fixture
@@ -666,7 +673,7 @@ async def test_slow_provider_times_out_cleanly(
     assert rows[0].est_cost_cents == 0
 
 
-# ---------- soft cap notification + Redis dedupe ---------------------
+# ---------- soft cap notification + used_tokens dedupe ---------------------
 
 
 @pytest.mark.asyncio
@@ -698,20 +705,7 @@ async def test_soft_cap_dispatches_notification_once_per_period(
     )
     await db.commit()
 
-    # Fake redis client — SET NX returns True first time, False second.
-    redis_state: dict[str, str] = {}
-
-    class FakeRedis:
-        async def set(self, key, value, ex=None, nx=False):
-            if nx and key in redis_state:
-                return False
-            redis_state[key] = value
-            return True
-
-    fake = FakeRedis()
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
-    )
+    markers = _SoftCapMarkers()
 
     dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
     monkeypatch.setattr(
@@ -731,8 +725,8 @@ async def test_soft_cap_dispatches_notification_once_per_period(
         )
     # First call dispatched a notification to the org admin.
     assert dispatch_mock.await_count == 1
-    # Redis marker set.
-    assert any(k.startswith("ai_soft_cap_warned:") for k in redis_state)
+    # Marker claimed.
+    assert markers.any()
 
     # Second call same period -> no new notification.
     with patch(
@@ -778,19 +772,6 @@ async def test_soft_cap_notification_failure_does_not_break_dispatch(
         )
     )
     await db.commit()
-
-    redis_state: dict[str, str] = {}
-
-    class FakeRedis:
-        async def set(self, key, value, ex=None, nx=False):
-            if nx and key in redis_state:
-                return False
-            redis_state[key] = value
-            return True
-
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client", lambda: FakeRedis()
-    )
 
     boom = AsyncMock(side_effect=RuntimeError("in-app row write failed"))
     monkeypatch.setattr(
@@ -859,19 +840,7 @@ async def test_soft_cap_crossing_warns_on_boundary_call(
     )
     await db.commit()
 
-    redis_state: dict[str, str] = {}
-
-    class FakeRedis:
-        async def set(self, key, value, ex=None, nx=False):
-            if nx and key in redis_state:
-                return False
-            redis_state[key] = value
-            return True
-
-    fake = FakeRedis()
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
-    )
+    markers = _SoftCapMarkers()
 
     dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
     monkeypatch.setattr(
@@ -898,8 +867,8 @@ async def test_soft_cap_crossing_warns_on_boundary_call(
         )
     # Boundary call dispatched the warning exactly once.
     assert dispatch_mock.await_count == 1
-    # Redis marker present after the crossing call.
-    assert any(k.startswith("ai_soft_cap_warned:") for k in redis_state)
+    # Marker present after the crossing call.
+    assert markers.any()
 
     # Make a follow-up call costing 5 cents (cost_before=110,
     # cost_after=115, both >= soft_cap). Pre-call check would fire,
@@ -958,19 +927,7 @@ async def test_soft_cap_not_crossed_no_warn(
     )
     await db.commit()
 
-    redis_state: dict[str, str] = {}
-
-    class FakeRedis:
-        async def set(self, key, value, ex=None, nx=False):
-            if nx and key in redis_state:
-                return False
-            redis_state[key] = value
-            return True
-
-    fake = FakeRedis()
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
-    )
+    markers = _SoftCapMarkers()
 
     dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
     monkeypatch.setattr(
@@ -994,7 +951,7 @@ async def test_soft_cap_not_crossed_no_warn(
             request_payload={"messages": []},
         )
     assert dispatch_mock.await_count == 0
-    assert not any(k.startswith("ai_soft_cap_warned:") for k in redis_state)
+    assert not markers.any()
 
 
 @pytest.mark.asyncio
@@ -1007,7 +964,7 @@ async def test_already_above_soft_cap_no_dupe_warn(
     monkeypatch,
 ):
     """If pre-existing usage is already past the soft cap, the pre-call
-    check fires once and sets the Redis marker. The post-write check
+    check fires once and claims the used_tokens marker. The post-write check
     on the SAME call must not re-dispatch because the boundary
     condition (cost_before < soft_cap) is false.
     """
@@ -1038,19 +995,7 @@ async def test_already_above_soft_cap_no_dupe_warn(
     )
     await db.commit()
 
-    redis_state: dict[str, str] = {}
-
-    class FakeRedis:
-        async def set(self, key, value, ex=None, nx=False):
-            if nx and key in redis_state:
-                return False
-            redis_state[key] = value
-            return True
-
-    fake = FakeRedis()
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
-    )
+    markers = _SoftCapMarkers()
 
     dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
     monkeypatch.setattr(
@@ -1259,7 +1204,7 @@ async def test_soft_warning_marker_is_default_when_only_hard_cap_is_feature_spec
         (300 > 200 default-hard, so default-hard wins for hard; default
         soft=100 wins for soft).
 
-    The soft cap that fires is the org-wide default (100). The Redis
+    The soft cap that fires is the org-wide default (100). The used_tokens
     marker MUST be ``__default__`` so the warning is org-wide and a
     second crossing on a different feature in the same period does
     NOT re-dispatch.
@@ -1301,19 +1246,7 @@ async def test_soft_warning_marker_is_default_when_only_hard_cap_is_feature_spec
     )
     await db.commit()
 
-    redis_state: dict[str, str] = {}
-
-    class FakeRedis:
-        async def set(self, key, value, ex=None, nx=False):
-            if nx and key in redis_state:
-                return False
-            redis_state[key] = value
-            return True
-
-    fake = FakeRedis()
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
-    )
+    markers = _SoftCapMarkers()
 
     dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
     monkeypatch.setattr(
@@ -1341,13 +1274,13 @@ async def test_soft_warning_marker_is_default_when_only_hard_cap_is_feature_spec
     # The marker must be org-wide (``__default__``), NOT feature-specific.
     period = ai_dispatch._current_period()
     expected_key = f"ai_soft_cap_warned:{org.id}:__default__:{period}"
-    assert expected_key in redis_state, (
-        f"expected org-wide marker, got keys: {sorted(redis_state)}"
+    assert expected_key in markers, (
+        f"expected org-wide marker, got keys: {markers.count()}"
     )
     feature_specific_key = (
         f"ai_soft_cap_warned:{org.id}:categorize_transactions:{period}"
     )
-    assert feature_specific_key not in redis_state, (
+    assert feature_specific_key not in markers, (
         "feature-specific marker leaked despite feature row contributing "
         "only a hard cap"
     )
@@ -1432,19 +1365,7 @@ async def test_soft_warning_marker_is_feature_specific_when_feature_has_own_soft
     )
     await db.commit()
 
-    redis_state: dict[str, str] = {}
-
-    class FakeRedis:
-        async def set(self, key, value, ex=None, nx=False):
-            if nx and key in redis_state:
-                return False
-            redis_state[key] = value
-            return True
-
-    fake = FakeRedis()
-    monkeypatch.setattr(
-        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
-    )
+    markers = _SoftCapMarkers()
 
     dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
     monkeypatch.setattr(
@@ -1474,10 +1395,10 @@ async def test_soft_warning_marker_is_feature_specific_when_feature_has_own_soft
         f"ai_soft_cap_warned:{org.id}:categorize_transactions:{period}"
     )
     default_marker = f"ai_soft_cap_warned:{org.id}:__default__:{period}"
-    assert feature_key_marker in redis_state, (
-        f"expected feature-scoped marker, got keys: {sorted(redis_state)}"
+    assert feature_key_marker in markers, (
+        f"expected feature-scoped marker, got keys: {markers.count()}"
     )
-    assert default_marker not in redis_state, (
+    assert default_marker not in markers, (
         "default marker leaked despite feature row supplying its own soft cap"
     )
 
@@ -1516,7 +1437,7 @@ async def test_soft_warning_marker_is_feature_specific_when_feature_has_own_soft
         )
     # NEW notification fired — different marker scope (__default__).
     assert dispatch_mock.await_count == 2
-    assert default_marker in redis_state
+    assert default_marker in markers
 
 
 # ---------- remaining_hard_cap_cents helper ---------------------------

@@ -2,7 +2,7 @@
 
 Production trace at 2026-05-19T10:33–10:50 showed
 ``redis_primary_and_grace_missing`` firing repeatedly for the same sid,
-with the browser sending old jtis that had been rotated past in Redis.
+with the browser sending old jtis that had been rotated past in the session store.
 The two grace branches in ``/refresh`` returned ``TokenResponse``
 without emitting ``Set-Cookie``, so when a cross-tab rotation race
 made the browser end up on the grace branch, the cookie was never
@@ -12,7 +12,7 @@ and forced a logout.
 
 The fix: both grace branches now mint a refresh JWT for the
 ``successor_jti`` recorded in the grace row and emit Set-Cookie
-without writing Redis. Browser catches up to the live primary; the
+without writing the store. Browser catches up to the live primary; the
 30s lockout class is eliminated.
 
 These tests pin the seven contracts required by the architect:
@@ -22,14 +22,13 @@ These tests pin the seven contracts required by the architect:
      same successor jti and sid.
   4. The catch-up-issued cookie validates against the primary on the
      follow-up /refresh.
-  5. No Redis write happens during catch-up issuance.
+  5. No store write happens during catch-up issuance.
   6. Missing/dead successor_jti logs ``catchup_successor_unavailable``
      and fails closed with no cookie emitted.
   7. /verify still NEVER emits Set-Cookie, even on the grace path.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import patch
@@ -48,6 +47,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app import state_db
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_session_factory
@@ -168,41 +168,20 @@ def _seed_session_state(
     sid: str,
     ttl_seconds: int = 30 * 86400,
 ) -> None:
-    """Seed the autouse fake Redis so the validator sees:
-    - primary key for ``old_jti`` MISSING (rotated past),
-    - grace key for ``old_jti`` ALIVE with ``successor_jti`` payload,
-    - primary key for ``successor_jti`` ALIVE,
-    - family set for ``sid`` alive and contains both jtis.
+    """Seed the state engine so the validator sees:
+    - ``old_jti`` rotated past (no longer the head) but still graced,
+    - ``successor_jti`` the live head,
+    - both jtis members of the family for ``sid``.
     """
-    from app import redis_client as rc
-
-    client = rc.get_client()
-    assert client is not None, "autouse fake-redis fixture missing"
-
-    # Primary for successor jti (the winner's row).
-    primary_payload = json.dumps(
-        {"user_id": user_id, "sid": sid}, separators=(",", ":")
-    )
-    client._kv[f"auth:session:{successor_jti}"] = primary_payload
-    # Old jti has NO primary (rotation deleted it) — leave unset.
-    # Grace key for the old jti, points at the winning successor jti.
-    grace_payload = json.dumps(
-        {"user_id": user_id, "sid": sid, "successor_jti": successor_jti},
-        separators=(",", ":"),
-    )
-    client._kv[f"auth:session:grace:{old_jti}"] = grace_payload
-    # Family set: both jtis are members (the Lua winner adds the
-    # successor, the loser's jti was added when it was originally
-    # issued).
-    client._sets[f"auth:session:by_sid:{sid}"].add(old_jti)
-    client._sets[f"auth:session:by_sid:{sid}"].add(successor_jti)
+    state_db._issue(old_jti, sid, user_id, ttl_seconds)
+    assert state_db._rotate(old_jti, successor_jti, sid, user_id, ttl_seconds) == "ok"
 
 
 def _mint_token_for(
     user_id: int, *, jti: str, sid: str, ttl_seconds: int = 30 * 86400
 ) -> str:
     """Build a refresh JWT with a specific jti/sid (so the validation
-    chain sees the JWT's claims match the seeded Redis state)."""
+    chain sees the JWT's claims match the seeded store state)."""
     token, _, _ = create_refresh_token(
         user_id,
         ttl_seconds=ttl_seconds,
@@ -273,45 +252,39 @@ class TestGraceBranchCatchupCookie:
     async def test_already_rotated_branch_emits_setcookie_for_successor(
         self, session_factory, monkeypatch
     ) -> None:
-        """When the Lua rotation returns ``already_rotated`` and the
+        """When the rotation returns ``already_rotated`` and the
         grace re-probe succeeds, /refresh now issues Set-Cookie with
         a JWT for the grace row's successor jti."""
         from app.routers import auth as auth_module
-        from app.redis_client import SESSION_ROTATE_ALREADY_ROTATED
+        from app.state_db import SESSION_ROTATE_ALREADY_ROTATED
 
         seed = await _seed_user(session_factory)
-        # In this case the validator hits PRIMARY (not grace), so the
-        # primary key for the cookie's jti must be alive. Then the Lua
-        # rotation returns already_rotated; the handler re-probes the
-        # grace key, which carries the successor written by the winner.
+        # In this case the validator hits the HEAD path (not grace): the
+        # loser validated before the winner rotated. Then the rotation
+        # returns already_rotated; the handler re-probes the grace
+        # state, which carries the successor written by the winner.
         winner_old_jti = "winner-old-jti"
         winner_successor = "winner-successor-aa9b"
         sid = "shared-sid"
-        from app import redis_client as rc
-        client = rc.get_client()
-        client._kv[f"auth:session:{winner_old_jti}"] = json.dumps(
-            {"user_id": seed["user_id"], "sid": sid},
-            separators=(",", ":"),
+        _seed_session_state(
+            seed["user_id"],
+            old_jti=winner_old_jti,
+            successor_jti=winner_successor,
+            sid=sid,
         )
-        client._sets[f"auth:session:by_sid:{sid}"].add(winner_old_jti)
-        # Stub the Lua rotation to return already_rotated (the loser's
-        # perspective) and pre-seed the grace key for ``winner_old_jti``
-        # that the winner would have written.
-        client._kv[f"auth:session:grace:{winner_old_jti}"] = json.dumps(
-            {
-                "user_id": seed["user_id"],
-                "sid": sid,
-                "successor_jti": winner_successor,
-            },
-            separators=(",", ":"),
-        )
-        # Successor primary alive too.
-        client._kv[f"auth:session:{winner_successor}"] = json.dumps(
-            {"user_id": seed["user_id"], "sid": sid},
-            separators=(",", ":"),
-        )
-        client._sets[f"auth:session:by_sid:{sid}"].add(winner_successor)
 
+        # The loser's pre-rotation view: its jti still validated as head.
+        real_validate = state_db.session_validate
+
+        async def _validate_as_loser(jti):
+            if jti == winner_old_jti:
+                return {"user_id": seed["user_id"], "sid": sid}
+            return await real_validate(jti)
+
+        monkeypatch.setattr(state_db, "session_validate", _validate_as_loser)
+
+        # Stub the rotation to return already_rotated (the loser's
+        # perspective).
         async def _stub_rotate(user_id, old_jti, sid_, **kwargs):
             # Return signature: (new_token, new_jti, sid, lua_result)
             return ("loser-token", "loser-new-jti", sid_, SESSION_ROTATE_ALREADY_ROTATED)
@@ -334,7 +307,7 @@ class TestGraceBranchCatchupCookie:
         # The Set-Cookie's JWT must decode to ``winner_successor``,
         # NOT the loser's ``loser-new-jti``. This is the architect's
         # explicit guard against issuing a cookie for the loser's
-        # phantom jti (which has no Redis row).
+        # phantom jti (which was never stored).
         set_cookie_headers = [
             v for k, v in res.headers.items()
             if k.lower() == "set-cookie" and "refresh_token=ey" in v
@@ -479,15 +452,15 @@ class TestCatchupCookieValidatesAgainstPrimary:
             assert second_decoded["jti"] != successor_jti
 
 
-# ── 5. No Redis write during catch-up issuance ──────────────────────────
+# ── 5. No store write during catch-up issuance ──────────────────────────
 
 
-class TestNoRedisWriteOnCatchup:
+class TestNoStoreWriteOnCatchup:
     @pytest.mark.asyncio
     async def test_catchup_does_not_call_session_issue_or_rotate(
         self, session_factory, monkeypatch
     ) -> None:
-        """The catch-up helper must NOT call any Redis-writing helper.
+        """The catch-up helper must NOT call any store-writing helper.
         The winning rotation already wrote the successor primary; a
         second write here would either be redundant (best case) or
         clobber the row's TTL/data (worst case)."""
@@ -503,9 +476,9 @@ class TestNoRedisWriteOnCatchup:
         )
         token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
 
-        from app import redis_client as rc
+        rc = state_db
 
-        # Spy on the Redis-writing helpers. The grace path is read-only
+        # Spy on the store-writing helpers. The grace path is read-only
         # so neither must be called.
         write_calls: list[str] = []
 
@@ -513,8 +486,8 @@ class TestNoRedisWriteOnCatchup:
             write_calls.append("session_issue")
             return None
 
-        async def _spy_session_rotate_lua(*args, **kwargs):
-            write_calls.append("session_rotate_lua")
+        async def _spy_session_rotate(*args, **kwargs):
+            write_calls.append("session_rotate")
             return "ok"
 
         async def _spy_session_revoke_family(*args, **kwargs):
@@ -522,7 +495,7 @@ class TestNoRedisWriteOnCatchup:
             return []
 
         monkeypatch.setattr(rc, "session_issue", _spy_session_issue)
-        monkeypatch.setattr(rc, "session_rotate_lua", _spy_session_rotate_lua)
+        monkeypatch.setattr(rc, "session_rotate", _spy_session_rotate)
         monkeypatch.setattr(
             rc, "session_revoke_family", _spy_session_revoke_family
         )
@@ -535,7 +508,7 @@ class TestNoRedisWriteOnCatchup:
             )
         assert res.status_code == 200
         assert write_calls == [], (
-            f"Catch-up path must not write Redis; calls observed: "
+            f"Catch-up path must not write the store; calls observed: "
             f"{write_calls}"
         )
 
@@ -548,22 +521,26 @@ class TestMissingSuccessorFailsClosed:
     async def test_missing_successor_jti_logs_and_401s(
         self, session_factory, monkeypatch
     ) -> None:
-        """Grace row exists but doesn't carry ``successor_jti`` (data
-        corruption / future migration / handcrafted row). Helper must
+        """Grace row doesn't carry ``successor_jti`` (injected: the store
+        always returns one). Helper must
         log ``catchup_successor_unavailable`` and 401 — never emit
         Set-Cookie for an unbound jti."""
         seed = await _seed_user(session_factory)
         old_jti = "no-successor-old"
         sid = "no-successor-sid"
-        from app import redis_client as rc
-
-        client = rc.get_client()
-        # Grace key WITHOUT successor_jti.
-        client._kv[f"auth:session:grace:{old_jti}"] = json.dumps(
-            {"user_id": seed["user_id"], "sid": sid},
-            separators=(",", ":"),
+        _seed_session_state(
+            seed["user_id"],
+            old_jti=old_jti,
+            successor_jti="no-successor-live-head",
+            sid=sid,
         )
-        client._sets[f"auth:session:by_sid:{sid}"].add(old_jti)
+
+        # Grace row WITHOUT successor_jti (the store always returns one;
+        # this injects the defensive-branch input).
+        async def _grace_no_successor(jti):
+            return {"user_id": seed["user_id"], "sid": sid}
+
+        monkeypatch.setattr(state_db, "session_grace", _grace_no_successor)
         token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
 
         recorder = _LogRecorder()
@@ -600,38 +577,32 @@ class TestMissingSuccessorFailsClosed:
     async def test_successor_not_in_family_set_logs_and_401s(
         self, session_factory, monkeypatch
     ) -> None:
-        """P2 architect addition: PR #308 made family-set membership the
-        authoritative revocation contract. Successor primary row alive
-        + (user_id, sid) match but jti NOT in ``auth:session:by_sid:{sid}``
-        (corrupted/partial Redis state) must fail closed — otherwise we
-        emit a cookie the very next /refresh would 401 with
-        ``family_member_missing``."""
+        """P2 architect addition: PR #308 made family membership the
+        authoritative revocation contract. Successor row alive
+        + (user_id, sid) match but the membership probe says the jti is
+        NOT in the family (injected: corrupted/partial store state) must
+        fail closed — otherwise we emit a cookie the very next /refresh
+        would 401 with ``family_member_missing``."""
         seed = await _seed_user(session_factory)
         old_jti = "orphan-old"
         successor_jti = "orphan-successor"
         sid = "orphan-sid"
-        from app import redis_client as rc
+        _seed_session_state(
+            seed["user_id"],
+            old_jti=old_jti,
+            successor_jti=successor_jti,
+            sid=sid,
+        )
 
-        client = rc.get_client()
-        # Grace row points at successor_jti.
-        client._kv[f"auth:session:grace:{old_jti}"] = json.dumps(
-            {
-                "user_id": seed["user_id"],
-                "sid": sid,
-                "successor_jti": successor_jti,
-            },
-            separators=(",", ":"),
-        )
-        # Successor primary alive and bound to (user_id, sid)…
-        client._kv[f"auth:session:{successor_jti}"] = json.dumps(
-            {"user_id": seed["user_id"], "sid": sid},
-            separators=(",", ":"),
-        )
-        # …BUT successor_jti is NOT in the family set. Family set
-        # contains only ``old_jti`` (simulating a revocation that
-        # dropped the successor while leaving the primary row alive,
-        # or a Redis replica desync).
-        client._sets[f"auth:session:by_sid:{sid}"].add(old_jti)
+        # Membership probe: the successor is reported as NOT in the family.
+        real_member = state_db.session_family_member
+
+        async def _member_probe(sid_, jti):
+            if jti == successor_jti:
+                return False
+            return await real_member(sid_, jti)
+
+        monkeypatch.setattr(state_db, "session_family_member", _member_probe)
         token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
 
         recorder = _LogRecorder()
@@ -667,27 +638,28 @@ class TestMissingSuccessorFailsClosed:
         self, session_factory, monkeypatch
     ) -> None:
         """Grace row carries ``successor_jti`` but the successor
-        primary row is GONE (the successor was itself rotated past
-        and its 30s grace also expired — pathological chain). Helper
-        must fail closed."""
+        no longer validates (injected: the family expired between the
+        grace probe and the successor probe). Helper must fail closed."""
         seed = await _seed_user(session_factory)
         old_jti = "dead-successor-old"
         successor_jti = "dead-successor"
         sid = "dead-successor-sid"
-        from app import redis_client as rc
-
-        client = rc.get_client()
-        # Grace row points at successor_jti, but successor's primary
-        # is NOT in the kv map.
-        client._kv[f"auth:session:grace:{old_jti}"] = json.dumps(
-            {
-                "user_id": seed["user_id"],
-                "sid": sid,
-                "successor_jti": successor_jti,
-            },
-            separators=(",", ":"),
+        _seed_session_state(
+            seed["user_id"],
+            old_jti=old_jti,
+            successor_jti=successor_jti,
+            sid=sid,
         )
-        client._sets[f"auth:session:by_sid:{sid}"].add(old_jti)
+
+        # The successor no longer validates as a live head.
+        real_validate = state_db.session_validate
+
+        async def _validate_dead_successor(jti):
+            if jti == successor_jti:
+                return None
+            return await real_validate(jti)
+
+        monkeypatch.setattr(state_db, "session_validate", _validate_dead_successor)
         token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
 
         recorder = _LogRecorder()

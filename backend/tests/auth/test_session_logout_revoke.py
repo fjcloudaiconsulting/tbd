@@ -4,12 +4,12 @@ Pins every architect-emphasized risk for the logout-vs-rotation path:
 
 1. Logout-after-rotation revokes the entire family — within the 30s
    grace window, a sibling tab holding the pre-rotation cookie cannot
-   refresh successfully. The family-set delete in Round A makes any
-   subsequent /refresh see ``SISMEMBER`` return 0 (rotation Lua) or
-   ``EXISTS by_sid`` return 0 (grace branch).
-2. Concurrent logout-vs-rotation produces Lua ``session_revoked`` —
-   gated with ``asyncio.Event`` so the rotate enters the Lua body
-   AFTER logout's Round A lands.
+   refresh successfully. The family delete makes any
+   subsequent /refresh find no member (rotation) or no family (grace
+   branch).
+2. Concurrent logout-vs-rotation produces ``session_revoked`` —
+   gated with ``asyncio.Event`` so the rotate runs
+   AFTER logout's revoke lands.
 3. ``/verify`` rejects a grace ticket after logout (mirrors PR 3
    semantics on the logout side).
 4. Multi-cookie logout (rare but real after PR #211 cookie-path
@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app import state_db
 from app.database import get_db
 from app.deps import get_session_factory
 from app.models import Base
@@ -62,15 +63,10 @@ from app.security import (
     hash_password,
 )
 
-from tests.conftest import set_refresh_cookie
+from tests.conftest import set_refresh_cookie, state_family, state_jtis
 
 
 PASSWORD = "starting-password-1"
-
-
-@pytest.fixture
-def fake_redis(_autouse_fake_redis):
-    yield _autouse_fake_redis
 
 
 @pytest_asyncio.fixture
@@ -213,12 +209,12 @@ async def _httpx_app_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
 
 
 async def test_logout_after_rotation_revokes_entire_family(
-    session_factory, fake_redis
+    session_factory
 ):
-    """Login -> rotate (new_jti primary, old_jti grace). Logout with the
+    """Login -> rotate (new_jti head, old_jti graced). Logout with the
     new cookie. Old jti must NOT re-authenticate even though its grace
-    key has not yet TTL-expired — the family-set delete in Round A is
-    what closes this race (architect P1.1 + PR #301 follow-up).
+    window has not yet expired — deleting the family is what closes this
+    race (architect P1.1 + PR #301 follow-up).
     """
     seed = await _seed_user(session_factory)
     app = _make_app(session_factory)
@@ -226,7 +222,7 @@ async def test_logout_after_rotation_revokes_entire_family(
         token = _login(client)
         old_jti, sid = decode_refresh_jti_sid(token)
 
-        # Rotate so old_jti only has a grace key, new_jti is the primary.
+        # Rotate so old_jti is only graced, new_jti is the head.
         set_refresh_cookie(client, token)
         r1 = client.post("/api/v1/auth/refresh" )
         assert r1.status_code == 200
@@ -236,11 +232,10 @@ async def test_logout_after_rotation_revokes_entire_family(
         new_jti, new_sid = decode_refresh_jti_sid(new_token)
         assert new_sid == sid  # sid is stable across rotation
 
-        # Sanity: both keys + family set are alive before logout.
-        assert f"auth:session:{new_jti}" in fake_redis._kv
-        assert f"auth:session:grace:{old_jti}" in fake_redis._kv
-        assert new_jti in fake_redis._sets[f"auth:session:by_sid:{sid}"]
-        assert old_jti in fake_redis._sets[f"auth:session:by_sid:{sid}"]
+        # Sanity: new head, graced old jti and family are alive before logout.
+        assert state_db._validate(new_jti) is not None
+        assert state_db._grace(old_jti) is not None
+        assert {new_jti, old_jti} <= state_jtis(sid)
 
         # Logout using the CURRENT (rotated) cookie. Authorization header
         # carries a valid access token so audit binds to the actor.
@@ -256,14 +251,13 @@ async def test_logout_after_rotation_revokes_entire_family(
         )
         assert logout.status_code == 200, logout.text
 
-        # Family set is gone — Round A's atomic DEL.
-        assert f"auth:session:by_sid:{sid}" not in fake_redis._sets
+        # Family and every member are gone.
+        assert state_family(sid) is None
+        assert state_jtis(sid) == set()
+        assert state_db._validate(new_jti) is None
+        assert state_db._grace(old_jti) is None
 
-        # Primary + grace keys for BOTH jtis are gone too — Round B.
-        assert f"auth:session:{new_jti}" not in fake_redis._kv
-        assert f"auth:session:grace:{old_jti}" not in fake_redis._kv
-
-        # Replay the PRE-rotation cookie. Grace key is gone AND family
+        # Replay the PRE-rotation cookie. Grace is gone AND family
         # is gone, so /refresh must 401.
         set_refresh_cookie(client, token)
         replay = client.post(
@@ -273,19 +267,18 @@ async def test_logout_after_rotation_revokes_entire_family(
     assert replay.json()["detail"] == "Session has been invalidated"
 
 
-# ─── 2. Concurrent logout-vs-rotation produces Lua session_revoked ──────────
+# ─── 2. Concurrent logout-vs-rotation produces session_revoked ──────────
 
 
 async def test_concurrent_logout_vs_rotation_returns_session_revoked(
-    session_factory, fake_redis
+    session_factory, monkeypatch
 ):
-    """Two coroutines: logout + rotate. Gate the rotate Lua entry with
-    an ``asyncio.Event`` so it ONLY runs AFTER logout's Round A has
-    deleted the family set.
+    """Two coroutines: logout + rotate. Gate the rotate call with an
+    ``asyncio.Event`` so it ONLY runs AFTER logout's revoke has deleted
+    the family.
 
-    Expected: the rotate Lua returns ``session_revoked`` (its first
-    guard finds ``SISMEMBER`` = 0), the router maps to 401, NO new
-    primary key is written, NO new family member added.
+    Expected: ``session_rotate`` returns ``session_revoked`` (no live
+    family), the router maps to 401, NO new member is written.
     """
     seed = await _seed_user(session_factory)
     app = _make_app(session_factory)
@@ -293,23 +286,17 @@ async def test_concurrent_logout_vs_rotation_returns_session_revoked(
         token = _login(client)
         old_jti, sid = decode_refresh_jti_sid(token)
 
-    # Two events drive the gating:
-    #   * ``logout_done`` — set by the logout coroutine AFTER its
-    #     ``redis_client.session_revoke_family`` call returns.
-    #   * Inside the fake's ``eval`` we monkey-patch a hook that waits
-    #     for ``logout_done`` before the script body executes. That
-    #     ensures the Lua script runs after the family is gone.
+    # ``logout_done`` is set by the logout coroutine AFTER its revoke
+    # returned; the gated ``session_rotate`` waits for it. Pure event
+    # signaling — no sleeps.
     logout_done = asyncio.Event()
+    original_rotate = state_db.session_rotate
 
-    original_eval = fake_redis.eval
-
-    async def gated_eval(script, numkeys, *args):
-        # Wait until logout's Round A has landed before letting the
-        # rotate Lua proceed. Pure event signaling — no sleeps.
+    async def gated_rotate(*args, **kwargs):
         await logout_done.wait()
-        return await original_eval(script, numkeys, *args)
+        return await original_rotate(*args, **kwargs)
 
-    fake_redis.eval = gated_eval
+    monkeypatch.setattr(state_db, "session_rotate", gated_rotate)
 
     access = create_access_token(
         seed["user_id"], seed["org_id"], Role.OWNER.value
@@ -339,34 +326,26 @@ async def test_concurrent_logout_vs_rotation_returns_session_revoked(
     assert rotate_res.status_code == 401, rotate_res.text
     assert rotate_res.json()["detail"] == "Session has been invalidated"
 
-    # No successor primary was written.
-    primary_keys = [
-        k for k in fake_redis._kv if k.startswith("auth:session:")
-        and not k.startswith("auth:session:grace:")
-        and not k.startswith("auth:session:by_sid:")
-    ]
-    assert primary_keys == [], (
-        f"expected no primary keys after revoked rotation, got {primary_keys}"
-    )
-    # Family set is gone.
-    assert f"auth:session:by_sid:{sid}" not in fake_redis._sets
+    # No successor member was written; the family is gone.
+    assert state_jtis(sid) == set()
+    assert state_family(sid) is None
 
 
 # ─── 3. /verify rejects a grace ticket after logout ─────────────────────────
 
 
 async def test_verify_rejects_grace_ticket_after_logout(
-    session_factory, fake_redis
+    session_factory
 ):
     """Spec §5.2 mirror for the logout side. After logout deletes the
-    family set, /verify must reject even within the 30s grace window."""
+    family, /verify must reject even within the 30s grace window."""
     seed = await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         token = _login(client)
         old_jti, sid = decode_refresh_jti_sid(token)
 
-        # Rotate so the grace key exists for old_jti.
+        # Rotate so old_jti is graced.
         set_refresh_cookie(client, token)
         r1 = client.post("/api/v1/auth/refresh" )
         assert r1.status_code == 200
@@ -374,7 +353,7 @@ async def test_verify_rejects_grace_ticket_after_logout(
             _canonical_refresh_cookie(r1.headers)
         )
 
-        # Logout — family set deleted.
+        # Logout — family deleted.
         access = create_access_token(
             seed["user_id"], seed["org_id"], Role.OWNER.value
         )
@@ -385,9 +364,8 @@ async def test_verify_rejects_grace_ticket_after_logout(
         )
         assert logout.status_code == 200
 
-        # /verify with the PRE-rotation cookie. Grace key was deleted
-        # by Round B, but even if some grace-only edge case lingered,
-        # the family-set check in the grace branch rejects.
+        # /verify with the PRE-rotation cookie. The members are gone, and
+        # the family check in the grace branch would reject regardless.
         set_refresh_cookie(client, token)
         verify = client.post(
             "/api/v1/auth/verify"
@@ -398,7 +376,7 @@ async def test_verify_rejects_grace_ticket_after_logout(
 # ─── 4. Multi-cookie logout (two distinct sids) ─────────────────────────────
 
 
-async def test_multi_cookie_logout_revokes_each_family(session_factory, fake_redis):
+async def test_multi_cookie_logout_revokes_each_family(session_factory):
     """Browser carries two refresh cookies for two distinct ``sid``s
     (rare but real with the PR #211 cookie-path migration overlap).
     Logout must revoke BOTH families and the audit detail must reflect
@@ -411,15 +389,15 @@ async def test_multi_cookie_logout_revokes_each_family(session_factory, fake_red
 
     # Force a SEPARATE second session (different sid) by logging in
     # again after clearing the cookie context. The previous family is
-    # still alive in Redis.
+    # still alive.
     app2 = _make_app(session_factory)
     with TestClient(app2) as client2:
         token_b = _login(client2)
         jti_b, sid_b = decode_refresh_jti_sid(token_b)
 
     assert sid_a != sid_b
-    assert f"auth:session:by_sid:{sid_a}" in fake_redis._sets
-    assert f"auth:session:by_sid:{sid_b}" in fake_redis._sets
+    assert state_family(sid_a) is not None
+    assert state_family(sid_b) is not None
 
     # Hand-craft a cookie header with BOTH refresh_token values so the
     # extractor walks the raw header and decodes both.
@@ -440,8 +418,8 @@ async def test_multi_cookie_logout_revokes_each_family(session_factory, fake_red
         )
 
     assert res.status_code == 200, res.text
-    assert f"auth:session:by_sid:{sid_a}" not in fake_redis._sets
-    assert f"auth:session:by_sid:{sid_b}" not in fake_redis._sets
+    assert state_family(sid_a) is None
+    assert state_family(sid_b) is None
 
     audit = await _list_audit(session_factory, "auth.session.terminated")
     assert len(audit) == 1
@@ -453,7 +431,7 @@ async def test_multi_cookie_logout_revokes_each_family(session_factory, fake_red
 
 
 async def test_anonymous_logout_succeeds_and_writes_no_audit_row(
-    session_factory, fake_redis
+    session_factory
 ):
     """No refresh cookie at all. Logout still returns 200 and still clears
     the cookie (a no-op since none arrived) — and since TBD-353 it writes
@@ -491,7 +469,7 @@ async def test_anonymous_logout_succeeds_and_writes_no_audit_row(
 # ─── 6. Cookie present but undecodable (corrupt JWT) ────────────────────────
 
 
-async def test_corrupt_refresh_cookie_logout_still_clears(session_factory, fake_redis):
+async def test_corrupt_refresh_cookie_logout_still_clears(session_factory):
     """Cookie value is not a valid refresh JWT. Logout swallows the
     decode error, clears the cookie and returns 200.
 
@@ -522,7 +500,7 @@ async def test_corrupt_refresh_cookie_logout_still_clears(session_factory, fake_
 
 
 async def test_logout_does_not_write_sessions_invalidated_at(
-    session_factory, fake_redis
+    session_factory
 ):
     """The 2026-05-16 false-logout incident regression pin. Capture the
     user's ``sessions_invalidated_at`` before logout, run logout, assert
@@ -567,7 +545,7 @@ async def test_logout_does_not_write_sessions_invalidated_at(
 
 
 async def test_logout_audit_binds_to_actor_when_bearer_present(
-    session_factory, fake_redis
+    session_factory
 ):
     """The audit row records ``actor_user_id`` + ``actor_email`` derived
     from the Authorization bearer when present. Important so the
@@ -598,7 +576,7 @@ async def test_logout_audit_binds_to_actor_when_bearer_present(
 
 
 async def test_logout_clears_canonical_and_legacy_cookie_paths(
-    session_factory, fake_redis
+    session_factory
 ):
     """PR #211 cookie-shadow trap: even after logout, the browser may
     still carry a legacy ``Path=/api/v1/auth/refresh`` cookie. Logout
@@ -630,7 +608,7 @@ async def test_logout_clears_canonical_and_legacy_cookie_paths(
 
 
 async def test_logout_one_device_leaves_other_device_authenticated(
-    session_factory, fake_redis
+    session_factory
 ):
     """AC2 from the spec: a second device (separate session, separate
     sid) must remain authenticated after the first device logs out."""
@@ -663,9 +641,9 @@ async def test_logout_one_device_leaves_other_device_authenticated(
     assert logout.status_code == 200
 
     # Device A's family is gone, Device B's is untouched.
-    assert f"auth:session:by_sid:{sid_a}" not in fake_redis._sets
-    assert f"auth:session:by_sid:{sid_b}" in fake_redis._sets
-    assert jti_b in fake_redis._sets[f"auth:session:by_sid:{sid_b}"]
+    assert state_family(sid_a) is None
+    assert state_family(sid_b) is not None
+    assert jti_b in state_jtis(sid_b)
 
     # Device B can still rotate.
     with TestClient(app_b) as client_b:
@@ -678,37 +656,25 @@ async def test_logout_one_device_leaves_other_device_authenticated(
     assert new_raw is not None
 
 
-# ─── 9. Architect P1 (PR #308 re-review): primary-token validation must
-#       gate on family-set membership, not just primary existence. ──────────
-#
-# The logout design makes ``DEL auth:session:by_sid:{sid}`` (Round A) the
-# load-bearing revocation step. Primary keys are cleaned up later in Round
-# B. Without a membership check on the primary path, a token whose family
-# has been deleted but whose primary key is still alive (Round B in flight
-# or partially failed) would pass /verify and /refresh — defeating the
-# revocation contract.
+# ─── 9. Architect P1 (PR #308 re-review): a revoked family must not verify
+#       or refresh. ──────────────────────────────────────────────────────────
 
 
 async def test_verify_rejects_primary_when_family_set_missing(
-    session_factory, fake_redis
+    session_factory
 ):
-    """Architect P1 on PR #308. Set up: primary key for ``jti`` exists
-    and binds correctly to ``{user_id, sid}`` — but the family set has
-    been deleted (simulates the gap between logout Round A and Round B,
-    or a partial Round B failure). ``/verify`` must return 401."""
+    """Architect P1 on PR #308. The family is revoked while the cookie's
+    jti was its head. ``/verify`` must return 401."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         token = _login(client)
         jti, sid = decode_refresh_jti_sid(token)
 
-        # Sanity: family set currently contains the jti, primary key exists.
-        assert jti in fake_redis._sets[f"auth:session:by_sid:{sid}"]
-        assert f"auth:session:{jti}" in fake_redis._kv
+        # Sanity: the family holds the jti.
+        assert jti in state_jtis(sid)
 
-        # Simulate Round A: delete the family set ONLY.
-        # Primary + grace keys deliberately remain — that's the bug class.
-        del fake_redis._sets[f"auth:session:by_sid:{sid}"]
+        state_db._revoke_family(sid)
 
         set_refresh_cookie(client, token)
         verify = client.post(
@@ -719,20 +685,17 @@ async def test_verify_rejects_primary_when_family_set_missing(
 
 
 async def test_refresh_rejects_primary_when_family_set_missing(
-    session_factory, fake_redis
+    session_factory
 ):
-    """Sister regression to the /verify case. Same setup: primary key
-    alive, family set deleted. ``/refresh`` must return 401 AND must
-    NOT emit a Set-Cookie (would otherwise re-mint a session that the
-    Lua rotation guard would have rejected)."""
+    """Sister regression to the /verify case. Same setup: family revoked.
+    ``/refresh`` must return 401 AND must NOT emit a Set-Cookie."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         token = _login(client)
         jti, sid = decode_refresh_jti_sid(token)
 
-        # Round A simulation.
-        del fake_redis._sets[f"auth:session:by_sid:{sid}"]
+        state_db._revoke_family(sid)
 
         set_refresh_cookie(client, token)
         refresh = client.post(
@@ -741,82 +704,3 @@ async def test_refresh_rejects_primary_when_family_set_missing(
     assert refresh.status_code == 401, refresh.json()
     # No Set-Cookie on a rejected refresh.
     assert _canonical_refresh_cookie(refresh.headers) is None
-
-
-async def test_logout_round_a_succeeds_round_b_fails_revocation_still_holds(
-    session_factory, fake_redis, monkeypatch
-):
-    """Architect P1 follow-up: the strongest version of the regression
-    — simulate the actual interleave the architect named. Logout's
-    Round A lands (family set deleted), but Round B (primary +
-    grace-key cleanup) raises mid-flight, leaving orphaned primary
-    keys behind. The pre-logout cookie MUST NOT verify against the
-    orphan primary."""
-    seed = await _seed_user(session_factory)
-    app = _make_app(session_factory)
-    with TestClient(app) as client:
-        token = _login(client)
-        jti, sid = decode_refresh_jti_sid(token)
-
-        # Patch ``session_revoke_family`` so Round A runs (family set
-        # gets deleted) but Round B raises before deleting primaries.
-        import app.redis_client as rc
-        from redis.exceptions import RedisError
-
-        original = rc.session_revoke_family
-
-        async def half_revoke(target_sid: str):
-            # Round A: actually delete the family set (the bug-class
-            # invariant we're testing — primary keys must NOT be the
-            # authority once the family is gone).
-            fake_redis._sets.pop(f"auth:session:by_sid:{target_sid}", None)
-            # Round B: simulate failure (network drop, OOM, anything).
-            raise RedisError("simulated Round B failure")
-
-        monkeypatch.setattr(rc, "session_revoke_family", half_revoke)
-
-        access = create_access_token(
-            seed["user_id"], seed["org_id"], Role.OWNER.value
-        )
-        # The logout handler is fail-open by design (spec §7.1): a
-        # ``RedisError`` from ``session_revoke_family`` is caught,
-        # ``redis_partial_revoke=True`` is flagged in the audit detail,
-        # the cookie is still cleared, and the response is 200. The
-        # orphan primary remains in Redis — exactly the half-revoked
-        # state we want to test against.
-        set_refresh_cookie(client, token)
-        logout = client.post(
-            "/api/v1/auth/logout",
-            headers={"Authorization": f"Bearer {access}"}
-        )
-        assert logout.status_code == 200
-
-        # Round A landed (family set was deleted by ``half_revoke``)
-        # but Round B's primary cleanup never ran.
-        assert f"auth:session:by_sid:{sid}" not in fake_redis._sets, (
-            "Test prerequisite: Round A must have deleted the family "
-            "set before Round B raised"
-        )
-        assert f"auth:session:{jti}" in fake_redis._kv, (
-            "Test prerequisite: the orphan primary must remain to "
-            "exercise the membership-check path"
-        )
-
-        # Restore the real helper so subsequent calls work normally.
-        monkeypatch.setattr(rc, "session_revoke_family", original)
-
-        # The orphaned cookie must NOT verify and must NOT refresh,
-        # even though the primary key is still alive. The
-        # membership check is what enforces this.
-        set_refresh_cookie(client, token)
-        verify = client.post(
-            "/api/v1/auth/verify"
-        )
-        assert verify.status_code == 401, verify.json()
-
-        set_refresh_cookie(client, token)
-        refresh = client.post(
-            "/api/v1/auth/refresh"
-        )
-        assert refresh.status_code == 401, refresh.json()
-        assert _canonical_refresh_cookie(refresh.headers) is None

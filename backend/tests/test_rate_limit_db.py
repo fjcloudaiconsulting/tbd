@@ -117,7 +117,7 @@ def test_engine_config_is_pinned(monkeypatch):
         "connect_timeout": 2,
         "read_timeout": 2,
         "write_timeout": 2,
-        "init_command": "SET SESSION innodb_lock_wait_timeout=1",
+        "init_command": "SET SESSION innodb_lock_wait_timeout=1, time_zone='+00:00'",
     }
     assert kw["isolation_level"] == "READ COMMITTED"
     assert (kw["pool_size"], kw["max_overflow"], kw["pool_timeout"]) == (2, 5, 2)

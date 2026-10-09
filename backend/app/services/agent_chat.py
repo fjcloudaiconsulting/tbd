@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import secrets
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -37,11 +36,11 @@ import anyio
 import structlog
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from redis.exceptions import RedisError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import redis_client
+from app import state_db
 from app.agent import registry
 from app.agent.registry import ToolError
 from app.config import settings
@@ -69,41 +68,27 @@ SYSTEM_PROMPT = (
     "Make at most one change per reply. Reply in plain text, without links, images or HTML."
 )
 
-# Compare-and-delete: an expired lock re-taken by another turn is never
-# deleted by the old holder.
-_RELEASE_LUA = (
-    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) "
-    "else return 0 end"
-)
-
-
 def lock_key(org_id: int) -> str:
     return f"agent:turn:{org_id}"
 
 
 async def acquire_lock(org_id: int) -> str:
-    """Take the org's turn lock; return its nonce. Fails CLOSED: the spend
-    bound per org depends on one turn at a time."""
-    client = redis_client.get_client()
-    if client is None:
-        raise HTTPException(503, detail={"code": "agent_unavailable"})
-    nonce = secrets.token_hex(16)
+    """Take the org's turn lock (a lease row); return its holder token. Fails
+    CLOSED: the spend bound per org depends on one turn at a time."""
     try:
-        ok = await client.set(lock_key(org_id), nonce, nx=True, ex=LOCK_TTL_SECONDS)
-    except RedisError:
+        nonce = await state_db.acquire_lease(lock_key(org_id), LOCK_TTL_SECONDS)
+    except SQLAlchemyError:
         raise HTTPException(503, detail={"code": "agent_unavailable"}) from None
-    if not ok:
+    if nonce is None:
         raise HTTPException(409, detail={"code": "agent_busy"})
     return nonce
 
 
 async def release_lock(org_id: int, nonce: str) -> None:
-    """Idempotent and best effort; the TTL is the backstop."""
-    client = redis_client.get_client()
-    if client is None:
-        return
+    """Idempotent and best effort; the TTL is the backstop. Compare-and-delete:
+    a lease re-taken after expiry is never released by the old holder."""
     try:
-        await client.eval(_RELEASE_LUA, 1, lock_key(org_id), nonce)
+        await state_db.release_lease(lock_key(org_id), nonce)
     except Exception:  # noqa: BLE001  (never mask the turn's own outcome)
         await logger.awarning("agent.turn.lock_release_failed", org_id=org_id)
 

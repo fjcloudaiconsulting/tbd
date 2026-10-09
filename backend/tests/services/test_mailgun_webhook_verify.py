@@ -13,7 +13,7 @@ import inspect
 
 import pytest
 
-from app import redis_client
+from app import state_db
 from app.services import mailgun_webhook
 from app.services.mailgun_webhook import (
     VERIFY_BAD_SIGNATURE,
@@ -218,41 +218,33 @@ def test_uses_compare_digest_not_equality():
     assert "signature ==" not in src
 
 
-# ── Replay-token helper: FAIL-OPEN on Redis error ───────────────────────
-
-
-class _RaisingRedis:
-    """Fake whose ``set`` raises a RedisError, to exercise fail-open."""
-
-    async def set(self, *args, **kwargs):
-        from redis.exceptions import RedisError
-
-        raise RedisError("boom")
+# ── Replay-token helper: FAIL-OPEN on store error ───────────────────────
 
 
 @pytest.mark.asyncio
-async def test_mark_webhook_token_seen_fail_open_on_redis_error(monkeypatch):
-    monkeypatch.setattr(redis_client, "get_client", lambda: _RaisingRedis())
-    # Must NOT propagate; must treat as first-sight (True) so a Redis blip
+async def test_mark_webhook_token_seen_fail_open_on_store_error(state_db_down):
+    # Must NOT propagate; must treat as first-sight (True) so a database blip
     # never rejects a legitimately-signed event.
-    result = await redis_client.mark_webhook_token_seen("tok-abc", ttl_s=1200)
+    result = await state_db.mark_webhook_token_seen("tok-abc", ttl_s=1200)
     assert result is True
 
 
 @pytest.mark.asyncio
-async def test_mark_webhook_token_seen_no_redis_first_sight(monkeypatch):
-    # Dev / no Redis configured → dedup disabled → first sight.
-    monkeypatch.setattr(redis_client, "get_client", lambda: None)
-    assert await redis_client.mark_webhook_token_seen("tok-x", ttl_s=1200) is True
+async def test_mark_webhook_token_seen_first_then_replay():
+    # First sight is True, replay is False.
+    first = await state_db.mark_webhook_token_seen("tok-dup", ttl_s=1200)
+    second = await state_db.mark_webhook_token_seen("tok-dup", ttl_s=1200)
+    assert first is True
+    assert second is False
 
 
 @pytest.mark.asyncio
-async def test_mark_webhook_token_seen_first_then_replay(monkeypatch):
-    # With the autouse fake Redis, first sight is True, replay is False.
-    first = await redis_client.mark_webhook_token_seen("tok-dup", ttl_s=1200)
-    second = await redis_client.mark_webhook_token_seen("tok-dup", ttl_s=1200)
-    assert first is True
-    assert second is False
+async def test_mark_webhook_token_seen_again_after_expiry():
+    from tests.conftest import expire_token
+
+    assert await state_db.mark_webhook_token_seen("tok-exp", ttl_s=1200) is True
+    expire_token("mailgun_webhook", "tok-exp")
+    assert await state_db.mark_webhook_token_seen("tok-exp", ttl_s=1200) is True
 
 
 def test_non_string_signature_is_bad_signature_not_error():

@@ -4,7 +4,7 @@ This job is deliberately NOT part of the per-org ``REGISTRY`` runner. A PAT
 belongs to a superadmin and carries no org dimension, so it cannot be gated on
 a per-org ``scheduler.``-namespaced ``OrgSetting`` and the org-iterating runner
 has no natural place for it. Instead it runs once per tick, invoked directly
-from ``run_one_tick`` under the same ``scheduler:tick:lock`` Redis lock (so a
+from ``run_one_tick`` under the same ``scheduler:tick:lock`` lease (so a
 single replica runs it per tick), and is gated on a *global* ``SystemSetting``
 flag (``api_token_expiry_reminders_enabled``, value ``"on"``).
 

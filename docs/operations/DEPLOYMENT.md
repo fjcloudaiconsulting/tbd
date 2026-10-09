@@ -31,7 +31,7 @@ flowchart LR
   class rel,apex pipe
 ```
 
-The apex Worker is deployed by GitHub Actions through the Cloudflare API. The app, its MySQL and Valkey, and their backups are described in aws-infra (see [Where to look](#8-where-to-look-when-something-breaks)).
+The apex Worker is deployed by GitHub Actions through the Cloudflare API. The app, its MySQL and its backups are described in aws-infra (see [Where to look](#8-where-to-look-when-something-breaks)).
 
 ## 2. PR lifecycle (`test.yml`)
 
@@ -224,7 +224,7 @@ aws-infra runbook above covers the password rotation. A rename is
 1. Watch the Release run: `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml`
 2. Follow the aws-infra bump PR and the Flux apply (runbook above); `kubectl -n tbd-prod logs deploy/backend -c migrate` shows the structured `migrate.*` JSON events.
 3. Inspect the running app: `curl -fsS https://app.thebetterdecision.com/health`, `curl -fsS https://app.thebetterdecision.com/ready`, and `curl -fsS https://app.thebetterdecision.com/health/dependencies`.
-   `/ready` is the database-only rotation gate; `/health/dependencies` is the one that also covers Redis, and therefore the one that tells you whether anybody can log in.
+   `/ready` is the database-only rotation gate; `/health/dependencies` reports each dependency, and is the one a monitor should read.
 
 ## 4. Apex landing deploy (`apex-deploy.yml`)
 
@@ -413,7 +413,7 @@ If a migration **partially applies** and the container exits non-zero, the backe
 | `apex-deploy.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/apex-deploy.yml` |
 | `test.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/test.yml` |
 | Production rollout, Flux, backend/frontend logs, `migrate` init container logs | [aws-infra `docs/runbooks.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md), "Follow Flux and rollouts" |
-| MySQL / Valkey (namespace `data`), backups and restore | [aws-infra `clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/data/RESTORE.md) |
+| MySQL (namespace `data`), backups and restore | [aws-infra `clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/data/RESTORE.md) |
 | Release published but not on the cluster | The `release-drift-probe` issue in aws-infra |
 | Apex Worker logs and versions | Cloudflare dashboard -> Workers & Pages -> `tbd-landing` |
 | Smoke-test failure GitHub issue | Auto-opened by `scripts/notify-smoke-failure.sh`; check open issues in `fjcloudaiconsulting/tbd` |
@@ -430,7 +430,7 @@ Triage shortcuts:
 | Rollout done, app still broken | Check the aws-infra `post-deploy-smoke.yml` run (INFRA-114) or run `scripts/smoke-test.sh` (runbook above), then the backend/frontend pod logs |
 | `migrate` init container hung or failed | `kubectl -n tbd-prod logs deploy/backend -c migrate`. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
 | Apex site shows stale content | Confirm the `deploy-worker` job of `apex-deploy.yml` ran for the SHA (it skips green while `CLOUDFLARE_API_TOKEN` is unset in the `landing` environment); `curl https://thebetterdecision.com/_meta.json` |
-| App can't reach MySQL or Valkey | Check the `data` namespace pods and the `DATABASE_URL` / `REDIS_URL` keys in the `tbd-prod` secret (aws-infra) |
+| App can't reach MySQL | Check the `data` namespace pods and the `DATABASE_URL` key in the `tbd-prod` secret (aws-infra) |
 | Secret env var missing or wrong after a rollout | `clusters/platform/tbd-prod/*.secret.yaml` in aws-infra; the runbook's "Write or rotate a Kubernetes Secret" |
 
 For the env var matrix and common per-variable failures (Google SSO button missing, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Common failure modes".

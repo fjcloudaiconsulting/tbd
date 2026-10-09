@@ -220,16 +220,16 @@ async def accept_invitation(
 
     access = create_access_token(user.id, user.org_id, user.role.value)
     # PR 2 (specs/2026-05-17-backend-session-model.md §5.4): write the
-    # Redis primary key + family-set entry BEFORE set_cookie. Fails
-    # closed (503) on unreachable Redis.
+    # session family row BEFORE set_cookie. Fails
+    # closed (503) on unreachable session store.
     #
-    # Architect P1 finding on PR #306: the Redis write must also come
+    # Architect P1 finding on PR #306: the store write must also come
     # BEFORE ``db.commit()``. ``invitation_service.accept_invitation``
-    # flushed (so ``user.id`` is set) but did NOT commit. If Redis is
+    # flushed (so ``user.id`` is set) but did NOT commit. If the session store is
     # down here, the 503 raises before commit, the open transaction
     # rolls back, and the invitation stays unconsumed — the user can
-    # retry. Previous order (commit-then-Redis) consumed the invitation
-    # on every Redis blip, permanently locking the invitee out.
+    # retry. Previous order (commit-then-store) consumed the invitation
+    # on every store blip, permanently locking the invitee out.
     # 2026-05-18 session-stability refactor: invitation accept now
     # respects the inviter org's per-org session TTL setting on the
     # very first cookie issued — same source of truth as login,

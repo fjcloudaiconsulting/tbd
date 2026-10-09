@@ -92,13 +92,6 @@ def reset_limiter():
     limiter.reset()
 
 
-@pytest.fixture(autouse=True)
-def fake_redis(_autouse_fake_redis):
-    """``_issue_refresh_session`` fails closed on unreachable Redis; the
-    in-process fake from ``tests/conftest.py`` stands in."""
-    yield _autouse_fake_redis
-
-
 def _make_app(session_factory) -> FastAPI:
     """Real routers, real ``get_current_user`` / ``get_current_user_optional``.
 
