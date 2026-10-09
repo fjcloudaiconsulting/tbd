@@ -223,7 +223,9 @@ async def mailgun_webhook(request: Request) -> Response:
 
     # 6. Replay dedup (defense-in-depth; fail-OPEN). Already-seen token ⇒
     #    verified but a replay → 200-drop.
-    ttl_s = settings.mailgun_webhook_timestamp_tolerance_s + _REPLAY_TTL_MARGIN_S
+    # A ts up to `tolerance` ahead is accepted until ts + tolerance: the marker
+    # must outlive the whole window.
+    ttl_s = 2 * settings.mailgun_webhook_timestamp_tolerance_s + _REPLAY_TTL_MARGIN_S
     first_sight = await mark_webhook_token_seen(str(token), ttl_s)
     if not first_sight:
         await logger.ainfo("webhook.mailgun.replay_dropped")

@@ -301,7 +301,10 @@ def _detect_reuse_and_revoke(jti: str, sid: str) -> tuple[str, int] | tuple[str]
             return (SESSION_REUSE_UNKNOWN,)
         # past this point a non-member is a pruned jti (consumed long ago): reuse
         graced = c.execute(
-            select(1).select_from(_M.join(_F, _M.c.sid == _F.c.sid)).where(_M.c.jti == jti, _graced())
+            select(1)
+            .select_from(_M.join(_F, _M.c.sid == _F.c.sid))
+            .where(_M.c.jti == jti, _graced())
+            .with_for_update(read=True)
         ).first()
         if graced is not None:
             return (SESSION_REUSE_GRACE,)
