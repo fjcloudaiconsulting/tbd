@@ -272,3 +272,45 @@ async def test_402_handler_carries_null_resets_at_for_a_zero_limit():
     resp = await app.exception_handlers[PlanLimitReached](
         None, PlanLimitReached("mcp.calls", 0, "day", None))
     assert json.loads(resp.body)["detail"]["resets_at"] is None
+
+
+# ── TBD-581: current_usage (GET /ai/status meters) ────────────────────────
+
+async def test_f581_meter_current_usage_reads_only_this_periods_row(factory):
+    """FENCE F-581-METER. Wrong implementations killed: summing every counter
+    row of a meter (the August row and the day-kind row would count), ignoring
+    the period kind (the day row shares the month row's meter), and listing a
+    limit-0 meter (the dark platform meters would show to every org)."""
+    org = await _org(factory, {
+        "mcp.calls": {"period": "month", "limit": 5},
+        "assistant.turns": {"period": "day", "limit": 3},
+    })
+    async with factory() as db:
+        db.add_all([
+            UsageCounter(org_id=org, meter="mcp.calls", period="month",
+                         period_start=date(2026, 9, 1), value=2),
+            UsageCounter(org_id=org, meter="mcp.calls", period="month",
+                         period_start=date(2026, 8, 1), value=9),
+            UsageCounter(org_id=org, meter="mcp.calls", period="day",
+                         period_start=date(2026, 9, 30), value=7),
+            UsageCounter(org_id=org, meter="assistant.turns", period="day",
+                         period_start=date(2026, 9, 30), value=1),
+            UsageCounter(org_id=org, meter="assistant.turns", period="day",
+                         period_start=date(2026, 9, 29), value=3),
+        ])
+        await db.commit()
+        out = await usage_service.current_usage(db, org, now=NOW)
+    midnight = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    assert out == [
+        {"meter": "assistant.turns", "used": 1, "limit": 3, "period": "day", "resets_at": midnight},
+        {"meter": "mcp.calls", "used": 2, "limit": 5, "period": "month", "resets_at": midnight},
+    ]
+
+
+async def test_f581_meter_unlimited_and_unused(factory):
+    org = await _org(factory, None)
+    async with factory() as db:
+        out = await usage_service.current_usage(db, org, now=NOW)
+    assert [(m["meter"], m["used"], m["limit"]) for m in out] == [
+        ("assistant.turns", 0, None), ("mcp.calls", 0, None),
+    ]

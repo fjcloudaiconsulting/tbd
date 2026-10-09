@@ -80,3 +80,21 @@ async def test_not_entitled_skips_routing_lookup(monkeypatch):
     assert routing_called == [], "routing should not be called for un-entitled features"
     for state in out.values():
         assert state == {"entitled": False, "configured": False}
+
+
+@pytest.mark.asyncio
+async def test_status_carries_meter_usage(monkeypatch):
+    """TBD-581: the settings page reads used / limit / reset per meter from here."""
+    from datetime import datetime, timezone
+
+    async def fake_features(db, org_id):
+        return {}
+
+    async def fake_usage(db, org_id):
+        return [{"meter": "mcp.calls", "used": 2, "limit": None, "period": "month",
+                 "resets_at": datetime(2026, 11, 1, tzinfo=timezone.utc)}]
+
+    monkeypatch.setattr(ai_status_service.feature_service, "get_features", fake_features)
+    monkeypatch.setattr(ai_status_service.usage_service, "current_usage", fake_usage)
+    out = AIStatusResponse.model_validate(await ai_status_service.get_ai_status(None, org_id=1))
+    assert [(m.meter, m.used, m.limit) for m in out.meters] == [("mcp.calls", 2, None)]
