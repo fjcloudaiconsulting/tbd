@@ -24,7 +24,7 @@ import os
 import pytest
 from sqlalchemy import text
 
-from app.database import get_db
+from app.database import _session
 
 
 pytestmark = pytest.mark.skipif(
@@ -38,7 +38,7 @@ async def test_opening_balance_backfill_is_zero_for_every_account():
     """§4.4: ``SELECT COUNT(*) FROM accounts WHERE opening_balance != 0``
     MUST equal 0 immediately after upgrade. This proves the canonical
     backfill landed for every pre-existing account."""
-    async for db in get_db():
+    async for db in _session():
         result = await db.execute(
             text("SELECT COUNT(*) AS n FROM accounts WHERE opening_balance != 0")
         )
@@ -57,7 +57,7 @@ async def test_opening_balance_columns_have_correct_types():
     """Schema-level sanity: the two columns landed with the contract's
     exact types (DECIMAL(12,2) and DATE) and are NOT NULL. The contract
     pins the shape so the OFX + Reconciliation teams can rely on it."""
-    async for db in get_db():
+    async for db in _session():
         result = await db.execute(
             text(
                 "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, "

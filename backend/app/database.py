@@ -1,6 +1,7 @@
 from urllib.parse import urlparse
 
 import structlog
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -89,9 +90,19 @@ logger.debug(
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
-async def get_db():
+async def _session():
     async with async_session() as session:
         try:
             yield session
         finally:
             await session.close()
+
+
+# A request-scoped yield dependency exits only after BackgroundTasks have run,
+# so the session closes when the handler returns instead (INFRA-128). get_db is
+# a plain coroutine so every `Depends(get_db)` shares one cached session.
+# Use _session only via get_db: its cache key includes the scope, so another
+# scope on `Depends(_session)` gives the request a second session. Code that
+# needs the DB after the handler returns opens its own session.
+async def get_db(session: AsyncSession = Depends(_session, scope="function")) -> AsyncSession:
+    return session
