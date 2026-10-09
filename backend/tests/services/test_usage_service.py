@@ -326,3 +326,33 @@ async def test_f581_platform_meters_admin_only_and_dark_at_zero(factory):
     assert sorted(member) == ["assistant.turns", "mcp.calls"]
     assert member["mcp.calls"] == {"used": 0, "limit": 0, "period": "day", "resets_at": None}
     assert member["assistant.turns"]["limit"] is None  # catalog default: unlimited
+
+
+async def test_f581_meter_period_kind_on_the_first_and_mid_month_resets(factory):
+    """FENCE F-581-METER, the two mutants a month-end NOW cannot see. On the
+    1st a day row and a month row share ``period_start``, so matching on the
+    start alone reads the day row for a monthly meter; mid-month, a day meter
+    resets tomorrow and a month meter on the 1st, so one ``resets_at`` for
+    both is caught."""
+    org = await _org(factory, {
+        "mcp.calls": {"period": "month", "limit": 50},
+        "assistant.turns": {"period": "day", "limit": 3},
+    })
+    first = datetime(2026, 10, 1, 9, 0, 0)
+    async with factory() as db:
+        db.add_all([
+            # A daily meter whose plan was monthly until today: both rows
+            # start on the 1st, and the stale month row sorts last.
+            UsageCounter(org_id=org, meter="assistant.turns", period="day",
+                         period_start=date(2026, 10, 1), value=1),
+            UsageCounter(org_id=org, meter="assistant.turns", period="month",
+                         period_start=date(2026, 10, 1), value=5),
+        ])
+        await db.commit()
+        on_first = await usage_service.current_usage(db, org, include_platform=False, now=first)
+        mid = await usage_service.current_usage(
+            db, org, include_platform=False, now=datetime(2026, 10, 15, 9, 0, 0)
+        )
+    assert on_first["assistant.turns"]["used"] == 1
+    assert mid["assistant.turns"]["resets_at"] == datetime(2026, 10, 16, tzinfo=timezone.utc)
+    assert mid["mcp.calls"]["resets_at"] == datetime(2026, 11, 1, tzinfo=timezone.utc)
