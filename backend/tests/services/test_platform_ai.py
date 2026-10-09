@@ -18,7 +18,6 @@ from app.models import Base
 from app.models.settings import OrgSetting
 from app.models.system_setting import SystemSetting
 from app.services import platform_ai, platform_ai_settings
-from app.services.ai_pricing import MODEL_PRICING
 from app.services.ai_providers import NativeNotAvailable
 from app.services.ai_providers.anthropic import AnthropicAdapter
 from app.services.ai_providers.openai import OpenAIAdapter
@@ -132,13 +131,16 @@ def test_anthropic_capability_set_excludes_embed():
 # ---- C12 forcing test ----------------------------------------------------
 
 def test_c12_every_priced_openai_chat_model_is_in_the_max_tokens_set():
-    """A priced OpenAI chat model that is not vetted for ``max_tokens`` (e.g. a
-    reasoning model that needs ``max_completion_tokens``) fails here until a
-    human decides. OpenRouter ``openai/*`` ids go through another path."""
+    """An OpenAI chat model the platform offers that is not vetted for
+    ``max_tokens`` (e.g. a reasoning model that needs ``max_completion_tokens``)
+    fails here until a human decides. Pricing alone offers nothing (TBD-618
+    prices BYOK-only models), so the set is the platform's own OpenAI list.
+    OpenRouter ``openai/*`` ids go through another path."""
     openai_chat = {
-        m for m in MODEL_PRICING
-        if m != "_default" and not m.startswith(("claude-", "text-embedding-"))
+        m for m in platform_ai.PLATFORM_MODELS["openai"]
+        if not m.startswith("text-embedding-")
     }
+    assert openai_chat, "the forcing set must not be empty"
     assert openai_chat <= platform_ai.OPENAI_ACCEPTS_MAX_TOKENS
 
 
