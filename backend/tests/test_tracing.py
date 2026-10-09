@@ -558,6 +558,32 @@ async def test_the_api_token_expiry_reminder_is_a_job_span(spans, monkeypatch):
     assert dict(job.attributes) == {"job.kind": "api_token_expiry"}
 
 
+async def test_the_oauth_client_purge_is_a_job_span(spans, monkeypatch):
+    inside = []
+
+    async def acquire(ttl):
+        return True
+
+    async def run_all_due(today, *, max_orgs=None):
+        return None
+
+    async def reminders(*, now):
+        return None
+
+    async def purge():
+        inside.append(tracing.trace.get_current_span().get_span_context().span_id)
+
+    monkeypatch.setattr(scheduler_loop_module, "acquire_tick_lock", acquire)
+    monkeypatch.setattr(scheduler_loop_module, "run_all_due", run_all_due)
+    monkeypatch.setattr(scheduler_loop_module, "run_api_token_expiry_reminders", reminders)
+    monkeypatch.setattr(scheduler_loop_module, "run_oauth_client_purge", purge)
+    await scheduler_loop_module.run_one_tick(datetime.date(2026, 10, 8), lock_ttl=1)
+    (job,) = [s for s in spans() if s.name == "job oauth_client_purge"]
+    assert dict(job.attributes) == {"job.kind": "oauth_client_purge"}
+    # The purge runs inside its own span, not beside it.
+    assert inside == [job.context.span_id]
+
+
 @pytest.mark.parametrize(
     "env, root",
     [
