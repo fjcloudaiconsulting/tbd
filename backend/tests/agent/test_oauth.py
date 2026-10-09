@@ -498,6 +498,8 @@ async def test_f_o7_consent_needs_an_interactive_session(factory, client):
     "https://claude.ai/" + "a" * 512, "https://claude.ai/c b", "https://claude.ai/\u00e9",
     "https://evil.com\\.claude.ai/cb", "http://127.0.0.1%2eevil.com/cb",
     "http://evil.com\\@127.0.0.1/cb",
+    "https://claude.ai%2eevil.com/cb", "https://claude.ai/cb?code=planted",
+    "https://claude.ai/cb?x=1&state=planted", "https://claude.ai/cb?iss=x", "https://claude.ai/cb?error=x",
 ])
 async def test_f_o9_dcr_refuses_unsafe_redirects(client, uri):
     """FENCE F-O9 (+S13). Wrong implementation: scheme check absent, or a
@@ -1071,7 +1073,8 @@ async def test_exchange_loser_issues_nothing(factory, client, monkeypatch):
 async def test_client_name_refuses_control_and_format_characters(client):
     """FENCE (review nit). Wrong implementation: a bidi override or control
     character in the claimed name reaching the consent screen."""
-    for name in ("Claude\u202eedualC", "Claude\u0007", "Cl\u200baude", "Claude\n"):
+    for name in ("Claude\u202eedualC", "Claude\u0007", "Cl\u200baude", "Claude\n",
+                 "Claude\u2028x", "Claude\u2029x"):
         assert _err(await _register(client, name=name)) == (400, "invalid_client_metadata"), name
     assert (await _register(client, name="Cl\u00e1ude")).status_code == 201
 
@@ -1189,3 +1192,34 @@ async def test_f_o4_exchange_keeps_created_at(factory, client):
         await s.commit()
     assert (await _exchange(client, g)).status_code == 200
     assert (await _one(factory, g["uid"])).created_at == hour_ago
+
+
+async def test_redirect_with_a_bare_question_mark_gets_one_separator(factory, client):
+    """FENCE (review nit). Wrong implementation: appending ``?`` to a URI that
+    already ends in ``?`` (``cb??code=``: the client never finds ``code``)."""
+    org = await _org(factory, "A")
+    h = await _jwt(factory, await _user(factory, org, "m"))
+    uri = "https://claude.ai/cb?"
+    cid = await _cid(client, [uri])
+    r, _ = await _consent(client, h, cid, redirect=uri, approve=False)
+    assert r.json()["redirect_to"].startswith(uri + "error=access_denied&"), r.text
+
+
+async def test_stored_redirect_failing_todays_policy_is_no_match(factory, client):
+    """FENCE (review nit). Wrong implementation: classifying stored URIs
+    without a guard, so a row registered under an older policy 500s consent."""
+    org = await _org(factory, "A")
+    h = await _jwt(factory, await _user(factory, org, "m"))
+    cid = await _cid(client, ["http://127.0.0.1:5555/cb"])
+    async with factory() as s:
+        await s.execute(update(OAuthClient).where(OAuthClient.id == cid).values(
+            redirect_uris=["http://127.0.0.1\\x/cb", "http://127.0.0.1:5555/cb"]))
+        await s.commit()
+    r, _ = await _consent(client, h, cid, redirect="http://127.0.0.1:6001/cb")
+    assert r.status_code == 200, r.text
+    async with factory() as s:
+        await s.execute(update(OAuthClient).where(OAuthClient.id == cid).values(
+            redirect_uris=["http://127.0.0.1\\x/cb"]))
+        await s.commit()
+    r, _ = await _consent(client, h, cid, redirect="http://127.0.0.1:6001/cb")
+    assert r.status_code == 400 and r.json()["detail"] == {"code": "invalid_redirect_uri"}, r.text

@@ -26,7 +26,7 @@ import secrets
 import unicodedata
 from datetime import datetime, timedelta
 from typing import Any, Mapping, Optional
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import structlog
 from sqlalchemy import func, or_, select, update
@@ -167,6 +167,9 @@ def classify_redirect(uri: Any) -> tuple[str, str]:
         raise _bad_uri() from None
     if "@" in parts.netloc or "%" in parts.netloc:
         raise _bad_uri()
+    # Keys we append to the redirect: a registered copy would be read first.
+    if {k for k, _ in parse_qsl(parts.query, keep_blank_values=True)} & RESERVED_QUERY_KEYS:
+        raise _bad_uri()
     if parts.scheme == "https" and host:
         return "https", host
     if parts.scheme == "http" and host in LOOPBACK_HOSTS:
@@ -174,6 +177,9 @@ def classify_redirect(uri: Any) -> tuple[str, str]:
     if parts.scheme not in ("http", "https") and "." in parts.scheme:
         return "private", parts.scheme
     raise _bad_uri()
+
+
+RESERVED_QUERY_KEYS = frozenset({"code", "state", "iss", "error", "error_description"})
 
 
 def match_key(uri: str) -> str:
@@ -197,10 +203,16 @@ def _redirect_registered(client: OAuthClient, uri: Any) -> bool:
     if kind != "loopback":
         return uri in client.redirect_uris
     key = match_key(uri)
-    return any(
-        classify_redirect(u)[0] == "loopback" and match_key(u) == key
-        for u in client.redirect_uris
-    )
+    return any(_is_loopback(u) and match_key(u) == key for u in client.redirect_uris)
+
+
+def _is_loopback(uri: str) -> bool:
+    """A stored URI that fails today's policy (registered under an older one)
+    is no match, never an error."""
+    try:
+        return classify_redirect(uri)[0] == "loopback"
+    except OAuthError:
+        return False
 
 
 def build_redirect(uri: str, params: dict[str, str], state: Optional[str]) -> str:
@@ -212,7 +224,8 @@ def build_redirect(uri: str, params: dict[str, str], state: Optional[str]) -> st
     added.append(("iss", issuer()))
     # The registered query is kept byte for byte (RFC 6749 3.1.2); a
     # registered URI never carries a fragment.
-    return uri + ("&" if urlsplit(uri).query else "?") + urlencode(added)
+    sep = "&" if urlsplit(uri).query else ("" if uri.endswith("?") else "?")
+    return uri + sep + urlencode(added)
 
 
 def redirect_host(uri: str) -> str:
@@ -260,8 +273,9 @@ async def register(db: AsyncSession, body: Any, ip: str) -> OAuthClient:
     if not isinstance(name, str) or len(name.strip()) > MAX_NAME_LEN:
         raise OAuthError("invalid_client_metadata", f"client_name must be at most {MAX_NAME_LEN} characters")
     # Shown on the consent screen: no control, format (bidi override,
-    # zero-width) or other category-C characters.
-    if any(unicodedata.category(c).startswith("C") for c in name):
+    # zero-width), other category-C, or line/paragraph separator characters.
+    if any(unicodedata.category(c) in ("Zl", "Zp") or unicodedata.category(c)[0] == "C"
+           for c in name):
         raise OAuthError("invalid_client_metadata", "client_name has control or format characters")
     name = name.strip() or DEFAULT_CLIENT_NAME
     key = metadata_key(name, uris)
