@@ -18,8 +18,10 @@ database error propagates as ``SQLAlchemyError`` and the caller decides.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 
 import structlog
 from sqlalchemy import and_, delete, insert, select, update
@@ -81,8 +83,14 @@ def _is_dup(exc: IntegrityError, pk_of: str | None = None) -> bool:
     return pk_of is None or msg.endswith(f"{pk_of}.jti")
 
 
+# Own threads, sized to the engine pool (2 + 5): a stalled database queues
+# store calls here instead of filling the loop's default executor.
+_POOL = ThreadPoolExecutor(max_workers=7, thread_name_prefix="state_db")
+
+
 async def _aio(fn, *args):
-    return await asyncio.to_thread(fn, *args)
+    ctx = contextvars.copy_context()  # keeps request_id in log lines, as to_thread does
+    return await asyncio.get_running_loop().run_in_executor(_POOL, ctx.run, fn, *args)
 
 
 # ── Refresh-session families ──────────────────────────────────────────────
@@ -101,6 +109,10 @@ SESSION_REUSE_REUSED = "reused"
 
 # A revoked family larger than this is logged (the revoke still happens).
 REUSE_REVOKE_FAMILY_SIZE_WARN_THRESHOLD = 10000
+# Members kept per family. /refresh is unlimited (TBD-353), so without a cap
+# a looping client grows one family without bound. A jti rotated out more than
+# this many rotations ago reads as unknown (401, no revoke) instead of reuse.
+_KEEP_MEMBERS = 1000
 
 _live = _F.c.expires_at > db_now()
 _S = _M.alias("successor")
@@ -238,6 +250,9 @@ def _rotate(
                 .where(_F.c.sid == sid)
                 .values(head_jti=new_jti, rotations=fam.rotations + 1, expires_at=db_now(idle_ttl_seconds))
             )
+            c.execute(
+                delete(_M).where(_M.c.sid == sid, _M.c.seq <= fam.rotations + 1 - _KEEP_MEMBERS)
+            )
     except _Collision:
         return SESSION_ROTATE_JTI_COLLISION
     return SESSION_ROTATE_OK
@@ -252,8 +267,9 @@ def _delete_family(c: Connection, sid: str) -> list[str]:
 
 def _revoke_family(sid: str) -> list[str]:
     with _engine.begin() as c:
-        if _lock_family(c, sid) is None:
-            return []
+        fam = _lock_family(c, sid)
+        if fam is None or not fam.live:
+            return []  # already expired: the purge removes it
         return _delete_family(c, sid)
 
 

@@ -3,6 +3,8 @@ state_db contract on SQLite. The races run on real MySQL in
 tests/test_state_db_mysql.py."""
 from __future__ import annotations
 
+from sqlalchemy import func, text
+
 from app import state_db as s
 from tests.conftest import expire_family, expire_grace, expire_lease, expire_token, state_family, state_jtis
 
@@ -119,6 +121,41 @@ def test_g4_seq_clash_is_not_a_jti_collision():
 
     with pytest.raises(IntegrityError):
         s._rotate("B", "C", "sid1", 7, TTL)
+
+
+def test_f10_family_keeps_at_most_keep_members(monkeypatch):
+    monkeypatch.setattr(s, "_KEEP_MEMBERS", 3)
+    _new(jti="j0")
+    for i in range(5):
+        assert s._rotate(f"j{i}", f"j{i + 1}", "sid1", 7, TTL) == s.SESSION_ROTATE_OK
+    assert state_jtis("sid1") == {"j3", "j4", "j5"}
+    expire_grace("sid1")
+    assert s._detect_reuse_and_revoke("j0", "sid1") == (s.SESSION_REUSE_UNKNOWN,)
+    assert s._detect_reuse_and_revoke("j3", "sid1") == (s.SESSION_REUSE_REUSED, 3)
+
+
+def _seconds_left(sid):
+    from sqlalchemy import select
+
+    with s._engine.connect() as c:
+        if c.dialect.name == "sqlite":
+            q = select((func.julianday(s._F.c.expires_at) - func.julianday(s.db_now())) * 86400)
+        else:
+            q = select(func.timestampdiff(text("SECOND"), s.db_now(), s._F.c.expires_at))
+        return c.execute(q.where(s._F.c.sid == sid)).scalar()
+
+
+def test_f11_issue_and_rotate_set_the_family_ttl():
+    s._issue("A", "sid1", 7, 100)
+    assert 95 <= _seconds_left("sid1") <= 101
+    s._rotate("A", "B", "sid1", 7, 5000)
+    assert 4995 <= _seconds_left("sid1") <= 5001
+
+
+def test_g5_logout_of_an_expired_family_reports_nothing():
+    _new()
+    expire_family("sid1")
+    assert s._revoke_family("sid1") == []
 
 
 def test_g2_expired_family_is_dead():

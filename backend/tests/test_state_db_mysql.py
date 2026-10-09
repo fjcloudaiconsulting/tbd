@@ -173,7 +173,7 @@ def test_m9_columns_are_fsp6_and_ascii_bin(mysql_engine):
             "AND table_name IN ('auth_session_families','auth_session_members','used_tokens','leases')"
         )).all()
     for t, col, fsp, coll in rows:
-        if col in ("expires_at", "grace_until"):
+        if col in ("expires_at", "created_at"):
             assert fsp == 6, (t, col)
         if col in ("sid", "jti", "head_jti", "name", "holder", "scope"):
             assert coll == "ascii_bin", (t, col)

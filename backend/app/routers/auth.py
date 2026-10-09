@@ -12,7 +12,7 @@ import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, Cookie, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
@@ -528,8 +528,9 @@ async def register(
 
 async def _require_session_store() -> None:
     """Probe the session store before any credential check, so every
-    branch answers the same 503 while it is down or full (INFRA-121,
-    INFRA-132)."""
+    branch answers the same 503 while it is unreachable (INFRA-121,
+    INFRA-132). A database that refuses writes is caught one step
+    earlier: the login rate limit's MySQL upsert fails closed first."""
     try:
         await state_db.session_store_probe()
     except SQLAlchemyError as exc:
