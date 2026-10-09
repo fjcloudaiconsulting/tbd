@@ -62,9 +62,12 @@ export default function AssistantChat() {
   // Cancel a running turn when the page goes away, so it frees the org's
   // turn lock instead of running on unseen.
   const unmounted = useRef(false);
-  useEffect(() => () => {
-    unmounted.current = true;
-    turnRef.current?.cancel();
+  useEffect(() => {
+    unmounted.current = false; // StrictMode re-runs the effect after a test cleanup
+    return () => {
+      unmounted.current = true;
+      turnRef.current?.cancel();
+    };
   }, []);
 
   useEffect(() => {
