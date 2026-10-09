@@ -137,7 +137,7 @@ def test_cost_table_values(model, p_tokens, c_tokens, expected):
 def test_tbd618_demo_ledger_cost_for_claude_sonnet_5_5():
     """The 2026-10-09 demo turn: 62,342 in / 1,898 out on claude-sonnet-5-5
     ($2 / $10 per 1M) costs 14,366,400 / 1M = 14.37 -> 15 cents, not the
-    ``_default`` 105."""
+    105 the old 1500 / 6000 ``_default`` row charged."""
     cents = estimate_cost_cents(
         model="claude-sonnet-5-5", prompt_tokens=62_342, completion_tokens=1_898
     )
