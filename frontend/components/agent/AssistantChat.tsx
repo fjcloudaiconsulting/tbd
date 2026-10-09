@@ -16,7 +16,7 @@ import type { StagedAction } from "@/lib/agent/types";
 import { maskMoneyText } from "@/lib/format";
 import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import {
-  badgeError, btnSecondary, error as errorCls, filterChip, filterChipOff,
+  badgeError, btnSecondary, error as errorCls, filterChip, filterChipOff, input,
 } from "@/lib/styles";
 
 import PreviewCard, { type Outcome } from "./PreviewCard";
@@ -289,7 +289,7 @@ export default function AssistantChat() {
             maxLength={MAX_INPUT_CHARS}
             rows={2}
             placeholder="Ask about your money"
-            className="min-h-[44px] w-full resize-y rounded-md border border-border bg-surface-raised px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none aria-disabled:opacity-60"
+            className={`${input} min-h-[44px] resize-y aria-disabled:opacity-60`}
           />
           {/* One slot, so focus on Send survives the swap to Stop. */}
           <button

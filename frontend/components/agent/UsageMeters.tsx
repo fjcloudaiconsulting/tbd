@@ -5,6 +5,7 @@
 
 import { METER_LABELS } from "@/lib/agent/present";
 import { formatMoney } from "@/lib/format";
+import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import type { MeterUsage } from "@/lib/types";
 import { badgeWarning, card, cardHeader, cardTitle } from "@/lib/styles";
 
@@ -36,6 +37,7 @@ export default function UsageMeters({
   meters?: string[];
   title?: string;
 }) {
+  useBalancesHidden(); // repaint platform spend on Hide balances (TBD-527)
   const keys = (meters ?? Object.keys(usage)).filter((m) => usage[m]);
   if (keys.length === 0) return null;
   return (
