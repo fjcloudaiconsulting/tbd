@@ -44,8 +44,9 @@ class ModelPricing:
 # variant is a different price, so an unlisted id falls to ``_default``
 # (over-meters) rather than borrowing a cheaper sibling's row.
 #
-# Where a provider tiers a price (by prompt size, or a dated increase), the
-# row holds the HIGHER rate so the cap never under-meters.
+# Each row holds the HIGHEST rate any cited source publishes for the model:
+# where a price is tiered (prompt size, modality, a dated increase) or two
+# sources differ, the higher one wins, so the cap never under-meters.
 #
 # Sources (USD per 1M tokens, standard tier, all read 2026-10-09):
 #   [A] https://platform.claude.com/docs/en/about-claude/pricing
@@ -56,13 +57,14 @@ class ModelPricing:
 #
 #   gpt-4o                  : $2.50 / $10.00  [O]  -> 250 / 1000
 #   gpt-4o-mini             : $0.15 / $0.60   [O]  -> 15 / 60
-#   gpt-6-astra             : $10 / $50       [O]  -> 1000 / 5000
-#   gpt-6.1-sol, gpt-6-sol  : $2 / $10        [O]  -> 200 / 1000
-#   gpt-6-luna              : $0.10 / $0.50   [O]  -> 10 / 50
-#   gpt-5.6-sol             : $8 / $30 (>272K-token prompt; $4 / $20 below)
-#                                             [O]  -> 800 / 3000
-#   gpt-5.6-terra           : $2 / $12        [O]  -> 200 / 1200
-#   gpt-5.6-luna            : $0.20 / $1.20   [O]  -> 20 / 120
+#   The gpt-6 / gpt-5.6 rows take the >=272K-token-prompt rate. [O] lists
+#   that tier for gpt-5.6-sol only; [R] lists it for the rest.
+#   gpt-6-astra             : $20 / $75 [R] ($10 / $50 [O])     -> 2000 / 7500
+#   gpt-6.1-sol, gpt-6-sol  : $4 / $15 [R] ($2 / $10 [O])       -> 400 / 1500
+#   gpt-6-luna              : $0.20 / $0.75 [R] ($0.10 / $0.50) -> 20 / 75
+#   gpt-5.6-sol             : $8 / $30 [O] ($4 / $20 below)     -> 800 / 3000
+#   gpt-5.6-terra           : $4 / $18 [R] ($2 / $12 [O])       -> 400 / 1800
+#   gpt-5.6-luna            : $0.40 / $1.80 [R] ($0.20 / $1.20) -> 40 / 180
 #   claude-fable-5-1, -5    : $10 / $50       [A]  -> 1000 / 5000
 #   claude-opus-5-5         : $4 / $20        [A]  -> 400 / 2000
 #   claude-opus-5, 4-8/7/6  : $5 / $25        [A]  -> 500 / 2500
@@ -86,17 +88,17 @@ class ModelPricing:
 #   text-embedding-3-large  : $0.13 in        [O]  -> 13 / 0
 #
 # OpenRouter ids (``OPENROUTER_IDS`` below) reuse the first-party row; every
-# one's [R] rate was at or below it on 2026-10-09.
+# one's [R] rate, long-prompt tier included, was at or below it on 2026-10-09.
 MODEL_PRICING: dict[str, ModelPricing] = {
     "gpt-4o": ModelPricing(prompt_per_1m_cents=250, completion_per_1m_cents=1000),
     "gpt-4o-mini": ModelPricing(prompt_per_1m_cents=15, completion_per_1m_cents=60),
-    "gpt-6-astra": ModelPricing(1000, 5000),
-    "gpt-6.1-sol": ModelPricing(200, 1000),
-    "gpt-6-sol": ModelPricing(200, 1000),
-    "gpt-6-luna": ModelPricing(10, 50),
+    "gpt-6-astra": ModelPricing(2000, 7500),
+    "gpt-6.1-sol": ModelPricing(400, 1500),
+    "gpt-6-sol": ModelPricing(400, 1500),
+    "gpt-6-luna": ModelPricing(20, 75),
     "gpt-5.6-sol": ModelPricing(800, 3000),
-    "gpt-5.6-terra": ModelPricing(200, 1200),
-    "gpt-5.6-luna": ModelPricing(20, 120),
+    "gpt-5.6-terra": ModelPricing(400, 1800),
+    "gpt-5.6-luna": ModelPricing(40, 180),
     "claude-fable-5-1": ModelPricing(1000, 5000),
     "claude-fable-5": ModelPricing(1000, 5000),
     "claude-opus-5-5": ModelPricing(400, 2000),
@@ -132,9 +134,10 @@ MODEL_PRICING: dict[str, ModelPricing] = {
     # Conservative fallback — picked to be higher than every known
     # frontier model. Unknown-model usage gets counted at this rate so
     # the cap fires sooner rather than later. Refresh during the
-    # quarterly PR if frontier prices climb past this value.
+    # quarterly PR if frontier prices climb past this value. Raised from
+    # 1500 / 6000 in TBD-618: gpt-6-astra's long-prompt rate passed it.
     "_default": ModelPricing(
-        prompt_per_1m_cents=1500, completion_per_1m_cents=6000
+        prompt_per_1m_cents=2500, completion_per_1m_cents=10000
     ),
 }
 

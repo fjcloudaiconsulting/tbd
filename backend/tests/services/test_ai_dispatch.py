@@ -548,7 +548,7 @@ async def test_unknown_model_projects_via_default_pricing_and_gates(
 ):
     """An unknown model still projects (via _default pricing) and gates.
 
-    _default pricing is 1500/6000 cents per 1M. Even a small unpinned
+    _default pricing is 2500/10000 cents per 1M. Even a small unpinned
     call projects well over 1 cent, so spent=99 under hard=100 blocks.
     """
     # Route to an unknown model.
