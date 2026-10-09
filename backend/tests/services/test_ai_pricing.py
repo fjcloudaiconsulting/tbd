@@ -119,6 +119,11 @@ def test_cost_integer_only_math_avoids_float_truncation():
         # Haiku 5.5 is priced by prompt size; the table holds the higher
         # (>100K-token prompt) rate so a long prompt never under-meters.
         ("claude-haiku-5-5", 1_000_000, 1_000_000, 50 + 250),
+        # One OpenAI and Gemini row per family, at their highest rate.
+        ("gpt-6-astra", 1_000_000, 1_000_000, 2000 + 7500),
+        ("gpt-5.6-sol", 1_000_000, 1_000_000, 800 + 3000),
+        ("gemini-3.1-pro-preview", 1_000_000, 1_000_000, 400 + 1800),
+        ("gemini-3.8-flash", 1_000_000, 1_000_000, 150 + 750),
         # OpenRouter spells the same model with dots and a vendor prefix.
         ("anthropic/claude-sonnet-5.5", 1_000_000, 1_000_000, 200 + 1000),
     ],
@@ -164,6 +169,7 @@ def test_openrouter_ids_share_the_row_of_the_same_model():
     """OpenRouter names Anthropic models with dots (``claude-sonnet-5.5``) and
     OpenAI/Google models as-is, behind a vendor prefix. Each alias must point
     at that same model's first-party row, not a sibling with another price."""
+    assert OPENROUTER_IDS
     for or_id, first_party in OPENROUTER_IDS.items():
         vendor, name = or_id.split("/")
         assert vendor in ("anthropic", "openai", "google"), or_id

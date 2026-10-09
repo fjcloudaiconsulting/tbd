@@ -44,9 +44,11 @@ class ModelPricing:
 # variant is a different price, so an unlisted id falls to ``_default``
 # (over-meters) rather than borrowing a cheaper sibling's row.
 #
-# Each row holds the HIGHEST rate any cited source publishes for the model:
-# where a price is tiered (prompt size, modality, a dated increase) or two
-# sources differ, the higher one wins, so the cap never under-meters.
+# Each row holds the HIGHEST text rate any cited source publishes for the
+# model: where a price is tiered (prompt size, a dated increase) or two
+# sources differ, the higher one wins, so the cap never under-meters. Text
+# rates only: the app sends no audio. Cache writes and fast/priority service
+# tiers are not modelled; no adapter sends cache_control or a service tier.
 #
 # Sources (USD per 1M tokens, standard tier, all read 2026-10-09):
 #   [A] https://platform.claude.com/docs/en/about-claude/pricing
@@ -57,14 +59,15 @@ class ModelPricing:
 #
 #   gpt-4o                  : $2.50 / $10.00  [O]  -> 250 / 1000
 #   gpt-4o-mini             : $0.15 / $0.60   [O]  -> 15 / 60
-#   The gpt-6 / gpt-5.6 rows take the >=272K-token-prompt rate. [O] lists
-#   that tier for gpt-5.6-sol only; [R] lists it for the rest.
-#   gpt-6-astra             : $20 / $75 [R] ($10 / $50 [O])     -> 2000 / 7500
-#   gpt-6.1-sol, gpt-6-sol  : $4 / $15 [R] ($2 / $10 [O])       -> 400 / 1500
-#   gpt-6-luna              : $0.20 / $0.75 [R] ($0.10 / $0.50) -> 20 / 75
-#   gpt-5.6-sol             : $8 / $30 [O] ($4 / $20 below)     -> 800 / 3000
-#   gpt-5.6-terra           : $4 / $18 [R] ($2 / $12 [O])       -> 400 / 1800
-#   gpt-5.6-luna            : $0.40 / $1.80 [R] ($0.20 / $1.20) -> 40 / 180
+#   The gpt-6 / gpt-5.6 rows take the >272K-token-prompt rate; the short-
+#   prompt rate [O] is in brackets.
+#   gpt-6-astra    : $20 / $75 [O]     ($10 / $50)     -> 2000 / 7500
+#   gpt-6.1-sol    : $4 / $15 [O]      ($2 / $10)      -> 400 / 1500
+#   gpt-6-sol      : $4 / $15 [R]      ($2 / $10)      -> 400 / 1500
+#   gpt-6-luna     : $0.20 / $0.75 [O] ($0.10 / $0.50) -> 20 / 75
+#   gpt-5.6-sol    : $8 / $30 [O]      ($4 / $20)      -> 800 / 3000
+#   gpt-5.6-terra  : $4 / $18 [R]      ($2 / $12)      -> 400 / 1800
+#   gpt-5.6-luna   : $0.40 / $1.80 [R] ($0.20 / $1.20) -> 40 / 180
 #   claude-fable-5-1, -5    : $10 / $50       [A]  -> 1000 / 5000
 #   claude-opus-5-5         : $4 / $20        [A]  -> 400 / 2000
 #   claude-opus-5, 4-8/7/6  : $5 / $25        [A]  -> 500 / 2500
@@ -82,13 +85,13 @@ class ModelPricing:
 #   gemini-3.5-flash-lite   : $0.30 / $2.50   [G]  -> 30 / 250
 #   gemini-3.1-pro-preview  : $4 / $18 (>200K-token prompt; $2 / $12 below)
 #                                             [G]  -> 400 / 1800
-#   gemini-3.1-flash-lite   : $0.50 audio-in / $1.50 ($0.25 text-in)
-#                                             [G]  -> 50 / 150
+#   gemini-3.1-flash-lite   : $0.25 / $1.50   [G]  -> 25 / 150
 #   text-embedding-3-small  : $0.02 in        [O]  -> 2 / 0
 #   text-embedding-3-large  : $0.13 in        [O]  -> 13 / 0
 #
 # OpenRouter ids (``OPENROUTER_IDS`` below) reuse the first-party row; every
-# one's [R] rate, long-prompt tier included, was at or below it on 2026-10-09.
+# one's [R] text rate, long-prompt tier included, was at or below it on
+# 2026-10-09.
 MODEL_PRICING: dict[str, ModelPricing] = {
     "gpt-4o": ModelPricing(prompt_per_1m_cents=250, completion_per_1m_cents=1000),
     "gpt-4o-mini": ModelPricing(prompt_per_1m_cents=15, completion_per_1m_cents=60),
@@ -121,7 +124,7 @@ MODEL_PRICING: dict[str, ModelPricing] = {
     "gemini-3.5-flash": ModelPricing(150, 900),
     "gemini-3.5-flash-lite": ModelPricing(30, 250),
     "gemini-3.1-pro-preview": ModelPricing(400, 1800),
-    "gemini-3.1-flash-lite": ModelPricing(50, 150),
+    "gemini-3.1-flash-lite": ModelPricing(25, 150),
     # Embedding models — input-only pricing. Completion column held at
     # zero so a future call site that accidentally passes
     # completion_tokens still doesn't double-bill an embedding row.
