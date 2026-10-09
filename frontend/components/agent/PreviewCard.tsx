@@ -17,7 +17,7 @@ import type { ActionChange, DriftRow, StagedAction } from "@/lib/agent/types";
 import { maskMoneyText } from "@/lib/format";
 import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import {
-  badgeError, badgeNeutral, badgeSuccess, btnPrimary, btnSecondary, cardTitle, label,
+  badgeError, badgeNeutral, badgeSuccess, btnPrimary, btnSecondary, cardTitle, focusInset,
   error as errorCls, warning as warningCls,
 } from "@/lib/styles";
 
@@ -35,6 +35,8 @@ interface Props {
   applyLabel?: string;
   onDecided?: (outcome: Outcome, action: StagedAction) => void;
 }
+
+const TH = "pb-1 text-left text-xs font-semibold uppercase tracking-[0.08em] text-text-secondary";
 
 // After a stale swap, Apply ignores clicks briefly, so the second click of a
 // double click cannot apply a diff nobody has read.
@@ -68,15 +70,21 @@ export default function PreviewCard({
   const [failure, setFailure] = useState("");
   const busyRef = useRef(false);
   const armedAt = useRef(0);
-  const headingRef = useRef<HTMLHeadingElement>(null);
+  // Focus lands on the whole card (announced by its heading) and the card is
+  // scrolled fully into view, Apply included.
+  const cardRef = useRef<HTMLElement>(null);
+  const focusCard = () => {
+    cardRef.current?.focus({ preventScroll: true });
+    cardRef.current?.scrollIntoView?.({ block: "nearest" });
+  };
 
   useEffect(() => {
-    if (autoFocus) headingRef.current?.focus();
+    if (autoFocus) focusCard();
   }, [autoFocus]);
 
   const finish = (o: Outcome, a: StagedAction) => {
     setOutcome(o);
-    headingRef.current?.focus(); // the buttons are gone; keep the reader in the card
+    focusCard(); // the buttons are gone; keep the reader in the card
     onDecided?.(o, a);
   };
 
@@ -99,7 +107,7 @@ export default function PreviewCard({
         setAction({ ...detail });
         setNotice("The data changed since this was proposed. Review the updated change.");
         armedAt.current = Date.now() + REARM_MS;
-        headingRef.current?.focus();
+        focusCard();
       } else if (code === "action_expired") {
         finish("expired", action);
       } else if (code === "action_already_decided") {
@@ -125,16 +133,16 @@ export default function PreviewCard({
 
   return (
     <section
+      ref={cardRef}
+      tabIndex={-1}
       aria-labelledby={headingId}
-      className="rounded-lg border border-border bg-surface"
+      className={`rounded-lg border border-border bg-surface ${focusInset}`}
       data-testid="preview-card"
     >
       <div className="px-5 pt-4">
         <p className={cardTitle}>Proposed change</p>
         <h3
           id={headingId}
-          ref={headingRef}
-          tabIndex={-1}
           className="mt-1 text-base font-semibold text-text-primary"
         >
           {maskMoneyText(actionHeadline(tool, action.summary, action.changes))}
@@ -180,9 +188,9 @@ export default function PreviewCard({
             <table className="mt-3 w-full text-left text-sm">
               <thead>
                 <tr>
-                  <th scope="col" className={`${label} pb-1 pr-3`}>Field</th>
-                  <th scope="col" className={`${label} pb-1 pr-3`}>After the change</th>
-                  <th scope="col" className={`${label} pb-1`}>Now</th>
+                  <th scope="col" className={`${TH} pr-3`}>Field</th>
+                  <th scope="col" className={`${TH} pr-3`}>After the change</th>
+                  <th scope="col" className={TH}>Now</th>
                 </tr>
               </thead>
               <tbody>

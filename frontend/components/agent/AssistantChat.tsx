@@ -180,7 +180,7 @@ export default function AssistantChat() {
   const newestOpen = [...entries].reverse().find((e) => e.kind === "preview" && !e.outcome)?.id;
 
   return (
-    <div className="mx-auto flex h-[calc(100dvh-13rem)] min-h-[26rem] max-w-3xl flex-col">
+    <div className="flex h-[calc(100dvh-13rem)] min-h-[26rem] max-w-3xl flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto pr-1" data-testid="transcript-pane">
       {entries.length === 0 && (
         <div className="mb-8">
@@ -209,7 +209,7 @@ export default function AssistantChat() {
 
       <div role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation">
       <ol className="space-y-5 pb-6">
-        {entries.map((e) => {
+        {entries.map((e, i) => {
           if (e.kind === "user") {
             return (
               <li key={e.id} className="flex flex-col items-end">
@@ -234,7 +234,11 @@ export default function AssistantChat() {
               </li>
             );
           }
-          if (e.kind === "tool") return <li key={e.id}><ToolLine e={e} /></li>;
+          if (e.kind === "tool") {
+            // Consecutive lookups read as one compact group.
+            const grouped = entries[i - 1]?.kind === "tool";
+            return <li key={e.id} className={grouped ? "!mt-1.5" : undefined}><ToolLine e={e} /></li>;
+          }
           if (e.kind === "preview") {
             return (
               <li key={e.id}>

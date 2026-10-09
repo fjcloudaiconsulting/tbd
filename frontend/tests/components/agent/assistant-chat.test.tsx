@@ -203,7 +203,7 @@ describe("preview card", () => {
       fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
       await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/data changed/));
       expect(screen.getByTestId("preview-card").textContent).toMatch(/€500\.00/);
-      expect(document.activeElement?.tagName).toBe("H3");
+      expect(document.activeElement).toBe(screen.getByTestId("preview-card"));
 
       // An immediate second click (the tail of a double click) is ignored.
       fireEvent.click(screen.getByRole("button", { name: "Apply change" }));
@@ -240,7 +240,7 @@ describe("transport and accessibility", () => {
     expect(getReader).toHaveBeenCalled();
     expect(es).not.toHaveBeenCalled();
     expect(screen.getByRole("log").getAttribute("aria-live")).toBe("polite");
-    expect(document.activeElement).toBe(within(screen.getByTestId("preview-card")).getByRole("heading", { level: 3 }));
+    expect(document.activeElement).toBe(screen.getByTestId("preview-card"));
 
     let result!: axe.AxeResults;
     await act(async () => {
