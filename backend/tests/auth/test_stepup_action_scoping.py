@@ -89,6 +89,12 @@ def _mock_email(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _oauth_on(monkeypatch):
+    # The oauth_consent consumer 404s with the OAuth server off.
+    monkeypatch.setattr(app_settings, "mcp_oauth_enabled", True)
+
+
 @pytest.fixture
 def google_config(monkeypatch):
     monkeypatch.setattr(app_settings, "google_client_id", "test-client-id")

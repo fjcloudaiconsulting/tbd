@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     # OFF in PR1 — flipped on later when the native adapter ships
     # alongside the consent UI (PR4).
     ai_native_enabled: bool = False
+    # MCP OAuth authorization server (TBD-587). Off: every route in
+    # ``app.routers.oauth`` answers 404 like an unknown path. Stays off in
+    # production until the server has had its own pen-test.
+    mcp_oauth_enabled: bool = False
     # Pinned ToS version for the native-provider consent flow. POSTs to
     # /api/v1/settings/ai-providers/consent must carry this exact
     # consent_version string — any mismatch (older OR newer) returns

@@ -92,6 +92,7 @@ async def factory():
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     limiter.reset()
+    monkeypatch.setattr(settings, "mcp_oauth_enabled", True)
     monkeypatch.setattr(settings, "app_url", APP + "/")
     monkeypatch.setenv("PFV_RUNTIME", "app_platform")  # trust do-connecting-ip
     monkeypatch.setattr(
@@ -1235,3 +1236,48 @@ async def test_stored_redirect_failing_todays_policy_is_no_match(factory, client
         await s.commit()
     r, _ = await _consent(client, h, cid, redirect="http://127.0.0.1:6001/cb")
     assert r.status_code == 400 and r.json()["detail"] == {"code": "invalid_redirect_uri"}, r.text
+
+
+# ── off switch (MCP_OAUTH_ENABLED) ─────────────────────────────────────────
+
+
+def _oauth_routes():
+    from app.routers.oauth import router as oauth_router
+
+    return [(m, r.path) for r in oauth_router.routes for m in sorted(r.methods)]
+
+
+async def _same_as_unknown(client, method: str, path: str, **kw) -> None:
+    got = await client.request(method, path, **kw)
+    unknown = await client.request(method, path + "-no-such-route", **kw)
+    assert unknown.status_code == 404
+
+    def _shape(r):  # x-request-id is fresh per request
+        return r.status_code, r.content, {k: v for k, v in r.headers.items() if k != "x-request-id"}
+
+    assert _shape(got) == _shape(unknown), (method, path)
+
+
+def test_mcp_oauth_is_off_by_default():
+    """FENCE. Wrong implementation: the flag defaults on, so a deploy that
+    never set MCP_OAUTH_ENABLED serves open registration."""
+    from app.config import Settings
+
+    assert Settings.model_fields["mcp_oauth_enabled"].default is False
+
+
+async def test_flag_off_every_oauth_route_is_an_unknown_path(factory, client, monkeypatch):
+    """FENCE. Wrong implementations: no gate (201/200/400 answers); a gate that
+    still answers 405 to the wrong method or 422 to a malformed body (both
+    say the route exists); a gate that writes the client row first."""
+    monkeypatch.setattr(settings, "mcp_oauth_enabled", False)
+    routes = _oauth_routes()
+    assert len(routes) == 6, routes
+    for method, path in routes:
+        await _same_as_unknown(client, method, path)
+        await _same_as_unknown(client, "DELETE", path)  # no 405 + Allow
+    await _same_as_unknown(client, "POST", AUTHZ, content=b"{",
+                           headers={"content-type": "application/json"})
+    await _same_as_unknown(client, "POST", REG, json={"redirect_uris": [CB], "client_name": "C"})
+    async with factory() as s:
+        assert (await s.scalar(select(func.count()).select_from(OAuthClient))) == 0

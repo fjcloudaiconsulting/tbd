@@ -312,7 +312,7 @@ recovery — reload — re-issues the request. Tracked separately.
 
 ### Public endpoints (no auth required)
 
-Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 14 are genuinely **open**, and 16 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "30 public routes" is not 30 unauthenticated ones.
+Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`. They split into two groups: 14 are genuinely **open**, and 16 are **credential-bearing** — they do authenticate the caller, just through a mechanism that lives outside the dependency graph (refresh cookie, MFA challenge token, invitation JWT, reset/verify JWT, OAuth state cookie, Mailgun HMAC, OAuth code + PKCE verifier or refresh token), which is why `get_current_user` cannot be attached to them. Keep that distinction in mind: "30 public routes" is not 30 unauthenticated ones. The four OAuth routes (and the two consent routes) answer a plain 404 unless `MCP_OAUTH_ENABLED` is set; it is off by default and in production.
 
 **Open — no identity check at all (14)**
 
