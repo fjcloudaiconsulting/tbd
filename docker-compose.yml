@@ -10,7 +10,7 @@ services:
     # If you need to move between this branch and an 8.0 branch, `./tbd reset`
     # on the way back, or keep the branches in separate worktrees with separate
     # `-p` compose projects so they never share this volume.
-    image: mysql:8.4@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242
+    image: mirror.gcr.io/library/mysql:8.4@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -218,7 +218,7 @@ services:
       - ./frontend/tsconfig.json:/app/tsconfig.json
 
   nginx:
-    image: nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
+    image: mirror.gcr.io/library/nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
     ports:
       - "80:80"
     volumes:
