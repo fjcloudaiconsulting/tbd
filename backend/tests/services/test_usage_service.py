@@ -272,3 +272,91 @@ async def test_402_handler_carries_null_resets_at_for_a_zero_limit():
     resp = await app.exception_handlers[PlanLimitReached](
         None, PlanLimitReached("mcp.calls", 0, "day", None))
     assert json.loads(resp.body)["detail"]["resets_at"] is None
+
+
+# ── TBD-581: current_usage (GET /ai/status usage) ─────────────────────────
+
+async def test_f581_meter_current_usage_reads_only_this_periods_row(factory):
+    """FENCE F-581-METER. Wrong implementations killed: summing every counter
+    row of a meter (the August row and the day-kind row would count), and
+    ignoring the period kind (the day row shares the month row's meter; the
+    month row of a now-daily meter sorts last, so last-row-wins reads it)."""
+    org = await _org(factory, {
+        "mcp.calls": {"period": "month", "limit": 5},
+        "assistant.turns": {"period": "day", "limit": 3},
+    })
+    other = await _org(factory, None)
+    async with factory() as db:
+        db.add_all([
+            UsageCounter(org_id=org, meter="mcp.calls", period="month",
+                         period_start=date(2026, 9, 1), value=2),
+            UsageCounter(org_id=org, meter="mcp.calls", period="month",
+                         period_start=date(2026, 8, 1), value=9),
+            UsageCounter(org_id=org, meter="mcp.calls", period="day",
+                         period_start=date(2026, 9, 30), value=7),
+            UsageCounter(org_id=org, meter="assistant.turns", period="day",
+                         period_start=date(2026, 9, 30), value=1),
+            UsageCounter(org_id=org, meter="assistant.turns", period="day",
+                         period_start=date(2026, 9, 29), value=3),
+            # Another org's counter for the same meter and period must never count.
+            UsageCounter(org_id=other, meter="mcp.calls", period="month",
+                         period_start=date(2026, 9, 1), value=40),
+            # Left from when the plan metered turns monthly; sorts after the day row.
+            UsageCounter(org_id=org, meter="assistant.turns", period="month",
+                         period_start=date(2026, 9, 1), value=5),
+        ])
+        await db.commit()
+        out = await usage_service.current_usage(db, org, include_platform=True, now=NOW)
+    midnight = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    assert out == {
+        "assistant.turns": {"used": 1, "limit": 3, "period": "day", "resets_at": midnight},
+        "mcp.calls": {"used": 2, "limit": 5, "period": "month", "resets_at": midnight},
+    }
+
+
+async def test_f581_platform_meters_admin_only_and_dark_at_zero(factory):
+    """FENCE. Wrong implementations killed: showing the org's platform spend
+    to every member, and listing a 0-limit platform meter (dark platform AI
+    would show to every org). A 0 limit on a product meter IS shown (it closes
+    the surface) and never resets."""
+    org = await _org(factory, {
+        "mcp.calls": {"period": "day", "limit": 0},
+        "platform_ai.cents": {"period": "month", "limit": 500},
+    })
+    async with factory() as db:
+        admin = await usage_service.current_usage(db, org, include_platform=True, now=NOW)
+        member = await usage_service.current_usage(db, org, include_platform=False, now=NOW)
+    assert sorted(admin) == ["assistant.turns", "mcp.calls", "platform_ai.cents"]
+    assert sorted(member) == ["assistant.turns", "mcp.calls"]
+    assert member["mcp.calls"] == {"used": 0, "limit": 0, "period": "day", "resets_at": None}
+    assert member["assistant.turns"]["limit"] is None  # catalog default: unlimited
+
+
+async def test_f581_meter_period_kind_on_the_first_and_mid_month_resets(factory):
+    """FENCE F-581-METER, the two mutants a month-end NOW cannot see. On the
+    1st a day row and a month row share ``period_start``, so matching on the
+    start alone reads the day row for a monthly meter; mid-month, a day meter
+    resets tomorrow and a month meter on the 1st, so one ``resets_at`` for
+    both is caught."""
+    org = await _org(factory, {
+        "mcp.calls": {"period": "month", "limit": 50},
+        "assistant.turns": {"period": "day", "limit": 3},
+    })
+    first = datetime(2026, 10, 1, 9, 0, 0)
+    async with factory() as db:
+        db.add_all([
+            # A daily meter whose plan was monthly until today: both rows
+            # start on the 1st, and the stale month row sorts last.
+            UsageCounter(org_id=org, meter="assistant.turns", period="day",
+                         period_start=date(2026, 10, 1), value=1),
+            UsageCounter(org_id=org, meter="assistant.turns", period="month",
+                         period_start=date(2026, 10, 1), value=5),
+        ])
+        await db.commit()
+        on_first = await usage_service.current_usage(db, org, include_platform=False, now=first)
+        mid = await usage_service.current_usage(
+            db, org, include_platform=False, now=datetime(2026, 10, 15, 9, 0, 0)
+        )
+    assert on_first["assistant.turns"]["used"] == 1
+    assert mid["assistant.turns"]["resets_at"] == datetime(2026, 10, 16, tzinfo=timezone.utc)
+    assert mid["mcp.calls"]["resets_at"] == datetime(2026, 11, 1, tzinfo=timezone.utc)

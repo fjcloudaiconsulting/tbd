@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services import ai_routing_service, feature_service
+from app.services import ai_routing_service, feature_service, usage_service
 from app.services.ai_feature_map import AI_FEATURE_MAP
 
 
@@ -30,3 +30,12 @@ async def get_ai_feature_status(
             configured = routing is not None
         out[ui_id] = {"entitled": entitled, "configured": configured}
     return out
+
+
+async def get_ai_status(db: AsyncSession, *, org_id: int, is_admin: bool) -> dict:
+    """``GET /ai/status``: the feature states plus this period's meter usage
+    (platform spend meters for org admins only)."""
+    return {
+        **await get_ai_feature_status(db, org_id=org_id),
+        "usage": await usage_service.current_usage(db, org_id, include_platform=is_admin),
+    }

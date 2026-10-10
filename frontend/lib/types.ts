@@ -1021,7 +1021,20 @@ export interface RateLimitOverrideListResponse {
 
 // AI readiness gating — PR1
 export interface AIFeatureState { entitled: boolean; configured: boolean }
-export interface AIStatus { categorize: AIFeatureState; forecast: AIFeatureState; budget: AIFeatureState }
+export interface MeterUsage {
+  used: number;
+  limit: number | null; // null = unlimited, 0 = closed
+  period: "day" | "month";
+  resets_at: string | null;
+}
+export interface AIStatus {
+  categorize: AIFeatureState;
+  forecast: AIFeatureState;
+  budget: AIFeatureState;
+  agent?: AIFeatureState;
+  // This period's use per meter (TBD-581); platform meters for org admins only.
+  usage?: Record<string, MeterUsage>;
+}
 
 // ── Email broadcasts (superadmin admin UI) ──────────────────────────────────
 //

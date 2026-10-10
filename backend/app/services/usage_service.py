@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -118,3 +118,35 @@ async def admit(
         raise PlanLimitReached(
             meter, lim.limit, lim.period, None if lim.limit == 0 else resets_at(lim.period, now)
         )
+
+
+
+async def current_usage(
+    db: AsyncSession, org_id: int, *, include_platform: bool, now: datetime | None = None
+) -> dict[str, dict]:
+    """This period's use of each meter (TBD-581), keyed by meter: ``used``,
+    ``limit`` (None = unlimited, 0 = closed), ``period`` and ``resets_at``
+    (None for a 0 limit, which never resets). ``platform_ai.*`` is the org's
+    platform spend: only for admins (``include_platform``), and left out at a 0
+    limit so dark platform AI stays dark."""
+    now = now or utcnow_naive()
+    ent = await feature_service.get_entitlements(db, org_id, now=now)
+    lims = {
+        m: ent.limits[m] for m in sorted(ALL_METER_KEYS)
+        if not m.startswith("platform_ai.") or (include_platform and ent.limits[m].limit != 0)
+    }
+    rows = (await db.execute(
+        select(UsageCounter.meter, UsageCounter.period, UsageCounter.period_start, UsageCounter.value)
+        .where(UsageCounter.org_id == org_id, UsageCounter.meter.in_(lims))
+    )).all()
+    used = {
+        r.meter: r.value for r in rows
+        if (r.period, r.period_start) == (lims[r.meter].period, period_start(lims[r.meter].period, now))
+    }
+    return {
+        m: {
+            "used": used.get(m, 0), "limit": lim.limit, "period": lim.period,
+            "resets_at": None if lim.limit == 0 else resets_at(lim.period, now),
+        }
+        for m, lim in lims.items()
+    }

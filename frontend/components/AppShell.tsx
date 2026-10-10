@@ -19,6 +19,7 @@ import {
   LayoutDashboard,
   LogOut,
   Megaphone,
+  MessagesSquare,
   Menu,
   MessageSquare,
   PieChart,
@@ -32,6 +33,7 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { DEFAULT_FEATURES } from "@/lib/features";
 import {
   EXTENDED_TOUR_STEPS,
@@ -191,6 +193,14 @@ function buildNavItems(features: {
   ];
 }
 
+// TBD-581: the assistant, right after Dashboard, only when the org has it
+// (the `ai.agent` key and an open `assistant.turns` meter; /ai/status).
+const ASSISTANT_NAV_ITEM = {
+  href: "/assistant",
+  label: "Assistant",
+  icon: <MessagesSquare {...NAV_ICON_PROPS} />,
+} as const;
+
 // Per-item permission gating: each System nav link declares the
 // platform permission its destination requires. AppShell renders only
 // the items whose permission the current user holds. A user with one
@@ -326,7 +336,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     authExitReason,
     clearAuthExitReason,
   } = useAuth();
-  const navItems = buildNavItems(features ?? DEFAULT_FEATURES);
+  const ai = useAiStatus();
+  const baseItems = buildNavItems(features ?? DEFAULT_FEATURES);
+  const navItems =
+    ai?.agent?.entitled && ai.usage?.["assistant.turns"]?.limit !== 0
+      ? [baseItems[0], ASSISTANT_NAV_ITEM, ...baseItems.slice(1)]
+      : baseItems;
   const router = useRouter();
   const pathname = usePathname();
   // Guards the redirect to fire exactly once per logged-out episode.

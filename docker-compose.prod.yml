@@ -33,6 +33,8 @@ services:
       - APP_ENV=production
       # TBD-561: no dev default in production; the shared pepper must be set.
       - API_TOKEN_HMAC_KEY=${API_TOKEN_HMAC_KEY:?set API_TOKEN_HMAC_KEY in .env}
+      # TBD-587: the OAuth server stays off in production (dev compose sets it on).
+      - MCP_OAUTH_ENABLED=${MCP_OAUTH_ENABLED:-false}
     depends_on:
       mysql:
         condition: service_healthy

@@ -39,6 +39,8 @@ services:
       # own (as in production), so tokens minted here would not authenticate
       # there. Set API_TOKEN_HMAC_KEY in .env to override.
       - API_TOKEN_HMAC_KEY=${API_TOKEN_HMAC_KEY:-dev-only-shared-api-token-hmac-key-not-for-prod}
+      # TBD-587: the OAuth server is off unless set (off in production).
+      - MCP_OAUTH_ENABLED=${MCP_OAUTH_ENABLED:-true}
     depends_on:
       mysql:
         condition: service_healthy

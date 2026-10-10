@@ -26,7 +26,7 @@ const STATUS_LABEL: Record<ApiToken["status"], string> = {
 
 // Map the expiry tone to a design-token text color (No Off-Token — never a
 // raw palette utility). `warning`/`danger` are the amber/red spec calls out.
-const TONE_CLASS: Record<string, string> = {
+export const TONE_CLASS: Record<string, string> = {
   normal: "text-text-secondary",
   warning: "text-warning",
   danger: "text-danger",
