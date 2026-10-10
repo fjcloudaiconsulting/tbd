@@ -68,14 +68,14 @@
     },
     {
       "description": "Python runtime upgrade (a new 3.x is a minor in Renovate's terms): Dockerfiles, requires-python and CI move together in one PR, on dashboard approval only.",
-      "matchDepNames": ["python"],
+      "matchDepNames": ["python", "mirror.gcr.io/library/python"],
       "matchUpdateTypes": ["major", "minor"],
       "groupName": "python runtime",
       "dependencyDashboardApproval": true
     },
     {
       "description": "Node runtime major: Dockerfiles, CI and @types/node move together in one PR, on dashboard approval only.",
-      "matchDepNames": ["node", "@types/node"],
+      "matchDepNames": ["node", "mirror.gcr.io/library/node", "@types/node"],
       "matchUpdateTypes": ["major"],
       "groupName": "node runtime",
       "dependencyDashboardApproval": true
@@ -83,7 +83,7 @@
     {
       "description": "The setup-uv python-version is a plain x.y input: never pin a digest to it.",
       "matchManagers": ["custom.regex"],
-      "matchDepNames": ["python"],
+      "matchDepNames": ["python", "mirror.gcr.io/library/python"],
       "pinDigests": false
     },
     {
@@ -95,7 +95,7 @@
     {
       "description": "Datastore image majors are never proposed: production versions are owned by aws-infra (clusters/platform/data), and local and CI images must not run ahead of them.",
       "matchDatasources": ["docker"],
-      "matchPackageNames": ["mysql"],
+      "matchPackageNames": ["mysql", "mirror.gcr.io/library/mysql"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     }
