@@ -101,7 +101,7 @@ REGEN = "python scripts/regen_feature_catalog_fixture.py"
 
 def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
     """Walk upward from `start` until a directory holding
-    `.github/workflows/release.yml` is found.
+    `.github/workflows/ci.yml` is found.
 
     Same marker walk, and the same rationale, as
     `tests/test_period_status_frontend_contract.py`: `parents[2]` is correct
@@ -112,10 +112,10 @@ def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
     docker-compose.yml).
     """
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "release.yml").exists():
+        if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate
     raise RuntimeError(
-        "Could not locate repo root containing .github/workflows/release.yml. "
+        "Could not locate repo root containing .github/workflows/ci.yml. "
         "Run these tests from a checked-out repo."
     )
 

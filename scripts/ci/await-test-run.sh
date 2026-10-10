@@ -4,7 +4,7 @@
 #
 # WHY THIS EXISTS (TBD-391)
 #
-# `ci.yml` and `release.yml` both trigger on `push: branches: [main]` and had
+# `ci.yml` and the (since removed) `release.yml` both triggered on `push: branches: [main]` and had
 # no dependency between them, so they raced and release won. Measured on PR
 # #654 (SHA 1af0b388), both runs created at 18:30:38:
 #
@@ -23,7 +23,8 @@
 # So this script is the interlock. Without it, the guard reports after the
 # thing it exists to prevent has already shipped.
 #
-# ⚠ IT GATES `release`. release-please cuts an immutable git tag and publishes
+# ⚠ IT NOW GATES ONLY apex-deploy.yml: the release runs inside ci.yml (INFRA-159) and needs the gates. The
+# reasoning below is why the gate sits BEFORE the irreversible step. release-please cuts an immutable git tag and publishes
 # a GitHub Release, so gating any later job would still leave a published
 # release for a commit whose suite then goes red.
 #

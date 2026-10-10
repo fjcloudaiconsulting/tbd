@@ -42,6 +42,8 @@ JOBS = WORKFLOW["jobs"]
 # The two jobs whose `name:` is a REQUIRED status check on `main`.
 GATES = ("backend", "frontend")
 DETECTOR = "changes"
+# Runs after the gates (needs: [backend, frontend]), so it is neither a work job nor wired into them.
+AFTER_GATES = {"release"}
 GATE_SCRIPT = "scripts/ci/assert-gate.sh"
 
 # ⚠ Read, never restated: `.github/branch-protection/main.json` is the
@@ -58,7 +60,7 @@ GATE_AREAS = {"backend": {"backend", "migrations"}, "frontend": {"frontend"}}
 
 
 def _work_jobs() -> list[str]:
-    return sorted(set(JOBS) - set(GATES) - {DETECTOR})
+    return sorted(set(JOBS) - set(GATES) - {DETECTOR} - AFTER_GATES)
 
 
 def _steps(job: str) -> list[dict]:
@@ -376,11 +378,17 @@ def test_every_job_is_wired_into_one_of_the_two_gates():
     wired = set()
     for gate in GATES:
         wired |= set(JOBS[gate].get("needs") or [])
-    unwired = sorted(set(JOBS) - wired - set(GATES))
+    unwired = sorted(set(JOBS) - wired - set(GATES) - AFTER_GATES)
     assert not unwired, (
         f"job(s) {unwired} are not depended on by either required gate. They "
         "would report an unrequired context: red, and the PR merges anyway."
     )
+
+
+def test_release_runs_after_exactly_the_two_gates():
+    """The one exemption from the wiring guard: it depends on the gates, so a
+    release cannot proceed past a failed or skipped work job."""
+    assert set(JOBS["release"]["needs"]) == set(GATES)
 
 
 def test_the_required_context_names_are_unchanged():
@@ -412,8 +420,8 @@ def test_every_main_commit_gets_its_own_test_run():
     """INFRA-42. A concurrency group keeps at most ONE pending run and cancels
     the older pending one even with `cancel-in-progress: false`. With every
     `main` push in the `refs/heads/main` group, a burst of three merges drops
-    the middle commit's run: no sha-<7> images for it, and release.yml's
-    await-test-run.sh sees `cancelled` and refuses the release. Push runs must
+    the middle commit's run: no sha-<7> images for it, and the (former) release await
+    saw `cancelled` and refused the release. Push runs must
     be keyed by sha; PR runs keep cancelling their own superseded runs."""
     concurrency = WORKFLOW["concurrency"]
     assert "github.event_name == 'push' && github.sha" in concurrency["group"], (

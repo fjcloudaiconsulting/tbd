@@ -260,7 +260,7 @@ Tests run inside `backend/tests/conftest.py`, which sets `DATABASE_URL`,
 `APP_ENV=development`, and a fixture `JWT_SECRET_KEY` directly. CI does
 NOT consume `.env`.
 
-`.github/workflows/release.yml` deploys nothing (see
+The `release` job in `.github/workflows/ci.yml` deploys nothing (see
 [`DEPLOYMENT.md`](DEPLOYMENT.md)). No workflow uses smoke credentials and
 there are no GitHub secrets for them. The post-deploy smoke (aws-infra `post-deploy-smoke.yml`, INFRA-114)
 runs `scripts/smoke-test.sh` and reads the credentials from the cluster Secret
@@ -371,6 +371,6 @@ switch to `main` for migrations, or set `PFV_MIGRATE_OK_OFF_MAIN=1` in
 - `frontend/components/auth/GoogleSSOButton.tsx` — gates on
   `TBD_GOOGLE_SSO_ENABLED`.
 - `pfv` (CLI) — `PFV_DEPDRIFT_*` and `PFV_MIGRATE_OK_OFF_MAIN` consumers.
-- `.github/workflows/release.yml` — release-please and image promotion
+- `.github/workflows/ci.yml` (`release` job) — release-please and image promotion
   (no deploy).
 - `CONTRIBUTING.md` — local-dev setup walkthrough.

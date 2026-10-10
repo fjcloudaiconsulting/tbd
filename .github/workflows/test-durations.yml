@@ -5,11 +5,11 @@ name: Test Durations
 #
 # ⚠ WHY THIS IS A SEPARATE WORKFLOW AND NOT A STEP IN ci.yml (TBD-421).
 #
-# `scripts/ci/await-test-run.sh` gates every production release on the RUN-level
+# `scripts/ci/await-test-run.sh` gates the apex deploy on the RUN-level
 # conclusion of `ci.yml` for the merge commit. Adding a write/upload step to
 # that workflow on `push: main` therefore puts a network-dependent operation on
 # the one path the deploy interlock reads: an artifact-service blip in any shard
-# would turn the run's conclusion to `failure`, `release.yml` would fail closed,
+# would turn the run's conclusion to `failure`, the apex deploy would fail closed,
 # and production would not deploy -- for a reason unrelated to whether the tests
 # passed.
 #
