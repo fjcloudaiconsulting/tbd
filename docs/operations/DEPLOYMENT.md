@@ -2,7 +2,7 @@
 
 Audience: a contributor who just cloned the repo and wants to understand what happens between `git push` and a live change at `app.thebetterdecision.com` or `thebetterdecision.com`. Also a triage reference for CI/CD failures.
 
-All four pipelines described here are live on `main` today (`ci.yml`, `release.yml`, `apex-deploy.yml`, `test-durations.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
+All four pipelines described here are live on `main` today (`ci.yml` including its `release` job, `apex-deploy.yml`, `test-durations.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
 
 For "how do I get my code ready to push", read [`CONTRIBUTING.md`](../../CONTRIBUTING.md). For the env var matrix, read [`ENVIRONMENT.md`](ENVIRONMENT.md). Production runs in `fjcloudaiconsulting/aws-infra`; this repo builds and releases the images, that one deploys them. This file does not duplicate either.
 
@@ -12,7 +12,7 @@ Three production surfaces. Each has its own pipeline. Some changes fan out acros
 
 | Surface | URL | Hosted by | Updated by |
 |---|---|---|---|
-| App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | Single-node k3s cluster, namespace `tbd-prod` (aws-infra) | `release.yml` publishes the `vX.Y.Z` images; merging the Renovate bump PR in aws-infra deploys them |
+| App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | Single-node k3s cluster, namespace `tbd-prod` (aws-infra) | the `ci.yml` `release` job publishes the `vX.Y.Z` images; merging the Renovate bump PR in aws-infra deploys them |
 | Apex landing (marketing, privacy, terms, docs) | `https://thebetterdecision.com` | Cloudflare Worker `tbd-landing` | `apex-deploy.yml` (auto) |
 
 ```mermaid
@@ -108,23 +108,23 @@ also measurably not a uniform rescaling of runner times.
 `backend/tests/test_test_durations_freshness.py` fails the build when the file
 drifts too far from the collected suite.
 
-## 3. Release and image promotion (`release.yml`)
+## 3. Release and image promotion (`ci.yml` `release` job)
 
-Source: `.github/workflows/release.yml`.
+Source: the `release` job of `.github/workflows/ci.yml`, which calls the shared `release.yml@v1`.
 
-`release.yml` is the **single arbiter** of "should we cut a release". It runs on every push to `main` and uses **release-please** (via the Release GitHub App token, environment `release`): an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; a release happens exactly once, when the owner merges that PR. On that merge `release` tags `vX.Y.Z` on the release commit and publishes the GitHub Release (`release_created`). Only then do the gated jobs run: `promote` (shared promote-release workflow retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations,mcp}` built by `ci.yml` on that commit as `vX.Y.Z`) and `release-smoke` (shared smoke workflow boots those images with `compose.smoke.yaml`, runs the migrations twice, and checks `/health` returns the version and revision). Before `release` runs, `await-tests` waits for the `Test` workflow on this sha, and `release` additionally waits for the `Test` run of the merged release PR's commit when that is not this run's commit.
+The `release` job in `ci.yml` is the **single arbiter** of "should we cut a release". It runs on every push to `main`, after the `Backend Checks` and `Frontend Checks` gates, by calling the shared `fjcloudaiconsulting/.github` `release.yml@v1` workflow (environment `release`, `secrets: inherit`). That workflow skips if `main` has moved past this commit, fails if a merged `autorelease: pending` release PR's own `Backend Checks`/`Frontend Checks` are not green yet (it never waits: re-run the job once they finish), then runs **release-please** with the Release GitHub App token: an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; a release happens exactly once, when the owner merges that PR, which tags `vX.Y.Z` on the release commit and publishes the GitHub Release. Only then do promote (retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations,mcp}` built by `ci.yml` on that commit as `vX.Y.Z`) and smoke (boots those images with `compose.smoke.yaml`, runs the migrations twice, and checks `/health` returns the version and revision) run.
 
 **Nothing in this repo deploys.** Production is the k3s cluster in `fjcloudaiconsulting/aws-infra`: Renovate opens a PR there bumping the `vX.Y.Z` image tags in `clusters/platform/tbd-prod/`, and merging it is the deploy (Flux applies it). aws-infra's `release-drift-probe` opens an issue when a published release has not reached `clusters/`.
 
 ### Trigger
 
 ```yaml
-on:
-  push:
-    branches: [main]
+release:
+  if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  needs: [backend, frontend]
 ```
 
-There is **no `paths:` filter** (TBD-424). Every push must reach release-please, or the release PR goes stale and the merged one is never tagged. The ship/no-ship call is the owner merging the release PR; conventional commit types (`feat:`, `fix:`, etc) only decide the version bump and CHANGELOG section.
+`ci.yml` has no `paths:` filter (TBD-424). Every push must reach release-please, or the release PR goes stale and the merged one is never tagged. The ship/no-ship call is the owner merging the release PR; conventional commit types (`feat:`, `fix:`, etc) only decide the version bump and CHANGELOG section.
 
 Why this design: merging a `feat:`/`fix:` PR no longer releases by itself, so versions ship once per release, when the owner decides, instead of on every merge.
 
@@ -140,7 +140,7 @@ sequenceDiagram
   participant K as k3s cluster (Flux)
 
   Owner->>GH: merge PR to main
-  GH->>SR: run release job (after await-tests)
+  GH->>SR: run release job (after the Backend and Frontend gates)
   SR->>SR: analyze conventional commits since last tag
   alt release_created == true (release PR merged)
     SR->>GH: tag vX.Y.Z, GitHub Release
@@ -156,13 +156,7 @@ sequenceDiagram
 
 ### The gate
 
-```yaml
-promote:
-  needs: release
-  if: needs.release.outputs.release_created == 'true'
-```
-
-This is the load-bearing line (see `.github/workflows/release.yml` for the exact expression). Without `release_created`, `promote` and `release-smoke` do not run and nothing is retagged. The output is set by release-please only when the merge is the release PR. `backend/tests/test_release_workflow.py` fences the workflow's shape.
+Inside the shared workflow, `promote` and `smoke` are gated on `needs.release.outputs.release_created == 'true'`. Without `release_created` they do not run and nothing is retagged. The output is set by release-please only when the merge is the release PR. `backend/tests/test_release_workflow.py` fences the `release` job's wiring.
 
 ### Production rollout (aws-infra)
 
@@ -221,7 +215,7 @@ aws-infra runbook above covers the password rotation. A rename is
 
 ### How to verify a rollout
 
-1. Watch the Release run: `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml`
+1. Watch the Release run: `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/ci.yml`
 2. Follow the aws-infra bump PR and the Flux apply (runbook above); `kubectl -n tbd-prod logs deploy/backend -c migrate` shows the structured `migrate.*` JSON events.
 3. Inspect the running app: `curl -fsS https://app.thebetterdecision.com/health`, `curl -fsS https://app.thebetterdecision.com/ready`, and `curl -fsS https://app.thebetterdecision.com/health/dependencies`.
    `/ready` is the database-only rotation gate; `/health/dependencies` reports each dependency, and is the one a monitor should read.
@@ -232,7 +226,7 @@ The apex landing (`thebetterdecision.com`) is a Next.js static export (`frontend
 
 The workflow runs on every push to `main` whose paths match the filter at the top of `.github/workflows/apex-deploy.yml` (and on `workflow_dispatch`). The `deploy-worker` job builds the export and runs `wrangler deploy`. It needs one secret, `CLOUDFLARE_API_TOKEN`, in the `landing` environment (deployment branches: `main` only), and skips with a notice while it is unset. No AWS credentials or repository variables are involved.
 
-Shared paths (`frontend/lib/brand.ts`, `frontend/public/**`, `frontend/package.json`, etc.) are also built by `release.yml`, so a change to any of them legitimately fires both pipelines. Landing-only paths only fire `apex-deploy.yml`.
+Shared paths (`frontend/lib/brand.ts`, `frontend/public/**`, `frontend/package.json`, etc.) are also built by `ci.yml`, so a change to any of them legitimately fires both pipelines. Landing-only paths only fire `apex-deploy.yml`.
 
 ### How to verify an apex deploy
 
@@ -321,7 +315,7 @@ For env var detail (`DATABASE_URL`, `APP_ENV`, etc.) on the migrate container, s
 
 ## 6. What triggers what (decision tree)
 
-⚠ **`release.yml` has NO `paths:` filter (TBD-424, 2026-08-20).** Every push to
+⚠ **The release job (in `ci.yml`) has NO `paths:` filter (TBD-424, 2026-08-20).** Every push to
 `main` starts a Release run, whatever it touched, a README-only merge included.
 What a run then *does* is decided further down the pipe, in two steps:
 
@@ -342,7 +336,7 @@ whatever merge next touches an allowlisted path.
 ```mermaid
 flowchart TD
   start[Commit lands on main with type <type> touching path P]
-  start --> rel[release.yml ALWAYS fires: no paths filter]
+  start --> rel[ci.yml release job ALWAYS fires: no paths filter]
   rel --> semrel{Is this the merge of the release PR?}
   semrel -- "yes: release_created" --> promote[promote retags images as vX.Y.Z, release-smoke boots them]
   promote --> bump[Renovate bump PR in aws-infra; merging it deploys]
@@ -359,15 +353,15 @@ Concrete cases:
 
 | You changed | Fires |
 |---|---|
-| `backend/app/routers/transactions.py` (feat) | `release.yml` updates the release PR; on its merge: release -> promote -> release-smoke. Production rolls when the aws-infra bump PR is merged (migrate init container runs first, no-op if no new revs) |
+| `backend/app/routers/transactions.py` (feat) | the `release` job updates the release PR; on its merge: release -> promote -> release-smoke. Production rolls when the aws-infra bump PR is merged (migrate init container runs first, no-op if no new revs) |
 | `frontend/components/dashboard/Foo.tsx` (feat) | Same path; the frontend image rolls with the bump PR |
-| `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. `release.yml` **also runs** and updates the release PR. |
-| `frontend/lib/brand.ts` (feat) | Both `release.yml` AND `apex-deploy.yml`. |
+| `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. the `release` job **also runs** and updates the release PR. |
+| `frontend/lib/brand.ts` (feat) | Both the `release` job AND `apex-deploy.yml`. |
 | `backend/alembic/versions/abc_new_migration.py` | release PR merge -> promote -> aws-infra bump PR merge -> `migrate` init container applies it -> backend starts |
-| `.github/workflows/ci.yml` | `ci.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and only updates the release PR. |
-| `README.md` only | `release.yml` **runs** and only updates the release PR. Nothing is tagged. |
+| `.github/workflows/ci.yml` | `ci.yml` triggers itself (it has no paths filter either). On merge, the `release` job runs and only updates the release PR. |
+| `README.md` only | the `release` job **runs** and only updates the release PR. Nothing is tagged. |
 
-⚠ A landing-only commit does not skip `release.yml`: if its commit type
+⚠ A landing-only commit does not skip the `release` job: if its commit type
 warrants a version, it enters the release PR. That is the correct behaviour:
 the version line should reflect what shipped. `apex-deploy.yml` keeps its own
 `paths:` filter. It is the only hand-maintained path allowlist in the repo, and
@@ -409,7 +403,7 @@ If a migration **partially applies** and the container exits non-zero, the backe
 | Surface | Where the logs live |
 |---|---|
 | GitHub Actions runs (all workflows) | `https://github.com/fjcloudaiconsulting/tbd/actions` |
-| `release.yml` runs specifically | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml` |
+| the `release` job (Release / release) | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/ci.yml` |
 | `apex-deploy.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/apex-deploy.yml` |
 | `ci.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/ci.yml` |
 | Production rollout, Flux, backend/frontend logs, `migrate` init container logs | [aws-infra `docs/runbooks.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md), "Follow Flux and rollouts" |
@@ -422,8 +416,8 @@ Triage shortcuts:
 
 | Symptom | First look at |
 |---|---|
-| Merge to `main` happened, prod didn't update | `release.yml` -> did `release` set `release_created=true`? Only the merge of the release PR cuts a release, and production only changes when the aws-infra bump PR is merged |
-| `release` job failed after the release PR merged | The Test run of the release PR's commit is red. Re-run that commit's failed Test jobs (not a `workflow_dispatch` run), then re-run the failed Release run (or wait for the next push to `main`) |
+| Merge to `main` happened, prod didn't update | the `release` job -> did `release` set `release_created=true`? Only the merge of the release PR cuts a release, and production only changes when the aws-infra bump PR is merged |
+| `release` job failed after the release PR merged | The release PR's commit has no green `Backend Checks`/`Frontend Checks` yet (the shared release-commit gate fails instead of waiting). Re-run that commit's failed Test jobs (not a `workflow_dispatch` run), then re-run the failed Release run (or wait for the next push to `main`) |
 | Release created but `promote` or `release-smoke` failed | Re-run the failed jobs of that Release run; the release already exists, so a new push to `main` will not redo them |
 | Release published, no bump PR in aws-infra | Renovate, then the `release-drift-probe` issue |
 | `release` job red after release-please already published the GitHub Release | `promote` never ran and a re-run cannot recover it (release-please finds the release and reports no `release_created`). Retag that commit's `sha-<7>` images as `vX.Y.Z` by hand, as `promote-release.yml` does; otherwise `release-drift-probe` flags it after its grace days |

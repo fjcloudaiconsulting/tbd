@@ -24,6 +24,7 @@ a run that never appears, and an API error such as a 403 from a missing
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import textwrap
@@ -65,6 +66,20 @@ SCRIPT = _find_script()
 FULL_SHA = "1af0b388fd27a4b621d9761a6a3ef1d153f0704c"
 
 
+_RUN_IDS = iter(range(1000, 10**6))
+
+
+def _jobs(backend: tuple[str, str | None], frontend: tuple[str, str | None] = ("completed", "success"), *extra: dict) -> list[dict]:
+    """The jobs of one ci.yml run. INFRA-159: the gate reads the two required
+    gate jobs, not the run's own conclusion (which now includes release)."""
+    jobs = [
+        {"id": 1, "name": "Backend Checks", "status": backend[0], "conclusion": backend[1]},
+        {"id": 2, "name": "Frontend Checks", "status": frontend[0], "conclusion": frontend[1]},
+        {"id": 3, "name": "Detect Changes", "status": "completed", "conclusion": "success"},
+    ]
+    return jobs + list(extra)
+
+
 def _runs_payload(*runs: str) -> str:
     return '{"total_count": %d, "workflow_runs": [%s]}' % (len(runs), ",".join(runs))
 
@@ -77,14 +92,28 @@ def _run(
     event: str = "push",
     branch: str = "main",
 ) -> str:
+    """A workflow run whose two gate jobs mirror `status`/`conclusion`."""
     concl = "null" if conclusion is None else f'"{conclusion}"'
+    run_id = next(_RUN_IDS)
+    _GATES_BY_RUN[run_id] = _jobs((status, conclusion))
     return (
-        f'{{"status": "{status}", "conclusion": {concl}, '
+        f'{{"id": {run_id}, "status": "{status}", "conclusion": {concl}, '
         f'"run_started_at": "{started}", "event": "{event}", "head_branch": "{branch}"}}'
     )
 
 
-def _invoke(tmp_path: Path, payload: str | None, *, exit_code: int = 0, sha: str = FULL_SHA):
+_GATES_BY_RUN: dict[int, list[dict]] = {}
+
+
+def _invoke(
+    tmp_path: Path,
+    payload: str | None,
+    *,
+    exit_code: int = 0,
+    sha: str = FULL_SHA,
+    jobs_by_run: dict[int, list[dict]] | None = None,
+    jobs_exit_code: int = 0,
+):
     """Run the REAL script with `gh` stubbed to emit `payload`.
 
     `exit_code` non-zero models the API call itself failing -- a 403 from a
@@ -93,14 +122,20 @@ def _invoke(tmp_path: Path, payload: str | None, *, exit_code: int = 0, sha: str
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
+    (tmp_path / "runs.json").write_text(payload if payload is not None else "")
+    for run_id, jobs in (jobs_by_run if jobs_by_run is not None else _GATES_BY_RUN).items():
+        (tmp_path / f"jobs-{run_id}.json").write_text(json.dumps({"jobs": jobs}))
     stub = bin_dir / "gh"
     stub.write_text(
         textwrap.dedent(
             f"""\
             #!/usr/bin/env bash
-            cat <<'PAYLOAD'
-            {payload if payload is not None else ""}
-            PAYLOAD
+            # $1 is `api`, $2 the endpoint. The jobs endpoint carries the run id.
+            if [[ "$2" =~ /actions/runs/([0-9]+)/jobs ]]; then
+              cat "{tmp_path}/jobs-${{BASH_REMATCH[1]}}.json" 2>/dev/null || echo '{{"jobs": []}}'
+              exit {jobs_exit_code}
+            fi
+            cat "{tmp_path}/runs.json"
             exit {exit_code}
             """
         )
@@ -130,13 +165,11 @@ def test_script_exists_and_is_executable():
     assert os.access(SCRIPT, os.X_OK), f"{SCRIPT} is not executable"
 
 
-def test_success_allows_the_deploy():
+def test_success_allows_the_deploy(tmp_path):
     """THE OVER-REACH CONTROL. Without this, a script that returned 1
     unconditionally would pass every other assertion in this file while
     permanently blocking all deploys."""
-    with pytest.MonkeyPatch.context():
-        pass
-    res = _invoke(Path("/tmp"), _runs_payload(_run("completed", "success")))
+    res = _invoke(tmp_path, _runs_payload(_run("completed", "success")))
     assert res.returncode == 0, res.stdout + res.stderr
 
 
@@ -268,3 +301,85 @@ def test_a_green_non_push_run_alone_fails_closed(tmp_path):
     res = _invoke(tmp_path, payload)
     assert res.returncode == 1, res.stdout + res.stderr
     assert "no Test run" in res.stdout and "timed out" in res.stderr, res.stdout + res.stderr
+
+
+def _single_run(jobs: list[dict], run_conclusion: str | None = "failure"):
+    """One push run on main with the given jobs. The RUN's own conclusion is
+    deliberately unrelated to the gates unless a test says otherwise."""
+    run_id = next(_RUN_IDS)
+    run = (
+        f'{{"id": {run_id}, "status": "completed", "conclusion": "{run_conclusion}", '
+        '"run_started_at": "2026-08-12T18:30:38Z", "event": "push", "head_branch": "main"}'
+    )
+    return _runs_payload(run), {run_id: jobs}
+
+
+def test_release_side_failure_with_green_gates_still_allows_the_deploy(tmp_path):
+    """INFRA-159, the regression. release/promote/smoke now live in ci.yml, so
+    the push run's conclusion is `failure` when the shared release-commit gate
+    (or promote, or smoke) is red. The landing deploy depends on the tests
+    only and must pass."""
+    extra = [
+        {"id": 90, "name": "Release / release", "status": "completed", "conclusion": "failure"},
+        {"id": 91, "name": "Release / promote / promote", "status": "completed", "conclusion": "skipped"},
+    ]
+    payload, jobs = _single_run(_jobs(("completed", "success"), ("completed", "success"), *extra))
+    res = _invoke(tmp_path, payload, jobs_by_run=jobs)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+def test_release_side_job_still_running_does_not_delay_the_deploy(tmp_path):
+    extra = [{"id": 90, "name": "Release / smoke / smoke", "status": "in_progress", "conclusion": None}]
+    payload, jobs = _single_run(_jobs(("completed", "success"), ("completed", "success"), *extra), None)
+    res = _invoke(tmp_path, payload, jobs_by_run=jobs)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize("which", ["backend", "frontend"])
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out", "action_required"])
+def test_either_gate_failing_blocks_even_if_the_other_is_green(tmp_path, which, conclusion):
+    bad = ("completed", conclusion)
+    good = ("completed", "success")
+    jobs = _jobs(bad, good) if which == "backend" else _jobs(good, bad)
+    payload, jobs_by_run = _single_run(jobs, "success")
+    res = _invoke(tmp_path, payload, jobs_by_run=jobs_by_run)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "timed out" not in res.stderr, "must fail on the conclusion, not by timing out"
+
+
+@pytest.mark.parametrize("pending", [("in_progress", None), ("queued", None)])
+def test_a_pending_gate_waits_then_fails_closed(tmp_path, pending):
+    payload, jobs = _single_run(_jobs(("completed", "success"), pending), None)
+    res = _invoke(tmp_path, payload, jobs_by_run=jobs)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "timed out" in res.stderr, res.stdout + res.stderr
+
+
+def test_missing_gate_jobs_time_out_fail_closed(tmp_path):
+    """A run exists but neither gate has a job yet (or one is missing)."""
+    payload, jobs = _single_run([], None)
+    res = _invoke(tmp_path, payload, jobs_by_run=jobs)
+    assert res.returncode == 1 and "timed out" in res.stderr, res.stdout + res.stderr
+
+    only_backend = [{"id": 1, "name": "Backend Checks", "status": "completed", "conclusion": "success"}]
+    payload, jobs = _single_run(only_backend, None)
+    res = _invoke(tmp_path, payload, jobs_by_run=jobs)
+    assert res.returncode == 1 and "timed out" in res.stderr, res.stdout + res.stderr
+
+
+def test_a_rerun_gate_job_wins_by_highest_id(tmp_path):
+    """A repeated gate name takes the highest job id: the re-run that
+    unblocks, and (mirror) a later red one that must not be masked."""
+    older_red = {"id": 0, "name": "Backend Checks", "status": "completed", "conclusion": "failure"}
+    payload, jobs = _single_run(_jobs(("completed", "success"), ("completed", "success"), older_red), None)
+    assert _invoke(tmp_path, payload, jobs_by_run=jobs).returncode == 0
+
+    newer_red = {"id": 99, "name": "Backend Checks", "status": "completed", "conclusion": "failure"}
+    payload, jobs = _single_run(_jobs(("completed", "success"), ("completed", "success"), newer_red), None)
+    assert _invoke(tmp_path, payload, jobs_by_run=jobs).returncode == 1
+
+
+def test_jobs_api_error_fails_closed(tmp_path):
+    payload, jobs = _single_run(_jobs(("completed", "success")))
+    res = _invoke(tmp_path, payload, jobs_by_run=jobs, jobs_exit_code=1)
+    assert res.returncode == 1, res.stdout + res.stderr

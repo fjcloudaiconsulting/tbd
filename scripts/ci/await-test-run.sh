@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Block until the `Test` workflow run for a commit completes. Exit 0 only on
-# success; fail CLOSED on every other outcome.
+# Block until the `Backend Checks` and `Frontend Checks` jobs of the `Test`
+# workflow's push run for a commit complete (INFRA-159: not the whole run, which
+# now includes release/promote/smoke). Exit 0 only on success; fail CLOSED on every other outcome.
 #
 # WHY THIS EXISTS (TBD-391)
 #
-# `ci.yml` and `release.yml` both trigger on `push: branches: [main]` and had
+# `ci.yml` and the (since removed) `release.yml` both triggered on `push: branches: [main]` and had
 # no dependency between them, so they raced and release won. Measured on PR
 # #654 (SHA 1af0b388), both runs created at 18:30:38:
 #
@@ -23,7 +24,8 @@
 # So this script is the interlock. Without it, the guard reports after the
 # thing it exists to prevent has already shipped.
 #
-# ⚠ IT GATES `release`. release-please cuts an immutable git tag and publishes
+# ⚠ IT NOW GATES ONLY apex-deploy.yml: the release runs inside ci.yml (INFRA-159) and needs the gates. The
+# reasoning below is why the gate sits BEFORE the irreversible step. release-please cuts an immutable git tag and publishes
 # a GitHub Release, so gating any later job would still leave a published
 # release for a commit whose suite then goes red.
 #
@@ -56,6 +58,7 @@ echo "await-test-run: waiting for '${WORKFLOW}' on ${SHA} (timeout ${TIMEOUT}s)"
 while :; do
   status="api-error"
   concl="-"
+  run_id=""
   if payload=$(gh api \
       "repos/${GH_REPO}/actions/workflows/${WORKFLOW}/runs?head_sha=${SHA}&event=push&branch=main&per_page=100" \
       2>&1); then
@@ -93,13 +96,51 @@ if not runs:
     print("absent -")
 else:
     newest = sorted(runs, key=lambda r: r.get("run_started_at") or "")[-1]
-    print((newest.get("status") or "absent") + " " + (newest.get("conclusion") or "-"))
+    print("found " + str(newest.get("id")))
 ' 2>/dev/null)
     if [ -z "$parsed" ]; then
       status="parse-error"
-      concl="-"
     else
-      read -r status concl <<<"$parsed"
+      read -r status run_id <<<"$parsed"
+    fi
+    # INFRA-159: the release, promote and smoke jobs now live in this same
+    # run, so the RUN's conclusion also reflects them. apex-deploy must depend
+    # on the tests only, i.e. the two gate jobs (the required contexts), read
+    # from the jobs of that push run. Reading them from the run, not from
+    # `commits/<sha>/check-runs` by name, is what proves they belong to the
+    # ci.yml push run on main: a check-run of the same name from another
+    # workflow or event cannot be mistaken for them. `/jobs` lists the latest
+    # attempt, so re-running a failed gate unblocks. A repeated name takes
+    # the highest job id.
+    if [ "$status" = "found" ]; then
+      status="absent"
+      if jobs=$(gh api "repos/${GH_REPO}/actions/runs/${run_id}/jobs?per_page=100" 2>&1); then
+        parsed=$(printf '%s' "$jobs" | python3 -c '
+import json, sys
+GATES = ("Backend Checks", "Frontend Checks")
+try:
+    jobs = json.load(sys.stdin).get("jobs") or []
+except Exception:
+    print("parse-error -")
+    raise SystemExit(0)
+state = []
+for name in GATES:
+    mine = [j for j in jobs if j.get("name") == name]
+    state.append(max(mine, key=lambda j: j.get("id") or 0) if mine else None)
+if any(j is None for j in state):
+    print("absent -")
+elif any(j.get("status") == "completed" and j.get("conclusion") != "success" for j in state):
+    bad = [j for j in state if j.get("status") == "completed" and j.get("conclusion") != "success"][0]
+    print("completed " + (bad.get("conclusion") or "unknown"))
+elif all(j.get("status") == "completed" for j in state):
+    print("completed success")
+else:
+    print("in_progress -")
+' 2>/dev/null)
+        if [ -z "$parsed" ]; then status="parse-error"; else read -r status concl <<<"$parsed"; fi
+      else
+        echo "await-test-run: gh api call failed, will retry: ${jobs}" >&2
+      fi
     fi
   else
     echo "await-test-run: gh api call failed, will retry: ${payload}" >&2
@@ -115,7 +156,7 @@ else:
   case "$status" in
     completed)
       if [ "$concl" = "success" ]; then
-        echo "await-test-run: Test run for ${SHA} succeeded."
+        echo "await-test-run: gate checks for ${SHA} succeeded."
         exit 0
       fi
       # failure / cancelled / timed_out / action_required / neutral / skipped
@@ -123,13 +164,13 @@ else:
       # deploy must not proceed on any of them. `cancelled` in particular is
       # reachable: a pending post-merge run is cancelled when a newer one
       # supersedes it in the concurrency group.
-      echo "await-test-run: Test run for ${SHA} concluded '${concl}'." >&2
+      echo "await-test-run: a gate check for ${SHA} concluded '${concl}'." >&2
       echo "Refusing to release. After investigating, re-run the Test run (or land a fix)," >&2
       echo "then re-run this workflow." >&2
       exit 1
       ;;
     absent)
-      echo "await-test-run: no Test run for ${SHA} yet; waiting"
+      echo "await-test-run: no Test run or gate checks for ${SHA} yet; waiting"
       ;;
     *)
       echo "await-test-run: Test run for ${SHA} is '${status}'; waiting"

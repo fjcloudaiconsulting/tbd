@@ -51,8 +51,7 @@ concurrency:
   # ONE pending run and cancels the older pending one even with
   # `cancel-in-progress: false`, so a shared `main` group dropped a merge's run
   # in a burst of three. Every `main` commit needs its own run: it builds the
-  # sha-<7> images that a release later promotes, and release.yml's
-  # await-tests waits for exactly that run's conclusion.
+  # sha-<7> images that a release later promotes.
   group: test-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   # ⚠ PR runs cancel their own superseded runs; `main` runs MUST NOT.
   # Before INFRA-42 every post-merge run shared the `refs/heads/main` group,
@@ -287,7 +286,7 @@ jobs:
 
   # INFRA-42: the GHCR images, through the shared build-image workflow
   # (RELEASE_CONTRACT.md section 3). Pull requests build without pushing; a
-  # push to `main` publishes sha-<7>, which release.yml's promote retags as
+  # push to `main` publishes sha-<7>, which the release job's promote retags as
   # vX.Y.Z and never rebuilds. detect-changed-areas.sh reports every area as
   # changed on any non-PR event, so every `main` commit (the release-please
   # commit included) gets all four images. mcp is promoted too (INFRA-147):
@@ -359,6 +358,9 @@ jobs:
 
           # Jobs that ARE the gates, so they cannot depend on themselves.
           ALLOWLIST = {"backend", "frontend"}
+          # Runs after the gates (needs: [backend, frontend]), so it cannot
+          # hang off them.
+          AFTER_GATES = {"release"}
 
           doc = yaml.safe_load(
               pathlib.Path(".github/workflows/ci.yml").read_text()
@@ -399,7 +401,7 @@ jobs:
           needs = set()
           for gate in sorted(ALLOWLIST):
               needs |= set(doc["jobs"][gate].get("needs") or [])
-          unwired = sorted(jobs - (needs | ALLOWLIST))
+          unwired = sorted(jobs - (needs | ALLOWLIST | AFTER_GATES))
 
           if unwired:
               print(f"Job(s) not wired into a required gate: {unwired}")
@@ -964,3 +966,22 @@ jobs:
           "${{ needs.frontend-image.result }}"
           "${{ needs.changes.outputs.frontend }}"
           "Publish frontend image"
+
+  # Releases only when both gates passed on this commit of main. Same run as the image builds, so the tagged release
+  # commit's sha-<7> images exist by the time promote runs. The shared workflow runs release-please (App token from
+  # this repo's `release` environment), then promote and smoke on a release. Nothing here deploys: production is the
+  # aws-infra bump PR.
+  release:
+    name: Release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend]
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
+      packages: write
+    uses: fjcloudaiconsulting/.github/.github/workflows/release.yml@v1
+    with:
+      images: backend frontend migrations mcp
+      health-url: http://localhost:8000/health
+    secrets: inherit

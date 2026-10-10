@@ -88,7 +88,7 @@ CASES: list[tuple[str, str | None]] = [
 
 def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
     """Walk upward from `start` until a directory holding
-    `.github/workflows/release.yml` is found.
+    `.github/workflows/ci.yml` is found.
 
     Same marker walk as `tests/test_release_workflow.py`, and here for the same
     reason: `parents[2]` is correct only from a host checkout and resolves to
@@ -99,10 +99,10 @@ def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
     already the repo root, so a revert here is green on every required check.
     """
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "release.yml").exists():
+        if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate
     raise RuntimeError(
-        "Could not locate repo root containing .github/workflows/release.yml. "
+        "Could not locate repo root containing .github/workflows/ci.yml. "
         "Run this generator from a checked-out repo."
     )
 
