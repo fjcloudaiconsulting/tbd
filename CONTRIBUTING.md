@@ -61,7 +61,7 @@ flowchart TD
     E --> H
     F --> H
     G --> H
-    H --> I[Push branch, open PR<br/>test.yml runs on PR]
+    H --> I[Push branch, open PR<br/>ci.yml runs on PR]
     I --> J[Merge to main]
     J --> K{Commit prefix release-eligible?}
     K -->|feat, fix, perf, revert| L[Lands in the release PR. Merging that PR ships to production.]
@@ -81,7 +81,7 @@ This repo uses `release-please`. Merging a `feat:`/`fix:` PR does not deploy; it
 | `perf:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
 | `revert:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
 | `feat!:`, `BREAKING CHANGE:` footer | Yes (minor bump below 1.0, `bump-minor-pre-major`; major after) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
-| `chore:`, `docs:`, `refactor:`, `test:`, `style:`, `ci:`, `build:` | No | Nothing. CI runs `test.yml` only. |
+| `chore:`, `docs:`, `refactor:`, `test:`, `style:`, `ci:`, `build:` | No | Nothing. CI runs `ci.yml` only. |
 
 Scope is freeform (`feat(admin):`, `fix(frontend):`, `chore(nginx):`). Scope does not change release behavior.
 
@@ -97,7 +97,7 @@ Full pipeline detail (path filters, gating logic, smoke tests, apex deploy) live
 
 PR push (any branch):
 
-- `.github/workflows/test.yml` runs on **every** push, deliberately with no `paths:` filter (TBD-347) — an in-workflow `changes` job diffs the PR instead and skips the backend/frontend shards for an unrelated change, so a docs-only PR still always produces a `Test` run. Backend: `pytest` + compileall syntax smoke. Frontend: lint, design-token check, `vitest`/`jest`, production build.
+- `.github/workflows/ci.yml` runs on **every** push, deliberately with no `paths:` filter (TBD-347) — an in-workflow `changes` job diffs the PR instead and skips the backend/frontend shards for an unrelated change, so a docs-only PR still always produces a `Test` run. Backend: `pytest` + compileall syntax smoke. Frontend: lint, design-token check, `vitest`/`jest`, production build.
 - Nothing deploys. Nothing reaches production.
 
 Merge to `main`:
@@ -504,7 +504,7 @@ the `capture_logs()` ones are green alone and red in a full run -- and plain
 as a clear failure.
 
 ⚠ **CI deliberately does not use `-n`.** The shard count is tuned to the runner
-budget (see the comment above `backend-shard:` in `.github/workflows/test.yml`),
+budget (see the comment above `backend-shard:` in `.github/workflows/ci.yml`),
 and `backend/tests/test_ci_shard_config.py` fences it.
 
 If you are working through a parallel agent session, use `-p team-<name>` on every compose call. See [Working in parallel agent sessions](#working-in-parallel-agent-sessions).
@@ -529,7 +529,7 @@ docker compose exec frontend pnpm exec tsc --noEmit
 cd frontend && pnpm exec tsc --noEmit
 ```
 
-CI runs the same check in the `Frontend Static Checks` job on every PR that touches
+CI runs the same check in the `Frontend Build` job on every PR that touches
 the frontend area. It covers test files, which `next build` does not, so a type error
 in a test can no longer merge green.
 

@@ -159,7 +159,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Wait for the Test workflow on this commit
+      - name: Wait for the CI workflow on this commit
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -202,11 +202,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Node
+      - name: Set up Node
         if: env.HAS_CF_TOKEN == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version-file: .nvmrc
 
       - name: Install frontend dependencies
         if: env.HAS_CF_TOKEN == 'true'

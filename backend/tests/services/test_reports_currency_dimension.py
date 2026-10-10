@@ -342,7 +342,7 @@ async def test_f4_currency_filter_matches_a_legacy_lowercase_row(db, legacy_case
     """F4. Kills the bare ``Account.currency`` on the FILTER side.
 
     ⚠ RED ON SQLITE, VACUOUS ON MYSQL -- and SQLite is where CI runs (every
-    shard but ``Migration Checks``). MySQL's ``utf8mb4_0900_ai_ci`` folds case in
+    shard but ``Backend Migrations``). MySQL's ``utf8mb4_0900_ai_ci`` folds case in
     a comparison, so the bare-column mutant passes there; SQLite does not fold,
     so the stored ``'eur'`` row silently drops out. Do not cite this test as
     MySQL coverage.

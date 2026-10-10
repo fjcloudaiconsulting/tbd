@@ -1,4 +1,4 @@
-"""TBD-404 -- `.github/workflows/test.yml` must stay wired the way the scoped
+"""TBD-404 -- `.github/workflows/ci.yml` must stay wired the way the scoped
 CI design requires.
 
 `test_ci_gate_accept_rule.py` fences the RULE (as behaviour, by executing
@@ -29,13 +29,13 @@ import yaml
 
 def _find_repo_root(start: Path) -> Path:
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "test.yml").exists():
+        if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate
-    raise RuntimeError("Could not locate repo root containing .github/workflows/test.yml")
+    raise RuntimeError("Could not locate repo root containing .github/workflows/ci.yml")
 
 
 REPO_ROOT = _find_repo_root(Path(__file__).resolve())
-WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "test.yml"
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 WORKFLOW = yaml.safe_load(WORKFLOW_PATH.read_text())
 JOBS = WORKFLOW["jobs"]
 
@@ -120,9 +120,9 @@ def test_the_detector_uses_no_third_party_action():
         uses = str(step.get("uses", ""))
         if not uses:
             continue
-        assert uses.startswith("actions/"), (
+        assert uses.startswith(("actions/", "fjcloudaiconsulting/.github/actions/")), (
             f"`changes` uses the third-party action {uses!r}. Change detection "
-            "gates the required contexts; keep it to first-party actions plus "
+            "gates the required contexts; keep it to first-party and org-owned actions plus "
             "scripts/ci/detect-changed-areas.sh."
         )
 
@@ -415,7 +415,7 @@ def test_every_main_commit_gets_its_own_test_run():
     be keyed by sha; PR runs keep cancelling their own superseded runs."""
     concurrency = WORKFLOW["concurrency"]
     assert "github.event_name == 'push' && github.sha" in concurrency["group"], (
-        f"test.yml's concurrency group is {concurrency['group']!r}; `main` push "
+        f"ci.yml's concurrency group is {concurrency['group']!r}; `main` push "
         "runs must be keyed by `github.sha`, not by `github.ref`."
     )
     assert concurrency["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"

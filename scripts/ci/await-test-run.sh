@@ -4,7 +4,7 @@
 #
 # WHY THIS EXISTS (TBD-391)
 #
-# `test.yml` and `release.yml` both trigger on `push: branches: [main]` and had
+# `ci.yml` and `release.yml` both trigger on `push: branches: [main]` and had
 # no dependency between them, so they raced and release won. Measured on PR
 # #654 (SHA 1af0b388), both runs created at 18:30:38:
 #
@@ -15,7 +15,7 @@
 #
 # The post-merge `Test` run is NOT a redundant re-run. It is the deliberate
 # substitute for branch protection's `strict: true` (see the comment block at
-# the top of test.yml): two PRs can each be green in isolation and conflict
+# the top of ci.yml): two PRs can each be green in isolation and conflict
 # semantically once both land, and no PR check can see that. Measured
 # 2026-08-12: 19 of the last 30 PRs had `main` move underneath them while they
 # were open, so that is not a rare shape.
@@ -27,7 +27,7 @@
 # a GitHub Release, so gating any later job would still leave a published
 # release for a commit whose suite then goes red.
 #
-# ⚠ THIS DEPENDS ON `test.yml` HAVING NO `paths:` FILTER. That ban (TBD-347) is
+# ⚠ THIS DEPENDS ON `ci.yml` HAVING NO `paths:` FILTER. That ban (TBD-347) is
 # what guarantees a Test run always exists for every push to `main`, which is
 # what makes this wait terminate. Reintroducing a filter there would no longer
 # just break PRs -- it would silently stop releases, one 25-minute
@@ -35,7 +35,7 @@
 set -uo pipefail
 
 SHA="${1:?usage: await-test-run.sh <full-40-char-sha>}"
-WORKFLOW="${AWAIT_TEST_WORKFLOW:-test.yml}"
+WORKFLOW="${AWAIT_TEST_WORKFLOW:-ci.yml}"
 INTERVAL="${AWAIT_TEST_POLL_SECONDS:-20}"
 TIMEOUT="${AWAIT_TEST_TIMEOUT_SECONDS:-1500}"
 DEADLINE=$(( $(date +%s) + TIMEOUT ))

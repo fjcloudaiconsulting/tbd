@@ -5117,7 +5117,7 @@
     "tests/test_ci_change_detection.py::test_a_pull_request_with_no_base_sha_runs_everything": 0.002428,
     "tests/test_ci_change_detection.py::test_a_shared_frontend_fixture_is_a_backend_change_too": 0.029759,
     "tests/test_ci_change_detection.py::test_an_empty_diff_is_an_answer_not_an_error": 0.021282,
-    "tests/test_ci_change_detection.py::test_an_unclassified_path_runs_everything[.github/workflows/test.yml]": 0.028909,
+    "tests/test_ci_change_detection.py::test_an_unclassified_path_runs_everything[.github/workflows/ci.yml]": 0.028909,
     "tests/test_ci_change_detection.py::test_an_unclassified_path_runs_everything[docker-compose.yml]": 0.028461,
     "tests/test_ci_change_detection.py::test_an_unclassified_path_runs_everything[scripts/ci/await-test-run.sh]": 0.028795,
     "tests/test_ci_change_detection.py::test_an_unclassified_path_runs_everything[tbd]": 0.028311,

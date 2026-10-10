@@ -35,7 +35,7 @@ def upgrade() -> None:
     # bare alias makes ``alembic upgrade head`` unrunnable on SQLite -- which
     # tests/migrations/test_sqlite_portability.py's docstring says migrations
     # must remain, and which is what lets the backfill be fenced at all (CI's
-    # shards are aiosqlite; the MySQL leg runs only in Migration Checks).
+    # shards are aiosqlite; the MySQL leg runs only in Backend Migrations).
     op.execute(
         """
         UPDATE organizations AS o

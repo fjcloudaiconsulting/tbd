@@ -8,7 +8,7 @@
 #     excluded — they cannot rely on Tailwind theme tokens at runtime).
 #   - Hard-coded hex literals in .ts/.tsx.
 #
-# This check is wired into CI (.github/workflows/test.yml) and is expected to
+# This check is wired into CI (.github/workflows/ci.yml) and is expected to
 # PASS: the call sites have been migrated to theme tokens. Both the raw-palette
 # / hex checks and the phantom-token check (a className referencing a --color-*
 # name that does not exist, which silently emits no CSS) are fatal. Keep it

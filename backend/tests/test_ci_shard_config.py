@@ -1,9 +1,9 @@
-"""Fence: the backend shard count must be consistent across test.yml.
+"""Fence: the backend shard count must be consistent across ci.yml.
 
 ## The hazard
 
 The shard count was, until TBD-421, written out literally in three places in
-`.github/workflows/test.yml`: the job `name:`, `strategy.matrix.group`, and the
+`.github/workflows/ci.yml`: the job `name:`, `strategy.matrix.group`, and the
 `--splits` argument to pytest.
 
 Those three can disagree, and the two directions are NOT symmetric:
@@ -33,13 +33,13 @@ import yaml
 
 def _find_repo_root(start: Path) -> Path:
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "test.yml").exists():
+        if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate
-    raise RuntimeError("Could not locate repo root containing .github/workflows/test.yml")
+    raise RuntimeError("Could not locate repo root containing .github/workflows/ci.yml")
 
 
 REPO_ROOT = _find_repo_root(Path(__file__).resolve())
-WORKFLOW = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "test.yml").read_text())
+WORKFLOW = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text())
 SHARD_JOB = WORKFLOW["jobs"]["backend-shard"]
 
 DURATIONS_WORKFLOW = yaml.safe_load(
@@ -72,7 +72,7 @@ def test_matrix_has_no_axis_other_than_group():
     """⚠ `strategy.job-total` is the PRODUCT of every matrix axis, not
     `len(matrix.group)`.
 
-    Adding a second axis is a normal, likely edit -- `Migration Checks` in this
+    Adding a second axis is a normal, likely edit -- `Backend Migrations` in this
     same workflow carries a `mysql` matrix of its own. Do it here:
 
         matrix:
@@ -147,8 +147,8 @@ def test_matrix_is_the_single_source_of_truth_for_the_shard_count():
     groups = SHARD_JOB["strategy"]["matrix"]["group"]
 
     # Positive baseline: a mis-parse yielding an empty list must not pass
-    # vacuously. Same reason test.yml's own wiring guard asserts len(jobs) >= 4.
-    assert len(groups) >= 2, f"parsed only {len(groups)} shard group(s) from test.yml"
+    # vacuously. Same reason ci.yml's own wiring guard asserts len(jobs) >= 4.
+    assert len(groups) >= 2, f"parsed only {len(groups)} shard group(s) from ci.yml"
     assert groups == list(range(1, len(groups) + 1)), (
         f"matrix.group must be a dense 1..N range, got {groups}. pytest-split "
         "addresses groups as 1..splits; a gap means a slice of the suite is "
@@ -178,7 +178,7 @@ def test_shard_job_name_reports_the_real_shard_count():
     groups = SHARD_JOB["strategy"]["matrix"]["group"]
     name = str(SHARD_JOB["name"])
 
-    match = re.search(r"/" + EXPR_OR_INT + r"\s*$", name)
+    match = re.search(r"/" + EXPR_OR_INT + r"\)?\s*$", name)
     assert match, f"shard job name has no `/<count>` suffix: {name!r}"
     suffix = _norm(match.group(1))
 
@@ -218,7 +218,7 @@ def test_the_harvest_is_sharded_the_same_way_the_suite_is():
     assert len(harvest) >= 2, f"parsed only {len(harvest)} harvest shard(s)"
     assert harvest == consume, (
         f"test-durations.yml harvests in {len(harvest)} shards ({harvest}) but "
-        f"test.yml consumes in {len(consume)} ({consume}). The harvest must "
+        f"ci.yml consumes in {len(consume)} ({consume}). The harvest must "
         "measure each test in the same process shape it will run in, or the "
         "timings are biased by collection position and the shards silently "
         "stop balancing."
@@ -258,7 +258,7 @@ def test_the_harvest_does_not_run_the_fence_that_reads_its_own_output():
     4181 entries", and the workflow could not produce the file that would have
     fixed it.
 
-    The fence still runs for real in test.yml. This job is measuring, not
+    The fence still runs for real in ci.yml. This job is measuring, not
     validating.
     """
     run = next(

@@ -7,13 +7,13 @@ import yaml
 
 def _root() -> Path:
     for c in [Path(__file__).resolve(), *Path(__file__).resolve().parents]:
-        if (c / ".github" / "workflows" / "test.yml").exists():
+        if (c / ".github" / "workflows" / "ci.yml").exists():
             return c
     raise RuntimeError("repo root not found")
 
 
 def _job_steps():
-    wf = yaml.safe_load((_root() / ".github/workflows/test.yml").read_text())
+    wf = yaml.safe_load((_root() / ".github/workflows/ci.yml").read_text())
     return wf["jobs"]["migrations"]["steps"]
 
 

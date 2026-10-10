@@ -3,8 +3,8 @@ gate may accept from an upstream job.
 
 WHY THIS EXISTS
 
-`test.yml` now scopes its work jobs to the area they test, so a docs-only PR
-skips the six backend shards, `Migration Checks` and the frontend suite. The
+`ci.yml` now scopes its work jobs to the area they test, so a docs-only PR
+skips the six backend shards, `Backend Migrations` and the frontend suite. The
 two REQUIRED contexts (`Backend Checks`, `Frontend Checks`) still run -- they
 must, because a required context that never reports blocks its PR forever --
 so they have to be able to accept a `skipped` upstream.
@@ -169,7 +169,7 @@ def test_wrong_argument_count_is_a_usage_error_not_a_pass(args):
 def test_the_label_is_reported_so_a_red_gate_names_its_subject():
     """Both aggregates call this script two or three times. A refusal that does
     not say which upstream it is about sends the reader hunting."""
-    ok = _run("success", "true", "Migration Checks")
-    assert "Migration Checks" in ok.stdout
-    bad = _run("failure", "true", "Migration Checks")
-    assert "Migration Checks" in bad.stderr
+    ok = _run("success", "true", "Backend Migrations")
+    assert "Backend Migrations" in ok.stdout
+    bad = _run("failure", "true", "Backend Migrations")
+    assert "Backend Migrations" in bad.stderr

@@ -97,9 +97,9 @@ MAX_SHARD_IMBALANCE = 1.30
 
 def _find_repo_root(start: Path) -> Path:
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "test.yml").exists():
+        if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate
-    raise RuntimeError("Could not locate repo root containing .github/workflows/test.yml")
+    raise RuntimeError("Could not locate repo root containing .github/workflows/ci.yml")
 
 
 # Read from the workflow rather than hardcoded, so the simulation always models
@@ -107,7 +107,7 @@ def _find_repo_root(start: Path) -> Path:
 # side of this pair.
 SHARD_COUNT = len(
     yaml.safe_load(
-        (_find_repo_root(Path(__file__).resolve()) / ".github" / "workflows" / "test.yml").read_text()
+        (_find_repo_root(Path(__file__).resolve()) / ".github" / "workflows" / "ci.yml").read_text()
     )["jobs"]["backend-shard"]["strategy"]["matrix"]["group"]
 )
 
@@ -170,7 +170,7 @@ def test_collection_capture_sees_the_whole_suite():
     health. The two likeliest accidental breakages (a moved test tree, a
     conftest refactor) would then both read GREEN.
 
-    This mirrors `assert len(jobs) >= 4` in test.yml's wiring guard, which
+    This mirrors `assert len(jobs) >= 4` in ci.yml's wiring guard, which
     exists for the same reason.
     """
     collected = _collected()
@@ -235,7 +235,7 @@ def test_durations_file_is_not_full_of_deleted_tests(durations):
 
 
 def test_thresholds_are_not_quietly_relaxed():
-    """⚠ Pinned deliberately, the way test.yml's wiring guard pins its ALLOWLIST.
+    """⚠ Pinned deliberately, the way ci.yml's wiring guard pins its ALLOWLIST.
 
     Relaxing a bar here must be a two-place edit that a reviewer sees, not the
     reflex fix for a red build. If this is in your way, the remedy is

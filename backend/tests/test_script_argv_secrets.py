@@ -26,7 +26,7 @@ import pytest
 
 def _find_repo_root(start: Path) -> Path | None:
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "test.yml").exists():
+        if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate
     return None
 

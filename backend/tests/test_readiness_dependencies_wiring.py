@@ -44,7 +44,7 @@ def _strip_helm(text: str) -> str:
 
 def _find_repo_root(start: pathlib.Path) -> pathlib.Path | None:
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "test.yml").exists():
+        if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate
     return None
 
@@ -96,12 +96,12 @@ ENDPOINT = "/health/dependencies"
 
 
 def _migrations_job() -> dict:
-    doc = yaml.safe_load(_artifact(".github/workflows/test.yml").read_text())
+    doc = yaml.safe_load(_artifact(".github/workflows/ci.yml").read_text())
     return doc["jobs"]["migrations"]
 
 
 def test_s1_ci_asserts_the_endpoint_by_parsing_json_not_grepping():
-    """S1 — ``Migration Checks`` must actually assert the response.
+    """S1 — ``Backend Migrations`` must actually assert the response.
 
     A bare status-code check is near-vacuous: a handler that always returns
     200 passes it. The step has to pin the values too, and it must parse the
