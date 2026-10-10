@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.296.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.295.0...v0.296.0) (2026-10-10)
+
+
+### Features
+
+* **ai:** assistant chat, agent access and review screens (TBD-581) ([#906](https://github.com/fjcloudaiconsulting/tbd/issues/906)) ([d6d551f](https://github.com/fjcloudaiconsulting/tbd/commit/d6d551f6a47bfbd1880cb306475c4c00201159b9))
+* **oauth:** keep the OAuth server off unless MCP_OAUTH_ENABLED is set (TBD-587) ([#905](https://github.com/fjcloudaiconsulting/tbd/issues/905)) ([8890ead](https://github.com/fjcloudaiconsulting/tbd/commit/8890ead44b6a5d39ddd997ac2fb66cffb4886a5b))
+
 ## [0.295.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.294.0...v0.295.0) (2026-10-09)
 
 
