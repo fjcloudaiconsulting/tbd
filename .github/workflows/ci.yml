@@ -28,7 +28,7 @@ name: CI
 # `Backend Migrations` and the frontend suite. That is NOT the banned filter, and
 # the difference is exactly the property the ban protects: every job still
 # STARTS and then decides to do nothing, so both required contexts always
-# report and the `Test` run always CONCLUDES. That is what keeps a docs-only PR
+# report and the `CI` run always CONCLUDES. That is what keeps a docs-only PR
 # mergeable, and what keeps `scripts/ci/await-test-run.sh` -- and therefore
 # production deploys -- terminating on every push to `main`. A trigger-level
 # `paths:` filter would stop the jobs existing at all, which breaks both.

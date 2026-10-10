@@ -13,7 +13,7 @@
 #   18:35:20  deploy done (DO ran the PRE_DEPLOY alembic migration)
 #   18:38:48  Test run completed          <- 7m41s after the tag was cut
 #
-# The post-merge `Test` run is NOT a redundant re-run. It is the deliberate
+# The post-merge `CI` run is NOT a redundant re-run. It is the deliberate
 # substitute for branch protection's `strict: true` (see the comment block at
 # the top of ci.yml): two PRs can each be green in isolation and conflict
 # semantically once both land, and no PR check can see that. Measured
@@ -70,7 +70,7 @@ while :; do
     # against history, pass the sha of a red push run on main.
     #
     # Newest push run wins: a re-run of a red suite (a re-run keeps its
-    # `push` event) unblocks a deploy without a force-push. Dispatching Test
+    # `push` event) unblocks a deploy without a force-push. Dispatching CI
     # instead does not.
     #
     # ⚠ python3, NOT jq. Both exist on `ubuntu-latest`, but `jq` is ABSENT
