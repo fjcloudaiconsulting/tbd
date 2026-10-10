@@ -1,5 +1,5 @@
 """TBD-404 -- ``scripts/ci/detect-changed-areas.sh`` classifies a PR's diff into
-the per-area booleans that gate the work jobs in ``.github/workflows/test.yml``.
+the per-area booleans that gate the work jobs in ``.github/workflows/ci.yml``.
 
 WHY THIS EXISTS
 
@@ -59,7 +59,7 @@ BASE_TREE = {
     "frontend/components/Thing.tsx": "export const Thing = () => null;\n",
     "frontend/tests/fixtures/report-sources.json": "{}\n",
     "docker-compose.yml": "services: {}\n",
-    ".github/workflows/test.yml": "name: Test\n",
+    ".github/workflows/ci.yml": "name: Test\n",
     "scripts/ci/await-test-run.sh": "true\n",
     "tbd": "#!/bin/sh\n",
 }
@@ -256,7 +256,7 @@ def test_a_frontend_source_a_backend_fence_reads_is_a_backend_change_too(
 @pytest.mark.parametrize(
     "path",
     [
-        ".github/workflows/test.yml",
+        ".github/workflows/ci.yml",
         "scripts/ci/await-test-run.sh",
         "docker-compose.yml",
         "tbd",
@@ -351,7 +351,7 @@ def test_an_unresolvable_base_sha_runs_everything(tmp_path):
 
 @needs_git
 def test_migrations_tracks_backend(tmp_path):
-    """`Migration Checks` boots the whole app against real MySQL and hits
+    """`Backend Migrations` boots the whole app against real MySQL and hits
     /ready, so its scope is every backend change, not just `backend/alembic/`.
     If that is ever narrowed, narrow it in the script -- not by hand-wiring a
     different output in the workflow."""

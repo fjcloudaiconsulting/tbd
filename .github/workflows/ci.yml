@@ -1,4 +1,4 @@
-name: Test
+name: CI
 
 # NO `paths:` FILTER, DELIBERATELY (TBD-347). Do not reintroduce one.
 #
@@ -25,10 +25,10 @@ name: Test
 # ⚠ IN-WORKFLOW CHANGE DETECTION IS THE SANCTIONED ALTERNATIVE (TBD-404). The
 # `changes` job below diffs the PR against its merge base and every work job is
 # gated on its per-area output, so a docs-only PR skips the six backend shards,
-# `Migration Checks` and the frontend suite. That is NOT the banned filter, and
+# `Backend Migrations` and the frontend suite. That is NOT the banned filter, and
 # the difference is exactly the property the ban protects: every job still
 # STARTS and then decides to do nothing, so both required contexts always
-# report and the `Test` run always CONCLUDES. That is what keeps a docs-only PR
+# report and the `CI` run always CONCLUDES. That is what keeps a docs-only PR
 # mergeable, and what keeps `scripts/ci/await-test-run.sh` -- and therefore
 # production deploys -- terminating on every push to `main`. A trigger-level
 # `paths:` filter would stop the jobs existing at all, which breaks both.
@@ -79,14 +79,14 @@ jobs:
   # scripts/ci/detect-changed-areas.sh and are fenced by
   # backend/tests/test_ci_change_detection.py.
   changes:
-    name: Detect changed areas
+    name: Detect Changes
     runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.detect.outputs.backend }}
       frontend: ${{ steps.detect.outputs.frontend }}
       migrations: ${{ steps.detect.outputs.migrations }}
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -107,12 +107,8 @@ jobs:
 
       # Here because both aggregate gates require this job. Anonymous Docker Hub
       # pulls from shared runner IPs hit 429s and auth outages (INFRA-152).
-      - name: No Docker Hub image references
-        run: |
-          if git grep -nE '(^|[[:space:]])(FROM|image:)[[:space:]]+"?(--platform=[^[:space:]]+[[:space:]]+)?(docker\.io/|index\.docker\.io/|[a-z0-9_-]+(/[a-z0-9._-]+)*[:@])|syntax=(docker\.io/|[a-z0-9_-]+(/[a-z0-9._-]+)*[:@])' \
-               -- '*Dockerfile*' '*compose*.yml' '*compose*.yaml' '.github/workflows/*.yml'; then
-            echo "Pull Docker Hub images through mirror.gcr.io (mirror.gcr.io/library/<name> for official images)." && exit 1
-          fi
+      - name: No Docker Hub images
+        uses: fjcloudaiconsulting/.github/actions/no-docker-hub@v1
 
   # Backend pytest is sharded across N parallel groups via pytest-split.
   # Each shard runs a deterministic, duration-balanced slice of the suite
@@ -122,7 +118,7 @@ jobs:
   # run's wall clock is set by its slowest job, so backend time below that job
   # is unobservable. At TBD-421 the slowest job was `Frontend Checks` (~347s)
   # and the target became "`Backend Checks` stays below `Frontend Checks`".
-  # That target is already missed: as of 2026-09-13 Backend Shard 5/6 (~470s)
+  # That target is already missed: as of 2026-09-13 Backend Tests (5/6) (~470s)
   # is the slowest job, ahead of the frontend suite (~400s) and the other
   # shards (~220-375s). The shard-5 imbalance is tracked as TBD-524.
   #
@@ -155,11 +151,11 @@ jobs:
   # A full run peaks at 9 concurrent jobs (8 before TBD-422 split the frontend
   # suite), so two concurrent PRs peaked at 18 of the 20 public runners. Eight
   # shards would put them over that budget, and queueing costs more than the
-  # extra shard saves. ⚠ INFRA-42 added the three Publish Image jobs (short,
+  # extra shard saves. ⚠ INFRA-42 added the three Image jobs (short,
   # cached builds): a full run now peaks at 12, so two full PRs at once queue
   # a few jobs.
   backend-shard:
-    name: Backend Shard ${{ matrix.group }}/${{ strategy.job-total }}
+    name: Backend Tests (${{ matrix.group }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
     needs: changes
     # TBD-404: skipped entirely when no backend-relevant file changed. The
@@ -171,24 +167,13 @@ jobs:
       matrix:
         group: [1, 2, 3, 4, 5, 6]
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          version: "0.12.24"
-          python-version: "3.12"
-          enable-cache: true
-          cache-dependency-glob: backend/uv.lock
-
       - name: Install backend dependencies
-        working-directory: backend
-        run: |
-          uv sync --locked
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+        uses: fjcloudaiconsulting/.github/actions/uv-sync@v1
 
       - name: Run backend tests (shard ${{ matrix.group }}/${{ strategy.job-total }})
         working-directory: backend
@@ -229,12 +214,12 @@ jobs:
   # Throwaway secrets: Settings refuses to import without real-looking ones.
   # Nothing is pushed here: `backend-images` publishes the same file (INFRA-147).
   mcp-image:
-    name: MCP Image
+    name: Image Smoke (mcp)
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -254,13 +239,13 @@ jobs:
   # both, prove the runtime has no build toolchain, and import the app and the
   # alembic entrypoint inside them. Nothing is pushed yet.
   backend-image:
-    name: Backend Image
+    name: Image Smoke (backend)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -308,7 +293,7 @@ jobs:
   # commit included) gets all four images. mcp is promoted too (INFRA-147):
   # aws-infra deploys it.
   backend-images:
-    name: Publish Image (${{ matrix.image }})
+    name: Image (${{ matrix.image }})
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     strategy:
@@ -328,7 +313,7 @@ jobs:
       target: ${{ matrix.target }}
 
   frontend-image:
-    name: Publish Image (frontend)
+    name: Image (frontend)
     needs: changes
     if: ${{ needs.changes.outputs.frontend == 'true' }}
     permissions:
@@ -364,7 +349,7 @@ jobs:
       # scale, and worse than the original because by then CI is believed to
       # be a floor.
       #
-      # The fold-in convention (see the `Migration Checks` note below) was
+      # The fold-in convention (see the `Backend Migrations` note below) was
       # previously held by a comment. This turns it into a test.
       - name: Verify every job in this workflow is wired into this gate
         run: |
@@ -376,7 +361,7 @@ jobs:
           ALLOWLIST = {"backend", "frontend"}
 
           doc = yaml.safe_load(
-              pathlib.Path(".github/workflows/test.yml").read_text()
+              pathlib.Path(".github/workflows/ci.yml").read_text()
           )
           jobs = set(doc["jobs"])
 
@@ -454,14 +439,14 @@ jobs:
           bash scripts/ci/assert-gate.sh
           "${{ needs.mcp-image.result }}"
           "${{ needs.changes.outputs.backend }}"
-          "MCP Image"
+          "Image Smoke (mcp)"
 
       - name: Verify the backend image targets built
         run: >-
           bash scripts/ci/assert-gate.sh
           "${{ needs.backend-image.result }}"
           "${{ needs.changes.outputs.backend }}"
-          "Backend Image"
+          "Image Smoke (backend)"
 
       - name: Verify the backend, migrations and MCP images built (and published on main)
         run: >-
@@ -470,7 +455,7 @@ jobs:
           "${{ needs.changes.outputs.backend }}"
           "Publish backend images"
 
-      # `Migration Checks` is folded into this aggregate deliberately. It is
+      # `Backend Migrations` is folded into this aggregate deliberately. It is
       # the one context branch protection is expected to require (TBD-347),
       # and a MySQL-only defect merging green because someone forgot to add a
       # second context name would reinstate exactly the hole that job exists
@@ -480,7 +465,7 @@ jobs:
           bash scripts/ci/assert-gate.sh
           "${{ needs.migrations.result }}"
           "${{ needs.changes.outputs.migrations }}"
-          "Migration Checks"
+          "Backend Migrations"
 
       # ── Coverage reporting (TBD-498) ─────────────────────────────────────
       # Deliberately AFTER the gate assertions above: this is reporting, not
@@ -506,7 +491,7 @@ jobs:
         if: ${{ needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: '3.12'
+          python-version-file: backend/.python-version
 
       - name: Combine shard coverage and report
         if: ${{ needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
@@ -537,7 +522,7 @@ jobs:
           cd ..
           ./scripts/ci/update-coverage-badge.sh backend "$PCT"
 
-  # ── Migration Checks (TBD-212) ───────────────────────────────────────────
+  # ── Backend Migrations (TBD-212) ───────────────────────────────────────────
   # The ONLY place CI executes migrations against MySQL 8.
   #
   # Every job above runs on in-process aiosqlite (see the shard note). That is
@@ -559,7 +544,7 @@ jobs:
   # cannot run on a bare runner. The wrapper's per-revision structured events
   # are therefore NOT exercised here; only the migrations themselves are.
   migrations:
-    name: Migration Checks
+    name: Backend Migrations
     runs-on: ubuntu-latest
     needs: changes
     # TBD-404: this job boots the whole app against real MySQL and hits
@@ -576,7 +561,7 @@ jobs:
     # so the 8.0 leg covered an engine nothing runs.
     #
     # ⚠ The matrix SHAPE is kept deliberately even at one entry, so the job name
-    # stays `Migration Checks` and the per-leg names keep their `(8.4)` suffix.
+    # stays `Backend Migrations` and the per-leg names keep their `(8.4)` suffix.
     # Collapsing to a plain job renames the check-runs.
     #
     # ⚠ Dropping the leg buys ZERO wall-clock. This job runs ~55s in parallel and
@@ -633,24 +618,13 @@ jobs:
       # the lifespan's own `alembic` subprocess during the boot step.
       PYTHONPATH: ${{ github.workspace }}/backend
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          version: "0.12.24"
-          python-version: "3.12"
-          enable-cache: true
-          cache-dependency-glob: backend/uv.lock
-
       - name: Install backend dependencies
-        working-directory: backend
-        run: |
-          uv sync --locked
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+        uses: fjcloudaiconsulting/.github/actions/uv-sync@v1
 
       # Guards the "from empty" claim. If a future change seeds the database
       # before this point, `upgrade head` would be exercising a partial path
@@ -863,46 +837,24 @@ jobs:
   # suite (~69% of the old single job's time); `frontend-static` runs the
   # static checks and both builds. The old single job took ~399s median over 20
   # runs; the suite alone is ~281s and static + builds ~115s. ⚠ This shortens
-  # frontend-only PRs only: on a full run the slowest job is Backend Shard 5/6
+  # frontend-only PRs only: on a full run the slowest job is Backend Tests (5/6)
   # (~470s, TBD-524), so wall clock is unchanged until that shard is rebalanced.
   # ⚠ Both builds stay together in `frontend-static`: build-apex.sh MOVES files
   # out of `app/` for its duration, so it must never share a checkout with
   # vitest, and the out-apex checks read that build's output.
   frontend-work:
-    name: Frontend Suite
+    name: Frontend Tests
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.frontend == 'true' }}
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "22"
-
-      # pnpm version comes from packageManager in frontend/package.json.
-      - name: Enable pnpm
-        run: corepack enable
-
-      - name: Locate pnpm store
-        id: pnpm-store
-        working-directory: frontend
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache pnpm store
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
-          restore-keys: pnpm-${{ runner.os }}-
-
       - name: Install frontend dependencies
-        working-directory: frontend
-        run: pnpm install --frozen-lockfile
+        uses: fjcloudaiconsulting/.github/actions/pnpm-install@v1
 
       # INFRA-54: coverage is main-only, like the backend (INFRA-53). PRs run
       # `test:nocov` (same act-guard reporter and judge, no --coverage); nothing
@@ -927,46 +879,24 @@ jobs:
           ./scripts/ci/update-coverage-badge.sh frontend "$PCT"
 
   frontend-static:
-    name: Frontend Static Checks
+    name: Frontend Build
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.frontend == 'true' }}
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "22"
-
-      # pnpm version comes from packageManager in frontend/package.json.
-      - name: Enable pnpm
-        run: corepack enable
-
-      - name: Locate pnpm store
-        id: pnpm-store
-        working-directory: frontend
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache pnpm store
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: pnpm-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
-          restore-keys: pnpm-${{ runner.os }}-
-
       - name: Install frontend dependencies
-        working-directory: frontend
-        run: pnpm install --frozen-lockfile
+        uses: fjcloudaiconsulting/.github/actions/pnpm-install@v1
 
       - name: Check design tokens
         working-directory: frontend
         run: bash scripts/check-design-tokens.sh
 
-      - name: Run frontend lint
+      - name: Lint frontend
         working-directory: frontend
         run: pnpm lint --quiet
 
@@ -976,7 +906,7 @@ jobs:
         working-directory: frontend
         run: pnpm exec tsc --noEmit
 
-      - name: Run frontend production build
+      - name: Build frontend
         working-directory: frontend
         run: pnpm build
 
@@ -1003,7 +933,7 @@ jobs:
     needs: [changes, frontend-work, frontend-static, frontend-image]
     if: ${{ always() }}
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

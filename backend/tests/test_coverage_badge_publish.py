@@ -29,13 +29,13 @@ import yaml
 
 def _find_repo_root(start: Path) -> Path:
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "test.yml").exists():
+        if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate
-    raise RuntimeError("Could not locate repo root containing .github/workflows/test.yml")
+    raise RuntimeError("Could not locate repo root containing .github/workflows/ci.yml")
 
 
 REPO_ROOT = _find_repo_root(Path(__file__).resolve())
-WORKFLOW = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "test.yml").read_text())
+WORKFLOW = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text())
 
 
 def _resolve(*candidates: Path) -> Path:

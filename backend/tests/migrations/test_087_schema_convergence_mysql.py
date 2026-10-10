@@ -164,8 +164,8 @@ def test_ci_runs_this_module_before_the_last_step():
     """The MySQL tests above skip without a URL; CI must set it, require it,
     and fail on a skip. The last step of the job belongs to TBD-586."""
     root = next(p for p in Path(__file__).resolve().parents
-                if (p / ".github/workflows/test.yml").exists())
-    steps = yaml.safe_load((root / ".github/workflows/test.yml").read_text())["jobs"]["migrations"]["steps"]
+                if (p / ".github/workflows/ci.yml").exists())
+    steps = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())["jobs"]["migrations"]["steps"]
     step = next(s for s in steps[:-1] if Path(__file__).name in s.get("run", ""))
     assert step["env"] == {"SCHEMA_CONVERGENCE_MYSQL_URL": "${{ env.DATABASE_URL }}",
                            "SCHEMA_CONVERGENCE_MYSQL_REQUIRED": "1"}

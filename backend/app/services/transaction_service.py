@@ -2886,7 +2886,7 @@ def _transfer_collapse_clause(filtered_ids_subq):
     this clause's fail-open polarity. Do not "simplify" it back.
 
     Cost, measured on MySQL 8.4 by hand -- no CI job runs this predicate
-    against MySQL, since the shards are all aiosqlite and ``Migration Checks``
+    against MySQL, since the shards are all aiosqlite and ``Backend Migrations``
     runs migrations rather than list queries. Both correlated subqueries are
     ``eq_ref`` PK point lookups, so no index helps and none could be added.
     ``partner_live`` genuinely renders TWICE (SQLAlchemy does no CSE): three

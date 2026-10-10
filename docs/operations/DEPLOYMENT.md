@@ -2,7 +2,7 @@
 
 Audience: a contributor who just cloned the repo and wants to understand what happens between `git push` and a live change at `app.thebetterdecision.com` or `thebetterdecision.com`. Also a triage reference for CI/CD failures.
 
-All four pipelines described here are live on `main` today (`test.yml`, `release.yml`, `apex-deploy.yml`, `test-durations.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
+All four pipelines described here are live on `main` today (`ci.yml`, `release.yml`, `apex-deploy.yml`, `test-durations.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
 
 For "how do I get my code ready to push", read [`CONTRIBUTING.md`](../../CONTRIBUTING.md). For the env var matrix, read [`ENVIRONMENT.md`](ENVIRONMENT.md). Production runs in `fjcloudaiconsulting/aws-infra`; this repo builds and releases the images, that one deploys them. This file does not duplicate either.
 
@@ -33,14 +33,14 @@ flowchart LR
 
 The apex Worker is deployed by GitHub Actions through the Cloudflare API. The app, its MySQL and its backups are described in aws-infra (see [Where to look](#8-where-to-look-when-something-breaks)).
 
-## 2. PR lifecycle (`test.yml`)
+## 2. PR lifecycle (`ci.yml`)
 
-Source: `.github/workflows/test.yml`.
+Source: `.github/workflows/ci.yml`.
 
-`test.yml` is the only CI workflow that runs on PRs. It does **not** deploy anything. Its job is to fail loud before code reaches `main`.
+`ci.yml` is the only CI workflow that runs on PRs. It does **not** deploy anything. Its job is to fail loud before code reaches `main`.
 
 Triggers:
-- `pull_request` with path filter on `backend/**`, `frontend/**`, or `.github/workflows/test.yml`
+- `pull_request` with path filter on `backend/**`, `frontend/**`, or `.github/workflows/ci.yml`
 - `workflow_dispatch` (manual)
 
 `concurrency.group = test-${workflow}-${ref}` with `cancel-in-progress: true`. Pushing a new commit to the PR cancels the prior run.
@@ -49,14 +49,14 @@ Two jobs run in parallel:
 
 | Job | Steps | Failure means |
 |---|---|---|
-| **Backend Checks** | Python 3.12, `uv sync --locked` (uv version pinned in `test.yml`), `pytest`, then `python -m compileall backend/app` | Pytest failed, or a syntax error slipped in that pytest didn't reach |
+| **Backend Checks** | Python 3.12, `uv sync --locked` (uv version pinned in `backend/.tool-versions`), `pytest`, then `python -m compileall backend/app` | Pytest failed, or a syntax error slipped in that pytest didn't reach |
 | **Frontend Checks** | Node 22, `pnpm install --frozen-lockfile`, `scripts/check-design-tokens.sh`, `pnpm lint --quiet`, `pnpm test`, `pnpm build` | One of: design-token violation, lint error, test failure, production build failure |
 
 Both must pass for merge (branch protection rule).
 
 ```mermaid
 flowchart LR
-  push[PR push] --> filter{Path in backend/<br/>frontend/<br/>test.yml?}
+  push[PR push] --> filter{Path in backend/<br/>frontend/<br/>ci.yml?}
   filter -->|no| skip[Skip: no checks fire]
   filter -->|yes| parallel
   parallel --> be[Backend Checks]
@@ -84,8 +84,8 @@ Re-run a single job from the PR's Checks tab.
 Source: `.github/workflows/test-durations.yml`. Added by TBD-421.
 
 `test-durations.yml` deploys nothing. It regenerates `backend/.test_durations`,
-the per-test timing file `pytest-split` uses to balance `test.yml`'s
-`Backend Shard` matrix.
+the per-test timing file `pytest-split` uses to balance `ci.yml`'s
+`Backend Tests` matrix.
 
 - **Triggers:** `workflow_dispatch`, a monthly `schedule`, and `pull_request`
   limited to changes to the workflow file itself (so a PR editing the generator
@@ -95,9 +95,9 @@ the per-test timing file `pytest-split` uses to balance `test.yml`'s
 - **Not a required status check**, and it must never become one — it runs the
   whole suite unsharded and takes ~30 minutes.
 
-⚠ **It is deliberately a separate workflow, not a step in `test.yml`.**
+⚠ **It is deliberately a separate workflow, not a step in `ci.yml`.**
 `scripts/ci/await-test-run.sh` gates production releases on the **run-level**
-conclusion of `test.yml`, so an artifact upload added there would let a
+conclusion of `ci.yml`, so an artifact upload added there would let a
 transient upload failure block a release for reasons unrelated to the tests.
 
 ⚠ **Do not regenerate the file locally.** `/app/.test_durations` is root-owned
@@ -112,7 +112,7 @@ drifts too far from the collected suite.
 
 Source: `.github/workflows/release.yml`.
 
-`release.yml` is the **single arbiter** of "should we cut a release". It runs on every push to `main` and uses **release-please** (via the Release GitHub App token, environment `release`): an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; a release happens exactly once, when the owner merges that PR. On that merge `release` tags `vX.Y.Z` on the release commit and publishes the GitHub Release (`release_created`). Only then do the gated jobs run: `promote` (shared promote-release workflow retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations,mcp}` built by `test.yml` on that commit as `vX.Y.Z`) and `release-smoke` (shared smoke workflow boots those images with `compose.smoke.yaml`, runs the migrations twice, and checks `/health` returns the version and revision). Before `release` runs, `await-tests` waits for the `Test` workflow on this sha, and `release` additionally waits for the `Test` run of the merged release PR's commit when that is not this run's commit.
+`release.yml` is the **single arbiter** of "should we cut a release". It runs on every push to `main` and uses **release-please** (via the Release GitHub App token, environment `release`): an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; a release happens exactly once, when the owner merges that PR. On that merge `release` tags `vX.Y.Z` on the release commit and publishes the GitHub Release (`release_created`). Only then do the gated jobs run: `promote` (shared promote-release workflow retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations,mcp}` built by `ci.yml` on that commit as `vX.Y.Z`) and `release-smoke` (shared smoke workflow boots those images with `compose.smoke.yaml`, runs the migrations twice, and checks `/health` returns the version and revision). Before `release` runs, `await-tests` waits for the `Test` workflow on this sha, and `release` additionally waits for the `Test` run of the merged release PR's commit when that is not this run's commit.
 
 **Nothing in this repo deploys.** Production is the k3s cluster in `fjcloudaiconsulting/aws-infra`: Renovate opens a PR there bumping the `vX.Y.Z` image tags in `clusters/platform/tbd-prod/`, and merging it is the deploy (Flux applies it). aws-infra's `release-drift-probe` opens an issue when a published release has not reached `clusters/`.
 
@@ -364,7 +364,7 @@ Concrete cases:
 | `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. `release.yml` **also runs** and updates the release PR. |
 | `frontend/lib/brand.ts` (feat) | Both `release.yml` AND `apex-deploy.yml`. |
 | `backend/alembic/versions/abc_new_migration.py` | release PR merge -> promote -> aws-infra bump PR merge -> `migrate` init container applies it -> backend starts |
-| `.github/workflows/test.yml` | `test.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and only updates the release PR. |
+| `.github/workflows/ci.yml` | `ci.yml` triggers itself (it has no paths filter either). On merge, `release.yml` runs and only updates the release PR. |
 | `README.md` only | `release.yml` **runs** and only updates the release PR. Nothing is tagged. |
 
 ⚠ A landing-only commit does not skip `release.yml`: if its commit type
@@ -411,7 +411,7 @@ If a migration **partially applies** and the container exits non-zero, the backe
 | GitHub Actions runs (all workflows) | `https://github.com/fjcloudaiconsulting/tbd/actions` |
 | `release.yml` runs specifically | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/release.yml` |
 | `apex-deploy.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/apex-deploy.yml` |
-| `test.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/test.yml` |
+| `ci.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/ci.yml` |
 | Production rollout, Flux, backend/frontend logs, `migrate` init container logs | [aws-infra `docs/runbooks.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md), "Follow Flux and rollouts" |
 | MySQL (namespace `data`), backups and restore | [aws-infra `clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/data/RESTORE.md) |
 | Release published but not on the cluster | The `release-drift-probe` issue in aws-infra |

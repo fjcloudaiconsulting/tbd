@@ -231,8 +231,8 @@ def test_ci_runs_the_mysql_fences_before_the_last_step():
 
     import yaml
 
-    root = next(p for p in Path(__file__).resolve().parents if (p / ".github/workflows/test.yml").exists())
-    steps = yaml.safe_load((root / ".github/workflows/test.yml").read_text())["jobs"]["migrations"]["steps"]
+    root = next(p for p in Path(__file__).resolve().parents if (p / ".github/workflows/ci.yml").exists())
+    steps = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())["jobs"]["migrations"]["steps"]
     step = next(st for st in steps[:-1] if "test_state_db_mysql.py" in st.get("run", ""))
     assert step["env"] == {
         "RATE_LIMIT_MYSQL_URL": "${{ env.DATABASE_URL }}",

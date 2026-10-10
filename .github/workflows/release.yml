@@ -5,7 +5,7 @@
 # and nothing ships; on the merge of that release PR it tags vX.Y.Z on the
 # release commit and publishes the GitHub Release (`release_created`). Only
 # then do the gated jobs run: `promote` retags the release commit's sha-<7>
-# GHCR images (built by test.yml, never rebuilt) as vX.Y.Z and `release-smoke`
+# GHCR images (built by ci.yml, never rebuilt) as vX.Y.Z and `release-smoke`
 # boots those images (compose.smoke.yaml).
 #
 # Nothing here deploys. Production runs on the k3s cluster in
@@ -26,7 +26,7 @@ on:
     # gated jobs below. Every push must reach release-please, or the release
     # PR goes stale and the merged one is never tagged.
     #
-    # ⚠ Do NOT replace it with in-workflow change detection either. test.yml's
+    # ⚠ Do NOT replace it with in-workflow change detection either. ci.yml's
     # `changes` job (scripts/ci/detect-changed-areas.sh) is VERDICT-NEUTRAL:
     # it fails TRUE on any uncertainty and can only ever add work. The same
     # detector here would be VERDICT-CHANGING: it could skip the run that
@@ -80,7 +80,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Wait for the Test workflow on this commit
+      - name: Wait for the CI workflow on this commit
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -154,10 +154,10 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # Retag the release commit's sha-<7> images (test.yml built them on that
+  # Retag the release commit's sha-<7> images (ci.yml built them on that
   # commit's push) as vX.Y.Z. Never rebuilds; fails if an image is missing.
   # Unlike ziftbook (one workflow), the image build is not a `needs` here: it
-  # lives in test.yml, and the release job has already awaited that commit's
+  # lives in ci.yml, and the release job has already awaited that commit's
   # Test run, which includes the build.
   promote:
     needs: release

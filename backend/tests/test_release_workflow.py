@@ -157,11 +157,11 @@ def test_release_workflow_has_exactly_the_gated_release_jobs():
 
 def test_promote_retags_exactly_the_images_test_yml_publishes():
     """INFRA-147. aws-infra deploys tbd/<image>:vX.Y.Z for each of these, so
-    each must be published as sha-<7> by test.yml AND retagged by promote.
+    each must be published as sha-<7> by ci.yml AND retagged by promote.
     Wrong implementations: an image published but never promoted (no vX.Y.Z,
     the deploy pins a tag that does not exist), promoted but never published
     (promote fails the release), or mcp built from the backend Dockerfile."""
-    test_jobs = _yaml(REPO_ROOT / ".github" / "workflows" / "test.yml")["jobs"]
+    test_jobs = _yaml(REPO_ROOT / ".github" / "workflows" / "ci.yml")["jobs"]
     matrix = test_jobs["backend-images"]["strategy"]["matrix"]["include"]
     published = {e["image"] for e in matrix} | {test_jobs["frontend-image"]["with"]["image"]}
     promoted = set(_yaml(RELEASE_WORKFLOW)["jobs"]["promote"]["with"]["images"].split())
@@ -310,7 +310,7 @@ def test_release_workflow_push_trigger_is_only_branch_scoped():
 def test_release_workflow_does_not_do_its_own_change_detection():
     """F5 (TBD-424). The rejected alternative, banned explicitly.
 
-    `test.yml`'s detector (scripts/ci/detect-changed-areas.sh) is
+    `ci.yml`'s detector (scripts/ci/detect-changed-areas.sh) is
     VERDICT-NEUTRAL: it fails TRUE on any uncertainty and structurally cannot
     turn a red suite green. The same detector on the release side would be
     VERDICT-CHANGING -- it could skip the run that tags a merged release PR,
@@ -328,6 +328,6 @@ def test_release_workflow_does_not_do_its_own_change_detection():
     assert not offenders, (
         f"release.yml invokes detect-changed-areas.sh in {offenders}. "
         "In-workflow change detection was deliberately rejected for the "
-        "release path (TBD-424): on test.yml it can only ever ADD work, here "
+        "release path (TBD-424): on ci.yml it can only ever ADD work, here "
         "it could silently SUPPRESS the run that tags a merged release PR."
     )

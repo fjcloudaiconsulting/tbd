@@ -610,7 +610,7 @@ async def health():
 # ``/ready`` is the ROTATION gate: "should traffic be sent to this instance".
 # It checks the database and NOTHING else, and its response contract is
 # frozen. The platform readiness probe points at it.
-# ``.github/workflows/test.yml``'s ``Migration Checks`` boots the app and
+# ``.github/workflows/ci.yml``'s ``Backend Migrations`` boots the app and
 # asserts this endpoint returns 200, and it feeds the REQUIRED
 # ``Backend Checks`` gate.
 #

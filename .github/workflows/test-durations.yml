@@ -1,19 +1,19 @@
 name: Test Durations
 
 # Regenerates `backend/.test_durations`, the per-test timing file pytest-split
-# uses to balance the `Backend Shard` matrix in test.yml.
+# uses to balance the `Backend Tests` matrix in ci.yml.
 #
-# ⚠ WHY THIS IS A SEPARATE WORKFLOW AND NOT A STEP IN test.yml (TBD-421).
+# ⚠ WHY THIS IS A SEPARATE WORKFLOW AND NOT A STEP IN ci.yml (TBD-421).
 #
 # `scripts/ci/await-test-run.sh` gates every production release on the RUN-level
-# conclusion of `test.yml` for the merge commit. Adding a write/upload step to
+# conclusion of `ci.yml` for the merge commit. Adding a write/upload step to
 # that workflow on `push: main` therefore puts a network-dependent operation on
 # the one path the deploy interlock reads: an artifact-service blip in any shard
 # would turn the run's conclusion to `failure`, `release.yml` would fail closed,
 # and production would not deploy -- for a reason unrelated to whether the tests
 # passed.
 #
-# Harvesting inside test.yml would also buy nothing. `test.yml` runs with
+# Harvesting inside ci.yml would also buy nothing. `ci.yml` runs with
 # `permissions: contents: read`, release-please commits only through its
 # release PR, and checkouts set `persist-credentials: false` -- so nothing in
 # this repo writes a commit to `main` directly, and `main` requires
@@ -75,7 +75,7 @@ jobs:
   # 1.82x real spread against a self-scored prediction of 1.01x. Sharding the
   # harvest measures each test in the same short-process context it will run in.
   #
-  # It is ALSO why this stays out of test.yml: harvesting there would put an
+  # It is ALSO why this stays out of ci.yml: harvesting there would put an
   # artifact upload on the run whose conclusion gates production deploys.
   harvest:
     name: Harvest shard ${{ matrix.group }}/${{ strategy.job-total }}
@@ -83,28 +83,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ⚠ Must equal test.yml's backend-shard matrix. Fenced by
+        # ⚠ Must equal ci.yml's backend-shard matrix. Fenced by
         # backend/tests/test_ci_shard_config.py.
         group: [1, 2, 3, 4, 5, 6]
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          version: "0.12.24"
-          python-version: "3.12"
-          enable-cache: true
-          cache-dependency-glob: backend/uv.lock
-
       - name: Install backend dependencies
-        working-directory: backend
-        run: |
-          uv sync --locked
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+        uses: fjcloudaiconsulting/.github/actions/uv-sync@v1
 
       - name: Harvest this shard's durations
         working-directory: backend
@@ -127,7 +116,7 @@ jobs:
         # only sanctioned way to produce a good one. Measured: run 32306137554,
         # `Harvest shard 6/6` failed on `only 824 distinct values across 4181
         # entries`, the merge job was skipped, and the remedy for the red fence
-        # became unreachable. The fence still runs for real in test.yml, which
+        # became unreachable. The fence still runs for real in ci.yml, which
         # is where it belongs; this job is measuring, not validating.
         run: >-
           pytest --splits ${{ strategy.job-total }} --group ${{ matrix.group }}

@@ -1,17 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>fjcloudaiconsulting/.github#v1"],
-  "customManagers": [
-    {
-      "customType": "regex",
-      "description": "The python-version input of astral-sh/setup-uv steps in CI, which the github-actions manager does not read, so the python runtime PR moves it with requires-python. Looked up as the python image, whose x.y tags keep the same precision.",
-      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
-      "matchStrings": ["uses: astral-sh/setup-uv@[^\\n]*\\n\\s+with:\\n(?:\\s+[a-z-]+: [^\\n]*\\n)*?\\s+python-version: \"(?<currentValue>\\d+\\.\\d+)\""],
-      "depNameTemplate": "python",
-      "datasourceTemplate": "docker",
-      "versioningTemplate": "docker"
-    }
-  ],
   "packageRules": [
     {
       "description": "Python non-major updates in one PR. FastAPI and uvicorn stay out and get their own PRs: a FastAPI minor can change telemetry behavior (INFRA-84, INFRA-105).",
@@ -57,6 +46,11 @@
       "groupName": "docker non-major"
     },
     {
+      "description": "uv is pinned twice (backend/.tool-versions for CI, the uv image in backend/Dockerfile*); move both in one PR.",
+      "matchPackageNames": ["astral-sh/uv", "ghcr.io/astral-sh/uv"],
+      "groupName": "uv"
+    },
+    {
       "description": "OpenTelemetry packages move together in their own PR, apart from the ecosystem groups: their versions are released in lockstep, and INFRA-84 owns the telemetry standard.",
       "matchPackageNames": ["opentelemetry-*", "@opentelemetry/**"],
       "groupName": "opentelemetry"
@@ -79,12 +73,6 @@
       "matchUpdateTypes": ["major"],
       "groupName": "node runtime",
       "dependencyDashboardApproval": true
-    },
-    {
-      "description": "The setup-uv python-version is a plain x.y input: never pin a digest to it.",
-      "matchManagers": ["custom.regex"],
-      "matchDepNames": ["python", "mirror.gcr.io/library/python"],
-      "pinDigests": false
     },
     {
       "description": "structlog majors are never proposed: INFRA-105 removes structlog.",

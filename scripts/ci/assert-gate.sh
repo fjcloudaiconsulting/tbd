@@ -10,8 +10,8 @@
 #
 # WHY THIS EXISTS (TBD-404)
 #
-# `test.yml` scopes its work jobs to the area they test, so a docs-only PR
-# skips the six backend shards, `Migration Checks` and the frontend suite. The
+# `ci.yml` scopes its work jobs to the area they test, so a docs-only PR
+# skips the six backend shards, `Backend Migrations` and the frontend suite. The
 # two required contexts (`Backend Checks`, `Frontend Checks`) still run — they
 # must, because a required context that never reports blocks its PR forever —
 # and they therefore have to accept a `skipped` upstream.

@@ -55,7 +55,7 @@ def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
 
     ⚠ **This walk is DEVELOPER-gated, not CI-gated. CI does not protect it.**
     Reverting to `parents[2]` is red in the container and GREEN in CI:
-    `.github/workflows/test.yml` runs pytest on a plain `actions/checkout`
+    `.github/workflows/ci.yml` runs pytest on a plain `actions/checkout`
     host tree with `working-directory: backend`, where this file is
     `<repo>/backend/tests/…` and `parents[2]` IS the repo root. Verified both
     sides this session — host `parents[2]` resolves to the repo root with the

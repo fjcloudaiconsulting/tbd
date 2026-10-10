@@ -6,7 +6,7 @@
 #
 # WHY THIS EXISTS (TBD-404)
 #
-# `test.yml` runs six backend shards, a real-MySQL migration smoke and the
+# `ci.yml` runs six backend shards, a real-MySQL migration smoke and the
 # whole frontend suite on every PR, including PRs that change nothing but
 # prose. The jobs are now gated on these outputs.
 #
@@ -118,7 +118,7 @@ while IFS= read -r f; do
     #
     # ⚠⚠ WITHOUT THIS, THE FENCE NEVER RUNS ON THE CHANGE THAT BREAKS IT.
     # A PR touching only one of these files sets backend=false, the six backend
-    # shards are skipped entirely (test.yml, TBD-404), and the drift guard that
+    # shards are skipped entirely (ci.yml, TBD-404), and the drift guard that
     # exists to catch exactly this edit does not execute. The drift merges green.
     #
     # ⚠⚠ THIS LIST IS HAND-MAINTAINED AND NOTHING DERIVES IT. An earlier
@@ -163,7 +163,7 @@ echo "detect-changed-areas: backend=${backend} frontend=${frontend}"
 {
   echo "backend=${backend}"
   echo "frontend=${frontend}"
-  # `Migration Checks` boots the whole app against real MySQL and hits /ready,
+  # `Backend Migrations` boots the whole app against real MySQL and hits /ready,
   # so any backend change is in its scope, not just alembic/. Kept as its own
   # output so narrowing it later is a one-line change here rather than a
   # workflow edit.
