@@ -33,10 +33,20 @@ export function expiryView(expiresAt: string, nowMs: number): ExpiryView {
   return { tone, label };
 }
 
-// Human label for the coarse method-scope. "Read-only" vs "Read & write" is
-// the exact copy the mint radio uses, so the list stays consistent with it.
+// Human label for a token scope: the PAT method-scopes and the agent scopes
+// (TBD-581), the exact copy each mint form uses, so lists and the reveal panel
+// stay consistent with it. Only `read` is "Read-only"; an unknown scope is
+// shown as itself rather than labelled harmless.
+const SCOPE_LABELS: Record<string, string> = {
+  read: "Read-only",
+  write: "Read & write",
+  "agent:read": "Read",
+  "agent:write": "Read and propose",
+  "agent:auto": "Auto-apply",
+};
+
 export function scopeLabel(scope: string): string {
-  return scope === "write" ? "Read & write" : "Read-only";
+  return SCOPE_LABELS[scope] ?? scope;
 }
 
 export const SCOPE_OPTIONS: ReadonlyArray<{ value: ApiTokenScope; label: string; hint: string }> = [

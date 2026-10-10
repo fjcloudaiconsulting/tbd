@@ -7,6 +7,8 @@ import Pagination from "@/components/ui/Pagination";
 import SortableHeader from "@/components/ui/SortableHeader";
 import { useTableState } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
+import UsageMeters from "@/components/agent/UsageMeters";
+import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import type { ListEnvelope } from "@/lib/types";
@@ -146,6 +148,7 @@ type CredentialSortField = (typeof CREDENTIAL_SORT_FIELDS)[number];
 
 export default function AiProvidersPage() {
   const { user, loading } = useAuth();
+  const ai = useAiStatus();
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [credentialsTotal, setCredentialsTotal] = useState(0);
   const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } =
@@ -317,6 +320,8 @@ export default function AiProvidersPage() {
           Add credential
         </button>
       </div>
+
+      {ai?.usage && <UsageMeters usage={ai.usage} title="Plan usage" />}
 
       {listError && <div className={errorCls}>{listError}</div>}
 

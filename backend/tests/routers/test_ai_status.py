@@ -80,3 +80,46 @@ async def test_not_entitled_skips_routing_lookup(monkeypatch):
     assert routing_called == [], "routing should not be called for un-entitled features"
     for state in out.values():
         assert state == {"entitled": False, "configured": False}
+
+
+@pytest.mark.asyncio
+async def test_status_carries_meter_usage(monkeypatch):
+    """TBD-581: the settings page reads used / limit / reset per meter from here."""
+    from datetime import datetime, timezone
+
+    async def fake_features(db, org_id):
+        return {}
+
+    async def fake_usage(db, org_id, *, include_platform):
+        assert include_platform is False
+        return {"mcp.calls": {"used": 2, "limit": None, "period": "month",
+                              "resets_at": datetime(2026, 11, 1, tzinfo=timezone.utc)}}
+
+    monkeypatch.setattr(ai_status_service.feature_service, "get_features", fake_features)
+    monkeypatch.setattr(ai_status_service.usage_service, "current_usage", fake_usage)
+    out = AIStatusResponse.model_validate(
+        await ai_status_service.get_ai_status(None, org_id=1, is_admin=False)
+    )
+    assert out.usage["mcp.calls"].used == 2 and out.usage["mcp.calls"].limit is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role,admin", [("owner", True), ("admin", True), ("member", False)])
+async def test_route_gives_platform_usage_to_org_admins_only(monkeypatch, role, admin):
+    """FENCE. Wrong implementations killed: the route passing is_admin=True for
+    every role (a member reads the org's platform spend) or False for all
+    (admins lose it)."""
+    from types import SimpleNamespace
+
+    from app.models.user import Role
+    from app.routers import ai_status as route
+
+    seen = {}
+
+    async def fake_status(db, *, org_id, is_admin):
+        seen["is_admin"] = is_admin
+        return {}
+
+    monkeypatch.setattr(route, "get_ai_status", fake_status)
+    await route.ai_status(current_user=SimpleNamespace(org_id=1, role=Role(role)), db=None)
+    assert seen["is_admin"] is admin
