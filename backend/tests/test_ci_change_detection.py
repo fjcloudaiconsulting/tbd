@@ -144,7 +144,7 @@ def test_anything_that_is_not_a_pull_request_runs_everything(event, tmp_path):
     """⚠ On `push: branches: [main]` the answer is EVERYTHING, deliberately.
 
     That run is the substitute for branch protection's `strict: true` and it is
-    what `scripts/ci/await-test-run.sh` gates the release on. Narrowing it
+    what apex-deploy gates on (`scripts/ci/await-test-run.sh`) and what the release job needs. Narrowing it
     would make the deploy interlock gate on a partial suite.
     """
     out = _detect(tmp_path, tmp_path, event=event)

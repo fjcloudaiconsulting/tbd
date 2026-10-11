@@ -6,7 +6,7 @@
 #
 # ⚠ THE PATH FILTER BELOW NO LONGER MIRRORS ANYTHING (TBD-424,
 # 2026-08-20). It used to be the positive half of a two-sided split with a
-# negation list in release.yml; release.yml's `paths:` filter is gone, so
+# negation list in the old release.yml; its `paths:` filter is gone, so
 # this is now the ONLY hand-maintained path allowlist in the repo. Nothing
 # else agrees or disagrees with it, and nothing tests it.
 #
@@ -130,7 +130,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # TBD-391. Same interlock as release.yml — the landing surface carried the
+  # TBD-391. Same interlock the release once had (now in-run, INFRA-159) — the landing surface carried the
   # identical race (push to main, no dependency on the Test run).
   #
   # ⚠ A SEPARATE JOB, not a step inside deploy-worker. That job's

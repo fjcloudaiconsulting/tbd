@@ -46,10 +46,10 @@ def _find_repo_root(start: Path) -> Path:
     regression reaches ``main`` with every check green.
     """
     for candidate in [start, *start.parents]:
-        if (candidate / ".github" / "workflows" / "release.yml").exists():
+        if (candidate / ".github" / "workflows" / "ci.yml").exists():
             return candidate
     raise RuntimeError(
-        "Could not locate repo root containing .github/workflows/release.yml. "
+        "Could not locate repo root containing .github/workflows/ci.yml. "
         "Run these tests from a checked-out repo."
     )
 
