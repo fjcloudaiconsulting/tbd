@@ -1,90 +1,50 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>fjcloudaiconsulting/.github#v1"],
+  "extends": [
+    "github>fjcloudaiconsulting/.github#v1",
+    "github>fjcloudaiconsulting/.github:app-stack#v1"
+  ],
   "packageRules": [
     {
-      "description": "Python non-major updates in one PR. FastAPI and uvicorn stay out and get their own PRs: a FastAPI minor can change telemetry behavior (INFRA-84, INFRA-105).",
-      "matchManagers": ["pep621"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "matchPackageNames": ["!fastapi", "!uvicorn"],
-      "groupName": "python non-major"
-    },
-    {
       "description": "SQLAlchemy patches ride in the python group; minors (2.1 is a real migration) get their own PR on dashboard approval. separateMultipleMinor, not separateMinorPatch, which would move the patch to its own branch.",
-      "matchPackageNames": ["sqlalchemy"],
+      "matchPackageNames": [
+        "sqlalchemy"
+      ],
       "separateMultipleMinor": true
     },
     {
       "description": "The SQLAlchemy minor leaves the python group and waits for approval; keep this rule after the python group rule so its groupName wins.",
-      "matchPackageNames": ["sqlalchemy"],
-      "matchUpdateTypes": ["minor"],
+      "matchPackageNames": [
+        "sqlalchemy"
+      ],
+      "matchUpdateTypes": [
+        "minor"
+      ],
       "groupName": "sqlalchemy minor",
       "dependencyDashboardApproval": true
     },
     {
       "description": "npm non-major updates in one PR. recharts gets its own PR: any move trips the TBD-528 version tripwire (chart-animation-gate.test.ts).",
-      "matchManagers": ["npm"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "matchPackageNames": ["!recharts"],
+      "matchManagers": [
+        "npm"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "matchPackageNames": [
+        "!recharts"
+      ],
       "groupName": "npm non-major"
     },
     {
-      "description": "npm updates wait 1 day after publishing: pnpm refuses younger packages (ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION, INFRA-77), and one fresh package would fail the whole npm group.",
-      "matchDatasources": ["npm"],
-      "minimumReleaseAge": "1 day"
-    },
-    {
-      "description": "GitHub Actions non-major and digest updates in one PR.",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch", "digest"],
-      "groupName": "github-actions non-major"
-    },
-    {
-      "description": "Docker non-major and digest updates in one PR.",
-      "matchDatasources": ["docker"],
-      "matchUpdateTypes": ["minor", "patch", "digest"],
-      "groupName": "docker non-major"
-    },
-    {
-      "description": "uv is pinned twice (backend/.tool-versions for CI, the uv image in backend/Dockerfile*); move both in one PR.",
-      "matchPackageNames": ["astral-sh/uv", "ghcr.io/astral-sh/uv"],
-      "groupName": "uv"
-    },
-    {
-      "description": "OpenTelemetry packages move together in their own PR, apart from the ecosystem groups: their versions are released in lockstep, and INFRA-84 owns the telemetry standard.",
-      "matchPackageNames": ["opentelemetry-*", "@opentelemetry/**"],
-      "groupName": "opentelemetry"
-    },
-    {
-      "description": "All majors (libraries, actions, images) wait for approval on the Dependency Dashboard, approve them one at a time, after the non-major groups have landed.",
-      "matchUpdateTypes": ["major"],
-      "dependencyDashboardApproval": true
-    },
-    {
-      "description": "Python runtime upgrade (a new 3.x is a minor in Renovate's terms): Dockerfiles, requires-python and CI move together in one PR, on dashboard approval only.",
-      "matchDepNames": ["python", "mirror.gcr.io/library/python"],
-      "matchUpdateTypes": ["major", "minor"],
-      "groupName": "python runtime",
-      "dependencyDashboardApproval": true
-    },
-    {
-      "description": "Node runtime major: Dockerfiles, CI and @types/node move together in one PR, on dashboard approval only.",
-      "matchDepNames": ["node", "mirror.gcr.io/library/node", "@types/node"],
-      "matchUpdateTypes": ["major"],
-      "groupName": "node runtime",
-      "dependencyDashboardApproval": true
-    },
-    {
       "description": "structlog majors are never proposed: INFRA-105 removes structlog.",
-      "matchPackageNames": ["structlog"],
-      "matchUpdateTypes": ["major"],
-      "enabled": false
-    },
-    {
-      "description": "Datastore image majors are never proposed: production versions are owned by aws-infra (clusters/platform/data), and local and CI images must not run ahead of them.",
-      "matchDatasources": ["docker"],
-      "matchPackageNames": ["mysql", "mirror.gcr.io/library/mysql"],
-      "matchUpdateTypes": ["major"],
+      "matchPackageNames": [
+        "structlog"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "enabled": false
     }
   ]
