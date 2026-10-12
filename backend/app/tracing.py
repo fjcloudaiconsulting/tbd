@@ -1,4 +1,4 @@
-"""OpenTelemetry for the API process: the telemetry standard (aws-infra docs/architecture.md, Telemetry),
+"""OpenTelemetry for the API process: the telemetry standard (cloud-infra docs/architecture.md, Telemetry),
 ported from Ziftbook's app/tracing.py.
 
 Manual spans only, no contrib instrumentation, so every attribute set anywhere comes from an explicit

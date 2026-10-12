@@ -24,7 +24,7 @@
 # overstates its coverage is worse than none, because the next design decision
 # will cite it.
 #
-# ⚠ STDIN RATHER THAN CALLING `gh` ITSELF, per the header of aws-infra's
+# ⚠ STDIN RATHER THAN CALLING `gh` ITSELF, per the header of cloud-infra's
 # check-backup-freshness.sh: a probe exercisable only against healthy live state proves nothing
 # about its unhealthy paths, and those are the only paths that matter.
 #
@@ -84,7 +84,7 @@ command -v python3 >/dev/null 2>&1 || {
 # `python3 - <<PY`. With `-` the heredoc BECOMES stdin, so the piped protection
 # payload would never reach the program and every input -- healthy or not --
 # would be judged "empty". That exact defect shipped once in
-# aws-infra's check-backup-freshness.sh and was caught only because its branches are
+# cloud-infra's check-backup-freshness.sh and was caught only because its branches are
 # exercised behaviourally.
 PROG="$(mktemp)"
 trap 'rm -f "$PROG"' EXIT

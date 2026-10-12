@@ -55,7 +55,7 @@ ENV TBD_APP_VERSION=$APP_VERSION \
 FROM runtime AS migrations
 
 # Run as a true init step (the `migrate` init container in production, see
-# aws-infra clusters/platform/tbd-prod/backend.yaml), NOT in the serving process: `alembic upgrade head` in the entrypoint
+# cloud-infra clusters/platform/tbd-prod/backend.yaml), NOT in the serving process: `alembic upgrade head` in the entrypoint
 # would gate uvicorn's port-bind on migration time, so a slow migration looks
 # like a hung container and is rolled back.
 CMD ["python", "/app/scripts/migrate.py"]

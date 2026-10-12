@@ -7,7 +7,7 @@ Sibling docs you will end up at:
 - `README.md` for product overview and stack.
 - `docs/operations/ENVIRONMENT.md` for every env var, with scopes, defaults, and failure modes.
 - `docs/operations/DEPLOYMENT.md` for the full CI/CD pipeline (what fires when, how a release reaches production, apex domain).
-- [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra) for where production runs (k3s cluster, databases, backups, runbooks).
+- [cloud-infra](https://github.com/fjcloudaiconsulting/cloud-infra) for where production runs (k3s cluster, databases, backups, runbooks).
 - `docs/product/BRAND.md` and `docs/design/DESIGN.md` for product copy and UI conventions.
 
 ## Prerequisites
@@ -54,7 +54,7 @@ flowchart TD
     B -->|backend/**| C[docker compose exec backend pytest]
     B -->|frontend/**| D[docker compose exec frontend pnpm test<br/>docker compose exec frontend pnpm exec tsc --noEmit]
     B -->|backend/alembic/versions/**| E[Restart backend so lifespan applies the migration<br/>./tbd restart]
-    B -->|nginx/**| F[./tbd prod for a local prod-shaped run<br/>Smoke: aws-infra `post-deploy-smoke.yml` (INFRA-114)]
+    B -->|nginx/**| F[./tbd prod for a local prod-shaped run<br/>Smoke: cloud-infra `post-deploy-smoke.yml` (INFRA-114)]
     B -->|docs only| G[No tests required.<br/>Use chore: or docs: prefix so it stays out of the release notes.]
     C --> H[Commit with Conventional Commits prefix]
     D --> H
@@ -76,11 +76,11 @@ This repo uses `release-please`. Merging a `feat:`/`fix:` PR does not deploy; it
 
 | Prefix | Release? | Effect when the release PR is merged |
 |--------|----------|------------|
-| `feat:` | Yes (minor bump) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
-| `fix:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
-| `perf:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
-| `revert:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
-| `feat!:`, `BREAKING CHANGE:` footer | Yes (minor bump below 1.0, `bump-minor-pre-major`; major after) | vX.Y.Z images promoted and smoked; the aws-infra bump PR deploys them |
+| `feat:` | Yes (minor bump) | vX.Y.Z images promoted and smoked; the cloud-infra bump PR deploys them |
+| `fix:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the cloud-infra bump PR deploys them |
+| `perf:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the cloud-infra bump PR deploys them |
+| `revert:` | Yes (patch bump) | vX.Y.Z images promoted and smoked; the cloud-infra bump PR deploys them |
+| `feat!:`, `BREAKING CHANGE:` footer | Yes (minor bump below 1.0, `bump-minor-pre-major`; major after) | vX.Y.Z images promoted and smoked; the cloud-infra bump PR deploys them |
 | `chore:`, `docs:`, `refactor:`, `test:`, `style:`, `ci:`, `build:` | No | Nothing. CI runs `ci.yml` only. |
 
 Scope is freeform (`feat(admin):`, `fix(frontend):`, `chore(nginx):`). Scope does not change release behavior.
@@ -89,7 +89,7 @@ Rules in practice:
 
 - If your change should reach production with the next release, use `feat:`, `fix:`, or `perf:`.
 - If your change is internal only (refactor, test fix, doc edit, CI tweak, dependency bump), use `chore:` / `docs:` / `refactor:` / `test:`. It will not appear in the release PR. This is the right answer most of the time for non-product changes.
-- Production configuration (env, secrets, resources) is not in this repo: change it in [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra).
+- Production configuration (env, secrets, resources) is not in this repo: change it in [cloud-infra](https://github.com/fjcloudaiconsulting/cloud-infra).
 
 Full pipeline detail (path filters, gating logic, smoke tests, apex deploy) lives in `docs/operations/DEPLOYMENT.md`. The short version is in [CI on your PR vs CI after merge](#ci-on-your-pr-vs-ci-after-merge) below.
 
@@ -102,7 +102,7 @@ PR push (any branch):
 
 Merge to `main`:
 
-- The `release` job of `.github/workflows/ci.yml` (shared `release.yml@v1`, after the Backend and Frontend gates) also runs on **every** push to `main`, deliberately with no `paths:` filter (TBD-424) — the filter only ever deferred the release tool's own commit-intent analysis and then misattributed the result. It runs `release-please`: on an ordinary merge it opens or updates the release PR and nothing ships. If (and only if) the merge is the release PR itself, a release is created and the gated jobs retag the GHCR images as vX.Y.Z and smoke them. Nothing here deploys: Renovate opens a PR in aws-infra bumping the image tags, and merging it is the production deploy.
+- The `release` job of `.github/workflows/ci.yml` (shared `release.yml@v1`, after the Backend and Frontend gates) also runs on **every** push to `main`, deliberately with no `paths:` filter (TBD-424) — the filter only ever deferred the release tool's own commit-intent analysis and then misattributed the result. It runs `release-please`: on an ordinary merge it opens or updates the release PR and nothing ships. If (and only if) the merge is the release PR itself, a release is created and the gated jobs retag the GHCR images as vX.Y.Z and smoke them. Nothing here deploys: Renovate opens a PR in cloud-infra bumping the image tags, and merging it is the production deploy.
 - Every other merge (including `chore:` / `docs:` / `refactor:`) still runs the `release` job, but only updates the release PR; the gated jobs are skipped.
 - `.github/workflows/apex-deploy.yml` deploys the apex landing site (`thebetterdecision.com`) as the Cloudflare Worker `tbd-landing` on merges that touch the apex path filter. Independent of the release pipeline.
 
@@ -187,7 +187,7 @@ Browser --> nginx (:80) --> /api/*  --> backend (FastAPI :8000) --> MySQL (:3306
                         --> /*      --> frontend (Next.js :3000)
 ```
 
-In production (a k3s cluster run from [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra)), Cloudflare and Traefik replace nginx, and MySQL runs in-cluster.
+In production (a k3s cluster run from [cloud-infra](https://github.com/fjcloudaiconsulting/cloud-infra)), Cloudflare and Traefik replace nginx, and MySQL runs in-cluster.
 
 ### Backend layout
 
@@ -451,7 +451,7 @@ Three execution paths, picked by environment:
 
 - **Local dev (`./tbd start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override).
 - **Local prod simulation (`./tbd prod`):** a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` (no lifespan migration).
-- **Production (k3s):** the backend pod's `migrate` init container runs the wrapper from the `migrations` image before the backend starts. Its env (`DATABASE_URL`, `APP_ENV=production`) is set in aws-infra `clusters/platform/tbd-prod/backend.yaml`.
+- **Production (k3s):** the backend pod's `migrate` init container runs the wrapper from the `migrations` image before the backend starts. Its env (`DATABASE_URL`, `APP_ENV=production`) is set in cloud-infra `clusters/platform/tbd-prod/backend.yaml`.
 
 The wrapper at `backend/scripts/migrate.py` does not replace alembic, it drives it. It runs `alembic upgrade <revision>` one revision at a time and emits structured JSON events around each step (grep `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`). Exit code matches alembic's, so a failed migration blocks the rollout.
 
@@ -535,7 +535,7 @@ in a test can no longer merge green.
 
 ### Manual smoke testing
 
-Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. The production smoke test is `scripts/smoke-test.sh`, post-deploy smoke runs from aws-infra `post-deploy-smoke.yml` (INFRA-114); credentials per aws-infra `docs/runbooks.md`, "TBD smoke account".
+Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. The production smoke test is `scripts/smoke-test.sh`, post-deploy smoke runs from cloud-infra `post-deploy-smoke.yml` (INFRA-114); credentials per cloud-infra `docs/runbooks.md`, "TBD smoke account".
 
 ## Branching and pull requests
 
@@ -550,7 +550,7 @@ Swagger UI at http://localhost/api/docs is the fastest way to poke a single endp
 The full pipeline (release gating, image promotion, apex pipeline) is in `docs/operations/DEPLOYMENT.md`. The short version contributors need to know:
 
 - Merges to `main` run the `release` job in `ci.yml`. A release (vX.Y.Z images on GHCR) is cut only when the release-please PR is merged (see [Conventional Commits and the release PR](#conventional-commits-and-the-release-pr)).
-- Production runs on a k3s cluster managed in [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra). A Renovate PR there bumps the image tags; merging it is the deploy. Production env and secrets (SOPS) live there too.
+- Production runs on a k3s cluster managed in [cloud-infra](https://github.com/fjcloudaiconsulting/cloud-infra). A Renovate PR there bumps the image tags; merging it is the deploy. Production env and secrets (SOPS) live there too.
 
 ## API documentation
 

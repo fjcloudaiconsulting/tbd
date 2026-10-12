@@ -4,7 +4,7 @@ Audience: a contributor who just cloned the repo and wants to understand what ha
 
 All four pipelines described here are live on `main` today (`ci.yml` including its `release` job, `apex-deploy.yml`, `test-durations.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
 
-For "how do I get my code ready to push", read [`CONTRIBUTING.md`](../../CONTRIBUTING.md). For the env var matrix, read [`ENVIRONMENT.md`](ENVIRONMENT.md). Production runs in `fjcloudaiconsulting/aws-infra`; this repo builds and releases the images, that one deploys them. This file does not duplicate either.
+For "how do I get my code ready to push", read [`CONTRIBUTING.md`](../../CONTRIBUTING.md). For the env var matrix, read [`ENVIRONMENT.md`](ENVIRONMENT.md). Production runs in `fjcloudaiconsulting/cloud-infra`; this repo builds and releases the images, that one deploys them. This file does not duplicate either.
 
 ## 1. Overview
 
@@ -12,7 +12,7 @@ Three production surfaces. Each has its own pipeline. Some changes fan out acros
 
 | Surface | URL | Hosted by | Updated by |
 |---|---|---|---|
-| App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | Single-node k3s cluster, namespace `tbd-prod` (aws-infra) | the `ci.yml` `release` job publishes the `vX.Y.Z` images; merging the Renovate bump PR in aws-infra deploys them |
+| App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | Single-node k3s cluster, namespace `tbd-prod` (cloud-infra) | the `ci.yml` `release` job publishes the `vX.Y.Z` images; merging the Renovate bump PR in cloud-infra deploys them |
 | Apex landing (marketing, privacy, terms, docs) | `https://thebetterdecision.com` | Cloudflare Worker `tbd-landing` | `apex-deploy.yml` (auto) |
 
 ```mermaid
@@ -21,7 +21,7 @@ flowchart LR
   dev --> apex[Apex Deploy workflow]
 
   rel -->|release-please release created| ghcr[GHCR vX.Y.Z images]
-  ghcr -->|Renovate bump PR in aws-infra, merged| flux[Flux on the k3s cluster]
+  ghcr -->|Renovate bump PR in cloud-infra, merged| flux[Flux on the k3s cluster]
   flux --> appurl[app.thebetterdecision.com]
 
   apex -->|build + wrangler deploy| worker[Cloudflare Worker tbd-landing]
@@ -31,7 +31,7 @@ flowchart LR
   class rel,apex pipe
 ```
 
-The apex Worker is deployed by GitHub Actions through the Cloudflare API. The app, its MySQL and its backups are described in aws-infra (see [Where to look](#8-where-to-look-when-something-breaks)).
+The apex Worker is deployed by GitHub Actions through the Cloudflare API. The app, its MySQL and its backups are described in cloud-infra (see [Where to look](#8-where-to-look-when-something-breaks)).
 
 ## 2. PR lifecycle (`ci.yml`)
 
@@ -114,7 +114,7 @@ Source: the `release` job of `.github/workflows/ci.yml`, which calls the shared 
 
 The `release` job in `ci.yml` is the **single arbiter** of "should we cut a release". It runs on every push to `main`, after the `Backend Checks` and `Frontend Checks` gates, by calling the shared `fjcloudaiconsulting/.github` `release.yml@v1` workflow (environment `release`, `secrets: inherit`). That workflow skips if `main` has moved past this commit, fails if a merged `autorelease: pending` release PR's own `Backend Checks`/`Frontend Checks` are not green yet (it never waits: re-run the job once they finish), then runs **release-please** with the Release GitHub App token: an ordinary merge only opens or updates the release PR (`chore(main): release X.Y.Z`), which accumulates every change; a release happens exactly once, when the owner merges that PR, which tags `vX.Y.Z` on the release commit and publishes the GitHub Release. Only then do promote (retags the `sha-<7>` GHCR images `ghcr.io/fjcloudaiconsulting/tbd/{backend,frontend,migrations,mcp}` built by `ci.yml` on that commit as `vX.Y.Z`) and smoke (boots those images with `compose.smoke.yaml`, runs the migrations twice, and checks `/health` returns the version and revision) run.
 
-**Nothing in this repo deploys.** Production is the k3s cluster in `fjcloudaiconsulting/aws-infra`: Renovate opens a PR there bumping the `vX.Y.Z` image tags in `clusters/platform/tbd-prod/`, and merging it is the deploy (Flux applies it). aws-infra's `release-drift-probe` opens an issue when a published release has not reached `clusters/`.
+**Nothing in this repo deploys.** Production is the k3s cluster in `fjcloudaiconsulting/cloud-infra`: Renovate opens a PR there bumping the `vX.Y.Z` image tags in `clusters/platform/tbd-prod/`, and merging it is the deploy (Flux applies it). cloud-infra's `release-drift-probe` opens an issue when a published release has not reached `clusters/`.
 
 ### Trigger
 
@@ -136,7 +136,7 @@ sequenceDiagram
   participant GH as GitHub Actions
   participant SR as release-please
   participant GHCR as GHCR
-  participant RN as Renovate (aws-infra)
+  participant RN as Renovate (cloud-infra)
   participant K as k3s cluster (Flux)
 
   Owner->>GH: merge PR to main
@@ -158,13 +158,13 @@ sequenceDiagram
 
 Inside the shared workflow, `promote` and `smoke` are gated on `needs.release.outputs.release_created == 'true'`. Without `release_created` they do not run and nothing is retagged. The output is set by release-please only when the merge is the release PR. `backend/tests/test_release_workflow.py` fences the `release` job's wiring.
 
-### Production rollout (aws-infra)
+### Production rollout (cloud-infra)
 
-The bump PR changes the image tags of the backend, frontend, scheduler and migrations in `clusters/platform/tbd-prod/`. Migrations run as the `migrate` init container of the backend pod (`python /app/scripts/migrate.py`, `migrations` image), so a new version never serves on an old schema; see `https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/tbd-prod/backend.yaml` and Section 5. Following a rollout: [aws-infra runbooks, "Follow Flux and rollouts"](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md).
+The bump PR changes the image tags of the backend, frontend, scheduler and migrations in `clusters/platform/tbd-prod/`. Migrations run as the `migrate` init container of the backend pod (`python /app/scripts/migrate.py`, `migrations` image), so a new version never serves on an old schema; see `https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/clusters/platform/tbd-prod/backend.yaml` and Section 5. Following a rollout: [cloud-infra runbooks, "Follow Flux and rollouts"](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/docs/runbooks.md).
 
 ### Smoke tests
 
-`scripts/smoke-test.sh` is run by the post-deploy smoke from aws-infra `post-deploy-smoke.yml` (INFRA-114) after a production rollout. Env: `SMOKE_BASE_URL=https://app.thebetterdecision.com`, plus `SMOKE_USERNAME` / `SMOKE_PASSWORD` for a dedicated smoke user, read from the SOPS Secret `tbd-prod/tbd-smoke` (there are no GitHub secrets for them). The smoke user must exist, must be `email_verified`, and must **not** have MFA enabled. The exact command, the credentials' location and rotation are in [aws-infra runbooks, "TBD smoke account"](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md).
+`scripts/smoke-test.sh` is run by the post-deploy smoke from cloud-infra `post-deploy-smoke.yml` (INFRA-114) after a production rollout. Env: `SMOKE_BASE_URL=https://app.thebetterdecision.com`, plus `SMOKE_USERNAME` / `SMOKE_PASSWORD` for a dedicated smoke user, read from the SOPS Secret `tbd-prod/tbd-smoke` (there are no GitHub secrets for them). The smoke user must exist, must be `email_verified`, and must **not** have MFA enabled. The exact command, the credentials' location and rotation are in [cloud-infra runbooks, "TBD smoke account"](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/docs/runbooks.md).
 
 #### ⚠ The smoke account cannot have MFA, and that is an accepted risk (TBD-371)
 
@@ -178,7 +178,7 @@ second factor at all.
 So the account stays single-factor. The compensating controls are:
 
 1. **Its username is not published.** It lives in the cluster Secrets
-   `tbd-prod/tbd-smoke` and the founder-count exclusion (SOPS, in aws-infra),
+   `tbd-prod/tbd-smoke` and the founder-count exclusion (SOPS, in cloud-infra),
    never as a plaintext value in source, a manifest or a GitHub secret.
 2. **A strong, rotated credential**, also in `tbd-prod/tbd-smoke`.
 3. **No PLATFORM rights, and a blast radius of one throwaway org.**
@@ -209,20 +209,20 @@ rather than be handed a confirmed-valid, MFA-less target.
 ⚠ **Renaming is the part that actually remediates a disclosure.** A username
 that was ever in git history is known forever, so rotating the password alone
 leaves a known, MFA-less account name reachable at the public login form. The
-aws-infra runbook above covers the password rotation. A rename is
+cloud-infra runbook above covers the password rotation. A rename is
 `PUT /api/v1/users/me` as the smoke account, then the new name goes into
 `tbd-prod/tbd-smoke` and `FOUNDER_COUNT_EXCLUDE_USERNAMES` in the same change.
 
 ### How to verify a rollout
 
 1. Watch the Release run: `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/ci.yml`
-2. Follow the aws-infra bump PR and the Flux apply (runbook above); `kubectl -n tbd-prod logs deploy/backend -c migrate` shows the structured `migrate.*` JSON events.
+2. Follow the cloud-infra bump PR and the Flux apply (runbook above); `kubectl -n tbd-prod logs deploy/backend -c migrate` shows the structured `migrate.*` JSON events.
 3. Inspect the running app: `curl -fsS https://app.thebetterdecision.com/health`, `curl -fsS https://app.thebetterdecision.com/ready`, and `curl -fsS https://app.thebetterdecision.com/health/dependencies`.
    `/ready` is the database-only rotation gate; `/health/dependencies` reports each dependency, and is the one a monitor should read.
 
 ## 4. Apex landing deploy (`apex-deploy.yml`)
 
-The apex landing (`thebetterdecision.com`) is a Next.js static export (`frontend/scripts/build-apex.sh` produces `frontend/out-apex/`) served by the Cloudflare Worker `tbd-landing` (code in `frontend/apex-worker/`). `www` is a proxied Cloudflare record that a redirect rule 301s to the apex (zone managed in aws-infra `terraform/cloudflare`).
+The apex landing (`thebetterdecision.com`) is a Next.js static export (`frontend/scripts/build-apex.sh` produces `frontend/out-apex/`) served by the Cloudflare Worker `tbd-landing` (code in `frontend/apex-worker/`). `www` is a proxied Cloudflare record that a redirect rule 301s to the apex (zone managed in cloud-infra `terraform/cloudflare`).
 
 The workflow runs on every push to `main` whose paths match the filter at the top of `.github/workflows/apex-deploy.yml` (and on `workflow_dispatch`). The `deploy-worker` job builds the export and runs `wrangler deploy`. It needs one secret, `CLOUDFLARE_API_TOKEN`, in the `landing` environment (deployment branches: `main` only), and skips with a notice while it is unset. No AWS credentials or repository variables are involved.
 
@@ -290,7 +290,7 @@ sequenceDiagram
 
 1. **Local dev (backend lifespan)**: `./tbd start | restart | rebuild` boots the backend. Its FastAPI lifespan calls `_run_migrations()` against the shared MySQL volume in dev. The lifespan reads `/app/.git/HEAD` and **refuses to migrate when the host checkout is on a non-main branch** (or is detached / unreadable). Override with `PFV_MIGRATE_OK_OFF_MAIN=1` in `.env` or the shell.
 2. **`./tbd migrate` (local CLI)**: same branch guard. Runs inside the local backend container. Never invoke from an agent worktree (it has no `-p` flag and targets the checkout's default compose project, `tbd` in the main checkout). See `reference_shared_mysql_volume_trap.md`.
-3. **Production (`migrate` init container)**: the `migrations` image runs `python /app/scripts/migrate.py` as an init container of the backend pod in aws-infra (`clusters/platform/tbd-prod/backend.yaml`), so the backend does not start until it exits 0. A MySQL `GET_LOCK` in alembic's `env.py` serializes concurrent migrators. The same wrapper is also used by the `migrate` service in `docker-compose.prod.yml`.
+3. **Production (`migrate` init container)**: the `migrations` image runs `python /app/scripts/migrate.py` as an init container of the backend pod in cloud-infra (`clusters/platform/tbd-prod/backend.yaml`), so the backend does not start until it exits 0. A MySQL `GET_LOCK` in alembic's `env.py` serializes concurrent migrators. The same wrapper is also used by the `migrate` service in `docker-compose.prod.yml`.
 
 ### What the wrapper guarantees
 
@@ -325,7 +325,7 @@ What a run then *does* is decided further down the pipe, in two steps:
 2. **`release_created` decides whether images are promoted.** It is set only on
    the merge of the release PR. Any other merge means `promote` and
    `release-smoke` are skipped. Nothing reaches production until the Renovate
-   bump PR in aws-infra is merged.
+   bump PR in cloud-infra is merged.
 
 So the common outcome for a non-shipping merge is a Release run that
 concludes in about a minute having done nothing, rather than no run at all.
@@ -339,7 +339,7 @@ flowchart TD
   start --> rel[ci.yml release job ALWAYS fires: no paths filter]
   rel --> semrel{Is this the merge of the release PR?}
   semrel -- "yes: release_created" --> promote[promote retags images as vX.Y.Z, release-smoke boots them]
-  promote --> bump[Renovate bump PR in aws-infra; merging it deploys]
+  promote --> bump[Renovate bump PR in cloud-infra; merging it deploys]
   semrel -- "no: ordinary merge" --> noship[Release PR opened or updated. No tag, no images retagged.]
 
   start --> apexq{P in the apex allowlist?<br/>app/page.tsx, app/privacy/**,<br/>app/terms/**, app/docs/**,<br/>components/landing/**, lib/brand.ts,<br/>globals.css, build-apex.sh, ...}
@@ -347,17 +347,17 @@ flowchart TD
   apexq -- no --> apexno[apex-deploy.yml does not fire]
 ```
 
-Backups and platform Terraform changes are made in the aws-infra repo.
+Backups and platform Terraform changes are made in the cloud-infra repo.
 
 Concrete cases:
 
 | You changed | Fires |
 |---|---|
-| `backend/app/routers/transactions.py` (feat) | the `release` job updates the release PR; on its merge: release -> promote -> release-smoke. Production rolls when the aws-infra bump PR is merged (migrate init container runs first, no-op if no new revs) |
+| `backend/app/routers/transactions.py` (feat) | the `release` job updates the release PR; on its merge: release -> promote -> release-smoke. Production rolls when the cloud-infra bump PR is merged (migrate init container runs first, no-op if no new revs) |
 | `frontend/components/dashboard/Foo.tsx` (feat) | Same path; the frontend image rolls with the bump PR |
 | `frontend/app/page.tsx` (feat, landing) | `apex-deploy.yml` deploys the landing. the `release` job **also runs** and updates the release PR. |
 | `frontend/lib/brand.ts` (feat) | Both the `release` job AND `apex-deploy.yml`. |
-| `backend/alembic/versions/abc_new_migration.py` | release PR merge -> promote -> aws-infra bump PR merge -> `migrate` init container applies it -> backend starts |
+| `backend/alembic/versions/abc_new_migration.py` | release PR merge -> promote -> cloud-infra bump PR merge -> `migrate` init container applies it -> backend starts |
 | `.github/workflows/ci.yml` | `ci.yml` triggers itself (it has no paths filter either). On merge, the `release` job runs and only updates the release PR. |
 | `README.md` only | the `release` job **runs** and only updates the release PR. Nothing is tagged. |
 
@@ -374,7 +374,7 @@ Forward-only philosophy across the board. "Rollback" means "publish a new state 
 
 ### App (production cluster)
 
-Revert the image-bump PR in aws-infra and merge it; Flux rolls the previous tags back. The `migrate` init container only moves the schema forward, so a rollback across a migration needs a fix-up migration (see "Database migrations" below). To undo the code itself, revert the merge commit here (`git revert -m 1 <merge-sha>`, PR, merge) and ship it through the next release.
+Revert the image-bump PR in cloud-infra and merge it; Flux rolls the previous tags back. The `migrate` init container only moves the schema forward, so a rollback across a migration needs a fix-up migration (see "Database migrations" below). To undo the code itself, revert the merge commit here (`git revert -m 1 <merge-sha>`, PR, merge) and ship it through the next release.
 
 ### Apex landing (`apex-deploy.yml`)
 
@@ -382,7 +382,7 @@ Revert the merge commit (PR, merge); the path filter re-triggers `apex-deploy.ym
 
 ### Terraform
 
-Revert the merge commit in aws-infra. TFC plans the inverse change on the next merge. Operator clicks Confirm & Apply. State catches up.
+Revert the merge commit in cloud-infra. TFC plans the inverse change on the next merge. Operator clicks Confirm & Apply. State catches up.
 
 For destructive teardown (rare), queue a `Destroy plan` from the TFC workspace UI. Local `terraform destroy` is debug-only.
 
@@ -391,12 +391,12 @@ For destructive teardown (rare), queue a `Destroy plan` from the TFC workspace U
 Forward-only. **Never `alembic downgrade` in production.** The path to a safe rollback is:
 
 1. Open a PR with a new alembic revision that performs the data and schema fix-up. Conventional title `fix(db): ...`.
-2. Merge, then merge the release PR, then the aws-infra bump PR. The `migrate` init container applies the fix-up revision and the backend starts on top.
+2. Merge, then merge the release PR, then the cloud-infra bump PR. The `migrate` init container applies the fix-up revision and the backend starts on top.
 3. Verify via the new revision's `migrate.step.end` event in `kubectl -n tbd-prod logs deploy/backend -c migrate`.
 
 If a migration **partially applies** and the container exits non-zero, the backend pod never starts and, since the Deployment uses `strategy: Recreate`, the old pod is already gone: the API is down until a fix-up revision or an image revert is rolled out. Diagnose from the streamed alembic output + the `migrate.failed` event (`reason`, `step_index`, `revision`). Fix-up paths:
 - Schema state matches a known earlier revision: stamp it (`alembic stamp <rev>`) via a one-shot ops session and ship a new revision that completes the work. Only the operator should do this; agents must not (`feedback_agent_destructive_db_ops`).
-- Data corruption: write a fix-up migration; ship that. Database restore: [`clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/data/RESTORE.md) in aws-infra.
+- Data corruption: write a fix-up migration; ship that. Database restore: [`clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/clusters/platform/data/RESTORE.md) in cloud-infra.
 
 ## 8. Where to look when something breaks
 
@@ -406,9 +406,9 @@ If a migration **partially applies** and the container exits non-zero, the backe
 | the `release` job (Release / release) | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/ci.yml` |
 | `apex-deploy.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/apex-deploy.yml` |
 | `ci.yml` runs | `https://github.com/fjcloudaiconsulting/tbd/actions/workflows/ci.yml` |
-| Production rollout, Flux, backend/frontend logs, `migrate` init container logs | [aws-infra `docs/runbooks.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md), "Follow Flux and rollouts" |
-| MySQL (namespace `data`), backups and restore | [aws-infra `clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/clusters/platform/data/RESTORE.md) |
-| Release published but not on the cluster | The `release-drift-probe` issue in aws-infra |
+| Production rollout, Flux, backend/frontend logs, `migrate` init container logs | [cloud-infra `docs/runbooks.md`](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/docs/runbooks.md), "Follow Flux and rollouts" |
+| MySQL (namespace `data`), backups and restore | [cloud-infra `clusters/platform/data/RESTORE.md`](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/clusters/platform/data/RESTORE.md) |
+| Release published but not on the cluster | The `release-drift-probe` issue in cloud-infra |
 | Apex Worker logs and versions | Cloudflare dashboard -> Workers & Pages -> `tbd-landing` |
 | Smoke-test failure GitHub issue | Auto-opened by `scripts/notify-smoke-failure.sh`; check open issues in `fjcloudaiconsulting/tbd` |
 
@@ -416,15 +416,15 @@ Triage shortcuts:
 
 | Symptom | First look at |
 |---|---|
-| Merge to `main` happened, prod didn't update | the `release` job -> did `release` set `release_created=true`? Only the merge of the release PR cuts a release, and production only changes when the aws-infra bump PR is merged |
+| Merge to `main` happened, prod didn't update | the `release` job -> did `release` set `release_created=true`? Only the merge of the release PR cuts a release, and production only changes when the cloud-infra bump PR is merged |
 | `release` job failed after the release PR merged | The release PR's commit has no green `Backend Checks`/`Frontend Checks` yet (the shared release-commit gate fails instead of waiting). Re-run that commit's failed Test jobs (not a `workflow_dispatch` run), then re-run the failed Release run (or wait for the next push to `main`) |
 | Release created but `promote` or `release-smoke` failed | Re-run the failed jobs of that Release run; the release already exists, so a new push to `main` will not redo them |
-| Release published, no bump PR in aws-infra | Renovate, then the `release-drift-probe` issue |
+| Release published, no bump PR in cloud-infra | Renovate, then the `release-drift-probe` issue |
 | `release` job red after release-please already published the GitHub Release | `promote` never ran and a re-run cannot recover it (release-please finds the release and reports no `release_created`). Retag that commit's `sha-<7>` images as `vX.Y.Z` by hand, as `promote-release.yml` does; otherwise `release-drift-probe` flags it after its grace days |
-| Rollout done, app still broken | Check the aws-infra `post-deploy-smoke.yml` run (INFRA-114) or run `scripts/smoke-test.sh` (runbook above), then the backend/frontend pod logs |
+| Rollout done, app still broken | Check the cloud-infra `post-deploy-smoke.yml` run (INFRA-114) or run `scripts/smoke-test.sh` (runbook above), then the backend/frontend pod logs |
 | `migrate` init container hung or failed | `kubectl -n tbd-prod logs deploy/backend -c migrate`. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
 | Apex site shows stale content | Confirm the `deploy-worker` job of `apex-deploy.yml` ran for the SHA (it skips green while `CLOUDFLARE_API_TOKEN` is unset in the `landing` environment); `curl https://thebetterdecision.com/_meta.json` |
-| App can't reach MySQL | Check the `data` namespace pods and the `DATABASE_URL` key in the `tbd-prod` secret (aws-infra) |
-| Secret env var missing or wrong after a rollout | `clusters/platform/tbd-prod/*.secret.yaml` in aws-infra; the runbook's "Write or rotate a Kubernetes Secret" |
+| App can't reach MySQL | Check the `data` namespace pods and the `DATABASE_URL` key in the `tbd-prod` secret (cloud-infra) |
+| Secret env var missing or wrong after a rollout | `clusters/platform/tbd-prod/*.secret.yaml` in cloud-infra; the runbook's "Write or rotate a Kubernetes Secret" |
 
 For the env var matrix and common per-variable failures (Google SSO button missing, audit log shows ingress IP, etc.), see [`ENVIRONMENT.md`](ENVIRONMENT.md) "Common failure modes".

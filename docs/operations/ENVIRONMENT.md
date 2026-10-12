@@ -10,7 +10,7 @@ Anyone deploying, operating, or running pfv locally:
 
 - Local developers (`docker compose` + `./tbd`)
 - CI maintainers (GitHub Actions secrets, smoke tests)
-- Production operators (aws-infra `clusters/platform/tbd-prod/`)
+- Production operators (cloud-infra `clusters/platform/tbd-prod/`)
 
 ## Table of contents
 
@@ -41,7 +41,7 @@ The rest of `.env.example` is pre-populated with safe local-dev defaults.
 
 ### Production
 
-Production env vars live in aws-infra `clusters/platform/tbd-prod/` (plain
+Production env vars live in cloud-infra `clusters/platform/tbd-prod/` (plain
 env in the manifests, secrets in SOPS-encrypted `*.secret.yaml`); see
 [Secrets vs non-secrets](#secrets-vs-non-secrets). Merging a change there is
 the deploy.
@@ -117,7 +117,7 @@ the env-var name (uppercased).
 | `EXPORT_MAX_ROWS` | no | `2000000` | `.env` (optional) | unset | inherit default | no | Pre-flight `COUNT(*)` ceiling across every table the export registry includes (TBD-222). Above it `scripts/export_org.py` refuses and points the operator at the `privacy@` email channel. | Default 2 000 000. A refusal is safe: no partial artifact is produced. |
 | `EXPORT_MAX_BYTES` | no | `1073741824` | `.env` (optional) | unset | inherit default | no | Cumulative encoded-output ceiling for one export, checked incrementally and aborted the moment it is crossed. A row count does NOT bound bytes (`transactions.description` is free text; several columns are unbounded JSON), and bytes is what exhausts a 512 MB single-instance box. | Default 1 GiB. On abort with `--out` the `.part` file is UNLINKED, so nothing is left at or beside the destination; with `--stdout` the bytes already redirected are trailer-less and fail verification by design. |
 | `PFV_RUNTIME` | legacy | unset | unset | unset | unset | no | Legacy: `app_platform` made `rate_limit.get_client_ip` read `do-connecting-ip`. Leave unset on k3s; use `CLIENT_IP_HEADER`. | Unset is correct on k3s. |
-| `CLIENT_IP_HEADER` | yes for k3s prod | unset | unset | unset | `cf-connecting-ip` in the aws-infra `tbd-prod` backend and frontend manifests | no | Header `rate_limit.get_client_ip` trusts for the visitor's IP when it holds one valid IP; the frontend `proxy.ts` access log (`remote_addr`) follows the same rule. Set only where the origin accepts our Cloudflare zone exclusively (Authenticated Origin Pulls, INFRA-93). A Cloudflare-ranges firewall is not enough: a Worker on another zone can set `x-real-ip`, which Cloudflare forwards as `CF-Connecting-IP`. | Unset behind Cloudflare: rate limits and `audit_events.ip_address` key on Cloudflare edge IPs. Set without Authenticated Origin Pulls: callers can pick their own IP. |
+| `CLIENT_IP_HEADER` | yes for k3s prod | unset | unset | unset | `cf-connecting-ip` in the cloud-infra `tbd-prod` backend and frontend manifests | no | Header `rate_limit.get_client_ip` trusts for the visitor's IP when it holds one valid IP; the frontend `proxy.ts` access log (`remote_addr`) follows the same rule. Set only where the origin accepts our Cloudflare zone exclusively (Authenticated Origin Pulls, INFRA-93). A Cloudflare-ranges firewall is not enough: a Worker on another zone can set `x-real-ip`, which Cloudflare forwards as `CF-Connecting-IP`. | Unset behind Cloudflare: rate limits and `audit_events.ip_address` key on Cloudflare edge IPs. Set without Authenticated Origin Pulls: callers can pick their own IP. |
 | `PFV_MIGRATE_OK_OFF_MAIN` | no | unset | shell / `.env` only when needed | unset | unset | no | Escape hatch for the lifespan + `./tbd migrate` branch guard. Allows migrations from a non-`main` checkout. | Without it, lifespan and `./tbd migrate` refuse to run on a feature branch. |
 
 #### Backend MySQL container (local dev only)
@@ -135,7 +135,7 @@ the Python backend. They must match the credentials embedded in
 
 Production MySQL runs in-cluster (namespace `data`); credentials live in
 `DATABASE_URL` (a SOPS secret) and not in any per-mysql-container env. See
-[aws-infra `clusters/platform/data/`](https://github.com/fjcloudaiconsulting/aws-infra/tree/main/clusters/platform/data).
+[cloud-infra `clusters/platform/data/`](https://github.com/fjcloudaiconsulting/cloud-infra/tree/main/clusters/platform/data).
 
 #### Backend seed helpers (`./tbd seed`)
 
@@ -212,9 +212,9 @@ deploy contract.
 
 ## Secrets vs non-secrets
 
-Production values live in aws-infra `clusters/platform/tbd-prod/`: plain env
-in the manifests, secrets in SOPS-encrypted `*.secret.yaml` (see the aws-infra
-[runbook](https://github.com/fjcloudaiconsulting/aws-infra/blob/main/docs/runbooks.md),
+Production values live in cloud-infra `clusters/platform/tbd-prod/`: plain env
+in the manifests, secrets in SOPS-encrypted `*.secret.yaml` (see the cloud-infra
+[runbook](https://github.com/fjcloudaiconsulting/cloud-infra/blob/main/docs/runbooks.md),
 "Write or rotate a Kubernetes Secret").
 
 These are secrets (never plain env):
@@ -262,13 +262,13 @@ NOT consume `.env`.
 
 The `release` job in `.github/workflows/ci.yml` deploys nothing (see
 [`DEPLOYMENT.md`](DEPLOYMENT.md)). No workflow uses smoke credentials and
-there are no GitHub secrets for them. The post-deploy smoke (aws-infra `post-deploy-smoke.yml`, INFRA-114)
+there are no GitHub secrets for them. The post-deploy smoke (cloud-infra `post-deploy-smoke.yml`, INFRA-114)
 runs `scripts/smoke-test.sh` and reads the credentials from the cluster Secret
-`tbd-prod/tbd-smoke` (aws-infra `docs/runbooks.md`, "TBD smoke account").
+`tbd-prod/tbd-smoke` (cloud-infra `docs/runbooks.md`, "TBD smoke account").
 
 ### Production
 
-Production env and secrets live in aws-infra `clusters/platform/tbd-prod/`.
+Production env and secrets live in cloud-infra `clusters/platform/tbd-prod/`.
 Merging a change there is the deploy (Flux applies it); see
 [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
@@ -284,7 +284,7 @@ image with the new env, with no rebuild.
 Symptom: `/login` and `/register` render without the "Sign in with
 Google" button. Cause: `TBD_GOOGLE_SSO_ENABLED` is not set (or not exactly the
 string `"true"`) in the running frontend. Fix: confirm the variable is in the
-`frontend` env of aws-infra `clusters/platform/tbd-prod/frontend.yaml` with
+`frontend` env of cloud-infra `clusters/platform/tbd-prod/frontend.yaml` with
 value `"true"`, and on the running pod
 (`kubectl -n tbd-prod exec deploy/frontend -- printenv TBD_GOOGLE_SSO_ENABLED`),
 then merge the fix there. No rebuild is needed. Also check the manifest has
@@ -295,7 +295,7 @@ the old `NEXT_PUBLIC_*` keys.
 
 Symptom: `audit_events.ip_address` records Cloudflare edge or `10.42.x.x`
 addresses. Cause: `CLIENT_IP_HEADER=cf-connecting-ip` is missing from the
-aws-infra `tbd-prod` backend manifest (or, for the frontend access log's
+cloud-infra `tbd-prod` backend manifest (or, for the frontend access log's
 `remote_addr`, from the frontend manifest). Fix it there, then verify by hitting
 any audited endpoint and inspecting the newest `audit_events` row in prod
 MySQL.
@@ -322,7 +322,7 @@ Symptom: `/forecast-plans` or `/import/[id]/reconcile` 500 on the server
 side. Cause: `BACKEND_INTERNAL_URL` is missing or wrong. Fix: in dev,
 the value lives in `docker-compose.yml` (`http://backend:8000`); in
 prod, it MUST point at the `backend` Service in the frontend manifest of
-aws-infra `clusters/platform/tbd-prod/`.
+cloud-infra `clusters/platform/tbd-prod/`.
 
 ### "Email sending fails silently"
 
@@ -355,7 +355,7 @@ switch to `main` for migrations, or set `PFV_MIGRATE_OK_OFF_MAIN=1` in
 
 - `.env.example` — copy-paste template with placeholder values and inline
   comments matching the Purpose column in this doc.
-- aws-infra `clusters/platform/tbd-prod/` — authoritative production env
+- cloud-infra `clusters/platform/tbd-prod/` — authoritative production env
   (manifests plus SOPS `*.secret.yaml`).
 - `docker-compose.yml` — local-dev stack. Frontend env is inline; backend
   pulls from `.env` via `env_file`.

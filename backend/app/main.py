@@ -261,7 +261,7 @@ async def lifespan(app: FastAPI):
     # ``verify_ai_credential_kek_separation`` docstring.
     verify_ai_credential_kek_separation()
     # Production runs migrations as a true init step (the `migrate` init
-    # container, aws-infra clusters/platform/tbd-prod) so they don't gate uvicorn's
+    # container, cloud-infra clusters/platform/tbd-prod) so they don't gate uvicorn's
     # port-bind. Dev runs them inline because the dev orchestrator
     # (docker-compose) has no PRE_DEPLOY equivalent. The alternative is a
     # manual `./tbd migrate` after every rebuild.
@@ -308,7 +308,7 @@ async def lifespan(app: FastAPI):
 
 _is_dev = app_settings.app_env == "development"
 
-# The telemetry standard (aws-infra docs/architecture.md, Telemetry): the global providers before
+# The telemetry standard (cloud-infra docs/architecture.md, Telemetry): the global providers before
 # FastAPI(). Without them FastAPI records no HTTP metric. Exports nothing unless OTEL_* env sets an
 # endpoint.
 tracing.configure("tbd-api")

@@ -1,5 +1,5 @@
 // INFRA-130: the privacy policy must name the recipients it really sends data to
-// and the request-log window the platform enforces (7 days, aws-infra INFRA-130).
+// and the request-log window the platform enforces (7 days, cloud-infra INFRA-130).
 import React from "react";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";

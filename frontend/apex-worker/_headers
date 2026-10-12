@@ -1,4 +1,4 @@
-# Port of the CloudFront response headers policy (aws-infra terraform/tbd-apex, local.apex_csp) and of the
+# Port of the CloudFront response headers policy (cloud-infra terraform/tbd-apex, local.apex_csp) and of the
 # Cache-Control the S3 sync sets. CI copies this file into out-apex/ right before wrangler deploy.
 # Applies to asset responses only, not to worker.js (/vd9r/*): CloudFront's /vd9r/* behaviour has no headers policy either.
 

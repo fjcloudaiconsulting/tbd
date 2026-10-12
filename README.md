@@ -35,7 +35,7 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 |-------|-----------|
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2 |
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS, Recharts |
-| Database | MySQL 8.4 LTS everywhere; in production a StatefulSet on the k3s cluster run from [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra) |
+| Database | MySQL 8.4 LTS everywhere; in production a StatefulSet on the k3s cluster run from [cloud-infra](https://github.com/fjcloudaiconsulting/cloud-infra) |
 | Auth | JWT (access + refresh), bcrypt, TOTP (pyotp), Google OAuth2 (with step-up for sensitive flows) |
 | Email | Mailgun (production), structlog (development) |
 | Proxy | nginx (development), Cloudflare in front of Traefik on k3s (production) |
@@ -68,7 +68,7 @@ Every part of the project has a single authoritative document. Start with the ro
 | Doc | When you need it |
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | First-time contributor. 30-minute Quickstart, Conventional Commits + deploy gate, CI on your PR vs after merge, parallel-agent compose-isolation rule, first-PR decision tree. |
-| [ENVIRONMENT.md](docs/operations/ENVIRONMENT.md) | Reference for every env var (backend, frontend, migrate job, CLI). Scope, default, sensitivity, deployment paths, failure modes. Source of truth for `.env` and GitHub Actions secrets; production values live in aws-infra. |
+| [ENVIRONMENT.md](docs/operations/ENVIRONMENT.md) | Reference for every env var (backend, frontend, migrate job, CLI). Scope, default, sensitivity, deployment paths, failure modes. Source of truth for `.env` and GitHub Actions secrets; production values live in cloud-infra. |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability. Private contact, scope, response time. |
 
 ### Shipping + operations
@@ -79,7 +79,7 @@ Every part of the project has a single authoritative document. Start with the ro
 
 ### Infrastructure
 
-Where and how TBD runs (k3s cluster, Flux, in-cluster MySQL, backups, Cloudflare) lives in [fjcloudaiconsulting/aws-infra](https://github.com/fjcloudaiconsulting/aws-infra). Its `docs/runbooks.md` and `docs/configuration-map.md` are the operations entry points.
+Where and how TBD runs (k3s cluster, Flux, in-cluster MySQL, backups, Cloudflare) lives in [fjcloudaiconsulting/cloud-infra](https://github.com/fjcloudaiconsulting/cloud-infra). Its `docs/runbooks.md` and `docs/configuration-map.md` are the operations entry points.
 
 ### Product + design
 
@@ -105,7 +105,7 @@ Browser
 - **Apex landing** is a separate Next.js static export built by `pnpm build:apex`, deployed as a Cloudflare Worker (`frontend/apex-worker/`) via GitHub Actions.
 - **nginx** routes traffic in development. Traefik on the k3s cluster handles ingress for the app in production; Cloudflare handles ingress for the apex.
 
-For the full pipeline mechanics, see [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md). For the production topology, see [aws-infra](https://github.com/fjcloudaiconsulting/aws-infra).
+For the full pipeline mechanics, see [DEPLOYMENT.md](docs/operations/DEPLOYMENT.md). For the production topology, see [cloud-infra](https://github.com/fjcloudaiconsulting/cloud-infra).
 
 ## CLI
 

@@ -1779,7 +1779,7 @@ def test_f7_the_push_trigger_is_unfiltered():
     """⚠⚠ Revision 1 guarded this with a YAML COMMENT ONLY. In a repo whose
     standing rule is *a grep can be satisfied by a comment*, the load-bearing
     property had no test -- and copying a sibling probe's paths-filtered `on:`
-    block (aws-infra's `backup-freshness-probe.yml` has exactly one) would kill the primary
+    block (cloud-infra's `backup-freshness-probe.yml` has exactly one) would kill the primary
     detection path with every other fence green.
 
     The suspected primary cause PRODUCES a push to `main`, so unfiltered push is
@@ -2016,7 +2016,7 @@ def test_c6_the_dedupe_does_not_capture_an_unrelated_issue(tmp_path):
     search for `[branch-protection]` also matches any open issue whose title
     contains "branch" and "protection", and taking `.[0].number` blindly would
     post this alarm as a comment on somebody else's incident, where nobody is
-    looking for it. `notify-backup-stale.sh` (now in aws-infra) had the safe idiom.
+    looking for it. `notify-backup-stale.sh` (now in cloud-infra) had the safe idiom.
 
     The stub returns a fuzzy match the real API would return: an unrelated issue
     whose title merely contains the words."""
@@ -2173,7 +2173,7 @@ def test_w1_the_alarm_step_actually_invokes_the_notifier():
     fenced and the body was not.
 
     House precedent: the backup freshness probe's alarm test (now in
-    fjcloudaiconsulting/aws-infra, `tests/test_backup_probe.py`) treats exactly
+    fjcloudaiconsulting/cloud-infra, `tests/test_backup_probe.py`) treats exactly
     this as load-bearing: the alarm step must run the notifier script.
     """
     steps = {st.get("id"): st for st in _steps() if st.get("id")}

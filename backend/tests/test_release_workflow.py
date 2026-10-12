@@ -1,6 +1,6 @@
 """Regression guards for the `release` job in ci.yml and the apex gate.
 
-Production deploys happen in fjcloudaiconsulting/aws-infra (a Renovate bump of
+Production deploys happen in fjcloudaiconsulting/cloud-infra (a Renovate bump of
 the vX.Y.Z image tag). What this repo owns, and these fences pin, is that a
 release is cut only on a push to main, after both gates, through the shared
 release workflow (release-please, GHCR promote and smoke of that version).
@@ -65,7 +65,7 @@ def test_release_job_calls_the_shared_workflow_after_both_gates_on_main_only():
 
 
 def test_release_promotes_exactly_the_images_ci_yml_publishes():
-    """INFRA-147. aws-infra deploys tbd/<image>:vX.Y.Z for each of these, so
+    """INFRA-147. cloud-infra deploys tbd/<image>:vX.Y.Z for each of these, so
     each must be published as sha-<7> by ci.yml AND retagged by promote.
     Wrong implementations: an image published but never promoted (no vX.Y.Z,
     the deploy pins a tag that does not exist), promoted but never published

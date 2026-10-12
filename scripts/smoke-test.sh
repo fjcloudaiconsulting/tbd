@@ -2,7 +2,7 @@
 # Post-deploy smoke tests (L0.5).
 #
 # Verifies the live app can serve traffic after a deploy. Run by hand
-# after a production rollout (aws-infra docs/runbooks.md, "TBD smoke
+# after a production rollout (cloud-infra docs/runbooks.md, "TBD smoke
 # account"): a rollout going Ready is necessary but not sufficient.
 # This script asserts the actual surface a real user would touch first.
 #
