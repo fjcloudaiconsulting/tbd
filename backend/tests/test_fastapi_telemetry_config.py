@@ -1,4 +1,4 @@
-"""FastAPI's native OpenTelemetry: HTTP metrics only (INFRA-105, the telemetry standard in aws-infra
+"""FastAPI's native OpenTelemetry: HTTP metrics only (INFRA-105, the telemetry standard in cloud-infra
 docs/architecture.md).
 
 FastAPI 0.142+ defaults every signal flag to on when ``telemetry=`` is omitted, and an omitted key

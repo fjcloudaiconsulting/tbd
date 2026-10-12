@@ -196,7 +196,7 @@ class Settings(BaseSettings):
     # same as being handed the answer.
     #
     # Supply it from the environment. In production it comes from the SOPS
-    # secret in aws-infra (clusters/platform/tbd-prod), never a plaintext
+    # secret in cloud-infra (clusters/platform/tbd-prod), never a plaintext
     # value in a committed manifest.
     #
     # ⚠ Empty is SILENTLY WRONG in production, never loud: the endpoint

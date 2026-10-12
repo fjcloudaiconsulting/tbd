@@ -6,7 +6,7 @@
 #
 # The only notifier left in this repo: the DigitalOcean-era deploy, smoke and
 # drift notifiers went with the DigitalOcean deploy path (INFRA-44), and
-# notify-backup-stale.sh moved to aws-infra (INFRA-20).
+# notify-backup-stale.sh moved to cloud-infra (INFRA-20).
 #
 # ⚠⚠ ITS OWN DEDUPE BUCKET. A new notifier copied from this one must change
 # TITLE_PREFIX, or each alarm would silence the other.
@@ -49,7 +49,7 @@ or whether a red required check actually blocks a merge.
 # production` returns the deploy-drift issue. So `[branch-protection]` matches
 # any open issue whose title contains both "branch" and "protection", and this
 # alarm would land as a comment on somebody else's incident, where nobody is
-# looking for it. `notify-backup-stale.sh` (now in aws-infra) carries the same
+# looking for it. `notify-backup-stale.sh` (now in cloud-infra) carries the same
 # safe idiom.
 EXISTING="$(gh issue list \
   --repo "$GH_REPO" \

@@ -1,4 +1,4 @@
-"""INFRA-105: own OpenTelemetry spans and FastAPI's native HTTP metrics (aws-infra docs/architecture.md,
+"""INFRA-105: own OpenTelemetry spans and FastAPI's native HTTP metrics (cloud-infra docs/architecture.md,
 Telemetry). The privacy fences prove that query-string secrets (the invite ``token``, the Google OAuth
 ``code`` and ``state``), bound SQL values and exception messages reach no exported span."""
 

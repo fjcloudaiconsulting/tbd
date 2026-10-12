@@ -290,7 +290,7 @@ jobs:
   # vX.Y.Z and never rebuilds. detect-changed-areas.sh reports every area as
   # changed on any non-PR event, so every `main` commit (the release-please
   # commit included) gets all four images. mcp is promoted too (INFRA-147):
-  # aws-infra deploys it.
+  # cloud-infra deploys it.
   backend-images:
     name: Image (${{ matrix.image }})
     needs: changes
@@ -970,7 +970,7 @@ jobs:
   # Releases only when both gates passed on this commit of main. Same run as the image builds, so the tagged release
   # commit's sha-<7> images exist by the time promote runs. The shared workflow runs release-please (App token from
   # this repo's `release` environment), then promote and smoke on a release. Nothing here deploys: production is the
-  # aws-infra bump PR.
+  # cloud-infra bump PR.
   release:
     name: Release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
