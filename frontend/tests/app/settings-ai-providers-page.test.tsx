@@ -11,7 +11,10 @@ import { useRouter } from "next/navigation";
 import AiProvidersPage from "@/app/settings/ai-providers/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
-import type { User } from "@/lib/types";
+import { useAiStatus } from "@/lib/hooks/use-ai-status";
+import type { AIStatus, User } from "@/lib/types";
+
+vi.mock("@/lib/hooks/use-ai-status", () => ({ useAiStatus: vi.fn() }));
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(),
@@ -497,5 +500,30 @@ describe("AiProvidersPage", () => {
     );
     expect(screen.getByLabelText(/Default soft cap/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Default hard cap/i)).toBeInTheDocument();
+  });
+
+  describe("plan usage meters (TBD-622)", () => {
+    const meter = { used: 1, limit: null, period: "month", resets_at: null };
+    const status = (entitled: boolean) => ({
+      agent: { entitled, configured: true },
+      usage: { "assistant.turns": meter, "mcp.calls": meter, "platform_ai.tokens": meter },
+    }) as unknown as AIStatus;
+
+    it("hides the assistant and agent meters when the org is not entitled to ai.agent", async () => {
+      mockAuxiliaryEndpoints([fixtureCredential]);
+      vi.mocked(useAiStatus).mockReturnValue(status(false));
+      render(<AiProvidersPage />);
+      expect(await screen.findByText("Platform AI tokens")).toBeInTheDocument();
+      expect(screen.queryByText("Assistant messages")).not.toBeInTheDocument();
+      expect(screen.queryByText("Connected agent calls")).not.toBeInTheDocument();
+    });
+
+    it("shows them when entitled", async () => {
+      mockAuxiliaryEndpoints([fixtureCredential]);
+      vi.mocked(useAiStatus).mockReturnValue(status(true));
+      render(<AiProvidersPage />);
+      expect(await screen.findByText("Assistant messages")).toBeInTheDocument();
+      expect(screen.getByText("Connected agent calls")).toBeInTheDocument();
+    });
   });
 });
