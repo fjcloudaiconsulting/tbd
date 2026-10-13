@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.296.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.296.0...v0.296.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **ai:** show Agent access only to orgs entitled to ai.agent (TBD-622) ([#921](https://github.com/fjcloudaiconsulting/tbd/issues/921)) ([e95c942](https://github.com/fjcloudaiconsulting/tbd/commit/e95c942da3a34790c943b22e39f621fc4fe01413))
+
 ## [0.296.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.295.0...v0.296.0) (2026-10-12)
 
 
