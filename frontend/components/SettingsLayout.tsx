@@ -4,6 +4,7 @@ import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { isAdmin, isOwner } from "@/lib/auth";
+import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { pageTitle } from "@/lib/styles";
 
 const tabs = [
@@ -18,6 +19,7 @@ const tabs = [
 
 export default function SettingsLayout({ children, activeTab }: { children: React.ReactNode; activeTab: string }) {
   const { user, loading, billingUiEnabled } = useAuth();
+  const ai = useAiStatus();
 
   if (loading || !user) {
     return (
@@ -37,6 +39,8 @@ export default function SettingsLayout({ children, activeTab }: { children: Reac
     // Inline conditional per spec; no minFlag abstraction for a
     // single flag.
     if (tab.href === "/settings/billing" && !billingUiEnabled) return false;
+    // Entitlement only; unknown status fails closed.
+    if (tab.href === "/settings/agent-tokens" && !ai?.agent?.entitled) return false;
     if (tab.minRole === "owner") return isOwner(user);
     if (tab.minRole === "admin") return isAdmin(user);
     return true;

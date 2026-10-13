@@ -159,6 +159,40 @@ describe("mint", () => {
   });
 });
 
+describe("entitlement gate (TBD-622)", () => {
+  const NOT_ENTITLED: AIStatus = { ...STATUS, agent: { entitled: false, configured: false } };
+
+  it("not entitled and no tokens: only the closed card", async () => {
+    vi.mocked(useAiStatus).mockReturnValue(NOT_ENTITLED);
+    routes["GET /api/v1/agent/tokens"] = () => json(200, { items: [], total: 0, limit: 1, offset: 0 });
+    renderWithSWR(<AgentTokensPage />);
+    expect(await screen.findByText(/not part of your organization/)).toBeInTheDocument();
+    expect(screen.queryByTestId("agent-mint-form")).toBeNull();
+    expect(screen.queryByText("Your agent tokens")).toBeNull();
+    expect(screen.queryByText(/MCP/)).toBeNull();
+    expect(screen.queryByText("Plan usage")).toBeNull();
+  });
+
+  it("not entitled with a token: revoke-only view, no intro, mint form, activity or meters", async () => {
+    vi.mocked(useAiStatus).mockReturnValue(NOT_ENTITLED);
+    renderWithSWR(<AgentTokensPage />);
+    expect(await screen.findByRole("button", { name: "Revoke Claude Desktop" })).toBeInTheDocument();
+    expect(screen.getByText("Your agent tokens")).toBeInTheDocument();
+    expect(screen.queryByText(/MCP/)).toBeNull();
+    expect(screen.queryByTestId("agent-mint-form")).toBeNull();
+    expect(screen.queryByText("Plan usage")).toBeNull();
+    expect(screen.queryByText(/not part of your organization/)).toBeNull();
+  });
+
+  it("status unknown fails closed: no token card, no intro", async () => {
+    vi.mocked(useAiStatus).mockReturnValue(undefined);
+    renderWithSWR(<AgentTokensPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(screen.queryByText("Your agent tokens")).toBeNull();
+    expect(screen.queryByText(/MCP/)).toBeNull();
+  });
+});
+
 describe("tokens", () => {
   it("F-581-DOWN: lowering offers only strictly lower access and sends it", async () => {
     routes["PATCH /api/v1/agent/tokens/5"] = () => json(200, token({ scope: "agent:read" }));

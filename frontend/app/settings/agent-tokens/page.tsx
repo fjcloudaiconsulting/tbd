@@ -96,7 +96,10 @@ export default function AgentTokensPage() {
   }
 
   const tokens = data?.items ?? [];
-  const canMint = Boolean(ai?.agent?.entitled) && ai?.usage?.["mcp.calls"]?.limit !== 0;
+  const entitled = Boolean(ai?.agent?.entitled);
+  const canMint = ai?.usage?.["mcp.calls"]?.limit !== 0;
+  // After a downgrade the tokens stay revocable (notification links land here); everything else is hidden.
+  const showTokens = entitled || (Boolean(ai) && tokens.length > 0);
 
   async function verifyWithGoogle() {
     if (!pending) return;
@@ -188,6 +191,7 @@ export default function AgentTokensPage() {
 
   return (
     <SettingsLayout activeTab="/settings/agent-tokens">
+      {entitled && (
       <div className="mb-6 max-w-3xl space-y-2 text-sm text-text-secondary">
         <p>
           Agent tokens let an AI agent you run, such as Claude Desktop or another MCP client, read
@@ -201,11 +205,22 @@ export default function AgentTokensPage() {
           the lowest access that works.
         </p>
       </div>
+      )}
 
       {pageError && <p role="alert" className={`${errorCls} mb-4`}>{pageError}</p>}
       <p role="status" className={pageNote ? `${successCls} mb-4` : "sr-only"}>{pageNote}</p>
 
-      {revealed ? (
+      {!showTokens && (
+        ai ? (
+          <p className={`${card} max-w-2xl p-6 text-sm text-text-secondary`}>
+            Agent access is not part of your organization&apos;s plan.
+          </p>
+        ) : (
+          <Spinner />
+        )
+      )}
+
+      {entitled && (revealed ? (
         <RevealOncePanel result={revealed} onDone={() => setRevealed(null)} />
       ) : canMint ? (
         <AgentMintForm
@@ -215,8 +230,9 @@ export default function AgentTokensPage() {
             setPending(v);
           }}
         />
-      ) : null}
+      ) : null)}
 
+      {showTokens && (
       <section className={`${card} mb-6`} aria-labelledby="tokens-title">
         <div className={`${cardHeader} flex flex-wrap items-center justify-between gap-3`}>
           <h2 id="tokens-title" className={cardTitle}>Your agent tokens</h2>
@@ -237,10 +253,11 @@ export default function AgentTokensPage() {
           }}
         />
       </section>
+      )}
 
-      <AgentActivity />
+      {entitled && <AgentActivity />}
 
-      {ai?.usage && (
+      {entitled && ai?.usage && (
         <UsageMeters usage={ai.usage} meters={["assistant.turns", "mcp.calls"]} title="Plan usage" />
       )}
 

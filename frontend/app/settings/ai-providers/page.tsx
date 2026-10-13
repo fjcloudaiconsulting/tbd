@@ -321,7 +321,11 @@ export default function AiProvidersPage() {
         </button>
       </div>
 
-      {ai?.usage && <UsageMeters usage={ai.usage} title="Plan usage" />}
+      {ai?.usage && <UsageMeters
+          usage={ai.usage}
+          meters={ai.agent?.entitled ? undefined : Object.keys(ai.usage).filter((m) => m !== "assistant.turns" && m !== "mcp.calls")}
+          title="Plan usage"
+        />}
 
       {listError && <div className={errorCls}>{listError}</div>}
 
