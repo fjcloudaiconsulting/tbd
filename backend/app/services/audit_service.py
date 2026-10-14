@@ -69,8 +69,8 @@ def _acting_api_token_id() -> Optional[int]:
 
     ``None`` for every non-PAT request (interactive JWT, pre-auth /
     anonymous, and scheduler tasks whose lifespan-spawned context snapshot
-    is empty). ``RequestContextMiddleware`` is pure-ASGI and calls
-    ``clear_contextvars()`` per request, so nothing bleeds across requests.
+    is empty). ``RequestContextMiddleware`` is pure-ASGI and starts each
+    request with a fresh ``CONTEXT``, so nothing bleeds across requests.
     """
     return logs.CONTEXT.get({}).get("api_token_id")
 

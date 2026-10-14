@@ -513,7 +513,7 @@ CPUs and took ~32 minutes.
 
 ⚠ **`--dist loadfile` is not optional.** It keeps each file's tests on a single
 worker, preserving within-file order. Some fences here are order-dependent --
-the `capture_logs()` ones are green alone and red in a full run -- and plain
+the order-dependent ones are green alone and red in a full run -- and plain
 `--dist load` scatters them across workers, which surfaces as flake rather than
 as a clear failure.
 

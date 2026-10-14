@@ -131,7 +131,7 @@ async def reset_org_data(
             outcome="failure",
             detail={
                 "actor_role": actor_role,
-                "error": tracing.error_summary(e),
+                "error": str(e),
                 "error_type": type(e).__name__,
             },
         )

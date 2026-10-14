@@ -1999,7 +1999,6 @@ async def logout(
         _LOGGER.info(
             "auth.session.terminated.anonymous",
             extra={
-                "ip_address": get_client_ip(request),
                 "request_id": request_id,
             },
         )
@@ -2666,7 +2665,6 @@ def _log_unverified_callback(
             "reason": reason,
             "state_ok": state_ok,
             "path": request.url.path,
-            "ip_address": get_client_ip(request),
         },
     )
 

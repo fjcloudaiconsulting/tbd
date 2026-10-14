@@ -49,10 +49,11 @@ class TracingMiddleware:
             # So lines logged after the span ends in this request (the access line, the 500
             # handler) still carry the ids; the context is set per request by RequestContext.
             span_context = current.get_span_context()
-            logs.bind(
-                trace_id=format(span_context.trace_id, "032x"),
-                span_id=format(span_context.span_id, "016x"),
-            )
+            if span_context.is_valid:  # a non-recording span has the all-zero invalid context
+                logs.bind(
+                    trace_id=format(span_context.trace_id, "032x"),
+                    span_id=format(span_context.span_id, "016x"),
+                )
             try:
                 await self.app(scope, receive, send_status)
             except Exception:
