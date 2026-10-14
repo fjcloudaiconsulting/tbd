@@ -1095,7 +1095,10 @@ async def test_turn_log_includes_the_reaped_dispatch(factory, w, provider, monke
     monkeypatch.setattr(chat, "KEEPALIVE_SECONDS", 0.05)
     _as(factory, w["user"])
 
+    round2 = asyncio.Event()
+
     async def late():
+        round2.set()
         await asyncio.sleep(0.3)
         return _resp(content="late", prompt_tokens=222)
 
@@ -1111,7 +1114,8 @@ async def test_turn_log_includes_the_reaped_dispatch(factory, w, provider, monke
         return {"type": "http.disconnect"}
 
     async def send(message):
-        if b"keepalive" in message.get("body", b""):
+        # a keepalive during round 1 (slow box) must not park the stream early
+        if b"keepalive" in message.get("body", b"") and round2.is_set():
             parked.set()
             await asyncio.sleep(10)
 
