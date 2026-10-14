@@ -6,7 +6,7 @@
 import { expiryView, scopeLabel, shortDate } from "@/components/system/api-tokens/expiry";
 import { TONE_CLASS } from "@/components/system/api-tokens/TokenList";
 import { lowerScopes } from "@/lib/agent/present";
-import type { AgentToken } from "@/lib/agent/types";
+import type { AgentToken, OrgAgentToken } from "@/lib/agent/types";
 import { badgeError, badgeNeutral, badgeSuccess, badgeWarning } from "@/lib/styles";
 
 const STATUS: Record<AgentToken["status"], { label: string; cls: string }> = {
@@ -62,7 +62,7 @@ export default function AgentTokenList({ tokens, nowMs, onLower, onRevoke, showO
             return (
               <tr key={t.id} className="border-b border-border-subtle align-top" data-testid={`agent-token-${t.id}`}>
                 {showOwner && (
-                  <td className="px-4 py-3 text-text-primary [overflow-wrap:anywhere]">{"owner_email" in t ? t.owner_email : ""}</td>
+                  <td className="px-4 py-3 text-text-primary [overflow-wrap:anywhere]">{(t as Partial<OrgAgentToken>).owner_email ?? ""}</td>
                 )}
                 <td className="px-4 py-3">
                   <span className="block font-medium text-text-primary [overflow-wrap:anywhere]">{t.name}</span>
