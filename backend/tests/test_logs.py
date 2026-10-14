@@ -255,3 +255,11 @@ def test_f13_alembic_env_keeps_our_handler_and_does_not_disable_loggers(caplog):
     assert early.disabled is False
     early.warning("still emits")
     assert any(r.getMessage() == "still emits" for r in caplog.records)
+
+
+# F11 (part): uvicorn's own access line (client IP, raw path and query) is never written.
+def test_f11_uvicorn_access_is_silent_after_configure(log_lines):
+    logging.getLogger("uvicorn.access").info('203.0.113.9:1234 - "GET /x?code=SECRET HTTP/1.1" 200')
+    logging.getLogger("uvicorn.error").info("control")  # the channel itself works
+
+    assert [line["msg"] for line in log_lines()] == ["control"]

@@ -264,7 +264,7 @@ def _assert_test_context_is_clean() -> None:
 # ── F1 · population 1: PAT-authed HTTP, post-bind ────────────────────────────
 
 
-async def test_f1_pat_authed_action_records_the_acting_token(factory):
+async def test_f1_pat_authed_action_records_the_acting_token(factory, monkeypatch):
     """A write-scope PAT creating a tag stamps its id on the audit row.
 
     Mutants that must redden this:
@@ -275,6 +275,18 @@ async def test_f1_pat_authed_action_records_the_acting_token(factory):
     pat, token_id = await _mint_pat_row(factory, uid, scope="write")
 
     _assert_test_context_is_clean()
+
+    # The value the builder read from the log context, before the DB can coerce it (SQLite turns
+    # "4" into 4 on insert, which would hide a stringified id).
+    built: list[object] = []
+    real_build = audit_service._build_audit_event
+
+    def spy_build(**kwargs):
+        event = real_build(**kwargs)
+        built.append(event.api_token_id)
+        return event
+
+    monkeypatch.setattr(audit_service, "_build_audit_event", spy_build)
 
     with _make_client(factory, tags_router) as client:
         r = client.post(
@@ -295,7 +307,7 @@ async def test_f1_pat_authed_action_records_the_acting_token(factory):
         "a PAT-authed action was not attributed to the acting token "
         f"(got {rows[0].api_token_id!r}, want {token_id})"
     )
-    assert isinstance(rows[0].api_token_id, int)  # F18: an int read back, never a stringified id
+    assert built == [token_id] and type(built[0]) is int  # F18: an int read back, never a string
     assert rows[0].request_id == "rid-f18-pat"  # F18: and the request's id, from the same context
     # The token id is genuinely new information here — the tag.created detail
     # never carried it, so this green cannot come from a pre-existing write.

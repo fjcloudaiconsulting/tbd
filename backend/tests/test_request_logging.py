@@ -232,3 +232,32 @@ async def test_f21_the_asyncio_handler_logs_the_class_not_the_message(log_lines)
     (line,) = [line for line in log_lines() if line["msg"] == "asyncio.unhandled"]
     assert line["exc"][0]["type"] == "builtins.RuntimeError"
     assert "SECRET" not in str(line)
+
+
+# F21 (wiring): both lifespans install the handler, so a stray task exception logs a class, not the
+# loop's default message and future repr.
+async def test_f21_the_mcp_lifespan_installs_the_asyncio_handler():
+    from app import mcp_main
+
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    try:
+        async with mcp_main.lifespan(mcp_main.app):
+            assert loop.get_exception_handler() is logs.asyncio_exception_handler
+    finally:
+        loop.set_exception_handler(previous)
+
+
+def test_f21_the_api_lifespan_installs_the_asyncio_handler():
+    """app.main's lifespan runs migrations and a scheduler, so assert its source: the call is the
+    first statement, before any of that can raise."""
+    import ast
+    import inspect
+
+    from app import main
+
+    tree = ast.parse(inspect.getsource(main.lifespan).lstrip())
+    first = tree.body[0].body[0]
+    assert ast.unparse(first) == (
+        "asyncio.get_running_loop().set_exception_handler(logs.asyncio_exception_handler)"
+    )
