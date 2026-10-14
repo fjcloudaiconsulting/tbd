@@ -230,7 +230,7 @@ async def test_transfer_row_does_not_learn(db_session: AsyncSession) -> None:
     assert rules == []
 
 
-async def test_aggregate_metric_emitted_with_correct_shape(db_session: AsyncSession) -> None:
+async def test_aggregate_metric_emitted_with_correct_shape(db_session: AsyncSession, log_lines) -> None:
     """Architect-mandated aggregate metric:
       - exactly one smart_rules.import_executed event per import
       - exactly one smart_rules.miss event per UNIQUE missed normalized_token
@@ -271,19 +271,16 @@ async def test_aggregate_metric_emitted_with_correct_shape(db_session: AsyncSess
         ],
     )
 
-    with patch.object(
-        import_service.logger, "ainfo", new_callable=AsyncMock
-    ) as mock_log:
-        await import_service.execute_import(
-            db_session, org_id=seed["org_id"], body=body,
-        )
+    await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
 
-    events = mock_log.call_args_list
-    aggregate_calls = [c for c in events if c.args and c.args[0] == "smart_rules.import_executed"]
-    miss_calls = [c for c in events if c.args and c.args[0] == "smart_rules.miss"]
+    events = log_lines()
+    aggregate_calls = [ln for ln in events if ln["msg"] == "smart_rules.import_executed"]
+    miss_calls = [ln for ln in events if ln["msg"] == "smart_rules.miss"]
 
     assert len(aggregate_calls) == 1
-    agg_kwargs = aggregate_calls[0].kwargs
+    agg_kwargs = aggregate_calls[0]
     assert agg_kwargs["org_id"] == seed["org_id"]
     assert agg_kwargs["rows_total"] == 3
     assert agg_kwargs["learned_count"] == 3
@@ -296,7 +293,7 @@ async def test_aggregate_metric_emitted_with_correct_shape(db_session: AsyncSess
 
     # Exactly one miss event for the unique normalized token.
     assert len(miss_calls) == 1
-    miss_kwargs = miss_calls[0].kwargs
+    miss_kwargs = miss_calls[0]
     assert miss_kwargs["org_id"] == seed["org_id"]
     assert miss_kwargs["normalized_token"]  # non-empty (will be "NOVEL CAFE")
 
@@ -353,7 +350,7 @@ async def test_learn_failure_does_not_fail_the_import(
 
 
 async def test_default_category_fallthrough_records_miss(
-    db_session: AsyncSession,
+    db_session: AsyncSession, log_lines,
 ) -> None:
     """The architect-mandated metric: when a row has NO suggestion AND the user
     leaves category_id None (relying on default_category_id), we must still
@@ -377,27 +374,18 @@ async def test_default_category_fallthrough_records_miss(
         ],
     )
 
-    with patch.object(
-        import_service.logger, "ainfo", new_callable=AsyncMock
-    ) as mock_log:
-        result = await import_service.execute_import(
-            db_session, org_id=seed["org_id"], body=body,
-        )
+    result = await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
 
     assert result.imported_count == 1
-    miss_calls = [
-        c for c in mock_log.call_args_list
-        if c.args and c.args[0] == "smart_rules.miss"
-    ]
+    miss_calls = [ln for ln in log_lines() if ln["msg"] == "smart_rules.miss"]
     assert len(miss_calls) == 1
-    assert miss_calls[0].kwargs["normalized_token"]  # non-empty
+    assert miss_calls[0]["normalized_token"]  # non-empty
 
-    aggregate_calls = [
-        c for c in mock_log.call_args_list
-        if c.args and c.args[0] == "smart_rules.import_executed"
-    ]
+    aggregate_calls = [ln for ln in log_lines() if ln["msg"] == "smart_rules.import_executed"]
     assert len(aggregate_calls) == 1
-    agg = aggregate_calls[0].kwargs
+    agg = aggregate_calls[0]
     assert agg["miss_count"] == 1
     assert agg["learned_count"] == 0  # user didn't pick → no learn
     assert agg["source_split"]["default"] == 1

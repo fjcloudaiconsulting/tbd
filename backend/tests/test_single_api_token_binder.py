@@ -1,9 +1,9 @@
 """AST-level regression: ``api_token_id`` is bound in exactly ONE place.
 
 ``audit_events.api_token_id`` (TBD-188) is resolved ambiently — every audit
-call site reads it out of the request-scoped structlog context rather than
+call site reads it out of the request-scoped log context rather than
 being handed it. That answer is only true while the context has a single
-writer. A second ``bind_contextvars(api_token_id=...)`` anywhere under
+writer. A second ``logs.bind(api_token_id=...)`` anywhere under
 ``backend/app/`` silently converts an audited fact into a race between two
 binders, and the losing one is invisible: the row still gets *a* token id, so
 nothing goes red and the value is simply wrong.
@@ -16,12 +16,12 @@ column, permanently merging two different facts (see
 
 Why an AST walk and not a grep: ``pat.py``'s bind site carries a long comment
 explaining that the bind's *position* is load-bearing, and that comment names
-``api_token_id`` and ``bind_contextvars`` in prose several times. A text scan
+``api_token_id`` and ``logs.bind`` in prose several times. A text scan
 would count those. The AST only sees real ``Call`` nodes, so prose is ignored
 for free.
 
 ⚠ **These two tests pass against pre-TBD-188 code.** Verified by AST against
-``origin/main``: it already had exactly one ``bind_contextvars(api_token_id=
+``origin/main``: it already had exactly one ``logs.bind(api_token_id=
 ...)``, inside ``authenticate_pat`` — the composite bind at the end of the
 function that TBD-188 split out and moved up. So a green here is NOT evidence
 that the feature works; it is an invariant guard on the *number* of binders,
@@ -72,7 +72,7 @@ ALLOWED_BINDERS: tuple[tuple[str, str, str], ...] = (
 
 @dataclass(frozen=True)
 class Bind:
-    """One ``bind_contextvars(..., api_token_id=..., ...)`` call site."""
+    """One ``logs.bind(..., api_token_id=..., ...)`` call site."""
 
     file: str
     function: str
@@ -86,17 +86,16 @@ def _enclosing_function(parents: list[ast.AST]) -> str:
     return "__module__"
 
 
-def _is_bind_contextvars(func: ast.expr) -> bool:
-    """Match ``bind_contextvars(...)`` however it was imported.
+def _is_logs_bind(func: ast.expr) -> bool:
+    """Match ``logs.bind(...)``, or a bare ``bind`` imported from ``app.logs``.
 
-    Covers the fully-qualified ``structlog.contextvars.bind_contextvars``
-    used in this tree today AND a bare ``bind_contextvars`` from a
-    ``from structlog.contextvars import bind_contextvars``, so dodging the
-    guard by changing the import style does not work.
+    The first is the form used in this tree; the second makes dodging the guard
+    by changing the import style not work. An unrelated ``x.bind(...)`` (a
+    socket, say) is not matched.
     """
     if isinstance(func, ast.Attribute):
-        return func.attr == "bind_contextvars"
-    return isinstance(func, ast.Name) and func.id == "bind_contextvars"
+        return func.attr == "bind" and isinstance(func.value, ast.Name) and func.value.id == "logs"
+    return isinstance(func, ast.Name) and func.id == "bind"
 
 
 def _find_binds() -> list[Bind]:
@@ -112,7 +111,7 @@ def _find_binds() -> list[Bind]:
         def visit(node: ast.AST, parents: list[ast.AST]) -> None:
             if (
                 isinstance(node, ast.Call)
-                and _is_bind_contextvars(node.func)
+                and _is_logs_bind(node.func)
                 and any(kw.arg == "api_token_id" for kw in node.keywords)
             ):
                 binds.append(
@@ -150,7 +149,7 @@ def test_api_token_id_has_exactly_one_binder():
 
     unexpected = found - expected
     assert not unexpected, (
-        "A second `bind_contextvars(api_token_id=...)` appeared. "
+        "A second `logs.bind(api_token_id=...)` appeared. "
         "audit_events.api_token_id is resolved ambiently and must have "
         "exactly one writer (TBD-188 §3):\n"
         + "\n".join(
@@ -181,7 +180,7 @@ def test_the_single_binder_is_counted_once():
     """
     binds = _find_binds()
     assert len(binds) == len(ALLOWED_BINDERS), (
-        "expected exactly one `bind_contextvars(api_token_id=...)` call per "
+        "expected exactly one `logs.bind(api_token_id=...)` call per "
         "allowlisted binder in backend/app/, found "
         + str(len(binds))
         + ":\n"

@@ -72,22 +72,6 @@ def _install_slow_transport(monkeypatch, delay_s: float) -> list[httpx.Request]:
     return seen
 
 
-def _record_logs(monkeypatch) -> list[tuple[str, dict]]:
-    """Swap ``email_service.logger`` for a recorder. Returns the event log
-    as ``(event_name, kwargs)`` pairs, same shape test_email_templates uses."""
-    captured: list[tuple[str, dict]] = []
-
-    class _Recorder:
-        async def ainfo(self, event: str, **kw) -> None:
-            captured.append((event, kw))
-
-        async def aerror(self, event: str, **kw) -> None:
-            captured.append((event, kw))
-
-    monkeypatch.setattr(email_service, "logger", _Recorder())
-    return captured
-
-
 def _install_exploding_transport(monkeypatch, exc: BaseException) -> None:
     """Wire every ``httpx.AsyncClient`` onto a transport that raises."""
 
@@ -275,14 +259,13 @@ async def test_send_batch_control_is_accepted_inside_the_budget(
 
 @pytest.mark.asyncio
 async def test_send_email_timeout_names_the_event_and_reports_the_budget(
-    monkeypatch,
+    monkeypatch, log_lines,
 ) -> None:
     _prod_mailgun(monkeypatch)
     monkeypatch.setattr(
         email_service, "MAILGUN_SEND_TOTAL_TIMEOUT_S", _TIMEOUT_BUDGET_S
     )
     _install_slow_transport(monkeypatch, delay_s=_HANG_S)
-    captured = _record_logs(monkeypatch)
 
     result = await email_service.send_email(
         "alice@acme.io",
@@ -292,9 +275,10 @@ async def test_send_email_timeout_names_the_event_and_reports_the_budget(
     )
 
     assert result is False
+    captured = [(ln["msg"], ln) for ln in log_lines()]
     events = [(e, kw) for e, kw in captured if e == "email_send_timeout"]
     assert len(events) == 1, captured
-    _event, kw = events[0]
+    kw = {k: v for k, v in events[0][1].items() if k not in ("ts", "level", "logger", "msg")}
     # A machine-readable, NON-EMPTY reason. ``str(TimeoutError())`` is "",
     # so this is exactly the assertion the shared handler cannot satisfy.
     assert kw["error"] == "timeout"
@@ -309,7 +293,7 @@ async def test_send_email_timeout_names_the_event_and_reports_the_budget(
 
 @pytest.mark.asyncio
 async def test_send_email_non_timeout_failure_still_lands_on_the_failed_event(
-    monkeypatch,
+    monkeypatch, log_lines,
 ) -> None:
     """Control: a transport error is NOT a timeout and must not be named one."""
     _prod_mailgun(monkeypatch)
@@ -317,13 +301,13 @@ async def test_send_email_non_timeout_failure_still_lands_on_the_failed_event(
         email_service, "MAILGUN_SEND_TOTAL_TIMEOUT_S", _CONTROL_BUDGET_S
     )
     _install_exploding_transport(monkeypatch, httpx.ReadTimeout("per-phase read"))
-    captured = _record_logs(monkeypatch)
 
     result = await email_service.send_email(
         "alice@acme.io", "Reset your password", "<p>hi</p>"
     )
 
     assert result is False
+    captured = [(ln["msg"], ln) for ln in log_lines()]
     assert [e for e, _kw in captured if e == "email_send_timeout"] == []
     failed = [(e, kw) for e, kw in captured if e == "email_send_failed"]
     assert len(failed) == 1, captured
@@ -333,14 +317,13 @@ async def test_send_email_non_timeout_failure_still_lands_on_the_failed_event(
 
 @pytest.mark.asyncio
 async def test_send_batch_timeout_names_the_event_and_reports_the_budget(
-    monkeypatch,
+    monkeypatch, log_lines,
 ) -> None:
     _prod_mailgun(monkeypatch)
     monkeypatch.setattr(
         email_service, "MAILGUN_SEND_TOTAL_TIMEOUT_S", _TIMEOUT_BUDGET_S
     )
     _install_slow_transport(monkeypatch, delay_s=_HANG_S)
-    captured = _record_logs(monkeypatch)
 
     result = await email_service.send_batch(
         ["alice@acme.io"],
@@ -352,9 +335,10 @@ async def test_send_batch_timeout_names_the_event_and_reports_the_budget(
     )
 
     assert result.disposition is SendDisposition.INDETERMINATE
+    captured = [(ln["msg"], ln) for ln in log_lines()]
     events = [(e, kw) for e, kw in captured if e == "broadcast_batch_timeout"]
     assert len(events) == 1, captured
-    _event, kw = events[0]
+    kw = {k: v for k, v in events[0][1].items() if k not in ("ts", "level", "logger", "msg")}
     assert kw["error"] == "timeout"
     assert kw["timeout_s"] == email_service.MAILGUN_SEND_TOTAL_TIMEOUT_S
     # PII bound MA5: counts and a reason, never an address.
@@ -364,7 +348,7 @@ async def test_send_batch_timeout_names_the_event_and_reports_the_budget(
 
 @pytest.mark.asyncio
 async def test_send_batch_non_timeout_failure_still_lands_on_the_failed_event(
-    monkeypatch,
+    monkeypatch, log_lines,
 ) -> None:
     """Control for the fence above."""
     _prod_mailgun(monkeypatch)
@@ -372,7 +356,6 @@ async def test_send_batch_non_timeout_failure_still_lands_on_the_failed_event(
         email_service, "MAILGUN_SEND_TOTAL_TIMEOUT_S", _CONTROL_BUDGET_S
     )
     _install_exploding_transport(monkeypatch, httpx.ReadTimeout("per-phase read"))
-    captured = _record_logs(monkeypatch)
 
     result = await email_service.send_batch(
         ["alice@acme.io"],
@@ -386,6 +369,7 @@ async def test_send_batch_non_timeout_failure_still_lands_on_the_failed_event(
     # A per-phase ReadTimeout is ALSO indeterminate — same epistemic state
     # as the aggregate bound, reached through a different clause.
     assert result.disposition is SendDisposition.INDETERMINATE
+    captured = [(ln["msg"], ln) for ln in log_lines()]
     assert [e for e, _kw in captured if e == "broadcast_batch_timeout"] == []
     failed = [(e, kw) for e, kw in captured if e == "broadcast_batch_failed"]
     assert len(failed) == 1, captured

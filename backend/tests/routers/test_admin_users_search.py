@@ -9,7 +9,7 @@ covers:
 - 404 on unknown user id.
 - Audit-throttle behavior: first list-view writes a row, second
   within the window does not. Same per-(actor, target) for detail.
-- Privacy: raw ``q`` string never appears in structlog event detail.
+- Privacy: raw ``q`` string never appears in log event detail.
 """
 from __future__ import annotations
 

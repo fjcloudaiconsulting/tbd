@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+import json
+
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI, Request
@@ -142,25 +144,21 @@ def _resolver_for(role: Role):
 # ── Audit-event capture ────────────────────────────────────────────────────
 
 
-class _CapturingLogger:
-    """Substitute for the structlog logger that records (event, kwargs)
-    tuples for every ainfo / aerror call."""
+class _RenderedLogs:
+    """``(event, fields)`` for every line the app logged, as rendered (the head keys stay in
+    ``fields``): what production prints, context and extras included."""
 
-    def __init__(self):
-        self.events: list[tuple[str, dict]] = []
+    def __init__(self, log_lines):
+        self._lines = log_lines
 
-    async def ainfo(self, event: str, **kwargs):
-        self.events.append((event, dict(kwargs)))
-
-    async def aerror(self, event: str, **kwargs):
-        self.events.append((event, dict(kwargs)))
+    @property
+    def events(self) -> list[tuple[str, dict]]:
+        return [(line["msg"], line) for line in self._lines()]
 
 
 @pytest.fixture
-def capture_logger(monkeypatch):
-    cap = _CapturingLogger()
-    monkeypatch.setattr(org_data_module, "logger", cap)
-    return cap
+def capture_logger(log_lines):
+    return _RenderedLogs(log_lines)
 
 
 # ── Auth gate ──────────────────────────────────────────────────────────────
@@ -311,7 +309,9 @@ async def test_reset_failure_logs_failed_event(monkeypatch, session_factory, cap
     assert payload["actor_user_id"] == seed["owner_id"]
     assert payload["org_id"] == seed["org_id"]
     assert payload["error_type"] == "RuntimeError"
-    assert "simulated DB failure" in payload["error"]
+    # The class, never the message (which could quote a row value).
+    assert payload["error"] == "RuntimeError"
+    assert "simulated DB failure" not in json.dumps(capture_logger.events)
 
 
 # ── Concurrent-reset guard (residual-risk follow-up to PR #134) ─────────────

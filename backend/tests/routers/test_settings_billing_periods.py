@@ -36,7 +36,6 @@ from unittest import mock
 
 import pytest
 import pytest_asyncio
-import structlog.stdlib
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -60,64 +59,6 @@ from app.routers.settings import router as settings_router
 from app.security import hash_password
 
 
-class _Recorder:
-    """Collects structlog events instead of rendering them.
-
-    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
-    processor chain on the GLOBAL structlog config — which ``app.main``
-    already replaced by calling ``setup_logging()`` at import, and which
-    other modules in this suite reconfigure without restoring. So whether a
-    ``capture_logs`` fence sees anything depends entirely on what ran before
-    it: green alone, red in a full or parallel run. Same remedy as
-    ``tests/auth/test_anonymous_audit_bounds``.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[dict] = []
-
-    def _add(self, level: str, event: str, kw: dict) -> None:
-        self.events.append({"event": event, "log_level": level, **kw})
-
-    async def adebug(self, event, **kw):
-        self._add("debug", event, kw)
-
-    async def ainfo(self, event, **kw):
-        self._add("info", event, kw)
-
-    async def awarning(self, event, **kw):
-        self._add("warning", event, kw)
-
-    async def aerror(self, event, **kw):
-        self._add("error", event, kw)
-
-    def debug(self, event, **kw):
-        self._add("debug", event, kw)
-
-    def info(self, event, **kw):
-        self._add("info", event, kw)
-
-    def warning(self, event, **kw):
-        self._add("warning", event, kw)
-
-    def error(self, event, **kw):
-        self._add("error", event, kw)
-
-    def bind(self, **_kw):
-        return self
-
-
-def _record_logs(monkeypatch) -> _Recorder:
-    """Bind a ``_Recorder`` in place of the logger ``billing_service`` builds.
-
-    ⚠ ``billing_service`` does ``import structlog`` INSIDE each function and
-    calls ``structlog.stdlib.get_logger()`` there, so there is no module
-    attribute to bind onto — the factory is the only handle. Unlike
-    ``capture_logs`` this touches no global structlog *configuration*, so it
-    neither depends on nor leaks test order, and ``monkeypatch`` restores it.
-    """
-    recorder = _Recorder()
-    monkeypatch.setattr(structlog.stdlib, "get_logger", lambda *a, **k: recorder)
-    return recorder
 from app.services import billing_service, budget_service
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
@@ -820,7 +761,7 @@ async def test_clamped_close_leaves_stub_budgets_reachable(
 
 @pytest.mark.asyncio
 async def test_clamped_close_audits_the_clamped_and_the_requested_date(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, log_lines
 ):
     """§5 test 16 — D10's audit mechanism.
 
@@ -835,7 +776,7 @@ async def test_clamped_close_audits_the_clamped_and_the_requested_date(
     ids = await _lapsed_roster(session_factory)
     client = TestClient(_make_app(session_factory, ids["owner"]))
 
-    logs = _record_logs(monkeypatch).events
+    logs = log_lines
     resp = client.post(
         "/api/v1/settings/billing-period/close?close_date=2026-07-24"
     )
@@ -849,7 +790,7 @@ async def test_clamped_close_audits_the_clamped_and_the_requested_date(
     assert detail["closed_period_id"] == ids["open"]
     assert detail["new_period_start"] == "2026-05-25"
 
-    clamped = [e for e in logs if e.get("event") == "billing.close.clamped"]
+    clamped = [e for e in logs() if e.get("msg") == "billing.close.clamped"]
     assert len(clamped) == 1
     assert clamped[0]["requested_close_date"] == "2026-07-24"
     assert clamped[0]["clamped_to"] == "2026-05-24"
@@ -1317,8 +1258,8 @@ async def test_ensure_future_periods_survives_a_concurrent_stub_revival(
 
 
 @pytest.mark.asyncio
-async def test_ensure_future_periods_logs_the_skip(session_factory, monkeypatch):
-    """The skip is silent to the caller by design, so the structlog warning
+async def test_ensure_future_periods_logs_the_skip(session_factory, monkeypatch, log_lines):
+    """The skip is silent to the caller by design, so the log warning
     is the only trace an off-grid org leaves. Asserted so the event name and
     its payload keys stay greppable in production."""
     _freeze_today(monkeypatch, _FROZEN_TODAY)
@@ -1335,20 +1276,20 @@ async def test_ensure_future_periods_logs_the_skip(session_factory, monkeypatch)
         "/api/v1/settings/billing-cycle", json={"billing_cycle_day": 25}
     ).status_code == 200
 
-    logs = _record_logs(monkeypatch).events
+    logs = log_lines
     async with session_factory() as db:
         created = await billing_service.ensure_future_periods(
             db, ids["org"], count=3
         )
 
     assert created == []
-    skips = [e for e in logs if e.get("event") == "billing.stub.skipped_overlap"]
+    skips = [e for e in logs() if e.get("msg") == "billing.stub.skipped_overlap"]
     assert len(skips) == 3
     assert [e["candidate_start"] for e in skips] == [
         "2026-04-25", "2026-05-25", "2026-06-25",
     ]
     for entry in skips:
-        assert entry["log_level"] == "warning"
+        assert entry["level"] == "WARNING"
         assert entry["org_id"] == ids["org"]
         assert entry["existing_period_id"] is not None
         assert entry["candidate_end"] > entry["candidate_start"]

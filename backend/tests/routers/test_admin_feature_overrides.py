@@ -15,6 +15,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, patch
 
+import json
+
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI, Request
@@ -135,16 +137,15 @@ def _plain_user_resolver():
 
 
 @pytest.mark.asyncio
-async def test_put_sets_new_override(session_factory):
+async def test_put_sets_new_override(session_factory, log_lines):
     seed = await _seed(session_factory)
     app = make_app(session_factory, _superadmin_resolver())
     from app.routers import admin_orgs as admin_orgs_module
-    with patch.object(admin_orgs_module.logger, "ainfo", new_callable=AsyncMock) as mock_ainfo:
-        with TestClient(app) as client:
-            res = client.put(
-                f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
-                json={"value": True, "note": "internal beta"},
-            )
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
+            json={"value": True, "note": "internal beta"},
+        )
     assert res.status_code == 200
     body = res.json()
     assert body["feature_key"] == "ai.budget"
@@ -154,25 +155,22 @@ async def test_put_sets_new_override(session_factory):
     assert body["is_expired"] is False
 
     # Find the structured event among possibly-multiple ainfo calls.
-    set_calls = [
-        c for c in mock_ainfo.call_args_list
-        if c.args and c.args[0] == "admin.org.feature.set"
-    ]
+    set_calls = [ln for ln in log_lines() if ln["msg"] == "admin.org.feature.set"]
     assert len(set_calls) == 1
-    args, kwargs = set_calls[0]
+    kwargs = set_calls[0]
     assert kwargs["target_org_id"] == seed["target_id"]
     assert kwargs["feature_key"] == "ai.budget"
-    assert kwargs["old_value"] is None
+    assert kwargs.get("old_value") is None  # a None field is not rendered at all
     assert kwargs["new_value"] is True
     assert kwargs["note_present"] is True
     assert kwargs["actor_email"] == seed["admin_email"]
     # Note text NEVER lands in the audit payload.
     assert "note" not in kwargs or kwargs.get("note") is None
-    assert "internal beta" not in str(kwargs.values())
+    assert "internal beta" not in json.dumps(log_lines())
 
 
 @pytest.mark.asyncio
-async def test_put_updates_existing_override(session_factory):
+async def test_put_updates_existing_override(session_factory, log_lines):
     seed = await _seed(session_factory)
     app = make_app(session_factory, _superadmin_resolver())
     with TestClient(app) as client:
@@ -183,24 +181,20 @@ async def test_put_updates_existing_override(session_factory):
         assert first.status_code == 200
         assert first.json()["value"] is True
 
-        from app.routers import admin_orgs as admin_orgs_module
-        with patch.object(admin_orgs_module.logger, "ainfo", new_callable=AsyncMock) as mock_ainfo:
-            second = client.put(
-                f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.forecast",
-                json={"value": False, "note": "rolled back"},
-            )
+        seen = len(log_lines())  # the capture is cumulative: only the second PUT's lines count
+        second = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.forecast",
+            json={"value": False, "note": "rolled back"},
+        )
 
     assert second.status_code == 200
     body = second.json()
     assert body["value"] is False
     assert body["set_by_email"] == seed["admin_email"]
 
-    set_calls = [
-        c for c in mock_ainfo.call_args_list
-        if c.args and c.args[0] == "admin.org.feature.set"
-    ]
+    set_calls = [ln for ln in log_lines()[seen:] if ln["msg"] == "admin.org.feature.set"]
     assert len(set_calls) == 1
-    args, kwargs = set_calls[0]
+    kwargs = set_calls[0]
     assert kwargs["old_value"] is True
     assert kwargs["new_value"] is False
     assert kwargs["note_present"] is True
@@ -264,7 +258,7 @@ async def test_put_requires_orgs_manage(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_delete_revokes_existing_override(session_factory):
+async def test_delete_revokes_existing_override(session_factory, log_lines):
     seed = await _seed(session_factory)
     app = make_app(session_factory, _superadmin_resolver())
     with TestClient(app) as client:
@@ -275,20 +269,16 @@ async def test_delete_revokes_existing_override(session_factory):
         assert put_res.status_code == 200
 
         from app.routers import admin_orgs as admin_orgs_module
-        with patch.object(admin_orgs_module.logger, "ainfo", new_callable=AsyncMock) as mock_ainfo:
-            del_res = client.delete(
-                f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
-            )
+        del_res = client.delete(
+            f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
+        )
 
     assert del_res.status_code == 204
     assert del_res.content == b""
 
-    revoked_calls = [
-        c for c in mock_ainfo.call_args_list
-        if c.args and c.args[0] == "admin.org.feature.revoked"
-    ]
+    revoked_calls = [ln for ln in log_lines() if ln["msg"] == "admin.org.feature.revoked"]
     assert len(revoked_calls) == 1
-    args, kwargs = revoked_calls[0]
+    kwargs = revoked_calls[0]
     assert kwargs["target_org_id"] == seed["target_id"]
     assert kwargs["feature_key"] == "ai.budget"
     assert kwargs["old_value"] is True

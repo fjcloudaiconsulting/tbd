@@ -75,7 +75,7 @@ def _make_app(session_factory) -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     # TBD-291: mounted here for the same reason `main.py` mounts it — it is what
-    # sanitizes the inbound `X-Request-Id` and binds the safe value onto structlog
+    # sanitizes the inbound `X-Request-Id` and binds the safe value onto the log context
     # contextvars. Without it every `request_id` the handler records is None, and
     # the sanitizer fences below could not tell a sanitized value from a raw one.
     app.add_middleware(RequestContextMiddleware)

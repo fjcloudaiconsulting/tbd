@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import importlib
 
-import structlog
-from structlog.testing import LogCapture
 
 
 def test_settings_expose_pool_defaults():
@@ -97,20 +95,11 @@ def test_engine_is_constructed_with_settings_pool_values(monkeypatch):
         importlib.reload(app_database)
 
 
-def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch):
+def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch, log_lines):
     """`db.engine.configured` is logged at module import with pool params + host.
 
     The host field must be the URL hostname only, never the credentials.
     """
-    capture = LogCapture()
-    structlog.configure(
-        processors=[capture],
-        wrapper_class=structlog.BoundLogger,
-        context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=False,
-    )
-
     try:
         monkeypatch.setenv(
             "DATABASE_URL",
@@ -138,7 +127,7 @@ def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch):
         importlib.reload(app_config)
         importlib.reload(app_database)
 
-        events = [e for e in capture.entries if e.get("event") == "db.engine.configured"]
+        events = [e for e in log_lines() if e["msg"] == "db.engine.configured"]
         assert events, "expected a db.engine.configured event at module import"
         evt = events[-1]
         assert evt["pool_size"] == 9
@@ -149,7 +138,6 @@ def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch):
         assert "secret" not in flat
         assert "user:" not in flat
     finally:
-        structlog.reset_defaults()
         # Restore original singleton and re-wire app.database to it.
         import app.config as app_config
         import app.database as app_database

@@ -40,33 +40,6 @@ from app.routers.auth import router as auth_router
 from tests.conftest import set_refresh_cookie
 
 
-class _Recorder:
-    """Collects structlog events off ``auth._LOGGER``.
-
-    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
-    processor chain on the GLOBAL structlog config, which several modules in
-    this suite reconfigure without restoring, so a capture_logs fence is
-    green alone and red in a full or parallel run (``app.main`` calls
-    ``setup_logging()`` at import). Worse for the two gate-OFF legs below,
-    whose assertion is an EMPTY list: a capture that silently stops
-    capturing makes them vacuously green — they would pass against a gate
-    that does not gate. Binding the recorder onto the module's own logger
-    removes both failure modes. Same remedy as
-    ``tests/auth/test_anonymous_audit_bounds``.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[dict[str, Any]] = []
-
-    def _record(self, event: str, **kw: Any) -> None:
-        self.events.append({"event": event, **kw})
-
-    debug = info = warning = error = critical = _record
-
-    def rejections(self) -> list[dict[str, Any]]:
-        return [ev for ev in self.events if ev["event"] == "auth.refresh.rejected"]
-
-
 @pytest_asyncio.fixture
 async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     engine = create_async_engine(
@@ -108,19 +81,25 @@ def _make_app(session_factory) -> FastAPI:
     return app
 
 
+def _assert_quiet(log_lines) -> None:
+    """No ``auth.refresh.rejected`` line, with a positive control: a line logged on the same
+    logger right after is captured, so an empty result cannot be a capture that stopped working."""
+    auth_module._LOGGER.info("control.channel")
+    lines = log_lines()
+    assert [ev["msg"] for ev in lines if ev["msg"] == "control.channel"] == ["control.channel"]
+    rejections = [ev for ev in lines if ev["msg"] == "auth.refresh.rejected"]
+    assert rejections == [], f"Gate OFF must suppress auth.refresh.rejected events; got: {rejections}"
+
+
 class TestAuthDebugLoggingGate:
     @pytest.mark.asyncio
     async def test_gate_off_suppresses_event_but_still_401s(
-        self, session_factory, monkeypatch
+        self, session_factory, monkeypatch, log_lines
     ) -> None:
         """Production default. A terminal 401 still fires; the
         ``auth.refresh.rejected`` event does NOT emit."""
         # Override the autouse-True from conftest.
         monkeypatch.setattr(app_settings, "auth_debug_logging", False)
-
-        recorder = _Recorder()
-        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
-
         app = _make_app(session_factory)
         with TestClient(app) as client:
             set_refresh_cookie(client, "not.a.jwt")
@@ -128,35 +107,24 @@ class TestAuthDebugLoggingGate:
                 "/api/v1/auth/refresh"
             )
         assert res.status_code == 401, res.json()
-        rejection_logs = recorder.rejections()
-        assert rejection_logs == [], (
-            f"Gate OFF must suppress auth.refresh.rejected events; got: "
-            f"{rejection_logs}"
-        )
+        _assert_quiet(log_lines)
 
     @pytest.mark.asyncio
     async def test_gate_off_suppresses_event_on_empty_cookie(
-        self, session_factory, monkeypatch
+        self, session_factory, monkeypatch, log_lines
     ) -> None:
         """Same property for the no-cookie path. The 2026-05-19 logs
         rely on this reason being the most useful diagnostic — when
         the gate is off, even that diagnostic stays quiet."""
         monkeypatch.setattr(app_settings, "auth_debug_logging", False)
-
-        recorder = _Recorder()
-        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
-
         app = _make_app(session_factory)
         with TestClient(app) as client:
             res = client.post("/api/v1/auth/refresh")
         assert res.status_code == 401
-        assert recorder.rejections() == [], (
-            f"Gate OFF must suppress auth.refresh.rejected events; got: "
-            f"{recorder.rejections()}"
-        )
+        _assert_quiet(log_lines)
 
     @pytest.mark.asyncio
-    async def test_gate_on_emits_event(self, session_factory, monkeypatch) -> None:
+    async def test_gate_on_emits_event(self, session_factory, monkeypatch, log_lines) -> None:
         """When the operator flips the gate on (the test suite's
         autouse-True default), the event emits with the correct
         reason. Confirms the gate doesn't change anything other than
@@ -164,10 +132,6 @@ class TestAuthDebugLoggingGate:
         assert app_settings.auth_debug_logging is True, (
             "conftest autouse fixture should enable the gate"
         )
-
-        recorder = _Recorder()
-        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
-
         app = _make_app(session_factory)
         with TestClient(app) as client:
             set_refresh_cookie(client, "not.a.jwt")
@@ -175,7 +139,7 @@ class TestAuthDebugLoggingGate:
                 "/api/v1/auth/refresh"
             )
         assert res.status_code == 401
-        rejection_logs = recorder.rejections()
+        rejection_logs = [ev for ev in log_lines() if ev["msg"] == "auth.refresh.rejected"]
         assert len(rejection_logs) == 1, rejection_logs
         assert rejection_logs[0]["reason"] == "invalid_token_decode"
 

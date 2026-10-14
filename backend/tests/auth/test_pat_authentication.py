@@ -429,7 +429,7 @@ async def test_known_dead_token_writes_auth_rejected_audit(factory, superadmin):
 
 
 async def test_unknown_token_writes_no_audit_row(factory, superadmin):
-    """Unknown ``pat_`` garbage stays structlog-only — no audit row, to avoid
+    """Unknown ``pat_`` garbage stays log-only — no audit row, to avoid
     an audit-flood DoS (ARC-R12)."""
     from app.models.audit_event import AuditEvent
 

@@ -6,11 +6,12 @@ Two properties to pin tightly:
    and commits — so an audit row exists even when the caller's session
    was rolled back.
 2. ``record_audit_event`` NEVER raises. A broken factory must be
-   absorbed; the caller's structlog event is the fallback channel.
+   absorbed; the caller's log event is the fallback channel.
 """
 from __future__ import annotations
 
 import datetime
+import json
 from collections.abc import AsyncIterator
 
 import pytest
@@ -90,7 +91,7 @@ async def test_record_audit_event_commits_independently(session_factory):
 @pytest.mark.asyncio
 async def test_record_audit_event_survives_bad_session():
     """If the factory itself blows up, record_audit_event must NOT
-    raise — the structlog event the caller already emitted is the
+    raise — the log event the caller already emitted is the
     backup channel and we don't want to mask the original 200/500 the
     user sees.
     """
@@ -113,7 +114,7 @@ async def test_record_audit_event_survives_bad_session():
 
 
 @pytest.mark.asyncio
-async def test_record_audit_event_failure_logs_at_error():
+async def test_record_audit_event_failure_logs_at_error(log_lines):
     """A backstop audit-write failure surfaces at ERROR level.
 
     After PR-C the org-delete success path stages the audit row in
@@ -125,39 +126,30 @@ async def test_record_audit_event_failure_logs_at_error():
     WARN. This pins the level so a future "oops" downgrade is
     caught.
     """
-    from unittest.mock import AsyncMock, patch
-
     def broken_factory():
         raise RuntimeError("DB unreachable")
 
-    from app.services import audit_service as audit_service_module
+    await record_audit_event(
+        broken_factory,
+        event_type="admin.org.delete",
+        actor_user_id=None,
+        actor_email="root@example.io",
+        target_org_id=None,
+        target_org_name=None,
+        request_id=None,
+        ip_address=None,
+        outcome="failure",
+        detail=None,
+    )
 
-    with patch.object(
-        audit_service_module.logger, "aerror", new_callable=AsyncMock
-    ) as mock_aerror, patch.object(
-        audit_service_module.logger, "awarning", new_callable=AsyncMock
-    ) as mock_awarning:
-        await record_audit_event(
-            broken_factory,
-            event_type="admin.org.delete",
-            actor_user_id=None,
-            actor_email="root@example.io",
-            target_org_id=None,
-            target_org_name=None,
-            request_id=None,
-            ip_address=None,
-            outcome="failure",
-            detail=None,
-        )
-
-    assert mock_awarning.call_count == 0, (
+    lines = [ln for ln in log_lines() if ln["msg"] == "audit.record.failed"]
+    assert [ln["level"] for ln in lines] == ["ERROR"], (
         "audit.record.failed must log at ERROR, not WARN"
     )
-    assert mock_aerror.call_count == 1
-    args, kwargs = mock_aerror.call_args
-    assert args[0] == "audit.record.failed"
-    assert kwargs["event_type"] == "admin.org.delete"
-    assert kwargs["error_type"] == "RuntimeError"
+    assert lines[0]["event_type"] == "admin.org.delete"
+    assert lines[0]["error_type"] == "RuntimeError"
+    # The exception text ("DB unreachable") is never part of the line.
+    assert "DB unreachable" not in json.dumps(lines)
 
 
 # ── querying ────────────────────────────────────────────────────────────

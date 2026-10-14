@@ -209,3 +209,49 @@ def test_f21_a_slowapi_warning_is_dropped(log_lines):
 
     lines = [line for line in log_lines() if line["logger"] == "slowapi"]
     assert [line["msg"] for line in lines] == ["kept"]
+
+
+# F19: a Settings error at import exits non-zero, naming fields or validator messages, never a value.
+def test_f19_a_field_error_names_the_field_and_not_the_value():
+    value = "SEC" + "RET-field-value"
+    done = _run_python("import app.config", {"DB_POOL_SIZE": value})
+
+    assert done.returncode != 0
+    assert "db_pool_size" in done.stdout + done.stderr
+    assert value not in done.stdout + done.stderr
+    assert "input_value" not in done.stdout + done.stderr
+
+
+def test_f19_a_model_validator_error_shows_its_message_and_not_the_values():
+    value = "SEC" + "RET-" + "k" * 40
+    done = _run_python(
+        "import app.config",
+        {"JWT_SECRET_KEY": value, "MFA_RECOVERY_HMAC_KEY": value},
+    )
+
+    assert done.returncode != 0
+    assert "must differ from JWT_SECRET_KEY" in done.stdout + done.stderr
+    assert value not in done.stdout + done.stderr
+    assert "input_value" not in done.stdout + done.stderr  # pydantic's repr of the input dict
+
+
+# F13: alembic's env.py sets logging up through logs.configure(), not fileConfig.
+def test_f13_alembic_env_keeps_our_handler_and_does_not_disable_loggers(caplog):
+    from alembic import command
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    early = logging.getLogger("app.tests.created_before_alembic")
+    config = Config(str(BACKEND_ROOT / "alembic.ini"), output_buffer=io.StringIO())
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    first = ScriptDirectory.from_config(config).walk_revisions("base", "heads")
+    base = [r.revision for r in first][-1]
+
+    command.upgrade(config, f"{base}", sql=True)  # offline: runs env.py, touches no database
+
+    root_handlers = [h for h in logging.getLogger().handlers if h is not caplog.handler]
+    assert [h.name for h in root_handlers if h.name == logs.HANDLER] == [logs.HANDLER]
+    assert not any(h.name != logs.HANDLER and type(h) is logging.StreamHandler for h in root_handlers)
+    assert early.disabled is False
+    early.warning("still emits")
+    assert any(r.getMessage() == "still emits" for r in caplog.records)

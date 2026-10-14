@@ -61,7 +61,6 @@ from app.services.mfa_service import (
 )
 
 from tests.conftest import set_refresh_cookie, state_jtis
-from tests.routers.test_refresh_logging_and_precedence import _LogRecorder
 
 
 PASSWORD = "starting-password-1"
@@ -1007,7 +1006,7 @@ async def test_refresh_rejects_jti_with_mismatched_user_id_in_store(
 
 @pytest.mark.asyncio
 async def test_refresh_rejects_jti_with_mismatched_sid_in_store(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, log_lines
 ) -> None:
     """Architect P2 on PR #306 — sister case to the user_id mismatch.
     The JWT carries one ``sid``, the stored family carries a different
@@ -1018,8 +1017,6 @@ async def test_refresh_rejects_jti_with_mismatched_sid_in_store(
     from app.security import create_refresh_token
 
     seed = await _seed_user(session_factory)
-    recorder = _LogRecorder()
-    monkeypatch.setattr(auth_module, "_LOGGER", recorder)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         login = client.post(
@@ -1040,6 +1037,6 @@ async def test_refresh_rejects_jti_with_mismatched_sid_in_store(
         )
     assert res.status_code == 401, res.json()
     reasons = [
-        ev["reason"] for ev in recorder.events if ev.get("event") == "auth.refresh.rejected"
+        ev["reason"] for ev in log_lines() if ev.get("msg") == "auth.refresh.rejected"
     ]
     assert reasons == ["row_binding_mismatch"], reasons

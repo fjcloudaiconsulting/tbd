@@ -161,7 +161,9 @@ def _import_mcp_main(extra_env: dict) -> subprocess.CompletedProcess:
 def test_f_n3_mcp_main_refuses_to_boot_with_a_platform_key(p):
     r = _import_mcp_main({f"PLATFORM_AI_{p}_API_KEY": "k"})
     assert r.returncode != 0
-    assert f"PLATFORM_AI_{p}_API_KEY" in r.stderr
+    # Named in the JSON line that logs the refusal; the crash hook itself prints the class only.
+    assert f'"variable": "PLATFORM_AI_{p}_API_KEY"' in r.stdout
+    assert "RuntimeError" in r.stdout
 
 
 def test_f_n3_control_mcp_main_boots_without_keys():

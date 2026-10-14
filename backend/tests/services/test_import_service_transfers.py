@@ -359,7 +359,7 @@ async def test_detector_1_takes_precedence_over_detector_2(
 
 
 async def test_summary_counters_match_per_row_actions_and_emit_metric(
-    db_session: AsyncSession,
+    db_session: AsyncSession, log_lines,
 ) -> None:
     """A 3-row preview: pair_with, suggest_pair, none → counters match;
     exactly one import.preview.matched event with the right shape.
@@ -401,13 +401,10 @@ async def test_summary_counters_match_per_row_actions_and_emit_metric(
             counterparty=None, transaction_type=None,
         ),
     ]
-    with patch.object(
-        import_service.logger, "ainfo", new_callable=AsyncMock,
-    ) as spy:
-        result = await import_service.build_preview(
-            db_session, org_id=seed["org_id"],
-            account_id=seed["src_id"], file_name="t.csv", parsed_rows=rows,
-        )
+    result = await import_service.build_preview(
+        db_session, org_id=seed["org_id"],
+        account_id=seed["src_id"], file_name="t.csv", parsed_rows=rows,
+    )
 
     assert [r.transfer_match_action for r in result.rows] == [
         "pair_with", "suggest_pair", "none",
@@ -419,12 +416,9 @@ async def test_summary_counters_match_per_row_actions_and_emit_metric(
     assert result.multi_candidate_count == 0
     assert result.duplicate_of_linked_count == 0
 
-    matched_calls = [
-        c for c in spy.call_args_list
-        if c.args and c.args[0] == "import.preview.matched"
-    ]
+    matched_calls = [ln for ln in log_lines() if ln["msg"] == "import.preview.matched"]
     assert len(matched_calls) == 1, "exactly one matched-summary event per preview"
-    kwargs = matched_calls[0].kwargs
+    kwargs = matched_calls[0]
     assert kwargs["org_id"] == seed["org_id"]
     assert kwargs["file_name"] == "t.csv"
     assert kwargs["auto_paired"] == 1
@@ -466,7 +460,7 @@ async def test_legacy_online_banking_string_no_longer_triggers_transfer_flag(
 
 
 async def test_confirm_pair_with_existing_creates_and_links_atomically(
-    db_session: AsyncSession,
+    db_session: AsyncSession, log_lines,
 ) -> None:
     """Happy path: action='pair_with_existing' inserts the new leg,
     locks the partner, and links both rows under a single per-row savepoint.
@@ -499,12 +493,9 @@ async def test_confirm_pair_with_existing_creates_and_links_atomically(
         )],
     )
 
-    with patch.object(
-        import_service.logger, "ainfo", new_callable=AsyncMock,
-    ) as spy:
-        result = await import_service.execute_import(
-            db_session, org_id=seed["org_id"], body=body,
-        )
+    result = await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
 
     assert result.imported_count == 0
     assert result.paired_count == 1
@@ -523,13 +514,10 @@ async def test_confirm_pair_with_existing_creates_and_links_atomically(
     assert partner.linked_transaction_id == new_leg.id
 
     # Telemetry: transfers.linked with source='import_pair'.
-    linked_calls = [
-        c for c in spy.call_args_list
-        if c.args and c.args[0] == "transfers.linked"
-    ]
+    linked_calls = [ln for ln in log_lines() if ln["msg"] == "transfers.linked"]
     assert len(linked_calls) == 1
-    assert linked_calls[0].kwargs["source"] == "import_pair"
-    assert linked_calls[0].kwargs["recategorized"] is False
+    assert linked_calls[0]["source"] == "import_pair"
+    assert linked_calls[0]["recategorized"] is False
 
 
 async def test_confirm_pair_with_existing_atomicity_rollback(
@@ -785,7 +773,7 @@ async def test_confirm_pair_with_existing_rejects_pending_partner(
 
 
 async def test_confirm_create_transfer_pair_creates_both_legs_and_links(
-    db_session: AsyncSession,
+    db_session: AsyncSession, log_lines,
 ) -> None:
     """action='create_transfer_pair' creates the CSV leg + a synthetic
     partner leg on partner_account_id and links them. Counts once toward
@@ -810,12 +798,9 @@ async def test_confirm_create_transfer_pair_creates_both_legs_and_links(
         )],
     )
 
-    with patch.object(
-        import_service.logger, "ainfo", new_callable=AsyncMock,
-    ) as spy:
-        result = await import_service.execute_import(
-            db_session, org_id=seed["org_id"], body=body,
-        )
+    result = await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
 
     assert result.imported_count == 0
     assert result.paired_count == 1
@@ -844,13 +829,10 @@ async def test_confirm_create_transfer_pair_creates_both_legs_and_links(
     assert csv_leg.is_imported is True
     assert partner_leg.is_imported is False
 
-    linked_calls = [
-        c for c in spy.call_args_list
-        if c.args and c.args[0] == "transfers.linked"
-    ]
+    linked_calls = [ln for ln in log_lines() if ln["msg"] == "transfers.linked"]
     assert len(linked_calls) == 1
-    assert linked_calls[0].kwargs["source"] == "import_create_pair"
-    assert linked_calls[0].kwargs["recategorized"] is False
+    assert linked_calls[0]["source"] == "import_create_pair"
+    assert linked_calls[0]["recategorized"] is False
 
 
 async def test_confirm_create_transfer_pair_atomicity_rollback(

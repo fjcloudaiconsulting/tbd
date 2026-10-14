@@ -52,50 +52,6 @@ from app.services.broadcast_service import (
 )
 
 
-# ─── structlog → caplog plumbing (mirrors test_notification_service.py) ───
-
-
-@pytest.fixture
-def _structlog_via_stdlib():
-    """Route structlog events through stdlib so ``caplog`` can see them.
-
-    Without this, structlog falls back to its default ``PrintLogger`` in a
-    bare unit-test process and ``caplog`` sees nothing (see the identical
-    fixture + rationale in ``tests/services/test_notification_service.py``).
-    """
-    import structlog
-
-    from app.logging import setup_logging
-
-    original_config = structlog.get_config() if structlog.is_configured() else None
-    setup_logging()
-    yield
-    if original_config is not None:
-        structlog.configure(**original_config)
-
-
-def _collect_structlog_events(caplog) -> list[dict]:
-    """Normalize captured log records into structlog event dicts."""
-    events: list[dict] = []
-    for rec in caplog.records:
-        candidate = rec.msg
-        if isinstance(candidate, tuple) and candidate:
-            candidate = candidate[0]
-        if isinstance(candidate, dict):
-            events.append(candidate)
-            continue
-        message = rec.getMessage()
-        for parser in (json.loads, ast.literal_eval):
-            try:
-                payload = parser(message)
-            except (ValueError, SyntaxError, TypeError):
-                continue
-            if isinstance(payload, dict):
-                events.append(payload)
-                break
-    return events
-
-
 # ─── httpx.MockTransport harness (mirrors test_ai_adapters_chat.py) ───
 
 
@@ -160,7 +116,7 @@ async def test_send_batch_dev_mode_returns_true_without_httpx(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_send_batch_dev_mode_logs_count_and_subject_only(
-    monkeypatch, caplog, _structlog_via_stdlib
+    monkeypatch, caplog, log_lines
 ):
     monkeypatch.setattr(email_service.settings, "mailgun_api_key", "")
     to_list = ["alice@x.io", "bob@x.io", "carol@x.io"]
@@ -175,14 +131,14 @@ async def test_send_batch_dev_mode_logs_count_and_subject_only(
             broadcast_id=42,
         )
 
-    events = [e for e in _collect_structlog_events(caplog) if e.get("event") == "broadcast_batch_sent"]
+    events = [e for e in log_lines() if e["msg"] == "broadcast_batch_sent"]
     assert len(events) == 1
     event = events[0]
     assert event["count"] == 3
     assert event["subject"] == "The Better Decision is back up"
 
     # No recipient PII anywhere in the captured log output (MA5).
-    full_log_text = caplog.text
+    full_log_text = json.dumps(log_lines())
     for addr in to_list:
         assert addr not in full_log_text
     assert "first_name_html" not in full_log_text
@@ -289,7 +245,7 @@ async def test_send_batch_prod_mode_5xx_is_indeterminate(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_send_batch_prod_mode_logs_status_on_success_and_error_on_failure(
-    monkeypatch, caplog, _structlog_via_stdlib
+    monkeypatch, caplog, log_lines
 ):
     monkeypatch.setattr(email_service.settings, "mailgun_api_key", "key-123")
     monkeypatch.setattr(email_service.settings, "mailgun_domain", "mg.example.com")
@@ -308,7 +264,7 @@ async def test_send_batch_prod_mode_logs_status_on_success_and_error_on_failure(
             {"alice@x.io": {"first_name_html": "there", "first_name_text": "there"}},
             broadcast_id=42,
         )
-    ok_events = [e for e in _collect_structlog_events(caplog) if e.get("event") == "broadcast_batch_sent"]
+    ok_events = [e for e in log_lines() if e["msg"] == "broadcast_batch_sent"]
     assert len(ok_events) == 1
     assert ok_events[0]["status"] == 200
 
@@ -327,10 +283,10 @@ async def test_send_batch_prod_mode_logs_status_on_success_and_error_on_failure(
             {"alice@x.io": {"first_name_html": "there", "first_name_text": "there"}},
             broadcast_id=42,
         )
-    fail_events = [e for e in _collect_structlog_events(caplog) if e.get("event") == "broadcast_batch_failed"]
+    fail_events = [e for e in log_lines() if e["msg"] == "broadcast_batch_failed"]
     assert len(fail_events) == 1
     assert "error" in fail_events[0]
-    assert "alice@x.io" not in caplog.text
+    assert "alice@x.io" not in json.dumps(log_lines())
 
 
 # ─── send_batch: the MA2 recipient-variables precondition ───
@@ -386,7 +342,7 @@ async def test_send_batch_multi_address_bad_vars_never_posts(
 
 @pytest.mark.asyncio
 async def test_send_batch_bad_vars_logs_counts_without_addresses(
-    monkeypatch, caplog, _structlog_via_stdlib
+    monkeypatch, caplog, log_lines
 ):
     monkeypatch.setattr(email_service.settings, "mailgun_api_key", "key-123")
     _install_transport(monkeypatch, _fail_if_called)
@@ -396,17 +352,13 @@ async def test_send_batch_bad_vars_logs_counts_without_addresses(
             ["alice@x.io", "bob@x.io"], "Subject", "<p>html</p>", "text", {}, broadcast_id=42
         )
 
-    events = [
-        e
-        for e in _collect_structlog_events(caplog)
-        if e.get("event") == "broadcast_batch_failed"
-    ]
+    events = [e for e in log_lines() if e["msg"] == "broadcast_batch_failed"]
     assert len(events) == 1
     assert events[0]["count"] == 2
     assert events[0]["variables_count"] == 0
     # PII bound (MA5): counts and a reason, never an address.
-    assert "alice@x.io" not in caplog.text
-    assert "bob@x.io" not in caplog.text
+    assert "alice@x.io" not in json.dumps(log_lines())
+    assert "bob@x.io" not in json.dumps(log_lines())
 
 
 @pytest.mark.asyncio

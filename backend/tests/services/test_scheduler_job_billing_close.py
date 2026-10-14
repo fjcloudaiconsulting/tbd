@@ -17,60 +17,6 @@ from app.services.scheduler.jobs import billing_close as billing_close_job
 from app.services.scheduler.jobs.billing_close import BillingCloseJob
 
 
-class _Recorder:
-    """Collects structlog events instead of rendering them.
-
-    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
-    processor chain on the GLOBAL structlog config — which ``app.main``
-    already replaced by calling ``setup_logging()`` at import, and which
-    other modules in this suite reconfigure without restoring. So whether a
-    ``capture_logs`` fence sees anything depends entirely on what ran before
-    it: green alone, red in a full or parallel run. Binding a recorder onto
-    the module's own ``logger`` is immune to all of it. Same remedy as
-    ``tests/auth/test_anonymous_audit_bounds``.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[dict] = []
-
-    def _add(self, level: str, event: str, kw: dict) -> None:
-        self.events.append({"event": event, "log_level": level, **kw})
-
-    async def adebug(self, event, **kw):
-        self._add("debug", event, kw)
-
-    async def ainfo(self, event, **kw):
-        self._add("info", event, kw)
-
-    async def awarning(self, event, **kw):
-        self._add("warning", event, kw)
-
-    async def aerror(self, event, **kw):
-        self._add("error", event, kw)
-
-    def debug(self, event, **kw):
-        self._add("debug", event, kw)
-
-    def info(self, event, **kw):
-        self._add("info", event, kw)
-
-    def warning(self, event, **kw):
-        self._add("warning", event, kw)
-
-    def error(self, event, **kw):
-        self._add("error", event, kw)
-
-    def bind(self, **_kw):
-        return self
-
-
-def _record_logs(monkeypatch) -> _Recorder:
-    """Bind a ``_Recorder`` onto ``scheduler.jobs.billing_close``'s module-level ``logger``."""
-    recorder = _Recorder()
-    monkeypatch.setattr(billing_close_job, "logger", recorder)
-    return recorder
-
-
 @pytest_asyncio.fixture
 async def session_factory():
     engine = create_async_engine(
@@ -359,7 +305,7 @@ async def test_mid_convergence_failure_propagates_and_the_next_tick_heals(
 
 
 async def test_convergence_stops_at_the_cap_and_reports_the_last_applied_date(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, log_lines
 ):
     """§5 test 21 — the 24-step cap.
 
@@ -379,7 +325,7 @@ async def test_convergence_stops_at_the_cap_and_reports_the_last_applied_date(
     job = BillingCloseJob()
     today = datetime.date(2026, 8, 3)
 
-    logs = _record_logs(monkeypatch).events
+    logs = log_lines
     async with session_factory() as db:
         res = await job.run(db, org, today)
 
@@ -390,7 +336,7 @@ async def test_convergence_stops_at_the_cap_and_reports_the_last_applied_date(
     assert res.counts["closed_on"] != (
         datetime.date(2026, 8, 1) - datetime.timedelta(days=1)
     ).isoformat()
-    capped = [e for e in logs if e.get("event") == "billing.close.convergence_capped"]
+    capped = [e for e in logs() if e.get("msg") == "billing.close.convergence_capped"]
     assert len(capped) == 1
     assert capped[0]["org_id"] == org.id
     assert capped[0]["steps"] == 24

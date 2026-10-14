@@ -2,7 +2,7 @@
 
 Unit tests only; no real DB / no real alembic invocation. We mock
 ScriptDirectory, the current-revision lookup, and subprocess.Popen, then
-inspect the structlog events the script emits via testing.LogCapture.
+inspect the log lines the script emits, rendered through the real formatter.
 
 Coverage:
   * no-op (current == head)
@@ -20,40 +20,13 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-import structlog
-from structlog.testing import LogCapture
-
 from scripts import migrate
 
 
 @pytest.fixture
-def cap_logs():
-    """Reroute structlog through LogCapture; restore on teardown.
-
-    Calling migrate.setup_logging() inside main() reconfigures structlog
-    with the JSON pipeline. We re-configure AFTER setup_logging runs (via
-    a side-effect on the patch) so the capturing processor wins.
-    """
-    capture = LogCapture()
-
-    original_configure = structlog.configure
-
-    def _configure_with_capture(*args: Any, **kwargs: Any) -> None:
-        # Replace processors with the capture so events land in `capture`.
-        structlog.configure(
-            processors=[capture],
-            wrapper_class=structlog.BoundLogger,
-            context_class=dict,
-            logger_factory=structlog.PrintLoggerFactory(),
-            cache_logger_on_first_use=False,
-        )
-
-    # Patch app.logging.setup_logging where the migrate module imports it.
-    with patch.object(migrate, "setup_logging", _configure_with_capture):
-        yield capture
-
-    # Restore default config so other tests aren't affected.
-    structlog.reset_defaults()
+def cap_logs(log_lines):
+    """The rendered log lines (a callable returning them), through the real filter and formatter."""
+    return log_lines
 
 
 def _fake_revision(revision: str, doc: str | None = None) -> SimpleNamespace:
@@ -118,9 +91,9 @@ def test_no_op_when_current_equals_head(cap_logs, monkeypatch):
     rc = migrate.main()
     assert rc == 0
 
-    events = [e["event"] for e in cap_logs.entries]
+    events = [e["msg"] for e in cap_logs()]
     assert events == ["migrate.no_op"]
-    entry = cap_logs.entries[0]
+    entry = cap_logs()[0]
     assert entry["revision"] == "002"
     assert entry.get("dialect") == "mysql"
     assert entry.get("database") == "dbname"
@@ -150,7 +123,7 @@ def test_multi_step_success_emits_full_event_sequence(cap_logs, monkeypatch):
     # Each pending rev (b, c) was upgraded in order.
     assert calls == ["b", "c"]
 
-    events = [e["event"] for e in cap_logs.entries]
+    events = [e["msg"] for e in cap_logs()]
     assert events == [
         "migrate.start",
         "migrate.step.start",
@@ -160,29 +133,29 @@ def test_multi_step_success_emits_full_event_sequence(cap_logs, monkeypatch):
         "migrate.complete",
     ]
 
-    start = cap_logs.entries[0]
+    start = cap_logs()[0]
     assert start["from_revision"] == "a"
     assert start["to_revision"] == "c"
     assert start["step_count"] == 2
 
-    step1_start = cap_logs.entries[1]
+    step1_start = cap_logs()[1]
     assert step1_start["revision"] == "b"
     assert step1_start["step_index"] == 1
     assert step1_start["step_count"] == 2
     assert step1_start["description"] == "second"
 
-    step1_end = cap_logs.entries[2]
+    step1_end = cap_logs()[2]
     assert step1_end["revision"] == "b"
     assert step1_end["step_index"] == 1
     assert step1_end["returncode"] == 0
     assert isinstance(step1_end["duration_ms"], int)
 
-    step2_start = cap_logs.entries[3]
+    step2_start = cap_logs()[3]
     assert step2_start["revision"] == "c"
     assert step2_start["step_index"] == 2
     assert step2_start["description"] == "third"
 
-    complete = cap_logs.entries[5]
+    complete = cap_logs()[5]
     assert complete["from_revision"] == "a"
     assert complete["to_revision"] == "c"
     assert complete["applied_count"] == 2
@@ -204,7 +177,7 @@ def test_alembic_nonzero_exit_propagates(cap_logs, monkeypatch):
     rc = migrate.main()
     assert rc == 7
 
-    events = [e["event"] for e in cap_logs.entries]
+    events = [e["msg"] for e in cap_logs()]
     assert events == [
         "migrate.start",
         "migrate.step.start",  # b
@@ -212,7 +185,7 @@ def test_alembic_nonzero_exit_propagates(cap_logs, monkeypatch):
         "migrate.step.start",  # c
         "migrate.failed",  # c
     ]
-    failed = cap_logs.entries[-1]
+    failed = cap_logs()[-1]
     assert failed["revision"] == "c"
     assert failed["step_index"] == 2
     assert failed["step_count"] == 2
@@ -243,9 +216,9 @@ def test_multi_head_detection_refuses(cap_logs, monkeypatch):
     rc = migrate.main()
     assert rc == 1
 
-    assert len(cap_logs.entries) == 1
-    failed = cap_logs.entries[0]
-    assert failed["event"] == "migrate.failed"
+    assert len(cap_logs()) == 1
+    failed = cap_logs()[0]
+    assert failed["msg"] == "migrate.failed"
     assert failed["reason"] == "multiple_heads"
     assert failed["heads"] == ["a", "b"]
     assert failed["returncode"] == 1
@@ -267,7 +240,7 @@ def test_db_url_redaction_no_password_or_host_or_user(cap_logs, monkeypatch):
     ]
 
     def _assert_clean() -> None:
-        for entry in cap_logs.entries:
+        for entry in cap_logs():
             blob = repr(entry)
             for token in forbidden:
                 assert token not in blob, (
@@ -288,7 +261,7 @@ def test_db_url_redaction_no_password_or_host_or_user(cap_logs, monkeypatch):
     )
     assert migrate.main() == 0
     _assert_clean()
-    cap_logs.entries.clear()
+    cap_logs().clear()
 
     # 2. success path
     revs = [_fake_revision("a"), _fake_revision("b")]
@@ -297,13 +270,13 @@ def test_db_url_redaction_no_password_or_host_or_user(cap_logs, monkeypatch):
     monkeypatch.setattr(migrate, "_run_alembic_upgrade", lambda rev: 0)
     assert migrate.main() == 0
     _assert_clean()
-    cap_logs.entries.clear()
+    cap_logs().clear()
 
     # 3. failure path
     monkeypatch.setattr(migrate, "_run_alembic_upgrade", lambda rev: 5)
     assert migrate.main() == 5
     _assert_clean()
-    cap_logs.entries.clear()
+    cap_logs().clear()
 
     # 4. multi-head path
     _patch_alembic(monkeypatch, heads=["a", "b"], revisions=revs)
@@ -421,11 +394,11 @@ def test_transient_connect_is_retried_and_then_succeeds(cap_logs, monkeypatch):
 
     assert rc == 0, "a transient connect failure must not fail the migrate job"
     assert calls["n"] == 3
-    retries = [e for e in cap_logs.entries if e["event"] == "migrate.connect.retry"]
+    retries = [e for e in cap_logs() if e["msg"] == "migrate.connect.retry"]
     assert len(retries) == 2
     assert retries[0]["driver_errno"] == 2003
     assert retries[0]["retryable"] is True
-    assert [e["event"] for e in cap_logs.entries][-1] == "migrate.no_op"
+    assert [e["msg"] for e in cap_logs()][-1] == "migrate.no_op"
 
 
 def test_non_retryable_connect_fails_immediately_without_burning_the_window(
@@ -449,7 +422,7 @@ def test_non_retryable_connect_fails_immediately_without_burning_the_window(
 
     assert rc == 1
     assert calls["n"] == 1, "a deterministic failure must not be retried"
-    failed = [e for e in cap_logs.entries if e["event"] == "migrate.failed"]
+    failed = [e for e in cap_logs() if e["msg"] == "migrate.failed"]
     assert failed and failed[-1]["driver_errno"] == 1045
 
 
@@ -470,7 +443,7 @@ def test_persistent_transient_failure_is_bounded(cap_logs, monkeypatch):
 
     assert rc == 1
     assert calls["n"] == migrate.CONNECT_MAX_ATTEMPTS
-    assert any(e["event"] == "migrate.connect.giving_up" for e in cap_logs.entries)
+    assert any(e["msg"] == "migrate.connect.giving_up" for e in cap_logs())
 
 
 def test_failure_event_carries_the_errno_but_never_the_driver_message(
@@ -492,7 +465,7 @@ def test_failure_event_carries_the_errno_but_never_the_driver_message(
     rc = migrate.main()
     assert rc == 1
 
-    blob = repr(cap_logs.entries)
+    blob = repr(cap_logs())
     assert "1045" in blob, "the errno must be present - it is the diagnostic"
     for leak in ("s3cret", "pfv_app", "10.108.0.3", "using password"):
         assert leak not in blob, f"{leak!r} leaked into the structured log"

@@ -132,13 +132,12 @@ async def test_preview_default_source_when_no_match(
 
 
 async def test_preview_emits_aggregate_metric(
-    db_session: AsyncSession,
+    db_session: AsyncSession, log_lines,
 ) -> None:
     """One smart_rules.preview_built event per preview, with the right shape.
 
-    The architect mandated aggregate (not per-row) telemetry. Structlog routes
-    through its own renderer, so caplog doesn't see records — patching the
-    bound logger's ainfo is the reliable way to capture the call.
+    The architect mandated aggregate (not per-row) telemetry; read as the
+    rendered line (the ``log_lines`` fixture).
     """
     seed = await _seed(db_session)
     rows = [
@@ -149,18 +148,14 @@ async def test_preview_emits_aggregate_metric(
         )
         for i, desc in enumerate(["POS LIDL *0001", "POS LIDL *0002", "POS UNKNOWN"], 1)
     ]
-    with patch.object(import_service.logger, "ainfo", new_callable=AsyncMock) as spy:
-        await import_service.build_preview(
-            db_session, org_id=seed["org_id"], account_id=seed["account_id"],
-            file_name="t.csv", parsed_rows=rows,
-        )
+    await import_service.build_preview(
+        db_session, org_id=seed["org_id"], account_id=seed["account_id"],
+        file_name="t.csv", parsed_rows=rows,
+    )
 
-    aggregate_calls = [
-        c for c in spy.call_args_list
-        if c.args and c.args[0] == "smart_rules.preview_built"
-    ]
+    aggregate_calls = [ln for ln in log_lines() if ln["msg"] == "smart_rules.preview_built"]
     assert len(aggregate_calls) == 1, "exactly one aggregate metric per preview"
-    kwargs = aggregate_calls[0].kwargs
+    kwargs = aggregate_calls[0]
     assert kwargs["org_id"] == seed["org_id"]
     assert kwargs["rows_total"] == 3
     assert kwargs["suggested_count"] == 2

@@ -123,26 +123,10 @@ def test_synth_no_date_in_window_noop():
     assert out == []
 
 
-def test_synth_multiple_dates_projects_earliest_only_and_warns(monkeypatch):
+def test_synth_multiple_dates_projects_earliest_only_and_warns(log_lines):
     # A wide (2-month) window holds two monthly dates; only the earliest is
-    # projected AND the >1 case emits the observability warning.
-    #
-    # ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
-    # processor chain on the GLOBAL structlog config — which ``app.main``
-    # already replaced by calling ``setup_logging()`` at import, and which
-    # other modules in this suite reconfigure without restoring. So whether a
-    # ``capture_logs`` fence sees anything depends entirely on what ran before
-    # it: green alone, red in a full or parallel run. Binding a recorder onto
-    # the module's own ``logger`` is immune to all of it. Same remedy as
-    # ``tests/auth/test_anonymous_audit_bounds``.
-    logs: list[dict] = []
-
-    class _Recorder:
-        def warning(self, event, **kw):
-            logs.append({"event": event, "log_level": "warning", **kw})
-
-    monkeypatch.setattr(loan_forecast_service, "logger", _Recorder())
-
+    # projected AND the >1 case emits the observability warning (read as the
+    # rendered line, from the log_lines fixture).
     out = synthesize_account_loan_payment(
         balance=Decimal("-10000.00"),
         already_paid=False,
@@ -154,6 +138,5 @@ def test_synth_multiple_dates_projects_earliest_only_and_warns(monkeypatch):
         account_id=7,
     )
     assert out == [(datetime.date(2026, 5, 15), Decimal("232.00"))]
-    assert any(
-        e.get("event") == "loan_forecast.multiple_due_dates_in_window" for e in logs
-    )
+    warned = [e for e in log_lines() if e["msg"] == "loan_forecast.multiple_due_dates_in_window"]
+    assert len(warned) == 1 and warned[0]["level"] == "WARNING"

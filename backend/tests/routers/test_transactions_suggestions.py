@@ -19,7 +19,6 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-import structlog
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -222,7 +221,7 @@ async def test_cache_control_private(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_no_pii_in_logs(session_factory, caplog):
+async def test_no_pii_in_logs(session_factory, log_lines):
     """Strictest privacy guard (§5.4).
 
     During a request with known query strings ('AlbertSecret123', plus
@@ -238,36 +237,20 @@ async def test_no_pii_in_logs(session_factory, caplog):
     await _seed_world(session_factory)
     app = _make_app(session_factory)
 
-    # Force structlog routing through stdlib so caplog sees our event.
-    structlog.configure(
-        processors=[
-            structlog.processors.add_log_level,
-            structlog.processors.JSONRenderer(),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=False,
-    )
-
-    with caplog.at_level(logging.INFO):
-        with TestClient(app) as client:
-            resp = client.get(
-                "/api/v1/transactions/suggestions/descriptions",
-                params={"type": "expense", "q": "AlbertSecret123"},
-            )
+    with TestClient(app) as client:
+        resp = client.get(
+            "/api/v1/transactions/suggestions/descriptions",
+            params={"type": "expense", "q": "AlbertSecret123"},
+        )
     assert resp.status_code == 200
 
-    # Only inspect APPLICATION logs (app.*). Excludes httpx access-log
-    # records (which include the URL, where ``q`` lives in the query
-    # string by design) and DB-driver DEBUG which is off in production.
+    # Every line the app wrote at INFO or above, as rendered (context and extras included), so
+    # the check sees what production prints.
     app_records = [
-        r for r in caplog.records
-        if r.name.startswith("app.") and r.levelno >= logging.INFO
+        line for line in log_lines()
+        if line["logger"].startswith("app.") and line["level"] != "DEBUG"
     ]
-    rendered = "\n".join(
-        r.getMessage() + " " + json.dumps(r.__dict__, default=str)
-        for r in app_records
-    )
+    rendered = "\n".join(json.dumps(line) for line in app_records)
     # The raw query string must NEVER appear in any application log.
     assert "AlbertSecret123" not in rendered, (
         f"Raw query leaked into application log output:\n{rendered}"
@@ -280,14 +263,11 @@ async def test_no_pii_in_logs(session_factory, caplog):
 
     # The metric/event must still carry query_length + result_count.
     metric_lines = [
-        r for r in app_records
-        if r.name.startswith("app.routers.transactions.suggestions")
+        line for line in app_records
+        if line["logger"].startswith("app.routers.transactions.suggestions")
     ]
     assert metric_lines, "Expected at least one suggestions logger event"
-    blob = "\n".join(
-        json.dumps(r.__dict__, default=str) + "\n" + r.getMessage()
-        for r in metric_lines
-    )
+    blob = "\n".join(json.dumps(line) for line in metric_lines)
     assert "query_length" in blob
     assert "result_count" in blob
 

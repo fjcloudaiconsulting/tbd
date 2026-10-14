@@ -22,6 +22,7 @@ Tests assert:
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -320,26 +321,11 @@ async def test_token_is_url_encoded_in_query_string(
 
 @pytest.mark.asyncio
 async def test_send_email_dev_mode_does_not_log_body_or_token(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, log_lines,
 ):
     """Dev mode logs ``to`` / ``subject`` only. Body + token must not appear."""
     # Force dev mode.
     monkeypatch.setattr(email_service.settings, "mailgun_api_key", "")
-
-    # Capture every kwarg the email service passes to the structlog logger
-    # by replacing the module-level logger with a recorder. This avoids any
-    # dependency on global structlog configuration (other tests in the
-    # suite reconfigure it freely).
-    captured: list[tuple[str, dict[str, Any]]] = []
-
-    class _Recorder:
-        async def ainfo(self, event: str, **kw: Any) -> None:
-            captured.append((event, kw))
-
-        async def aerror(self, event: str, **kw: Any) -> None:
-            captured.append((event, kw))
-
-    monkeypatch.setattr(email_service, "logger", _Recorder())
 
     ok = await email_service.send_email(
         "user@example.com",
@@ -349,20 +335,22 @@ async def test_send_email_dev_mode_does_not_log_body_or_token(
     )
     assert ok is True
 
-    dev_events = [(e, kw) for e, kw in captured if e == "email_sent_dev"]
+    # Every line the service wrote, as rendered (context and extras included).
+    lines = log_lines()
+    dev_events = [line for line in lines if line["msg"] == "email_sent_dev"]
     assert len(dev_events) == 1
-    _event, kw = dev_events[0]
-    assert kw == {
+    fields = {k: v for k, v in dev_events[0].items() if k not in ("ts", "level", "logger", "msg")}
+    assert fields == {
         "to": "user@example.com",
         "subject": "Confirm your email for The Better Decision",
     }
-    # Tokens must never appear anywhere in the captured payload.
-    assert "SECRET_TOKEN_123" not in repr(captured)
+    # Tokens must never appear anywhere in what was printed.
+    assert "SECRET_TOKEN_123" not in json.dumps(lines)
 
 
 @pytest.mark.asyncio
 async def test_send_email_failure_does_not_log_body(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, log_lines,
 ):
     """A Mailgun transport failure must not log the rendered body."""
     monkeypatch.setattr(email_service.settings, "mailgun_api_key", "real-key")
@@ -384,17 +372,6 @@ async def test_send_email_failure_does_not_log_body(
 
     monkeypatch.setattr(email_service.httpx, "AsyncClient", _BoomClient)
 
-    captured: list[tuple[str, dict[str, Any]]] = []
-
-    class _Recorder:
-        async def ainfo(self, event: str, **kw: Any) -> None:
-            captured.append((event, kw))
-
-        async def aerror(self, event: str, **kw: Any) -> None:
-            captured.append((event, kw))
-
-    monkeypatch.setattr(email_service, "logger", _Recorder())
-
     ok = await email_service.send_email(
         "user@example.com",
         "Reset your The Better Decision password",
@@ -402,17 +379,19 @@ async def test_send_email_failure_does_not_log_body(
         "http://x/reset-password?token=SECRET_RESET",
     )
     assert ok is False
-    fail_events = [(e, kw) for e, kw in captured if e == "email_send_failed"]
+    lines = log_lines()
+    fail_events = [line for line in lines if line["msg"] == "email_send_failed"]
     assert len(fail_events) == 1
-    _event, kw = fail_events[0]
+    kw = fail_events[0]
+    assert kw["to"] == "user@example.com"  # the positive control: the event carries its fields
     # Allowed keys only: to, subject, error, error_type. Body fields absent.
     assert "body_html" not in kw and "body_text" not in kw
-    assert "SECRET_RESET" not in repr(kw)
+    assert "SECRET_RESET" not in json.dumps(lines)
 
 
 @pytest.mark.asyncio
 async def test_send_timeout_does_not_log_body(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, log_lines,
 ):
     """Same PII bound on the timeout event (TBD-266).
 
@@ -443,17 +422,6 @@ async def test_send_timeout_does_not_log_body(
 
     monkeypatch.setattr(email_service.httpx, "AsyncClient", _TimeoutClient)
 
-    captured: list[tuple[str, dict[str, Any]]] = []
-
-    class _Recorder:
-        async def ainfo(self, event: str, **kw: Any) -> None:
-            captured.append((event, kw))
-
-        async def aerror(self, event: str, **kw: Any) -> None:
-            captured.append((event, kw))
-
-    monkeypatch.setattr(email_service, "logger", _Recorder())
-
     ok = await email_service.send_email(
         "user@example.com",
         "Reset your The Better Decision password",
@@ -461,11 +429,13 @@ async def test_send_timeout_does_not_log_body(
         "http://x/reset-password?token=SECRET_RESET",
     )
     assert ok is False
-    timeout_events = [(e, kw) for e, kw in captured if e == "email_send_timeout"]
+    lines = log_lines()
+    timeout_events = [line for line in lines if line["msg"] == "email_send_timeout"]
     assert len(timeout_events) == 1
-    _event, kw = timeout_events[0]
+    kw = timeout_events[0]
+    assert kw["to"] == "user@example.com"  # the positive control: the event carries its fields
     assert "body_html" not in kw and "body_text" not in kw
-    assert "SECRET_RESET" not in repr(kw)
+    assert "SECRET_RESET" not in json.dumps(lines)
 
 
 # ─── Bulk hygiene sweep over every template ───

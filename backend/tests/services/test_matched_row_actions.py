@@ -2163,26 +2163,19 @@ async def test_transfer_leg_refusal_does_not_depend_on_the_edit_shape(db_session
 
 
 class _Recorder:
-    """Minimal stand-in for the module's structlog logger.
+    """``(event, fields)`` of every line logged since construction or the last ``clear()``, as
+    rendered (the ``log_lines`` fixture): what production prints."""
 
-    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That helper
-    swaps global processor state, so a fence built on it is green alone AND
-    green on either half of the suite, then RED in a full run once another
-    module has configured structlog first. Binding a recorder onto the
-    module's OWN ``logger`` attribute is order-independent.
-    """
+    def __init__(self, log_lines):
+        self._lines = log_lines
+        self._skip = 0
 
-    def __init__(self):
-        self.events: list[tuple[str, dict]] = []
+    @property
+    def events(self) -> list[tuple[str, dict]]:
+        return [(ln["msg"], ln) for ln in self._lines()[self._skip:]]
 
-    async def ainfo(self, event, **kw):
-        self.events.append((event, kw))
-
-    async def awarning(self, event, **kw):
-        self.events.append((event, kw))
-
-    def bind(self, **_kw):
-        return self
+    def clear(self) -> None:
+        self._skip = len(self._lines())
 
 
 def _balance_events(rec: "_Recorder") -> list[dict]:
@@ -2191,7 +2184,7 @@ def _balance_events(rec: "_Recorder") -> list[dict]:
 
 @pytest.mark.asyncio
 async def test_amount_edit_logs_a_balance_move_only_when_money_moved(
-    db_session, monkeypatch,
+    db_session, monkeypatch, log_lines,
 ):
     """F47. The forensic event, and a SECOND independent detector of THE TRAP.
 
@@ -2213,8 +2206,7 @@ async def test_amount_edit_logs_a_balance_move_only_when_money_moved(
     matched row and this fence sees the event fire.
     """
     seed = await _seed(db_session)
-    rec = _Recorder()
-    monkeypatch.setattr(reconciliation_service, "logger", rec)
+    rec = _Recorder(log_lines)
 
     # 1. Unlinked settled row: money really moves, so the event must fire.
     plain = await _create(
@@ -2238,7 +2230,7 @@ async def test_amount_edit_logs_a_balance_move_only_when_money_moved(
     # real MATCHED transition, which legitimately reverts the contribution and
     # legitimately emits its own balance_changed event. Clearing earlier makes
     # this fence fail on the fixture's own correct behaviour.
-    rec.events.clear()
+    rec.clear()
 
     await _reconcile(db_session, seed, _edit(dup.id, amount=Decimal("512.00")))
 
