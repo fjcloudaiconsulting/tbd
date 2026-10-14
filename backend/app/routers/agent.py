@@ -192,7 +192,9 @@ async def chat_turn(
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """One assistant turn, streamed as server-sent events. Refusals (busy,
-    no provider, cap, plan limit) are HTTP errors before the stream opens."""
+    no provider, cap, plan limit, 413 ``message_too_long`` over 7,000 chars,
+    413 ``input_budget_exceeded`` when the kept history plus the message cannot
+    fit the plan's turn budget) are HTTP errors before the stream opens."""
     messages = [m.model_dump() for m in body.messages]
     # Before anything is taken or counted: no lock, no routing, no meter.
     if len(messages[-1]["content"]) > chat.MAX_MESSAGE_CHARS:

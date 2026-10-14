@@ -46,7 +46,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app import state_db
 from app.agent import registry
 from app.agent.registry import ToolError
-from app.auth.feature_catalog import DEFAULT_TURN_INPUT_TOKENS
 from app.config import settings
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.user import User
@@ -126,10 +125,12 @@ async def tool_schemas(db: AsyncSession, user: User) -> list[dict[str, Any]]:
 
 
 def _estimate(transcript: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
-    """Conservative prompt-token estimate for a whole request (messages, tool
-    calls and schemas). Multi-byte text costs far more per char than ASCII
+    """Conservative ESTIMATE of prompt tokens for a whole request (messages,
+    tool calls and schemas). Multi-byte text costs far more per char than ASCII
     (emoji ~2.7 chars/token, CJK ~2), which the shared chars/3.5 estimator
-    ignores; this one only gates the chat loop."""
+    ignores; this one only gates the chat loop. It is not the provider's count:
+    high-entropy ASCII (base64, hex) can cost ~2x the real tokens, so the budget
+    bounds estimated tokens. The turn log pairs est and actual for calibration."""
     s = json.dumps([transcript, tools], ensure_ascii=False)
     ascii_n = len(s.encode("ascii", "ignore"))
     # surrogatepass: a lone surrogate in user text must not crash the estimator
@@ -156,7 +157,8 @@ def _blank(text: str) -> bool:
 def _cap_result(result: Any) -> Any:
     """``result`` itself when its serialization fits, else whole trailing rows
     dropped from its longest list (scalars kept, ``truncated`` says what was
-    cut). Never slices the string, so the model always gets valid JSON."""
+    cut). Never slices the string, so the model always gets valid JSON. Linear:
+    each row is sized once, never the whole result per dropped row."""
     def size(x: Any) -> int:
         return len(json.dumps(x, ensure_ascii=False))
 
@@ -169,13 +171,32 @@ def _cap_result(result: Any) -> Any:
         return {"error": "result_too_large"}
     key = max(lists, key=lambda k: size(lists[k]))
     rows, offset = result[key], result.get("offset")
-    for n in range(len(rows) - 1, -1, -1):
-        out = {**result, key: rows[:n], "truncated": {"key": key, "shown": n, "of": len(rows)}}
-        if isinstance(offset, int) and not isinstance(offset, bool):
+    paged = isinstance(offset, int) and not isinstance(offset, bool)
+
+    def build(n: int, kept: list[Any]) -> dict[str, Any]:
+        out = {**result, key: kept, "truncated": {"key": key, "shown": n, "of": len(rows)}}
+        if paged:
             out["next_offset"] = offset + n  # the model pages by ``offset += limit``
-        if size(out) <= MAX_TOOL_RESULT_CHARS:
-            return out
-    return {"error": "result_too_large"}
+        return out
+
+    room = MAX_TOOL_RESULT_CHARS - size(build(len(rows), []))  # widest marker digits
+    n = used = 0
+    for row_size in map(size, rows):
+        used += row_size + (2 if n else 0)  # ", " between rows
+        if used > room:
+            break
+        n += 1
+    out = build(n, rows[:n])
+    return out if size(out) <= MAX_TOOL_RESULT_CHARS else {"error": "result_too_large"}
+
+
+def _tool_message(call_id: str, result: Any) -> dict[str, str]:
+    """Every tool message goes through the cap, errors included: an oversized
+    ``detail`` must not end the turn on the budget."""
+    return {
+        "role": "tool", "tool_call_id": call_id,
+        "content": json.dumps(_cap_result(result), ensure_ascii=False),
+    }
 
 
 def opening(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -192,7 +213,7 @@ async def preflight(
     # First, before the lock: a refusal here takes and counts nothing.
     budget = (await feature_service.get_entitlements(db, org_id)).turn_input_tokens
     messages = fit_history(messages, budget)
-    if _estimate(opening(messages[-1:]), tools) > budget:
+    if _estimate(opening(messages), tools) > budget:  # round 1 must be able to run
         raise HTTPException(413, detail={"code": "input_budget_exceeded", "limit_tokens": budget})
     nonce = await acquire_lock(org_id)
     try:
@@ -264,8 +285,8 @@ async def stream_turn(
     nonce: str,
     messages: list[dict[str, str]],
     tools: list[dict[str, Any]],
-    budget: int = DEFAULT_TURN_INPUT_TOKENS,
-    history_trimmed: bool = False,
+    budget: int,
+    history_trimmed: bool,
 ) -> AsyncIterator[str]:
     """One assistant turn as SSE. Owns its session and the org lock."""
     loop = asyncio.get_running_loop()
@@ -326,10 +347,7 @@ async def stream_turn(
             previewed = False
             for i, call in enumerate(resp.tool_calls):
                 if i >= MAX_CALLS_PER_ROUND:
-                    transcript.append({
-                        "role": "tool", "tool_call_id": call["id"],
-                        "content": json.dumps({"error": "too_many_calls"}),
-                    })
+                    transcript.append(_tool_message(call["id"], {"error": "too_many_calls"}))
                     continue
                 spec = registry.get_tool(call["name"])
                 # A model-chosen name is never echoed unless it is ours.
@@ -362,10 +380,7 @@ async def stream_turn(
                             break
                         result = _cap_result(data)
                         yield _sse("tool_result", {"name": shown, "ok": True, "rows": _rows(result)})
-                transcript.append({
-                    "role": "tool", "tool_call_id": call["id"],
-                    "content": json.dumps(result, ensure_ascii=False),
-                })
+                transcript.append(_tool_message(call["id"], result))
             if previewed:
                 outcome = "preview"
                 break
