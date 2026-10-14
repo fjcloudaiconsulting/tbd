@@ -10,8 +10,9 @@ import type { StagedAction } from "./types";
 
 export const MAX_MESSAGES = 40;
 export const MAX_BYTES = 64 * 1024;
-// One message alone stays well under the byte cap even at 4 bytes a char.
-export const MAX_INPUT_CHARS = 8000;
+// The server refuses a longer newest message (413 message_too_long); 7,000
+// chars stay under the byte cap even at 4 bytes a char.
+export const MAX_INPUT_CHARS = 7000;
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -91,6 +92,10 @@ const ERRORS: Record<string, string> = {
   ai_capability_not_supported: "The configured AI model cannot use tools. An admin can pick another in Settings, AI providers.",
   ai_consent_required: "An admin needs to accept the AI provider terms in Settings, AI providers.",
   ai_hard_cap_exceeded: "Your organization's AI spending limit is reached for now.",
+  message_too_long: "Your message is over 7,000 characters. Shorten it and try again.",
+  input_budget_exceeded: "Your message is too long for the assistant. Shorten it and try again.",
+  input_budget: "This question needed more lookups than one reply allows. Ask in smaller steps or start a new chat.",
+  empty_reply: "The assistant returned no answer. Try again.",
 };
 
 export function errorText(code: string, status?: number): string {
