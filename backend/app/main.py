@@ -551,8 +551,13 @@ def _log_client_error(request, status: int, detail) -> None:
         )}
     route = request.scope.get("route")
     logger.info(
-        "http.client_error", status=status, method=request.method,
-        route=getattr(route, "path", None), **fields,
+        "http.client_error",
+        extra={
+            "status": status,
+            "method": request.method,
+            "route": getattr(route, "path", None),
+            **fields,
+        },
     )
 
 
@@ -585,8 +590,13 @@ async def request_validation_handler(request, exc: RequestValidationError):
     })
     route = request.scope.get("route")
     logger.info(
-        "http.validation_error", count=len(errors), fields=fields,
-        method=request.method, route=getattr(route, "path", None),
+        "http.validation_error",
+        extra={
+            "count": len(errors),
+            "fields": fields,
+            "method": request.method,
+            "route": getattr(route, "path", None),
+        },
     )
     redacted_errors = []
     for err in exc.errors():

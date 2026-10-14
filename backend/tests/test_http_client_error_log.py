@@ -14,6 +14,7 @@ from app.main import app
 from app.rate_limit import limiter
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.usage_service import PlanLimitReached
+from tests.conftest import LogView
 
 SENT = "ZQ-SENTINEL-617"
 
@@ -121,9 +122,10 @@ async def test_response_is_byte_identical_to_the_default(probe, name, status):
         assert got.headers[k] == v, k
 
 
-async def test_4xx_logs_status_route_template_and_code_only(probe, logs):
+async def test_4xx_logs_status_route_template_and_code_only(probe, log_lines):
     """FENCE H2. Wrong implementations: the concrete URL or query string instead
     of the route template; logging a detail's content; ``code`` from a non-dict."""
+    logs = LogView(log_lines)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         for name in ("dict", "text", "list", "none", "unauth"):
             await c.get(f"/__t617/{name}/secret-item?q={SENT}")
@@ -135,22 +137,24 @@ async def test_4xx_logs_status_route_template_and_code_only(probe, logs):
     for name, kind in (("text", "text"), ("list", "list"), ("none", "text"), ("unauth", "text")):
         e = ev[f"/__t617/{name}/{{item}}"]
         assert e["detail_kind"] == kind and "code" not in e, name
-    unrouted = [e for e in logs.named("http.client_error") if e["status"] == 404 and e["route"] is None]
+    unrouted = [e for e in logs.named("http.client_error") if e["status"] == 404 and e.get("route") is None]
     assert len(unrouted) == 1
     text = logs.text()
     assert SENT not in text and "secret-item" not in text and "nowhere" not in text
 
 
-async def test_5xx_is_not_logged_here(probe, logs):
+async def test_5xx_is_not_logged_here(probe, log_lines):
     """FENCE H3. 5xx stays out of scope."""
+    logs = LogView(log_lines)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         assert (await c.get("/__t617/five/x")).status_code == 503
         await c.get("/__t617/dict/x")
     assert [e["status"] for e in logs.named("http.client_error")] == [404]
 
 
-async def test_validation_error_logs_count_and_field_names_only(probe, logs):
+async def test_validation_error_logs_count_and_field_names_only(probe, log_lines):
     """FENCE H4. Wrong implementation: logging the errors (they carry ``input``)."""
+    logs = LogView(log_lines)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.post("/__t617/validated", json={"n": SENT})
     assert r.status_code == 422
@@ -167,10 +171,11 @@ async def test_validation_error_logs_count_and_field_names_only(probe, logs):
     ("confplain", 409, {"detail_kind": "text"}),
     ("rate", 429, {"detail_kind": "text"}),
 ])
-async def test_every_4xx_path_logs_exactly_once(probe, logs, name, status, extra):
+async def test_every_4xx_path_logs_exactly_once(probe, log_lines, name, status, extra):
     """FENCE H5. Handlers registered for non-HTTPException classes (and slowapi's
     429, which wins over the HTTPException handler by MRO) bypass the generic
     handler. Wrong implementation: logging only in that one."""
+    logs = LogView(log_lines)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         for _ in range(2 if name == "rate" else 1):
             r = await c.get(f"/__t617/{name}/abc?q={SENT}")

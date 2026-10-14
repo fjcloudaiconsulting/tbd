@@ -2,9 +2,8 @@
 
 Fixtures come from ``test_chat`` (same provider seam, real routing/ledger).
 Capture is a handler on the ROOT stdlib logger: ``app.logging`` bridges every
-structlog logger to stdlib, so one handler sees every module (``capture_logs``
-is banned here, and binding a recorder to one module's logger could not prove
-"logged nowhere").
+stdlib logger, so one handler sees every module (``log_lines`` captures the
+root handler, so "logged nowhere" can be asserted).
 """
 from __future__ import annotations
 
@@ -13,13 +12,14 @@ import dataclasses
 import json
 import httpx
 import pytest
-import structlog
+import logging
 
 from app.agent import registry
 from app.config import settings as app_settings
 from app.models.org_ai_credential import AiProvider
 from app.models.user import User
 from app.services import agent_chat as chat
+from tests.conftest import LogView
 from test_chat import (  # noqa: F401  (fixtures)
     ASK, URL, _add, _as, _budget, _call, _env, _events, _ledger, _resp, client, engine, factory,
     provider, w, limiter,
@@ -32,9 +32,10 @@ async def _turn(client, **kw):
     return await client.post(URL, json=kw.pop("body", ASK), **kw)
 
 
-async def test_round_events(factory, w, client, provider, logs):
+async def test_round_events(factory, w, client, provider, log_lines):
     """FENCE R1. Wrong implementations: logging the model-supplied tool name;
     dropping the provider's tokens or the ledger id; one event per turn."""
+    logs = LogView(log_lines)
     _as(factory, w["user"])
     adapter = provider([
         _resp([_call("accounts_list", cid="a"), _call("evil_tool_" + SENT, cid="b"),
@@ -54,8 +55,8 @@ async def test_round_events(factory, w, client, provider, logs):
         {"name": "unknown_tool", "ok": False, "code": "unknown_tool", "rows": None},
         {"name": "budgets_update_amount", "ok": False, "code": "invalid_arguments", "rows": None},
     ]
-    assert r1["stop"] is None
-    assert (r2["prompt_tokens"], r2["ledger_id"], r2["tools"], r2["stop"]) == (222, ids[1], [], "ok")
+    assert r1.get("stop") is None
+    assert (r2["prompt_tokens"], r2["ledger_id"], r2["tools"], r2.get("stop")) == (222, ids[1], [], "ok")
 
 
 def _seq(logs):
@@ -64,29 +65,30 @@ def _seq(logs):
     rounds = logs.named("agent.turn.round")
     (done,) = logs.named("agent.turn.completed")
     assert len(rounds) == done["rounds"], "round events != dispatched rounds"
-    return [(r["round"], r["stop"]) for r in rounds], done
+    return [(r["round"], r.get("stop")) for r in rounds], done
 
 
 async def _run(client, logs):
-    logs.events.clear()
+    logs.clear()
     await _turn(client)
     return _seq(logs)
 
 
 async def test_round_events_per_dispatched_round_only(
-    factory, w, client, provider, logs, monkeypatch,
+    factory, w, client, provider, log_lines, monkeypatch,
 ):
     """FENCE R2. Exactly one event per DISPATCHED round, whatever ended the turn;
     the stop of a turn that ends before a dispatch lives on ``completed`` only.
     Wrong implementations: a phantom event for round_limit/turn_timeout/
     input_budget, a missing event on one exit path, a duplicate."""
+    logs = LogView(log_lines)
     _as(factory, w["user"])
     spin = lambda n: _resp([_call("accounts_list", cid=f"c{n}")])  # noqa: E731
 
     provider(spin)
     seq, done = await _run(client, logs)
     assert seq == [(i, None) for i in range(1, 7)]
-    assert (done["outcome"], done["sse_code"]) == ("round_limit", "round_limit")
+    assert (done["outcome"], done.get("sse_code")) == ("round_limit", "round_limit")
 
     limiter.reset()
     provider([_resp(content="  ")])
@@ -96,12 +98,12 @@ async def test_round_events_per_dispatched_round_only(
     limiter.reset()
     provider([_resp(content="hi")])
     seq, done = await _run(client, logs)
-    assert seq == [(1, "ok")] and done["sse_code"] is None  # no error event was sent
+    assert seq == [(1, "ok")] and done.get("sse_code") is None  # no error event was sent
 
     limiter.reset()
     provider([_resp([_call("budgets_update_amount", {"budget_id": w["budget"], "amount": "120.00"})])])
     seq, done = await _run(client, logs)
-    assert seq == [(1, "preview")] and done["sse_code"] is None
+    assert seq == [(1, "preview")] and done.get("sse_code") is None
 
     # a failed dispatch: code is the error event's, tokens absent, the failed ledger row linked
     limiter.reset()
@@ -114,7 +116,7 @@ async def test_round_events_per_dispatched_round_only(
     seq, done = await _run(client, logs)
     assert seq == [(1, "provider_status_400")] and done["sse_code"] == "provider_status_400"
     (r,) = logs.named("agent.turn.round")
-    assert r["prompt_tokens"] is None and r["est_tokens"] > 0
+    assert r.get("prompt_tokens") is None and r["est_tokens"] > 0
     assert r["ledger_id"] == (await _ledger(factory))[-1].id
 
     # an internal error: the in-flight round is still reported
@@ -140,9 +142,10 @@ async def test_round_events_per_dispatched_round_only(
 
 
 async def test_round_events_when_the_turn_ends_before_a_dispatch(
-    factory, w, client, provider, logs, monkeypatch,
+    factory, w, client, provider, log_lines, monkeypatch,
 ):
     """FENCE R2b. turn_timeout and input_budget: the dispatched rounds, no phantom."""
+    logs = LogView(log_lines)
     _as(factory, w["user"])
     adapter = provider(lambda n: _resp([_call("accounts_list", cid=f"c{n}")]))
     await _turn(client)
@@ -210,55 +213,58 @@ async def _disconnect_at(marker: bytes, factory, w, provider, monkeypatch, logs,
     await app(scope, receive, send)
 
 
-async def test_round_events_on_disconnect(factory, w, provider, logs, monkeypatch):
+async def test_round_events_on_disconnect(factory, w, provider, log_lines, monkeypatch):
     """FENCE R2c. A disconnect sends no error event (sse_code None), yet the
     in-flight round is reported once: with its tokens when the dispatch had
     returned, and a reaped dispatch with its ledger id."""
+    logs = LogView(log_lines)
     await _disconnect_at(b"event: message", factory, w, provider, monkeypatch, logs)
     seq, done = _seq(logs)
     assert seq == [(1, "client_disconnected")]
-    assert done["outcome"] == "client_disconnected" and done["sse_code"] is None
+    assert done["outcome"] == "client_disconnected" and done.get("sse_code") is None
     assert logs.named("agent.turn.round")[0]["prompt_tokens"] == 111
 
-    logs.events.clear()
+    logs.clear()
     limiter.reset()
     await _disconnect_at(b"keepalive", factory, w, provider, monkeypatch, logs, round2_late=True)
     seq, done = _seq(logs)
-    assert seq == [(1, None), (2, "client_disconnected")] and done["sse_code"] is None
+    assert seq == [(1, None), (2, "client_disconnected")] and done.get("sse_code") is None
     r2 = logs.named("agent.turn.round")[1]
     ids = [r.id for r in await _ledger(factory)]
     assert (r2["prompt_tokens"], r2["ledger_id"]) == (222, ids[-1])
 
 
-async def test_turn_events_carry_the_request_id(factory, w, client, provider, logs):
+async def test_turn_events_carry_the_request_id(factory, w, client, provider, log_lines):
     """FENCE R3. The generator runs after the handler returned: the request's
     contextvars must still be bound. Wrong implementation: clearing/rebinding
     context in the stream, or logging from a detached task."""
+    logs = LogView(log_lines)
     _as(factory, w["user"])
     provider([_resp([_call("accounts_list")]), _resp(content="hi")])
     await client.post(URL, json=ASK, headers={"X-Request-ID": "req-617-abc"})
-    turn = [e for e in logs.events if str(e.get("event", "")).startswith("agent.turn.")
-            or e.get("event") in ("ai.ledger.recorded", "ai.dispatch.success")]
-    assert {e["event"] for e in turn} >= {
+    turn = [e for e in logs.events if str(e.get("msg", "")).startswith("agent.turn.")
+            or e.get("msg") in ("ai.ledger.recorded", "ai.dispatch.success")]
+    assert {e["msg"] for e in turn} >= {
         "agent.turn.round", "agent.turn.completed", "ai.ledger.recorded"}
     assert [e["request_id"] for e in turn if "request_id" not in e or e["request_id"] != "req-617-abc"] == []
 
 
-async def test_ledger_write_is_logged_and_linkable(factory, w, client, provider, logs):
+async def test_ledger_write_is_logged_and_linkable(factory, w, client, provider, log_lines):
     """FENCE R4. Wrong implementation: no event for the write, or one that
     omits the ledger id (the only join key to the turn's ``ledger_ids``)."""
+    logs = LogView(log_lines)
     _as(factory, w["user"])
     provider([_resp([_call("accounts_list")], prompt_tokens=7), _resp(content="hi", prompt_tokens=9)])
     await _turn(client)
     rows = await _ledger(factory)
     rec = logs.named("ai.ledger.recorded")
-    assert [(e["ledger_id"], e["feature_key"], e["success"], e["error_class"],
+    assert [(e["ledger_id"], e["feature_key"], e["success"], e.get("error_class"),
              e["prompt_tokens"], e["completion_tokens"]) for e in rec] == [
         (r.id, "chat", True, None, p, 5) for r, p in zip(rows, (7, 9))]
 
 
 async def test_privacy_nothing_user_supplied_is_ever_logged(
-    factory, w, client, logs, monkeypatch,
+    factory, w, client, log_lines, monkeypatch,
 ):
     """FENCE R5. One turn through the REAL OpenAI adapter where every content
     channel carries a sentinel (user message, history, tool arguments, tool
@@ -266,8 +272,9 @@ async def test_privacy_nothing_user_supplied_is_ever_logged(
     HTTPException string detail; EVERY event of EVERY module is searched.
     Wrong implementations: logging args/results/replies/messages, the
     provider's error message, or a string detail."""
-    # the capture sees any module's structlog event (not vacuous)
-    structlog.stdlib.get_logger("some.other.module").info("canary", v="CANARY-617")
+    logs = LogView(log_lines)
+    # the capture sees any module's event (not vacuous)
+    logging.getLogger("app.some.other.module").info("canary", extra={"v": "CANARY-617"})
     assert "CANARY-617" in logs.text()
 
     spec = registry.get_tool("accounts_list")

@@ -301,7 +301,7 @@ async def stream_turn(
         """One INFO event per DISPATCHED round, ids and counts only (never content)."""
         nonlocal rd
         if rd is not None:
-            await logger.ainfo("agent.turn.round", **rd, stop=stop)
+            logger.info("agent.turn.round", extra={**rd, "stop": stop})
             rd = None
     db: AsyncSession | None = None
     pending: asyncio.Task | None = None

@@ -857,9 +857,16 @@ async def _write_ledger_row(
     await db.refresh(row)
     # The join key between a request's logs and the ledger (no column for it).
     logger.info(
-        "ai.ledger.recorded", ledger_id=row.id, org_id=org_id, feature_key=feature_key,
-        success=success, error_class=error_class,
-        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+        "ai.ledger.recorded",
+        extra={
+            "ledger_id": row.id,
+            "org_id": org_id,
+            "feature_key": feature_key,
+            "success": success,
+            "error_class": error_class,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        },
     )
     return row
 
@@ -1636,6 +1643,9 @@ async def call_llm_structured(
                 if isinstance(exc, AIProviderError)
                 else "capability_not_supported"
             )
+            provider_reason = (
+                exc.provider_reason if isinstance(exc, AIProviderError) else None
+            )
             # Bill any tokens already consumed by previous attempts
             # before the adapter raised; first-attempt failures
             # naturally land at zero because no successful response
@@ -1666,7 +1676,7 @@ async def call_llm_structured(
                     "org_id": org_id,
                     "feature_key": feature_key,
                     "error_class": error_code,
-                    "provider_reason": getattr(exc, "provider_reason", None),
+                    "provider_reason": provider_reason,
                     "latency_ms": latency_ms,
                 },
             )
@@ -2046,8 +2056,14 @@ async def call_llm_function(
             error_class=exc.code,
         )
         logger.info(
-            "ai.dispatch.function_call.failed", org_id=org_id, feature_key=feature_key,
-            error_class=exc.code, provider_reason=exc.provider_reason, latency_ms=latency_ms,
+            "ai.dispatch.function_call.failed",
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "error_class": exc.code,
+                "provider_reason": exc.provider_reason,
+                "latency_ms": latency_ms,
+            },
         )
         failed = AIDispatchFailed(exc.code)
         failed.ledger_id = row.id  # lets the chat loop report which ledger row it was
