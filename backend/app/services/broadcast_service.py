@@ -30,7 +30,7 @@ import html
 import re
 from collections.abc import Sequence
 
-import structlog
+import logging
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -48,8 +48,9 @@ from app.services.email_service import (
     SendDisposition,
     send_batch,
 )
+from app import tracing
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 # Static account-context footer for every broadcast email (Ruling 11 /
 # spec "Email content"). No user-controlled content, so no escaping needed,
@@ -379,7 +380,7 @@ def _launch(
     mutual-exclusion guard, so the send path and the resume path share ONE
     registry and can never both run the same id concurrently (no double-send).
     Otherwise a tracked ``asyncio.Task`` is created (strong ref held in
-    ``_DRAIN_TASKS``) with a done-callback that logs any exception via structlog
+    ``_DRAIN_TASKS``) with a done-callback that logs any exception in the logs
     and discards the task from both module sets, so a failure is observed rather
     than silently swallowed.
     """
@@ -392,7 +393,7 @@ def _launch(
         # signal, and anything downstream that assumes "a drain ran" succeeds
         # vacuously. ``info``, not ``warning``: a genuine concurrent second
         # launch is the expected, healthy shape of this branch.
-        logger.info("broadcast_drain_already_active", broadcast_id=broadcast_id)
+        logger.info("broadcast_drain_already_active", extra={"broadcast_id": broadcast_id})
         return
     _ACTIVE_DRAINS.add(broadcast_id)
     task = asyncio.create_task(coro_fn(session_factory, broadcast_id))
@@ -402,15 +403,17 @@ def _launch(
         _DRAIN_TASKS.discard(finished)
         _ACTIVE_DRAINS.discard(broadcast_id)
         if finished.cancelled():
-            logger.warning("broadcast_drain_cancelled", broadcast_id=broadcast_id)
+            logger.warning("broadcast_drain_cancelled", extra={"broadcast_id": broadcast_id})
             return
         exc = finished.exception()
         if exc is not None:
             logger.error(
                 "broadcast_drain_failed",
-                broadcast_id=broadcast_id,
-                error=str(exc),
-                error_type=type(exc).__name__,
+                extra={
+                    "broadcast_id": broadcast_id,
+                    "error": tracing.error_summary(exc),
+                    "error_type": type(exc).__name__,
+                },
             )
 
     task.add_done_callback(_on_done)
@@ -815,9 +818,11 @@ async def _run_drain_loop(
             await db.rollback()
             logger.error(
                 "broadcast_batch_claim_mismatch",
-                broadcast_id=broadcast_id,
-                expected=len(survivor_ids),
-                actual=claimed,
+                extra={
+                    "broadcast_id": broadcast_id,
+                    "expected": len(survivor_ids),
+                    "actual": claimed,
+                },
             )
             continue
         await db.commit()
@@ -913,9 +918,11 @@ async def _run_drain_loop(
             # size of the uncertainty, never the addresses.
             logger.error(
                 "broadcast_batch_indeterminate",
-                broadcast_id=broadcast_id,
-                count=len(survivor_ids),
-                reason=result.reason,
+                extra={
+                    "broadcast_id": broadcast_id,
+                    "count": len(survivor_ids),
+                    "reason": result.reason,
+                },
             )
 
         # Recompute live so GET /{id} progress polling advances per batch.

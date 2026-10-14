@@ -6,7 +6,7 @@ can replace the synchronous confirm path later without a rewrite.
 
 from collections import Counter
 
-import structlog
+import logging
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,8 +49,9 @@ from app.services.category_rules_service import (
     should_skip_learning,
 )
 from app.services.import_parser import ParsedRow
+from app import tracing
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 
 async def _assert_categories_cover_row_types(
@@ -112,10 +113,12 @@ async def _assert_categories_cover_row_types(
             "organization is missing one of each. Add them to continue."
         )
 
-    await logger.ainfo(
+    logger.info(
         "import.preview.missing_category_type",
-        org_id=org_id,
-        missing_types=missing,
+        extra={
+            "org_id": org_id,
+            "missing_types": missing,
+        },
     )
 
     raise MissingCategoryTypeError(missing_types=missing, message=message)
@@ -338,12 +341,14 @@ async def build_preview(
     suggested_count = sum(
         1 for r in preview_rows if r.suggested_category_id is not None
     )
-    await logger.ainfo(
+    logger.info(
         "smart_rules.preview_built",
-        org_id=org_id,
-        rows_total=len(preview_rows),
-        suggested_count=suggested_count,
-        source_split=dict(source_split),
+        extra={
+            "org_id": org_id,
+            "rows_total": len(preview_rows),
+            "suggested_count": suggested_count,
+            "source_split": dict(source_split),
+        },
     )
 
     # ── Detector summary counters + telemetry (spec §3.2) ──
@@ -359,14 +364,16 @@ async def build_preview(
     duplicate_of_linked_count = sum(
         1 for r in preview_rows if r.is_duplicate_of_linked_leg
     )
-    await logger.ainfo(
+    logger.info(
         "import.preview.matched",
-        org_id=org_id,
-        file_name=file_name,
-        auto_paired=auto_paired_count,
-        suggested=suggested_pair_count,
-        multi_candidate=multi_candidate_count,
-        duplicate_of_linked=duplicate_of_linked_count,
+        extra={
+            "org_id": org_id,
+            "file_name": file_name,
+            "auto_paired": auto_paired_count,
+            "suggested": suggested_pair_count,
+            "multi_candidate": multi_candidate_count,
+            "duplicate_of_linked": duplicate_of_linked_count,
+        },
     )
 
     return ImportPreviewResponse(
@@ -672,11 +679,13 @@ async def execute_import(
             errors.append(
                 ImportRowError(row_number=row.row_number, error=str(exc))
             )
-            await logger.awarning(
+            logger.warning(
                 "import_row_failed",
-                row_number=row.row_number,
-                error=str(exc),
-                error_type=type(exc).__name__,
+                extra={
+                    "row_number": row.row_number,
+                    "error": tracing.error_summary(exc),
+                    "error_type": type(exc).__name__,
+                },
             )
             continue
         except Exception as exc:
@@ -684,11 +693,13 @@ async def execute_import(
             errors.append(
                 ImportRowError(row_number=row.row_number, error=str(exc))
             )
-            await logger.awarning(
+            logger.warning(
                 "import_row_failed",
-                row_number=row.row_number,
-                error=str(exc),
-                error_type=type(exc).__name__,
+                extra={
+                    "row_number": row.row_number,
+                    "error": tracing.error_summary(exc),
+                    "error_type": type(exc).__name__,
+                },
             )
             continue
 
@@ -709,35 +720,41 @@ async def execute_import(
             imported_count += 1
         elif action_taken == "pair_with_existing":
             paired_count += 1
-            await logger.ainfo(
+            logger.info(
                 "transfers.linked",
-                org_id=org_id,
-                expense_id=expense_tx.id,
-                income_id=income_tx.id,
-                source="import_pair",
-                recategorized=row.recategorize,
+                extra={
+                    "org_id": org_id,
+                    "expense_id": expense_tx.id,
+                    "income_id": income_tx.id,
+                    "source": "import_pair",
+                    "recategorized": row.recategorize,
+                },
             )
         elif action_taken == "drop_as_duplicate":
             dropped_duplicate_count += 1
-            await logger.ainfo(
+            logger.info(
                 "import.dropped_duplicate_leg",
-                org_id=org_id,
-                csv_row_index=row.row_number,
-                duplicate_of_transaction_id=row.duplicate_of_transaction_id,
-                account_id=body.account_id,
-                amount=str(row.amount),  # spec §6.1: amount as string
+                extra={
+                    "org_id": org_id,
+                    "csv_row_index": row.row_number,
+                    "duplicate_of_transaction_id": row.duplicate_of_transaction_id,
+                    "account_id": body.account_id,
+                    "amount": str(row.amount),  # spec §6.1: amount as string
+                },
             )
         elif action_taken == "create_transfer_pair":
             # Counts as ONE CSV row (we created two legs but only one was in
             # the CSV — the partner is synthetic).
             paired_count += 1
-            await logger.ainfo(
+            logger.info(
                 "transfers.linked",
-                org_id=org_id,
-                expense_id=expense_tx.id,
-                income_id=income_tx.id,
-                source="import_create_pair",
-                recategorized=row.recategorize,
+                extra={
+                    "org_id": org_id,
+                    "expense_id": expense_tx.id,
+                    "income_id": income_tx.id,
+                    "source": "import_create_pair",
+                    "recategorized": row.recategorize,
+                },
             )
 
         # ── Best-effort learning from the user's category choice ───────────
@@ -775,13 +792,15 @@ async def execute_import(
                 # savepoint already rolled back by the begin_nested context
                 # manager; outer transaction (with imports + paired rows)
                 # untouched.
-                await logger.awarning(
+                logger.warning(
                     "smart_rules.learn_failed",
-                    org_id=org_id,
-                    op="execute_import",
-                    row_number=row.row_number,
-                    error=str(exc),
-                    error_type=type(exc).__name__,
+                    extra={
+                        "org_id": org_id,
+                        "op": "execute_import",
+                        "row_number": row.row_number,
+                        "error": tracing.error_summary(exc),
+                        "error_type": type(exc).__name__,
+                    },
                 )
 
             # Counters always update — the user's choice was registered
@@ -843,32 +862,40 @@ async def execute_import(
 
     # ── Aggregate smart-rules metric (architect-mandated; one per import) ──
     # rows_total preserves its original meaning: total submitted rows.
-    await logger.ainfo(
+    logger.info(
         "smart_rules.import_executed",
-        org_id=org_id,
-        rows_total=len(body.rows),
-        imported_count=imported_count,
-        paired_count=paired_count,
-        learned_count=learned_count,
-        accepted_count=accepted_count,
-        overridden_count=overridden_count,
-        source_split=dict(source_split),
-        miss_count=len(miss_tokens),
+        extra={
+            "org_id": org_id,
+            "rows_total": len(body.rows),
+            "imported_count": imported_count,
+            "paired_count": paired_count,
+            "learned_count": learned_count,
+            "accepted_count": accepted_count,
+            "overridden_count": overridden_count,
+            "source_split": dict(source_split),
+            "miss_count": len(miss_tokens),
+        },
     )
     # Per-UNIQUE-token miss events (set-dedup is load-bearing — emitting
     # per-row would flood the metric with duplicates of the same merchant).
     for token in miss_tokens:
-        await logger.ainfo(
-            "smart_rules.miss", org_id=org_id, normalized_token=token,
+        logger.info(
+            "smart_rules.miss",
+            extra={
+                "org_id": org_id,
+                "normalized_token": token,
+            },
         )
 
     # ── Per-execute confirm summary (transfer-aware) ──
-    await logger.ainfo(
+    logger.info(
         "import.confirmed.transfers",
-        org_id=org_id,
-        paired_count=paired_count,
-        dropped_duplicate_count=dropped_duplicate_count,
-        plain_created_count=imported_count,
+        extra={
+            "org_id": org_id,
+            "paired_count": paired_count,
+            "dropped_duplicate_count": dropped_duplicate_count,
+            "plain_created_count": imported_count,
+        },
     )
 
     return ImportConfirmResponse(

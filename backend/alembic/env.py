@@ -1,18 +1,18 @@
 import asyncio
 import os
-from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app import logs
 from app.migration_lock import acquire_migration_lock
 from app.models import Base
 
 config = context.config
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# One JSON setup for every process (INFRA-105): alembic's own lines come out as JSON on stdout.
+logs.configure()
 
 target_metadata = Base.metadata
 

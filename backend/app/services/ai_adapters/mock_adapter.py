@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 # Reserved provider/model identifiers for telemetry. The ledger and
-# structlog event use these strings verbatim so dashboards can tell
+# log event use these strings verbatim so dashboards can tell
 # mock from real-provider rows at a glance.
 MOCK_PROVIDER = "mock"
 MOCK_MODEL = "mock-1"

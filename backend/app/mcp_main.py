@@ -28,12 +28,13 @@ import json
 from contextlib import asynccontextmanager
 from typing import Any
 
-import structlog
+import logging
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
@@ -44,12 +45,13 @@ from app.agent.auth import authenticate_agent_token, www_authenticate
 from app.agent.registry import AGENT_FEATURE_KEY, ToolError
 from app.config import settings
 from app.database import async_session, engine
-from app.logging import setup_logging
+from app import logs
+from app.middleware.request_context import RequestContextMiddleware
 from app.rate_limit import rate_limit_key
 from app.services import feature_service
 
-setup_logging()
-logger = structlog.stdlib.get_logger(__name__)
+logs.configure()
+logger = logging.getLogger(__name__)
 
 # Tests point this at their own database.
 session_factory = async_session
@@ -228,7 +230,7 @@ async def mcp_endpoint(request: Request) -> Response:
 
     raw = _bearer(request)
     if raw is None:
-        logger.info("agent_token.auth_rejected", reason="no_bearer")
+        logger.info("agent_token.auth_rejected", extra={"reason": "no_bearer"})
         return await _refuse()
     async with session_factory() as db:
         try:
@@ -334,6 +336,7 @@ async def health(request: Request) -> Response:
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
+    asyncio.get_running_loop().set_exception_handler(logs.asyncio_exception_handler)
     yield
     await engine.dispose()
 
@@ -344,4 +347,6 @@ app = Starlette(
         Route("/health", health, methods=["GET"]),
     ],
     lifespan=lifespan,
+    # Every POST /mcp, 401/403/429 included, gets a request_id and one access line.
+    middleware=[Middleware(RequestContextMiddleware)],
 )

@@ -21,7 +21,7 @@ import hashlib
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 
-import structlog
+import logging
 from sqlalchemy import and_, delete, insert, select, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -32,7 +32,7 @@ from sqlalchemy.types import DateTime
 from app import rate_limit_db
 from app.models.session_state import AuthSessionFamily, AuthSessionMember, Lease, UsedToken
 
-logger = structlog.stdlib.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 _F = AuthSessionFamily.__table__
 _M = AuthSessionMember.__table__
@@ -166,7 +166,7 @@ def _purge_families() -> None:
             if stale:
                 _drop_families(c, stale)
     except SQLAlchemyError as exc:  # the session itself is committed
-        logger.warning("auth.session.purge_failed", error_class=type(exc).__name__)
+        logger.warning("auth.session.purge_failed", extra={"error_class": type(exc).__name__})
 
 
 def _issue(jti: str, sid: str, user_id: int, ttl_seconds: int) -> None:
@@ -313,8 +313,10 @@ def _detect_reuse_and_revoke(jti: str, sid: str) -> tuple[str, int] | tuple[str]
     if count > REUSE_REVOKE_FAMILY_SIZE_WARN_THRESHOLD:
         logger.warning(
             "auth.session.reuse_revoke.large_family",
-            jti_count=count,
-            threshold=REUSE_REVOKE_FAMILY_SIZE_WARN_THRESHOLD,
+            extra={
+                "jti_count": count,
+                "threshold": REUSE_REVOKE_FAMILY_SIZE_WARN_THRESHOLD,
+            },
         )
     return (SESSION_REUSE_REUSED, count)
 
@@ -400,7 +402,7 @@ def _purge_used_tokens() -> None:
             for scope, token in stale:
                 c.execute(delete(_U).where(_U.c.scope == scope, _U.c.token == token))
     except SQLAlchemyError as exc:  # the claim itself is committed
-        logger.warning("used_tokens.purge_failed", error_class=type(exc).__name__)
+        logger.warning("used_tokens.purge_failed", extra={"error_class": type(exc).__name__})
 
 
 def _claim(scope: str, token: str, ttl_seconds: int) -> bool:
@@ -432,7 +434,12 @@ async def mark_webhook_token_seen(token: str, ttl_s: int) -> bool:
     try:
         return await claim_token("mailgun_webhook", token, ttl_s)
     except SQLAlchemyError as exc:
-        logger.warning("webhook.mailgun.token_seen.fail_open", error_class=type(exc).__name__)
+        logger.warning(
+            "webhook.mailgun.token_seen.fail_open",
+            extra={
+                "error_class": type(exc).__name__,
+            },
+        )
         return True
 
 

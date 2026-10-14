@@ -33,7 +33,7 @@ from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
-import structlog
+import logging
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -57,7 +57,7 @@ from app.services.scenario_engine import (
 )
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # Feature-gate key (see app/auth/feature_catalog.py). Gates AI-enhanced
@@ -224,16 +224,20 @@ async def run_ai_simulation(
     except Exception as exc:  # noqa: BLE001 - defensive
         logger.warning(
             "plans.ai.gate_check.failed",
-            org_id=org_id,
-            scenario_id=scenario.id,
-            error_class=type(exc).__name__,
+            extra={
+                "org_id": org_id,
+                "scenario_id": scenario.id,
+                "error_class": type(exc).__name__,
+            },
         )
         return _baseline()
     if not gate_open:
         logger.info(
             "plans.ai.gate.closed",
-            org_id=org_id,
-            scenario_id=scenario.id,
+            extra={
+                "org_id": org_id,
+                "scenario_id": scenario.id,
+            },
         )
         return _baseline()
 
@@ -282,9 +286,11 @@ async def run_ai_simulation(
         # modes to typed errors. Log loudly and degrade gracefully.
         logger.warning(
             "plans.ai.dispatch.unexpected_error",
-            org_id=org_id,
-            scenario_id=scenario.id,
-            error_class=type(exc).__name__,
+            extra={
+                "org_id": org_id,
+                "scenario_id": scenario.id,
+                "error_class": type(exc).__name__,
+            },
         )
         fallback_reason = f"unexpected:{type(exc).__name__}"
     else:
@@ -312,9 +318,11 @@ async def run_ai_simulation(
             }
             logger.warning(
                 "plans.ai.schema.invalid",
-                org_id=org_id,
-                scenario_id=scenario.id,
-                **validation_errors,
+                extra={
+                    "org_id": org_id,
+                    "scenario_id": scenario.id,
+                    **validation_errors,
+                },
             )
             fallback_reason = "schema_invalid"
 
@@ -434,10 +442,12 @@ async def run_ai_simulation(
     )
     logger.info(
         "plans.ai.success",
-        org_id=org_id,
-        scenario_id=scenario.id,
-        applied=applied_count,
-        proposed=len(provenance_adjustments),
+        extra={
+            "org_id": org_id,
+            "scenario_id": scenario.id,
+            "applied": applied_count,
+            "proposed": len(provenance_adjustments),
+        },
     )
     return adjusted_result
 

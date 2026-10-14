@@ -21,7 +21,7 @@ Mounted at ``/api/v1/scenarios``. Architect-locked:
 """
 from __future__ import annotations
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -55,7 +55,7 @@ from app.services.scenario_engine import (
 from app.services.scenario_engine_ai import run_ai_simulation
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/scenarios",

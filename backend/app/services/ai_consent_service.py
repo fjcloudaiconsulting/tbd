@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import HTTPException, status
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,7 +23,7 @@ from app.models.org_ai_consent import OrgAIConsent
 from app.services import audit_service
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

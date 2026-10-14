@@ -17,7 +17,7 @@ on an independent session so a rolled-back business txn still leaves
 a forensic trail.
 """
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -34,15 +34,16 @@ from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.orgs import OrgRenameRequest, OrgResponse
 from app.services import audit_service, notification_service, org_service
 from app.services.notification_templates import org_renamed as _tpl_org_renamed
+from app import logs
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/orgs", tags=["orgs"])
 
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 @router.patch(
@@ -183,13 +184,15 @@ async def rename_org_endpoint(
         )
         raise
 
-    await logger.ainfo(
+    logger.info(
         "org.rename",
-        actor_user_id=actor_user_id,
-        actor_email=actor_email,
-        target_org_id=target_org_id,
-        old_name=old_name,
-        new_name=new_name,
+        extra={
+            "actor_user_id": actor_user_id,
+            "actor_email": actor_email,
+            "target_org_id": target_org_id,
+            "old_name": old_name,
+            "new_name": new_name,
+        },
     )
 
     # Fan out an in-app ``org_admin`` notification to every active

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import datetime
 
-import structlog
+import logging
 from opentelemetry import trace
 from sqlalchemy import delete, func, select
 
@@ -26,7 +26,7 @@ from app.database import async_session
 from app.models.api_token import ApiToken
 from app.models.oauth_client import OAuthClient
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 IDLE_CLIENT_DAYS = 30
 
@@ -55,9 +55,19 @@ async def run_oauth_client_purge(
         # Swallowed here, so the job span is marked by hand. Class only: str(exc) quotes
         # the statement and its bound values (client ids, code hashes).
         tracing.mark_error(trace.get_current_span(), exc)
-        await logger.aerror("scheduler.oauth_client_purge.failed", error=type(exc).__name__)
+        logger.error(
+            "scheduler.oauth_client_purge.failed",
+            extra={
+                "error": type(exc).__name__,
+            },
+        )
         return 0
     if codes.rowcount or clients.rowcount:
-        await logger.ainfo("scheduler.oauth_client_purge.complete",
-                           codes=codes.rowcount, clients=clients.rowcount)
+        logger.info(
+            "scheduler.oauth_client_purge.complete",
+            extra={
+                "codes": codes.rowcount,
+                "clients": clients.rowcount,
+            },
+        )
     return clients.rowcount

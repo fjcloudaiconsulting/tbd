@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-import structlog
+import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, Cookie, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import func, or_, select
@@ -95,6 +95,7 @@ from app.services.mfa_service import (
     verify_recovery_code,
     verify_totp,
 )
+from app import logs
 
 GOOGLE_OAUTH_TIMEOUT = httpx.Timeout(10.0)
 
@@ -354,7 +355,7 @@ async def register(
             # is `String(64)`, and `record_audit_event` swallows every exception:
             # an oversized inbound header therefore silently DROPPED this row on
             # MySQL, letting a client suppress its own refusals from the numerator.
-            request_id=structlog.contextvars.get_contextvars().get("request_id"),
+            request_id=logs.CONTEXT.get({}).get("request_id"),
             ip_address=get_client_ip(request),
             outcome="failure",
             detail={
@@ -508,7 +509,7 @@ async def register(
         # See the `auth.register.captcha_failed` call above: contextvars, not the
         # raw header, or an oversized inbound `X-Request-Id` silently drops the row
         # and the client suppresses itself from the denominator.
-        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        request_id=logs.CONTEXT.get({}).get("request_id"),
         ip_address=get_client_ip(request),
         outcome="success",
         detail={
@@ -628,7 +629,7 @@ async def login(
 # SHA-256 prefixes (sufficient for correlation, useless for replay).
 # Never log raw jti/sid/cookie values — telemetry retention varies and
 # raw refresh-token claims are a session-takeover vector.
-_LOGGER = structlog.stdlib.get_logger()
+_LOGGER = logging.getLogger(__name__)
 
 
 def _hash_for_log(value: str | None) -> str | None:
@@ -652,7 +653,7 @@ def _log_refresh_rejected(
     sid: str | None = None,
     extra: dict | None = None,
 ) -> None:
-    """One structlog event per terminal refresh-cookie rejection with a
+    """One log event per terminal refresh-cookie rejection with a
     stable ``reason`` enum. Ops correlates by ``request_id`` (already
     bound by ``RequestContextMiddleware``) + ``jti_h``/``sid_h`` to
     distinguish the eleven 401 paths.
@@ -672,7 +673,7 @@ def _log_refresh_rejected(
     }
     if extra:
         detail.update(extra)
-    _LOGGER.info("auth.refresh.rejected", **detail)
+    _LOGGER.info("auth.refresh.rejected", extra={**detail})
 
 
 def _log_google_callback_phase(
@@ -681,7 +682,7 @@ def _log_google_callback_phase(
     duration_ms: float,
     extra: dict | None = None,
 ) -> None:
-    """One structlog breadcrumb per Google-callback phase, with the
+    """One log breadcrumb per Google-callback phase, with the
     per-phase duration in milliseconds.
 
     The 2026-05-19 incident hung somewhere between the userinfo fetch and
@@ -690,7 +691,7 @@ def _log_google_callback_phase(
     response time). These breadcrumbs make the phase sequence visible: the
     last phase logged before silence is the await that hung.
 
-    ``request_id`` is already bound on the structlog contextvars by
+    ``request_id`` is already bound on the log context by
     ``RequestContextMiddleware``, so every breadcrumb carries it for
     per-sign-in correlation without threading it through here.
 
@@ -706,7 +707,7 @@ def _log_google_callback_phase(
     detail: dict = {"phase": phase, "duration_ms": round(duration_ms, 1)}
     if extra:
         detail.update(extra)
-    _LOGGER.info("auth.google.callback.phase", **detail)
+    _LOGGER.info("auth.google.callback.phase", extra={**detail})
 
 
 SESSION_EXPIRED_DETAIL = "Session expired — please sign in again"
@@ -1585,7 +1586,7 @@ async def _refresh_impl(
 
     if lua_result == state_db.SESSION_ROTATE_JTI_COLLISION:
         # 128-bit collision — regenerate jti once and retry. If the second
-        # attempt also collides, the RNG is broken: 503 + structlog flag.
+        # attempt also collides, the RNG is broken: 503 + log flag.
         new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
             user.id,
             old_jti,
@@ -1823,7 +1824,7 @@ async def logout(
        ``{sid_count, jti_count}``, outcome=success — but ONLY when the
        call identified a session family or an actor. A fully anonymous
        logout still clears the cookie and still returns 200; it writes a
-       structlog line instead of a row (TBD-353, amending spec §5.3
+       log line instead of a row (TBD-353, amending spec §5.3
        step 5, which said outcome=success even when 0).
 
     Critically does NOT touch ``sessions_invalidated_at`` — that field
@@ -1874,7 +1875,9 @@ async def logout(
             # above describes is observable instead of invisible.
             _LOGGER.debug(
                 "auth.logout.refresh_cookie_undecodable",
-                error_type=type(exc).__name__,
+                extra={
+                    "error_type": type(exc).__name__,
+                },
             )
             continue
         jtis_seen.append(jti)
@@ -1943,7 +1946,7 @@ async def logout(
     _clear_legacy_refresh_cookie(response)
 
     # ── 5. Audit, but only when the call identified something ──────────
-    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    request_id = logs.CONTEXT.get({}).get("request_id")
     detail: dict[str, Any] = {
         "sid_count": len(sids),
         "jti_count": jti_count,
@@ -1965,7 +1968,7 @@ async def logout(
     # ``<form method=POST>`` here sends no refresh cookie (SameSite=Lax)
     # but the browser still honours both delete-cookie headers, so the
     # victim IS logged out, anonymously, with ``sid_count=0``. What makes
-    # dropping it adequate is that THE SIGNAL MOVES to the structlog line
+    # dropping it adequate is that THE SIGNAL MOVES to the log line
     # below: same ``ip_address``, same ``request_id``, same rate, same
     # request. A retention downgrade, not a lost observation.
     #
@@ -1995,8 +1998,10 @@ async def logout(
     else:
         _LOGGER.info(
             "auth.session.terminated.anonymous",
-            ip_address=get_client_ip(request),
-            request_id=request_id,
+            extra={
+                "ip_address": get_client_ip(request),
+                "request_id": request_id,
+            },
         )
 
     body: dict[str, Any] = {"detail": "Logged out"}
@@ -2086,7 +2091,7 @@ async def reset_password(
         actor_email=user.email,
         target_org_id=user.org_id,
         target_org_name=None,
-        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        request_id=logs.CONTEXT.get({}).get("request_id"),
         ip_address=get_client_ip(request),
         outcome="success",
         detail=None,
@@ -2340,7 +2345,7 @@ async def _record_email_promoted(
         actor_email=old_email,
         target_org_id=org_id,
         target_org_name=org_name,
-        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        request_id=logs.CONTEXT.get({}).get("request_id"),
         ip_address=get_client_ip(request),
         outcome="success",
         detail={"old_email": old_email, "new_email": new_email},
@@ -2657,10 +2662,12 @@ def _log_unverified_callback(
     """
     _LOGGER.info(
         _INVALID_STATE_PAYLOAD_EVENT if state_ok else _UNVERIFIED_STATE_EVENT,
-        reason=reason,
-        state_ok=state_ok,
-        path=request.url.path,
-        ip_address=get_client_ip(request),
+        extra={
+            "reason": reason,
+            "state_ok": state_ok,
+            "path": request.url.path,
+            "ip_address": get_client_ip(request),
+        },
     )
 
 
@@ -2720,7 +2727,7 @@ async def _record_google_callback_failure(
     in rows. Truncate here, at the one shared writer, rather than at each
     call site (TBD-353 review).
     """
-    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    request_id = logs.CONTEXT.get({}).get("request_id")
     detail: dict[str, Any] = {"reason": reason}
     if detail_extra:
         detail.update(
@@ -2910,7 +2917,7 @@ async def _record_google_callback_created_user(
     from "Google identity logged into an existing local user". No
     token values are persisted, matching ``_record_login_success``.
     """
-    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    request_id = logs.CONTEXT.get({}).get("request_id")
     await audit_service.record_audit_event(
         session_factory,
         event_type="auth.google.callback.created_user",
@@ -2947,7 +2954,7 @@ async def _record_login_success(
     schema change. PII (e.g. password, TOTP code) is never recorded;
     only the actor identity, request id, and IP travel into the row.
     """
-    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    request_id = logs.CONTEXT.get({}).get("request_id")
     await audit_service.record_audit_event(
         session_factory,
         event_type="user.login.success",
@@ -2980,7 +2987,7 @@ async def _record_session_rotated(
     Detail carries the predecessor + successor ``jti`` plus the stable
     ``sid`` so operators can reconstruct the rotation chain offline.
     """
-    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    request_id = logs.CONTEXT.get({}).get("request_id")
     await audit_service.record_audit_event(
         session_factory,
         event_type="auth.session.rotated",
@@ -3013,7 +3020,7 @@ async def _record_session_grace_accept(
     pass the app-side GET HIT and only one wins). The
     ``via_already_rotated`` flag lets ops disaggregate the two shapes.
     """
-    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    request_id = logs.CONTEXT.get({}).get("request_id")
     await audit_service.record_audit_event(
         session_factory,
         event_type="auth.session.grace_accept",
@@ -3045,17 +3052,19 @@ async def _record_session_rotated_failed(
 
     Emitted on the double-``jti_collision`` 503 path only. Two 128-bit
     collisions in a row signals an RNG problem worth alerting on. The
-    structlog event below mirrors the audit row so log-based alerts
+    log event below mirrors the audit row so log-based alerts
     can fire even if the DB write fails.
     """
-    request_id = structlog.contextvars.get_contextvars().get("request_id")
-    logger = structlog.stdlib.get_logger()
-    await logger.aerror(
+    request_id = logs.CONTEXT.get({}).get("request_id")
+    logger = logging.getLogger(__name__)
+    logger.error(
         "auth.session.rotated.failed",
-        user_id=user.id,
-        sid=sid,
-        old_jti=old_jti,
-        reason=reason,
+        extra={
+            "user_id": user.id,
+            "sid": sid,
+            "old_jti": old_jti,
+            "reason": reason,
+        },
     )
     await audit_service.record_audit_event(
         session_factory,
@@ -3157,7 +3166,7 @@ async def _record_session_reuse_detected(
     ``RefreshBothMissError`` before this await, so the write survives a
     rolled-back request session (audit-on-failure pattern).
     """
-    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    request_id = logs.CONTEXT.get({}).get("request_id")
     await audit_service.record_audit_event(
         session_factory,
         event_type="auth.session.reuse_detected",
@@ -3238,7 +3247,7 @@ async def mfa_enable(
         actor_email=current_user.email,
         target_org_id=current_user.org_id,
         target_org_name=None,
-        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        request_id=logs.CONTEXT.get({}).get("request_id"),
         ip_address=get_client_ip(request),
         outcome="success",
         detail=None,
@@ -3313,7 +3322,7 @@ async def mfa_disable(
         actor_email=current_user.email,
         target_org_id=current_user.org_id,
         target_org_name=None,
-        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        request_id=logs.CONTEXT.get({}).get("request_id"),
         ip_address=get_client_ip(request),
         outcome="success",
         detail=None,
@@ -3391,7 +3400,7 @@ async def mfa_regenerate_codes(
         actor_email=current_user.email,
         target_org_id=current_user.org_id,
         target_org_name=None,
-        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        request_id=logs.CONTEXT.get({}).get("request_id"),
         ip_address=get_client_ip(request),
         outcome="success",
         detail=None,
@@ -3823,9 +3832,11 @@ async def google_callback(
                 # clause's note below.
                 _LOGGER.warning(
                     "auth.google.callback.invalid_payload",
-                    flow="login",
-                    phase="token",
-                    **body_detail,
+                    extra={
+                        "flow": "login",
+                        "phase": "token",
+                        **body_detail,
+                    },
                 )
                 await _record_google_callback_failure(
                     session_factory,
@@ -3854,9 +3865,11 @@ async def google_callback(
             if google_user is None:
                 _LOGGER.warning(
                     "auth.google.callback.invalid_payload",
-                    flow="login",
-                    phase="userinfo",
-                    body="not_object",
+                    extra={
+                        "flow": "login",
+                        "phase": "userinfo",
+                        "body": "not_object",
+                    },
                 )
                 await _record_google_callback_failure(
                     session_factory,
@@ -3878,15 +3891,17 @@ async def google_callback(
         # total silence today.
         #
         # Fields are passed FLAT, not under ``extra=``: ``_LOGGER`` is a
-        # structlog stdlib BoundLogger, which treats ``extra`` as an
+        # log stdlib BoundLogger, which treats ``extra`` as an
         # ordinary key and renders it as a nested object, so a log filter
         # on ``flow:"login"`` would not match. Same shape as
         # ``_log_google_callback_phase``'s ``**detail``.
         _LOGGER.warning(
             "auth.google.callback.exchange_timeout",
-            timeout_s=GOOGLE_OAUTH_TOTAL_TIMEOUT_S,
-            flow="login",
-            last_phase=progress["phase"],
+            extra={
+                "timeout_s": GOOGLE_OAUTH_TOTAL_TIMEOUT_S,
+                "flow": "login",
+                "last_phase": progress["phase"],
+            },
         )
         # Audit "timeout" but redirect as "token": "Google rejected the
         # code" and "Google never answered" need different operator
@@ -3906,7 +3921,7 @@ async def google_callback(
         return _google_error_redirect("token")
 
     # ── Post-userinfo breadcrumbs (2026-05-19 hang diagnosis) ────────
-    # Emit one gated structlog line per phase from here to the redirect so
+    # Emit one gated log line per phase from here to the redirect so
     # a future hang pins the exact stuck await (the last phase before
     # silence). ``_phase`` reports the per-step duration; the clock resets
     # each call. All gated behind AUTH_DEBUG_LOGGING, so this is free in
@@ -4319,7 +4334,7 @@ async def sso_stepup_callback(
         """Record the audit row and build the friendly redirect.
 
         ``audit=False`` (TBD-353) keeps the redirect and the cookie
-        deletion but drops the ``audit_events`` row, emitting a structlog
+        deletion but drops the ``audit_events`` row, emitting a log
         line in its place. It is passed on two DIFFERENT kinds of path
         and the distinction matters:
 
@@ -4517,9 +4532,11 @@ async def sso_stepup_callback(
                 body_detail = _google_token_body_detail(tokens)
                 _LOGGER.warning(
                     "auth.google.callback.invalid_payload",
-                    flow="stepup",
-                    phase="token",
-                    **body_detail,
+                    extra={
+                        "flow": "stepup",
+                        "phase": "token",
+                        **body_detail,
+                    },
                 )
                 return await _stepup_failure(
                     "token_payload",
@@ -4540,9 +4557,11 @@ async def sso_stepup_callback(
             if google_user is None:
                 _LOGGER.warning(
                     "auth.google.callback.invalid_payload",
-                    flow="stepup",
-                    phase="userinfo",
-                    body="not_object",
+                    extra={
+                        "flow": "stepup",
+                        "phase": "userinfo",
+                        "body": "not_object",
+                    },
                 )
                 return await _stepup_failure(
                     "userinfo_payload",
@@ -4554,9 +4573,11 @@ async def sso_stepup_callback(
         # Flat fields, not ``extra=`` — see the login site's note.
         _LOGGER.warning(
             "auth.google.callback.exchange_timeout",
-            timeout_s=GOOGLE_OAUTH_TOTAL_TIMEOUT_S,
-            flow="stepup",
-            last_phase=progress["phase"],
+            extra={
+                "timeout_s": GOOGLE_OAUTH_TOTAL_TIMEOUT_S,
+                "flow": "stepup",
+                "last_phase": progress["phase"],
+            },
         )
         # Audit the precise cause, show the user the existing "token"
         # banner. ``ui_code`` keeps the two apart without duplicating
@@ -4601,7 +4622,7 @@ async def sso_stepup_callback(
         actor_email=actor_email,
         target_org_id=None,
         target_org_name=None,
-        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        request_id=logs.CONTEXT.get({}).get("request_id"),
         ip_address=get_client_ip(request),
         outcome="success",
         detail={"action": action},

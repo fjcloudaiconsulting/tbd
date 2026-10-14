@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +24,7 @@ from app.database import get_db
 from app.models.user import User
 from app.rate_limit import limiter
 
-logger = structlog.stdlib.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/public", tags=["public"])
 

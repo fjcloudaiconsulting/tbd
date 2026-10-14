@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import structlog
+import logging
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.models.user import User
 
-logger = structlog.stdlib.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 async def maybe_stamp_last_active(
@@ -44,4 +44,4 @@ async def maybe_stamp_last_active(
             )
             await session.commit()
     except Exception:  # noqa: BLE001 — never break auth on a stamp failure
-        logger.warning("user_activity.stamp_failed", user_id=user_id)
+        logger.warning("user_activity.stamp_failed", extra={"user_id": user_id})

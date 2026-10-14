@@ -1,6 +1,6 @@
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,17 +33,18 @@ from app.services.category_service import (
     validate_category_type_change,
 )
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app import logs
 
 router = APIRouter(prefix="/api/v1/categories", tags=["categories"])
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 Parent = aliased(Category)
 
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 async def _actor_org_name(db: AsyncSession, org_id: int) -> str:
@@ -235,10 +236,12 @@ async def restore_recommended_categories_endpoint(
         outcome="success",
         detail={"created_count": created_count},
     )
-    await logger.ainfo(
+    logger.info(
         "org.categories.restored",
-        org_id=current_user.org_id,
-        created_count=created_count,
+        extra={
+            "org_id": current_user.org_id,
+            "created_count": created_count,
+        },
     )
     await db.commit()
     return RestoreRecommendedResult(created_count=created_count)
@@ -297,11 +300,13 @@ async def create_category(
             "is_system": False,
         },
     )
-    await logger.ainfo(
+    logger.info(
         "category.created",
-        category_id=cat.id,
-        type=cat.type.value,
-        parent_id=cat.parent_id,
+        extra={
+            "category_id": cat.id,
+            "type": cat.type.value,
+            "parent_id": cat.parent_id,
+        },
     )
 
     await db.commit()
@@ -438,11 +443,13 @@ async def update_category(
                 "type": cat.type.value,
             },
         )
-        await logger.ainfo(
+        logger.info(
             "category.renamed",
-            category_id=cat.id,
-            old_name=old_name,
-            new_name=cat.name,
+            extra={
+                "category_id": cat.id,
+                "old_name": old_name,
+                "new_name": cat.name,
+            },
         )
     if type_changed:
         audit_service.add_audit_event_to_session(
@@ -463,11 +470,13 @@ async def update_category(
                 "child_ids_cascaded": cascaded_child_ids,
             },
         )
-        await logger.ainfo(
+        logger.info(
             "category.type_changed",
-            category_id=cat.id,
-            old_type=old_type.value,
-            new_type=cat.type.value,
+            extra={
+                "category_id": cat.id,
+                "old_type": old_type.value,
+                "new_type": cat.type.value,
+            },
         )
 
     await db.commit()
@@ -506,7 +515,7 @@ async def preview_move_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Read-only move preview. Issues SELECTs only; no audit row, no
-    structlog event, no writes (section 4.1 of the C0 spec)."""
+    log event, no writes (section 4.1 of the C0 spec)."""
     try:
         return await preview_move(
             db,

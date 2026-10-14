@@ -1,55 +1,38 @@
-"""Pure-ASGI middleware that binds a per-request correlation context.
+"""Pure-ASGI middleware that opens the per-request log context and writes the access line.
 
-**Why pure ASGI, not BaseHTTPMiddleware.** Starlette's
-``BaseHTTPMiddleware`` runs the wrapped app on a separate task via an
-internal ``StreamingResponse`` bridge. ``contextvars`` set inside the
-handler (e.g. ``user_id`` / ``org_id`` / ``role`` bound by
-``deps.get_current_user``) live in that downstream task's context and
-do NOT propagate back into the middleware's outer scope. Anything the
-outer scope emits afterward — most importantly uvicorn's access log
-line, which fires from there — would silently miss the auth fields,
-defeating the whole point of L4.9. Pure-ASGI middleware shares the
-caller's task and contextvar pool, so a ``bind_contextvars`` inside
-the handler stays visible to the outer scope, and the access log
-inherits both ``request_id`` and the auth context for free.
+**Why pure ASGI, not BaseHTTPMiddleware.** Starlette's ``BaseHTTPMiddleware`` runs the wrapped app
+on a separate task, so a context bound inside the handler (``user_id`` / ``org_id`` / ``role`` bound
+by ``deps.get_current_user``) never reaches this scope, and the access line written here after the
+app returns would miss the auth fields. A pure-ASGI middleware shares the caller's task and
+contextvar pool.
 
 Per HTTP request, this middleware:
 
-- Clears structlog's contextvars (fresh per-request scope; never bleed
-  state from a previous request that crashed mid-handler).
-- Reads ``X-Request-Id`` from the inbound headers if present and it
-  passes a strict character-set + length policy; otherwise generates
-  a UUID4 hex. Either way the value is bound onto structlog
-  contextvars under the ``request_id`` key.
-- Stashes the same value on ``scope["state"]["request_id"]`` so
-  ``request.state.request_id`` works in any FastAPI handler.
-- Echoes the value back as ``X-Request-Id`` on the response so
-  callers (frontend, ops) can correlate.
-- Resolves the real client IP via the shared ``get_client_ip``
-  helper and binds it onto structlog contextvars as ``client_ip``.
-  Done HERE (not in ``deps.get_current_user``) so it lands on EVERY
-  access-log line, including anonymous routes like
-  ``/api/v1/auth/register`` and ``/api/v1/auth/login`` that never
-  resolve the auth dependency. The helper applies the same DO ingress
-  precedence (``do-connecting-ip``) and trusted-proxy XFF walk that
-  authed routes use for audit logging, so anonymous bot-signup waves
-  can be IP-clustered the same way.
-
-User / org / role context is bound LATER, inside
-``deps.get_current_user``. With pure-ASGI semantics here, that
-binding stays visible to the outer scope — including uvicorn.access.
+- Starts a fresh context holding only ``request_id``. ``CONTEXT.set``, never ``bind`` (which would
+  merge into the previous request's context when two requests run in one task) and never reset
+  (the line written below and the error handlers after it still need the context).
+- Reads ``X-Request-Id`` from the inbound headers if present and it passes a strict character-set
+  + length policy; otherwise generates a UUID4 hex. The same value is stashed on
+  ``scope["state"]["request_id"]`` and echoed back as ``X-Request-Id``.
+- Writes exactly one access line, in a ``finally`` (``status`` defaults to 500: Starlette's
+  ServerErrorMiddleware is outside this one, so an unhandled error's response never passes our
+  ``send``): method, route template, status and duration. Never the raw path, the query string or
+  the client IP: they carry invite tokens, OAuth codes and addresses. Health probes log at DEBUG.
 """
 from __future__ import annotations
 
+import logging
 import re
+import time
 import uuid
 
-import structlog
-from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.rate_limit import get_client_ip
+from app import logs, tracing
+from app.middleware.tracing import METHODS
 
+
+access_logger = logging.getLogger("app.access")
 
 # Bounded length on the inbound side. Past this we generate a fresh
 # UUID instead of trusting the caller's value — keeps log size sane
@@ -93,17 +76,11 @@ class RequestContextMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
-            # Lifespan / websocket — pass through untouched. structlog
-            # contextvars don't apply here.
+            # Lifespan / websocket: no request context applies.
             await self.app(scope, receive, send)
             return
 
-        # Fresh per-request scope. A handler that crashed mid-flight
-        # in the previous request must not leave residue here.
-        structlog.contextvars.clear_contextvars()
-
-        # Find the inbound X-Request-Id (case-insensitive on the
-        # header name, per the HTTP spec).
+        # Find the inbound X-Request-Id (case-insensitive on the header name, per the HTTP spec).
         inbound: str | None = None
         for name, value in scope.get("headers", []):
             if name == self._header_bytes:
@@ -114,33 +91,35 @@ class RequestContextMiddleware:
                 break
 
         request_id = _coerce_request_id(inbound)
-        structlog.contextvars.bind_contextvars(request_id=request_id)
-
-        # Resolve the real client IP and bind it for every request,
-        # authed or not. ``get_client_ip`` only reads ``request.headers``
-        # and ``request.client``, both derivable from the ASGI scope
-        # without consuming ``receive`` — so a header-only ``Request``
-        # is sufficient and keeps the body stream untouched.
-        structlog.contextvars.bind_contextvars(
-            client_ip=get_client_ip(Request(scope))
-        )
+        logs.CONTEXT.set({"request_id": request_id})
 
         # Make request.state.request_id available without re-deriving.
-        # ``scope.setdefault`` keeps any state dict Starlette already
-        # populated.
         state = scope.setdefault("state", {})
         state["request_id"] = request_id
 
-        # Wrap ``send`` so we can inject the X-Request-Id header on
-        # the way out. ``http.response.start`` is the only message
-        # type that carries headers; everything else passes through.
+        started = time.perf_counter()
+        status = 500  # the app raised before starting a response
+
+        # Wrap ``send`` to inject the X-Request-Id header and to see the status.
         async def send_with_header(message: Message) -> None:
+            nonlocal status
             if message["type"] == "http.response.start":
+                status = message["status"]
                 headers = list(message.get("headers", ()))
-                headers.append(
-                    (self._header_bytes, request_id.encode("latin-1"))
-                )
+                headers.append((self._header_bytes, request_id.encode("latin-1")))
                 message["headers"] = headers
             await send(message)
 
-        await self.app(scope, receive, send_with_header)
+        try:
+            await self.app(scope, receive, send_with_header)
+        finally:
+            fields: dict[str, object] = {
+                "method": scope["method"] if scope["method"] in METHODS else "_OTHER",
+                "status": status,
+                "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+            }
+            # The router sets scope["route"] on this same dict; absent when nothing matched.
+            if route := getattr(scope.get("route"), "path", None):
+                fields["route"] = route
+            level = logging.DEBUG if scope["path"] in tracing.HEALTH_PATHS else logging.INFO
+            access_logger.log(level, "request", extra=fields)

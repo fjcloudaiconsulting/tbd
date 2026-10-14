@@ -25,7 +25,7 @@ from __future__ import annotations
 import datetime
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -54,9 +54,10 @@ from app.services.ai_forecast_refine_token_estimate import Scope, _duration_band
 # time, silently.
 from app.services.feature_gate import Feature
 from app.services.feature_gate import require_feature as require_product_area
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # The Forecast product gate goes on the APIRouter CONSTRUCTOR. On this router
@@ -130,9 +131,11 @@ async def refine_forecast_endpoint(
     )
     logger.info(
         "ai.forecast.refine.confirmed_params",
-        org_id=current_user.org_id,
-        timeframe_months=body.timeframe_months,
-        scope=body.scope,
+        extra={
+            "org_id": current_user.org_id,
+            "timeframe_months": body.timeframe_months,
+            "scope": body.scope,
+        },
     )
 
     # Audit AFTER the business operation. The audit row carries the
@@ -182,10 +185,10 @@ async def refine_forecast_endpoint(
             actor_email=current_user.email,
             target_org_id=current_user.org_id,
             target_org_name=None,
-            # Read the request_id from structlog's contextvars so the
+            # Read the request_id from the log context so the
             # audit row correlates with the access log for this HTTP
             # call. Generating a fresh UUID here would orphan the row.
-            request_id=structlog.contextvars.get_contextvars().get("request_id"),
+            request_id=logs.CONTEXT.get({}).get("request_id"),
             ip_address=get_client_ip(request),
             outcome=outcome,
             detail=detail,
@@ -193,8 +196,10 @@ async def refine_forecast_endpoint(
     except Exception as exc:  # pragma: no cover - audit failure must not break user flow
         logger.warning(
             "ai.forecast.refine.audit_failed",
-            org_id=current_user.org_id,
-            error_class=type(exc).__name__,
+            extra={
+                "org_id": current_user.org_id,
+                "error_class": type(exc).__name__,
+            },
         )
 
     return refined
@@ -239,8 +244,10 @@ async def estimate_refine_endpoint(
     except Exception as exc:
         logger.warning(
             "ai.forecast.refine.estimate_failed",
-            org_id=current_user.org_id,
-            error_class=type(exc).__name__,
+            extra={
+                "org_id": current_user.org_id,
+                "error_class": type(exc).__name__,
+            },
         )
         return ForecastRefineEstimate(
             est_prompt_tokens=0,

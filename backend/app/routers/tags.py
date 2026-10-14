@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -36,9 +36,10 @@ from app.schemas.tag import (
 )
 from app.services import audit_service, tag_service
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/tags", tags=["tags"])
 
@@ -52,7 +53,7 @@ transaction_tags_router = APIRouter(
 
 
 def _request_id() -> Optional[str]:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 @router.get("", response_model=list[TagResponse])

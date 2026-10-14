@@ -36,7 +36,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
-import structlog
+import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -53,7 +53,7 @@ from app.services.ai_dispatch import (
 from app.services.ai_providers import NativeNotAvailable, StructuredOutputError
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # Architect-locked feature key. See ``ROUTABLE_FEATURE_NAMES`` in
@@ -244,10 +244,12 @@ async def suggest_category(
         if c.slug in slug_to_category:
             logger.warning(
                 "ai.categorize.duplicate_slug",
-                org_id=org_id,
-                slug=c.slug,
-                kept_category_id=slug_to_category[c.slug].id,
-                dropped_category_id=c.id,
+                extra={
+                    "org_id": org_id,
+                    "slug": c.slug,
+                    "kept_category_id": slug_to_category[c.slug].id,
+                    "dropped_category_id": c.id,
+                },
             )
             continue
         slug_to_category[c.slug] = c
@@ -305,9 +307,11 @@ async def suggest_category(
         # validation drifted. Refuse rather than guess.
         logger.warning(
             "ai.categorize.unknown_slug",
-            org_id=org_id,
-            transaction_id=transaction_id,
-            returned_slug=slug,
+            extra={
+                "org_id": org_id,
+                "transaction_id": transaction_id,
+                "returned_slug": slug,
+            },
         )
         raise SuggestionRejected("unknown_slug")
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
-import structlog
+import logging
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,7 +35,7 @@ from app.services.transaction_filters import (
     reportable_transaction_filter,
 )
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 async def _gather_draft_facts(

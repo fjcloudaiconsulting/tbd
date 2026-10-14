@@ -6,7 +6,7 @@ fine-grained roles can land later via L4.8 without touching this
 file).
 
 Destructive endpoints (DELETE, PUT subscription) emit a single
-structlog event — prefix `admin.org.*` — so an operator can later
+log event — prefix `admin.org.*` — so an operator can later
 attribute who did what to whom even before the L4.7 audit table
 exists. FK / SQL diagnostics never bleed into 500 bodies — generic
 message client-side, full detail server-side.
@@ -22,7 +22,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-import structlog
+import logging
 
 from app.auth.feature_catalog import ALL_FEATURE_KEYS, ALL_METER_KEYS, METER_MODULES
 from app.auth.pat import require_interactive_session
@@ -58,8 +58,10 @@ from app.services.notification_templates import (
     account_role_changed as _tpl_account_role_changed,
     admin_org_plan_changed as _tpl_admin_org_plan_changed,
 )
+from app import logs
+from app import tracing
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/admin/orgs", tags=["admin-orgs"])
 
@@ -75,7 +77,7 @@ _SWEEP_AUDIT_ENTRY_CAP = 50
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 @router.get(
@@ -139,14 +141,16 @@ async def update_org_subscription(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     await db.commit()
 
-    await logger.ainfo(
+    logger.info(
         "admin.org.subscription.override",
-        actor_user_id=current_user.id,
-        actor_email=current_user.email,
-        target_org_id=org_id,
-        target_org_name=detail["name"],
-        before=before,
-        after=after,
+        extra={
+            "actor_user_id": current_user.id,
+            "actor_email": current_user.email,
+            "target_org_id": org_id,
+            "target_org_name": detail["name"],
+            "before": before,
+            "after": after,
+        },
     )
     await audit_service.record_audit_event(
         session_factory,
@@ -333,12 +337,14 @@ async def delete_org(
         # handler in this file matches `"superadmin" in msg.lower()` and that
         # is a defect waiting to fire (TBD-374) — do not copy it.
         await db.rollback()
-        await logger.awarning(
+        logger.warning(
             "admin.org.delete.refused",
-            actor_user_id=actor_id,
-            actor_email=actor_email,
-            target_org_id=org_id,
-            reason=e.code,
+            extra={
+                "actor_user_id": actor_id,
+                "actor_email": actor_email,
+                "target_org_id": org_id,
+                "reason": e.code,
+            },
         )
         await audit_service.record_audit_event(
             session_factory,
@@ -361,14 +367,16 @@ async def delete_org(
         # Use pre-snapshotted scalars — current_user is expired after
         # rollback on an async session and accessing .id would raise
         # MissingGreenlet, swallowing the audit write below.
-        await logger.aerror(
+        logger.error(
             "admin.org.delete.failed",
-            actor_user_id=actor_id,
-            actor_email=actor_email,
-            target_org_id=org_id,
-            target_org_name=detail["name"],
-            error=str(e),
-            error_type=type(e).__name__,
+            extra={
+                "actor_user_id": actor_id,
+                "actor_email": actor_email,
+                "target_org_id": org_id,
+                "target_org_name": detail["name"],
+                "error": tracing.error_summary(e),
+                "error_type": type(e).__name__,
+            },
         )
         # Independent-session audit write — the business txn has been
         # rolled back (taking the staged success row with it), but the
@@ -386,7 +394,7 @@ async def delete_org(
             outcome="failure",
             detail={
                 "snapshot": org_snapshot,
-                "error": str(e),
+                "error": tracing.error_summary(e),
                 "error_type": type(e).__name__,
             },
         )
@@ -395,13 +403,15 @@ async def delete_org(
             detail="Failed to delete organization",
         )
 
-    await logger.ainfo(
+    logger.info(
         "admin.org.delete",
-        actor_user_id=actor_id,
-        actor_email=actor_email,
-        target_org_id=org_id,
-        target_org_name=detail["name"],
-        deleted_rows_by_table=counts,
+        extra={
+            "actor_user_id": actor_id,
+            "actor_email": actor_email,
+            "target_org_id": org_id,
+            "target_org_name": detail["name"],
+            "deleted_rows_by_table": counts,
+        },
     )
     return {"deleted": counts}
 
@@ -468,12 +478,14 @@ async def _sweep_expired(
         if affected is not None and affected != len(ids):
             divergence = True
             deleted_count = affected
-            await logger.awarning(
+            logger.warning(
                 f"admin.{model.__tablename__.removeprefix('org_').removesuffix('s')}"
                 ".sweep.lock_delete_mismatch",
-                table=model.__tablename__,
-                locked_count=len(ids),
-                deleted_count=affected,
+                extra={
+                    "table": model.__tablename__,
+                    "locked_count": len(ids),
+                    "deleted_count": affected,
+                },
             )
 
     if divergence:
@@ -516,7 +528,7 @@ async def sweep_expired_feature_overrides(
 
     Audit detail (PR-C / PR #141 #1) includes a bounded summary of the
     rows that were deleted so ops can answer "which orgs/features lost
-    access" without reaching for structlog. ``entries`` is capped at
+    access" without reaching for the logs. ``entries`` is capped at
     ``_SWEEP_AUDIT_ENTRY_CAP``; over the cap, ``truncated_count`` and
     ``counts_by_feature`` carry the rest.
 
@@ -555,12 +567,14 @@ async def sweep_expired_feature_overrides(
 
     await db.commit()
 
-    await logger.ainfo(
+    logger.info(
         "admin.feature_override.expired_swept",
-        actor_user_id=user.id,
-        actor_email=user.email,
-        deleted_count=feature_deleted,
-        limit_overrides_deleted=limit_deleted,
+        extra={
+            "actor_user_id": user.id,
+            "actor_email": user.email,
+            "deleted_count": feature_deleted,
+            "limit_overrides_deleted": limit_deleted,
+        },
     )
     for event_type, detail in (
         ("admin.feature_override.expired_swept", feature_detail),
@@ -652,17 +666,19 @@ async def set_feature_override(
             detail="Override changed concurrently; retry.",
         )
 
-    await logger.ainfo(
+    logger.info(
         "admin.org.feature.set",
-        target_org_id=org_id,
-        feature_key=feature_key,
-        old_value=old_value,
-        new_value=body.value,
-        old_expires_at=old_expires_at.isoformat() if old_expires_at else None,
-        new_expires_at=body.expires_at.isoformat() if body.expires_at else None,
-        actor_user_id=user.id,
-        actor_email=user.email,
-        note_present=body.note is not None,
+        extra={
+            "target_org_id": org_id,
+            "feature_key": feature_key,
+            "old_value": old_value,
+            "new_value": body.value,
+            "old_expires_at": old_expires_at.isoformat() if old_expires_at else None,
+            "new_expires_at": body.expires_at.isoformat() if body.expires_at else None,
+            "actor_user_id": user.id,
+            "actor_email": user.email,
+            "note_present": body.note is not None,
+        },
     )
     await audit_service.record_audit_event(
         session_factory,
@@ -732,13 +748,15 @@ async def revoke_feature_override(
     await db.delete(existing)
     await db.commit()
 
-    await logger.ainfo(
+    logger.info(
         "admin.org.feature.revoked",
-        target_org_id=org_id,
-        feature_key=feature_key,
-        old_value=old_value,
-        actor_user_id=user.id,
-        actor_email=user.email,
+        extra={
+            "target_org_id": org_id,
+            "feature_key": feature_key,
+            "old_value": old_value,
+            "actor_user_id": user.id,
+            "actor_email": user.email,
+        },
     )
     await audit_service.record_audit_event(
         session_factory,
@@ -863,9 +881,14 @@ async def set_limit_override(
         "new_expires_at": body.expires_at.isoformat() if body.expires_at else None,
         "note_present": body.note is not None,
     }
-    await logger.ainfo(
-        "admin.org.limit.set", target_org_id=org_id,
-        actor_user_id=actor_id, actor_email=actor_email, **detail,
+    logger.info(
+        "admin.org.limit.set",
+        extra={
+            "target_org_id": org_id,
+            "actor_user_id": actor_id,
+            "actor_email": actor_email,
+            **detail,
+        },
     )
     await audit_service.record_audit_event(
         session_factory,
@@ -923,9 +946,14 @@ async def revoke_limit_override(
     await db.delete(existing)
     await db.commit()
 
-    await logger.ainfo(
-        "admin.org.limit.revoked", target_org_id=org_id,
-        actor_user_id=actor_id, actor_email=actor_email, **detail,
+    logger.info(
+        "admin.org.limit.revoked",
+        extra={
+            "target_org_id": org_id,
+            "actor_user_id": actor_id,
+            "actor_email": actor_email,
+            **detail,
+        },
     )
     await audit_service.record_audit_event(
         session_factory,
@@ -1189,16 +1217,18 @@ async def update_org_member(
             "after": after,
             "changed_fields": changes,
         }
-        await logger.ainfo(
+        logger.info(
             event_type,
-            actor_user_id=current_user.id,
-            actor_email=current_user.email,
-            target_org_id=org_id,
-            target_org_name=target_org_name,
-            target_user_id=target.id,
-            before=before,
-            after=after,
-            changed_fields=changes,
+            extra={
+                "actor_user_id": current_user.id,
+                "actor_email": current_user.email,
+                "target_org_id": org_id,
+                "target_org_name": target_org_name,
+                "target_user_id": target.id,
+                "before": before,
+                "after": after,
+                "changed_fields": changes,
+            },
         )
         audit_event_id = await audit_service.record_audit_event(
             session_factory,

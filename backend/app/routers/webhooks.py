@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-import structlog
+import logging
 from fastapi import APIRouter, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -53,7 +53,7 @@ from app.services.mailgun_webhook import (
 from app.state_db import mark_webhook_token_seen
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks"])
 
@@ -116,20 +116,24 @@ async def _apply_delivery_status(
         if not rows:
             # Unknown / foreign broadcast_id, or address mismatch. Breadcrumb
             # WITHOUT the raw email (W10), then the router 200-drops.
-            await logger.ainfo(
+            logger.info(
                 "webhook.mailgun.no_match",
-                broadcast_id=broadcast_id,
-                new_status=new_status,
+                extra={
+                    "broadcast_id": broadcast_id,
+                    "new_status": new_status,
+                },
             )
             return
 
         if len(rows) > 1:
             # Shouldn't happen — user email is unique — but if it does, apply
             # to all and log the anomaly (W7).
-            await logger.awarning(
+            logger.warning(
                 "webhook.mailgun.multiple_recipient_rows",
-                broadcast_id=broadcast_id,
-                match_count=len(rows),
+                extra={
+                    "broadcast_id": broadcast_id,
+                    "match_count": len(rows),
+                },
             )
 
         new_rank = DELIVERY_RANK[new_status]
@@ -169,9 +173,11 @@ async def mailgun_webhook(request: Request) -> Response:
     if declared_len is not None:
         try:
             if int(declared_len) > _MAX_BODY_BYTES:
-                await logger.ainfo(
+                logger.info(
                     "webhook.mailgun.oversized",
-                    content_length=declared_len,
+                    extra={
+                        "content_length": declared_len,
+                    },
                 )
                 return Response(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
@@ -182,7 +188,7 @@ async def mailgun_webhook(request: Request) -> Response:
     # 2. Read the body, capped.
     raw = await request.body()
     if len(raw) > _MAX_BODY_BYTES:
-        await logger.ainfo("webhook.mailgun.oversized", byte_len=len(raw))
+        logger.info("webhook.mailgun.oversized", extra={"byte_len": len(raw)})
         return Response(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
 
     # 3. JSON parse → 400 on failure.
@@ -228,7 +234,7 @@ async def mailgun_webhook(request: Request) -> Response:
     ttl_s = 2 * settings.mailgun_webhook_timestamp_tolerance_s + _REPLAY_TTL_MARGIN_S
     first_sight = await mark_webhook_token_seen(str(token), ttl_s)
     if not first_sight:
-        await logger.ainfo("webhook.mailgun.replay_dropped")
+        logger.info("webhook.mailgun.replay_dropped")
         return Response(status_code=status.HTTP_200_OK)
 
     # 7. Pull event-data. From here every non-processable case is a
@@ -248,10 +254,12 @@ async def mailgun_webhook(request: Request) -> Response:
     # 8. Map event → status. Unknown / ignored event ⇒ 200-drop.
     new_status = map_event(event, severity) if isinstance(event, str) else None
     if new_status is None:
-        await logger.ainfo(
+        logger.info(
             "webhook.mailgun.ignored_event",
-            mg_event=event,
-            severity=severity,
+            extra={
+                "mg_event": event,
+                "severity": severity,
+            },
         )
         return Response(status_code=status.HTTP_200_OK)
 
@@ -260,17 +268,21 @@ async def mailgun_webhook(request: Request) -> Response:
     try:
         broadcast_id = int(broadcast_id_raw)
     except (TypeError, ValueError):
-        await logger.ainfo(
+        logger.info(
             "webhook.mailgun.bad_broadcast_id",
-            mg_event=event,
+            extra={
+                "mg_event": event,
+            },
         )
         return Response(status_code=status.HTTP_200_OK)
 
     if not isinstance(recipient, str) or not recipient:
-        await logger.ainfo(
+        logger.info(
             "webhook.mailgun.missing_recipient",
-            broadcast_id=broadcast_id,
-            mg_event=event,
+            extra={
+                "broadcast_id": broadcast_id,
+                "mg_event": event,
+            },
         )
         return Response(status_code=status.HTTP_200_OK)
 
@@ -282,12 +294,14 @@ async def mailgun_webhook(request: Request) -> Response:
 
     # Structured breadcrumb — broadcast_id / event / severity only, NEVER the
     # raw recipient email (W10).
-    await logger.ainfo(
+    logger.info(
         "webhook.mailgun.event",
-        broadcast_id=broadcast_id,
-        mg_event=event,
-        severity=severity,
-        new_status=new_status,
+        extra={
+            "broadcast_id": broadcast_id,
+            "mg_event": event,
+            "severity": severity,
+            "new_status": new_status,
+        },
     )
 
     # 10. Apply under precedence (W6/W7), DB last.

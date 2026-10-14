@@ -9,7 +9,7 @@ Behaviour vs. raw `alembic upgrade head`:
   * Same stdout / stderr from alembic. We do NOT capture, summarize, or
     reorder it; alembic's lines stream through unchanged. The only
     additions are extra structured JSON events emitted by THIS wrapper
-    (via the existing structlog config in app.logging) before / between /
+    (via app.logs) before / between /
     after each per-revision subprocess invocation.
   * Multi-head detection. If ScriptDirectory.get_heads() returns more
     than one revision we refuse to act and emit migrate.failed with
@@ -34,14 +34,14 @@ import threading
 import time
 from typing import IO, Optional
 
-import structlog
+import logging
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.logging import setup_logging
+from app import logs
 
 
 ALEMBIC_INI = "/app/alembic.ini"
@@ -144,7 +144,7 @@ def _get_current_revision_sync(database_url: str) -> Optional[str]:
 
 
 def _get_current_revision_with_retry(
-    database_url: str, log: "structlog.BoundLogger", safe_url: dict[str, str]
+    database_url: str, log: logging.Logger, safe_url: dict[str, str]
 ) -> Optional[str]:
     """`_get_current_revision_sync` with a bounded retry on transient failures.
 
@@ -162,14 +162,17 @@ def _get_current_revision_with_retry(
             last_exc = exc
             retryable = _is_retryable(exc)
             final = attempt >= CONNECT_MAX_ATTEMPTS or not retryable
+            errno = _driver_errno(exc)  # the code only: _driver_errno never reads the message
             log.warning(
                 "migrate.connect.retry" if not final else "migrate.connect.giving_up",
-                attempt=attempt,
-                max_attempts=CONNECT_MAX_ATTEMPTS,
-                retryable=retryable,
-                error_type=type(exc).__name__,
-                driver_errno=_driver_errno(exc),
-                **safe_url,
+                extra={
+                    "attempt": attempt,
+                    "max_attempts": CONNECT_MAX_ATTEMPTS,
+                    "retryable": retryable,
+                    "error_type": type(exc).__name__,
+                    "driver_errno": errno,
+                    **safe_url,
+                },
             )
             if final:
                 raise
@@ -228,8 +231,8 @@ def _run_alembic_upgrade(revision: str) -> int:
 
 
 def main() -> int:
-    setup_logging()
-    log = structlog.get_logger("migrate")
+    logs.configure()
+    log = logging.getLogger("migrate")
 
     alembic_cfg = Config(ALEMBIC_INI)
     database_url = _resolve_database_url(alembic_cfg)
@@ -242,22 +245,25 @@ def main() -> int:
     # merged with `alembic merge` before deploy; auto-picking is exactly
     # the "silent wrong choice" we want logs to flag.
     if len(heads) > 1:
+        errno = _driver_errno(exc)  # the code only: _driver_errno never reads the message
         log.error(
             "migrate.failed",
-            revision=None,
-            step_index=None,
-            step_count=0,
-            duration_ms=0,
-            returncode=1,
-            reason="multiple_heads",
-            heads=heads,
-            **safe_url,
+            extra={
+                "revision": None,
+                "step_index": None,
+                "step_count": 0,
+                "duration_ms": 0,
+                "returncode": 1,
+                "reason": "multiple_heads",
+                "heads": heads,
+                **safe_url,
+            },
         )
         return 1
 
     if not heads:
         # No revisions at all; alembic itself would no-op. Treat as no-op.
-        log.info("migrate.no_op", revision=None, **safe_url)
+        log.info("migrate.no_op", extra={"revision": None, **safe_url})
         return 0
 
     head = heads[0]
@@ -265,14 +271,17 @@ def main() -> int:
     if not database_url:
         # Without a URL we can't read alembic_version; let alembic's own
         # error handling fire by delegating once.
+        errno = _driver_errno(exc)  # the code only: _driver_errno never reads the message
         log.error(
             "migrate.failed",
-            revision=None,
-            step_index=None,
-            step_count=0,
-            duration_ms=0,
-            returncode=1,
-            reason="missing_database_url",
+            extra={
+                "revision": None,
+                "step_index": None,
+                "step_count": 0,
+                "duration_ms": 0,
+                "returncode": 1,
+                "reason": "missing_database_url",
+            },
         )
         return 1
 
@@ -283,23 +292,26 @@ def main() -> int:
         # errors routinely embed username/host/port (e.g. pymysql's
         # "Access denied for user 'foo'@'10.x.x.x'"), which would defeat
         # the redaction guarantee on the migrate.failed event.
+        errno = _driver_errno(exc)  # the code only: _driver_errno never reads the message
         log.error(
             "migrate.failed",
-            revision=None,
-            step_index=None,
-            step_count=0,
-            duration_ms=0,
-            returncode=1,
-            reason="unexpected_exception",
-            error_type=type(exc).__name__,
-            # ⚠ The CODE only, never the message - see _driver_errno.
-            driver_errno=_driver_errno(exc),
-            **safe_url,
+            extra={
+                "revision": None,
+                "step_index": None,
+                "step_count": 0,
+                "duration_ms": 0,
+                "returncode": 1,
+                "reason": "unexpected_exception",
+                "error_type": type(exc).__name__,
+                # ⚠ The CODE only, never the message - see _driver_errno.
+                "driver_errno": errno,
+                **safe_url,
+            },
         )
         return 1
 
     if current == head:
-        log.info("migrate.no_op", revision=head, **safe_url)
+        log.info("migrate.no_op", extra={"revision": head, **safe_url})
         return 0
 
     # Pending revisions = everything strictly newer than `current` up to
@@ -312,10 +324,12 @@ def main() -> int:
 
     log.info(
         "migrate.start",
-        from_revision=current,
-        to_revision=head,
-        step_count=step_count,
-        **safe_url,
+        extra={
+            "from_revision": current,
+            "to_revision": head,
+            "step_count": step_count,
+            **safe_url,
+        },
     )
 
     overall_start = time.monotonic()
@@ -324,10 +338,12 @@ def main() -> int:
         description = (rev.doc or "").strip() or None
         log.info(
             "migrate.step.start",
-            revision=rev.revision,
-            step_index=index,
-            step_count=step_count,
-            description=description,
+            extra={
+                "revision": rev.revision,
+                "step_index": index,
+                "step_count": step_count,
+                "description": description,
+            },
         )
         step_start = time.monotonic()
         try:
@@ -336,49 +352,59 @@ def main() -> int:
             duration_ms = int((time.monotonic() - step_start) * 1000)
             # Same redaction concern as the bootstrap-time handler: don't
             # str(exc) onto the structured event.
+            errno = _driver_errno(exc)  # the code only: _driver_errno never reads the message
             log.error(
                 "migrate.failed",
-                revision=rev.revision,
-                step_index=index,
-                step_count=step_count,
-                duration_ms=duration_ms,
-                returncode=1,
-                reason="unexpected_exception",
-                error_type=type(exc).__name__,
-                driver_errno=_driver_errno(exc),
+                extra={
+                    "revision": rev.revision,
+                    "step_index": index,
+                    "step_count": step_count,
+                    "duration_ms": duration_ms,
+                    "returncode": 1,
+                    "reason": "unexpected_exception",
+                    "error_type": type(exc).__name__,
+                    "driver_errno": errno,
+                },
             )
             return 1
 
         duration_ms = int((time.monotonic() - step_start) * 1000)
         if rc != 0:
+            errno = _driver_errno(exc)  # the code only: _driver_errno never reads the message
             log.error(
                 "migrate.failed",
-                revision=rev.revision,
-                step_index=index,
-                step_count=step_count,
-                duration_ms=duration_ms,
-                returncode=rc,
-                reason="alembic_nonzero_exit",
+                extra={
+                    "revision": rev.revision,
+                    "step_index": index,
+                    "step_count": step_count,
+                    "duration_ms": duration_ms,
+                    "returncode": rc,
+                    "reason": "alembic_nonzero_exit",
+                },
             )
             return rc
 
         log.info(
             "migrate.step.end",
-            revision=rev.revision,
-            step_index=index,
-            step_count=step_count,
-            duration_ms=duration_ms,
-            returncode=0,
+            extra={
+                "revision": rev.revision,
+                "step_index": index,
+                "step_count": step_count,
+                "duration_ms": duration_ms,
+                "returncode": 0,
+            },
         )
         applied += 1
 
     total_ms = int((time.monotonic() - overall_start) * 1000)
     log.info(
         "migrate.complete",
-        from_revision=current,
-        to_revision=head,
-        applied_count=applied,
-        duration_ms=total_ms,
+        extra={
+            "from_revision": current,
+            "to_revision": head,
+            "applied_count": applied,
+            "duration_ms": total_ms,
+        },
     )
     return 0
 

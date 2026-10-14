@@ -32,7 +32,7 @@ Design decisions:
 from __future__ import annotations
 
 import copy
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +45,7 @@ from app.schemas.dashboard import DashboardLayoutOut, DashboardUpdate
 from app.services.feature_gate import Feature, require_feature
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 # Phase 2a+2b+2c default layout: 7 finance tiles at the same grid coords as
 # ``emptyDashboardWidget`` defaults in ``frontend/lib/dashboard/widget-types.ts``.

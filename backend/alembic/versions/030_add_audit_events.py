@@ -5,7 +5,7 @@ Revises: 029_reset_locks
 Create Date: 2026-05-06
 
 Persists the structured ``admin.org.*`` and ``org.data.*`` events
-that already stream to structlog into a durable, queryable store.
+that already stream to the logs into a durable, queryable store.
 
 Foreign keys use ON DELETE SET NULL on both actor_user_id and
 target_org_id so the audit history outlives the rows it describes

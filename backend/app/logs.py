@@ -34,6 +34,7 @@ STANDARD = set(vars(logging.makeLogRecord({}))) | {
 }
 RESERVED = {"ts", "level", "logger", "msg"}  # set by _head(); context/extras never overwrite them
 uncaught_logger = logging.getLogger("app.uncaught")
+asyncio_logger = logging.getLogger("app.asyncio")
 
 
 def bind(**fields: Any) -> None:
@@ -171,6 +172,16 @@ def _unraisable_hook(args: "sys.UnraisableHookArgs") -> None:
         return
     info = (args.exc_type, args.exc_value, args.exc_traceback)
     uncaught_logger.error("unraisable error", exc_info=info)
+
+
+def asyncio_exception_handler(loop: Any, context: dict[str, Any]) -> None:
+    """The loop's handler for an exception nobody awaited. The default one prints
+    context["message"] and the future's repr, either of which can carry a value; this logs the
+    exception's class and frames only."""
+    error = context.get("exception")
+    asyncio_logger.error(
+        "asyncio.unhandled", exc_info=error if isinstance(error, BaseException) else None
+    )
 
 
 def configure() -> None:

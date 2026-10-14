@@ -1,4 +1,4 @@
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -17,20 +17,28 @@ from app.services import audit_service
 from app.services.exceptions import ValidationError
 from app.services.list_query import resolve_order_by
 from app.services.plan_service import canonicalize_features, canonicalize_usage_limits
+from app import logs
 
 router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 def _request_id() -> str | None:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 async def _audit_plan(
     session_factory, request: Request, *, event_type: str, actor_id: int,
     actor_email: str, detail: dict,
 ) -> None:
-    await logger.ainfo(event_type, actor_user_id=actor_id, actor_email=actor_email, **detail)
+    logger.info(
+        event_type,
+        extra={
+            "actor_user_id": actor_id,
+            "actor_email": actor_email,
+            **detail,
+        },
+    )
     await audit_service.record_audit_event(
         session_factory,
         event_type=event_type,

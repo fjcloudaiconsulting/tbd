@@ -30,7 +30,7 @@ import types
 from datetime import datetime, timezone
 from typing import Callable, Mapping
 
-import structlog
+import logging
 from fastapi import Depends
 from limits import parse_many
 from sqlalchemy import or_, select
@@ -39,9 +39,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.deps import get_current_user, get_session_factory
 from app.models.rate_limit_override import RateLimitOverride
 from app.models.user import User
+from app import tracing
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 _overrides_cv: contextvars.ContextVar[Mapping[str, str]] = contextvars.ContextVar(
     "rate_limit_overrides", default=types.MappingProxyType({})
@@ -117,7 +118,7 @@ async def load_rate_limit_overrides(
             target[r.endpoint_pattern] = format_limit(r.max_requests, r.period_seconds)
         overrides = {**by_org, **by_user}
     except Exception as exc:  # noqa: BLE001 — fail open to the defaults.
-        logger.warning("rate_limit_override.load_failed", error=str(exc))
+        logger.warning("rate_limit_override.load_failed", extra={"error": tracing.error_summary(exc)})
         overrides = {}
     _overrides_cv.set(overrides)
 

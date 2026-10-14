@@ -6,7 +6,7 @@ roles via L4.8 layer in later without touching this file).
 
 Read-only. Writes happen as a side effect inside admin and tenant
 routers via ``audit_service.record_audit_event`` so the events the
-log captures are the same events the structlog stream emits.
+log captures are the same events the log stream emits.
 """
 from __future__ import annotations
 

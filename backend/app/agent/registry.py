@@ -33,7 +33,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-import structlog
+import logging
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
@@ -45,7 +45,7 @@ from app.services import feature_service, usage_service
 from app.services.exceptions import NotFoundError, ValidationError
 from app.services.feature_gate import Feature, resolve_feature
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 AGENT_FEATURE_KEY = "ai.agent"
 
@@ -332,9 +332,15 @@ async def invoke(
             db, user, name, raw_args, channel, scope, api_token_id, reverts
         )
     except ToolError as exc:
-        await logger.ainfo(
-            "agent.tool.invoked", tool=name, channel=channel, org_id=org_id,
-            user_id=user_id, outcome=exc.code,
+        logger.info(
+            "agent.tool.invoked",
+            extra={
+                "tool": name,
+                "channel": channel,
+                "org_id": org_id,
+                "user_id": user_id,
+                "outcome": exc.code,
+            },
         )
         exc.data = wrap_untrusted(exc.data)
         # A refused preview may hold a row lock (FOR UPDATE); never keep it
@@ -346,13 +352,26 @@ async def invoke(
         # Gates and tools alike: never hand SQL or internals to a model or a
         # harness. Roll back so the caller's session stays usable for the
         # next call in the same turn.
-        await logger.aexception("agent.tool.failed", tool=name, channel=channel, org_id=org_id)
+        logger.exception(
+            "agent.tool.failed",
+            extra={
+                "tool": name,
+                "channel": channel,
+                "org_id": org_id,
+            },
+        )
         if db is not None:
             await db.rollback()
         raise ToolError("internal_error", "the tool failed") from None
-    await logger.ainfo(
-        "agent.tool.invoked", tool=name, channel=channel, org_id=org_id, user_id=user_id,
-        outcome="ok",
+    logger.info(
+        "agent.tool.invoked",
+        extra={
+            "tool": name,
+            "channel": channel,
+            "org_id": org_id,
+            "user_id": user_id,
+            "outcome": "ok",
+        },
     )
     return {"data": wrap_untrusted(data)}
 
@@ -441,20 +460,37 @@ async def _decide(
         await _admit_mcp_call(db, user, channel)
         data = await getattr(actions, which)(ctx, action_id, scope=scope)
     except ToolError as exc:
-        await logger.ainfo(
-            f"agent.action.{which}", channel=channel, org_id=org_id, user_id=user_id,
-            outcome=exc.code,
+        logger.info(
+            f"agent.action.{which}",
+            extra={
+                "channel": channel,
+                "org_id": org_id,
+                "user_id": user_id,
+                "outcome": exc.code,
+            },
         )
         exc.data = wrap_untrusted(exc.data)
         raise
     except Exception:
         # Everything after the claim is handled inside the engine; this is a
         # failure before it (the database was unreachable, say).
-        await logger.aexception(f"agent.action.{which}.failed", channel=channel, org_id=org_id)
+        logger.exception(
+            f"agent.action.{which}.failed",
+            extra={
+                "channel": channel,
+                "org_id": org_id,
+            },
+        )
         await db.rollback()
         raise ToolError("internal", "the action failed") from None
-    await logger.ainfo(
-        f"agent.action.{which}", channel=channel, org_id=org_id, user_id=user_id, outcome="ok",
+    logger.info(
+        f"agent.action.{which}",
+        extra={
+            "channel": channel,
+            "org_id": org_id,
+            "user_id": user_id,
+            "outcome": "ok",
+        },
     )
     return {"data": wrap_untrusted(data)}
 
@@ -531,18 +567,32 @@ async def revert_action(db: AsyncSession, user: User, action_id: str) -> dict[st
                 data={**staged, "drift": drift},
             )
     except ToolError as exc:
-        await logger.ainfo(
-            "agent.action.revert", channel="in_app", org_id=org_id, user_id=user_id,
-            action_id=action_id, staged_action_id=exc.data.get("action_id"), outcome=exc.code,
+        logger.info(
+            "agent.action.revert",
+            extra={
+                "channel": "in_app",
+                "org_id": org_id,
+                "user_id": user_id,
+                "action_id": action_id,
+                "staged_action_id": exc.data.get("action_id"),
+                "outcome": exc.code,
+            },
         )
         exc.data = wrap_untrusted(exc.data)
         raise
     except Exception:
-        await logger.aexception("agent.action.revert.failed", org_id=org_id)
+        logger.exception("agent.action.revert.failed", extra={"org_id": org_id})
         await db.rollback()
         raise ToolError("internal", "the revert failed") from None
-    await logger.ainfo(
-        "agent.action.revert", channel="in_app", org_id=org_id, user_id=user_id,
-        action_id=action_id, staged_action_id=staged["action_id"], outcome="ok",
+    logger.info(
+        "agent.action.revert",
+        extra={
+            "channel": "in_app",
+            "org_id": org_id,
+            "user_id": user_id,
+            "action_id": action_id,
+            "staged_action_id": staged["action_id"],
+            "outcome": "ok",
+        },
     )
     return {"data": staged}

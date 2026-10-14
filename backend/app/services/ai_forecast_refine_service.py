@@ -40,7 +40,7 @@ import math
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 
-import structlog
+import logging
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -70,7 +70,7 @@ from app.services.transaction_filters import (
     reportable_transaction_filter,
 )
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # Two distinct keys for the same surface:
@@ -554,8 +554,10 @@ async def refine_forecast(
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
             "ai.forecast.refine.history_failed",
-            org_id=org_id,
-            error_class=type(exc).__name__,
+            extra={
+                "org_id": org_id,
+                "error_class": type(exc).__name__,
+            },
         )
         return _baseline_response(
             baseline=baseline, fallback_reason="history_build_failed"
@@ -614,7 +616,9 @@ async def refine_forecast(
     except ai_dispatch.AICapExceeded:
         logger.info(
             "ai.forecast.refine.cap_exceeded",
-            org_id=org_id,
+            extra={
+                "org_id": org_id,
+            },
         )
         return _baseline_response(
             baseline=baseline, fallback_reason="ai_cap_exceeded"
@@ -631,7 +635,9 @@ async def refine_forecast(
         # do the same here. Without this the endpoint 5xxs.
         logger.info(
             "ai.forecast.refine.native_not_available",
-            org_id=org_id,
+            extra={
+                "org_id": org_id,
+            },
         )
         return _baseline_response(
             baseline=baseline,
@@ -640,7 +646,9 @@ async def refine_forecast(
     except StructuredOutputError:
         logger.warning(
             "ai.forecast.refine.structured_exhausted",
-            org_id=org_id,
+            extra={
+                "org_id": org_id,
+            },
         )
         return _baseline_response(
             baseline=baseline,
@@ -649,8 +657,10 @@ async def refine_forecast(
     except ai_dispatch.AIDispatchFailed as exc:
         logger.warning(
             "ai.forecast.refine.dispatch_failed",
-            org_id=org_id,
-            error_class=exc.code,
+            extra={
+                "org_id": org_id,
+                "error_class": exc.code,
+            },
         )
         return _baseline_response(
             baseline=baseline, fallback_reason=f"ai_dispatch_failed:{exc.code}"
@@ -671,12 +681,14 @@ async def refine_forecast(
         errors = exc.errors()
         logger.warning(
             "ai.forecast.refine.invalid_schema",
-            org_id=org_id,
-            error_count=len(errors),
-            error_fields=[
-                {"loc": ".".join(str(p) for p in e["loc"]), "type": e["type"]}
-                for e in errors[:20]
-            ],
+            extra={
+                "org_id": org_id,
+                "error_count": len(errors),
+                "error_fields": [
+                    {"loc": ".".join(str(p) for p in e["loc"]), "type": e["type"]}
+                    for e in errors[:20]
+                ],
+            },
         )
         return _baseline_response(
             baseline=baseline,

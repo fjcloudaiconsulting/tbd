@@ -32,7 +32,7 @@ import dataclasses
 import datetime
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import (
     APIRouter,
     Depends,
@@ -80,7 +80,7 @@ from app.services.feature_gate import Feature, require_feature
 from app.services.sankey_service import build_sankey
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(

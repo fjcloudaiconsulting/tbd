@@ -20,7 +20,7 @@ means a new mint with step-up.
 
 from typing import Any, Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -50,8 +50,9 @@ from app.security import token_cutoff
 from app.services import api_token_service as svc
 from app.services import audit_service, notification_service
 from app.services.notification_templates import agent_token_created
+from app import logs
 
-logger = structlog.stdlib.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/agent/tokens",
@@ -103,7 +104,7 @@ async def _audit(
         actor_email=actor_email,
         target_org_id=org_id,
         target_org_name=None,
-        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        request_id=logs.CONTEXT.get({}).get("request_id"),
         ip_address=get_client_ip(request),
         outcome=outcome,
         detail=detail,
@@ -187,7 +188,7 @@ async def mint_agent_token(
         db, user_id=actor[0], email=actor[1], event_type="agent_token.created",
         title=title, body=ntf_body, link_url=link_url,
     )
-    await logger.ainfo("agent_token.created", api_token_id=row.id, scope=row.scope)
+    logger.info("agent_token.created", extra={"api_token_id": row.id, "scope": row.scope})
 
     response.headers["Cache-Control"] = "no-store"
     return MintTokenResponse(
@@ -261,7 +262,7 @@ async def _revoke(
         "api_token_id": row.id, "name": row.name, "scope": row.scope,
         "prefix": row.token_prefix, **extra,
     })
-    await logger.ainfo("agent_token.revoked", api_token_id=row.id)
+    logger.info("agent_token.revoked", extra={"api_token_id": row.id})
     return {"ok": True, "id": row.id}
 
 
@@ -311,5 +312,5 @@ async def revoke_all_agent_tokens(
     count = await svc.revoke_all_agent(db, current_user)
     await _audit(session_factory, request, actor, "agent_token.revoked_all", "success",
                  {"count": count})
-    await logger.ainfo("agent_token.revoked_all", count=count)
+    logger.info("agent_token.revoked_all", extra={"count": count})
     return {"revoked": count}

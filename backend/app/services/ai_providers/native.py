@@ -23,13 +23,13 @@ Behavior contract (spec §5):
 """
 from __future__ import annotations
 
-import structlog
+import logging
 
 from app.config import settings
 from app.services.ai_providers.base import NativeNotAvailable, ValidateResult
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 class NativeAdapter:
@@ -39,8 +39,10 @@ class NativeAdapter:
         if settings.ai_native_enabled:
             logger.warning(
                 "ai.native.gate_on_but_backend_missing",
-                ai_native_enabled=True,
-                note="AI_NATIVE_ENABLED=true but no native backend ships in PR3",
+                extra={
+                    "ai_native_enabled": True,
+                    "note": "AI_NATIVE_ENABLED=true but no native backend ships in PR3",
+                },
             )
 
     async def validate(self) -> ValidateResult:

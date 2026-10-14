@@ -5,7 +5,7 @@ Mounted at `/api/v1/orgs`. Admin-gating uses `require_org_admin` from
 JWT in the URL is the proof of intent.
 """
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -38,16 +38,17 @@ from app.security import (
 from app.services import invitation_service
 from app.services.email_service import send_invitation_email
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app import logs
 
 
 router = APIRouter(prefix="/api/v1/orgs", tags=["org-members"])
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 def _serialize_invitation(inv) -> InvitationResponse:
@@ -390,12 +391,14 @@ async def remove_member(
         # one connection, so no behavioural test on the CI backend can see it.
         await db.rollback()
 
-        await logger.awarning(
+        logger.warning(
             "org.member.remove.failed",
-            actor_user_id=actor_id,
-            target_org_id=actor_org_id,
-            target_user_id=user_id,
-            reason=e.code,
+            extra={
+                "actor_user_id": actor_id,
+                "target_org_id": actor_org_id,
+                "target_user_id": user_id,
+                "reason": e.code,
+            },
         )
         # Independent session: the business txn is abandoned, but an attempt
         # against a protected member must be durable regardless

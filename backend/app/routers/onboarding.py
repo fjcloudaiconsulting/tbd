@@ -47,7 +47,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -64,9 +64,10 @@ from app.services.demo_seed_service import (
     DemoSeedAlreadyApplied,
     seed_org,
 )
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/users/me/onboarding", tags=["onboarding"])
 
@@ -86,7 +87,7 @@ class RestartTourResponse(BaseModel):
 
 
 def _request_id() -> Optional[str]:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 @router.post("/complete", response_model=OnboardingCompleteResponse, dependencies=[Depends(load_rate_limit_overrides)])

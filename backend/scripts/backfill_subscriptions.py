@@ -20,14 +20,15 @@ import json
 import pathlib
 import sys
 
-import structlog
+import logging
 
 from app.database import engine
-from app.logging import setup_logging
+from app import logs
+from app import tracing
 
 
-setup_logging()
-logger = structlog.stdlib.get_logger()
+logs.configure()
+logger = logging.getLogger(__name__)
 
 
 def _load_migration_module():
@@ -77,10 +78,10 @@ def main() -> int:
     try:
         summary = asyncio.run(_run())
     except Exception as exc:
-        logger.error("backfill_subscriptions.failed", error=str(exc))
+        logger.error("backfill_subscriptions.failed", extra={"error": tracing.error_summary(exc)})
         return 1
     print(json.dumps(summary, default=str))
-    logger.info("backfill_subscriptions.complete", **summary)
+    logger.info("backfill_subscriptions.complete", extra={**summary})
     return 0
 
 

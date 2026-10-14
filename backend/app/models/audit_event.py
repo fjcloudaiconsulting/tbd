@@ -1,6 +1,6 @@
 """Durable audit log for superadmin platform actions (L4.7).
 
-The structlog ``admin.org.*`` and ``org.data.*`` events emitted by the
+The log ``admin.org.*`` and ``org.data.*`` events emitted by the
 admin and tenant routers stream to stdout (and from there to whatever
 log sink ops wires up). They're great for triage but they're not a
 queryable history with SLA-grade retention. This table persists the
@@ -31,7 +31,7 @@ Two design choices worth restating in code:
    for the request that produced this row.* On ``outcome="success"``
    rows it additionally validated; on ``api_token.auth_rejected``
    rows it was presented and rejected. It is resolved from the
-   request-scoped structlog contextvar inside
+   request-scoped log context inside
    ``audit_service._build_audit_event`` — never passed by a caller —
    so a new audit call site is attributed by construction.
 

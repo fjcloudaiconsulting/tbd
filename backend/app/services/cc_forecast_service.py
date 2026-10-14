@@ -25,12 +25,12 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
-import structlog
+import logging
 from dateutil.relativedelta import relativedelta
 
 from app.services.cc_cycle_service import CreditCardCycle, resolve_cycle_for_account
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # Safety cap on the enumeration walk (a horizon is at most a couple of
 # cycles; this only guards against a pathological resolver loop).
@@ -161,9 +161,11 @@ def synthesize_account_cc_payments(
         if cycle.payment_date <= cycle.period_end_inclusive:
             logger.warning(
                 "cc_forecast.degenerate_cycle_skipped",
-                account_id=getattr(account, "id", None),
-                close_date=cycle.period_end_inclusive.isoformat(),
-                payment_date=cycle.payment_date.isoformat(),
+                extra={
+                    "account_id": getattr(account, "id", None),
+                    "close_date": cycle.period_end_inclusive.isoformat(),
+                    "payment_date": cycle.payment_date.isoformat(),
+                },
             )
             continue
         b_k = balance_at_close(opening_balance, ledger, cycle.period_end_inclusive)

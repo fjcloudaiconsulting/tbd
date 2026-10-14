@@ -28,7 +28,7 @@ import json
 from dataclasses import asdict
 from typing import Annotated, Literal
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints
 from sqlalchemy import delete, select
@@ -52,8 +52,9 @@ from app.services.feature_gate import (
     org_preference_key,
     upsert_org_setting,
 )
+from app import logs
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 async def require_superadmin(
@@ -105,7 +106,7 @@ class PlatformAIBody(BaseModel):
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 def _feature_from_str(name: str) -> Feature:

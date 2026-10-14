@@ -27,7 +27,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
-import structlog
+import logging
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +45,7 @@ from app.services.currency_service import (
 )
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # Sentinel category slug stored on the seeded category row. We check
@@ -295,9 +295,11 @@ async def seed_org(db: AsyncSession, org_id: int) -> SeedResult:
 
     logger.info(
         "demo_seed.completed",
-        org_id=org_id,
-        accounts=len(accounts),
-        transactions=tx_count,
+        extra={
+            "org_id": org_id,
+            "accounts": len(accounts),
+            "transactions": tx_count,
+        },
     )
 
     return SeedResult(

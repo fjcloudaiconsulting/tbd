@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -65,9 +65,10 @@ from app.services.ai_routing_service import (
     UnknownFeatureName,
 )
 from app.services.exceptions import ValidationError
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/settings/ai-providers",
@@ -76,7 +77,7 @@ router = APIRouter(
 
 
 def _request_id() -> Optional[str]:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 @router.get("/options")

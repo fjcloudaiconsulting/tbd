@@ -1,6 +1,6 @@
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select, update
@@ -39,15 +39,16 @@ from app.services.transaction_service import (
     assert_no_dependents,
     reconcile_account,
 )
+from app import logs
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["accounts"])
 
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 def _is_admin_user(user: User) -> bool:
@@ -688,14 +689,16 @@ async def _update_account_atomic(
                 else None,
             },
         )
-        await logger.ainfo(
+        logger.info(
             "account.type_changed",
-            actor_user_id=actor_user_id,
-            actor_email=actor_email,
-            target_org_id=actor_org_id,
-            account_id=account_id,
-            old_type_slug=type_result.old_type_slug,
-            new_type_slug=type_result.new_type_slug,
+            extra={
+                "actor_user_id": actor_user_id,
+                "actor_email": actor_email,
+                "target_org_id": actor_org_id,
+                "account_id": account_id,
+                "old_type_slug": type_result.old_type_slug,
+                "new_type_slug": type_result.new_type_slug,
+            },
         )
 
     if type_result is not None and type_result.deleted_cycle_payments:
@@ -916,16 +919,18 @@ async def adjust_balance(
     except ValidationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    await logger.ainfo(
+    logger.info(
         "org.account.balance.adjust",
-        actor_user_id=actor_user_id,
-        actor_email=actor_email,
-        target_org_id=actor_org_id,
-        account_id=account_id,
-        old_balance=str(old_balance),
-        new_balance=str(new_balance),
-        delta=str(delta),
-        generated_transaction_id=tx.id,
+        extra={
+            "actor_user_id": actor_user_id,
+            "actor_email": actor_email,
+            "target_org_id": actor_org_id,
+            "account_id": account_id,
+            "old_balance": str(old_balance),
+            "new_balance": str(new_balance),
+            "delta": str(delta),
+            "generated_transaction_id": tx.id,
+        },
     )
 
     return BalanceAdjustmentResponse(

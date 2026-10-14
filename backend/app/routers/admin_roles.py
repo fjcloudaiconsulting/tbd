@@ -6,7 +6,7 @@ fine-grained roles can hold the permission once the L4.4 user-role
 join lands).
 
 Defense in depth: ``is_system_frozen`` is enforced both here and in
-the service layer. Mutating endpoints emit a structlog event and
+the service layer. Mutating endpoints emit a log event and
 persist the same shape into the L4.7 audit log so an operator can
 later attribute who created/edited/deleted which role.
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-import structlog
+import logging
 
 from app.auth.pat import require_interactive_session
 from app.auth.permissions import ALL_PERMISSIONS, require_permission
@@ -40,9 +40,10 @@ from app.services.exceptions import (
     NotFoundError,
     ValidationError,
 )
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(tags=["admin-roles"])
@@ -50,7 +51,7 @@ router = APIRouter(tags=["admin-roles"])
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 # ── Permissions catalog ──────────────────────────────────────────────────
@@ -159,13 +160,15 @@ async def create_role(
         )
     await db.commit()
 
-    await logger.ainfo(
+    logger.info(
         "admin.role.created",
-        actor_user_id=current_user.id,
-        actor_email=current_user.email,
-        role_id=item["id"],
-        role_slug=item["slug"],
-        permission_count=len(item["permissions"]),
+        extra={
+            "actor_user_id": current_user.id,
+            "actor_email": current_user.email,
+            "role_id": item["id"],
+            "role_slug": item["slug"],
+            "permission_count": len(item["permissions"]),
+        },
     )
     await audit_service.record_audit_event(
         session_factory,
@@ -263,15 +266,17 @@ async def update_role(
     perm_added = sorted(set(after_perms) - set(before_perms))
     perm_removed = sorted(set(before_perms) - set(after_perms))
 
-    await logger.ainfo(
+    logger.info(
         "admin.role.updated",
-        actor_user_id=current_user.id,
-        actor_email=current_user.email,
-        role_id=item["id"],
-        role_slug=item["slug"],
-        changed_fields=changed_fields,
-        permissions_added=perm_added,
-        permissions_removed=perm_removed,
+        extra={
+            "actor_user_id": current_user.id,
+            "actor_email": current_user.email,
+            "role_id": item["id"],
+            "role_slug": item["slug"],
+            "changed_fields": changed_fields,
+            "permissions_added": perm_added,
+            "permissions_removed": perm_removed,
+        },
     )
     await audit_service.record_audit_event(
         session_factory,
@@ -335,12 +340,14 @@ async def delete_role(
         )
     await db.commit()
 
-    await logger.ainfo(
+    logger.info(
         "admin.role.deleted",
-        actor_user_id=current_user.id,
-        actor_email=current_user.email,
-        role_id=role_id,
-        role_slug=existing["slug"],
+        extra={
+            "actor_user_id": current_user.id,
+            "actor_email": current_user.email,
+            "role_id": role_id,
+            "role_slug": existing["slug"],
+        },
     )
     await audit_service.record_audit_event(
         session_factory,

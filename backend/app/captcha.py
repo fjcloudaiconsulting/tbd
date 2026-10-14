@@ -6,7 +6,7 @@ timeout, network error, hostname/action mismatch) refuses registration.
 
 The token is never logged. Only stable diagnostic fields (provider
 error codes, expected vs. observed hostname/action, latency) are
-emitted via structlog so an operator can tell why the gate fired
+emitted in the logs so an operator can tell why the gate fired
 without inspecting the token itself.
 
 Idempotency key: a fresh UUID per call. Cloudflare's docs note this
@@ -24,12 +24,12 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-import structlog
+import logging
 
 from app.config import settings as app_settings
 
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 # Result reason codes — stable strings so audit/log consumers can pin
@@ -71,7 +71,7 @@ async def verify_captcha(token: str | None, remote_ip: str | None) -> CaptchaVer
         return CaptchaVerifyResult(ok=True, reason=REASON_DISABLED)
 
     if not app_settings.captcha_secret or not app_settings.captcha_verify_url:
-        await logger.aerror("captcha.verify.misconfigured")
+        logger.error("captcha.verify.misconfigured")
         return CaptchaVerifyResult(ok=False, reason=REASON_MISCONFIGURED)
 
     if not token:
@@ -151,31 +151,37 @@ async def verify_captcha(token: str | None, remote_ip: str | None) -> CaptchaVer
         # ``OSError``, not from ``httpx.HTTPError``), so every exception
         # reaching this clause matches exactly one arm.
         bound = "per_phase" if isinstance(exc, httpx.TimeoutException) else "aggregate"
-        await logger.awarning(
+        logger.warning(
             "captcha.verify.timeout",
-            bound=bound,
-            timeout_s=app_settings.captcha_verify_timeout_s,
-            total_timeout_s=app_settings.captcha_verify_total_timeout_s,
+            extra={
+                "bound": bound,
+                "timeout_s": app_settings.captcha_verify_timeout_s,
+                "total_timeout_s": app_settings.captcha_verify_total_timeout_s,
+            },
         )
         return CaptchaVerifyResult(ok=False, reason=REASON_TIMEOUT)
     except httpx.HTTPError as exc:
-        await logger.awarning(
+        logger.warning(
             "captcha.verify.network_error",
-            error=type(exc).__name__,
+            extra={
+                "error": type(exc).__name__,
+            },
         )
         return CaptchaVerifyResult(ok=False, reason=REASON_NETWORK_ERROR)
 
     if response.status_code >= 500 or response.status_code >= 400:
-        await logger.awarning(
+        logger.warning(
             "captcha.verify.provider_error",
-            status_code=response.status_code,
+            extra={
+                "status_code": response.status_code,
+            },
         )
         return CaptchaVerifyResult(ok=False, reason=REASON_PROVIDER_ERROR)
 
     try:
         data = response.json()
     except ValueError:
-        await logger.awarning("captcha.verify.invalid_json")
+        logger.warning("captcha.verify.invalid_json")
         return CaptchaVerifyResult(ok=False, reason=REASON_PROVIDER_ERROR)
 
     success = bool(data.get("success"))
@@ -184,9 +190,11 @@ async def verify_captcha(token: str | None, remote_ip: str | None) -> CaptchaVer
     observed_action = data.get("action")
 
     if not success:
-        await logger.ainfo(
+        logger.info(
             "captcha.verify.failed",
-            provider_error_codes=error_codes,
+            extra={
+                "provider_error_codes": error_codes,
+            },
         )
         return CaptchaVerifyResult(
             ok=False,
@@ -198,10 +206,12 @@ async def verify_captcha(token: str | None, remote_ip: str | None) -> CaptchaVer
 
     expected_hostname = app_settings.captcha_expected_hostname
     if expected_hostname and observed_hostname != expected_hostname:
-        await logger.awarning(
+        logger.warning(
             "captcha.verify.hostname_mismatch",
-            expected=expected_hostname,
-            observed=observed_hostname,
+            extra={
+                "expected": expected_hostname,
+                "observed": observed_hostname,
+            },
         )
         return CaptchaVerifyResult(
             ok=False,
@@ -212,10 +222,12 @@ async def verify_captcha(token: str | None, remote_ip: str | None) -> CaptchaVer
 
     expected_action = app_settings.captcha_expected_action
     if expected_action and observed_action != expected_action:
-        await logger.awarning(
+        logger.warning(
             "captcha.verify.action_mismatch",
-            expected=expected_action,
-            observed=observed_action,
+            extra={
+                "expected": expected_action,
+                "observed": observed_action,
+            },
         )
         return CaptchaVerifyResult(
             ok=False,
@@ -224,10 +236,12 @@ async def verify_captcha(token: str | None, remote_ip: str | None) -> CaptchaVer
             observed_action=observed_action,
         )
 
-    await logger.ainfo(
+    logger.info(
         "captcha.verify.ok",
-        hostname=observed_hostname,
-        action=observed_action,
+        extra={
+            "hostname": observed_hostname,
+            "action": observed_action,
+        },
     )
     return CaptchaVerifyResult(
         ok=True,

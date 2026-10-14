@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import structlog
+import logging
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -29,8 +29,9 @@ from app.services.api_token_service import (
     lookup_token,
     maybe_stamp_last_used,
 )
+from app import logs
 
-logger = structlog.stdlib.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def www_authenticate() -> str:
@@ -58,25 +59,37 @@ async def authenticate_agent_token(
 ) -> tuple[User, ApiToken]:
     """Resolve an agent bearer to ``(owner, token row)`` or raise the 401."""
     if not raw_token.startswith("pat_"):
-        logger.info("agent_token.auth_rejected", reason="not_pat")
+        logger.info("agent_token.auth_rejected", extra={"reason": "not_pat"})
         raise _reject()
     row = await lookup_token(db, raw_token)
     if row is None:
-        # Unknown bearer: structlog only, never an audit row (spray DoS).
-        logger.info("agent_token.auth_rejected", reason="unknown")
+        # Unknown bearer: log only, never an audit row (spray DoS).
+        logger.info("agent_token.auth_rejected", extra={"reason": "unknown"})
         raise _reject()
 
     # Bound BEFORE the rejection branches: ``_record_auth_rejected`` audits
     # through this contextvar (see the bind site in ``app.auth.pat``).
-    structlog.contextvars.bind_contextvars(api_token_id=row.id)
+    logs.bind(api_token_id=row.id)
 
     now = datetime.now(timezone.utc)
     if row.revoked_at is not None:
-        logger.info("agent_token.auth_rejected", reason="revoked", api_token_id=row.id)
+        logger.info(
+            "agent_token.auth_rejected",
+            extra={
+                "reason": "revoked",
+                "api_token_id": row.id,
+            },
+        )
         await _record_auth_rejected(session_factory, request, row, "revoked")
         raise _reject()
     if _aware(row.expires_at) <= now:
-        logger.info("agent_token.auth_rejected", reason="expired", api_token_id=row.id)
+        logger.info(
+            "agent_token.auth_rejected",
+            extra={
+                "reason": "expired",
+                "api_token_id": row.id,
+            },
+        )
         # An OAuth access token lapses every hour by design (the client
         # refreshes): no audit row for that, only for a manual token.
         if row.oauth_client_id is None:
@@ -84,25 +97,37 @@ async def authenticate_agent_token(
         raise _reject()
     if row.scope not in AGENT_SCOPE_RANK:
         # A superadmin REST PAT is not an agent credential.
-        logger.info("agent_token.auth_rejected", reason="scope", api_token_id=row.id)
+        logger.info("agent_token.auth_rejected", extra={"reason": "scope", "api_token_id": row.id})
         raise _reject()
     if row.created_by_user_id is None:
-        logger.info("agent_token.auth_rejected", reason="owner_null", api_token_id=row.id)
+        logger.info(
+            "agent_token.auth_rejected",
+            extra={
+                "reason": "owner_null",
+                "api_token_id": row.id,
+            },
+        )
         raise _reject()
     user = (
         await db.execute(select(User).where(User.id == row.created_by_user_id))
     ).scalar_one_or_none()
     if user is None or not user.is_active:
-        logger.info("agent_token.auth_rejected", reason="owner_inactive", api_token_id=row.id)
+        logger.info(
+            "agent_token.auth_rejected",
+            extra={
+                "reason": "owner_inactive",
+                "api_token_id": row.id,
+            },
+        )
         raise _reject()
     # ``<=``, not the JWT path's ``<``: both sides are whole seconds (created_at
     # is floored at mint, the cutoff columns are DATETIME(0) on MySQL), so a
     # token minted in the same second as a logout-everywhere must die.
     if _aware(row.created_at) <= token_cutoff(user):
-        logger.info("agent_token.auth_rejected", reason="cutoff", api_token_id=row.id)
+        logger.info("agent_token.auth_rejected", extra={"reason": "cutoff", "api_token_id": row.id})
         raise _reject()
 
-    structlog.contextvars.bind_contextvars(
+    logs.bind(
         user_id=user.id,
         org_id=user.org_id,
         role=user.role.value if hasattr(user.role, "value") else str(user.role),

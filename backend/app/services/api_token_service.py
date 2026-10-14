@@ -14,7 +14,7 @@ import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
-import structlog
+import logging
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -23,7 +23,7 @@ from app.models.api_token import ApiToken
 from app.models.user import User
 from app.security import derive_hmac_key, token_cutoff
 
-logger = structlog.stdlib.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def _primary_key() -> bytes:
@@ -233,7 +233,7 @@ async def maybe_stamp_last_used(
             )
             await session.commit()
     except Exception:  # noqa: BLE001 — never break auth on a stamp failure
-        logger.warning("api_token.last_used_stamp_failed", api_token_id=token_id)
+        logger.warning("api_token.last_used_stamp_failed", extra={"api_token_id": token_id})
 
 
 # ── Agent access tokens (TBD-578) ───────────────────────────────────────────

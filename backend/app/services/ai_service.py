@@ -25,12 +25,12 @@ feature surface must call. Three properties this gives us:
 
 Cap enforcement and the ``ai_usage`` ledger ship in PR-C (migration
 048). In PR-B the cap-check is a stub that always returns "within
-budget", and the only persisted artifact is the ``ai.call`` structlog
+budget", and the only persisted artifact is the ``ai.call`` log
 event.
 
 Privacy invariants (locked by spec §8):
 - No prompt content, no completion content, no API-key fragments in any
-  structlog event from this module.
+  log event from this module.
 - ``user_context`` PII-key rejection is defense-in-depth, not the
   primary control — callers are still responsible for redaction.
 """
@@ -41,7 +41,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import structlog
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.feature_catalog import ALL_FEATURE_KEYS, FeatureKey
@@ -50,7 +50,7 @@ from app.services.ai_adapters import mock_adapter
 from app.services.exceptions import ValidationError
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # Status enumeration matches spec §3 (ai_usage.status). PR-B only emits
@@ -211,7 +211,7 @@ async def call_llm(
     1. Validate ``prompt`` (PII keys, redaction certified).
     2. Fail-closed on the feature gate.
     3. Dispatch to ``mock_adapter`` (every call is effectively dry-run).
-    4. Emit a single ``ai.call`` structlog event with the whitelisted
+    4. Emit a single ``ai.call`` log event with the whitelisted
        telemetry fields from spec §6 — never prompt content.
 
     Future PRs add:
@@ -241,24 +241,26 @@ async def call_llm(
 
     # Defense-in-depth gate check. Even if the router forgot to
     # `Depends(require_feature(...))`, this raises before any adapter
-    # work happens. The structlog event records the rejection so the
+    # work happens. The log event records the rejection so the
     # coverage endpoint can see "gate-closed" as a distinct outcome.
     gate_open = await feature_service.has_feature(db, org_id, feature_key)
     if not gate_open:
-        await logger.ainfo(
+        logger.info(
             "ai.call",
-            org_id=org_id,
-            feature_key=feature_key,
-            provider="(none)",
-            model="(none)",
-            tokens_in=0,
-            tokens_out=0,
-            cost_cents=0,
-            latency_ms=0,
-            dry_run=dry_run,
-            status=STATUS_REJECTED_GATE_CLOSED,
-            error_code=None,
-            request_id=request_id,
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "provider": "(none)",
+                "model": "(none)",
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cost_cents": 0,
+                "latency_ms": 0,
+                "dry_run": dry_run,
+                "status": STATUS_REJECTED_GATE_CLOSED,
+                "error_code": None,
+                "request_id": request_id,
+            },
         )
         raise FeatureNotEnabled(org_id, feature_key)
 
@@ -274,20 +276,22 @@ async def call_llm(
         # Until then, treat as mock so we cannot accidentally leak.
         result = mock_adapter.dispatch(prompt=prompt, request_id=request_id)
 
-    await logger.ainfo(
+    logger.info(
         "ai.call",
-        org_id=org_id,
-        feature_key=feature_key,
-        provider=result.provider,
-        model=result.model,
-        tokens_in=result.tokens_in,
-        tokens_out=result.tokens_out,
-        cost_cents=result.cost_cents,
-        latency_ms=result.latency_ms,
-        dry_run=result.dry_run,
-        status=result.status,
-        error_code=None,
-        request_id=result.request_id,
+        extra={
+            "org_id": org_id,
+            "feature_key": feature_key,
+            "provider": result.provider,
+            "model": result.model,
+            "tokens_in": result.tokens_in,
+            "tokens_out": result.tokens_out,
+            "cost_cents": result.cost_cents,
+            "latency_ms": result.latency_ms,
+            "dry_run": result.dry_run,
+            "status": result.status,
+            "error_code": None,
+            "request_id": result.request_id,
+        },
     )
 
     return result

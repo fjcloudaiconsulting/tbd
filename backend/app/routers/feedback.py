@@ -18,7 +18,7 @@ feedback archive.
 """
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -29,15 +29,16 @@ from app.rate_limit import get_client_ip, limiter
 from app.rate_limit_overrides import dynamic_limit, load_rate_limit_overrides
 from app.schemas.feedback import FeedbackCreate, FeedbackResponse
 from app.services import audit_service, feedback_service
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/feedback", tags=["feedback"])
 
 
 def _request_id() -> Optional[str]:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 @router.post("", response_model=FeedbackResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(load_rate_limit_overrides)])
@@ -93,11 +94,13 @@ async def submit_feedback(
         },
     )
 
-    await logger.ainfo(
+    logger.info(
         "feedback.submitted",
-        category=body.category.value,
-        identity_attached=body.include_identity,
-        message_length=len(body.message),
+        extra={
+            "category": body.category.value,
+            "identity_attached": body.include_identity,
+            "message_length": len(body.message),
+        },
     )
 
     return entry

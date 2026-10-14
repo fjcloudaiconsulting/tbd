@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import case, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -33,7 +33,7 @@ from app.models.user import User
 from app.schemas.announcement import AnnouncementResponse
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/announcements", tags=["announcements"])
 

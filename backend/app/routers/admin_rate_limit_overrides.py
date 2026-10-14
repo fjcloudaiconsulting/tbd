@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -37,9 +37,10 @@ from app.schemas.rate_limit_override import (
 from app.services import audit_service
 from app.services import rate_limit_overrides_service as svc
 from app.services.exceptions import ValidationError
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/admin/rate-limit-overrides",
@@ -48,7 +49,7 @@ router = APIRouter(
 
 
 def _request_id() -> Optional[str]:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 async def require_superadmin(
@@ -179,12 +180,14 @@ async def create_override_endpoint(
         detail=_audit_detail(row),
     )
 
-    await logger.ainfo(
+    logger.info(
         "admin.rate_limit.created",
-        override_id=row.id,
-        org_id=row.org_id,
-        user_id=row.user_id,
-        endpoint_pattern=row.endpoint_pattern,
+        extra={
+            "override_id": row.id,
+            "org_id": row.org_id,
+            "user_id": row.user_id,
+            "endpoint_pattern": row.endpoint_pattern,
+        },
     )
     return row
 
@@ -236,10 +239,12 @@ async def update_override_endpoint(
         },
     )
 
-    await logger.ainfo(
+    logger.info(
         "admin.rate_limit.updated",
-        override_id=row.id,
-        patched_fields=sorted(patch.keys()),
+        extra={
+            "override_id": row.id,
+            "patched_fields": sorted(patch.keys()),
+        },
     )
     return row
 
@@ -284,8 +289,10 @@ async def delete_override_endpoint(
         detail=audit_blob,
     )
 
-    await logger.ainfo(
+    logger.info(
         "admin.rate_limit.deleted",
-        override_id=override_id,
+        extra={
+            "override_id": override_id,
+        },
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

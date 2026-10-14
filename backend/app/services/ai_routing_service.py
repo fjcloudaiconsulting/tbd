@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import structlog
+import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -32,7 +32,7 @@ from app.models.org_ai_routing import (
 from app.services import audit_service, platform_ai, platform_ai_settings
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 class CrossOrgRoutingDenied(Exception):

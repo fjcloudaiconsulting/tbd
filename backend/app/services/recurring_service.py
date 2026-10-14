@@ -7,7 +7,7 @@ next_due_date has passed. Advances next_due_date based on frequency.
 import dataclasses
 import datetime
 
-import structlog
+import logging
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -33,7 +33,7 @@ from app.services.transaction_service import (
     validate_category_for_type,
 )
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 # Defensive per-RUN cap so a pathologically stale template can't spin an
 # unbounded loop inside one scheduler tick.
@@ -510,9 +510,13 @@ async def _reanchor_frontier_on_resume(
         # MAX_CATCHUP_ITERATIONS rows -- this ticket's defect, re-entered. It
         # must not be silent.
         if steps >= _MAX_FRONTIER_ADVANCE_STEPS:
-            await logger.awarning(
+            logger.warning(
                 "recurring.resume.reanchor_cap",
-                org_id=org_id, recurring_id=r.id, next_due_date=str(r.next_due_date),
+                extra={
+                    "org_id": org_id,
+                    "recurring_id": r.id,
+                    "next_due_date": str(r.next_due_date),
+                },
             )
             break
         r.next_due_date = advance_date(r.next_due_date, r.frequency)
@@ -983,9 +987,13 @@ async def generate_due_transactions(
             if not has_remaining_occurrences(r):
                 break
             if iterations >= MAX_CATCHUP_ITERATIONS:
-                await logger.awarning(
+                logger.warning(
                     "recurring.generate.catchup_cap",
-                    org_id=org_id, recurring_id=r.id, next_due_date=str(r.next_due_date),
+                    extra={
+                        "org_id": org_id,
+                        "recurring_id": r.id,
+                        "next_due_date": str(r.next_due_date),
+                    },
                 )
                 break
             iterations += 1
@@ -1016,9 +1024,13 @@ async def generate_due_transactions(
 
     await db.commit()
     if backfilled:
-        await logger.ainfo(
+        logger.info(
             "recurring.generate.backfill",
-            org_id=org_id, count=len(backfilled), earliest_date=str(min(backfilled)),
+            extra={
+                "org_id": org_id,
+                "count": len(backfilled),
+                "earliest_date": str(min(backfilled)),
+            },
         )
     return {
         "generated": created,
