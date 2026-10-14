@@ -6,7 +6,7 @@
 import { expiryView, scopeLabel, shortDate } from "@/components/system/api-tokens/expiry";
 import { TONE_CLASS } from "@/components/system/api-tokens/TokenList";
 import { lowerScopes } from "@/lib/agent/present";
-import type { AgentToken, OrgAgentToken } from "@/lib/agent/types";
+import type { AgentToken } from "@/lib/agent/types";
 import { badgeError, badgeNeutral, badgeSuccess, badgeWarning } from "@/lib/styles";
 
 const STATUS: Record<AgentToken["status"], { label: string; cls: string }> = {
@@ -21,7 +21,7 @@ export const rowBtn =
   "inline-flex min-h-6 items-center rounded-md border border-border-strong bg-surface px-2.5 py-1 text-xs font-medium text-text-primary transition-colors hover:bg-surface-raised";
 
 interface Props {
-  tokens: Array<AgentToken | OrgAgentToken>;
+  tokens: AgentToken[];
   nowMs: number;
   // Absent on the org admin view: an admin may revoke a member's token, never lower it.
   onLower?: (t: AgentToken) => void;
@@ -61,8 +61,8 @@ export default function AgentTokenList({ tokens, nowMs, onLower, onRevoke, showO
             const expiry = expiryView(t.expires_at, nowMs);
             return (
               <tr key={t.id} className="border-b border-border-subtle align-top" data-testid={`agent-token-${t.id}`}>
-                {"owner_email" in t && showOwner && (
-                  <td className="px-4 py-3 text-text-primary [overflow-wrap:anywhere]">{t.owner_email}</td>
+                {showOwner && (
+                  <td className="px-4 py-3 text-text-primary [overflow-wrap:anywhere]">{"owner_email" in t ? t.owner_email : ""}</td>
                 )}
                 <td className="px-4 py-3">
                   <span className="block font-medium text-text-primary [overflow-wrap:anywhere]">{t.name}</span>

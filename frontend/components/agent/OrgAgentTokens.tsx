@@ -5,7 +5,7 @@
 // 403 (role changed since load) renders nothing.
 
 import { useState } from "react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 
 import AgentTokenList from "@/components/agent/AgentTokenList";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -15,12 +15,14 @@ import type { ListEnvelope } from "@/lib/types";
 import { card, cardHeader, cardTitle, error as errorCls, success as successCls } from "@/lib/styles";
 
 const ORG = "/api/v1/agent/tokens/org";
+const OWN = "/api/v1/agent/tokens";
 
 export default function OrgAgentTokens() {
   const { data, error, mutate } = useSWR<ListEnvelope<OrgAgentToken>>(ORG, (u: string) => apiFetch(u), {
     revalidateOnFocus: false,
     shouldRetryOnError: false,
   });
+  const { mutate: globalMutate } = useSWRConfig();
   const [nowMs] = useState(() => Date.now());
   const [target, setTarget] = useState<OrgAgentToken | null>(null);
   const [working, setWorking] = useState(false);
@@ -39,11 +41,12 @@ export default function OrgAgentTokens() {
       await apiFetch(`${ORG}/${target.id}`, { method: "DELETE" });
       setNote(`Revoked ${target.name} owned by ${target.owner_email}.`);
       setTarget(null);
-      await mutate();
     } catch (e) {
       setTarget(null);
       setErr(extractErrorMessage(e));
     } finally {
+      // The org list includes the admin's own tokens: refresh both tables, even after a failure.
+      await Promise.all([mutate(), globalMutate(OWN)]);
       setWorking(false);
     }
   }
@@ -58,6 +61,9 @@ export default function OrgAgentTokens() {
       </div>
       {err && <p role="alert" className={`${errorCls} m-4`}>{err}</p>}
       <p role="status" className={note ? `${successCls} m-4` : "sr-only"}>{note}</p>
+      {error && !data ? (
+        <p role="alert" className={`${errorCls} m-4`}>{extractErrorMessage(error)}</p>
+      ) : (
       <AgentTokenList
         tokens={data?.items ?? []}
         nowMs={nowMs}
@@ -65,6 +71,7 @@ export default function OrgAgentTokens() {
         emptyText="No one in your organization has created an agent token yet."
         onRevoke={(t) => setTarget(t as OrgAgentToken)}
       />
+      )}
       <ConfirmModal
         open={target !== null}
         title="Revoke member's token"

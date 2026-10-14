@@ -4,14 +4,14 @@
  * nothing broken, axe clean.
  */
 import React from "react";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import axe from "axe-core";
 
 import AgentTokensPage from "@/app/settings/agent-tokens/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { setAccessToken } from "@/lib/api";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
-import type { OrgAgentToken } from "@/lib/agent/types";
+import type { AgentToken, OrgAgentToken } from "@/lib/agent/types";
 import type { AIStatus, User } from "@/lib/types";
 import { renderWithSWR } from "@/tests/utils/render-with-swr";
 
@@ -57,6 +57,14 @@ const json = (status: number, body: unknown) =>
 const list = (items: unknown[]) => json(200, { items, total: items.length, limit: items.length, offset: 0 });
 
 let orgItems: OrgAgentToken[];
+// The admin's own token (id 5) is in both lists; one flag drives both.
+let ownRevoked: boolean;
+const own = (): AgentToken => ({ ...orgToken({ id: 5, name: "My bot", owner_email: "d@x.io", owner_user_id: 1,
+  scope: "agent:auto", status: ownRevoked ? "revoked" : "active" }) });
+const ownRow = () => {
+  const { owner_user_id: _a, owner_email: _b, ...t } = own() as OrgAgentToken;
+  return t;
+};
 let orgStatus: number;
 let fetchMock: ReturnType<typeof vi.fn>;
 const calls = () => fetchMock.mock.calls.map(([u, i]) => `${(i as RequestInit)?.method ?? "GET"} ${u}`);
@@ -65,14 +73,20 @@ beforeEach(() => {
   setAccessToken("t");
   orgItems = [orgToken({})];
   orgStatus = 200;
+  ownRevoked = false;
   vi.mocked(useAuth).mockReturnValue({ user: user("admin"), loading: false } as unknown as ReturnType<typeof useAuth>);
   vi.mocked(useAiStatus).mockReturnValue(STATUS);
   fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
     const key = `${init.method ?? "GET"} ${String(url)}`;
-    if (key === "GET /api/v1/agent/tokens") return list([]);
+    if (key === "GET /api/v1/agent/tokens") return list(ownRevoked || orgItems.length ? [ownRow()] : []);
+    if (key === "DELETE /api/v1/agent/tokens/5" || key === "DELETE /api/v1/agent/tokens/org/5") {
+      ownRevoked = true;
+      return json(200, { ok: true, id: 5 });
+    }
     if (key === "GET /api/v1/agent/actions?status=done&limit=20") return list([]);
     if (key === "GET /api/v1/agent/tokens/org") {
-      return orgStatus === 200 ? list(orgItems) : json(orgStatus, { detail: "Forbidden" });
+      if (orgStatus !== 200) return json(orgStatus, { detail: orgStatus === 403 ? "Forbidden" : "Boom" });
+      return list(orgItems.length ? [...orgItems, { ...own(), owner_user_id: 1, owner_email: "d@x.io" }] : []);
     }
     if (key === "DELETE /api/v1/agent/tokens/org/77") {
       orgItems = [orgToken({ status: "revoked" })];
@@ -124,8 +138,47 @@ describe("org agent tokens", () => {
     renderWithSWR(<AgentTokensPage />);
     await waitFor(() => expect(calls()).toContain("GET /api/v1/agent/tokens/org"));
     await screen.findByText("Your agent tokens");
+    // let the 403 response settle through SWR before asserting
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
     expect(screen.queryByText("Organization agent tokens")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("F-619-500: a failed org list shows the error, not the empty state", async () => {
+    orgStatus = 500;
+    renderWithSWR(<AgentTokensPage />);
+    const section = await screen.findByRole("region", { name: "Organization agent tokens" });
+    expect(await within(section).findByRole("alert")).toBeInTheDocument();
+    expect(screen.queryByText("No one in your organization has created an agent token yet.")).toBeNull();
+  });
+
+  it("F-619-STALE-A: revoking my own token in 'Your agent tokens' updates the org row", async () => {
+    renderWithSWR(<AgentTokensPage />);
+    const org = await screen.findByRole("region", { name: "Organization agent tokens" });
+    await within(org).findByTestId("agent-token-5");
+    const mine = screen.getByRole("region", { name: "Your agent tokens" });
+    fireEvent.click(await within(mine).findByRole("button", { name: "Revoke My bot" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Revoke token" }));
+    await waitFor(() => expect(within(within(org).getByTestId("agent-token-5")).getByText("Revoked")).toBeInTheDocument());
+  });
+
+  it("F-619-STALE-B: revoking my own token in the org table updates the personal row", async () => {
+    renderWithSWR(<AgentTokensPage />);
+    const org = await screen.findByRole("region", { name: "Organization agent tokens" });
+    const mine = screen.getByRole("region", { name: "Your agent tokens" });
+    const mineRow = await within(mine).findByTestId("agent-token-5");
+    expect(within(mineRow).getByRole("button", { name: "Lower access for My bot" })).toBeInTheDocument();
+    fireEvent.click(await within(org).findByRole("button", { name: "Revoke My bot owned by d@x.io" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Revoke token" }));
+    await waitFor(() => expect(within(within(mine).getByTestId("agent-token-5")).getByText("Revoked")).toBeInTheDocument());
+    expect(within(mine).queryByRole("button", { name: "Lower access for My bot" })).toBeNull();
+  });
+
+  it("F-619-DOWNGRADED: an admin of a non-entitled org still gets the org section", async () => {
+    vi.mocked(useAiStatus).mockReturnValue({ ...STATUS, agent: { entitled: false, configured: true } });
+    renderWithSWR(<AgentTokensPage />);
+    const section = await screen.findByRole("region", { name: "Organization agent tokens" });
+    expect(await within(section).findByTestId("agent-token-77")).toBeInTheDocument();
   });
 
   it("F-619-EMPTY: an empty org shows the empty state", async () => {

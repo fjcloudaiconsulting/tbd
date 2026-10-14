@@ -6,7 +6,7 @@
 // notifications all link here.
 
 import { useEffect, useState } from "react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 
 import SettingsLayout from "@/components/SettingsLayout";
 import AgentActivity from "@/components/agent/AgentActivity";
@@ -27,6 +27,7 @@ import type { ListEnvelope, MintTokenResponse } from "@/lib/types";
 import { btnSecondary, card, cardHeader, cardTitle, error as errorCls, success as successCls } from "@/lib/styles";
 
 const BASE = "/api/v1/agent/tokens";
+const ORG_KEY = `${BASE}/org`;
 const STEPUP_ACTION = "agent_token_mint";
 // The mint form survives the Google round trip here; never a secret.
 const PENDING_KEY = "tbd.agent-token-mint";
@@ -52,6 +53,7 @@ export default function AgentTokensPage() {
   const { data, mutate } = useSWR<ListEnvelope<AgentToken>>(user ? BASE : null, (u: string) => apiFetch(u), {
     revalidateOnFocus: false,
   });
+  const { mutate: globalMutate } = useSWRConfig();
   const [nowMs] = useState(() => Date.now());
 
   const [pending, setPending] = useState<AgentMintValues | null>(null);
@@ -97,6 +99,7 @@ export default function AgentTokensPage() {
   }
 
   const tokens = data?.items ?? [];
+  const isOrgAdmin = user.role === "owner" || user.role === "admin";
   const entitled = Boolean(ai?.agent?.entitled);
   const canMint = ai?.usage?.["mcp.calls"]?.limit !== 0;
   // After a downgrade the tokens stay revocable (notification links land here); everything else is hidden.
@@ -179,6 +182,8 @@ export default function AgentTokensPage() {
       setIntent(null);
       setPageError(extractErrorMessage(err));
     } finally {
+      // The org table lists the admin's own tokens too.
+      if (isOrgAdmin) await globalMutate(ORG_KEY);
       setWorking(false);
     }
   }
@@ -256,7 +261,7 @@ export default function AgentTokensPage() {
       </section>
       )}
 
-      {showTokens && (user.role === "owner" || user.role === "admin") && <OrgAgentTokens />}
+      {isOrgAdmin && <OrgAgentTokens />}
 
       {entitled && <AgentActivity />}
 
