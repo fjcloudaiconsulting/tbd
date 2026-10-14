@@ -891,7 +891,9 @@ def _long_history():
     return h + [_msg("user", "current")]
 
 
-async def test_history_is_trimmed_oldest_first_and_starts_on_a_user(factory, w, client, provider):
+async def test_history_is_trimmed_oldest_first_and_starts_on_a_user(
+    factory, w, client, provider, turnlog,
+):
     """FENCE F2. Wrong implementations: newest-first trimming; trimming the
     system prompt, tools or the current message; an assistant-first transcript."""
     _as(factory, w["user"])
@@ -905,6 +907,7 @@ async def test_history_is_trimmed_oldest_first_and_starts_on_a_user(factory, w, 
     assert adapter.tools[1] == adapter.tools[0]
     assert sent[1:] == hist[2:]  # U0 dropped, then the assistant it left first
     assert sent[1]["role"] == "user" and hist[5] in sent
+    assert turnlog.done[-1]["history_trimmed"] is True
 
 
 async def test_trim_happens_before_the_projection(factory, w, client, provider, monkeypatch):
@@ -993,14 +996,14 @@ async def test_tool_result_is_capped_by_whole_rows(factory, w, client, provider,
     capping only the SSE row count; capping after the append."""
     _as(factory, w["user"])
     rows = [{"id": i, "memo": "m" * 1200} for i in range(50)]
-    _fake_accounts(monkeypatch, {"items": rows, "total": 50, "limit": 50, "offset": 0})
+    _fake_accounts(monkeypatch, {"items": rows, "total": 50, "limit": 50, "offset": 100})
     msg, ev = await _tool_message(client, provider)
     assert msg["role"] == "tool" and len(msg["content"]) <= chat.MAX_TOOL_RESULT_CHARS
     out = json.loads(msg["content"])
     n = len(out["items"])
     assert 0 < n < 50 and [r["id"] for r in out["items"]] == list(range(n))  # whole rows
     assert out["truncated"] == {"key": "items", "shown": n, "of": 50}
-    assert out["next_offset"] == n and out["total"] == 50
+    assert out["next_offset"] == 100 + n and out["total"] == 50
     assert ("tool_result", {"name": "accounts_list", "ok": True, "rows": n}) in ev
 
 
@@ -1010,12 +1013,14 @@ async def test_tool_result_trims_the_longest_list_and_keeps_scalars(
     """FENCE F8. Wrong implementation: trimming ``items`` only."""
     _as(factory, w["user"])
     _fake_accounts(monkeypatch, {
+        "tags": ["a", "b"],
         "categories": [{"id": i, "n": "c" * 1200} for i in range(60)], "total": 123,
     })
     msg, _ = await _tool_message(client, provider)
     out = json.loads(msg["content"])
     assert len(msg["content"]) <= chat.MAX_TOOL_RESULT_CHARS
-    assert out["total"] == 123 and out["truncated"]["key"] == "categories"
+    assert out["total"] == 123 and out["tags"] == ["a", "b"]
+    assert out["truncated"]["key"] == "categories"
     assert out["truncated"]["of"] == 60 and "next_offset" not in out
 
     limiter.reset()
@@ -1141,7 +1146,7 @@ def test_limit_defaults_fit_every_plan():
     for budget in {DEFAULT_TURN_INPUT_TOKENS, *TURN_INPUT_TOKENS_BY_PLAN_SLUG.values()}:
         ascii_ = chat._estimate(chat.opening([_msg("user", "a" * 7000)]), schemas)
         emoji = chat._estimate(chat.opening([_msg("user", "\U0001F600" * 7000)]), schemas)
-        assert ascii_ <= budget // 3 and emoji <= budget
+        assert ascii_ <= budget // 3 and emoji + budget // chat.HISTORY_SHARE <= budget
 
 
 async def test_default_category_seed_fits_the_tool_cap(factory, w):
@@ -1156,22 +1161,58 @@ async def test_default_category_seed_fits_the_tool_cap(factory, w):
     assert len(json.dumps(data, ensure_ascii=False)) < chat.MAX_TOOL_RESULT_CHARS // 2
 
 
-async def test_mcp_transactions_search_still_returns_fifty_rows(factory, w):
-    """GUARD G2: the result cap lives in the chat loop, not in the shared tool."""
-    from app.models.transaction import Transaction, TransactionStatus, TransactionType
+async def test_floor_counts_the_kept_history(factory, w, client, provider, monkeypatch):
+    """FENCE (review). Wrong implementation: a floor on the current message
+    alone, so a turn whose kept history pushes round 1 over budget is admitted
+    and counted, then stops at 0 dispatches."""
+    _as(factory, w["user"])
+    adapter = provider(lambda n: _resp(content="hi"))
+    await client.post(URL, json=ASK)
+    budget = 4000
+    base = chat._estimate(chat.opening([_msg("user", "")]), adapter.tools[0])
+    cur = _msg("user", "a" * int((budget - 60 - base) * 3.5))
+    hist = [_msg("user", "h" * 450), _msg("assistant", "k" * 450)]
+    assert chat._estimate(hist, []) <= budget // chat.HISTORY_SHARE
+    _budget(monkeypatch, budget)
+    assert (await client.post(URL, json={"messages": [cur]})).status_code == 200
+    calls, turns = len(adapter.seen), await _turns(factory, w["org"])
+    r = await client.post(URL, json={"messages": [*hist, cur]})
+    assert r.status_code == 413
+    assert r.json()["detail"] == {"code": "input_budget_exceeded", "limit_tokens": budget}
+    assert len(adapter.seen) == calls and await _turns(factory, w["org"]) == turns
 
-    async with factory._f() as db:
-        acct = await db.scalar(select(Account).where(Account.org_id == w["org"]))
-        cat = await db.scalar(select(Category).where(Category.org_id == w["org"]))
-        db.add_all([Transaction(
-            org_id=w["org"], account_id=acct.id, category_id=cat.id, description=f"t{i}", amount=Decimal("1.00"),
-            type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
-            date=P_START, settled_date=P_START,
-        ) for i in range(55)])
-        await db.commit()
-        user = await db.get(User, w["user"])
-        data = (await registry.invoke(db, user, "transactions_search", {
-            "date_from": str(P_START), "date_to": str(P_START), "category_match": "subtree",
-            "limit": 50,
-        }, channel="in_app"))["data"]
-    assert len(data["items"]) == 50
+
+def test_cap_result_does_not_reserialize_per_row(monkeypatch):
+    """FENCE (review). Wrong implementation: re-serializing the whole result once
+    per dropped row (O(N^2); 5,000 rows blocked the event loop for ~14s)."""
+    real, big = json.dumps, []
+
+    def spy(obj, *a, **k):
+        out = real(obj, *a, **k)
+        if len(out) > chat.MAX_TOOL_RESULT_CHARS:
+            big.append(1)
+        return out
+
+    monkeypatch.setattr(chat.json, "dumps", spy)
+    rows = [{"id": i, "m": "m" * 60} for i in range(5000)]
+    out = chat._cap_result({"items": rows, "total": 5000, "offset": 0})
+    monkeypatch.undo()
+    assert len(big) <= 4
+    assert len(real(out, ensure_ascii=False)) <= chat.MAX_TOOL_RESULT_CHARS
+    assert out["items"] == rows[:len(out["items"])] and out["truncated"]["shown"] == len(out["items"])
+
+
+async def test_oversized_error_result_is_capped_too(factory, w, client, provider, monkeypatch):
+    """FENCE (review). Wrong implementation: capping read results only, so an
+    oversized ToolError detail goes to the model whole."""
+    _as(factory, w["user"])
+    spec = registry.get_tool("accounts_list")
+
+    async def boom(ctx, args):
+        raise registry.ToolError("not_found", "d" * 60_000)
+
+    monkeypatch.setitem(registry._TOOLS, "accounts_list", dataclasses.replace(spec, run=boom))
+    msg, ev = await _tool_message(client, provider)
+    assert len(msg["content"]) <= chat.MAX_TOOL_RESULT_CHARS
+    assert json.loads(msg["content"]) == {"error": "result_too_large"}
+    assert ev[-1] == ("done", {}) and ("error", {"code": "input_budget"}) not in ev

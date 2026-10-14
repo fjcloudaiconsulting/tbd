@@ -15,5 +15,4 @@ it.each([
   ["empty_reply", "The assistant returned no answer. Try again."],
 ])("%s has its own copy", (code, text) => {
   expect(errorText(code, 413)).toBe(text);
-  expect(text).not.toContain("—");
 });

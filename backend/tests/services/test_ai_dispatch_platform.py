@@ -929,7 +929,7 @@ async def test_round_n_refusal_in_the_stream_loop_is_its_own_code_not_internal_e
 
     async def run():
         out = []
-        async for ev in agent_chat.stream_turn(lambda: db, 1, org, "n", MSGS, TOOLS):
+        async for ev in agent_chat.stream_turn(lambda: db, 1, org, "n", MSGS, TOOLS, 40_000, False):
             out.append(ev)
         return "".join(out)
 
@@ -1159,5 +1159,5 @@ async def test_r2_3_mid_chat_consent_refusal_reports_its_own_code(db, sf, fake, 
     monkeypatch.setattr(ai_consent_service, "has_current_consent", consent)
     monkeypatch.setattr(agent_chat, "release_lock", lambda *a, **k: asyncio.sleep(0))
     await agent_chat.preflight(db, SimpleNamespace(org_id=org), MSGS, TOOLS)
-    body = "".join([ev async for ev in agent_chat.stream_turn(lambda: db, 1, org, "n", MSGS, TOOLS)])
+    body = "".join([ev async for ev in agent_chat.stream_turn(lambda: db, 1, org, "n", MSGS, TOOLS, 40_000, False)])
     assert '"code":"ai_consent_required"' in body and "ai_native_not_available" not in body

@@ -69,6 +69,8 @@ MAX_MESSAGE_CHARS = 7_000
 # One tool message. Far above a real org's categories_list (67 seeded = ~18k):
 # a cut there is unrecoverable, those tools take no paging arguments.
 MAX_TOOL_RESULT_CHARS = 40_000
+# Prior history may use 1/HISTORY_SHARE of the turn budget: it is re-billed every round.
+HISTORY_SHARE = 10
 
 SYSTEM_PROMPT = (
     "You are the assistant inside a personal finance app. Answer questions about the user's "
@@ -139,7 +141,7 @@ def fit_history(messages: list[dict[str, str]], budget: int) -> list[dict[str, s
     the budget, then any leading non-user ones. The newest message is never a
     candidate."""
     *prior, current = messages
-    while prior and _estimate(prior, []) > budget // 10:
+    while prior and _estimate(prior, []) > budget // HISTORY_SHARE:
         prior.pop(0)
     while prior and prior[0]["role"] != "user":
         prior.pop(0)
