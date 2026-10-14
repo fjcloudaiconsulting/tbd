@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 
-import structlog
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -10,6 +9,7 @@ from app.database import async_session, get_db
 from app.models.user import User
 from app.security import decode_token, token_cutoff
 from app.services.user_activity_service import maybe_stamp_last_active
+from app import logs
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -73,12 +73,12 @@ async def get_current_user(
     # attribution: an interactive JWT session, as opposed to a PAT.
     request.state.auth_method = "jwt"
 
-    # L4.9: bind authenticated context onto structlog's request-scoped
+    # L4.9: bind authenticated context onto the request-scoped
     # contextvars (request_id was already bound by RequestContextMiddleware
-    # before deps resolved). Every structlog event emitted in this
+    # before deps resolved). Every log event emitted in this
     # request from here on — including the uvicorn access log line at
     # response time — carries user_id / org_id / role for triage.
-    structlog.contextvars.bind_contextvars(
+    logs.bind(
         user_id=user.id,
         org_id=user.org_id,
         role=user.role.value if hasattr(user.role, "value") else str(user.role),
@@ -102,7 +102,7 @@ async def get_current_user_optional(
     session).  Used by endpoints that serve both authenticated and anonymous callers
     with different resolution behaviour (e.g. ``/auth/status`` feature flags).
 
-    Does NOT bind structlog context — that is ``get_current_user``'s job.
+    Does NOT bind log context — that is ``get_current_user``'s job.
     """
     if credentials is None:
         return None

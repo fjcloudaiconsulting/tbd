@@ -3,7 +3,7 @@
 Spec: ``specs/2026-08-07-audit-api-token-attribution.md``.
 
 The column answers "everything token 42 did" in one hop, without joining
-against a structlog stream that DO App Platform does not retain. It records
+against a log stream that DO App Platform does not retain. It records
 the API token **presented as the credential** for the request — the ACTOR,
 never the subject.
 
@@ -53,7 +53,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-import structlog
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from slowapi import _rate_limit_exceeded_handler
@@ -66,8 +65,10 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app import logs
 from app.database import get_db
 from app.deps import get_session_factory
+from app.middleware.request_context import RequestContextMiddleware
 from app.models import Base
 from app.models.api_token import ApiToken
 from app.models.audit_event import AuditEvent
@@ -216,6 +217,8 @@ def _make_client(factory, *routers) -> TestClient:
     app = FastAPI()
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    # So the audit row's request_id is the one in the log context, as in production (F18).
+    app.add_middleware(RequestContextMiddleware)
 
     async def override_get_db() -> AsyncIterator[AsyncSession]:
         async with factory() as session:
@@ -252,7 +255,7 @@ def _assert_test_context_is_clean() -> None:
     If this ever fires, the fence below would be proving the builder reads a
     contextvar the TEST set — not one ``authenticate_pat`` set.
     """
-    assert structlog.contextvars.get_contextvars().get("api_token_id") is None, (
+    assert logs.CONTEXT.get({}).get("api_token_id") is None, (
         "the test process has api_token_id bound before the request — the "
         "assertions below would be vacuous (see trap 2 in the module docstring)"
     )
@@ -261,7 +264,7 @@ def _assert_test_context_is_clean() -> None:
 # ── F1 · population 1: PAT-authed HTTP, post-bind ────────────────────────────
 
 
-async def test_f1_pat_authed_action_records_the_acting_token(factory):
+async def test_f1_pat_authed_action_records_the_acting_token(factory, monkeypatch):
     """A write-scope PAT creating a tag stamps its id on the audit row.
 
     Mutants that must redden this:
@@ -273,8 +276,22 @@ async def test_f1_pat_authed_action_records_the_acting_token(factory):
 
     _assert_test_context_is_clean()
 
+    # The value the builder read from the log context, before the DB can coerce it (SQLite turns
+    # "4" into 4 on insert, which would hide a stringified id).
+    built: list[object] = []
+    real_build = audit_service._build_audit_event
+
+    def spy_build(**kwargs):
+        event = real_build(**kwargs)
+        built.append(event.api_token_id)
+        return event
+
+    monkeypatch.setattr(audit_service, "_build_audit_event", spy_build)
+
     with _make_client(factory, tags_router) as client:
-        r = client.post(TAGS, json={"name": "groceries"}, headers=_h(pat))
+        r = client.post(
+            TAGS, json={"name": "groceries"}, headers={**_h(pat), "X-Request-Id": "rid-f18-pat"}
+        )
     assert r.status_code == 201, r.text
 
     rows = await _audit_rows(factory, "tag.created")
@@ -290,6 +307,8 @@ async def test_f1_pat_authed_action_records_the_acting_token(factory):
         "a PAT-authed action was not attributed to the acting token "
         f"(got {rows[0].api_token_id!r}, want {token_id})"
     )
+    assert built == [token_id] and type(built[0]) is int  # F18: an int read back, never a string
+    assert rows[0].request_id == "rid-f18-pat"  # F18: and the request's id, from the same context
     # The token id is genuinely new information here — the tag.created detail
     # never carried it, so this green cannot come from a pre-existing write.
     assert "api_token_id" not in (rows[0].detail or {})
@@ -311,7 +330,9 @@ async def test_f2_jwt_session_leaves_the_column_null(factory):
     _assert_test_context_is_clean()
 
     with _make_client(factory, tags_router) as client:
-        r = client.post(TAGS, json={"name": "utilities"}, headers=_h(jwt))
+        r = client.post(
+            TAGS, json={"name": "utilities"}, headers={**_h(jwt), "X-Request-Id": "rid-f18-jwt"}
+        )
     assert r.status_code == 201, r.text
 
     rows = await _audit_rows(factory, "tag.created")
@@ -322,6 +343,7 @@ async def test_f2_jwt_session_leaves_the_column_null(factory):
         "(trap 3)"
     )
     assert rows[0].actor_user_id == uid, "wrong actor — is this the right row?"
+    assert rows[0].request_id == "rid-f18-jwt"
     assert rows[0].api_token_id is None, (
         "an interactive JWT session was attributed to an API token "
         f"({rows[0].api_token_id!r}) — the resolver is inventing a value"
@@ -473,14 +495,14 @@ def test_f5_builder_reads_bound_context():
         detail=None,
     )
 
-    structlog.contextvars.clear_contextvars()
+    logs.CONTEXT.set({})
     assert audit_service._build_audit_event(**kwargs).api_token_id is None
 
-    structlog.contextvars.bind_contextvars(api_token_id=4242)
+    logs.bind(api_token_id=4242)
     try:
         assert audit_service._build_audit_event(**kwargs).api_token_id == 4242
     finally:
-        structlog.contextvars.clear_contextvars()
+        logs.CONTEXT.set({})
 
     # And it goes back to NULL once the context is gone — the column is
     # request-scoped, not sticky process state.

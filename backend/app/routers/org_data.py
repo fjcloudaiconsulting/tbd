@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-import structlog
+import logging
 
 from app.auth.org_permissions import require_org_owner
 from app.auth.pat import require_interactive_session
@@ -22,15 +22,17 @@ from app.services import (
     org_reset_lock_service,
 )
 from app.services.notification_templates import org_data_reset as _tpl_org_data_reset
+from app import logs
+from app import tracing
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/orgs/data", tags=["org-data"])
 
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 @router.post(
@@ -100,15 +102,17 @@ async def reset_org_data(
         counts = await org_data_service.reset_org_data(db, org_id=org_id)
     except Exception as e:  # noqa: BLE001 — translate to generic 500 + log.
         await db.rollback()
-        await logger.aerror(
+        logger.error(
             "org.data.reset.failed",
-            actor_user_id=actor_user_id,
-            actor_email=actor_email,
-            actor_role=actor_role,
-            org_id=org_id,
-            org_name=org_name,
-            error=str(e),
-            error_type=type(e).__name__,
+            extra={
+                "actor_user_id": actor_user_id,
+                "actor_email": actor_email,
+                "actor_role": actor_role,
+                "org_id": org_id,
+                "org_name": org_name,
+                "error": tracing.error_summary(e),
+                "error_type": type(e).__name__,
+            },
         )
         # Release the lock before raising so a retry isn't blocked.
         await org_reset_lock_service.release_reset_lock(db, org_id=org_id, token=lease_token)
@@ -139,14 +143,16 @@ async def reset_org_data(
     # Success path: release the lock so subsequent resets can run.
     await org_reset_lock_service.release_reset_lock(db, org_id=org_id, token=lease_token)
 
-    await logger.ainfo(
+    logger.info(
         "org.data.reset",
-        actor_user_id=actor_user_id,
-        actor_email=actor_email,
-        actor_role=actor_role,
-        org_id=org_id,
-        org_name=org_name,
-        deleted_rows_by_table=counts,
+        extra={
+            "actor_user_id": actor_user_id,
+            "actor_email": actor_email,
+            "actor_role": actor_role,
+            "org_id": org_id,
+            "org_name": org_name,
+            "deleted_rows_by_table": counts,
+        },
     )
     audit_event_id = await audit_service.record_audit_event(
         session_factory,

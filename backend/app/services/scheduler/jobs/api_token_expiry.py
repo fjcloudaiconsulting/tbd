@@ -31,7 +31,7 @@ from __future__ import annotations
 import datetime
 from datetime import timezone
 
-import structlog
+import logging
 from sqlalchemy import select
 
 from app.database import async_session
@@ -42,8 +42,9 @@ from app.models.user import User
 from app.security import token_cutoff
 from app.services.email_service import send_notification_email
 from app.services.notification_service import dispatch_notification
+from app import tracing
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 FLAG_KEY = "api_token_expiry_reminders_enabled"
 EVENT_TYPE = "api_token.expiry_reminder"
@@ -226,10 +227,12 @@ async def _process_token(session_factory, token_id: int, now: datetime.datetime)
             await db.commit()
         except Exception as exc:  # noqa: BLE001 — isolate per-token failures
             await db.rollback()
-            await logger.aerror(
+            logger.error(
                 "scheduler.api_token_expiry.token_failed",
-                token_id=token_id,
-                error=str(exc),
+                extra={
+                    "token_id": token_id,
+                    "error": tracing.error_summary(exc),
+                },
             )
             return False
 
@@ -240,10 +243,12 @@ async def _process_token(session_factory, token_id: int, now: datetime.datetime)
             owner_email, title=title, body=body, link_url=link_url
         )
     except Exception as exc:  # noqa: BLE001 — email never fails the sweep
-        await logger.awarning(
+        logger.warning(
             "scheduler.api_token_expiry.email_failed",
-            token_id=token_id,
-            error=str(exc),
+            extra={
+                "token_id": token_id,
+                "error": tracing.error_summary(exc),
+            },
         )
     return True
 
@@ -270,5 +275,5 @@ async def run_api_token_expiry_reminders(
             fired += 1
 
     if fired:
-        await logger.ainfo("scheduler.api_token_expiry.complete", fired=fired)
+        logger.info("scheduler.api_token_expiry.complete", extra={"fired": fired})
     return fired

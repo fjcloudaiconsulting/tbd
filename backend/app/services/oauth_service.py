@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from typing import Any, Mapping, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-import structlog
+import logging
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -50,8 +50,9 @@ from app.services.api_token_service import (
     sha256_hex,
     token_hash_candidates,
 )
+from app import logs
 
-logger = structlog.stdlib.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 METER = "mcp.calls"
 # OAuth never grants ``agent:auto`` (A1.2): it exists on manual tokens only.
@@ -379,7 +380,7 @@ async def stamp_client_used(
             )
             await s.commit()
     except Exception:  # noqa: BLE001 -- best effort
-        logger.warning("oauth.client_stamp_failed", oauth_client_id=client_id)
+        logger.warning("oauth.client_stamp_failed", extra={"oauth_client_id": client_id})
 
 
 # ── token endpoint ─────────────────────────────────────────────────────────
@@ -438,12 +439,18 @@ async def _revoke(
         actor_email=snap.pop("owner_email"),
         target_org_id=org_id,
         target_org_name=None,
-        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        request_id=logs.CONTEXT.get({}).get("request_id"),
         ip_address=ip,
         outcome="success",
         detail={**snap, "reason": reason},
     )
-    await logger.awarning("agent_token.revoked", api_token_id=snap["api_token_id"], reason=reason)
+    logger.warning(
+        "agent_token.revoked",
+        extra={
+            "api_token_id": snap["api_token_id"],
+            "reason": reason,
+        },
+    )
 
 
 def _snap(row: ApiToken) -> dict[str, Any]:

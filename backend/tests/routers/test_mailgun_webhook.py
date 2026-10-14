@@ -27,6 +27,8 @@ import hmac
 import time
 from collections.abc import AsyncIterator
 
+import json
+
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
@@ -415,26 +417,11 @@ async def test_broadcast_id_string_is_parsed(client, session_factory):
 
 
 @pytest.mark.asyncio
-async def test_handler_never_logs_raw_email(client, session_factory, monkeypatch):
-    """Spot-check W10: the handler must not bind the raw recipient email into
-    any structlog call. Capture every event-dict passed to the logger and
-    assert the address never appears as a value."""
-    captured: list[dict] = []
-
-    real_info = webhooks_module.logger.ainfo
-    real_warn = webhooks_module.logger.awarning
-
-    async def _capture_info(event, **kw):
-        captured.append({"event": event, **kw})
-        return await real_info(event, **kw)
-
-    async def _capture_warn(event, **kw):
-        captured.append({"event": event, **kw})
-        return await real_warn(event, **kw)
-
-    monkeypatch.setattr(webhooks_module.logger, "ainfo", _capture_info)
-    monkeypatch.setattr(webhooks_module.logger, "awarning", _capture_warn)
-
+async def test_handler_never_logs_raw_email(client, session_factory, log_lines):
+    """Spot-check W10: the handler must not put the raw recipient email into
+    any log line. Read the rendered lines (the only place a leaked field
+    would show: the message is just the event name) and assert the address
+    never appears."""
     bid, rid = await _seed(session_factory, email="secret@person.io")
     # Exercise the happy path + a no-match path (both breadcrumb).
     await client.post(
@@ -457,10 +444,9 @@ async def test_handler_never_logs_raw_email(client, session_factory, monkeypatch
             )
         ),
     )
-    assert captured, "expected at least one breadcrumb"
-    for rec in captured:
-        for value in rec.values():
-            assert "secret@person.io" not in str(value)
+    lines = [ln for ln in log_lines() if ln["logger"] == webhooks_module.logger.name]
+    assert lines, "expected at least one breadcrumb"
+    assert "secret@person.io" not in json.dumps(log_lines())
 
 
 @pytest.mark.asyncio

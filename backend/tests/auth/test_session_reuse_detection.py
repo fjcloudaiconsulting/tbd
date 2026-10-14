@@ -62,7 +62,6 @@ from app.security import (
 )
 
 from tests.conftest import expire_grace, set_refresh_cookie, state_family, state_jtis
-from tests.routers.test_refresh_logging_and_precedence import _LogRecorder
 
 
 PASSWORD = "starting-password-1"
@@ -371,7 +370,7 @@ async def test_verify_never_revokes_on_both_miss(session_factory):
 
 
 async def test_non_both_miss_401_does_not_revoke(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, log_lines
 ):
     # Spy: reuse detection must NOT be invoked for a non-both-miss 401.
     calls = {"n": 0}
@@ -384,8 +383,6 @@ async def test_non_both_miss_401_does_not_revoke(
     monkeypatch.setattr(state_db, "session_detect_reuse_and_revoke", _spy)
 
     seeded = await _seed_user(session_factory)
-    recorder = _LogRecorder()
-    monkeypatch.setattr(auth_module, "_LOGGER", recorder)
     app = _make_app(session_factory)
     with TestClient(app) as client:
         token = _login(client)
@@ -405,7 +402,7 @@ async def test_non_both_miss_401_does_not_revoke(
     assert res.status_code == 401, res.text
     assert res.json()["detail"] == "Session has been invalidated"
     reasons = [
-        ev["reason"] for ev in recorder.events if ev.get("event") == "auth.refresh.rejected"
+        ev["reason"] for ev in log_lines() if ev.get("msg") == "auth.refresh.rejected"
     ]
     assert reasons == ["row_binding_mismatch"], reasons
     # Reuse detection was NEVER called.

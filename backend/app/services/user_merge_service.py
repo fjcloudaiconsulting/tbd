@@ -27,7 +27,7 @@ workflow we don't have yet. Out of scope here.
 """
 from __future__ import annotations
 
-import structlog
+import logging
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,7 +41,7 @@ from app.models.user import Role, User
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 async def merge_users(
@@ -200,11 +200,13 @@ async def merge_users(
     # silently nulling out an audit/tag attribution.
     await db.execute(delete(User).where(User.id == source_user_id))
 
-    await logger.ainfo(
+    logger.info(
         "admin.user.merge",
-        source_user_id=source_user_id,
-        target_user_id=target_user_id,
-        counts=counts,
+        extra={
+            "source_user_id": source_user_id,
+            "target_user_id": target_user_id,
+            "counts": counts,
+        },
     )
 
     return counts

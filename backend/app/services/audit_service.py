@@ -9,8 +9,8 @@ properties this gives us:
   produces an audit row, because the audit write doesn't ride on
   the rolled-back session.
 - A failed audit write (DB transient, FK violation, anything) never
-  surfaces back to the caller. We log the failure via structlog and
-  swallow — the structlog event the caller already emitted is the
+  surfaces back to the caller. We log the failure in the logs and
+  swallow — the log event the caller already emitted is the
   fallback channel.
 
 Caller responsibilities:
@@ -26,15 +26,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-import structlog
+import logging
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.audit_event import AuditEvent, AuditOutcome
 from app.services.list_query import resolve_order_by
+from app import logs
+from app import tracing
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # Closed whitelist of sortable columns for the admin audit list. Keys are
@@ -57,7 +59,7 @@ _SORTABLE = {
 def _acting_api_token_id() -> Optional[int]:
     """The API token presented as the credential for the current request.
 
-    Read from the request-scoped structlog contextvars, bound exactly once
+    Read from the request-scoped log context, bound exactly once
     in ``app.auth.pat.authenticate_pat``. This is an *ambient* read on
     purpose (TBD-188 §2): threading a kwarg through the 108 audit call
     sites has a silent failure mode — a forgotten site is permanently NULL
@@ -67,10 +69,10 @@ def _acting_api_token_id() -> Optional[int]:
 
     ``None`` for every non-PAT request (interactive JWT, pre-auth /
     anonymous, and scheduler tasks whose lifespan-spawned context snapshot
-    is empty). ``RequestContextMiddleware`` is pure-ASGI and calls
-    ``clear_contextvars()`` per request, so nothing bleeds across requests.
+    is empty). ``RequestContextMiddleware`` is pure-ASGI and starts each
+    request with a fresh ``CONTEXT``, so nothing bleeds across requests.
     """
-    return structlog.contextvars.get_contextvars().get("api_token_id")
+    return logs.CONTEXT.get({}).get("api_token_id")
 
 
 def _build_audit_event(
@@ -118,7 +120,7 @@ async def record_audit_event(
     """Persist an audit event in its OWN transaction.
 
     Returns the newly persisted audit row's id on success, or
-    ``None`` when the write failed (failure is logged via structlog
+    ``None`` when the write failed (failure is logged in the logs
     and swallowed — this function never raises). Callers that don't
     need the id can keep ignoring the return value.
 
@@ -165,14 +167,16 @@ async def record_audit_event(
         # business txn via add_audit_event_to_session, so any
         # audit.record.failed signal here is a genuine problem
         # worth alerting on.
-        await logger.aerror(
+        logger.error(
             "audit.record.failed",
-            event_type=event_type,
-            actor_user_id=actor_user_id,
-            target_org_id=target_org_id,
-            outcome=outcome,
-            error=str(exc),
-            error_type=type(exc).__name__,
+            extra={
+                "event_type": event_type,
+                "actor_user_id": actor_user_id,
+                "target_org_id": target_org_id,
+                "outcome": outcome,
+                "error": tracing.error_summary(exc),
+                "error_type": type(exc).__name__,
+            },
         )
         return None
 

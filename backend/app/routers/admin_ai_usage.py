@@ -18,7 +18,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +29,7 @@ from app.models.ai_usage_ledger import AIUsageLedger
 from app.models.user import User
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/admin/ai", tags=["admin-ai"])
 

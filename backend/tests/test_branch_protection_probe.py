@@ -23,7 +23,7 @@ pytest". That is an over-generalisation of the real finding and is not followed
 literally: `yaml` is imported, exactly as ten sibling fence modules already do
 (`test_release_workflow.py`, ...). The
 actual finding was that the module must not depend on `backend/tests/conftest.py`
--- whose autouse fixture imports `structlog` -- because a missing conftest
+-- whose autouse fixtures import the app -- because a missing conftest
 dependency turns every fence into a setup ERROR that reads like a RED while
 proving nothing. Nothing here uses a conftest fixture. Forbidding `yaml` would
 make F6/F7/F14/F15/F21 unwritable as *parsing* fences, and F6 explicitly forbids

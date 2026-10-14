@@ -30,7 +30,7 @@ from dataclasses import asdict
 from datetime import timedelta
 from typing import Any
 
-import structlog
+import logging
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,8 +45,9 @@ from app.models.agent_pending_action import (
     ActionChannel, ActionMode, ActionRisk, ActionStatus, AgentPendingAction as Action,
 )
 from app.services import audit_service
+from app import logs
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 PENDING_TTL = timedelta(minutes=10)
 MAX_ARGS_BYTES = 4 * 1024
@@ -334,7 +335,7 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
         audit = audit_service.add_audit_event_to_session(
             db, event_type="agent.action.executed", actor_user_id=user_id, actor_email=email,
             target_org_id=org_id, target_org_name=None,
-            request_id=structlog.contextvars.get_contextvars().get("request_id"),
+            request_id=logs.CONTEXT.get({}).get("request_id"),
             ip_address=None,
             outcome="success" if status == ActionStatus.DONE else "failure",
             detail={
@@ -382,7 +383,7 @@ async def confirm(ctx: ToolContext, action_id: str, *, scope: str | None) -> dic
             status, error_code, raised = ActionStatus.FAILED, exc.code, exc
             await db.rollback()
         except Exception:
-            await logger.aexception("agent.action.failed", tool=tool, org_id=org_id)
+            logger.exception("agent.action.failed", extra={"tool": tool, "org_id": org_id})
             await db.rollback()
             status, error_code = ActionStatus.FAILED, "internal"
             raised = ToolError("internal", "the action failed")

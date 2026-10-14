@@ -64,41 +64,6 @@ from tests.conftest import set_refresh_cookie
 PASSWORD = "starting-password-1"
 
 
-class _LogRecorder:
-    """Collects structlog events emitted on ``app.routers.auth._LOGGER``.
-
-    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
-    processor chain on the GLOBAL structlog config — which ``app.main``
-    already replaced by calling ``setup_logging()`` at import, and which
-    other modules in this suite reconfigure without restoring. So whether a
-    ``capture_logs`` fence sees anything depends entirely on what ran before
-    it: green alone, red in a full or parallel run. Binding onto the
-    module's own logger is immune to all of it. Same remedy as
-    ``tests/auth/test_anonymous_audit_bounds``.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[dict[str, Any]] = []
-
-    def _add(self, level: str, event: str, kw: dict[str, Any]) -> None:
-        self.events.append({"event": event, "log_level": level, **kw})
-
-    def debug(self, event: str, **kw: Any) -> None:
-        self._add("debug", event, kw)
-
-    def info(self, event: str, **kw: Any) -> None:
-        self._add("info", event, kw)
-
-    def warning(self, event: str, **kw: Any) -> None:
-        self._add("warning", event, kw)
-
-    def error(self, event: str, **kw: Any) -> None:
-        self._add("error", event, kw)
-
-    def bind(self, **_kw: Any) -> "_LogRecorder":
-        return self
-
-
 @pytest_asyncio.fixture
 async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     engine = create_async_engine(
@@ -519,7 +484,7 @@ class TestNoStoreWriteOnCatchup:
 class TestMissingSuccessorFailsClosed:
     @pytest.mark.asyncio
     async def test_missing_successor_jti_logs_and_401s(
-        self, session_factory, monkeypatch
+        self, session_factory, monkeypatch, log_lines
     ) -> None:
         """Grace row doesn't carry ``successor_jti`` (injected: the store
         always returns one). Helper must
@@ -543,21 +508,18 @@ class TestMissingSuccessorFailsClosed:
         monkeypatch.setattr(state_db, "session_grace", _grace_no_successor)
         token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
 
-        recorder = _LogRecorder()
-        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
-
         app = _make_app(session_factory)
         with TestClient(app) as cli:
             set_refresh_cookie(cli, token)
             res = cli.post(
                 "/api/v1/auth/refresh"
             )
-        captured = recorder.events
+        captured = log_lines()
         assert res.status_code == 401
         # Reason log emitted.
         rejection_logs = [
             ev for ev in captured
-            if ev.get("event") == "auth.refresh.rejected"
+            if ev.get("msg") == "auth.refresh.rejected"
             and ev.get("reason") == "catchup_successor_unavailable"
         ]
         assert len(rejection_logs) == 1, (
@@ -575,7 +537,7 @@ class TestMissingSuccessorFailsClosed:
 
     @pytest.mark.asyncio
     async def test_successor_not_in_family_set_logs_and_401s(
-        self, session_factory, monkeypatch
+        self, session_factory, monkeypatch, log_lines
     ) -> None:
         """P2 architect addition: PR #308 made family membership the
         authoritative revocation contract. Successor row alive
@@ -605,20 +567,17 @@ class TestMissingSuccessorFailsClosed:
         monkeypatch.setattr(state_db, "session_family_member", _member_probe)
         token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
 
-        recorder = _LogRecorder()
-        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
-
         app = _make_app(session_factory)
         with TestClient(app) as cli:
             set_refresh_cookie(cli, token)
             res = cli.post(
                 "/api/v1/auth/refresh"
             )
-        captured = recorder.events
+        captured = log_lines()
         assert res.status_code == 401
         rejection_logs = [
             ev for ev in captured
-            if ev.get("event") == "auth.refresh.rejected"
+            if ev.get("msg") == "auth.refresh.rejected"
             and ev.get("reason") == "catchup_successor_unavailable"
             and ev.get("successor_family_member_missing") is True
         ]
@@ -635,7 +594,7 @@ class TestMissingSuccessorFailsClosed:
 
     @pytest.mark.asyncio
     async def test_successor_primary_missing_logs_and_401s(
-        self, session_factory, monkeypatch
+        self, session_factory, monkeypatch, log_lines
     ) -> None:
         """Grace row carries ``successor_jti`` but the successor
         no longer validates (injected: the family expired between the
@@ -662,20 +621,17 @@ class TestMissingSuccessorFailsClosed:
         monkeypatch.setattr(state_db, "session_validate", _validate_dead_successor)
         token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
 
-        recorder = _LogRecorder()
-        monkeypatch.setattr(auth_module, "_LOGGER", recorder)
-
         app = _make_app(session_factory)
         with TestClient(app) as cli:
             set_refresh_cookie(cli, token)
             res = cli.post(
                 "/api/v1/auth/refresh"
             )
-        captured = recorder.events
+        captured = log_lines()
         assert res.status_code == 401
         rejection_logs = [
             ev for ev in captured
-            if ev.get("event") == "auth.refresh.rejected"
+            if ev.get("msg") == "auth.refresh.rejected"
             and ev.get("reason") == "catchup_successor_unavailable"
         ]
         assert len(rejection_logs) == 1, (

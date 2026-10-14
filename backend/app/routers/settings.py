@@ -1,7 +1,7 @@
 import datetime
 from decimal import Decimal
 
-import structlog
+import logging
 from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, delete, func, or_, select, union_all
@@ -53,8 +53,9 @@ from app.services.transaction_filters import (
     reportable_transaction_filter,
     signed_amount_expr,
 )
+from app import logs
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
@@ -110,7 +111,7 @@ _PLANNING_TOOLS: dict[str, Feature] = {
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 def _require_admin(user: User) -> None:
@@ -357,15 +358,17 @@ async def set_planning_tool(
 
     effective = await resolve_feature(feat, actor_org_id, db)
 
-    await logger.ainfo(
+    logger.info(
         "org.config.feature.set",
-        actor_user_id=actor_user_id,
-        actor_email=actor_email,
-        target_org_id=actor_org_id,
-        feature=feature,
-        old=old_value,
-        new=body.enabled,
-        effective=effective,
+        extra={
+            "actor_user_id": actor_user_id,
+            "actor_email": actor_email,
+            "target_org_id": actor_org_id,
+            "feature": feature,
+            "old": old_value,
+            "new": body.enabled,
+            "effective": effective,
+        },
     )
     await audit_service.record_audit_event(
         session_factory,
@@ -473,10 +476,10 @@ async def update_billing_cycle(
     open_period_start = current_period.start_date
 
     async def _audit(outcome: str, **extra) -> None:
-        """Structlog breadcrumb + audit row for this endpoint.
+        """Log breadcrumb + audit row for this endpoint.
 
         ``record_audit_event`` swallows every exception by design
-        (audit_service.py) and names "the structlog event the caller already
+        (audit_service.py) and names "the log event the caller already
         emitted" as its fallback record, so the log line has to be emitted
         first — otherwise a transient audit-session failure leaves no trace
         at all that an org's billing cycle day changed.
@@ -494,13 +497,15 @@ async def update_billing_cycle(
             "applies_from": "next_period",
             **extra,
         }
-        await logger.ainfo(
+        logger.info(
             "org.billing_cycle_day.updated",
-            actor_user_id=actor_user_id,
-            actor_email=actor_email,
-            target_org_id=actor_org_id,
-            outcome=outcome,
-            **payload,
+            extra={
+                "actor_user_id": actor_user_id,
+                "actor_email": actor_email,
+                "target_org_id": actor_org_id,
+                "outcome": outcome,
+                **payload,
+            },
         )
         await audit_service.record_audit_event(
             session_factory,
@@ -713,7 +718,7 @@ async def get_billing_period_roster(
 
     **Read-only, and that is load-bearing.** Five shipped tickets deferred
     residual corruption to a detector that did not exist, and today the
-    fleet's roster health is observable only by grepping structlog.
+    fleet's roster health is observable only by grepping the logs.
 
     Three rules this handler exists to obey:
 
@@ -1051,10 +1056,10 @@ async def close_period(
     closed_period_start = closing.start_date
 
     async def _audit(outcome: str, **extra) -> None:
-        """Structlog breadcrumb + audit row for this endpoint.
+        """Log breadcrumb + audit row for this endpoint.
 
         ``record_audit_event`` swallows every exception by design
-        (audit_service.py) and names "the structlog event the caller already
+        (audit_service.py) and names "the log event the caller already
         emitted" as its fallback record, so the log line goes first.
         """
         payload = {
@@ -1062,13 +1067,17 @@ async def close_period(
             "closed_period_start": closed_period_start.isoformat(),
             **extra,
         }
-        await logger.ainfo(
+        logger.info(
             "org.billing_period.closed",
-            actor_user_id=actor_user_id,
-            actor_email=actor_email,
-            target_org_id=actor_org_id,
-            outcome=outcome,
-            **payload,
+            extra={
+                "actor_user_id": actor_user_id,
+                "actor_email": actor_email,
+                "target_org_id": actor_org_id,
+                "outcome": outcome,
+                # "message" is an exception's text (audit row only): a log field never is, and
+                # `message` is a LogRecord attribute, so stdlib raises KeyError on it.
+                **{k: v for k, v in payload.items() if k != "message"},
+            },
         )
         await audit_service.record_audit_event(
             session_factory,
@@ -1198,13 +1207,15 @@ async def update_manual_balance_adjustment(
     org_name = org.name
     await db.commit()
 
-    await logger.ainfo(
+    logger.info(
         "org.config.allow_manual_balance_adjustment.set",
-        actor_user_id=actor_user_id,
-        actor_email=actor_email,
-        target_org_id=actor_org_id,
-        old=old_value,
-        new=new_value,
+        extra={
+            "actor_user_id": actor_user_id,
+            "actor_email": actor_email,
+            "target_org_id": actor_org_id,
+            "old": old_value,
+            "new": new_value,
+        },
     )
     await audit_service.record_audit_event(
         session_factory,

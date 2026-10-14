@@ -15,7 +15,7 @@ Logic lives in ``app.services.oauth_service``.
 """
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -45,7 +45,7 @@ from app.services.api_token_service import AGENT_SCOPE_RANK
 from app.services.notification_templates import agent_token_created
 from app.services.oauth_service import ConsentError, OAuthError
 
-logger = structlog.stdlib.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class _OffSwitchRoute(APIRoute):
@@ -253,7 +253,13 @@ async def authorize_decision(
         title=title, body=ntf_body, link_url=link_url,
     )
     await oauth_service.stamp_client_used(session_factory, cid)
-    await logger.ainfo("agent_token.created", api_token_id=row.id, oauth_client_id=cid)
+    logger.info(
+        "agent_token.created",
+        extra={
+            "api_token_id": row.id,
+            "oauth_client_id": cid,
+        },
+    )
     return {"redirect_to": oauth_service.build_redirect(redirect, {"code": code}, state)}
 
 

@@ -1,13 +1,13 @@
 from urllib.parse import urlparse
 
-import structlog
+import logging
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 def _build_connect_args() -> dict:
@@ -41,7 +41,7 @@ def _safe_host(database_url: str) -> str:
     """Extract just the host portion of the DB URL for diagnostic logging.
 
     SQLAlchemy URLs can include credentials inline. We only ever log the
-    hostname so credentials never reach structlog output. Returns
+    hostname so credentials never reach log output. Returns
     "unknown" if parsing fails for any reason.
     """
     try:
@@ -82,9 +82,11 @@ engine = create_async_engine(
 # at env-var resolution. Host only; credentials are never logged.
 logger.debug(
     "db.engine.configured",
-    pool_size=settings.db_pool_size,
-    max_overflow=settings.db_max_overflow,
-    host=_safe_host(settings.database_url),
+    extra={
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "host": _safe_host(settings.database_url),
+    },
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

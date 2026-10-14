@@ -8,7 +8,7 @@ Auth via the platform ``subscriptions.view`` permission (superadmin
 short-circuits today; fine-grained roles can land later via L4.8
 without touching this file).
 
-Audit policy: every list hit emits a structlog
+Audit policy: every list hit emits a log
 ``admin.subscriptions.viewed`` event and every detail hit emits
 ``admin.subscriptions.detail.viewed``; the durable
 ``audit_events`` row is **rate-throttled** to at most once per admin
@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -44,9 +44,11 @@ from app.schemas.admin_subscriptions import (
 )
 from app.services import admin_subscription_service, audit_service
 from app.services.exceptions import NotFoundError, ValidationError
+from app import logs
+from app import tracing
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/admin/subscriptions", tags=["admin-subscriptions"]
@@ -66,7 +68,7 @@ SubscriptionStatusFilter = Literal[
 
 def _request_id() -> Optional[str]:
     """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 async def _should_persist_audit(
@@ -78,7 +80,7 @@ async def _should_persist_audit(
 
     - No actor → True.
     - Store error → True (don't lose audit evidence because of a
-      database blip). The structlog event still emits unconditionally.
+      database blip). The log event still emits unconditionally.
     - First hit in the window (the ``used_tokens`` claim lands) → True.
     - Already claimed in the window → False.
     """
@@ -88,10 +90,12 @@ async def _should_persist_audit(
     try:
         return await state_db.claim_token("admin_sub_audit", key, AUDIT_THROTTLE_SECONDS)
     except Exception as exc:  # noqa: BLE001 — defensive, never block on the throttle.
-        await logger.awarning(
+        logger.warning(
             "admin.subscriptions.audit_throttle.error",
-            error=str(exc),
-            error_type=type(exc).__name__,
+            extra={
+                "error": tracing.error_summary(exc),
+                "error_type": type(exc).__name__,
+            },
         )
         return True
 
@@ -106,15 +110,17 @@ async def _emit_view_audit(
     target_org_id: Optional[int] = None,
     target_org_name: Optional[str] = None,
 ) -> None:
-    """Emit both the structlog event (always) and the durable audit row
+    """Emit both the log event (always) and the durable audit row
     (rate-throttled). Never raises — failures are logged and swallowed
     so a throttle or audit-write blip never reaches the caller."""
-    await logger.ainfo(
+    logger.info(
         event_type,
-        actor_user_id=actor.id,
-        actor_email=actor.email,
-        target_org_id=target_org_id,
-        target_org_name=target_org_name,
+        extra={
+            "actor_user_id": actor.id,
+            "actor_email": actor.email,
+            "target_org_id": target_org_id,
+            "target_org_name": target_org_name,
+        },
     )
     try:
         should_persist = await _should_persist_audit(

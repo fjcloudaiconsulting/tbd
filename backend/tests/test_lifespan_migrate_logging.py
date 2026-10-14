@@ -17,33 +17,13 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-import structlog
-from structlog.testing import LogCapture
-
 from app import main as app_main
 
 
 @pytest.fixture
-def cap_logs():
-    """Reroute structlog through LogCapture; restore on teardown."""
-    capture = LogCapture()
-
-    structlog.configure(
-        processors=[capture],
-        wrapper_class=structlog.BoundLogger,
-        context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=False,
-    )
-
-    # Re-bind the module-level logger so it picks up the new config.
-    original_logger = app_main.logger
-    app_main.logger = structlog.stdlib.get_logger()
-
-    yield capture
-
-    app_main.logger = original_logger
-    structlog.reset_defaults()
+def cap_logs(log_lines):
+    """The rendered log lines (a callable returning them), through the real filter and formatter."""
+    return log_lines
 
 
 @pytest.fixture
@@ -79,11 +59,11 @@ async def test_run_migrations_emits_target_event_with_revisions(
 
     await app_main._run_migrations()
 
-    events = [e["event"] for e in cap_logs.entries]
+    events = [e["msg"] for e in cap_logs()]
     assert "migrate.dev.target" in events
 
     target_event = next(
-        e for e in cap_logs.entries if e["event"] == "migrate.dev.target"
+        e for e in cap_logs() if e["msg"] == "migrate.dev.target"
     )
     assert target_event["current_revision"] == "current_xyz"
     assert target_event["head_revision"] == "head_abc"
@@ -109,9 +89,9 @@ async def test_run_migrations_emits_no_op_when_current_equals_head(
 
     await app_main._run_migrations()
 
-    events = [e["event"] for e in cap_logs.entries]
+    events = [e["msg"] for e in cap_logs()]
     assert events == ["migrate.dev.no_op"]
-    entry = cap_logs.entries[0]
+    entry = cap_logs()[0]
     assert entry["current_revision"] == "head_abc"
     assert entry["head_revision"] == "head_abc"
     assert entry["branch"] == "main"
@@ -147,7 +127,7 @@ async def test_run_migrations_runs_alembic_when_head_unknown(
 
     # Even with both unknown we still emit a target event (no_op only
     # fires when both equal AND head is a real revision).
-    events = [e["event"] for e in cap_logs.entries]
+    events = [e["msg"] for e in cap_logs()]
     assert "migrate.dev.target" in events
     assert calls == [("alembic", "upgrade", "head")]
 
@@ -211,7 +191,7 @@ async def test_run_migrations_refuses_when_branch_is_not_main(
     with pytest.raises(RuntimeError, match="Refusing to run dev lifespan migrations"):
         await app_main._run_migrations()
 
-    refused = [e for e in cap_logs.entries if e["event"] == "migrate.dev.refused"]
+    refused = [e for e in cap_logs() if e["msg"] == "migrate.dev.refused"]
     assert len(refused) == 1
     assert refused[0]["branch"] == "feat/some-thing"
     assert refused[0]["reason"] == "branch_not_main"
@@ -248,7 +228,7 @@ async def test_run_migrations_proceeds_when_branch_is_main(
     await app_main._run_migrations()
 
     assert calls == [("alembic", "upgrade", "head")]
-    events = [e["event"] for e in cap_logs.entries]
+    events = [e["msg"] for e in cap_logs()]
     assert "migrate.dev.refused" not in events
 
 
@@ -282,9 +262,9 @@ async def test_run_migrations_proceeds_off_main_when_override_set(
     await app_main._run_migrations()
 
     assert calls == [("alembic", "upgrade", "head")]
-    events = [e["event"] for e in cap_logs.entries]
+    events = [e["msg"] for e in cap_logs()]
     assert "migrate.dev.refused" not in events
-    target = next(e for e in cap_logs.entries if e["event"] == "migrate.dev.target")
+    target = next(e for e in cap_logs() if e["msg"] == "migrate.dev.target")
     assert target["branch"] == "feat/something"
 
 
@@ -310,7 +290,7 @@ async def test_run_migrations_refuses_on_undetectable_branch(
     with pytest.raises(RuntimeError, match="detached/unknown"):
         await app_main._run_migrations()
 
-    refused = [e for e in cap_logs.entries if e["event"] == "migrate.dev.refused"]
+    refused = [e for e in cap_logs() if e["msg"] == "migrate.dev.refused"]
     assert len(refused) == 1
     assert refused[0]["branch"] == "unknown"
     assert refused[0]["reason"] == "branch_undetectable"

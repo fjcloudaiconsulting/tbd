@@ -3,7 +3,7 @@
 The point isn't to re-test admin behaviour (already covered in
 ``test_admin_orgs.py`` / ``test_org_data.py``) — it's to prove that
 each call site we wired writes an ``audit_events`` row in addition
-to its existing structlog event. Two important paths:
+to its existing log event. Two important paths:
 
 - A success: subscription override writes a `success` audit row.
 - A FAILURE: when the org-cascade delete blows up mid-transaction,
@@ -603,7 +603,7 @@ async def test_delete_success_persists_audit_with_snapshot(session_factory):
     durably persisted to ``audit_events`` (it used to be lost because
     the FK insert ran AFTER the org row was deleted, the FK violation
     was swallowed by record_audit_event, and the success only ever
-    showed up in structlog).
+    showed up in the logs).
 
     Pin:
     - row exists with outcome=SUCCESS and event_type=admin.org.delete
@@ -740,7 +740,7 @@ async def test_delete_failed_writes_audit(session_factory):
     assert row.detail.get("error_type") == "RuntimeError"
     # PR-C also embeds the org snapshot on the failure path so
     # ops can answer "which org failed to delete and what state was
-    # it in" without reaching back to a structlog grep.
+    # it in" without reaching back to a log grep.
     snapshot = row.detail.get("snapshot")
     assert snapshot is not None
     assert snapshot["org_id"] == seed["target_id"]

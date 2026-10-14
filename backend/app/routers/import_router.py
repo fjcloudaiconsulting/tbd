@@ -8,13 +8,12 @@ spec at ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-
 
 from typing import Callable
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_current_user, get_db
 from app.models.user import User
-from app.rate_limit import get_client_ip
 from app.schemas.import_reconciliation import (
     ImportBatchDetail,
     ReconcileBatchRequest,
@@ -31,7 +30,7 @@ from app.services.import_abn_tab import parse_tab
 from app.services.import_ofx_service import parse_ofx
 from app.services.import_parser import ParsedRow, ParseError, parse_csv
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 
@@ -277,14 +276,15 @@ async def reconcile_import_batch(
         batch_id=import_id,
         request=body,
     )
-    await logger.ainfo(
+    logger.info(
         "import.reconcile.applied",
-        org_id=current_user.org_id,
-        batch_id=import_id,
-        actor_user_id=current_user.id,
-        ip=get_client_ip(request),
-        transitioned=len(response.transitioned),
-        remaining_pending=response.remaining_pending,
-        batch_status=response.batch_status,
+        extra={
+            "org_id": current_user.org_id,
+            "batch_id": import_id,
+            "actor_user_id": current_user.id,
+            "transitioned": len(response.transitioned),
+            "remaining_pending": response.remaining_pending,
+            "batch_status": response.batch_status,
+        },
     )
     return response

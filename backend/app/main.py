@@ -3,7 +3,7 @@ import os
 import subprocess
 from contextlib import asynccontextmanager
 
-import structlog
+import logging
 from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -20,7 +20,7 @@ from sqlalchemy import text
 
 from app.config import settings as app_settings
 from app.database import engine
-from app.logging import setup_logging
+from app import logs
 from app.rate_limit import limiter
 from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_broadcasts, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, agent, agent_tokens, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, api_tokens, auth, budgets, categories, cc_cycle_payments, dashboard, feedback, forecast, forecast_plans, import_router, notifications, oauth, onboarding, org_data, org_members, orgs, plans, public_stats, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users, webhooks
 from app.routers import scheduler as scheduler_router
@@ -30,9 +30,9 @@ from app.services.scheduler.loop import scheduler_loop
 from app.services.usage_service import PlanLimitReached
 
 # Setup JSON logging early so uvicorn's loggers are captured
-setup_logging()
+logs.configure()
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # K8S-2 (L0.6): subscription backfill was previously run on every lifespan
@@ -158,11 +158,11 @@ async def _run_migrations() -> None:
     if branch != "main" and not _migrate_off_main_override_set():
         logger.error(
             "migrate.dev.refused",
-            branch=branch if branch is not None else "unknown",
-            reason=(
-                "branch_not_main" if branch is not None else "branch_undetectable"
-            ),
-            override_env_var="PFV_MIGRATE_OK_OFF_MAIN",
+            extra={
+                "branch": branch if branch is not None else "unknown",
+                "reason": "branch_not_main" if branch is not None else "branch_undetectable",
+                "override_env_var": "PFV_MIGRATE_OK_OFF_MAIN",
+            },
         )
         raise RuntimeError(
             "Refusing to run dev lifespan migrations from non-main branch "
@@ -178,17 +178,21 @@ async def _run_migrations() -> None:
     if current == head and head != "unknown":
         logger.info(
             "migrate.dev.no_op",
-            current_revision=current,
-            head_revision=head,
-            branch=branch_for_log,
+            extra={
+                "current_revision": current,
+                "head_revision": head,
+                "branch": branch_for_log,
+            },
         )
         return
 
     logger.info(
         "migrate.dev.target",
-        current_revision=current,
-        head_revision=head,
-        branch=branch_for_log,
+        extra={
+            "current_revision": current,
+            "head_revision": head,
+            "branch": branch_for_log,
+        },
     )
 
     result = subprocess.run(
@@ -244,10 +248,10 @@ def verify_ai_credential_kek_separation(settings_obj=app_settings) -> None:
     if collision:
         logger.error(
             "config.ai_credential_key_reuses_mfa_key",
-            message=(
-                "AI_CREDENTIAL_ENCRYPTION_KEY must not equal MFA_ENCRYPTION_KEY. "
-                "Generate a separate Fernet key for AI credentials."
-            ),
+            extra={
+                "reason": "AI_CREDENTIAL_ENCRYPTION_KEY must not equal MFA_ENCRYPTION_KEY. "
+                "Generate a separate Fernet key for AI credentials.",
+            },
         )
         raise AiCredentialKeyReusesMfaKey(
             "AI_CREDENTIAL_ENCRYPTION_KEY reuses MFA_ENCRYPTION_KEY value"
@@ -256,6 +260,7 @@ def verify_ai_credential_kek_separation(settings_obj=app_settings) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    asyncio.get_running_loop().set_exception_handler(logs.asyncio_exception_handler)
     # PR1 of the AI tier train — refuse to boot if the AI KEK collides
     # with the MFA KEK (covers _PREV rotation slots too). See
     # ``verify_ai_credential_kek_separation`` docstring.
@@ -272,7 +277,13 @@ async def lifespan(app: FastAPI):
     # via a per-row HAS_SUBSCRIPTION existence check (plus the UNIQUE
     # constraint on subscriptions.org_id). Multi-replica safe. For manual
     # re-runs, see `backend/scripts/backfill_subscriptions.py`.
-    await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
+    logger.info(
+        "starting",
+        extra={
+            "app": app_settings.app_name,
+            "env": app_settings.app_env,
+        },
+    )
     # OFX statement imports parse in hard-killable child processes bounded by
     # a per-org + global concurrency cap. Create the process-local executor
     # here so the caps bind to this event loop; the child processes it owns
@@ -303,7 +314,7 @@ async def lifespan(app: FastAPI):
             app.state.scheduler_task.cancel()
     shutdown_ofx_executor()
     await engine.dispose()
-    await logger.ainfo("shutdown complete")
+    logger.info("shutdown complete")
 
 
 _is_dev = app_settings.app_env == "development"
@@ -389,7 +400,7 @@ app.build_middleware_stack = _build_middleware_stack_with_security_headers  # ty
 app.add_middleware(TracingMiddleware)
 
 # L4.9: bind a per-request correlation id (and clear any leftover
-# structlog contextvars from a previous request) at the very edge of
+# log context from a previous request) at the very edge of
 # the stack. Added LAST so it sits OUTERMOST in the ASGI chain
 # (Starlette adds middleware in reverse order) — guarantees the
 # context is set before any other middleware logs a thing.
@@ -705,8 +716,10 @@ async def ready():
         # discriminating detail an operator gets. Carry the class explicitly.
         logger.error(
             "readiness check failed",
-            error=str(e) or type(e).__name__,
-            error_class=type(e).__name__,
+            extra={
+                "error": tracing.error_summary(e),
+                "error_class": type(e).__name__,
+            },
         )
         return JSONResponse(
             status_code=503,
@@ -730,7 +743,7 @@ async def health_dependencies():
         return {"status": "ok", "checks": checks}
     # Structured, and deliberately NOT silenced in logging.py: the access log
     # line carries only the 503, while this names the state.
-    logger.error("readiness.dependencies.unhealthy", database=database)
+    logger.error("readiness.dependencies.unhealthy", extra={"database": database})
     return JSONResponse(
         status_code=503,
         content={"status": "unhealthy", "checks": checks},

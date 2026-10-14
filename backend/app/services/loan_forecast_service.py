@@ -47,10 +47,10 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-import structlog
+import logging
 from dateutil.relativedelta import relativedelta
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def due_loan_payment_dates(
@@ -108,10 +108,12 @@ def synthesize_account_loan_payment(
         # attribute a credit to one of several in-window dates).
         logger.warning(
             "loan_forecast.multiple_due_dates_in_window",
-            account_id=account_id,
-            count=len(dates),
-            p_start=p_start.isoformat(),
-            p_end=p_end.isoformat(),
+            extra={
+                "account_id": account_id,
+                "count": len(dates),
+                "p_start": p_start.isoformat(),
+                "p_end": p_end.isoformat(),
+            },
         )
     pay_date = dates[0]
     outstanding = max(Decimal("0"), -Decimal(str(balance)))

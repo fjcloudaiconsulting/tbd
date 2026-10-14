@@ -156,24 +156,6 @@ def _install_exploding_transport(monkeypatch, exc: BaseException) -> list[httpx.
     return seen
 
 
-def _record_logs(monkeypatch) -> list[tuple[str, dict]]:
-    """Swap ``captcha.logger`` for a recorder returning ``(event, kwargs)``."""
-    captured: list[tuple[str, dict]] = []
-
-    class _Recorder:
-        async def ainfo(self, event: str, **kw) -> None:
-            captured.append((event, kw))
-
-        async def awarning(self, event: str, **kw) -> None:
-            captured.append((event, kw))
-
-        async def aerror(self, event: str, **kw) -> None:
-            captured.append((event, kw))
-
-    monkeypatch.setattr(captcha, "logger", _Recorder())
-    return captured
-
-
 # ─── the setting ───
 #
 # There is deliberately NO test here reading
@@ -320,13 +302,12 @@ def test_shipped_defaults_satisfy_the_validator() -> None:
 
 
 @pytest.mark.asyncio
-async def test_verify_outlasting_the_budget_fails_closed(monkeypatch) -> None:
+async def test_verify_outlasting_the_budget_fails_closed(monkeypatch, log_lines) -> None:
     """A verify that never finishes must fail closed, not hold the worker."""
     monkeypatch.setattr(
         app_settings, "captcha_verify_total_timeout_s", _TIMEOUT_BUDGET_S
     )
     seen = _install_slow_transport(monkeypatch, delay_s=_HANG_S)
-    captured = _record_logs(monkeypatch)
 
     result = await verify_captcha("token", "203.0.113.7")
 
@@ -339,6 +320,7 @@ async def test_verify_outlasting_the_budget_fails_closed(monkeypatch) -> None:
     # opposed to an injected ``TimeoutError``. So this is the only place
     # that can say the aggregate arm is reached by the aggregate bound
     # itself rather than merely by an exception type chosen in a test.
+    captured = [(ln["msg"], ln) for ln in log_lines()]
     events = [kw for e, kw in captured if e == "captcha.verify.timeout"]
     assert len(events) == 1, captured
     assert events[0]["bound"] == "aggregate"
@@ -418,7 +400,7 @@ async def test_bare_builtin_timeouterror_is_caught(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_bare_builtin_timeouterror_keeps_the_existing_event(
-    monkeypatch,
+    monkeypatch, log_lines,
 ) -> None:
     """Outcome AND operator signal unchanged: same ``captcha.verify.timeout``
     event, not a new one, so existing log consumers keep working.
@@ -437,11 +419,11 @@ async def test_bare_builtin_timeouterror_keeps_the_existing_event(
         app_settings, "captcha_verify_total_timeout_s", _CONTROL_BUDGET_S
     )
     _install_exploding_transport(monkeypatch, TimeoutError())
-    captured = _record_logs(monkeypatch)
 
     result = await verify_captcha("token", None)
 
     assert result.reason == REASON_TIMEOUT
+    captured = [(ln["msg"], ln) for ln in log_lines()]
     events = [(e, kw) for e, kw in captured if e == "captcha.verify.timeout"]
     assert len(events) == 1, captured
     _event, kw = events[0]
@@ -459,7 +441,7 @@ async def test_bare_builtin_timeouterror_keeps_the_existing_event(
 
 @pytest.mark.asyncio
 async def test_per_phase_httpx_timeout_still_lands_on_the_same_reason(
-    monkeypatch,
+    monkeypatch, log_lines,
 ) -> None:
     """Control: widening the clause must not change the httpx per-phase
     path. ``httpx.ReadTimeout`` derives from ``httpx.TimeoutException``, not
@@ -476,11 +458,11 @@ async def test_per_phase_httpx_timeout_still_lands_on_the_same_reason(
         app_settings, "captcha_verify_total_timeout_s", _CONTROL_BUDGET_S
     )
     _install_exploding_transport(monkeypatch, httpx.ReadTimeout("per-phase read"))
-    captured = _record_logs(monkeypatch)
 
     result = await verify_captcha("token", None)
 
     assert result == CaptchaVerifyResult(ok=False, reason=REASON_TIMEOUT)
+    captured = [(ln["msg"], ln) for ln in log_lines()]
     events = [kw for e, kw in captured if e == "captcha.verify.timeout"]
     assert len(events) == 1, captured
     assert events[0]["bound"] == "per_phase"
@@ -488,7 +470,7 @@ async def test_per_phase_httpx_timeout_still_lands_on_the_same_reason(
 
 @pytest.mark.asyncio
 async def test_non_timeout_transport_error_is_not_renamed_a_timeout(
-    monkeypatch,
+    monkeypatch, log_lines,
 ) -> None:
     """Control for the whole handler block: an implementation that called
     everything a timeout would pass every fence above. A connect failure is
@@ -498,10 +480,10 @@ async def test_non_timeout_transport_error_is_not_renamed_a_timeout(
         app_settings, "captcha_verify_total_timeout_s", _CONTROL_BUDGET_S
     )
     _install_exploding_transport(monkeypatch, httpx.ConnectError("nope"))
-    captured = _record_logs(monkeypatch)
 
     result = await verify_captcha("token", None)
 
     assert result == CaptchaVerifyResult(ok=False, reason=REASON_NETWORK_ERROR)
+    captured = [(ln["msg"], ln) for ln in log_lines()]
     assert [e for e, _kw in captured if e == "captcha.verify.timeout"] == []
     assert [e for e, _kw in captured if e == "captcha.verify.network_error"] != []

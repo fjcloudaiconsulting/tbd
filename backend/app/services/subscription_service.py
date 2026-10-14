@@ -3,7 +3,7 @@
 import asyncio
 import datetime
 
-import structlog
+import logging
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +19,7 @@ from app.models.user import Organization, User
 from app.services.exceptions import NotFoundError, ValidationError
 from app.services.email_service import send_trial_expiring_email
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 async def get_default_plan(db: AsyncSession) -> Plan:
@@ -92,7 +92,13 @@ async def _send_trial_email_safe(email: str, days_left: int, org_name: str) -> N
     try:
         await send_trial_expiring_email(email, days_left, org_name)
     except Exception:
-        await logger.awarning("trial_reminder_email_failed", email=email, days_left=days_left)
+        logger.warning(
+            "trial_reminder_email_failed",
+            extra={
+                "email": email,
+                "days_left": days_left,
+            },
+        )
 
 
 async def check_trial_expiry(db: AsyncSession, org_id: int) -> Subscription | None:

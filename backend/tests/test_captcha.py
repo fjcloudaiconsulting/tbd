@@ -14,6 +14,8 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+import json
+
 import pytest
 
 from app import captcha
@@ -286,10 +288,14 @@ async def test_invalid_json_fails_closed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_token_never_appears_in_structlog_events(monkeypatch, caplog):
+async def test_token_never_appears_in_log_lines(monkeypatch, log_lines):
     """The captcha response token is the only sensitive value in the
     happy-path payload (it's a server-validated bearer good for 300s).
     Any code path must NOT echo it into our structured logs.
+
+    Read as the rendered JSON line (message, extras and context), the only
+    channel where a leaked field would show: the record's message is just
+    the event name.
     """
     _patch_httpx(
         monkeypatch,
@@ -302,7 +308,7 @@ async def test_token_never_appears_in_structlog_events(monkeypatch, caplog):
     secret_token = "DO-NOT-LEAK-THIS-VALUE-123456"
     await verify_captcha(secret_token, "203.0.113.7")
 
-    for record in caplog.records:
-        assert secret_token not in record.getMessage()
-        for arg in getattr(record, "args", []) or []:
-            assert secret_token not in str(arg)
+    lines = log_lines()
+    # Positive control: the rejection was logged, with its fields rendered.
+    assert [ln for ln in lines if "timeout-or-duplicate" in json.dumps(ln)], lines
+    assert secret_token not in json.dumps(lines)

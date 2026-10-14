@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import structlog
+import logging
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -33,8 +33,9 @@ from app.models.user import User
 from app.rate_limit import get_client_ip
 from app.services import audit_service
 from app.services.api_token_service import lookup_token, maybe_stamp_last_used
+from app import logs
 
-logger = structlog.stdlib.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # Safe (read) vs unsafe (write) HTTP methods for the coarse v1 scope model
 # (spec §5). Anything not in either set is unmapped and denied fail-closed.
@@ -60,7 +61,7 @@ async def _record_auth_rejected(
     token (revoked / expired), spec §11 / ARC-R12.
 
     Only ever called with a resolved ``ApiToken`` row — unknown ``pat_``
-    garbage stays structlog-only to avoid an audit-flood DoS. Best-effort:
+    garbage stays log-only to avoid an audit-flood DoS. Best-effort:
     ``record_audit_event`` already opens its own session and swallows write
     failures, so an audit-write problem can never break the auth rejection.
     Detail carries the token id / prefix / reason — NEVER a secret.
@@ -73,7 +74,7 @@ async def _record_auth_rejected(
             actor_email=row.created_by_email,
             target_org_id=None,
             target_org_name=None,
-            request_id=structlog.contextvars.get_contextvars().get("request_id"),
+            request_id=logs.CONTEXT.get({}).get("request_id"),
             ip_address=get_client_ip(request),
             outcome="failure",
             detail={
@@ -83,7 +84,7 @@ async def _record_auth_rejected(
             },
         )
     except Exception:  # noqa: BLE001 — an audit failure must never break auth
-        logger.warning("pat.auth_rejected_audit_failed", api_token_id=row.id)
+        logger.warning("pat.auth_rejected_audit_failed", extra={"api_token_id": row.id})
 
 
 def _aware(dt: datetime) -> datetime:
@@ -112,9 +113,9 @@ async def authenticate_pat(
     # 1-2. Look up by full HMAC digest (primary + verify-only PREV key).
     row = await lookup_token(db, raw_token)
     if row is None:
-        # Unknown token → structlog ONLY, never an audit row, to avoid an
+        # Unknown token → log ONLY, never an audit row, to avoid an
         # audit-flood DoS from `pat_<garbage>` spraying (spec §11 / ARC-R12).
-        logger.info("pat.auth_rejected", reason="unknown")
+        logger.info("pat.auth_rejected", extra={"reason": "unknown"})
         raise _generic_401()
 
     # ⚠ THE POSITION OF THIS BIND IS THE FIX (TBD-188 §3), and nothing in
@@ -136,24 +137,24 @@ async def authenticate_pat(
     # ``api_token.auth_rejected`` row (which must carry this id) or raises
     # out of ``get_current_user`` without auditing anything. No path binds a
     # token id and then audits a non-token action.
-    structlog.contextvars.bind_contextvars(api_token_id=row.id)
+    logs.bind(api_token_id=row.id)
 
     # 3. Revoked / expired (naive-UTC normalized). These are KNOWN-but-dead
     # tokens (a resolved row), so — unlike unknown garbage — they also get an
     # ``api_token.auth_rejected`` audit row (spec §11): a leaked token still
     # being used after revoke/expiry is exactly the signal an operator wants.
     if row.revoked_at is not None:
-        logger.info("pat.auth_rejected", reason="revoked", api_token_id=row.id)
+        logger.info("pat.auth_rejected", extra={"reason": "revoked", "api_token_id": row.id})
         await _record_auth_rejected(session_factory, request, row, "revoked")
         raise _generic_401()
     if _aware(row.expires_at) <= now:
-        logger.info("pat.auth_rejected", reason="expired", api_token_id=row.id)
+        logger.info("pat.auth_rejected", extra={"reason": "expired", "api_token_id": row.id})
         await _record_auth_rejected(session_factory, request, row, "expired")
         raise _generic_401()
 
     # 4. Owner gone (ON DELETE SET NULL) → fails to authenticate.
     if row.created_by_user_id is None:
-        logger.info("pat.auth_rejected", reason="owner_null", api_token_id=row.id)
+        logger.info("pat.auth_rejected", extra={"reason": "owner_null", "api_token_id": row.id})
         raise _generic_401()
 
     result = await db.execute(
@@ -161,7 +162,7 @@ async def authenticate_pat(
     )
     user = result.scalar_one_or_none()
     if user is None:
-        logger.info("pat.auth_rejected", reason="owner_missing", api_token_id=row.id)
+        logger.info("pat.auth_rejected", extra={"reason": "owner_missing", "api_token_id": row.id})
         raise _generic_401()
 
     # 5. Live re-check on the freshly-read row — the instant kill switch for
@@ -169,8 +170,10 @@ async def authenticate_pat(
     if not user.is_active or not user.is_superadmin:
         logger.info(
             "pat.auth_rejected",
-            reason="owner_inactive_or_not_superadmin",
-            api_token_id=row.id,
+            extra={
+                "reason": "owner_inactive_or_not_superadmin",
+                "api_token_id": row.id,
+            },
         )
         raise _generic_401()
 
@@ -208,11 +211,11 @@ async def authenticate_pat(
     # ``auth_method`` stays — ``require_interactive_session`` reads it.
     request.state.auth_method = "pat"
 
-    # 9. Bind the request-scoped structlog context exactly as the JWT branch
+    # 9. Bind the request-scoped log context exactly as the JWT branch
     # does. ``api_token_id`` is NOT bound here — see the comment at the bind
     # site above; it must be bound before the rejection branches, and binding
     # it twice would make that position look optional.
-    structlog.contextvars.bind_contextvars(
+    logs.bind(
         user_id=user.id,
         org_id=user.org_id,
         role=user.role.value if hasattr(user.role, "value") else str(user.role),

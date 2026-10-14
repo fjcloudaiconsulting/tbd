@@ -198,12 +198,26 @@ backend/app/
 ├── database.py      # async SQLAlchemy engine + session factory
 ├── security.py      # JWT encode/decode, bcrypt hash/verify
 ├── deps.py          # FastAPI dependencies: get_db, get_current_user
-├── logging.py       # structlog JSON setup
+├── logs.py          # stdlib JSON logging setup, one per process
 ├── models/          # SQLAlchemy ORM models
 ├── schemas/         # Pydantic request/response models
 ├── routers/         # API route handlers (one file per resource)
 └── services/        # Business logic called by routers
 ```
+
+### Logging
+
+One library, stdlib `logging`, rendered as JSON lines on stdout by `app/logs.py`. A module logs with
+`logger = logging.getLogger(__name__)` and `logger.info("event.name", extra={"org_id": org.id})`: the
+event name is the message, fields go in `extra` (never a keyword, never a key that is a `LogRecord`
+attribute such as `name` or `message`), nothing is awaited. `logs.bind(user_id=...)` adds a field to every
+later line of the request; `RequestContextMiddleware` starts each request with a fresh context and writes
+the one access line (method, route template, status, duration, never the path, query or client address).
+
+Log an exception's class, never its message: `logger.exception("x")` / `exc_info=True` (class and frames) or
+`extra={"error": tracing.error_summary(exc)}`. A message can quote an email or a row value.
+`tests/test_log_calls.py` fails the build on `str(exc)`, `repr(exc)` or an f-string of a caught error in a
+log call.
 
 ### Frontend layout
 
@@ -499,7 +513,7 @@ CPUs and took ~32 minutes.
 
 ⚠ **`--dist loadfile` is not optional.** It keeps each file's tests on a single
 worker, preserving within-file order. Some fences here are order-dependent --
-the `capture_logs()` ones are green alone and red in a full run -- and plain
+the order-dependent ones are green alone and red in a full run -- and plain
 `--dist load` scatters them across workers, which surfaces as flake rather than
 as a clear failure.
 

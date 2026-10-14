@@ -61,11 +61,9 @@ What each group fences, and the wrong implementation it kills:
   and must stay alertable. Emitting both under one name is the mislabelling
   this group fences.
 
-Structlog assertions bind a recorder onto ``auth._LOGGER`` and never use
-``structlog.testing.capture_logs()``: that swaps the processor chain on the
-GLOBAL structlog config, which other modules in this suite reconfigure without
-restoring, so a ``capture_logs`` fence is green alone, green on either half,
-and RED in a full run.
+Log assertions read the rendered lines (the ``log_lines`` fixture), after a
+control line proves the capture works: an empty list must mean "nothing was
+logged".
 
 Rate-limiter notes. The singleton bleeds between tests, so ``reset_limiter``
 runs before AND after. Under ``TestClient`` the peer is the literal
@@ -213,31 +211,15 @@ async def _terminated(factory) -> list[AuditEvent]:
     return await _rows(factory, "auth.session.terminated")
 
 
-class _LogRecorder:
-    """Collects events emitted on ``app.routers.auth._LOGGER``.
+def _callback_events(log_lines) -> list[tuple[str, dict]]:
+    """Only the two OAuth-callback suppression events, as rendered lines.
 
-    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That swaps the
-    processor chain on the GLOBAL structlog config, and modules in this suite
-    call ``structlog.configure(...)`` without restoring it, so a capture_logs
-    fence is green on its own file, green on either half of the suite, and RED
-    in a full run. Binding onto the module's own logger is immune to all of it.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict]] = []
-
-    def _record(self, event: str, **kw) -> None:
-        self.events.append((event, kw))
-
-    debug = info = warning = error = exception = _record
-
-    def callback_events(self) -> list[tuple[str, dict]]:
-        """Only the two OAuth-callback suppression events."""
-        return [
-            (name, kw)
-            for name, kw in self.events
-            if name.startswith("auth.oauth.callback.")
-        ]
+    A control line is logged and must be captured first, so an empty result is "nothing was
+    logged", never "the capture stopped working"."""
+    auth_module._LOGGER.info("control.channel")
+    lines = log_lines()
+    assert [ln["msg"] for ln in lines if ln["msg"] == "control.channel"] == ["control.channel"]
+    return [(ln["msg"], ln) for ln in lines if ln["msg"].startswith("auth.oauth.callback.")]
 
 
 def _delete_cookies(headers) -> list[str]:
@@ -626,7 +608,7 @@ async def test_f3_leg6_error_with_mismatched_cookie_keeps_cancelled_code(
 
 @pytest.mark.parametrize("path,event_type,qkey,base", CALLBACKS)
 async def test_f3_leg7_state_branch_writes_no_row(
-    session_factory, google_config, monkeypatch, path, event_type, qkey, base
+    session_factory, google_config, monkeypatch, path, event_type, qkey, base, log_lines
 ):
     """?code=... with a MISMATCHED cookie -> 307 ``state``, and ZERO rows.
 
@@ -642,9 +624,6 @@ async def test_f3_leg7_state_branch_writes_no_row(
     must NOT. Collapsing the two names back into one reddens exactly one of
     the two groups, whichever name survives.
     """
-    recorder = _LogRecorder()
-    monkeypatch.setattr(auth_module, "_LOGGER", recorder)
-
     app = _make_app(session_factory)
     with TestClient(app) as client:
         client.cookies.set("oauth_state", "a-different-value")
@@ -657,7 +636,7 @@ async def test_f3_leg7_state_branch_writes_no_row(
     assert res.headers["location"] == f"{base}?{qkey}=state"
     assert await _rows(session_factory, event_type) == []
 
-    logged = recorder.callback_events()
+    logged = _callback_events(log_lines)
     assert len(logged) == 1, logged
     name, payload = logged[0]
     assert name == "auth.oauth.callback.unverified_state", logged
@@ -853,7 +832,7 @@ STEPUP_PAYLOAD_BRANCHES = [
 
 @pytest.mark.parametrize("state,return_path", STEPUP_PAYLOAD_BRANCHES)
 async def test_f6_stepup_payload_branch_writes_no_row(
-    session_factory, google_config, monkeypatch, state, return_path
+    session_factory, google_config, monkeypatch, state, return_path, log_lines
 ):
     """Matching cookie + a ``stepup:``-shaped junk state -> ZERO rows.
 
@@ -866,9 +845,6 @@ async def test_f6_stepup_payload_branch_writes_no_row(
     is a REGRESSION against the durable audit row it used to leave.
     """
     await _seed_user(session_factory)
-    recorder = _LogRecorder()
-    monkeypatch.setattr(auth_module, "_LOGGER", recorder)
-
     app = _make_app(session_factory)
     with TestClient(app) as client:
         client.cookies.set("oauth_state", state)
@@ -885,7 +861,7 @@ async def test_f6_stepup_payload_branch_writes_no_row(
     ), res.headers["location"]
     assert await _rows(session_factory, "auth.google.sso_stepup.callback.failed") == []
 
-    logged = recorder.callback_events()
+    logged = _callback_events(log_lines)
     assert len(logged) == 1, logged
     name, payload = logged[0]
     assert name == "auth.oauth.callback.invalid_state_payload", logged
@@ -894,7 +870,7 @@ async def test_f6_stepup_payload_branch_writes_no_row(
 
 
 async def test_f6_control_matching_state_reaches_the_exchange(
-    session_factory, google_config, monkeypatch
+    session_factory, google_config, monkeypatch, log_lines
 ):
     """CONTROL: a WELL-FORMED stepup state past all four branches behaves
     differently — it reaches the token exchange.
@@ -908,9 +884,6 @@ async def test_f6_control_matching_state_reaches_the_exchange(
     """
     seeded = await _seed_user(session_factory)
     state = f"stepup:{seeded['user_id']}:nonce:email_change"
-    recorder = _LogRecorder()
-    monkeypatch.setattr(auth_module, "_LOGGER", recorder)
-
     async def _boom(*args, **kwargs):
         raise httpx.ConnectError("no network in tests")
 
@@ -932,6 +905,6 @@ async def test_f6_control_matching_state_reaches_the_exchange(
     assert (
         res.headers["location"] == "http://localhost/settings?sso_stepup_error=token"
     ), res.headers["location"]
-    assert [name for name, _ in recorder.callback_events()] == [], (
+    assert [name for name, _ in _callback_events(log_lines)] == [], (
         "a well-formed state must not log a suppressed-callback event"
     )

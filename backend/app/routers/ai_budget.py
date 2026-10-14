@@ -15,7 +15,7 @@ instead of crashing.
 """
 from __future__ import annotations
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -35,13 +35,14 @@ from app.services.ai_feature_map import ui_to_routing
 # time, silently.
 from app.services.feature_gate import Feature
 from app.services.feature_gate import require_feature as require_product_area
+from app import logs
 
 # Source the routing name from the canonical map so it can't drift from the
 # entitlement/UI mapping (budget_rebalance_service exposes no ROUTING_KEY).
 _ROUTING_KEY = ui_to_routing("budget")
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # The Budgets product gate goes on the APIRouter CONSTRUCTOR, not beside the
@@ -118,7 +119,7 @@ async def rebalance(
         actor_email=current_user.email,
         target_org_id=current_user.org_id,
         target_org_name=None,
-        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        request_id=logs.CONTEXT.get({}).get("request_id"),
         ip_address=get_client_ip(request),
         outcome=audit_outcome,
         detail={

@@ -7,7 +7,7 @@
  *   - Node.js server runtime (`NEXT_RUNTIME === "nodejs"`): JSON line
  *     written via ``process.stdout.write`` / ``process.stderr.write``
  *     so the deployed App Platform log shipper sees the same shape as
- *     the backend structlog output.
+ *     the backend log output.
  *   - Edge runtime (`NEXT_RUNTIME === "edge"`, e.g. middleware): the
  *     Edge runtime does NOT expose ``process.stdout`` / ``process.stderr``.
  *     Touching them would crash at request time and triggers a

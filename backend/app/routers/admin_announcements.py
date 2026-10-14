@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -34,15 +34,16 @@ from app.schemas.common import ListEnvelope
 from app.services import audit_service
 from app.services.exceptions import ValidationError
 from app.services.list_query import resolve_order_by
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/admin/announcements", tags=["admin-announcements"])
 
 
 def _request_id() -> Optional[str]:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 async def require_superadmin(
@@ -167,11 +168,13 @@ async def create_announcement(
         detail=_audit_detail(row),
     )
 
-    await logger.ainfo(
+    logger.info(
         "system.announcement.created",
-        announcement_id=row.id,
-        severity=row.severity.value,
-        is_active=row.is_active,
+        extra={
+            "announcement_id": row.id,
+            "severity": row.severity.value,
+            "is_active": row.is_active,
+        },
     )
     return row
 
@@ -243,10 +246,12 @@ async def update_announcement(
         detail={**_audit_detail(row), "patched_fields": sorted(patch.keys())},
     )
 
-    await logger.ainfo(
+    logger.info(
         "system.announcement.updated",
-        announcement_id=row.id,
-        patched_fields=sorted(patch.keys()),
+        extra={
+            "announcement_id": row.id,
+            "patched_fields": sorted(patch.keys()),
+        },
     )
     return row
 
@@ -293,8 +298,10 @@ async def delete_announcement(
         detail=audit_blob,
     )
 
-    await logger.ainfo(
+    logger.info(
         "system.announcement.deleted",
-        announcement_id=announcement_id,
+        extra={
+            "announcement_id": announcement_id,
+        },
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

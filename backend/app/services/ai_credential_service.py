@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 from sqlalchemy import func, select
@@ -51,7 +51,7 @@ _CREDENTIAL_SORT_COLUMNS = {
 }
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 def _credential_validation_failure(error: str) -> HTTPException:

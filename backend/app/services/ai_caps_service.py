@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import structlog
+import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -21,7 +21,7 @@ from app.services import audit_service
 from app.services.ai_routing_service import UnknownFeatureName
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 def assert_known_feature(feature_key: str) -> None:

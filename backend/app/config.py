@@ -1,4 +1,4 @@
-from pydantic import field_validator, model_validator
+from pydantic import ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -609,4 +609,12 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
-settings = Settings()
+try:
+    settings = Settings()
+except ValidationError as error:
+    # Not str(error): pydantic quotes the rejected input, secret tails included. The field name,
+    # or for a model validator (no location) its message, which interpolates no value.
+    raise SystemExit(
+        "invalid settings: "
+        + "; ".join(".".join(map(str, e["loc"])) or e["msg"] for e in error.errors())
+    ) from None

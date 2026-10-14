@@ -152,10 +152,8 @@ async def test_founder_count_degrades_to_zero_on_db_error(session_factory, monke
 
 # ── TBD-371: an empty exclusion list in production must be observable ────────
 #
-# ⚠ These monkeypatch the module logger rather than using structlog's
-# ``capture_logs()``. TBD-367 (open) leaks global structlog config from another
-# module, which makes ``capture_logs()`` assertions order-dependent — green
-# alone, red in a full run. Patching the bound logger sidesteps global state.
+# ⚠ These read the rendered log lines (the ``log_lines`` fixture), not a patched
+# module logger: the line is what production prints.
 #
 # ⚠ There is deliberately no "refuses to boot" fence. An earlier draft raised
 # from a ``model_validator`` in production; the full suite rejected it (7
@@ -164,27 +162,20 @@ async def test_founder_count_degrades_to_zero_on_db_error(session_factory, monke
 # refusal costs the whole application.
 
 
-class _LogRecorder:
-    def __init__(self) -> None:
-        self.errors: list[str] = []
+class _Errors:
+    """The event names of every ERROR line the app logged."""
 
-    def error(self, event, *a, **kw):
-        self.errors.append(event)
+    def __init__(self, log_lines) -> None:
+        self._lines = log_lines
 
-    def warning(self, event, *a, **kw):
-        pass
-
-    def info(self, event, *a, **kw):
-        pass
+    @property
+    def errors(self) -> list[str]:
+        return [ln["msg"] for ln in self._lines() if ln["level"] == "ERROR"]
 
 
 @pytest.fixture
-def log_recorder(monkeypatch):
-    from app.routers import public_stats
-
-    rec = _LogRecorder()
-    monkeypatch.setattr(public_stats, "logger", rec)
-    return rec
+def log_recorder(log_lines):
+    return _Errors(log_lines)
 
 
 def _set_env(monkeypatch, *, exclusions: str, app_env: str) -> None:

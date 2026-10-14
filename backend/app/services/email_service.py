@@ -34,11 +34,12 @@ from dataclasses import dataclass
 from enum import Enum
 
 import httpx
-import structlog
+import logging
 
 from app.config import settings
+from app import tracing
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 # Per-phase transport bound for the Mailgun HTTP calls below.
 MAILGUN_TIMEOUT = httpx.Timeout(10.0)
@@ -122,7 +123,7 @@ class BatchSendResult:
     ``reason`` is a short, PII-free, operator-readable string explaining a
     non-ACCEPTED disposition. The drain writes it verbatim into
     ``email_broadcast_recipients.error``, which moves the
-    rejection-vs-unknown distinction out of structlog and into a queryable
+    rejection-vs-unknown distinction out of the logs and into a queryable
     column. It is ``None`` for ACCEPTED.
     """
 
@@ -308,7 +309,7 @@ async def send_email(
     inside the backend container.
     """
     if not settings.mailgun_api_key:
-        await logger.ainfo("email_sent_dev", to=to, subject=subject)
+        logger.info("email_sent_dev", extra={"to": to, "subject": subject})
         return True
 
     # Production: send via Mailgun HTTP API.
@@ -337,8 +338,13 @@ async def send_email(
                     },
                 )
             response.raise_for_status()
-            await logger.ainfo(
-                "email_sent", to=to, subject=subject, status=response.status_code
+            logger.info(
+                "email_sent",
+                extra={
+                    "to": to,
+                    "subject": subject,
+                    "status": response.status_code,
+                },
             )
             return True
     except TimeoutError:
@@ -366,12 +372,14 @@ async def send_email(
         #
         # PII bound is the same as the handler below: ``to`` and
         # ``subject`` only, never the body (it carries the raw token).
-        await logger.aerror(
+        logger.error(
             "email_send_timeout",
-            to=to,
-            subject=subject,
-            error="timeout",
-            timeout_s=MAILGUN_SEND_TOTAL_TIMEOUT_S,
+            extra={
+                "to": to,
+                "subject": subject,
+                "error": "timeout",
+                "timeout_s": MAILGUN_SEND_TOTAL_TIMEOUT_S,
+            },
         )
         return False
     except Exception as exc:
@@ -379,12 +387,14 @@ async def send_email(
         # surfaces the response status / reason but not our payload.
         # ``error_type`` rides along because ``str(exc)`` is empty for any
         # zero-message exception; the class name is always there.
-        await logger.aerror(
+        logger.error(
             "email_send_failed",
-            to=to,
-            subject=subject,
-            error=str(exc),
-            error_type=type(exc).__name__,
+            extra={
+                "to": to,
+                "subject": subject,
+                "error": tracing.error_summary(exc),
+                "error_type": type(exc).__name__,
+            },
         )
         return False
 
@@ -451,16 +461,16 @@ async def send_batch(
     variables are NOT echoed).
     """
     if len(to_list) > 1 and set(recipient_variables or {}) != set(to_list):
-        await logger.aerror(
+        logger.error(
             "broadcast_batch_failed",
-            count=len(to_list),
-            subject=subject,
-            variables_count=len(recipient_variables or {}),
-            error=(
-                "recipient-variables key set does not match the to-list; "
+            extra={
+                "count": len(to_list),
+                "subject": subject,
+                "variables_count": len(recipient_variables or {}),
+                "error": "recipient-variables key set does not match the to-list; "
                 "refusing to send a multi-address batch that Mailgun would "
-                "deliver with every address exposed in the To header"
-            ),
+                "deliver with every address exposed in the To header",
+            },
         )
         return BatchSendResult(
             SendDisposition.REJECTED,
@@ -469,8 +479,12 @@ async def send_batch(
         )
 
     if not settings.mailgun_api_key:
-        await logger.ainfo(
-            "broadcast_batch_sent", count=len(to_list), subject=subject
+        logger.info(
+            "broadcast_batch_sent",
+            extra={
+                "count": len(to_list),
+                "subject": subject,
+            },
         )
         return _ACCEPTED
 
@@ -499,11 +513,13 @@ async def send_batch(
                     },
                 )
             response.raise_for_status()
-            await logger.ainfo(
+            logger.info(
                 "broadcast_batch_sent",
-                count=len(to_list),
-                subject=subject,
-                status=response.status_code,
+                extra={
+                    "count": len(to_list),
+                    "subject": subject,
+                    "status": response.status_code,
+                },
             )
             return _ACCEPTED
     except TimeoutError:
@@ -516,12 +532,14 @@ async def send_batch(
         # this is INDETERMINATE, not a rejection. Reverting these rows to
         # ``failed`` (the pre-TBD-330 behaviour) invites a Resume click to
         # duplicate a batch Mailgun may already be delivering.
-        await logger.aerror(
+        logger.error(
             "broadcast_batch_timeout",
-            count=len(to_list),
-            subject=subject,
-            error="timeout",
-            timeout_s=MAILGUN_SEND_TOTAL_TIMEOUT_S,
+            extra={
+                "count": len(to_list),
+                "subject": subject,
+                "error": "timeout",
+                "timeout_s": MAILGUN_SEND_TOTAL_TIMEOUT_S,
+            },
         )
         return BatchSendResult(
             SendDisposition.INDETERMINATE,
@@ -534,12 +552,14 @@ async def send_batch(
         # count, subject, and the exception's str() (httpx surfaces status /
         # reason there, not our request payload). ``error_type`` rides along
         # because ``str(exc)`` is empty for any zero-message exception.
-        await logger.aerror(
+        logger.error(
             "broadcast_batch_failed",
-            count=len(to_list),
-            subject=subject,
-            error=str(exc),
-            error_type=type(exc).__name__,
+            extra={
+                "count": len(to_list),
+                "subject": subject,
+                "error": tracing.error_summary(exc),
+                "error_type": type(exc).__name__,
+            },
         )
         disposition = _classify_send_exception(exc)
         if disposition is SendDisposition.REJECTED:

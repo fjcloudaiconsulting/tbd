@@ -35,7 +35,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -50,9 +50,10 @@ from app.services import audit_service
 # uses. ``tests/test_csp_report.py::test_csp_row_is_hidden_from_the_default_
 # audit_view`` is the end-to-end fence that closes that gap.
 from app.services.audit_service import CSP_VIOLATION_EVENT_TYPE  # noqa: F401
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/security", tags=["security"])
 
@@ -173,7 +174,7 @@ def _parse_reports(payload: Any) -> list[dict[str, Any]]:
 
 
 def _request_id() -> Optional[str]:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 @router.post(
@@ -211,9 +212,11 @@ async def csp_report(request: Request) -> Response:
     if declared_len is not None:
         try:
             if int(declared_len) > _MAX_BODY_BYTES:
-                await logger.ainfo(
+                logger.info(
                     "security.csp_report.oversized",
-                    content_length=declared_len,
+                    extra={
+                        "content_length": declared_len,
+                    },
                 )
                 return Response(status_code=status.HTTP_204_NO_CONTENT)
         except ValueError:
@@ -236,10 +239,12 @@ async def csp_report(request: Request) -> Response:
         # Nothing recognizable. Emit a low-cardinality breadcrumb (no
         # payload) so a flood of malformed reports is still visible in
         # logs without leaking content, then accept gracefully.
-        await logger.ainfo(
+        logger.info(
             "security.csp_report.unparsed",
-            content_type=request.headers.get("content-type", ""),
-            byte_len=len(raw),
+            extra={
+                "content_type": request.headers.get("content-type", ""),
+                "byte_len": len(raw),
+            },
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -250,10 +255,12 @@ async def csp_report(request: Request) -> Response:
         detail = _extract_detail(body)
         # Structured breadcrumb at INFO — only the (bounded) directive,
         # never the full payload or URL-bearing fields.
-        await logger.ainfo(
+        logger.info(
             "security.csp_violation",
-            violated_directive=(detail or {}).get("violated_directive"),
-            effective_directive=(detail or {}).get("effective_directive"),
+            extra={
+                "violated_directive": (detail or {}).get("violated_directive"),
+                "effective_directive": (detail or {}).get("effective_directive"),
+            },
         )
         await audit_service.record_audit_event(
             session_factory,

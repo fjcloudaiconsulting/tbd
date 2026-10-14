@@ -70,6 +70,49 @@ def metric_reader():
     yield reader
     provider.remove_metric_reader(reader)
 
+
+def render_line(event: str, kwargs: dict) -> str:
+    """The JSON line a call ``logger.info(event, **kwargs)`` prints, through the real filter and
+    formatter. For tests that mock a module logger: a "not logged" assertion must read this, not the
+    call's arguments, which say nothing about what the formatter adds (context, extras)."""
+    exc_info = kwargs.get("exc_info")
+    if exc_info is True:  # resolved like the stdlib does, from the exception being handled
+        exc_info = sys.exc_info()
+    record = logging.LogRecord("app.tests", logging.INFO, __file__, 0, event, (), exc_info)
+    for key, value in kwargs.get("extra", {}).items():
+        setattr(record, key, value)
+    from app import logs
+
+    logs._add_context(record)
+    return logs.Formatter().format(record)
+
+
+@pytest.fixture
+def log_lines():
+    """Captured JSON log records of the ``app`` loggers at DEBUG, parsed one dict per line, through
+    the same filter and formatter as the real handler."""
+    import io
+    import json
+
+    from app import logs
+
+    logs.configure()
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logs.Formatter())
+    handler.addFilter(logs._add_context)
+    root = logging.getLogger()
+    app_logger = logging.getLogger("app")
+    before = app_logger.level
+    root.addHandler(handler)
+    app_logger.setLevel(logging.DEBUG)
+    try:
+        yield lambda: [json.loads(line) for line in stream.getvalue().splitlines() if line]
+    finally:
+        app_logger.setLevel(before)
+        root.removeHandler(handler)
+
+
 # INFRA-51: bcrypt cost 12 (the production default) makes every hash_password
 # call in a fixture cost ~250ms; 149 test files do it. Use cost 4 (bcrypt's
 # minimum) in tests only. Production hashing is untouched: app/security.py
@@ -153,17 +196,16 @@ def set_refresh_cookie(client: Any, token: str) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _autouse_clear_structlog_contextvars():
-    """Give every test an empty structlog context, before AND after.
+def _autouse_clear_log_context():
+    """Give every test an empty log context, before AND after.
 
-    In production ``RequestContextMiddleware`` (pure ASGI) calls
-    ``clear_contextvars()`` at the top of every HTTP request, so nothing
-    bleeds between requests. Test apps built as a bare ``FastAPI()`` do not
-    mount that middleware, and a handful of sync tests bind on the main
-    thread directly (``test_log_field_propagation.py``,
-    ``test_request_context.py``) and clear only by convention.
+    In production ``RequestContextMiddleware`` (pure ASGI) starts every HTTP
+    request with a fresh context, so nothing bleeds between requests. Test
+    apps built as a bare ``FastAPI()`` do not mount that middleware, and a
+    handful of sync tests bind on the main thread directly
+    (``test_request_context.py``) and clear only by convention.
 
-    That mattered little while contextvars were log decoration. Since
+    That mattered little while the context was log decoration. Since
     TBD-188 ``audit_service._build_audit_event`` READS ``api_token_id`` from
     this context, so a leftover bind from an earlier test could stamp a real
     token id onto an unrelated test's audit row. This fixture makes the empty
@@ -173,11 +215,11 @@ def _autouse_clear_structlog_contextvars():
     hygiene requires a specific execution order, and an order-dependent test
     is worse than the defect it guards against.
     """
-    import structlog
+    from app import logs
 
-    structlog.contextvars.clear_contextvars()
+    logs.CONTEXT.set({})
     yield
-    structlog.contextvars.clear_contextvars()
+    logs.CONTEXT.set({})
 
 
 @pytest.fixture(autouse=True)

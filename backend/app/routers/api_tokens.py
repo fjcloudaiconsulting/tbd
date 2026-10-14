@@ -26,7 +26,7 @@ Security-critical paths:
 """
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -44,15 +44,16 @@ from app.security import verify_password
 from app.services import api_token_service, audit_service, notification_service
 from app.services.mfa_service import MfaConfigError, decrypt_secret, verify_totp
 from app.services.notification_templates import api_token_created as _tpl_api_token_created
+from app import logs
 
 
-logger = structlog.stdlib.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/system/api-tokens", tags=["api-tokens"])
 
 
 def _request_id() -> Optional[str]:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 async def require_superadmin(
@@ -247,8 +248,12 @@ async def mint_token(
         link_url=link_url,
     )
 
-    await logger.ainfo(
-        "api_token.created", api_token_id=row.id, scope=row.scope
+    logger.info(
+        "api_token.created",
+        extra={
+            "api_token_id": row.id,
+            "scope": row.scope,
+        },
     )
 
     # Reveal-once transport: plaintext only here, under no-store (SEC-R5).
@@ -320,7 +325,7 @@ async def revoke_token(
             "created_by": actor_email,
         },
     )
-    await logger.ainfo("api_token.revoked", api_token_id=row.id)
+    logger.info("api_token.revoked", extra={"api_token_id": row.id})
     return {"ok": True, "id": row.id}
 
 
@@ -353,5 +358,5 @@ async def revoke_all_tokens(
         outcome="success",
         detail={"count": count, "created_by": actor_email},
     )
-    await logger.ainfo("api_token.revoked_all", count=count)
+    logger.info("api_token.revoked_all", extra={"count": count})
     return {"revoked": count}

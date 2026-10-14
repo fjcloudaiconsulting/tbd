@@ -37,7 +37,7 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS, Recharts |
 | Database | MySQL 8.4 LTS everywhere; in production a StatefulSet on the k3s cluster run from [cloud-infra](https://github.com/fjcloudaiconsulting/cloud-infra) |
 | Auth | JWT (access + refresh), bcrypt, TOTP (pyotp), Google OAuth2 (with step-up for sensitive flows) |
-| Email | Mailgun (production), structlog (development) |
+| Email | Mailgun (production), JSON log lines (development) |
 | Proxy | nginx (development), Cloudflare in front of Traefik on k3s (production) |
 | Landing (apex) | Cloudflare Worker `tbd-landing`, separate from the app, see [`DEPLOYMENT.md`](docs/operations/DEPLOYMENT.md) |
 

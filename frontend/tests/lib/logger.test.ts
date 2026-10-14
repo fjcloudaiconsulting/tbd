@@ -70,7 +70,7 @@ describe("logger runtime detection", () => {
     expect(consoleErrorSpy).not.toHaveBeenCalled();
 
     // Payload must be a single JSON line terminated by a newline,
-    // matching the backend structlog format.
+    // matching the backend log format.
     const stdoutLine = stdoutSpy.mock.calls[0][0] as string;
     const stderrLine = stderrSpy.mock.calls[0][0] as string;
     expect(stdoutLine.endsWith("\n")).toBe(true);

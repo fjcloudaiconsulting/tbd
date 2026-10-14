@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 
-import structlog
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import NotificationCategory
@@ -14,7 +14,7 @@ from app.services.scheduler import org_settings
 from app.services.scheduler.audit import record_run
 from app.services.scheduler.base import JobResult
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # TBD-241 §2. `close_period` performs exactly ONE close per call, so an org
 # whose open period is N cycles behind needs N iterations. The cap bounds a
@@ -121,13 +121,15 @@ class BillingCloseJob:
                 # Believed unreachable — the clamp always lands strictly after
                 # the closing start. A cheap backstop against an infinite loop,
                 # and it logs so an unreachable branch that fires is visible.
-                await logger.awarning(
+                logger.warning(
                     "billing.close.no_progress",
-                    org_id=org.id,
-                    closing_period_id=closing_id,
-                    closing_period_start=closing_start.isoformat(),
-                    new_period_start=new_period.start_date.isoformat(),
-                    steps=steps,
+                    extra={
+                        "org_id": org.id,
+                        "closing_period_id": closing_id,
+                        "closing_period_start": closing_start.isoformat(),
+                        "new_period_start": new_period.start_date.isoformat(),
+                        "steps": steps,
+                    },
                 )
                 break
 
@@ -138,13 +140,15 @@ class BillingCloseJob:
             # step is absorbed by a racer applies nothing, and a cap keyed on
             # `steps` would then never fire.
             if iterations >= MAX_CONVERGENCE_STEPS:
-                await logger.awarning(
+                logger.warning(
                     "billing.close.convergence_capped",
-                    org_id=org.id,
-                    steps=steps,
-                    iterations=iterations,
-                    target_close_date=close_date.isoformat(),
-                    new_period_start=new_period.start_date.isoformat(),
+                    extra={
+                        "org_id": org.id,
+                        "steps": steps,
+                        "iterations": iterations,
+                        "target_close_date": close_date.isoformat(),
+                        "new_period_start": new_period.start_date.isoformat(),
+                    },
                 )
                 break
 

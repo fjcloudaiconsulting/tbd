@@ -379,29 +379,6 @@ def test_f17b_probe_bound_fits_under_the_backstop():
 # ── F18-F19: /ready's OWN new code path ────────────────────────────────────
 
 
-class _LogRecorder:
-    """Structlog-shaped recorder bound onto the module's own ``logger``.
-
-    ⚠ Deliberately NOT ``structlog.testing.capture_logs()``. That helper
-    installs a processor globally and this repo has been bitten by fences that
-    are green alone and on either half of the suite but red in a full run,
-    because another module's configuration ran first. Substituting the
-    module's own name has no such ordering dependence.
-    """
-
-    def __init__(self):
-        self.calls: list[tuple[str, str, dict]] = []
-
-    def _record(self, level):
-        def log(event, **kw):
-            self.calls.append((level, event, kw))
-
-        return log
-
-    def __getattr__(self, name):
-        return self._record(name)
-
-
 def test_f18_ready_reports_503_with_its_frozen_body_when_the_database_is_down(
     client, monkeypatch
 ):
@@ -420,7 +397,7 @@ def test_f18_ready_reports_503_with_its_frozen_body_when_the_database_is_down(
     assert r.json() == {"status": "not_ready", "database": "connection error"}
 
 
-def test_f19_ready_is_bounded_and_logs_a_discriminating_error(client, monkeypatch):
+def test_f19_ready_is_bounded_and_logs_a_discriminating_error(client, monkeypatch, log_lines):
     """F19 — the ``wait_for`` added to ``/ready`` in this diff.
 
     Two kills in one, both on the same wedged-socket mode.
@@ -430,16 +407,14 @@ def test_f19_ready_is_bounded_and_logs_a_discriminating_error(client, monkeypatc
        state the bound exists for, since aiomysql 0.2.0 accepts no
        ``read_timeout`` and an established-but-wedged socket has no driver
        bound at all. The wall-clock assertion is the discriminator.
-    2. Logging ``error=str(e)`` alone. ``wait_for`` raises a BARE
-       ``TimeoutError()``, so ``str(e)`` is ``""`` and the one log line an
-       operator gets on this failure mode carries no detail whatsoever.
+    2. Logging ``str(e)``. ``wait_for`` raises a BARE ``TimeoutError()``,
+       so ``str(e)`` is ``""`` and the one log line an operator gets on this
+       failure mode would carry no detail whatsoever; the class is the detail.
     """
     import time
 
     from app import main as app_main
 
-    recorder = _LogRecorder()
-    monkeypatch.setattr(app_main, "logger", recorder)
     monkeypatch.setattr(app_main, "_DB_PROBE_TIMEOUT_S", 0.05)
     _break_db(monkeypatch, hang=True)
 
@@ -454,9 +429,10 @@ def test_f19_ready_is_bounded_and_logs_a_discriminating_error(client, monkeypatc
         "patched to 0.05s; nothing is bounding the query"
     )
 
-    failures = [c for c in recorder.calls if c[1] == "readiness check failed"]
-    assert failures, f"no failure log emitted; recorded: {recorder.calls}"
-    kwargs = failures[0][2]
+    lines = log_lines()
+    failures = [ln for ln in lines if ln["msg"] == "readiness check failed"]
+    assert failures, f"no failure log emitted; recorded: {lines}"
+    kwargs = failures[0]
     detail = " ".join(str(v) for v in kwargs.values())
     assert "TimeoutError" in detail, (
         "the readiness failure log carries no discriminating detail. "

@@ -943,13 +943,10 @@ async def test_stepup_exchange_timeout_emits_the_ungated_warning(
     reports the budget it actually used" without coupling to the
     harness value.
 
-    The fields are asserted at the TOP level of the call kwargs, never
-    under an `extra` key. `_LOGGER` is a structlog stdlib BoundLogger,
-    which treats `extra` as an ordinary key and renders it as a nested
-    object, so a DigitalOcean log filter on `flow:"stepup"` would not
-    match one — and `flow` is the only thing separating this site from
-    the login site. Pinning the flat shape is what keeps that
-    distinction usable.
+    The fields are asserted under the call's `extra` key and nowhere
+    else: `_LOGGER` is a stdlib logger, which renders each `extra` key
+    as its own JSON key, so a log filter on `flow:"stepup"` matches
+    (`flow` is the only thing separating this site from the login site).
     """
     user_id = await _seed_user(session_factory, email="alice@acme.io")
     app = _make_app(session_factory, user_id)
@@ -977,7 +974,8 @@ async def test_stepup_exchange_timeout_emits_the_ungated_warning(
     calls = _exchange_timeout_warnings(logger_mock)
     assert len(calls) == 1, calls
     fields = calls[0]
-    assert "extra" not in fields, fields
+    assert set(fields) == {"extra"}, fields  # the fields ride in extra=, one JSON key each
+    fields = fields["extra"]
     assert fields["flow"] == "stepup"
     assert fields["last_phase"] == "token_ok"
     assert fields["timeout_s"] == auth_module.GOOGLE_OAUTH_TOTAL_TIMEOUT_S
@@ -1324,7 +1322,8 @@ async def test_stepup_userinfo_200_with_a_non_object_body_redirects_and_audits(
     calls = _invalid_payload_warnings(logger_mock)
     assert len(calls) == 1, calls
     fields = calls[0]
-    assert "extra" not in fields, fields
+    assert set(fields) == {"extra"}, fields  # the fields ride in extra=, one JSON key each
+    fields = fields["extra"]
     assert set(fields) == {"flow", "phase", "body"}, fields
     assert fields["flow"] == "stepup"
     assert fields["phase"] == "userinfo"
@@ -1520,7 +1519,8 @@ async def test_stepup_invalid_payload_emits_the_ungated_warning(
     calls = _invalid_payload_warnings(logger_mock)
     assert len(calls) == 1, calls
     fields = calls[0]
-    assert "extra" not in fields, fields
+    assert set(fields) == {"extra"}, fields  # the fields ride in extra=, one JSON key each
+    fields = fields["extra"]
     assert set(fields) == {"flow", "phase", "body", "google_error"}, fields
     assert fields["flow"] == "stepup"
     assert fields["phase"] == "token"

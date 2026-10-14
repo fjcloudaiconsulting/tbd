@@ -434,7 +434,7 @@ async def test_detail_audit_not_suppressed_after_recent_list_view(session_factor
 async def test_audit_throttle_skips_durable_row_when_the_window_claim_fails(session_factory):
     """When the throttle helper returns False (the used_tokens claim failed
     because the key was already claimed inside the 60s window), the
-    durable audit row is skipped — structlog event still fires
+    durable audit row is skipped — log event still fires
     elsewhere as the fallback channel."""
     await _seed(session_factory)
     app = make_app(session_factory, _superadmin_resolver())

@@ -46,6 +46,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from tests.conftest import render_line
+
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -338,7 +340,7 @@ async def test_expired_oauth_state_cookie_redirects_with_state_code(
     reachable ONLY when the state check fails, so the row was anonymous by
     construction and was an unbounded insert primitive for any caller. The
     redirect — the whole point of the production fix this test pins — is
-    unchanged. A structlog line replaces the row."""
+    unchanged. A log line replaces the row."""
     app = _make_app(session_factory)
     with TestClient(app) as client:
         # Deliberately do NOT set the oauth_state cookie. This is the
@@ -767,13 +769,10 @@ async def test_exchange_timeout_emits_the_ungated_warning_at_the_login_site(
     emitter reports the budget it actually used" without coupling to
     the monkeypatched harness value.
 
-    The fields are asserted at the TOP level of the call kwargs, never
-    under an ``extra`` key. ``_LOGGER`` is a structlog stdlib
-    BoundLogger, which treats ``extra`` as an ordinary key and renders
-    it as a nested object, so a DigitalOcean log filter on
-    ``flow:"login"`` would not match one. Pinning the flat shape is what
-    keeps this warning filterable, which is the only reason it is worth
-    emitting.
+    The fields are asserted under the call's ``extra`` key and nowhere
+    else: ``_LOGGER`` is a stdlib logger, which renders each ``extra``
+    key as its own JSON key, so a log filter on ``flow:"login"``
+    matches. A keyword argument would raise ``TypeError``.
     """
     await _seed_default_plan(session_factory)
     await _seed_user(session_factory, email="alice@acme.io")
@@ -796,7 +795,8 @@ async def test_exchange_timeout_emits_the_ungated_warning_at_the_login_site(
     calls = _exchange_timeout_warnings(logger_mock)
     assert len(calls) == 1, calls
     fields = calls[0]
-    assert "extra" not in fields, fields
+    assert set(fields) == {"extra"}, fields  # the fields ride in extra=, one JSON key each
+    fields = fields["extra"]
     assert fields["flow"] == "login"
     assert fields["last_phase"] == "start"
     assert fields["timeout_s"] == auth_module.GOOGLE_OAUTH_TOTAL_TIMEOUT_S
@@ -1381,7 +1381,8 @@ async def test_userinfo_200_with_a_non_object_body_redirects_and_audits(
     calls = _invalid_payload_warnings(logger_mock)
     assert len(calls) == 1, calls
     fields = calls[0]
-    assert "extra" not in fields, fields
+    assert set(fields) == {"extra"}, fields  # the fields ride in extra=, one JSON key each
+    fields = fields["extra"]
     assert set(fields) == {"flow", "phase", "body"}, fields
     assert fields["flow"] == "login"
     assert fields["phase"] == "userinfo"
@@ -1611,10 +1612,10 @@ async def test_invalid_payload_emits_the_ungated_warning_at_the_login_site(
     ungated: the neighbouring ``_log_google_callback_phase``
     breadcrumbs are gated on that flag and are silent in production.
 
-    Fields are asserted at the TOP level of the call kwargs, never
-    under ``extra``. ``_LOGGER`` is a structlog stdlib BoundLogger,
-    which treats ``extra`` as an ordinary key and renders it nested, so
-    a DigitalOcean log filter on ``flow:"login"`` would not match one.
+    Fields are asserted under the call's ``extra`` key and nowhere
+    else: ``_LOGGER`` is a stdlib logger, which renders each ``extra``
+    key as its own JSON key, so a log filter on ``flow:"login"``
+    matches.
 
     The second leg is a credential check with teeth. It drives the
     ``unusable_access_token`` branch — a token Google really did send,
@@ -1653,7 +1654,8 @@ async def test_invalid_payload_emits_the_ungated_warning_at_the_login_site(
     calls = _invalid_payload_warnings(logger_mock)
     assert len(calls) == 1, calls
     fields = calls[0]
-    assert "extra" not in fields, fields
+    assert set(fields) == {"extra"}, fields  # the fields ride in extra=, one JSON key each
+    fields = fields["extra"]
     assert set(fields) == {"flow", "phase", "body", "google_error"}, fields
     assert fields["flow"] == "login"
     assert fields["phase"] == "token"
@@ -1676,10 +1678,12 @@ async def test_invalid_payload_emits_the_ungated_warning_at_the_login_site(
     assert res.status_code == 307, res.text
     calls = _invalid_payload_warnings(logger_mock)
     assert len(calls) == 1, calls
-    fields = calls[0]
+    assert set(calls[0]) == {"extra"}, calls[0]
+    fields = calls[0]["extra"]
     assert set(fields) == {"flow", "phase", "body"}, fields
     assert fields["body"] == "unusable_access_token"
-    assert "SENTINEL" not in str(fields), fields
+    # The rendered line, not the arguments: the formatter is what adds context and extras.
+    assert "SENTINEL" not in render_line(INVALID_PAYLOAD_EVENT, calls[0])
 
     rows = await _callback_failure_rows(session_factory)
     assert len(rows) == 2, rows

@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-import structlog
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from slowapi import _rate_limit_exceeded_handler
@@ -28,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
+from app import logs
 from app.agent.auth import authenticate_agent_token, www_authenticate
 from app.agent.registry import AGENT_SCOPES
 from app.database import get_db
@@ -266,7 +266,7 @@ async def test_f_t2_mint_stamps_created_at_whole_seconds(factory):
 
 
 async def test_f_t3_every_rejection_is_the_same_401(factory):
-    structlog.contextvars.clear_contextvars()
+    logs.CONTEXT.set({})
     """FENCE F-T3. Wrong implementations: per-reason bodies (an oracle); the
     owner's ``is_active`` not re-read (inactive cell authenticates); a REST
     PAT accepted as an agent credential (rest cell authenticates)."""

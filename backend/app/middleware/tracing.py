@@ -15,7 +15,7 @@ from opentelemetry.trace import SpanKind
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app import tracing
+from app import logs, tracing
 
 METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
 
@@ -46,6 +46,14 @@ class TracingMiddleware:
         with tracing.span(
             method, SpanKind.SERVER, {"http.request.method": method}, context=parent
         ) as current:
+            # So lines logged after the span ends in this request (the access line, the 500
+            # handler) still carry the ids; the context is set per request by RequestContext.
+            span_context = current.get_span_context()
+            if span_context.is_valid:  # a non-recording span has the all-zero invalid context
+                logs.bind(
+                    trace_id=format(span_context.trace_id, "032x"),
+                    span_id=format(span_context.span_id, "016x"),
+                )
             try:
                 await self.app(scope, receive, send_status)
             except Exception:

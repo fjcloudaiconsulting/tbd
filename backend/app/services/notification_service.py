@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-import structlog
+import logging
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,9 +52,10 @@ from app.models.notification import (
 )
 from app.models.user import Role, User
 from app.services.email_service import send_notification_email
+from app import tracing
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # Page size cap mirrors the parent spec's pagination decision (G3):
@@ -194,8 +195,12 @@ async def _send_notification_email_best_effort(
         if await _email_preference_allows(db, user_id=user_id, category=category):
             await send_notification_email(email, title=title, body=body, link_url=link_url)
     except Exception:  # noqa: BLE001 — email never fails the fan-out
-        await logger.awarning(
-            "notification.fanout.email_failed", user_id=user_id, event_type=event_type
+        logger.warning(
+            "notification.fanout.email_failed",
+            extra={
+                "user_id": user_id,
+                "event_type": event_type,
+            },
         )
 
 
@@ -264,7 +269,7 @@ async def dispatch_notification(
     - ``category in {account, org_admin, org_activity}`` → consult the
       user's ``in_app_{category}`` preference. If the toggle is False
       the row is NOT written; a ``notification.skipped_by_pref``
-      structlog event fires so an operator can spot the skip.
+      log event fires so an operator can spot the skip.
 
     Returns the persisted ``Notification`` row, or ``None`` when the
     preference check skipped the write. Callers that need to chain
@@ -278,12 +283,14 @@ async def dispatch_notification(
         db, user_id=user_id, category=category
     )
     if not allowed:
-        await logger.ainfo(
+        logger.info(
             "notification.skipped_by_pref",
-            user_id=user_id,
-            category=category.value,
-            event_type=event_type,
-            audit_event_id=audit_event_id,
+            extra={
+                "user_id": user_id,
+                "category": category.value,
+                "event_type": event_type,
+                "audit_event_id": audit_event_id,
+            },
         )
         return None
 
@@ -363,11 +370,13 @@ async def dispatch_notification_best_effort(
         await db.commit()
     except Exception:  # noqa: BLE001 — in-app dispatch never fails a completed action
         await db.rollback()
-        await logger.awarning(
+        logger.warning(
             "notification.dispatch_failed",
-            user_id=user_id,
-            event_type=event_type,
-            audit_event_id=audit_event_id,
+            extra={
+                "user_id": user_id,
+                "event_type": event_type,
+                "audit_event_id": audit_event_id,
+            },
         )
 
 
@@ -495,13 +504,15 @@ async def dispatch_notification_to_org_admins(
             # next recipient's flush would raise InvalidRequestError
             # and the caller's commit would fail too.
             await savepoint.rollback()
-            await logger.awarning(
+            logger.warning(
                 "notification.dispatch.fanout.recipient_failed",
-                org_id=org_id,
-                recipient_user_id=admin.id,
-                event_type=event_type,
-                error=str(exc),
-                error_class=type(exc).__name__,
+                extra={
+                    "org_id": org_id,
+                    "recipient_user_id": admin.id,
+                    "event_type": event_type,
+                    "error": tracing.error_summary(exc),
+                    "error_class": type(exc).__name__,
+                },
             )
             failures += 1
         else:
@@ -526,13 +537,15 @@ async def dispatch_notification_to_org_admins(
             link_url=link_url,
         )
 
-    await logger.ainfo(
+    logger.info(
         "notification.dispatch.fanout.complete",
-        org_id=org_id,
-        event_type=event_type,
-        admin_count=len(admins),
-        rows_written=written,
-        failures=failures,
+        extra={
+            "org_id": org_id,
+            "event_type": event_type,
+            "admin_count": len(admins),
+            "rows_written": written,
+            "failures": failures,
+        },
     )
     return written
 
@@ -583,7 +596,13 @@ async def dispatch_notification_to_org_members(
             if row is not None:
                 written += 1
         except Exception:  # noqa: BLE001 — best-effort fanout
-            await logger.awarning("notification.fanout.member_failed", user_id=uid, event_type=event_type)
+            logger.warning(
+                "notification.fanout.member_failed",
+                extra={
+                    "user_id": uid,
+                    "event_type": event_type,
+                },
+            )
         # Email outside the savepoint, gated by the email pref (shared helper).
         if send_email:
             await _send_notification_email_best_effort(

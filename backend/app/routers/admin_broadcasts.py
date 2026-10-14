@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -61,9 +61,10 @@ from app.services.broadcast_service import (
     render_email,
 )
 from app.services.email_service import send_email
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/admin/broadcasts", tags=["admin-broadcasts"])
 
@@ -74,7 +75,7 @@ _PREVIEW_SAMPLE_FIRST_NAME = "Alex"
 
 
 def _request_id() -> Optional[str]:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 async def require_superadmin(
@@ -191,8 +192,12 @@ async def create_broadcast(
         detail=_audit_detail(row),
     )
 
-    await logger.ainfo(
-        "broadcast.create", broadcast_id=row.id, segment=row.segment
+    logger.info(
+        "broadcast.create",
+        extra={
+            "broadcast_id": row.id,
+            "segment": row.segment,
+        },
     )
 
     data = BroadcastResponse.model_validate(row).model_dump()
@@ -342,7 +347,7 @@ async def delete_broadcast(
         detail=detail,
     )
 
-    await logger.ainfo("broadcast.delete", broadcast_id=broadcast_id)
+    logger.info("broadcast.delete", extra={"broadcast_id": broadcast_id})
     return None
 
 
@@ -427,7 +432,7 @@ async def dry_run_broadcast(
             outcome="failure",
             detail=_audit_detail(row, error="send_failed"),
         )
-        await logger.awarning("broadcast.dry_run_failed", broadcast_id=row.id)
+        logger.warning("broadcast.dry_run_failed", extra={"broadcast_id": row.id})
         # 502 + coded detail, the shape this codebase already uses for an
         # upstream that failed us (``routers/ai_categorize.py``).
         raise HTTPException(
@@ -456,7 +461,7 @@ async def dry_run_broadcast(
         detail=_audit_detail(row),
     )
 
-    await logger.ainfo("broadcast.dry_run", broadcast_id=row.id)
+    logger.info("broadcast.dry_run", extra={"broadcast_id": row.id})
     return await _to_response(db, row)
 
 
@@ -608,10 +613,12 @@ async def send_broadcast(
         detail=_audit_detail(row),
     )
 
-    await logger.ainfo(
+    logger.info(
         "broadcast.send",
-        broadcast_id=row.id,
-        total_recipients=row.total_recipients,
+        extra={
+            "broadcast_id": row.id,
+            "total_recipients": row.total_recipients,
+        },
     )
     return await _to_response(db, row)
 
@@ -651,5 +658,5 @@ async def resume_broadcast(
         detail=_audit_detail(row),
     )
 
-    await logger.ainfo("broadcast.resume", broadcast_id=row.id)
+    logger.info("broadcast.resume", extra={"broadcast_id": row.id})
     return await _to_response(db, row)

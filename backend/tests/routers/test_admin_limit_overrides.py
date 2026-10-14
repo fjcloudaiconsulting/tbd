@@ -393,7 +393,7 @@ async def test_feature_state_has_limits_rows(session_factory):
     (OrgLimitOverride, "admin.limit_override.sweep.lock_delete_mismatch"),
     (OrgFeatureOverride, "admin.feature_override.sweep.lock_delete_mismatch"),
 ])
-async def test_sweep_mismatch_warning_is_named_after_the_table(model, event_name, monkeypatch):
+async def test_sweep_mismatch_warning_is_named_after_the_table(model, event_name, log_lines):
     """The mismatch warning names its own table's event, not the feature one."""
     from types import SimpleNamespace
 
@@ -409,13 +409,7 @@ async def test_sweep_mismatch_warning_is_named_after_the_table(model, event_name
         async def execute(self, _stmt):
             return next(results)
 
-    seen: list[str] = []
-
-    async def _warn(name, **_kw):
-        seen.append(name)
-
-    monkeypatch.setattr(admin_orgs.logger, "awarning", _warn)
     key = model.meter if model is OrgLimitOverride else model.feature_key
     await admin_orgs._sweep_expired(
         _Db(), model, key, "counts", utcnow_naive(), lambda r: {key.key: "x"})
-    assert seen == [event_name]
+    assert [ln["msg"] for ln in log_lines() if ln["level"] == "WARNING"] == [event_name]

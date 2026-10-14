@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 
-import structlog
+import logging
 from opentelemetry.trace import SpanKind
 from sqlalchemy import select
 
@@ -19,7 +19,7 @@ from app.services.scheduler.jobs.cc_statement_close import CcStatementCloseJob
 from app.services.scheduler.jobs.cc_statement_reminder import CcStatementReminderJob
 from app.services.scheduler.jobs.recurring_generation import RecurringGenerationJob
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 REGISTRY = [
     RecurringGenerationJob(),
@@ -69,18 +69,35 @@ async def run_all_due(
                         result = await job.run(db, org, today)
                     if result.outcome == OUTCOME_SUCCESS:
                         org_did_work = True
-                    await logger.ainfo("scheduler.job.%s" % result.outcome,
-                                       job=job.job_type, org_id=org.id, counts=result.counts)
+                    logger.info(
+                        "scheduler.job.%s" % result.outcome,
+                        extra={
+                            "job": job.job_type,
+                            "org_id": org.id,
+                            "counts": result.counts,
+                        },
+                    )
                 except Exception as exc:  # noqa: BLE001 — isolate per-job failures
                     await db.rollback()
                     await record_run(job_type=job.job_type, outcome="failure", org=org,
                                      detail={"error": str(exc)})
-                    await logger.aerror("scheduler.job.failure", job=job.job_type,
-                                        org_id=org.id, error=type(exc).__name__)
+                    logger.error(
+                        "scheduler.job.failure",
+                        extra={
+                            "job": job.job_type,
+                            "org_id": org.id,
+                            "error": type(exc).__name__,
+                        },
+                    )
         if org_did_work:
             worked_orgs += 1
             if max_orgs is not None and max_orgs > 0 and worked_orgs >= max_orgs:
-                await logger.ainfo("scheduler.tick.budget_exhausted",
-                                   worked_orgs=worked_orgs, max_orgs=max_orgs,
-                                   total_orgs=len(orgs))
+                logger.info(
+                    "scheduler.tick.budget_exhausted",
+                    extra={
+                        "worked_orgs": worked_orgs,
+                        "max_orgs": max_orgs,
+                        "total_orgs": len(orgs),
+                    },
+                )
                 break

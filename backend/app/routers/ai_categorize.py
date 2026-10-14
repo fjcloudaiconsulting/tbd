@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -33,15 +33,16 @@ from app.services.ai_dispatch import (
     http_for_dispatch_error,
 )
 from app.services.ai_providers import NativeNotAvailable, StructuredOutputError
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
 
 
 def _request_id() -> Optional[str]:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 @router.post(
@@ -129,9 +130,11 @@ async def categorize_transaction(
         )
         logger.info(
             "ai.categorize.failed",
-            org_id=current_user.org_id,
-            transaction_id=payload.transaction_id,
-            code=code,
+            extra={
+                "org_id": current_user.org_id,
+                "transaction_id": payload.transaction_id,
+                "code": code,
+            },
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

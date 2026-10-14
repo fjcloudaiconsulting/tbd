@@ -49,8 +49,7 @@ class TestRefreshHandlerTimeout:
             await asyncio.sleep(60)
 
         # Patch _LOGGER on the module so we can assert the structured
-        # event regardless of how structlog's processor chain routes
-        # output. ``warning`` is the contract surface.
+        # event as the call arguments, whatever the handler renders. ``warning`` is the contract surface.
         with patch.object(auth_mod, "_refresh_impl", hang_forever), \
              patch.object(auth_mod, "_LOGGER") as logger_mock:
             start = time.monotonic()

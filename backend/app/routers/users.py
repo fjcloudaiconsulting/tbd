@@ -1,7 +1,6 @@
 import re
 from datetime import datetime, timezone
 
-import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -30,11 +29,12 @@ from app.services.notification_templates import (
     user_email_change_requested_old_address as _tpl_user_email_change_requested_old_address,
     user_password_changed as _tpl_user_password_changed,
 )
+from app import logs
 
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 _USERNAME_RE = re.compile(USERNAME_PATTERN)
 

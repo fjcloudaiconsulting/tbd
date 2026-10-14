@@ -2,8 +2,8 @@
 
 Three concerns under test:
 
-1. Every HTTP request gets a ``request_id`` bound onto structlog's
-   contextvars and echoed back as the ``X-Request-Id`` response
+1. Every HTTP request gets a ``request_id`` bound onto the log
+   context and echoed back as the ``X-Request-Id`` response
    header. An inbound ``X-Request-Id`` is preserved if it passes
    the length + safe-character policy.
 2. Once auth resolves through ``deps.get_current_user``, the same
@@ -18,10 +18,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import structlog
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
+from app import logs
 from app.middleware.request_context import RequestContextMiddleware
 
 
@@ -31,7 +32,7 @@ def _build_app(captured: list[dict]) -> FastAPI:
 
     @app.get("/echo")
     async def echo(request: Request):
-        captured.append(dict(structlog.contextvars.get_contextvars()))
+        captured.append(dict(logs.CONTEXT.get({})))
         return {"request_id_state": getattr(request.state, "request_id", None)}
 
     return app
@@ -118,53 +119,42 @@ def test_coerce_rejects_non_ascii_word_chars():
         assert len(coerced) == 32, bad
 
 
-def test_middleware_clears_contextvars_between_requests():
-    """A second request starts with a fresh scope — no stale state."""
+async def test_middleware_starts_each_request_with_a_fresh_context():
+    """A second request starts with a fresh scope. Two requests on ONE
+    ``httpx.AsyncClient`` run in one task, which is where a context that is
+    merged (``bind``) instead of replaced (``CONTEXT.set``) leaks:
+    ``TestClient`` runs every call in a new task and cannot see it."""
     captured: list[dict] = []
-    with TestClient(_build_app(captured)) as client:
-        client.get("/echo", headers={"X-Request-Id": "first.req"})
-        client.get("/echo", headers={"X-Request-Id": "second.req"})
-    assert captured[0].get("request_id") == "first.req"
-    assert captured[1].get("request_id") == "second.req"
-    assert "first.req" not in captured[1].values()
+    app = _build_app(captured)
+
+    @app.get("/bind")
+    async def bind():
+        logs.bind(user_id=7, org_id=3)
+        return {}
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        await client.get("/bind", headers={"X-Request-Id": "first.req"})
+        await client.get("/echo", headers={"X-Request-Id": "second.req"})
+    assert captured[-1].get("request_id") == "second.req"
+    assert "user_id" not in captured[-1] and "org_id" not in captured[-1]
 
 
-# ── client_ip is bound unconditionally, incl. anonymous routes ───────────
+# ── the client address is never part of the log context ──────────────────
 
 
-def test_middleware_binds_client_ip_for_every_request():
-    """``client_ip`` is bound onto contextvars for ANY request — no
-    auth dependency required. Anonymous routes like ``/api/v1/auth/register``
-    resolve no ``get_current_user`` dep, so binding here (not in the
-    dep) is what makes bot-signup waves IP-clusterable.
-    """
-    captured: list[dict] = []
-    with TestClient(_build_app(captured)) as client:
-        res = client.get("/echo")
-    assert res.status_code == 200
-    # TestClient's default peer is the loopback address; the resolver
-    # returns it as the client IP when no trusted-proxy/DO context
-    # applies. The point of this assertion is that the KEY is present
-    # on an unauthenticated request.
-    assert "client_ip" in captured[-1]
-    assert captured[-1]["client_ip"]
-
-
-def test_middleware_binds_do_connecting_ip_on_anonymous_route(monkeypatch):
-    """On DO App Platform (``PFV_RUNTIME=app_platform``) the resolver
-    honours ``do-connecting-ip`` unconditionally. An anonymous request
-    carrying that header must surface the real client IP in
-    ``client_ip`` — identical precedence to the authed audit path —
-    so the access-log line for ``/api/v1/auth/register`` is IP-clusterable.
-    """
+def test_middleware_never_puts_the_client_ip_in_the_context(monkeypatch):
+    """Telemetry standard: no client address in logs. A positive control
+    (``request_id`` is there) keeps the absence from being vacuous, with and
+    without a forwarding header."""
     monkeypatch.setenv("PFV_RUNTIME", "app_platform")
     captured: list[dict] = []
     with TestClient(_build_app(captured)) as client:
-        res = client.get(
-            "/echo", headers={"do-connecting-ip": "203.0.113.7"}
-        )
-    assert res.status_code == 200
-    assert captured[-1].get("client_ip") == "203.0.113.7"
+        client.get("/echo")
+        client.get("/echo", headers={"do-connecting-ip": "203.0.113.7"})
+    assert [bool(c.get("request_id")) for c in captured] == [True, True]
+    assert all("client_ip" not in c for c in captured)
+    assert "203.0.113.7" not in str(captured)
 
 
 # ── Critical regression: handler-bound contextvars survive ────────────────
@@ -200,14 +190,12 @@ def test_handler_bound_contextvars_survive_to_outer_scope():
             # middleware this still sees handler-bound contextvars;
             # with BaseHTTPMiddleware it would not.
             post_handler_snapshots.append(
-                dict(structlog.contextvars.get_contextvars())
+                dict(logs.CONTEXT.get({}))
             )
 
     async def asgi_handler(scope, receive, send):
         # Simulate ``deps.get_current_user`` binding auth context.
-        structlog.contextvars.bind_contextvars(
-            user_id=42, org_id=7, role="owner"
-        )
+        logs.bind(user_id=42, org_id=7, role="owner")
         await send(
             {
                 "type": "http.response.start",
@@ -288,7 +276,7 @@ def _make_user(**overrides) -> User:
 
 @pytest.mark.asyncio
 async def test_get_current_user_binds_authenticated_context(monkeypatch) -> None:
-    structlog.contextvars.clear_contextvars()
+    logs.CONTEXT.set({})
     # Fresh last_active_at so the founding-members stamp short-circuits
     # (this test asserts context binding, not the stamp).
     user = _make_user(
@@ -307,8 +295,8 @@ async def test_get_current_user_binds_authenticated_context(monkeypatch) -> None
         _FakeAsyncSession(user),
     )
     assert resolved is user
-    bound = structlog.contextvars.get_contextvars()
+    bound = logs.CONTEXT.get({})
     assert bound.get("user_id") == 7
     assert bound.get("org_id") == 42
     assert bound.get("role") == "owner"
-    structlog.contextvars.clear_contextvars()
+    logs.CONTEXT.set({})

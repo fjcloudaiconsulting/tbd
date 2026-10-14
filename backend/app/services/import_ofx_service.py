@@ -88,13 +88,13 @@ from datetime import date as date_t
 from decimal import Decimal
 from multiprocessing.connection import Connection
 
-import structlog
+import logging
 from fastapi import HTTPException
 
 from app.config import settings
 from app.services.import_parser import ParseError, ParsedRow
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # ── Spec-locked bounds (L3.2 §1.2) ──
@@ -637,11 +637,13 @@ async def parse_ofx(
                     file_bytes, timeout_s=timeout_s, max_rows=max_rows
                 )
             except _ParseTimeout:
-                await logger.ainfo(
+                logger.info(
                     "import.ofx.parse.timeout",
-                    timeout_s=timeout_s,
-                    bytes=len(file_bytes),
-                    org_id=org_id,
+                    extra={
+                        "timeout_s": timeout_s,
+                        "bytes": len(file_bytes),
+                        "org_id": org_id,
+                    },
                 )
                 raise HTTPException(
                     status_code=400,
@@ -651,12 +653,14 @@ async def parse_ofx(
                     ),
                 )
     except _CapExceeded as exc:
-        await logger.ainfo(
+        logger.info(
             "import.ofx.parse.rejected",
-            reason=exc.reason,
-            org_id=org_id,
-            max_concurrent=executor.max_concurrent,
-            max_per_org=executor.max_per_org,
+            extra={
+                "reason": exc.reason,
+                "org_id": org_id,
+                "max_concurrent": executor.max_concurrent,
+                "max_per_org": executor.max_per_org,
+            },
         )
         raise HTTPException(
             status_code=429,
@@ -666,5 +670,5 @@ async def parse_ofx(
             ),
         )
 
-    await logger.ainfo("import.ofx.parsed", bytes=len(file_bytes), **meta)
+    logger.info("import.ofx.parsed", extra={"bytes": len(file_bytes), **meta})
     return rows

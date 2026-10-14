@@ -3,7 +3,7 @@
 
 The 2026-05-19 production incident hung somewhere between the userinfo
 fetch and the redirect, but no step emitted a log line, so ops could not
-tell which ``await`` was stuck. The callback now emits one gated structlog
+tell which ``await`` was stuck. The callback now emits one gated log
 breadcrumb per phase (``auth.google.callback.phase``) so the last phase
 before silence pins the hung await.
 
@@ -28,6 +28,8 @@ from slowapi.errors import RateLimitExceeded
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
+
+from tests.conftest import render_line
 
 from app.config import settings as app_settings
 from app.database import get_db
@@ -148,13 +150,18 @@ def _patch_httpx(monkeypatch, *, userinfo_email: str) -> None:
     monkeypatch.setattr(auth_module.httpx, "AsyncClient", _FakeClient)
 
 
-def _phase_calls(logger_mock) -> list[dict]:
-    """The kwargs of every ``_LOGGER.info(PHASE_EVENT, ...)`` call, in order."""
+def _phase_raw(logger_mock) -> list:
+    """Every ``_LOGGER.info(PHASE_EVENT, ...)`` call, in order."""
     return [
-        call.kwargs
+        call
         for call in logger_mock.info.call_args_list
         if call.args and call.args[0] == PHASE_EVENT
     ]
+
+
+def _phase_calls(logger_mock) -> list[dict]:
+    """The ``extra`` of every phase call: each key is one JSON key on the line."""
+    return [call.kwargs["extra"] for call in _phase_raw(logger_mock)]
 
 
 def _run_callback(session_factory, *, email: str) -> None:
@@ -212,8 +219,11 @@ async def test_breadcrumbs_carry_no_token_or_email_pii(
     with patch.object(auth_module, "_LOGGER") as logger_mock:
         _run_callback(session_factory, email="brand-new@example.com")
 
-    for c in _phase_calls(logger_mock):
-        blob = repr(c).lower()
+    calls = _phase_raw(logger_mock)
+    assert len(calls) == len(EXPECTED_PHASES)  # the positive control: the breadcrumbs fired
+    for call in calls:
+        blob = render_line(call.args[0], call.kwargs).lower()
+        assert "auth.google.callback.phase" in blob
         assert "brand-new@example.com" not in blob
         assert "fake-google-token" not in blob
         assert "token" not in blob  # no access/refresh token value or key

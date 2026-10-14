@@ -36,16 +36,6 @@
         "!recharts"
       ],
       "groupName": "npm non-major"
-    },
-    {
-      "description": "structlog majors are never proposed: INFRA-105 removes structlog.",
-      "matchPackageNames": [
-        "structlog"
-      ],
-      "matchUpdateTypes": [
-        "major"
-      ],
-      "enabled": false
     }
   ]
 }

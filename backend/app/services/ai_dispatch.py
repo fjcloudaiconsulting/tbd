@@ -55,7 +55,7 @@ rejected-by-hard-cap call writes a ledger row. **We do not write a
 ledger row for hard-cap rejections.** Rationale: rejected calls
 never reach the provider, so there's no cost/latency to record,
 and writing zero-cost rows would inflate the row count without
-adding ops signal. Hard-cap events are surfaced via the structlog
+adding ops signal. Hard-cap events are surfaced via the log
 ``ai.dispatch.cap.exceeded`` event and (in PR3+) an audit row.
 """
 from __future__ import annotations
@@ -68,7 +68,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-import structlog
+import logging
 from fastapi import HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -130,7 +130,7 @@ STRUCTURED_OUTPUT_MAX_RETRIES = 2
 DISPATCH_TIMEOUT_ERROR_CODE = "provider_timeout"
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 async def _with_dispatch_timeout(awaitable):
@@ -658,10 +658,12 @@ def _enforce_cap(
         projected = 0
         logger.warning(
             "ai.dispatch.cap.projection_failed",
-            org_id=org_id,
-            feature_key=feature_key,
-            capability=capability,
-            error_class=type(exc).__name__,
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "capability": capability,
+                "error_class": type(exc).__name__,
+            },
         )
 
     if (
@@ -670,17 +672,17 @@ def _enforce_cap(
     ):
         logger.info(
             "ai.dispatch.cap.exceeded",
-            org_id=org_id,
-            feature_key=feature_key,
-            capability=capability,
-            cost_so_far=cost_so_far,
-            hard_cap_cents=resolved.hard_cap_cents,
-            projected_cost_cents=projected,
-            reason=(
-                "exhausted"
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "capability": capability,
+                "cost_so_far": cost_so_far,
+                "hard_cap_cents": resolved.hard_cap_cents,
+                "projected_cost_cents": projected,
+                "reason": "exhausted"
                 if cost_so_far >= resolved.hard_cap_cents
-                else "projected"
-            ),
+                else "projected",
+            },
         )
         raise AICapExceeded()
 
@@ -752,9 +754,11 @@ async def _maybe_warn_soft_cap(
         # ops signal still surfaces.
         logger.warning(
             "ai.dispatch.soft_cap_marker.store_error",
-            error_class=type(exc).__name__,
-            org_id=org_id,
-            feature_key=feature_key,
+            extra={
+                "error_class": type(exc).__name__,
+                "org_id": org_id,
+                "feature_key": feature_key,
+            },
         )
 
     percent = 0
@@ -789,9 +793,11 @@ async def _maybe_warn_soft_cap(
             await savepoint.rollback()
             logger.warning(
                 "ai.dispatch.soft_cap.notify_failed",
-                org_id=org_id,
-                recipient_user_id=user_id,
-                error_class=type(exc).__name__,
+                extra={
+                    "org_id": org_id,
+                    "recipient_user_id": user_id,
+                    "error_class": type(exc).__name__,
+                },
             )
         else:
             await savepoint.commit()
@@ -799,12 +805,14 @@ async def _maybe_warn_soft_cap(
 
     logger.info(
         "ai.dispatch.soft_cap.warned",
-        org_id=org_id,
-        feature_key=feature_key,
-        period=period,
-        soft_cap_cents=resolved.soft_cap_cents,
-        cost_before_call=cost_before_call,
-        recipients=len(recipients),
+        extra={
+            "org_id": org_id,
+            "feature_key": feature_key,
+            "period": period,
+            "soft_cap_cents": resolved.soft_cap_cents,
+            "cost_before_call": cost_before_call,
+            "recipients": len(recipients),
+        },
     )
     return True
 
@@ -936,8 +944,10 @@ async def call_llm(
         # for the ops view).
         logger.info(
             "ai.dispatch.native.unavailable",
-            org_id=org_id,
-            feature_key=feature_key,
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+            },
         )
         raise
     except AIProviderError as exc:
@@ -958,10 +968,12 @@ async def call_llm(
         )
         logger.info(
             "ai.dispatch.adapter.failed",
-            org_id=org_id,
-            feature_key=feature_key,
-            error_class=exc.code,
-            latency_ms=latency_ms,
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "error_class": exc.code,
+                "latency_ms": latency_ms,
+            },
         )
         raise AIDispatchFailed(exc.code) from None
     except Exception as exc:  # pragma: no cover - defensive
@@ -982,10 +994,12 @@ async def call_llm(
         )
         logger.warning(
             "ai.dispatch.unexpected_error",
-            org_id=org_id,
-            feature_key=feature_key,
-            error_class=type(exc).__name__,
-            latency_ms=latency_ms,
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "error_class": type(exc).__name__,
+                "latency_ms": latency_ms,
+            },
         )
         raise AIDispatchFailed(type(exc).__name__) from None
 
@@ -1036,14 +1050,16 @@ async def call_llm(
 
     logger.info(
         "ai.dispatch.success",
-        org_id=org_id,
-        feature_key=feature_key,
-        model=model,
-        prompt_tokens=response.prompt_tokens,
-        completion_tokens=response.completion_tokens,
-        est_cost_cents=cost,
-        latency_ms=latency_ms,
-        ledger_id=ledger.id,
+        extra={
+            "org_id": org_id,
+            "feature_key": feature_key,
+            "model": model,
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
+            "est_cost_cents": cost,
+            "latency_ms": latency_ms,
+            "ledger_id": ledger.id,
+        },
     )
 
     # Best-effort last_used_at refresh — same fire-and-forget posture
@@ -1082,8 +1098,10 @@ async def _touch_last_used(credential_id: int) -> None:
     except Exception:  # noqa: BLE001 - telemetry must never break dispatch
         logger.warning(
             "ai.dispatch.touch_last_used.failed",
-            credential_id=credential_id,
             exc_info=True,
+            extra={
+                "credential_id": credential_id,
+            },
         )
 
 
@@ -1195,8 +1213,10 @@ async def _prepare_platform(
     except Exception as exc:  # noqa: BLE001 - a platform dispatch never projects 0
         logger.warning(
             "ai.dispatch.platform.projection_failed",
-            org_id=org_id,
-            error_class=type(exc).__name__,
+            extra={
+                "org_id": org_id,
+                "error_class": type(exc).__name__,
+            },
         )
         raise AIPlatformProjectionFailed() from None
     try:
@@ -1258,8 +1278,10 @@ async def _settle(
     except SQLAlchemyError as exc:
         logger.warning(
             "ai.dispatch.platform.settle_failed",
-            org_id=handle.org_id,
-            error_class=type(exc).__name__,
+            extra={
+                "org_id": handle.org_id,
+                "error_class": type(exc).__name__,
+            },
         )
 
 
@@ -1322,9 +1344,11 @@ async def _prepare_dispatch(
     if routing is None:
         logger.info(
             "ai.dispatch.routing.missing",
-            org_id=org_id,
-            feature_key=feature_key,
-            capability=capability,
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "capability": capability,
+            },
         )
         raise NoRoutingConfigured()
     credential_id, model = routing
@@ -1340,10 +1364,12 @@ async def _prepare_dispatch(
     if cred is None:
         logger.error(
             "ai.dispatch.routing.dangling",
-            org_id=org_id,
-            feature_key=feature_key,
-            credential_id=credential_id,
-            capability=capability,
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "credential_id": credential_id,
+                "capability": capability,
+            },
         )
         raise NoRoutingConfigured()
 
@@ -1364,11 +1390,13 @@ async def _prepare_dispatch(
         if capability not in capabilities:
             logger.info(
                 "ai.dispatch.capability.unsupported",
-                org_id=org_id,
-                feature_key=feature_key,
-                capability=capability,
-                credential_id=credential_id,
-                discovered=capabilities,
+                extra={
+                    "org_id": org_id,
+                    "feature_key": feature_key,
+                    "capability": capability,
+                    "credential_id": credential_id,
+                    "discovered": capabilities,
+                },
             )
             raise AICapabilityNotSupported(
                 capability=capability, feature_key=feature_key
@@ -1587,9 +1615,11 @@ async def call_llm_structured(
         except NativeNotAvailable:
             logger.info(
                 "ai.dispatch.native.unavailable",
-                org_id=org_id,
-                feature_key=feature_key,
-                capability="structured_output",
+                extra={
+                    "org_id": org_id,
+                    "feature_key": feature_key,
+                    "capability": "structured_output",
+                },
             )
             raise
         except (AIProviderError, CapabilityNotSupported) as exc:
@@ -1625,10 +1655,12 @@ async def call_llm_structured(
             )
             logger.info(
                 "ai.dispatch.structured.failed",
-                org_id=org_id,
-                feature_key=feature_key,
-                error_class=error_code,
-                latency_ms=latency_ms,
+                extra={
+                    "org_id": org_id,
+                    "feature_key": feature_key,
+                    "error_class": error_code,
+                    "latency_ms": latency_ms,
+                },
             )
             raise AIDispatchFailed(error_code) from None
 
@@ -1689,12 +1721,14 @@ async def call_llm_structured(
             )
             logger.info(
                 "ai.dispatch.structured.success",
-                org_id=org_id,
-                feature_key=feature_key,
-                retries_used=attempt,
-                ledger_id=ledger.id,
-                prompt_tokens=total_prompt_tokens,
-                completion_tokens=total_completion_tokens,
+                extra={
+                    "org_id": org_id,
+                    "feature_key": feature_key,
+                    "retries_used": attempt,
+                    "ledger_id": ledger.id,
+                    "prompt_tokens": total_prompt_tokens,
+                    "completion_tokens": total_completion_tokens,
+                },
             )
             asyncio.create_task(  # noqa: RUF006
                 _touch_last_used(prepared.credential_pk_id)
@@ -1711,7 +1745,7 @@ async def call_llm_structured(
                 ledger_id=ledger.id,
             )
         else:
-            last_error = f"schema:{err}"
+            last_error = "schema"  # the class of failure only, never the validator text
             attempt_messages = attempt_messages + [retry_message]
 
     # Exhausted retries. Bill the SUM of tokens consumed across all
@@ -1755,13 +1789,15 @@ async def call_llm_structured(
     )
     logger.warning(
         "ai.dispatch.structured.exhausted",
-        org_id=org_id,
-        feature_key=feature_key,
-        retries_used=STRUCTURED_OUTPUT_MAX_RETRIES,
-        last_error=last_error,
-        ledger_id=ledger.id,
-        prompt_tokens=total_prompt_tokens,
-        completion_tokens=total_completion_tokens,
+        extra={
+            "org_id": org_id,
+            "feature_key": feature_key,
+            "retries_used": STRUCTURED_OUTPUT_MAX_RETRIES,
+            "last_error": last_error,
+            "ledger_id": ledger.id,
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+        },
     )
     raise StructuredOutputError("STATUS_ERROR_STRUCTURED_OUTPUT")
 
@@ -1891,11 +1927,13 @@ async def call_llm_embed(
     )
     logger.info(
         "ai.dispatch.embed.success",
-        org_id=org_id,
-        feature_key=feature_key,
-        model=response.model,
-        prompt_tokens=response.prompt_tokens,
-        ledger_id=ledger.id,
+        extra={
+            "org_id": org_id,
+            "feature_key": feature_key,
+            "model": response.model,
+            "prompt_tokens": response.prompt_tokens,
+            "ledger_id": ledger.id,
+        },
     )
     asyncio.create_task(_touch_last_used(prepared.credential_pk_id))  # noqa: RUF006
     return EmbedDispatchResult(response=response, ledger_id=ledger.id)
@@ -1974,9 +2012,11 @@ async def call_llm_function(
         )
         logger.info(
             "ai.dispatch.function_call.model_unsupported",
-            org_id=org_id,
-            feature_key=feature_key,
-            model=exc.model,
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "model": exc.model,
+            },
         )
         raise AICapabilityNotSupported(
             capability="function_call", feature_key=feature_key
@@ -2036,11 +2076,13 @@ async def call_llm_function(
     )
     logger.info(
         "ai.dispatch.function_call.success",
-        org_id=org_id,
-        feature_key=feature_key,
-        model=prepared.model,
-        tool_calls=len(response.tool_calls),
-        ledger_id=ledger.id,
+        extra={
+            "org_id": org_id,
+            "feature_key": feature_key,
+            "model": prepared.model,
+            "tool_calls": len(response.tool_calls),
+            "ledger_id": ledger.id,
+        },
     )
     asyncio.create_task(_touch_last_used(prepared.credential_pk_id))  # noqa: RUF006
     return FunctionCallDispatchResult(response=response, ledger_id=ledger.id)
@@ -2165,12 +2207,14 @@ async def call_llm_stream(
         )
         logger.info(
             "ai.dispatch.stream.success",
-            org_id=org_id,
-            feature_key=feature_key,
-            model=prepared.model,
-            ledger_id=ledger.id,
-            prompt_tokens=final_usage.prompt_tokens,
-            completion_tokens=final_usage.completion_tokens,
+            extra={
+                "org_id": org_id,
+                "feature_key": feature_key,
+                "model": prepared.model,
+                "ledger_id": ledger.id,
+                "prompt_tokens": final_usage.prompt_tokens,
+                "completion_tokens": final_usage.completion_tokens,
+            },
         )
         asyncio.create_task(_touch_last_used(prepared.credential_pk_id))  # noqa: RUF006
     finally:

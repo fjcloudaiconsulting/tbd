@@ -68,7 +68,7 @@ import time
 from threading import Lock
 from typing import Literal, Optional
 
-import structlog
+import logging
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -112,9 +112,10 @@ from app.services.notification_templates import (
     admin_initiated_email_change_requested_old_address as _tpl_admin_email_change_old,
 )
 from app.services.user_service import normalize_email
+from app import logs
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/admin/users", tags=["admin-users"])
 
@@ -171,7 +172,7 @@ def _reset_audit_throttle_for_tests() -> None:
 
 
 def _request_id() -> str | None:
-    return structlog.contextvars.get_contextvars().get("request_id")
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 @router.post(
@@ -259,10 +260,12 @@ async def merge_users(
         raise HTTPException(status_code=status_code, detail=str(e))
     except Exception:
         await db.rollback()
-        await logger.aexception(
+        logger.exception(
             "admin.user.merge.error",
-            source_user_id=body.source_user_id,
-            target_user_id=body.target_user_id,
+            extra={
+                "source_user_id": body.source_user_id,
+                "target_user_id": body.target_user_id,
+            },
         )
         await audit_service.record_audit_event(
             session_factory,
@@ -334,7 +337,7 @@ async def list_users(
     """Paginated cross-org user list.
 
     Privacy note: ``q`` is NEVER logged. Only ``query_length`` and
-    ``result_count`` go to structlog so a raw search string can't
+    ``result_count`` go to the logs so a raw search string can't
     leak into the log pipeline.
 
     Audit: one ``admin.user.list.viewed`` row per actor per minute
@@ -355,16 +358,18 @@ async def list_users(
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.detail) from exc
 
-    await logger.ainfo(
+    logger.info(
         "admin.user.list.viewed",
-        actor_user_id=actor.id,
-        actor_email=actor.email,
-        query_length=len(q) if q else 0,
-        org_filter=org_id,
-        role_filter=role,
-        status_filter=status_filter,
-        result_count=len(payload["items"]),
-        total=payload["total"],
+        extra={
+            "actor_user_id": actor.id,
+            "actor_email": actor.email,
+            "query_length": len(q) if q else 0,
+            "org_filter": org_id,
+            "role_filter": role,
+            "status_filter": status_filter,
+            "result_count": len(payload["items"]),
+            "total": payload["total"],
+        },
     )
 
     if _should_emit_view_audit(("list", actor.id)):
@@ -415,11 +420,13 @@ async def get_user_detail(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
-    await logger.ainfo(
+    logger.info(
         "admin.user.viewed",
-        actor_user_id=actor.id,
-        actor_email=actor.email,
-        target_user_id=user_id,
+        extra={
+            "actor_user_id": actor.id,
+            "actor_email": actor.email,
+            "target_user_id": user_id,
+        },
     )
 
     if _should_emit_view_audit(("detail", actor.id, user_id)):
@@ -518,10 +525,12 @@ async def delete_user(
         )
     except Exception:
         await db.rollback()
-        await logger.aexception(
+        logger.exception(
             "admin.user.delete.error",
-            target_user_id=user_id,
-            actor_user_id=actor_id,
+            extra={
+                "target_user_id": user_id,
+                "actor_user_id": actor_id,
+            },
         )
         await audit_service.record_audit_event(
             session_factory,

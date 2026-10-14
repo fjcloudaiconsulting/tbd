@@ -75,7 +75,7 @@ the audit row is self-explanatory.
 """
 from __future__ import annotations
 
-import structlog
+import logging
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,7 +87,7 @@ from app.models.user import Role, User
 from app.services.exceptions import ConflictError, NotFoundError
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # Stable machine-readable codes the router surfaces back to the
@@ -253,13 +253,15 @@ async def delete_user(
     # previews, dropped on purpose) all run as part of the same statement.
     await db.execute(delete(User).where(User.id == target_user_id))
 
-    await logger.ainfo(
+    logger.info(
         "admin.user.delete",
-        target_user_id=target_user_id,
-        target_email=snapshot["email"],
-        target_org_id=snapshot["org_id"],
-        actor_user_id=actor_user_id,
-        fk_cleanup_counts=fk_cleanup_counts,
+        extra={
+            "target_user_id": target_user_id,
+            "target_email": snapshot["email"],
+            "target_org_id": snapshot["org_id"],
+            "actor_user_id": actor_user_id,
+            "fk_cleanup_counts": fk_cleanup_counts,
+        },
     )
 
     return {

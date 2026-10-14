@@ -33,7 +33,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import anyio
-import structlog
+import logging
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -49,7 +49,7 @@ from app.models.user import User
 from app.services import ai_dispatch, usage_service
 from app.services.ai_providers import NativeNotAvailable
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 FEATURE_KEY = "chat"  # AI routing + cap key (``ai_feature_map``)
 MAX_ROUNDS = 6
@@ -90,7 +90,7 @@ async def release_lock(org_id: int, nonce: str) -> None:
     try:
         await state_db.release_lease(lock_key(org_id), nonce)
     except Exception:  # noqa: BLE001  (never mask the turn's own outcome)
-        await logger.awarning("agent.turn.lock_release_failed", org_id=org_id)
+        logger.warning("agent.turn.lock_release_failed", extra={"org_id": org_id})
 
 
 async def tool_schemas(db: AsyncSession, user: User) -> list[dict[str, Any]]:
@@ -292,7 +292,7 @@ async def stream_turn(
         await release_lock(org_id, nonce)
         yield _sse("done", {})
     except Exception:
-        await logger.aexception("agent.turn.failed", org_id=org_id, user_id=user_id)
+        logger.exception("agent.turn.failed", extra={"org_id": org_id, "user_id": user_id})
         outcome = "internal_error"
         yield _sse("error", {"code": outcome})
         yield _sse("done", {})
@@ -314,8 +314,19 @@ async def stream_turn(
                 try:
                     await db.close()
                 except Exception:  # noqa: BLE001
-                    await logger.awarning("agent.turn.session_close_failed", org_id=org_id)
-            await logger.ainfo(
-                "agent.turn.completed", org_id=org_id, user_id=user_id, rounds=rounds,
-                outcome=outcome, latency_ms=int((loop.time() - started) * 1000),
+                    logger.warning(
+                        "agent.turn.session_close_failed",
+                        extra={
+                            "org_id": org_id,
+                        },
+                    )
+            logger.info(
+                "agent.turn.completed",
+                extra={
+                    "org_id": org_id,
+                    "user_id": user_id,
+                    "rounds": rounds,
+                    "outcome": outcome,
+                    "latency_ms": int((loop.time() - started) * 1000),
+                },
             )

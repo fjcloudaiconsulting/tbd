@@ -30,7 +30,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable
 
-import structlog
+import logging
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,7 +62,7 @@ from app.services.transaction_filters import (
     is_reciprocal_pair,
 )
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # Allowed state transitions (server-authoritative; spec §3.4 / §0.3).
@@ -261,12 +261,14 @@ async def create_import_batch(
         .values(import_batch_id=batch.id)
     )
 
-    await logger.ainfo(
+    logger.info(
         "import.batch_created",
-        org_id=org_id,
-        batch_id=batch.id,
-        source_format=source_format_enum.value,
-        row_count=len(ids),
+        extra={
+            "org_id": org_id,
+            "batch_id": batch.id,
+            "source_format": source_format_enum.value,
+            "row_count": len(ids),
+        },
     )
 
     return batch
@@ -603,11 +605,13 @@ async def _apply_edits(
     # fails CLOSED, so a one-way reconcile match reads as an ordinary
     # editable row (TBD-310) while a real pair is still refused (F42).
     if is_reciprocal_pair(tx, link_target):
-        await logger.ainfo(
+        logger.info(
             "reconcile.edit_refused_transfer_leg",
-            org_id=org_id,
-            transaction_id=tx.id,
-            partner_id=link_target.id,
+            extra={
+                "org_id": org_id,
+                "transaction_id": tx.id,
+                "partner_id": link_target.id,
+            },
         )
         raise ValidationError(
             "Cannot edit a transfer leg from the reconciliation inbox; "
@@ -654,18 +658,20 @@ async def _apply_edits(
             # the caller; move either and they start lying silently.
             # ``source_amount`` likewise reads the pre-mutation value only
             # because ``tx.amount = edits.amount`` sits BELOW this call.
-            await logger.ainfo(
+            logger.info(
                 "import.reconcile.balance_changed",
-                org_id=org_id,
-                transaction_id=tx.id,
-                account_id=tx.account_id,
-                source_state=tx.reconciliation_state,
-                target_state=ReconciliationState.EDITED.value,
-                direction="amount_edit",
-                amount=str(edits.amount),
-                tx_type=tx.type.value,
-                source_amount=str(tx.amount),
-                target_amount=str(edits.amount),
+                extra={
+                    "org_id": org_id,
+                    "transaction_id": tx.id,
+                    "account_id": tx.account_id,
+                    "source_state": tx.reconciliation_state,
+                    "target_state": ReconciliationState.EDITED.value,
+                    "direction": "amount_edit",
+                    "amount": str(edits.amount),
+                    "tx_type": tx.type.value,
+                    "source_amount": str(tx.amount),
+                    "target_amount": str(edits.amount),
+                },
             )
         tx.amount = edits.amount
 
@@ -773,12 +779,14 @@ async def _apply_match(
         # Both guards fire only on states the design argues are unreachable.
         # If one EVER fires in production this event is the only way to find
         # it. Ids and org only -- no PII.
-        await logger.awarning(
+        logger.warning(
             "reconcile.match_refused_would_forge_pair",
-            org_id=org_id,
-            guard="target_links_back",
-            transaction_id=tx.id,
-            target_id=target.id,
+            extra={
+                "org_id": org_id,
+                "guard": "target_links_back",
+                "transaction_id": tx.id,
+                "target_id": target.id,
+            },
         )
         raise ValidationError(
             f"Transaction {target.id} is already matched to transaction {tx.id}; "
@@ -798,13 +806,15 @@ async def _apply_match(
             )
         )
         if is_reciprocal_pair(tx, current):
-            await logger.awarning(
+            logger.warning(
                 "reconcile.match_refused_would_forge_pair",
-                org_id=org_id,
-                guard="tx_is_transfer_leg",
-                transaction_id=tx.id,
-                target_id=target.id,
-                existing_partner_id=current.id,
+                extra={
+                    "org_id": org_id,
+                    "guard": "tx_is_transfer_leg",
+                    "transaction_id": tx.id,
+                    "target_id": target.id,
+                    "existing_partner_id": current.id,
+                },
             )
             raise ValidationError(
                 f"Transaction {tx.id} is a transfer leg; unlink the transfer "
@@ -943,18 +953,20 @@ async def _apply_balance_for_transition(
     # "your skipped row on 2026-05-10 moved the cached balance by
     # -12.50". The router-level ``import.reconcile.applied`` event
     # summarises the request; this one is per-row.
-    await logger.ainfo(
+    logger.info(
         "import.reconcile.balance_changed",
-        org_id=org_id,
-        transaction_id=tx.id,
-        account_id=tx.account_id,
-        source_state=source_state,
-        target_state=target_state,
-        direction=direction,
-        amount=str(tx.amount),
-        tx_type=tx.type.value,
-        source_in_cached_balance=source_in_cached_balance,
-        target_in_cached_balance=target_in_cached_balance,
+        extra={
+            "org_id": org_id,
+            "transaction_id": tx.id,
+            "account_id": tx.account_id,
+            "source_state": source_state,
+            "target_state": target_state,
+            "direction": direction,
+            "amount": str(tx.amount),
+            "tx_type": tx.type.value,
+            "source_in_cached_balance": source_in_cached_balance,
+            "target_in_cached_balance": target_in_cached_balance,
+        },
     )
 
 
@@ -1087,12 +1099,14 @@ async def _reconcile_one(
     if target_state in REVERTED_RECONCILIATION_STATES and is_reciprocal_pair(
         tx, source_partner
     ):
-        await logger.ainfo(
+        logger.info(
             "reconcile.transition_refused_transfer_leg",
-            org_id=org_id,
-            transaction_id=tx.id,
-            partner_id=source_partner.id if source_partner else None,
-            target_state=target_state,
+            extra={
+                "org_id": org_id,
+                "transaction_id": tx.id,
+                "partner_id": source_partner.id if source_partner else None,
+                "target_state": target_state,
+            },
         )
         # Voice matches its sibling refusal in ``_apply_edits`` deliberately:
         # no raw id, remedy named. This string is customer-facing -- the inbox
@@ -1224,20 +1238,24 @@ async def close_batch_if_complete(
     if pending and pending > 0:
         # Counter drift -- fix it but stay open.
         batch.pending_count = int(pending)
-        await logger.awarning(
+        logger.warning(
             "import.batch_pending_count_drift",
-            batch_id=batch.id,
-            counter_value=0,
-            actual=int(pending),
+            extra={
+                "batch_id": batch.id,
+                "counter_value": 0,
+                "actual": int(pending),
+            },
         )
         return False
 
     batch.status = ImportBatchStatus.CLOSED
     batch.closed_at = datetime.now(timezone.utc).replace(tzinfo=None)
-    await logger.ainfo(
+    logger.info(
         "import.batch_auto_closed",
-        batch_id=batch.id,
-        row_count=batch.row_count,
+        extra={
+            "batch_id": batch.id,
+            "row_count": batch.row_count,
+        },
     )
     return True
 

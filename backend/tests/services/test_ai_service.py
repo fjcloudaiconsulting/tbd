@@ -6,7 +6,7 @@ PR-B is mock-only. The cap-check is a stub (always within budget) and
 the real-provider adapters are not wired. These tests pin:
 
 - Feature-gate fail-closed: a closed gate raises ``FeatureNotEnabled``
-  and emits a ``rejected_gate_closed`` structlog event.
+  and emits a ``rejected_gate_closed`` log event.
 - Dry-run path: ``dry_run=True`` returns the deterministic mock content
   with ``cost_cents=0``.
 - Mock adapter idempotency: the same ``Prompt`` returns the same
@@ -15,17 +15,16 @@ the real-provider adapters are not wired. These tests pin:
   ``PromptNotRedacted``.
 - PII key rejection: ``user_context`` with an IBAN-shaped key raises
   ``PromptContainsPII``.
-- Structlog privacy: the ``ai.call`` event never contains prompt
+- Log privacy: the ``ai.call`` event never contains prompt
   content under any key.
 
-Test-pattern note: structlog routes through its own renderer, so
-``caplog`` does not see records. We patch ``ai_service.logger.ainfo``
-with ``AsyncMock`` to capture event payloads (same pattern as
-``backend/tests/services/test_import_preview_with_rules.py`` for the
-``smart_rules.preview_built`` event).
+Test-pattern note: events are read as the rendered JSON lines (the
+``log_lines`` fixture), the only place a leaked field would show. A field
+whose value is None is not rendered at all.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -137,12 +136,15 @@ def redacted_prompt() -> Prompt:
     )
 
 
-def _capture_ai_calls(spy: AsyncMock) -> list[dict[str, Any]]:
-    """Return kwargs for every ``ai.call`` structlog event the spy saw."""
+_HEAD = ("ts", "level", "logger", "msg")
+
+
+def _capture_ai_calls(log_lines) -> list[dict[str, Any]]:
+    """The fields of every rendered ``ai.call`` line."""
     return [
-        c.kwargs
-        for c in spy.call_args_list
-        if c.args and c.args[0] == "ai.call"
+        {k: v for k, v in ln.items() if k not in _HEAD}
+        for ln in log_lines()
+        if ln["msg"] == "ai.call"
     ]
 
 
@@ -300,10 +302,10 @@ async def test_unknown_feature_key_raises_validation_error(
 
 
 @pytest.mark.asyncio
-async def test_structlog_event_contains_no_prompt_content(
-    session_factory, redacted_prompt
+async def test_log_event_contains_no_prompt_content(
+    session_factory, redacted_prompt, log_lines
 ):
-    """The ``ai.call`` structlog event must never contain prompt
+    """The ``ai.call`` log event must never contain prompt
     content under any key. Spec §6 / §8 privacy invariant."""
     secret_marker = "SECRET_PROMPT_BODY_DO_NOT_LOG"
     prompt = Prompt(
@@ -317,26 +319,22 @@ async def test_structlog_event_contains_no_prompt_content(
         plan = await _make_plan(db, features=_enabled_features("ai.autocategorize"))
         await _make_sub(db, org_id=org.id, plan_id=plan.id)
 
-        with patch.object(
-            ai_service.logger, "ainfo", new_callable=AsyncMock
-        ) as spy:
-            result = await call_llm(
-                db,
-                org_id=org.id,
-                feature_key="ai.autocategorize",
-                prompt=prompt,
-            )
+        result = await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="ai.autocategorize",
+            prompt=prompt,
+        )
 
     # Result content must not echo the secret marker.
     assert secret_marker not in result.content
 
     # Every ``ai.call`` event's kwargs (and the positional event name
     # itself) must be marker-free.
-    events = _capture_ai_calls(spy)
+    events = _capture_ai_calls(log_lines)
     assert len(events) == 1, f"expected exactly one ai.call event, got {len(events)}"
-    rendered = repr(events[0])
-    assert secret_marker not in rendered, (
-        f"Prompt content leaked into ai.call event kwargs: {events[0]}"
+    assert secret_marker not in json.dumps(log_lines()), (
+        f"Prompt content leaked into the ai.call line: {events[0]}"
     )
 
     # Telemetry whitelist (spec §6) — must contain the field set, NOT
@@ -346,12 +344,15 @@ async def test_structlog_event_contains_no_prompt_content(
         "tokens_in", "tokens_out", "cost_cents", "latency_ms",
         "dry_run", "status", "error_code", "request_id",
     }
-    assert set(events[0].keys()) == expected_keys
+    # A None value (error_code, request_id here) is not rendered, so the whitelist is a ceiling
+    # and the fields that always carry a value are the floor.
+    assert set(events[0]) <= expected_keys
+    assert {"org_id", "feature_key", "provider", "model", "tokens_in", "status"} <= set(events[0])
 
 
 @pytest.mark.asyncio
-async def test_gate_closed_emits_structlog_event(session_factory, redacted_prompt):
-    """A gate-closed rejection still emits a structlog ``ai.call`` event
+async def test_gate_closed_emits_log_event(session_factory, redacted_prompt, log_lines):
+    """A gate-closed rejection still emits a log ``ai.call`` event
     with ``status=rejected_gate_closed`` so the coverage endpoint can
     count rejections as a distinct outcome."""
     async with session_factory() as db:
@@ -359,18 +360,15 @@ async def test_gate_closed_emits_structlog_event(session_factory, redacted_promp
         plan = await _make_plan(db, features=_ALL_FALSE)
         await _make_sub(db, org_id=org.id, plan_id=plan.id)
 
-        with patch.object(
-            ai_service.logger, "ainfo", new_callable=AsyncMock
-        ) as spy:
-            with pytest.raises(FeatureNotEnabled):
-                await call_llm(
-                    db,
-                    org_id=org.id,
-                    feature_key="ai.autocategorize",
-                    prompt=redacted_prompt,
-                )
+        with pytest.raises(FeatureNotEnabled):
+            await call_llm(
+                db,
+                org_id=org.id,
+                feature_key="ai.autocategorize",
+                prompt=redacted_prompt,
+            )
 
-    events = _capture_ai_calls(spy)
+    events = _capture_ai_calls(log_lines)
     assert len(events) == 1
     assert events[0]["status"] == STATUS_REJECTED_GATE_CLOSED
     assert events[0]["org_id"] == org.id

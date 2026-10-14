@@ -41,9 +41,10 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, Mock
 
+import json
+
 import pytest
 import pytest_asyncio
-import structlog.testing
 from sqlalchemy import event, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -585,7 +586,7 @@ async def test_drain_rejects_hazardous_subject_before_sending(
 
 @pytest.mark.asyncio
 async def test_drain_skips_batch_when_claim_rowcount_short(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, log_lines
 ):
     """R2 safety net: if the claim UPDATE does not cover every survivor, the
     batch is rolled back and SKIPPED rather than sent.
@@ -597,8 +598,6 @@ async def test_drain_skips_batch_when_claim_rowcount_short(
     """
     send_mock = AsyncMock(return_value=ACCEPTED)
     monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
-    fake_logger = Mock()
-    monkeypatch.setattr(broadcast_service, "logger", fake_logger)
 
     broadcast_id, _users, recipient_ids = await _seed(session_factory, [{}, {}])
 
@@ -629,11 +628,10 @@ async def test_drain_skips_batch_when_claim_rowcount_short(
 
     # The short claim means the batch is never handed to Mailgun.
     assert send_mock.await_count == 0
-    logged = [c for c in fake_logger.error.call_args_list
-              if c.args and c.args[0] == "broadcast_batch_claim_mismatch"]
-    assert len(logged) == 1
-    assert logged[0].kwargs["expected"] == 2
-    assert logged[0].kwargs["actual"] == 1
+    logged = [ln for ln in log_lines() if ln["msg"] == "broadcast_batch_claim_mismatch"]
+    assert len(logged) == 1 and logged[0]["level"] == "ERROR"
+    assert logged[0]["expected"] == 2
+    assert logged[0]["actual"] == 1
     # The un-advanced row stayed pending (claim rolled back), so a resume can
     # still pick it up.
     statuses = await _recipient_statuses(session_factory, broadcast_id)
@@ -641,7 +639,7 @@ async def test_drain_skips_batch_when_claim_rowcount_short(
 
 
 @pytest.mark.asyncio
-async def test_drain_raise_observed_by_done_callback(session_factory, monkeypatch):
+async def test_drain_raise_observed_by_done_callback(session_factory, monkeypatch, log_lines):
     monkeypatch.setattr(
         broadcast_service, "send_batch", AsyncMock(return_value=ACCEPTED)
     )
@@ -652,8 +650,6 @@ async def test_drain_raise_observed_by_done_callback(session_factory, monkeypatc
         raise RuntimeError("tokenize exploded")
 
     monkeypatch.setattr(broadcast_service, "build_batch_bodies", _boom)
-    fake_logger = Mock()
-    monkeypatch.setattr(broadcast_service, "logger", fake_logger)
 
     broadcast_id, _users, _recips = await _seed(session_factory, [{}])
 
@@ -664,7 +660,7 @@ async def test_drain_raise_observed_by_done_callback(session_factory, monkeypatc
     await asyncio.sleep(0)  # let the done-callback run
 
     # Done-callback logged the failure and cleaned up the registries.
-    fake_logger.error.assert_called_once()
+    assert [ln["msg"] for ln in log_lines() if ln["level"] == "ERROR"] == ["broadcast_drain_failed"]
     assert task not in broadcast_service._DRAIN_TASKS
     assert broadcast_id not in broadcast_service._ACTIVE_DRAINS
     # The wrapper flipped the broadcast to FAILED before re-raising.
@@ -687,12 +683,10 @@ async def test_drain_raise_observed_by_done_callback(session_factory, monkeypatc
 
 @pytest.mark.asyncio
 async def test_indeterminate_batch_stays_sent_and_resume_leaves_it_alone(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, log_lines
 ):
     """F2. An INDETERMINATE batch leaves its rows ``sent``, records the
     specific reason in ``error``, and a later resume does not touch them."""
-    fake_logger = Mock()
-    monkeypatch.setattr(broadcast_service, "logger", fake_logger)
     monkeypatch.setattr(
         broadcast_service, "send_batch", AsyncMock(return_value=INDETERMINATE)
     )
@@ -704,7 +698,7 @@ async def test_indeterminate_batch_stays_sent_and_resume_leaves_it_alone(
     assert [r.status for r in rows.values()] == [RecipientStatus.SENT] * 3
     # Claimed exactly once. Not reverted, so not re-claimable either.
     assert [r.attempts for r in rows.values()] == [1, 1, 1]
-    # The typed reason reaches a queryable column, not just structlog. This
+    # The typed reason reaches a queryable column, not just the logs. This
     # is the assertion an implementation that merely "does not revert" fails:
     # leaving the rows alone is necessary but not sufficient, the operator
     # still has to be able to find out WHICH batch is unresolved.
@@ -714,22 +708,14 @@ async def test_indeterminate_batch_stays_sent_and_resume_leaves_it_alone(
     # F8: emitted at ERROR, carrying broadcast_id + count, and NO addresses.
     # ``info`` would sort it with ``broadcast_batch_sent`` — an unresolved
     # delivery question must not look like a success.
-    events = [
-        c
-        for c in fake_logger.error.call_args_list
-        if c.args and c.args[0] == "broadcast_batch_indeterminate"
-    ]
-    assert len(events) == 1
-    assert events[0].kwargs["broadcast_id"] == broadcast_id
-    assert events[0].kwargs["count"] == 3
-    # MA5: counts, never addresses.
+    lines = log_lines()
+    events = [ln for ln in lines if ln["msg"] == "broadcast_batch_indeterminate"]
+    assert len(events) == 1 and events[0]["level"] == "ERROR"  # ERROR, never INFO
+    assert events[0]["broadcast_id"] == broadcast_id
+    assert events[0]["count"] == 3
+    # MA5: counts, never addresses (on every rendered line, not just this one).
     for addr in ("user0@x.io", "user1@x.io", "user2@x.io"):
-        assert addr not in repr(events[0].kwargs)
-    assert [
-        c
-        for c in fake_logger.info.call_args_list
-        if c.args and c.args[0] == "broadcast_batch_indeterminate"
-    ] == []
+        assert addr not in json.dumps(lines)
 
     # And the headline: a Resume click cannot re-send them.
     resume_mock = AsyncMock(return_value=ACCEPTED)
@@ -982,7 +968,7 @@ async def test_resume_sends_only_the_row_no_webhook_has_reported_on(
 
 @pytest.mark.asyncio
 async def test_claim_refuses_a_row_that_gained_delivery_status_mid_flight(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, log_lines
 ):
     """F5 — the half-fix killer.
 
@@ -999,8 +985,6 @@ async def test_claim_refuses_a_row_that_gained_delivery_status_mid_flight(
     """
     send_mock = AsyncMock(return_value=ACCEPTED)
     monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
-    fake_logger = Mock()
-    monkeypatch.setattr(broadcast_service, "logger", fake_logger)
 
     broadcast_id, _users, recipient_ids = await _seed(
         session_factory,
@@ -1038,14 +1022,10 @@ async def test_claim_refuses_a_row_that_gained_delivery_status_mid_flight(
     # Nothing was handed to Mailgun at all: the claim came up one row short,
     # so the whole batch was rolled back and skipped.
     assert send_mock.await_count == 0
-    logged = [
-        c
-        for c in fake_logger.error.call_args_list
-        if c.args and c.args[0] == "broadcast_batch_claim_mismatch"
-    ]
-    assert len(logged) == 1
-    assert logged[0].kwargs["expected"] == 2
-    assert logged[0].kwargs["actual"] == 1
+    logged = [ln for ln in log_lines() if ln["msg"] == "broadcast_batch_claim_mismatch"]
+    assert len(logged) == 1 and logged[0]["level"] == "ERROR"
+    assert logged[0]["expected"] == 2
+    assert logged[0]["actual"] == 1
 
     rows = await _recipient_rows(session_factory, broadcast_id)
     # The delivered row keeps its outcome and is never re-sent.
@@ -1189,7 +1169,7 @@ async def test_quiesce_cancels_and_awaits_a_still_pending_drain(
 
 @pytest.mark.asyncio
 async def test_launch_on_an_already_active_id_logs_the_skip(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, log_lines
 ):
     """FENCE (TBD-358, DoD item 2). Kills the SILENT ``_ACTIVE_DRAINS`` return.
 
@@ -1209,48 +1189,16 @@ async def test_launch_on_an_already_active_id_logs_the_skip(
     The defect is a registry entry with no live task behind it, so the test
     constructs exactly that.
 
-    ⚠ DO NOT reach for ``structlog.testing.capture_logs()`` here. This fence
-    was originally written that way and it was ORDER-DEPENDENT: green on the
-    file alone and on either half of the suite, RED in a full run. ``capture_logs``
-    swaps the processor chain on the GLOBAL structlog config, and several tests
-    in this suite reconfigure that global and never restore it — for example
-    ``tests/routers/test_transactions_suggestions.py`` calls
-    ``structlog.configure(...)`` with its own processors and ``wrapper_class``
-    and has no restore, unlike its siblings in ``test_broadcast_batch_primitives``
-    and ``test_notification_service``, which both put the original config back.
-    Whether the capture sees anything therefore depends on which files ran
-    first, which is exactly the "a red result you cannot trust" failure this
-    ticket exists to remove. Binding a recorder onto the module's own ``logger``
-    asserts the same thing — that the skip is observable — and is immune to
-    whatever any other test has done to the global configuration.
+    Read as the rendered line (the ``log_lines`` fixture), which is what production prints.
     """
     stale_id = 4242
     broadcast_service._ACTIVE_DRAINS.add(stale_id)
-
-    calls: list[tuple[str, dict]] = []
-
-    class _Recorder:
-        """Records structlog-style calls without touching global config."""
-
-        def info(self, event, **kw):
-            calls.append((event, kw))
-
-        def warning(self, event, **kw):
-            calls.append((event, kw))
-
-        def error(self, event, **kw):
-            calls.append((event, kw))
-
-    monkeypatch.setattr(broadcast_service, "logger", _Recorder())
 
     broadcast_service.launch_drain(session_factory, stale_id)
 
     # GUARD (not the fence): the Ruling 3b no-op still holds — no second task.
     assert broadcast_service._DRAIN_TASKS == set()
 
-    skips = [kw for event, kw in calls if event == "broadcast_drain_already_active"]
-    assert skips, (
-        "a launch skipped because of the registry must be observable; "
-        f"calls={calls}"
-    )
+    skips = [ln for ln in log_lines() if ln["msg"] == "broadcast_drain_already_active"]
+    assert skips, "a launch skipped because of the registry must be observable"
     assert skips[0]["broadcast_id"] == stale_id

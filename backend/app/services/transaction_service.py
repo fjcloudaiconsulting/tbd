@@ -13,7 +13,7 @@ instead of HTTPException — callers map these to the appropriate response.
 import datetime
 from decimal import Decimal, InvalidOperation
 
-import structlog
+import logging
 from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,8 +44,9 @@ from app.services.transaction_filters import (
     is_reportable_transaction,
     reportable_transaction_filter,
 )
+from app import tracing
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # ── Response helpers ──────────────────────────────────────────────────────────
@@ -411,12 +412,14 @@ async def create_transaction(
             await db.commit()
         except Exception as exc:
             await db.rollback()
-            await logger.awarning(
+            logger.warning(
                 "smart_rules.learn_failed",
-                org_id=org_id,
-                op="create_transaction",
-                error=str(exc),
-                error_type=type(exc).__name__,
+                extra={
+                    "org_id": org_id,
+                    "op": "create_transaction",
+                    "error": tracing.error_summary(exc),
+                    "error_type": type(exc).__name__,
+                },
             )
 
     result = await db.execute(
@@ -859,13 +862,15 @@ async def update_transaction(
                 raise ValidationError("Pair currencies differ after edit")
 
         if amount_was_changed and pair_partner is not None:
-            await logger.ainfo(
+            logger.info(
                 "transfers.edit_mirrored",
-                org_id=org_id,
-                edited_id=tx.id,
-                partner_id=pair_partner.id,
-                old_amount=str(pre_edit_amount),
-                new_amount=str(tx.amount),
+                extra={
+                    "org_id": org_id,
+                    "edited_id": tx.id,
+                    "partner_id": pair_partner.id,
+                    "old_amount": str(pre_edit_amount),
+                    "new_amount": str(tx.amount),
+                },
             )
 
     # Sync name/category/account forward to the recurring series (template +
@@ -910,12 +915,14 @@ async def update_transaction(
             await db.commit()
         except Exception as exc:
             await db.rollback()
-            await logger.awarning(
+            logger.warning(
                 "smart_rules.learn_failed",
-                org_id=org_id,
-                op="update_transaction",
-                error=str(exc),
-                error_type=type(exc).__name__,
+                extra={
+                    "org_id": org_id,
+                    "op": "update_transaction",
+                    "error": tracing.error_summary(exc),
+                    "error_type": type(exc).__name__,
+                },
             )
 
     result = await db.execute(
@@ -1219,10 +1226,12 @@ async def _settle_batch_counters_and_demote_orphans(
             # delete path must route through it", and a fifth path that
             # passed an id it forgot to lock would reintroduce TBD-311
             # silently, with the suite green. Say so rather than skipping.
-            await logger.awarning(
+            logger.warning(
                 "transactions.delete_counter_skipped_unlocked_row",
-                org_id=org_id,
-                transaction_id=tid,
+                extra={
+                    "org_id": org_id,
+                    "transaction_id": tid,
+                },
             )
             continue
         if r.import_batch_id is None:
@@ -1251,14 +1260,16 @@ async def _settle_batch_counters_and_demote_orphans(
         # so this demotion is irreversible through every API we expose. Ids and
         # org only -- no PII -- matching the forensic pattern in
         # ``reconciliation_service._apply_balance_for_transition``.
-        await logger.ainfo(
+        logger.info(
             "transactions.match_orphan_rejected",
-            org_id=org_id,
-            deleted_transaction_id=r.linked_transaction_id,
-            demoted_transaction_id=r.id,
-            prior_state=prior,
-            amount=str(r.amount),
-            tx_type=r.type.value,
+            extra={
+                "org_id": org_id,
+                "deleted_transaction_id": r.linked_transaction_id,
+                "demoted_transaction_id": r.id,
+                "prior_state": prior,
+                "amount": str(r.amount),
+                "tx_type": r.type.value,
+            },
         )
 
     # ⚠ THE EARLY RETURN LIVES HERE, BELOW BOTH DELTA CLASSES, AND MUST STAY
@@ -2090,13 +2101,15 @@ async def pair_existing_transactions(
         )
     await db.commit()
 
-    await logger.ainfo(
+    logger.info(
         "transfers.linked",
-        org_id=org_id,
-        expense_id=expense_tx.id,
-        income_id=income_tx.id,
-        source="bulk_link",
-        recategorized=recategorize,
+        extra={
+            "org_id": org_id,
+            "expense_id": expense_tx.id,
+            "income_id": income_tx.id,
+            "source": "bulk_link",
+            "recategorized": recategorize,
+        },
     )
     return expense_tx, income_tx
 
@@ -2247,13 +2260,15 @@ async def convert_and_create_leg(
         )
     await db.commit()
 
-    await logger.ainfo(
+    logger.info(
         "transfers.linked",
-        org_id=org_id,
-        expense_id=expense_tx.id,
-        income_id=income_tx.id,
-        source="convert_create",
-        recategorized=recategorize,
+        extra={
+            "org_id": org_id,
+            "expense_id": expense_tx.id,
+            "income_id": income_tx.id,
+            "source": "convert_create",
+            "recategorized": recategorize,
+        },
     )
     return expense_tx, income_tx
 
@@ -2309,17 +2324,17 @@ async def unpair_transactions(
         # ``stage`` distinguishes the two sites: the preview raises first in
         # the single-threaded case, so a "locked" event means the link went
         # non-mutual between preview and lock. No PII -- ids and org only.
-        await logger.awarning(
+        logger.warning(
             "transfers.unpair_refused_non_mutual",
-            org_id=org_id,
-            stage="preview",
-            transaction_id=preview.id,
-            linked_transaction_id=preview.linked_transaction_id,
-            partner_linked_transaction_id=(
-                preview_partner.linked_transaction_id
+            extra={
+                "org_id": org_id,
+                "stage": "preview",
+                "transaction_id": preview.id,
+                "linked_transaction_id": preview.linked_transaction_id,
+                "partner_linked_transaction_id": preview_partner.linked_transaction_id
                 if preview_partner is not None
-                else None
-            ),
+                else None,
+            },
         )
         raise ValidationError("Transaction is not part of a transfer pair")
 
@@ -2384,17 +2399,17 @@ async def unpair_transactions(
             else None
         )
         if not is_reciprocal_pair(subject, locked_partner):
-            await logger.awarning(
+            logger.warning(
                 "transfers.unpair_refused_non_mutual",
-                org_id=org_id,
-                stage="locked",
-                transaction_id=subject.id,
-                linked_transaction_id=subject.linked_transaction_id,
-                partner_linked_transaction_id=(
-                    locked_partner.linked_transaction_id
+                extra={
+                    "org_id": org_id,
+                    "stage": "locked",
+                    "transaction_id": subject.id,
+                    "linked_transaction_id": subject.linked_transaction_id,
+                    "partner_linked_transaction_id": locked_partner.linked_transaction_id
                     if locked_partner is not None
-                    else None
-                ),
+                    else None,
+                },
             )
             raise ValidationError("Transaction is not part of a transfer pair")
 
@@ -2415,13 +2430,15 @@ async def unpair_transactions(
         await db.flush()
     await db.commit()
 
-    await logger.ainfo(
+    logger.info(
         "transfers.unpaired",
-        org_id=org_id,
-        expense_id=expense_tx.id,
-        income_id=income_tx.id,
-        expense_fallback_category_id=expense_fallback_category_id,
-        income_fallback_category_id=income_fallback_category_id,
+        extra={
+            "org_id": org_id,
+            "expense_id": expense_tx.id,
+            "income_id": income_tx.id,
+            "expense_fallback_category_id": expense_fallback_category_id,
+            "income_fallback_category_id": income_fallback_category_id,
+        },
     )
     return expense_tx, income_tx
 

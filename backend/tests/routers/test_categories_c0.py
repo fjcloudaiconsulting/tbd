@@ -1270,7 +1270,7 @@ async def test_category_created_writes_audit_row(session_factory):
 @pytest.mark.asyncio
 async def test_org_bootstrap_seed_does_not_write_audit_rows(session_factory):
     """The seed path runs without a human actor; per section D resolution it
-    is structlog-only."""
+    is log-only."""
     from app.services.org_bootstrap_service import seed_org_defaults
 
     async with session_factory() as db:

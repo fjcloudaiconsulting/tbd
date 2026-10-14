@@ -1,7 +1,7 @@
 import datetime
 from typing import Literal, Optional
 
-import structlog
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
@@ -51,11 +51,12 @@ from app.services import (
     transaction_suggestions_service as suggestions_svc,
 )
 from app.services.exceptions import NotFoundError, ValidationError
+from app import logs
 
 
 def _request_id() -> Optional[str]:
-    """Return the structlog-bound request_id, if any."""
-    return structlog.contextvars.get_contextvars().get("request_id")
+    """Return the log-bound request_id, if any."""
+    return logs.CONTEXT.get({}).get("request_id")
 
 
 # Dedicated logger for the suggestions endpoint so its events are easy
@@ -63,9 +64,7 @@ def _request_id() -> Optional[str]:
 # transactions handlers. Privacy rules in §5.4 of the L3.2 import
 # contract: we log only org_id, type, query_length, result_count,
 # never the raw ``q`` or returned descriptions.
-suggestions_logger = structlog.stdlib.get_logger(
-    "app.routers.transactions.suggestions"
-)
+suggestions_logger = logging.getLogger("app.routers.transactions.suggestions")
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
 
@@ -476,10 +475,12 @@ async def suggest_descriptions(
     # ``q``; ``result_count`` reflects what we're returning.
     suggestions_logger.info(
         "transactions.suggestions.descriptions",
-        org_id=current_user.org_id,
-        type=type,
-        query_length=len(q) if q else 0,
-        result_count=len(suggestions),
+        extra={
+            "org_id": current_user.org_id,
+            "type": type,
+            "query_length": len(q) if q else 0,
+            "result_count": len(suggestions),
+        },
     )
     response.headers["Cache-Control"] = "private, max-age=60"
     return DescriptionSuggestionsResponse(suggestions=suggestions)

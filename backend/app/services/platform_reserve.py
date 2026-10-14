@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-import structlog
+import logging
 from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -29,7 +29,7 @@ from app.models.usage_counter import UsageCounter
 from app.services import feature_service, platform_ai
 from app.services.usage_service import PlanLimitReached, period_start, resets_at
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 TOKENS = "platform_ai.tokens"
 CENTS = "platform_ai.cents"
@@ -101,11 +101,17 @@ async def _resolve(db: AsyncSession, org_id: int, now: datetime):
         out = _keys(ent, now)
     except (SQLAlchemyError, ValidationError, KeyError) as exc:
         await db.rollback()
-        logger.warning("platform_reserve.entitlements_failed", org_id=org_id, error=type(exc).__name__)
+        logger.warning(
+            "platform_reserve.entitlements_failed",
+            extra={
+                "org_id": org_id,
+                "error": type(exc).__name__,
+            },
+        )
         raise PlatformAIUnavailable("entitlements unavailable") from exc
     if out[0].limit is None or out[1].limit is None:
         await db.rollback()
-        logger.warning("platform_reserve.meter_without_limit", org_id=org_id)
+        logger.warning("platform_reserve.meter_without_limit", extra={"org_id": org_id})
         raise PlatformAIUnavailable("platform meter has no limit")
     return out
 
@@ -138,7 +144,13 @@ async def check_headroom(
             select(PlatformAISpend.cents).where(PlatformAISpend.period_start == month)) or 0
     except SQLAlchemyError as exc:
         await db.rollback()
-        logger.warning("platform_reserve.headroom_failed", org_id=org_id, error=type(exc).__name__)
+        logger.warning(
+            "platform_reserve.headroom_failed",
+            extra={
+                "org_id": org_id,
+                "error": type(exc).__name__,
+            },
+        )
         raise PlatformAIUnavailable("headroom check failed") from exc
     if tv + tokens > lt.limit:
         raise _plan_limit(lt, TOKENS, now)
@@ -196,7 +208,13 @@ async def reserve(
         await db.commit()
     except SQLAlchemyError as exc:
         await db.rollback()
-        logger.warning("platform_reserve.reserve_failed", org_id=org_id, error=type(exc).__name__)
+        logger.warning(
+            "platform_reserve.reserve_failed",
+            extra={
+                "org_id": org_id,
+                "error": type(exc).__name__,
+            },
+        )
         raise PlatformAIUnavailable("reservation failed") from exc
 
     return Reservation(

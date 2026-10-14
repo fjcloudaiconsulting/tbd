@@ -20,7 +20,7 @@ learn failure on row N never poisons rows N+1..M.
 """
 from __future__ import annotations
 
-import structlog
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.import_batch import (
@@ -36,8 +36,9 @@ from app.services.exceptions import (
     ValidationError,
 )
 from app.services.category_rules_service import learn_from_choice
+from app import tracing
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 def _error_message(exc: Exception) -> str:
@@ -111,12 +112,14 @@ async def create_batch(
                 )
             )
         except Exception as exc:  # noqa: BLE001 — defensive: log + continue.
-            await logger.aerror(
+            logger.error(
                 "transactions.batch.row_unexpected_error",
-                org_id=org_id,
-                row_number=row.row_number,
-                error=str(exc),
-                error_type=type(exc).__name__,
+                extra={
+                    "org_id": org_id,
+                    "row_number": row.row_number,
+                    "error": tracing.error_summary(exc),
+                    "error_type": type(exc).__name__,
+                },
             )
             errors.append(
                 BatchRowError(
@@ -145,12 +148,14 @@ async def create_batch(
                     source="user_edit",
                 )
         except Exception as exc:  # noqa: BLE001 — best effort.
-            await logger.awarning(
+            logger.warning(
                 "transactions.batch.learn_failed",
-                org_id=org_id,
-                row_id=result.transaction_id,
-                error=str(exc),
-                error_type=type(exc).__name__,
+                extra={
+                    "org_id": org_id,
+                    "row_id": result.transaction_id,
+                    "error": tracing.error_summary(exc),
+                    "error_type": type(exc).__name__,
+                },
             )
 
     return BatchTransactionsResponse(

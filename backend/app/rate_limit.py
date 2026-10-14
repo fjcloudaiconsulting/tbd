@@ -58,13 +58,13 @@ import ipaddress
 import os
 from typing import Iterable
 
-import structlog
+import logging
 from slowapi import Limiter
 from starlette.requests import Request
 
 from app import rate_limit_db  # noqa: F401  (registers tbd-db://)
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # Kept in lockstep with ``--forwarded-allow-ips`` in backend/Dockerfile,
@@ -230,7 +230,7 @@ def rate_limit_key(request: Request) -> str:
 
 def _build_limiter() -> Limiter:
     """Counters live in MySQL (rate limits move to MySQL, INFRA-121)."""
-    logger.info("rate_limit.storage", backend="db")
+    logger.info("rate_limit.storage", extra={"backend": "db"})
     return Limiter(key_func=rate_limit_key, storage_uri="tbd-db://")
 
 

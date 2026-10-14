@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
-import structlog
+import logging
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -72,7 +72,7 @@ from app.services.transaction_filters import (
 )
 
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # The dispatch feature_key MUST be the routable name (``smart_budget``), NOT the
@@ -663,8 +663,10 @@ async def suggest_rebalance(
     ) as exc:
         logger.info(
             "ai.budget.rebalance.unavailable",
-            org_id=org_id,
-            error_class=type(exc).__name__,
+            extra={
+                "org_id": org_id,
+                "error_class": type(exc).__name__,
+            },
         )
     except Exception as exc:  # noqa: BLE001 - defensive
         # Anything unexpected (engine errors from session_factory(),
@@ -673,8 +675,10 @@ async def suggest_rebalance(
         # below still yields a balanced suggestion.
         logger.warning(
             "ai.budget.rebalance.unexpected_error",
-            org_id=org_id,
-            error_class=type(exc).__name__,
+            extra={
+                "org_id": org_id,
+                "error_class": type(exc).__name__,
+            },
         )
 
     suggestions, uncovered = _allocate_rebalance(facts, priority, reasons)
@@ -691,9 +695,11 @@ async def suggest_rebalance(
     if abs(total_suggested - total_budget) > CENT:
         logger.warning(
             "ai.budget.rebalance.guard_tripped",
-            org_id=org_id,
-            total_budget=str(total_budget),
-            total_suggested=str(total_suggested),
+            extra={
+                "org_id": org_id,
+                "total_budget": str(total_budget),
+                "total_suggested": str(total_suggested),
+            },
         )
         suggestions, uncovered = _allocate_rebalance(facts, [], {})
         emitted = {s.category_id: s.suggested_amount for s in suggestions}

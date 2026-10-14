@@ -18,6 +18,7 @@ request path reaches it today.
 
 import calendar
 import datetime
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -31,6 +32,8 @@ from app.models.budget import Budget
 from app.models.category import Category
 from app.models.user import Organization
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 def _snap_to_cycle(d: datetime.date, cycle_day: int) -> datetime.date:
@@ -128,13 +131,13 @@ async def get_current_period(
     open_periods = await _open_periods(db, org_id)
 
     if len(open_periods) > 1:
-        import structlog
-        logger = structlog.stdlib.get_logger()
-        await logger.awarning(
+        logger.warning(
             "multiple open billing periods",
-            org_id=org_id,
-            count=len(open_periods),
-            period_ids=[p.id for p in open_periods],
+            extra={
+                "org_id": org_id,
+                "count": len(open_periods),
+                "period_ids": [p.id for p in open_periods],
+            },
         )
 
     period = open_periods[0] if open_periods else None
@@ -301,13 +304,14 @@ async def ensure_future_periods(
             # Forecasts mount (budgets/page.tsx:97,
             # ForecastPlansClient.tsx:290), so a 409 here would break two
             # pages for an org whose roster is merely off-grid.
-            import structlog
-            await structlog.stdlib.get_logger().awarning(
+            logger.warning(
                 "billing.stub.skipped_overlap",
-                org_id=org_id,
-                candidate_start=next_start.isoformat(),
-                candidate_end=end_date.isoformat(),
-                existing_period_id=overlapping,
+                extra={
+                    "org_id": org_id,
+                    "candidate_start": next_start.isoformat(),
+                    "candidate_end": end_date.isoformat(),
+                    "existing_period_id": overlapping,
+                },
             )
             continue
 
@@ -837,9 +841,6 @@ async def _apply_close_step(
     the helper returns the row it opened, so D4's retry re-derives the clamp
     from scratch instead of re-clamping an already-clamped value.
     """
-    import structlog
-    logger = structlog.stdlib.get_logger()
-
     # ── step a — straddling rows (D12). Pure SELECT, no mutation. ─────────
     #
     # A row starting at or before `current.start_date` but ending after it is
@@ -997,37 +998,39 @@ async def _apply_close_step(
     # residual (process death between i and j) is accepted and recorded in the
     # spec.
     for period_id, straddler_start, straddler_end in straddling_rows:
-        await logger.awarning(
+        logger.warning(
             "billing.close.straddling_row_ignored",
-            org_id=org_id,
-            period_id=period_id,
-            period_start=straddler_start.isoformat(),
-            period_end=straddler_end.isoformat(),
-            closing_period_start=current.start_date.isoformat(),
+            extra={
+                "org_id": org_id,
+                "period_id": period_id,
+                "period_start": straddler_start.isoformat(),
+                "period_end": straddler_end.isoformat(),
+                "closing_period_start": current.start_date.isoformat(),
+            },
         )
     if resolved != requested:
-        await logger.ainfo(
+        logger.info(
             "billing.close.clamped",
-            org_id=org_id,
-            requested_close_date=requested.isoformat(),
-            clamped_to=resolved.isoformat(),
-            absorbed_period_ids=absorbed_ids,
-            revived_period_id=revived_id,
-            revived_previous_end=(
-                revived_previous_end.isoformat() if revived_previous_end else None
-            ),
+            extra={
+                "org_id": org_id,
+                "requested_close_date": requested.isoformat(),
+                "clamped_to": resolved.isoformat(),
+                "absorbed_period_ids": absorbed_ids,
+                "revived_period_id": revived_id,
+                "revived_previous_end": revived_previous_end.isoformat() if revived_previous_end else None,
+            },
         )
     if revived_id is not None:
         # Its OWN event, not a key on `clamped`: the unclamped revive (the
         # ordinary stub case) overwrites `end_date` too and emits no `clamped`
         # event, so attaching the key there would lose it on the common path.
-        await logger.ainfo(
+        logger.info(
             "billing.close.revived",
-            org_id=org_id,
-            revived_period_id=revived_id,
-            revived_previous_end=(
-                revived_previous_end.isoformat() if revived_previous_end else None
-            ),
+            extra={
+                "org_id": org_id,
+                "revived_period_id": revived_id,
+                "revived_previous_end": revived_previous_end.isoformat() if revived_previous_end else None,
+            },
         )
 
     return new_period

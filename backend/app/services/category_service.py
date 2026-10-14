@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-import structlog
+import logging
 from sqlalchemy import and_, delete, exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -52,7 +52,7 @@ from app.schemas.category import (
 from app.services import audit_service
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
-logger = structlog.stdlib.get_logger()
+logger = logging.getLogger(__name__)
 
 
 # --- Existing type-compatibility guard helpers ------------------------------
@@ -890,7 +890,7 @@ async def preview_move(
     """Read-only move preview (section 4.1).
 
     Issues SELECTs only. Does NOT write to ``categories``,
-    ``audit_events``, or any dependent table. Does NOT emit structlog
+    ``audit_events``, or any dependent table. Does NOT log
     events (the preview is a UX helper, not a business event).
     """
     sub, source_master, target = await _resolve_for_move(
@@ -963,12 +963,14 @@ async def move_subcategory(
         },
     )
 
-    await logger.ainfo(
+    logger.info(
         "category.moved",
-        category_id=sub.id,
-        source_master_id=source_master.id,
-        target_master_id=target.id,
-        affected_transaction_count=result.affected_transaction_count,
+        extra={
+            "category_id": sub.id,
+            "source_master_id": source_master.id,
+            "target_master_id": target.id,
+            "affected_transaction_count": result.affected_transaction_count,
+        },
     )
 
     return result
@@ -1083,9 +1085,11 @@ async def batch_move_subcategories(
         # No await db.commit(); db.begin() context manager owns the
         # boundary per section 3.C.
 
-    await logger.ainfo(
+    logger.info(
         "category.batch_moved",
-        total_subcategories=len(per_move_results),
+        extra={
+            "total_subcategories": len(per_move_results),
+        },
     )
 
     return BatchMoveResult(moves=per_move_results)
@@ -1400,15 +1404,17 @@ async def delete_category_with_migration(
         },
     )
 
-    await logger.ainfo(
+    logger.info(
         "category.deleted",
-        category_id=cat.id,
-        migration_target_id=target.id,
-        migrated_transaction_count=migrated_tx,
-        migrated_recurring_count=migrated_rec,
-        migrated_forecast_item_count=migrated_fpi,
-        migrated_rule_count=migrated_rules,
-        deleted_rule_count=dropped_rules,
+        extra={
+            "category_id": cat.id,
+            "migration_target_id": target.id,
+            "migrated_transaction_count": migrated_tx,
+            "migrated_recurring_count": migrated_rec,
+            "migrated_forecast_item_count": migrated_fpi,
+            "migrated_rule_count": migrated_rules,
+            "deleted_rule_count": dropped_rules,
+        },
     )
 
     return CategoryDeleteResult(
@@ -1470,11 +1476,13 @@ async def _delete_category_no_dependents(
         },
     )
 
-    await logger.ainfo(
+    logger.info(
         "category.deleted",
-        category_id=cat.id,
-        migration_target_id=None,
-        migrated_transaction_count=0,
+        extra={
+            "category_id": cat.id,
+            "migration_target_id": None,
+            "migrated_transaction_count": 0,
+        },
     )
 
     return CategoryDeleteResult(

@@ -13,7 +13,6 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
-import structlog
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import event
