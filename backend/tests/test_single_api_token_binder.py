@@ -98,6 +98,30 @@ def _is_logs_bind(func: ast.expr) -> bool:
     return isinstance(func, ast.Name) and func.id == "bind"
 
 
+def _is_context_set_with_token(node: ast.AST) -> bool:
+    """``logs.CONTEXT.set({... "api_token_id": ...})``: a second way to write the key."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "set"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "CONTEXT"
+        and any(
+            isinstance(n, ast.Dict)
+            and any(isinstance(k, ast.Constant) and k.value == "api_token_id" for k in n.keys)
+            for arg in node.args
+            for n in ast.walk(arg)
+        )
+    )
+
+
+def test_the_context_set_matcher_tells_right_from_wrong():
+    wrong = ast.parse('logs.CONTEXT.set({**logs.CONTEXT.get({}), "api_token_id": 4})').body[0].value
+    right = ast.parse('logs.CONTEXT.set({"request_id": rid})').body[0].value
+    assert _is_context_set_with_token(wrong)
+    assert not _is_context_set_with_token(right)
+
+
 def _find_binds() -> list[Bind]:
     binds: list[Bind] = []
     for path in sorted(BACKEND_APP.rglob("*.py")):
@@ -111,8 +135,10 @@ def _find_binds() -> list[Bind]:
         def visit(node: ast.AST, parents: list[ast.AST]) -> None:
             if (
                 isinstance(node, ast.Call)
-                and _is_logs_bind(node.func)
-                and any(kw.arg == "api_token_id" for kw in node.keywords)
+                and (
+                    (_is_logs_bind(node.func) and any(kw.arg == "api_token_id" for kw in node.keywords))
+                    or _is_context_set_with_token(node)
+                )
             ):
                 binds.append(
                     Bind(

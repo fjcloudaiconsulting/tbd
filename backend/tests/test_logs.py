@@ -263,3 +263,43 @@ def test_f11_uvicorn_access_is_silent_after_configure(log_lines):
     logging.getLogger("uvicorn.error").info("control")  # the channel itself works
 
     assert [line["msg"] for line in log_lines()] == ["control"]
+
+
+# Review 1: uvicorn logs a failed lifespan as logger.error(<the whole traceback text>), which quotes
+# the exception message. The filter on uvicorn.error replaces it with a fixed message.
+def test_a_uvicorn_lifespan_traceback_text_is_replaced(log_lines):
+    text = (
+        "Traceback (most recent call last):\n  File \"x.py\", line 1, in f\n"
+        f"RuntimeError: {VALUE}"
+    )
+    logging.getLogger("uvicorn.error").error(text)
+    logging.getLogger("uvicorn.error").error("Application startup complete.")  # control
+
+    lines = log_lines()
+
+    assert [line["msg"] for line in lines] == ["uvicorn.lifespan.failed", "Application startup complete."]
+    assert "SECRET" not in json.dumps(lines)
+
+
+# Review 1: a third-party `logger.error("...: %s", exc)` renders the class, never the message.
+def test_an_exception_in_the_message_args_is_rendered_as_its_class(log_lines):
+    logging.getLogger("opentelemetry.exporter").error(
+        "Failed to export: %s", _raised(RuntimeError, VALUE)
+    )
+
+    (line,) = log_lines()
+    assert line["msg"] == "Failed to export: RuntimeError"
+    assert "SECRET" not in json.dumps(line)
+
+
+# Review 1: the test helper resolves exc_info=True like the stdlib, so the line has its exc chain.
+def test_render_line_resolves_exc_info_true():
+    from tests.conftest import render_line
+
+    try:
+        raise RuntimeError(VALUE)
+    except RuntimeError:
+        line = json.loads(render_line("x", {"exc_info": True}))
+
+    assert line["exc"][0]["type"] == "builtins.RuntimeError"
+    assert "SECRET" not in json.dumps(line)

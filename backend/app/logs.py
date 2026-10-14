@@ -5,6 +5,7 @@ is copied onto each record by a filter on our handler. Records never carry an ex
 only its class, its frames and, for MySQL driver errors, the error number.
 """
 
+import copy
 import json
 import logging
 import sys
@@ -100,8 +101,27 @@ def _json_default(value: object) -> str:
     return type(value).__name__ if isinstance(value, BaseException) else str(value)
 
 
+class _LifespanFailure(logging.Filter):
+    """uvicorn logs a failed lifespan as logger.error(<the whole traceback text>), which quotes the
+    exception's message; a fixed message goes out instead."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str) and record.msg.startswith("Traceback (most recent call last)"):
+            record.msg, record.args = "uvicorn.lifespan.failed", ()
+        return True
+
+
+LIFESPAN_FAILURE = _LifespanFailure()
+
+
 class Formatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        if isinstance(record.args, tuple) and any(isinstance(a, BaseException) for a in record.args):
+            # logger.error("...: %s", exc) from a library: the class, never the message.
+            record = copy.copy(record)
+            record.args = tuple(
+                type(a).__name__ if isinstance(a, BaseException) else a for a in record.args
+            )
         # A non-string message (logger.warning(error)) is logged as its class, never str().
         template = record.msg if isinstance(record.msg, str) else type(record.msg).__name__
         try:
@@ -229,6 +249,7 @@ def configure() -> None:
     for name in ("uvicorn", "uvicorn.error"):
         logging.getLogger(name).handlers.clear()
         logging.getLogger(name).propagate = True
+    logging.getLogger("uvicorn.error").addFilter(LIFESPAN_FAILURE)
     # Its access line has the client IP and the raw path with query: RequestContextMiddleware
     # writes the access line instead.
     access = logging.getLogger("uvicorn.access")

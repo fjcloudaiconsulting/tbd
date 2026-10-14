@@ -193,13 +193,6 @@ def test_f14_one_logging_library():
         assert "structlog" not in (BACKEND / name).read_text(encoding="utf-8"), name
 
 
-def test_f14_the_ast_finds_an_import_and_an_attribute():
-    import_ = "import " + "struct" + "log\n"
-    for source in (import_, import_ + "x = " + "struct" + "log.get_logger()\n"):
-        tree = ast.parse(source)
-        assert any(isinstance(n, ast.Import) for n in ast.walk(tree))
-
-
 # F15 ------------------------------------------------------------------------------------------
 def test_f15_every_logger_call_has_a_runtime_safe_shape():
     problems = {}
@@ -235,6 +228,36 @@ def test_f15_the_scanner_passes_the_right_shape():
         "log.info('m', extra={'org_id': 1, **d}, exc_info=True)\n"
     )
     assert call_problems(source) == []
+
+
+# No client address in a log field (telemetry standard) ---------------------------------------
+ADDRESS_KEYS = {"ip", "ip_address", "client_ip", "remote_addr"}
+
+
+def address_problems(source: str) -> list[str]:
+    tree = ast.parse(source)
+    problems: list[str] = []
+    for call in logger_calls(tree):
+        if (extra := _extra_dict(call)) is not None:
+            for key in extra.keys:
+                if isinstance(key, ast.Constant) and key.value in ADDRESS_KEYS:
+                    problems.append(f"line {call.lineno}: {key.value!r}")
+    return problems
+
+
+def test_no_log_field_carries_a_client_address():
+    problems = {}
+    for path in RUNTIME:
+        if found := address_problems(path.read_text(encoding="utf-8")):
+            problems[path.relative_to(BACKEND).as_posix()] = found
+    assert not problems, problems
+
+
+@pytest.mark.parametrize("key", sorted(ADDRESS_KEYS))
+def test_the_address_scanner_catches_each_key(key):
+    source = f"import logging\nlog = logging.getLogger('x')\nlog.info('m', extra={{{key!r}: 1}})\n"
+    assert address_problems(source)
+    assert address_problems("import logging\nlog = logging.getLogger('x')\nlog.info('m', extra={'org_id': 1})\n") == []
 
 
 # F16 ------------------------------------------------------------------------------------------

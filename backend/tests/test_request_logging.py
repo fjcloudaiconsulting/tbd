@@ -164,13 +164,18 @@ async def test_f11_an_unmatched_request_has_no_route(real_app, log_lines):
     assert "1234" not in str(line)
 
 
-async def test_f11_the_health_probe_is_debug_only(real_app, log_lines):
+async def test_f11_the_health_probes_are_debug_only_and_nothing_else_under_health_is(
+    real_app, log_lines
+):
+    # The silent list of the old access log: exactly these three paths (INFRA-83).
     async with client_for(real_app) as client:
-        await client.get("/health")
-        await client.get("/ready")
+        for path in ("/health", "/ready", "/health/dependencies"):
+            await client.get(path)
+        for path in ("/health/dependencies/x", "/healthz", "/ready/x"):
+            await client.get(path)
 
-    lines = access(log_lines())
-    assert [line["level"] for line in lines] == ["DEBUG", "DEBUG"]
+    levels = [line["level"] for line in access(log_lines())]
+    assert levels == ["DEBUG"] * 3 + ["INFO"] * 3
 
 
 async def test_f11_an_unhandled_error_still_yields_one_access_line_with_status_500(

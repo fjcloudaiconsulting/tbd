@@ -75,9 +75,10 @@ def render_line(event: str, kwargs: dict) -> str:
     """The JSON line a call ``logger.info(event, **kwargs)`` prints, through the real filter and
     formatter. For tests that mock a module logger: a "not logged" assertion must read this, not the
     call's arguments, which say nothing about what the formatter adds (context, extras)."""
-    record = logging.LogRecord(
-        "app.tests", logging.INFO, __file__, 0, event, (), kwargs.get("exc_info")
-    )
+    exc_info = kwargs.get("exc_info")
+    if exc_info is True:  # resolved like the stdlib does, from the exception being handled
+        exc_info = sys.exc_info()
+    record = logging.LogRecord("app.tests", logging.INFO, __file__, 0, event, (), exc_info)
     for key, value in kwargs.get("extra", {}).items():
         setattr(record, key, value)
     from app import logs
