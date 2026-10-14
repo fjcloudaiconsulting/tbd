@@ -95,7 +95,7 @@ async def test_4xx_logs_status_route_template_and_code_only(probe, logs):
     base = {"status": 404, "method": "GET", "route": "/__t617/dict/{item}"}
     assert {k: ev["/__t617/dict/{item}"][k] for k in base} == base
     assert ev["/__t617/dict/{item}"]["code"] == "thing_missing"
-    for name, kind in (("text", "text"), ("list", "list"), ("none", "none"), ("unauth", "text")):
+    for name, kind in (("text", "text"), ("list", "list"), ("none", "text"), ("unauth", "text")):
         e = ev[f"/__t617/{name}/{{item}}"]
         assert e["detail_kind"] == kind and "code" not in e, name
     unrouted = [e for e in logs.named("http.client_error") if e["status"] == 404 and e["route"] is None]

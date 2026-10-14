@@ -1,14 +1,17 @@
 import asyncio
 import os
+import re
 import subprocess
 from contextlib import asynccontextmanager
 
 import logging
 from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import tracing
 from app.middleware.request_context import RequestContextMiddleware
@@ -519,6 +522,32 @@ def _loc_targets_sensitive_field(loc) -> bool:
     )
 
 
+_FIELD_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_logged(request, exc: StarletteHTTPException):
+    """Log WHY a 4xx happened, then answer exactly as FastAPI's default does.
+    ``code`` only from a dict detail's string ``code``: any other detail can
+    echo user input, so only its kind is logged. Route template, never the URL."""
+    if 400 <= exc.status_code < 500:
+        d = exc.detail
+        fields: dict = {}
+        if isinstance(d, dict) and isinstance(d.get("code"), str):
+            fields["code"] = d["code"]
+        else:
+            fields["detail_kind"] = (
+                "text" if isinstance(d, str) else "list" if isinstance(d, list)
+                else "none" if d is None else "other"
+            )
+        route = request.scope.get("route")
+        logger.info(
+            "http.client_error", status=exc.status_code, method=request.method,
+            route=getattr(route, "path", None), **fields,
+        )
+    return await http_exception_handler(request, exc)
+
+
 @app.exception_handler(RequestValidationError)
 async def request_validation_handler(request, exc: RequestValidationError):
     """Sanitize FastAPI's default 422 response so we don't echo
@@ -533,6 +562,17 @@ async def request_validation_handler(request, exc: RequestValidationError):
          failing field, identified through `loc` (e.g. ["body",
          "password"]). The whole `input` is replaced with '<redacted>'.
     """
+    errors = exc.errors()
+    # Field names only (a loc key can be user-typed, so gate its shape); never input.
+    fields = sorted({
+        ".".join(p if isinstance(p, str) and _FIELD_RE.fullmatch(p) else "?" for p in e["loc"][:2])
+        for e in errors
+    })
+    route = request.scope.get("route")
+    logger.info(
+        "http.validation_error", count=len(errors), fields=fields,
+        method=request.method, route=getattr(route, "path", None),
+    )
     redacted_errors = []
     for err in exc.errors():
         new_err = dict(err)

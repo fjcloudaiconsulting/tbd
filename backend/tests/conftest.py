@@ -576,10 +576,13 @@ class _LogRecorder(logging.Handler):
 
 @pytest.fixture
 def logs():
-    rec, root = _LogRecorder(), logging.getLogger()
-    level = root.level
+    rec, root, httpx_log = _LogRecorder(), logging.getLogger(), logging.getLogger("httpx")
+    level, httpx_level = root.level, httpx_log.level
     root.addHandler(rec)
     root.setLevel(logging.INFO)
+    # httpx logs the IN-PROCESS test client's own request URL: not the server.
+    httpx_log.setLevel(logging.WARNING)
     yield rec
     root.removeHandler(rec)
     root.setLevel(level)
+    httpx_log.setLevel(httpx_level)

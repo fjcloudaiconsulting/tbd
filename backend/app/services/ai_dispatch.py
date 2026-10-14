@@ -855,6 +855,12 @@ async def _write_ledger_row(
     db.add(row)
     await db.commit()
     await db.refresh(row)
+    # The join key between a request's logs and the ledger (no column for it).
+    logger.info(
+        "ai.ledger.recorded", ledger_id=row.id, org_id=org_id, feature_key=feature_key,
+        success=success, error_class=error_class,
+        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+    )
     return row
 
 
@@ -972,6 +978,7 @@ async def call_llm(
                 "org_id": org_id,
                 "feature_key": feature_key,
                 "error_class": exc.code,
+                "provider_reason": exc.provider_reason,
                 "latency_ms": latency_ms,
             },
         )
@@ -1659,6 +1666,7 @@ async def call_llm_structured(
                     "org_id": org_id,
                     "feature_key": feature_key,
                     "error_class": error_code,
+                    "provider_reason": getattr(exc, "provider_reason", None),
                     "latency_ms": latency_ms,
                 },
             )
@@ -2036,6 +2044,10 @@ async def call_llm_function(
             latency_ms=latency_ms,
             success=False,
             error_class=exc.code,
+        )
+        logger.info(
+            "ai.dispatch.function_call.failed", org_id=org_id, feature_key=feature_key,
+            error_class=exc.code, provider_reason=exc.provider_reason, latency_ms=latency_ms,
         )
         raise AIDispatchFailed(exc.code) from None
 
