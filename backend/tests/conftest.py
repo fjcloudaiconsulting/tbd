@@ -562,10 +562,13 @@ class _LogRecorder(logging.Handler):
         self.blob: list[str] = []
 
     def emit(self, record: logging.LogRecord) -> None:
-        if isinstance(record.msg, dict):
-            self.events.append(record.msg)
-        # repr() sees args/extras; format() adds any traceback
-        self.blob.append(repr((record.msg, record.args)) + self.format(record))
+        try:
+            if isinstance(record.msg, dict):
+                self.events.append(record.msg)
+            # repr() sees args/extras; format() adds any traceback
+            self.blob.append(repr((record.msg, record.args)) + self.format(record))
+        except Exception:  # noqa: BLE001  (a recorder must not break the test it watches)
+            self.handleError(record)
 
     def named(self, name: str) -> list[dict]:
         return [e for e in self.events if e.get("event") == name]
@@ -576,6 +579,11 @@ class _LogRecorder(logging.Handler):
 
 @pytest.fixture
 def logs():
+    # Another test may have reconfigured logging/structlog: re-apply the app's
+    # stdlib bridge so the capture below does not depend on shard order.
+    from app.logging import setup_logging
+
+    setup_logging()
     rec, root, httpx_log = _LogRecorder(), logging.getLogger(), logging.getLogger("httpx")
     level, httpx_level = root.level, httpx_log.level
     root.addHandler(rec)

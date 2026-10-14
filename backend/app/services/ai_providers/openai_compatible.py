@@ -466,7 +466,6 @@ class OpenAICompatibleAdapter:
                         raise AIProviderError(
                             code=f"provider_status_{resp.status_code}",
                             status_code=resp.status_code,
-                            provider_reason=provider_reason(resp),
                         )
                     async for line in resp.aiter_lines():
                         if not line:

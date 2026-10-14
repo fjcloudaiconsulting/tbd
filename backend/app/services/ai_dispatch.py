@@ -2031,7 +2031,7 @@ async def call_llm_function(
         ) from None
     except AIProviderError as exc:
         latency_ms = int((time.perf_counter() - start) * 1000)
-        await _write_ledger_row(
+        row = await _write_ledger_row(
             db,
             billing_source=prepared.billing_source,
             org_id=org_id,
@@ -2049,7 +2049,9 @@ async def call_llm_function(
             "ai.dispatch.function_call.failed", org_id=org_id, feature_key=feature_key,
             error_class=exc.code, provider_reason=exc.provider_reason, latency_ms=latency_ms,
         )
-        raise AIDispatchFailed(exc.code) from None
+        failed = AIDispatchFailed(exc.code)
+        failed.ledger_id = row.id  # lets the chat loop report which ledger row it was
+        raise failed from None
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     cost = estimate_cost_cents(

@@ -8,6 +8,7 @@ is banned here, and binding a recorder to one module's logger could not prove
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import httpx
@@ -17,10 +18,11 @@ import structlog
 from app.agent import registry
 from app.config import settings as app_settings
 from app.models.org_ai_credential import AiProvider
+from app.models.user import User
 from app.services import agent_chat as chat
 from test_chat import (  # noqa: F401  (fixtures)
-    ASK, URL, _add, _as, _call, _env, _events, _ledger, _resp, client, engine, factory,
-    provider, w,
+    ASK, URL, _add, _as, _budget, _call, _env, _events, _ledger, _resp, client, engine, factory,
+    provider, w, limiter,
 )
 
 SENT = "ZQ-SENTINEL-617"
@@ -56,56 +58,176 @@ async def test_round_events(factory, w, client, provider, logs):
     assert (r2["prompt_tokens"], r2["ledger_id"], r2["tools"], r2["stop"]) == (222, ids[1], [], "ok")
 
 
-async def test_stop_reasons_and_sse_code(factory, w, client, provider, logs, monkeypatch):
-    """FENCE R2. ``stop`` names why the loop ended in that round; ``sse_code``
-    is what the browser got. Wrong implementation: logging ``outcome`` before
-    it is set, or an sse_code that is not the error event's code."""
-    _as(factory, w["user"])
-    # round limit: the 7th round never dispatches but is still reported
-    provider(lambda n: _resp([_call("accounts_list", cid=f"c{n}")]))
-    await _turn(client)
+def _seq(logs):
+    """(round, stop) of every round event, plus the turn's completed record; and
+    the invariant that one event is logged per dispatched round."""
     rounds = logs.named("agent.turn.round")
-    assert len(rounds) == 7 and rounds[-1]["stop"] == "round_limit"
-    assert rounds[-1]["prompt_tokens"] is None and rounds[-1]["ledger_id"] is None
-    assert [r["stop"] for r in rounds[:-1]] == [None] * 6
-    assert logs.named("agent.turn.completed")[-1]["sse_code"] == "round_limit"
+    (done,) = logs.named("agent.turn.completed")
+    assert len(rounds) == done["rounds"], "round events != dispatched rounds"
+    return [(r["round"], r["stop"]) for r in rounds], done
 
-    # blank reply
+
+async def _run(client, logs):
     logs.events.clear()
+    await _turn(client)
+    return _seq(logs)
+
+
+async def test_round_events_per_dispatched_round_only(
+    factory, w, client, provider, logs, monkeypatch,
+):
+    """FENCE R2. Exactly one event per DISPATCHED round, whatever ended the turn;
+    the stop of a turn that ends before a dispatch lives on ``completed`` only.
+    Wrong implementations: a phantom event for round_limit/turn_timeout/
+    input_budget, a missing event on one exit path, a duplicate."""
+    _as(factory, w["user"])
+    spin = lambda n: _resp([_call("accounts_list", cid=f"c{n}")])  # noqa: E731
+
+    provider(spin)
+    seq, done = await _run(client, logs)
+    assert seq == [(i, None) for i in range(1, 7)]
+    assert (done["outcome"], done["sse_code"]) == ("round_limit", "round_limit")
+
+    limiter.reset()
     provider([_resp(content="  ")])
-    await _turn(client)
-    assert logs.named("agent.turn.round")[-1]["stop"] == "empty_reply"
-    assert logs.named("agent.turn.completed")[-1]["sse_code"] == "empty_reply"
+    seq, done = await _run(client, logs)
+    assert seq == [(1, "empty_reply")] and done["sse_code"] == "empty_reply"
 
-    # normal
-    logs.events.clear()
+    limiter.reset()
     provider([_resp(content="hi")])
-    await _turn(client)
-    assert logs.named("agent.turn.completed")[-1]["sse_code"] == "ok"
+    seq, done = await _run(client, logs)
+    assert seq == [(1, "ok")] and done["sse_code"] is None  # no error event was sent
 
-    # preview
-    logs.events.clear()
-    provider([_resp([_call("budgets_update_amount",
-                           {"budget_id": w["budget"], "amount": "120.00"})])])
-    await _turn(client)
-    assert logs.named("agent.turn.round")[-1]["stop"] == "preview"
-    assert logs.named("agent.turn.completed")[-1]["sse_code"] == "preview"
+    limiter.reset()
+    provider([_resp([_call("budgets_update_amount", {"budget_id": w["budget"], "amount": "120.00"})])])
+    seq, done = await _run(client, logs)
+    assert seq == [(1, "preview")] and done["sse_code"] is None
 
-    # a dispatch error: the code is the error event's code, tokens absent
-    logs.events.clear()
-    from app.services import ai_dispatch
+    # a failed dispatch: code is the error event's, tokens absent, the failed ledger row linked
+    limiter.reset()
     from app.services.ai_providers import AIProviderError
 
     async def boom(n):
         raise AIProviderError(code="provider_status_400", status_code=400)
 
     provider(boom)
-    ev = _events((await _turn(client)).text)
-    assert ("error", {"code": "provider_status_400"}) in ev
-    last = logs.named("agent.turn.round")[-1]
-    assert last["stop"] == "provider_status_400" and last["prompt_tokens"] is None
-    assert last["ledger_id"] is None and last["est_tokens"] > 0
-    assert logs.named("agent.turn.completed")[-1]["sse_code"] == "provider_status_400"
+    seq, done = await _run(client, logs)
+    assert seq == [(1, "provider_status_400")] and done["sse_code"] == "provider_status_400"
+    (r,) = logs.named("agent.turn.round")
+    assert r["prompt_tokens"] is None and r["est_tokens"] > 0
+    assert r["ledger_id"] == (await _ledger(factory))[-1].id
+
+    # an internal error: the in-flight round is still reported
+    limiter.reset()
+    provider([_resp([_call("accounts_list")])])
+    real = chat._rows
+    monkeypatch.setattr(chat, "_rows", lambda d: 1 / 0)
+    seq, done = await _run(client, logs)
+    monkeypatch.setattr(chat, "_rows", real)
+    assert seq == [(1, "internal_error")] and done["sse_code"] == "internal_error"
+
+    # user_inactive
+    limiter.reset()
+    async def deactivate_then_call(n):
+        async with factory._f() as db:
+            (await db.get(User, w["user"])).is_active = False
+            await db.commit()
+        return _resp([_call("accounts_list")])
+
+    provider(deactivate_then_call)
+    seq, done = await _run(client, logs)
+    assert seq == [(1, "user_inactive")] and done["sse_code"] == "user_inactive"
+
+
+async def test_round_events_when_the_turn_ends_before_a_dispatch(
+    factory, w, client, provider, logs, monkeypatch,
+):
+    """FENCE R2b. turn_timeout and input_budget: the dispatched rounds, no phantom."""
+    _as(factory, w["user"])
+    adapter = provider(lambda n: _resp([_call("accounts_list", cid=f"c{n}")]))
+    await _turn(client)
+    e = [chat._estimate(adapter.seen[i], adapter.tools[i]) for i in range(2)]
+    limiter.reset()
+    provider(lambda n: _resp([_call("accounts_list", cid=f"c{n}")]))
+    _budget(monkeypatch, e[0] + e[1] - 1)
+    seq, done = await _run(client, logs)
+    assert seq == [(1, None)] and (done["outcome"], done["sse_code"]) == ("input_budget", "input_budget")
+
+    limiter.reset()
+    _budget(monkeypatch, 40_000)
+    monkeypatch.setattr(app_settings, "ai_dispatch_timeout_s", 0.2)
+    monkeypatch.setattr(chat, "TURN_SECONDS", 0.3)
+
+    async def slow(n):
+        await asyncio.sleep(0.15)
+        return _resp([_call("accounts_list", cid=f"c{n}")])
+
+    provider(slow)
+    seq, done = await _run(client, logs)
+    assert seq == [(1, None)] and (done["outcome"], done["sse_code"]) == ("turn_timeout", "turn_timeout")
+
+
+async def _disconnect_at(marker: bytes, factory, w, provider, monkeypatch, logs, round2_late=False):
+    """Drive the real ASGI app and park the stream when ``marker`` is sent, then
+    report a client disconnect."""
+    monkeypatch.setattr(chat, "KEEPALIVE_SECONDS", 0.05)
+    _as(factory, w["user"])
+    armed = asyncio.Event()
+
+    async def late():
+        armed.set()
+        await asyncio.sleep(0.3)
+        return _resp(content="late", prompt_tokens=222)
+
+    if round2_late:
+        provider(lambda n: _resp([_call("accounts_list")], prompt_tokens=111) if n == 1 else late())
+    else:
+        armed.set()
+        provider([_resp([_call("accounts_list")], content="said", prompt_tokens=111)])
+    body = json.dumps(ASK).encode()
+    parked = asyncio.Event()
+    msgs = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def receive():
+        if msgs:
+            return msgs.pop(0)
+        await parked.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if marker in message.get("body", b"") and armed.is_set():
+            parked.set()
+            await asyncio.sleep(10)
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",
+        "method": "POST", "scheme": "http", "path": URL, "raw_path": URL.encode(),
+        "query_string": b"", "root_path": "", "client": ("127.0.0.1", 1), "server": ("t", 80),
+        "headers": [(b"host", b"t"), (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode())],
+    }
+    from app.main import app
+    await app(scope, receive, send)
+
+
+async def test_round_events_on_disconnect(factory, w, provider, logs, monkeypatch):
+    """FENCE R2c. A disconnect sends no error event (sse_code None), yet the
+    in-flight round is reported once: with its tokens when the dispatch had
+    returned, and a reaped dispatch with its ledger id."""
+    await _disconnect_at(b"event: message", factory, w, provider, monkeypatch, logs)
+    seq, done = _seq(logs)
+    assert seq == [(1, "client_disconnected")]
+    assert done["outcome"] == "client_disconnected" and done["sse_code"] is None
+    assert logs.named("agent.turn.round")[0]["prompt_tokens"] == 111
+
+    logs.events.clear()
+    limiter.reset()
+    await _disconnect_at(b"keepalive", factory, w, provider, monkeypatch, logs, round2_late=True)
+    seq, done = _seq(logs)
+    assert seq == [(1, None), (2, "client_disconnected")] and done["sse_code"] is None
+    r2 = logs.named("agent.turn.round")[1]
+    ids = [r.id for r in await _ledger(factory)]
+    assert (r2["prompt_tokens"], r2["ledger_id"]) == (222, ids[-1])
 
 
 async def test_turn_events_carry_the_request_id(factory, w, client, provider, logs):

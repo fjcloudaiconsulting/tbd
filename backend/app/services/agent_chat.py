@@ -255,10 +255,6 @@ def _rows(data: Any) -> int | None:
     return None
 
 
-async def _round_event(rd: dict[str, Any], stop: str | None) -> None:
-    await logger.ainfo("agent.turn.round", **rd, stop=stop)
-
-
 class TurnResponse(StreamingResponse):
     """Closes the turn generator and releases the lock however the response
     ends. A client gone before the first byte means Starlette never starts
@@ -298,35 +294,39 @@ async def stream_turn(
     deadline = started + TURN_SECONDS
     rounds, outcome = 0, "running"
     spent, input_tokens, ledger_ids, said = 0, 0, [], False
-    sse_code: str | None = None  # the terminal code the browser received
+    sse_code: str | None = None  # the code of the SSE error event actually sent
+    rd: dict[str, Any] | None = None  # the dispatched round not yet reported
+
+    async def emit(stop: str | None) -> None:
+        """One INFO event per DISPATCHED round, ids and counts only (never content)."""
+        nonlocal rd
+        if rd is not None:
+            await logger.ainfo("agent.turn.round", **rd, stop=stop)
+            rd = None
     db: AsyncSession | None = None
     pending: asyncio.Task | None = None
     try:
         db = session_factory()
         transcript = opening(messages)
         while True:
-            # One INFO event per round, ids and counts only (never content).
-            rd: dict[str, Any] = {
-                "round": rounds + 1, "est_tokens": None, "prompt_tokens": None,
-                "completion_tokens": None, "ledger_id": None, "tools": [],
-            }
             if rounds == MAX_ROUNDS:
                 outcome = "round_limit"
-                await _round_event(rd, outcome)
                 break
             # A started dispatch is never cancelled, so only start one that
             # its own timeout lets finish inside the turn.
             if deadline - loop.time() < settings.ai_dispatch_timeout_s:
                 outcome = "turn_timeout"
-                await _round_event(rd, outcome)
                 break
-            est = rd["est_tokens"] = _estimate(transcript, tools)
+            est = _estimate(transcript, tools)
             if spent + est > budget:
                 outcome = "input_budget"
-                await _round_event(rd, outcome)
                 break
             spent += est  # counted at start: a failed dispatch is spend too
             rounds += 1
+            rd = {
+                "round": rounds, "est_tokens": est, "prompt_tokens": None,
+                "completion_tokens": None, "ledger_id": None, "tools": [],
+            }
             pending = asyncio.ensure_future(ai_dispatch.call_llm_function(
                 db, org_id=org_id, feature_key=FEATURE_KEY, messages=transcript, tools=tools,
             ))
@@ -338,15 +338,16 @@ async def stream_turn(
                 resp = dispatched.response
             except ai_dispatch.AIDispatchError as exc:
                 outcome = exc.code
-                await _round_event(rd, outcome)
+                rd["ledger_id"] = getattr(exc, "ledger_id", None)  # set on a ledgered failure
+                await emit(outcome)
                 break
             except ai_dispatch.PlatformConsentRequired as exc:
                 outcome = exc.code  # same code as the pre-flight refusal
-                await _round_event(rd, outcome)
+                await emit(outcome)
                 break
             except NativeNotAvailable:
                 outcome = "ai_native_not_available"
-                await _round_event(rd, outcome)
+                await emit(outcome)
                 break
 
             input_tokens += resp.prompt_tokens or 0
@@ -358,7 +359,7 @@ async def stream_turn(
                 yield _sse("message", {"text": resp.content})
             if not resp.tool_calls:
                 outcome = "ok" if said else "empty_reply"
-                await _round_event(rd, outcome)
+                await emit(outcome)
                 break
             transcript.append(
                 {"role": "assistant", "content": resp.content, "tool_calls": resp.tool_calls}
@@ -407,16 +408,14 @@ async def stream_turn(
                 transcript.append(_tool_message(call["id"], result))
             if previewed:
                 outcome = "preview"
-                await _round_event(rd, outcome)
+                await emit(outcome)
                 break
             if outcome == "user_inactive":
-                await _round_event(rd, outcome)
+                await emit(outcome)
                 break
-            await _round_event(rd, None)
+            await emit(None)
         if outcome not in ("ok", "preview"):
             yield _sse("error", {"code": outcome})
-            sse_code = outcome
-        else:
             sse_code = outcome
         # Free the org before ``done``: a client may send its next turn on it.
         await release_lock(org_id, nonce)
@@ -424,6 +423,7 @@ async def stream_turn(
     except Exception:
         logger.exception("agent.turn.failed", extra={"org_id": org_id, "user_id": user_id})
         outcome = "internal_error"
+        await emit(outcome)
         yield _sse("error", {"code": outcome})
         sse_code = outcome
         yield _sse("done", {})
@@ -442,6 +442,11 @@ async def stream_turn(
                     reaped = pending.result()  # its spend and ledger row still count
                     input_tokens += reaped.response.prompt_tokens or 0
                     ledger_ids.append(reaped.ledger_id)
+                    if rd is not None:
+                        rd.update(prompt_tokens=reaped.response.prompt_tokens,
+                                  completion_tokens=reaped.response.completion_tokens,
+                                  ledger_id=reaped.ledger_id)
+            await emit(outcome)  # the in-flight round of a disconnect
             await release_lock(org_id, nonce)
             if db is not None:
                 try:
