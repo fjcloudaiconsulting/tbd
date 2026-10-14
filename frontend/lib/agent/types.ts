@@ -60,3 +60,9 @@ export interface AgentToken {
   last_used_ip: string | null;
   status: "active" | "expired" | "revoked" | "invalidated";
 }
+
+// GET /api/v1/agent/tokens/org (org admins): every member's token plus its owner.
+export interface OrgAgentToken extends AgentToken {
+  owner_user_id: number;
+  owner_email: string;
+}

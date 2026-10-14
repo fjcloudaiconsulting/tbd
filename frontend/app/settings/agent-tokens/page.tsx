@@ -12,6 +12,7 @@ import SettingsLayout from "@/components/SettingsLayout";
 import AgentActivity from "@/components/agent/AgentActivity";
 import AgentMintForm, { type AgentMintValues } from "@/components/agent/AgentMintForm";
 import AgentTokenList from "@/components/agent/AgentTokenList";
+import OrgAgentTokens from "@/components/agent/OrgAgentTokens";
 import UsageMeters from "@/components/agent/UsageMeters";
 import { useAuth } from "@/components/auth/AuthProvider";
 import RevealOncePanel from "@/components/system/api-tokens/RevealOncePanel";
@@ -254,6 +255,8 @@ export default function AgentTokensPage() {
         />
       </section>
       )}
+
+      {showTokens && (user.role === "owner" || user.role === "admin") && <OrgAgentTokens />}
 
       {entitled && <AgentActivity />}
 
