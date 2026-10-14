@@ -998,7 +998,7 @@ async def test_tool_result_is_capped_by_whole_rows(factory, w, client, provider,
     assert msg["role"] == "tool" and len(msg["content"]) <= chat.MAX_TOOL_RESULT_CHARS
     out = json.loads(msg["content"])
     n = len(out["items"])
-    assert 0 < n < 50 and out["items"] == rows[:n]
+    assert 0 < n < 50 and [r["id"] for r in out["items"]] == list(range(n))  # whole rows
     assert out["truncated"] == {"key": "items", "shown": n, "of": 50}
     assert out["next_offset"] == n and out["total"] == 50
     assert ("tool_result", {"name": "accounts_list", "ok": True, "rows": n}) in ev

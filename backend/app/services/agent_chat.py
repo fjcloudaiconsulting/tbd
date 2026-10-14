@@ -16,7 +16,9 @@ closes the session. :class:`TurnResponse` closes the generator and releases
 the lock however the response ends, including a generator that never started.
 
 Bounds per turn: 6 model rounds, no round started with less than one
-dispatch timeout left of the 90 seconds, one write. A write tool call becomes
+dispatch timeout left of the 90 seconds, one write, and an input budget per plan
+(TBD-613): history is trimmed once in the pre-flight, and the estimated prompt of
+every round counts against the budget. A write tool call becomes
 a preview (``registry.invoke`` stages it) and ends the turn; nothing is
 executed without the user's confirm. Auto mode never applies in-app
 (``channel="in_app"`` carries no token scope).
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -43,10 +46,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app import state_db
 from app.agent import registry
 from app.agent.registry import ToolError
+from app.auth.feature_catalog import DEFAULT_TURN_INPUT_TOKENS
 from app.config import settings
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.user import User
-from app.services import ai_dispatch, usage_service
+from app.services import ai_dispatch, feature_service, usage_service
 from app.services.ai_providers import NativeNotAvailable
 
 logger = logging.getLogger(__name__)
@@ -58,6 +62,13 @@ TURN_SECONDS = 90.0
 KEEPALIVE_SECONDS = 15.0
 # Outlives a full turn plus the one dispatch the ``finally`` may wait for.
 LOCK_TTL_SECONDS = 180
+
+# A UX limit on the newest message (code points), not a spend bound: the spend
+# bound is the per-turn input budget.
+MAX_MESSAGE_CHARS = 7_000
+# One tool message. Far above a real org's categories_list (67 seeded = ~18k):
+# a cut there is unrecoverable, those tools take no paging arguments.
+MAX_TOOL_RESULT_CHARS = 40_000
 
 SYSTEM_PROMPT = (
     "You are the assistant inside a personal finance app. Answer questions about the user's "
@@ -112,16 +123,75 @@ async def tool_schemas(db: AsyncSession, user: User) -> list[dict[str, Any]]:
     return out
 
 
+def _estimate(transcript: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
+    """Conservative prompt-token estimate for a whole request (messages, tool
+    calls and schemas). Multi-byte text costs far more per char than ASCII
+    (emoji ~2.7 chars/token, CJK ~2), which the shared chars/3.5 estimator
+    ignores; this one only gates the chat loop."""
+    s = json.dumps([transcript, tools], ensure_ascii=False)
+    ascii_n = len(s.encode("ascii", "ignore"))
+    # surrogatepass: a lone surrogate in user text must not crash the estimator
+    return math.ceil(ascii_n / 3.5 + (len(s.encode("utf-8", "surrogatepass")) - ascii_n) / 1.5)
+
+
+def fit_history(messages: list[dict[str, str]], budget: int) -> list[dict[str, str]]:
+    """Drop the oldest PRIOR messages until the prior history fits a tenth of
+    the budget, then any leading non-user ones. The newest message is never a
+    candidate."""
+    *prior, current = messages
+    while prior and _estimate(prior, []) > budget // 10:
+        prior.pop(0)
+    while prior and prior[0]["role"] != "user":
+        prior.pop(0)
+    return [*prior, current]
+
+
+def _blank(text: str) -> bool:
+    # U+FEFF: JS ``trim()`` strips it, Python's ``strip()`` does not
+    return not text.replace("\ufeff", "").strip()
+
+
+def _cap_result(result: Any) -> Any:
+    """``result`` itself when its serialization fits, else whole trailing rows
+    dropped from its longest list (scalars kept, ``truncated`` says what was
+    cut). Never slices the string, so the model always gets valid JSON."""
+    def size(x: Any) -> int:
+        return len(json.dumps(x, ensure_ascii=False))
+
+    if size(result) <= MAX_TOOL_RESULT_CHARS:
+        return result
+    if isinstance(result, list):
+        result = {"items": result}
+    lists = {k: v for k, v in result.items() if isinstance(v, list)} if isinstance(result, dict) else {}
+    if not lists:
+        return {"error": "result_too_large"}
+    key = max(lists, key=lambda k: size(lists[k]))
+    rows, offset = result[key], result.get("offset")
+    for n in range(len(rows) - 1, -1, -1):
+        out = {**result, key: rows[:n], "truncated": {"key": key, "shown": n, "of": len(rows)}}
+        if isinstance(offset, int) and not isinstance(offset, bool):
+            out["next_offset"] = offset + n  # the model pages by ``offset += limit``
+        if size(out) <= MAX_TOOL_RESULT_CHARS:
+            return out
+    return {"error": "result_too_large"}
+
+
 def opening(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
     return [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
 
 
 async def preflight(
     db: AsyncSession, user: User, messages: list[dict[str, str]], tools: list[dict[str, Any]],
-) -> str:
+) -> tuple[str, list[dict[str, str]], int]:
     """Refuse the turn with a real HTTP status, or admit it and return the
-    lock nonce. Commits ``db`` (``usage_service.admit``)."""
+    lock nonce, the trimmed history and the turn's input budget. Commits ``db``
+    (``usage_service.admit``)."""
     org_id = user.org_id
+    # First, before the lock: a refusal here takes and counts nothing.
+    budget = (await feature_service.get_entitlements(db, org_id)).turn_input_tokens
+    messages = fit_history(messages, budget)
+    if _estimate(opening(messages[-1:]), tools) > budget:
+        raise HTTPException(413, detail={"code": "input_budget_exceeded", "limit_tokens": budget})
     nonce = await acquire_lock(org_id)
     try:
         # The same routing, capability and projected-cap gate round 1 runs,
@@ -147,7 +217,7 @@ async def preflight(
     except BaseException:
         await release_lock(org_id, nonce)
         raise
-    return nonce
+    return nonce, messages, budget
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -192,12 +262,15 @@ async def stream_turn(
     nonce: str,
     messages: list[dict[str, str]],
     tools: list[dict[str, Any]],
+    budget: int = DEFAULT_TURN_INPUT_TOKENS,
+    history_trimmed: bool = False,
 ) -> AsyncIterator[str]:
     """One assistant turn as SSE. Owns its session and the org lock."""
     loop = asyncio.get_running_loop()
     started = loop.time()
     deadline = started + TURN_SECONDS
     rounds, outcome = 0, "running"
+    spent, input_tokens, ledger_ids, said = 0, 0, [], False
     db: AsyncSession | None = None
     pending: asyncio.Task | None = None
     try:
@@ -212,6 +285,11 @@ async def stream_turn(
             if deadline - loop.time() < settings.ai_dispatch_timeout_s:
                 outcome = "turn_timeout"
                 break
+            est = _estimate(transcript, tools)
+            if spent + est > budget:
+                outcome = "input_budget"
+                break
+            spent += est  # counted at start: a failed dispatch is spend too
             rounds += 1
             pending = asyncio.ensure_future(ai_dispatch.call_llm_function(
                 db, org_id=org_id, feature_key=FEATURE_KEY, messages=transcript, tools=tools,
@@ -220,7 +298,8 @@ async def stream_turn(
                 yield ": keepalive\n\n"
             task, pending = pending, None
             try:
-                resp = task.result().response
+                dispatched = task.result()
+                resp = dispatched.response
             except ai_dispatch.AIDispatchError as exc:
                 outcome = exc.code
                 break
@@ -231,10 +310,13 @@ async def stream_turn(
                 outcome = "ai_native_not_available"
                 break
 
-            if resp.content.strip():
+            input_tokens += resp.prompt_tokens or 0
+            ledger_ids.append(dispatched.ledger_id)
+            if not _blank(resp.content):
+                said = True
                 yield _sse("message", {"text": resp.content})
             if not resp.tool_calls:
-                outcome = "ok"
+                outcome = "ok" if said else "empty_reply"
                 break
             transcript.append(
                 {"role": "assistant", "content": resp.content, "tool_calls": resp.tool_calls}
@@ -276,10 +358,11 @@ async def stream_turn(
                             yield _sse("preview", {"action": data})
                             previewed = True
                             break
-                        result = data
-                        yield _sse("tool_result", {"name": shown, "ok": True, "rows": _rows(data)})
+                        result = _cap_result(data)
+                        yield _sse("tool_result", {"name": shown, "ok": True, "rows": _rows(result)})
                 transcript.append({
-                    "role": "tool", "tool_call_id": call["id"], "content": json.dumps(result),
+                    "role": "tool", "tool_call_id": call["id"],
+                    "content": json.dumps(result, ensure_ascii=False),
                 })
             if previewed:
                 outcome = "preview"
@@ -307,8 +390,10 @@ async def stream_turn(
                 # timeout) so its ledger row lands and no call outlives the lock.
                 # ``wait``, not ``gather``: never propagate a cancel into it.
                 await asyncio.wait({pending})
-                if not pending.cancelled():
-                    pending.exception()  # retrieved: no "never retrieved" noise
+                if not pending.cancelled() and pending.exception() is None:
+                    reaped = pending.result()  # its spend and ledger row still count
+                    input_tokens += reaped.response.prompt_tokens or 0
+                    ledger_ids.append(reaped.ledger_id)
             await release_lock(org_id, nonce)
             if db is not None:
                 try:
@@ -328,5 +413,10 @@ async def stream_turn(
                     "rounds": rounds,
                     "outcome": outcome,
                     "latency_ms": int((loop.time() - started) * 1000),
+                    "input_tokens": input_tokens,
+                    "est_input_tokens": spent,
+                    "ledger_ids": ledger_ids,
+                    "budget": budget,
+                    "history_trimmed": history_trimmed,
                 },
             )
