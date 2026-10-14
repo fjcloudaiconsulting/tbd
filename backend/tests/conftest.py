@@ -70,6 +70,33 @@ def metric_reader():
     yield reader
     provider.remove_metric_reader(reader)
 
+
+@pytest.fixture
+def log_lines():
+    """Captured JSON log records of the ``app`` loggers at DEBUG, parsed one dict per line, through
+    the same filter and formatter as the real handler."""
+    import io
+    import json
+
+    from app import logs
+
+    logs.configure()
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logs.Formatter())
+    handler.addFilter(logs._add_context)
+    root = logging.getLogger()
+    app_logger = logging.getLogger("app")
+    before = app_logger.level
+    root.addHandler(handler)
+    app_logger.setLevel(logging.DEBUG)
+    try:
+        yield lambda: [json.loads(line) for line in stream.getvalue().splitlines() if line]
+    finally:
+        app_logger.setLevel(before)
+        root.removeHandler(handler)
+
+
 # INFRA-51: bcrypt cost 12 (the production default) makes every hash_password
 # call in a fixture cost ~250ms; 149 test files do it. Use cost 4 (bcrypt's
 # minimum) in tests only. Production hashing is untouched: app/security.py
@@ -175,9 +202,13 @@ def _autouse_clear_structlog_contextvars():
     """
     import structlog
 
+    from app import logs
+
     structlog.contextvars.clear_contextvars()
+    logs.CONTEXT.set({})
     yield
     structlog.contextvars.clear_contextvars()
+    logs.CONTEXT.set({})
 
 
 @pytest.fixture(autouse=True)
