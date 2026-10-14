@@ -59,6 +59,7 @@ const list = (items: unknown[]) => json(200, { items, total: items.length, limit
 let orgItems: OrgAgentToken[];
 // The admin's own token (id 5) is in both lists; one flag drives both.
 let ownRevoked: boolean;
+let ownEmpty = false;
 const own = (): AgentToken => ({ ...orgToken({ id: 5, name: "My bot", owner_email: "d@x.io", owner_user_id: 1,
   scope: "agent:auto", status: ownRevoked ? "revoked" : "active" }) });
 const ownRow = () => {
@@ -74,11 +75,12 @@ beforeEach(() => {
   orgItems = [orgToken({})];
   orgStatus = 200;
   ownRevoked = false;
+  ownEmpty = false;
   vi.mocked(useAuth).mockReturnValue({ user: user("admin"), loading: false } as unknown as ReturnType<typeof useAuth>);
   vi.mocked(useAiStatus).mockReturnValue(STATUS);
   fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
     const key = `${init.method ?? "GET"} ${String(url)}`;
-    if (key === "GET /api/v1/agent/tokens") return list(ownRevoked || orgItems.length ? [ownRow()] : []);
+    if (key === "GET /api/v1/agent/tokens") return list(!ownEmpty && (ownRevoked || orgItems.length) ? [ownRow()] : []);
     if (key === "DELETE /api/v1/agent/tokens/5" || key === "DELETE /api/v1/agent/tokens/org/5") {
       ownRevoked = true;
       return json(200, { ok: true, id: 5 });
@@ -175,6 +177,7 @@ describe("org agent tokens", () => {
   });
 
   it("F-619-DOWNGRADED: an admin of a non-entitled org still gets the org section", async () => {
+    ownEmpty = true; // no own tokens, so showTokens is false: only the role may mount the section
     vi.mocked(useAiStatus).mockReturnValue({ ...STATUS, agent: { entitled: false, configured: true } });
     renderWithSWR(<AgentTokensPage />);
     const section = await screen.findByRole("region", { name: "Organization agent tokens" });
