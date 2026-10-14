@@ -3828,8 +3828,6 @@ async def google_callback(
                 # Ungated: after this guard the failure is a quiet 307
                 # rather than a 5xx stack trace, so without the warning
                 # the fix would be a net loss of production visibility.
-                # Flat kwargs, never ``extra=`` -- see the timeout
-                # clause's note below.
                 _LOGGER.warning(
                     "auth.google.callback.invalid_payload",
                     extra={

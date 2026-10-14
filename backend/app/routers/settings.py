@@ -476,7 +476,7 @@ async def update_billing_cycle(
     open_period_start = current_period.start_date
 
     async def _audit(outcome: str, **extra) -> None:
-        """Structlog breadcrumb + audit row for this endpoint.
+        """Log breadcrumb + audit row for this endpoint.
 
         ``record_audit_event`` swallows every exception by design
         (audit_service.py) and names "the log event the caller already
@@ -1056,7 +1056,7 @@ async def close_period(
     closed_period_start = closing.start_date
 
     async def _audit(outcome: str, **extra) -> None:
-        """Structlog breadcrumb + audit row for this endpoint.
+        """Log breadcrumb + audit row for this endpoint.
 
         ``record_audit_event`` swallows every exception by design
         (audit_service.py) and names "the log event the caller already
@@ -1074,7 +1074,9 @@ async def close_period(
                 "actor_email": actor_email,
                 "target_org_id": actor_org_id,
                 "outcome": outcome,
-                **payload,
+                # "message" is an exception's text (audit row only): a log field never is, and
+                # `message` is a LogRecord attribute, so stdlib raises KeyError on it.
+                **{k: v for k, v in payload.items() if k != "message"},
             },
         )
         await audit_service.record_audit_event(

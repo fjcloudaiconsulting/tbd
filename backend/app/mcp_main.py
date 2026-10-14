@@ -71,6 +71,8 @@ def refuse_platform_ai_keys() -> None:
         "platform_ai_anthropic_api_key", "platform_ai_gemini_api_key",
     ):
         if getattr(settings, name):
+            # The crash hook logs a RuntimeError as its class only, so name the variable here.
+            logger.error("mcp.platform_ai_key_refused", extra={"variable": name.upper()})
             raise RuntimeError(f"{name.upper()} must not be set on the mcp component")
 
 

@@ -245,7 +245,6 @@ def main() -> int:
     # merged with `alembic merge` before deploy; auto-picking is exactly
     # the "silent wrong choice" we want logs to flag.
     if len(heads) > 1:
-        errno = _driver_errno(exc)  # the code only: _driver_errno never reads the message
         log.error(
             "migrate.failed",
             extra={
@@ -271,7 +270,6 @@ def main() -> int:
     if not database_url:
         # Without a URL we can't read alembic_version; let alembic's own
         # error handling fire by delegating once.
-        errno = _driver_errno(exc)  # the code only: _driver_errno never reads the message
         log.error(
             "migrate.failed",
             extra={
@@ -370,7 +368,6 @@ def main() -> int:
 
         duration_ms = int((time.monotonic() - step_start) * 1000)
         if rc != 0:
-            errno = _driver_errno(exc)  # the code only: _driver_errno never reads the message
             log.error(
                 "migrate.failed",
                 extra={
