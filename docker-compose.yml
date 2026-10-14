@@ -44,7 +44,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws", "none", "--reload", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
     volumes:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
@@ -97,6 +97,9 @@ services:
       # the MCP image, which no directory mount covers. Read-only; recreate
       # the container after a `git pull` replaces either file (inode mount).
       - ./backend/pyproject.toml:/app/pyproject.toml:ro
+      # INFRA-105: test_log_calls.py's F14 reads uv.lock to prove structlog is gone. Not in the
+      # image's directory mounts, so without this it evaluates the lock baked in at build.
+      - ./backend/uv.lock:/app/uv.lock:ro
       - ./backend/Dockerfile.mcp:/app/Dockerfile.mcp:ro
       # Read-only so test_release_workflow.py and the frontend-contract tests
       # find the repo-root marker .github/workflows/ci.yml.
@@ -167,7 +170,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--reload", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
+    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001", "--ws", "none", "--reload", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
     volumes:
       - ./backend/app:/app/app:ro
 
