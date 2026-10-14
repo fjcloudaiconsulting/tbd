@@ -549,3 +549,37 @@ def limits_hit_down(monkeypatch):
         raise OperationalError("INSERT", {}, Exception("limits db down"))
 
     monkeypatch.setattr(rate_limit_db, "hit", boom)
+
+
+class _LogRecorder(logging.Handler):
+    """Every event of every module (app.logging bridges all structlog loggers to
+    stdlib). ``capture_logs`` is banned here; this has no per-module binding, so
+    "logged nowhere" can be asserted (TBD-617)."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.events: list[dict] = []
+        self.blob: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if isinstance(record.msg, dict):
+            self.events.append(record.msg)
+        # repr() sees args/extras; format() adds any traceback
+        self.blob.append(repr((record.msg, record.args)) + self.format(record))
+
+    def named(self, name: str) -> list[dict]:
+        return [e for e in self.events if e.get("event") == name]
+
+    def text(self) -> str:
+        return "\n".join(self.blob)
+
+
+@pytest.fixture
+def logs():
+    rec, root = _LogRecorder(), logging.getLogger()
+    level = root.level
+    root.addHandler(rec)
+    root.setLevel(logging.INFO)
+    yield rec
+    root.removeHandler(rec)
+    root.setLevel(level)
