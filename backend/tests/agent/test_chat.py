@@ -838,12 +838,12 @@ class _Log:
     def __init__(self):
         self.done: list[dict] = []
 
-    async def ainfo(self, event, **kw):
+    def info(self, event, *, extra=None, **_):
         if event == "agent.turn.completed":
-            self.done.append(kw)
+            self.done.append(extra)
 
-    async def awarning(self, *a, **k): ...
-    async def aexception(self, *a, **k): ...
+    def warning(self, *a, **k): ...
+    def exception(self, *a, **k): ...
 
 
 @pytest.fixture
