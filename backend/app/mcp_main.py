@@ -49,7 +49,7 @@ from app.database import async_session, engine
 from app import logs
 from app.middleware.request_context import RequestContextMiddleware
 from app.rate_limit import rate_limit_key
-from app.services import ai_consent_service, feature_service
+from app.services import ai_consent_service, ai_scrub, feature_service
 from app.services.ai_consent_service import AI_OFF_MESSAGE
 
 logs.configure()
@@ -172,7 +172,7 @@ def _tool_list(scope: str) -> list[dict[str, Any]]:
 # ── tools/call ────────────────────────────────────────────────────────────
 
 def _content(payload: dict[str, Any], is_error: bool) -> dict[str, Any]:
-    text = json.dumps(payload, default=str)
+    text = json.dumps(ai_scrub.scrub_value(payload), default=str)
     # structuredContent and the text block carry the same JSON.
     return {"content": [{"type": "text", "text": text}], "structuredContent": json.loads(text),
             "isError": is_error}

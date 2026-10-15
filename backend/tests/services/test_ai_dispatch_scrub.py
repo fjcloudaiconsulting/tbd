@@ -48,7 +48,8 @@ def _clean(blob: str):
 async def _byok(db):
     await set_platform(db)
     org = await mk_org(db)
-    cred = OrgAICredential(org_id=org, provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-byok"))
+    cred = OrgAICredential(org_id=org, provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-byok"),
+                          discovered_capabilities=["chat", "embed", "structured_output", "function_call", "stream"])
     db.add(cred)
     await db.flush()
     db.add(OrgAIDefaultRouting(org_id=org, credential_id=cred.id, model="gpt-4o-mini"))
