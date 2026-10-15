@@ -49,7 +49,7 @@ from app.services.ai_dispatch import (
     PlatformConsentRequired,
     http_for_dispatch_error,
 )
-from app.services.ai_pricing import MODEL_PRICING, ModelPricing, estimate_cost_cents
+from app.services.ai_pricing import MODEL_PRICING, ModelPricing, estimate_cost_micros
 from app.services.ai_providers import NativeNotAvailable
 from app.services.ai_providers.base import AIProviderError, CapabilityNotSupported
 from app.services.ai_token_estimate import (
@@ -198,9 +198,9 @@ def spy(monkeypatch):
     calls = []
     real = platform_reserve.reserve
 
-    async def wrapper(db, org_id, cred, tokens, cents, ceiling, **kw):
-        calls.append(SimpleNamespace(tokens=tokens, cents=cents, ceiling=ceiling))
-        return await real(db, org_id, cred, tokens, cents, ceiling, **kw)
+    async def wrapper(db, org_id, cred, tokens, micros, ceiling, **kw):
+        calls.append(SimpleNamespace(tokens=tokens, micros=micros, ceiling=ceiling))
+        return await real(db, org_id, cred, tokens, micros, ceiling, **kw)
 
     monkeypatch.setattr(platform_reserve, "reserve", wrapper)
     return calls
@@ -218,13 +218,13 @@ async def set_platform(db, *, enabled="on", cents="1000", models=None):
     await db.commit()
 
 
-async def mk_org(db, *, tokens=100_000, cents=1000, name="Acme", extra=None):
+async def mk_org(db, *, tokens=100_000, micros=10_000_000, name="Acme", extra=None):
     org = Organization(name=name, billing_cycle_day=1)
     db.add(org)
     await db.flush()
     limits = PlanUsageLimits().model_dump(by_alias=True)
     limits["platform_ai.tokens"] = {"period": "month", "limit": tokens}
-    limits["platform_ai.cents"] = {"period": "month", "limit": cents}
+    limits["platform_ai.micros"] = {"period": "month", "limit": micros}
     limits.update(extra or {})
     plan = Plan(slug=f"p{org.id}", name="P", features={"ai.agent": True}, usage_limits=limits)
     db.add(plan)
@@ -260,7 +260,7 @@ async def counters(sf, org_id):
 
 async def spend(sf):
     async with sf() as s:
-        return sum((r.cents for r in (await s.scalars(select(PlatformAISpend))).all()), 0)
+        return sum((r.micros for r in (await s.scalars(select(PlatformAISpend))).all()), 0)
 
 
 async def ledger(sf):
@@ -316,7 +316,7 @@ def _json_content(fake):
 
 @ALL
 async def test_f_q1_default_limits_cannot_dispatch_through_a_platform_row(db, sf, fake, entry):
-    org, _ = await setup(db, tokens=0, cents=0)
+    org, _ = await setup(db, tokens=0, micros=0)
     with pytest.raises(AIPlanLimitReached) as ei:
         await ENTRIES[entry](db, org)
     assert ei.value.code == "plan_limit_reached" and ei.value.meter == "platform_ai.tokens"
@@ -336,8 +336,8 @@ async def test_every_entry_point_reserves_then_settles_to_actual(db, sf, fake, s
     model = rows[0].model
     assert await counters(sf, org) == {
         "platform_ai.tokens": p + c,
-        "platform_ai.cents": estimate_cost_cents(model=model, prompt_tokens=p, completion_tokens=c)}
-    assert await spend(sf) == estimate_cost_cents(model=model, prompt_tokens=p, completion_tokens=c)
+        "platform_ai.micros": estimate_cost_micros(model=model, prompt_tokens=p, completion_tokens=c)}
+    assert await spend(sf) == estimate_cost_micros(model=model, prompt_tokens=p, completion_tokens=c)
     if entry != "embed":
         assert all(b["max_tokens"] == 100 for b in fake.bodies)
 
@@ -394,7 +394,7 @@ async def test_f_v1_zero_usage_keeps_the_reservation(db, sf, fake, spy, provider
     fake.usage = (0, 0)
     await _chat(db, org, 100)
     assert (await counters(sf, org))["platform_ai.tokens"] == spy[0].tokens
-    assert (await counters(sf, org))["platform_ai.cents"] == spy[0].cents
+    assert (await counters(sf, org))["platform_ai.micros"] == spy[0].micros
 
 
 async def test_bound_is_min_of_caller_and_ceiling(db, sf, fake):
@@ -433,8 +433,8 @@ async def test_f_q7_dispatch_timeout_keeps_the_full_reservation(db, sf, fake, sp
     with pytest.raises(AIDispatchFailed) as ei:
         await _chat(db, org)
     assert ei.value.code == "provider_timeout"
-    assert await counters(sf, org) == {"platform_ai.tokens": spy[0].tokens, "platform_ai.cents": spy[0].cents}
-    assert await spend(sf) == spy[0].cents
+    assert await counters(sf, org) == {"platform_ai.tokens": spy[0].tokens, "platform_ai.micros": spy[0].micros}
+    assert await spend(sf) == spy[0].micros
 
 
 async def test_f_q7_pre_send_refusal_reserves_nothing(db, sf, fake, spy):
@@ -459,7 +459,7 @@ async def test_f_q3_byok_spend_does_not_reduce_the_platform_allowance(db, sf, fa
     for cid in (cred.id, None):
         db.add(AIUsageLedger(org_id=org, credential_id=cid, feature_key="chat", model="gpt-4o",
                              prompt_tokens=1, completion_tokens=1, total_tokens=10**6,
-                             est_cost_cents=600, latency_ms=1, success=True, billing_source="org_key"))
+                             cost_micros=6_000_000, latency_ms=1, success=True, billing_source="org_key"))
     await db.commit()
     await _chat(db, org)
     assert len(fake.reqs) == 1
@@ -669,7 +669,7 @@ async def test_k7_every_post_send_failure_keeps_the_reservation(db, sf, fake, sp
     with pytest.raises(BaseException):
         await ENTRIES[entry](db, org)
     c = await counters(sf, org)
-    assert c["platform_ai.tokens"] == spy[0].tokens and c["platform_ai.cents"] == spy[0].cents
+    assert c["platform_ai.tokens"] == spy[0].tokens and c["platform_ai.micros"] == spy[0].micros
 
 
 @pytest.mark.parametrize("usage", [(10, 0), (0, 10), (0, 0)])
@@ -699,7 +699,7 @@ async def test_k9_ledger_commit_failure_after_settle_leaves_actual(db, sf, fake,
 async def test_r19_settle_failure_still_returns_writes_ledger_and_keeps_reservation(db, sf, fake, spy, monkeypatch, entry):
     org, _ = await setup(db)
 
-    async def bad(db_, handle, tokens, cents):
+    async def bad(db_, handle, tokens, micros):
         raise OperationalError("x", {}, Exception("settle down"))
 
     monkeypatch.setattr(platform_reserve, "settle", bad)
@@ -754,7 +754,7 @@ async def test_r6_platform_embed_prices_and_ledgers_the_model_sent(db, sf, fake,
     await _embed(db, org)
     rows = await ledger(sf)
     assert rows[0].model == "text-embedding-3-small"  # not the provider-returned name
-    assert rows[0].est_cost_cents == estimate_cost_cents(
+    assert rows[0].cost_micros == estimate_cost_micros(
         model="text-embedding-3-small", prompt_tokens=15, completion_tokens=0)
 
 
@@ -763,7 +763,7 @@ async def test_k12_embed_override_is_projected_on_the_model_sent(db, sf, fake, s
     big = ["x" * 3_500_000]
     await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=big,
                                      model="text-embedding-3-large")
-    assert spy[0].cents == estimate_cost_cents(
+    assert spy[0].micros == estimate_cost_micros(
         model="text-embedding-3-large", prompt_tokens=1_000_000, completion_tokens=0)
     assert fake.bodies[0]["model"] == "text-embedding-3-large"
 
@@ -812,9 +812,9 @@ async def test_stream_full_consumption_attempts_settle_twice_and_applies_once(db
     org, _ = await setup(db)
     real, attempts = platform_reserve.settle, []
 
-    async def counting(db_, handle, tokens, cents):
+    async def counting(db_, handle, tokens, micros):
         attempts.append(1)
-        await real(db_, handle, tokens, cents)
+        await real(db_, handle, tokens, micros)
 
     monkeypatch.setattr(platform_reserve, "settle", counting)
     await _stream(db, org)  # success-path settle, then the generator finally
@@ -837,9 +837,9 @@ async def test_r10_finally_settle_survives_cancellation_during_aclose(db, sf, fa
     org, _ = await setup(db)
     real, finished = platform_reserve.settle, asyncio.Event()
 
-    async def slow(db_, handle, tokens, cents):
+    async def slow(db_, handle, tokens, micros):
         await asyncio.sleep(0.15)
-        await real(db_, handle, tokens, cents)
+        await real(db_, handle, tokens, micros)
         finished.set()
 
     monkeypatch.setattr(platform_reserve, "settle", slow)
@@ -905,7 +905,7 @@ async def test_r7_r15_preflight_on_an_exhausted_platform_org_is_402_with_detail(
 async def test_r7_preflight_global_ceiling_exhausted_is_402_platform_ai_unavailable(db, sf, fake, chat_env):
     org, _ = await setup(db, extra={"assistant.turns": {"period": "day", "limit": 5}})
     db.add(PlatformAISpend(period_start=platform_reserve.period_start("month", platform_reserve.utcnow_naive()),
-                           cents=1000))
+                           micros=10_000_000))
     await db.commit()
     with pytest.raises(HTTPException) as ei:
         await agent_chat.preflight(db, SimpleNamespace(org_id=org), MSGS, TOOLS)
@@ -995,10 +995,10 @@ def test_k7_only_settle_can_decrement_a_counter():
 
 # ---- review round 1 -----------------------------------------------------------
 
-def _ent(tokens_limit, cents_limit=1000):
+def _ent(tokens_limit, micros_limit=10_000_000):
     return SimpleNamespace(features={"ai.agent": True}, limits={
         "platform_ai.tokens": SimpleNamespace(period="month", limit=tokens_limit),
-        "platform_ai.cents": SimpleNamespace(period="month", limit=cents_limit)})
+        "platform_ai.micros": SimpleNamespace(period="month", limit=micros_limit)})
 
 
 async def test_r1_blocking_a_meter_without_a_limit_fails_closed_not_unlimited_not_500(db, sf, fake, monkeypatch):
@@ -1097,12 +1097,12 @@ async def test_item4_cents_meter_and_global_spend_settle_to_the_actual_cost(db, 
     org = await mk_org(db)
     await mk_platform(db, org, "gemini")
     await BIG[entry](db, org)
-    expected = 150 if entry == "embed" else 34  # 15 tokens*10c ; 20*1c + 7*2c
-    assert spy[0].cents > 0 and spy[0].cents != expected  # reserved differs from actual
+    expected = 1_500_000 if entry == "embed" else 340_000  # 15 tokens*10c ; 20*1c + 7*2c, in micros
+    assert spy[0].micros > 0 and spy[0].micros != expected  # reserved differs from actual
     c = await counters(sf, org)
-    assert c["platform_ai.cents"] == expected and await spend(sf) == expected
+    assert c["platform_ai.micros"] == expected and await spend(sf) == expected
     rows = await ledger(sf)
-    assert rows[0].est_cost_cents == expected
+    assert rows[0].cost_micros == expected
     if entry == "embed":
         assert rows[0].model == "emb-x"  # R6: priced on the model sent, not response.model
 
@@ -1251,6 +1251,7 @@ async def test_fence_global_ceiling_is_converted_at_both_sites(db, sf, fake, mon
         await ai_dispatch._reserve(db, org, SimpleNamespace(platform=req, adapter=None))
     assert await spend(sf) == 0
 
+    await db.refresh(cred)  # a refused reserve rolls back and expires ORM objects
     _, _, req = await prepare(10_000)
     await ai_dispatch._reserve(db, org, SimpleNamespace(platform=req, adapter=None))
     assert await spend(sf) == 10_000

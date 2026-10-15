@@ -2,7 +2,7 @@
 
 This module is the single home for the char-per-token prompt heuristic
 and the per-model worst-case output-token ceiling. Both the universal
-dispatch projected-overspend gate (``ai_dispatch._projected_cost_cents``)
+dispatch projected-overspend gate (``ai_dispatch._projected_cost_micros``)
 and the forecast-refine UI preflight
 (``ai_forecast_refine_token_estimate``) source the prompt heuristic from
 here so the two estimates cannot drift apart.

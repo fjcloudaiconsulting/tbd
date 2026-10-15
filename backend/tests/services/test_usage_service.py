@@ -325,12 +325,12 @@ async def test_f581_platform_meters_admin_only_and_dark_at_zero(factory):
     the surface) and never resets."""
     org = await _org(factory, {
         "mcp.calls": {"period": "day", "limit": 0},
-        "platform_ai.cents": {"period": "month", "limit": 500},
+        "platform_ai.micros": {"period": "month", "limit": 500},
     })
     async with factory() as db:
         admin = await usage_service.current_usage(db, org, include_platform=True, now=NOW)
         member = await usage_service.current_usage(db, org, include_platform=False, now=NOW)
-    assert sorted(admin) == ["assistant.turns", "mcp.calls", "platform_ai.cents"]
+    assert sorted(admin) == ["assistant.turns", "mcp.calls", "platform_ai.micros"]
     assert sorted(member) == ["assistant.turns", "mcp.calls"]
     assert member["mcp.calls"] == {"used": 0, "limit": 0, "period": "day", "resets_at": None}
     assert member["assistant.turns"]["limit"] is None  # catalog default: unlimited

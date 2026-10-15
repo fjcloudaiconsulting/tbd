@@ -312,7 +312,7 @@ async def _seed_embed_cap_and_spend(
                 prompt_tokens=0,
                 completion_tokens=0,
                 total_tokens=0,
-                est_cost_cents=spent_cents,
+                cost_micros=spent_cents * 10_000,
                 latency_ms=1,
                 success=True,
                 error_class=None,
@@ -357,7 +357,7 @@ async def test_embed_exhausted_block_no_adapter_no_ledger(
         )
     ).scalars().all()
     assert len(rows) == 1  # only the seeded prior-spend row
-    assert rows[0].est_cost_cents == 12
+    assert rows[0].cost_micros == 120_000
 
 
 @pytest.mark.asyncio
@@ -409,7 +409,7 @@ async def test_embed_projected_overspend_blocks_under_cap_no_adapter_no_ledger(
         )
     ).scalars().all()
     assert len(rows) == 1  # only the seeded prior-spend row
-    assert rows[0].est_cost_cents == 70
+    assert rows[0].cost_micros == 700_000
 
 
 @pytest.mark.asyncio
@@ -805,7 +805,7 @@ async def test_function_tool_schema_tips_projection_over_cap_no_adapter_no_ledge
         )
     ).scalars().all()
     assert len(rows) == 1  # only the seeded prior-spend row
-    assert rows[0].est_cost_cents == 90
+    assert rows[0].cost_micros == 900_000
 
 
 @pytest.mark.asyncio
@@ -1098,7 +1098,7 @@ async def test_call_llm_stream_gate_blocks_before_first_chunk(
         )
     ).scalars().all()
     assert len(rows) == 1
-    assert rows[0].est_cost_cents == 12
+    assert rows[0].cost_micros == 120_000
 
 
 # ---------- Structured-output token aggregation ---------------------
@@ -1339,7 +1339,7 @@ async def _seed_cap_and_spend(
                 prompt_tokens=0,
                 completion_tokens=0,
                 total_tokens=0,
-                est_cost_cents=spent_cents,
+                cost_micros=spent_cents * 10_000,
                 latency_ms=1,
                 success=True,
                 error_class=None,
@@ -1375,8 +1375,8 @@ async def test_structured_projected_overspend_blocks_no_adapter_no_ledger(
 ):
     """Structured dispatch: under cap but projected (x retries) tips it
     over → AICapExceeded, adapter never called, no ledger row."""
-    # hard=100, spent=99; a tiny unpinned gpt-4o-mini structured call
-    # projects ~1 cent single, x3 = 3 cents → 99 + 3 > 100 → block.
+    # hard=100, spent=99 -> 10_000 micros of headroom; max_tokens=10_000 on
+    # gpt-4o-mini projects ~6_000 micros single (fits), x3 = ~18_000 → block.
     await _seed_cap_and_spend(
         db, org, credential, hard_cap_cents=100, spent_cents=99
     )
@@ -1391,6 +1391,7 @@ async def test_structured_projected_overspend_blocks_no_adapter_no_ledger(
                 feature_key="chat",
                 messages=[{"role": "user", "content": "x"}],
                 response_schema=_STRUCT_SCHEMA,
+                max_tokens=10_000,
             )
     assert exc_info.value.code == "ai_hard_cap_exceeded"
     adapter.chat_structured.assert_not_awaited()
@@ -1400,7 +1401,7 @@ async def test_structured_projected_overspend_blocks_no_adapter_no_ledger(
         )
     ).scalars().all()
     assert len(rows) == 1  # only the seeded prior-spend row
-    assert rows[0].est_cost_cents == 99
+    assert rows[0].cost_micros == 990_000
 
 
 @pytest.mark.asyncio
@@ -1482,7 +1483,7 @@ async def test_structured_projection_failure_fails_closed(
     with patch(
         "app.services.ai_dispatch.get_adapter", return_value=adapter
     ), patch(
-        "app.services.ai_dispatch._projected_cost_cents",
+        "app.services.ai_dispatch._projected_cost_micros",
         side_effect=RuntimeError("boom"),
     ):
         result = await call_llm_structured(
@@ -1509,7 +1510,7 @@ async def test_structured_retry_multiplier_blocks_when_single_would_fit(
     the multiplier as the cause of the structured block.
     """
     # gpt-4o-mini completion = 60 cents / 1M tokens; prompt "x" adds ~1
-    # token at 15 cents / 1M. estimate_cost_cents sums prompt+completion
+    # token at 15 cents / 1M. estimate_cost_micros sums prompt+completion
     # raw cost and ceils ONCE: max_tokens=200_000 → 12_000_000 + 15 raw
     # = 13 cents single (not 12, because of the prompt cent).
     # retries+1 = STRUCTURED_OUTPUT_MAX_RETRIES + 1 = 3 → 13 x 3 = 39

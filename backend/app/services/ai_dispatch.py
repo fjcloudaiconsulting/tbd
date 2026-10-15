@@ -11,12 +11,12 @@ Flow (spec §3, PR2 scope):
    Feature override beats default; no row at all -> 412 with code
    ``ai_routing_not_configured``.
 2. Pre-check caps: aggregate the rolling-window (calendar month)
-   ``est_cost_cents`` for the org from ``ai_usage_ledger``. Compare
+   ``cost_micros`` for the org from ``ai_usage_ledger``. Compare
    against both ``org_ai_default_caps`` AND ``org_ai_feature_caps``
    for the feature; whichever is tighter wins. Hard cap exceeded ->
    402 with code ``ai_hard_cap_exceeded`` (no adapter call, no
    ledger row).
-3. Soft-cap warning: if the current usage crosses ``soft_cap_cents``
+3. Soft-cap warning: if the current usage crosses the soft cap
    for the first time in the period, enqueue a notification via
    ``notification_service.dispatch_notification`` for every owner /
    admin of the org. Idempotent per (org, feature_key, period) via
@@ -94,7 +94,7 @@ from app.services import (
 )
 from app.services.ai_credential_crypto import decrypt
 from app.services.ai_feature_map import AI_FEATURE_MAP
-from app.services.ai_pricing import estimate_cost_cents
+from app.services.ai_pricing import MICROS_PER_CENT, estimate_cost_micros
 from app.services.ai_token_estimate import (
     _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL,
     default_max_output_tokens_for,
@@ -422,9 +422,9 @@ def http_for_dispatch_error(exc: AIDispatchError) -> HTTPException:
 
 @dataclass(frozen=True)
 class _ResolvedCaps:
-    soft_cap_cents: Optional[int]
-    hard_cap_cents: Optional[int]
-    # ``True`` iff the EFFECTIVE soft cap (the one ``soft_cap_cents``
+    soft_cap_micros: Optional[int]
+    hard_cap_micros: Optional[int]
+    # ``True`` iff the EFFECTIVE soft cap (the one ``soft_cap_micros``
     # holds) came from the per-feature override row. This is used to
     # shape the dedupe marker for soft-cap warnings.
     #
@@ -509,16 +509,22 @@ async def _resolve_caps(
         )
     ).scalar_one_or_none()
 
-    default_soft = default_row.soft_cap_cents if default_row else None
-    default_hard = default_row.hard_cap_cents if default_row else None
-    feat_soft = feat_row.soft_cap_cents if feat_row else None
-    feat_hard = feat_row.hard_cap_cents if feat_row else None
+    # The cap columns stay in cents (a human types them); this is the one
+    # conversion point, so everything downstream is micros vs micros.
+    def _micros(row, col: str) -> Optional[int]:
+        cents = getattr(row, col) if row else None
+        return None if cents is None else cents * MICROS_PER_CENT
+
+    default_soft = _micros(default_row, "soft_cap_cents")
+    default_hard = _micros(default_row, "hard_cap_cents")
+    feat_soft = _micros(feat_row, "soft_cap_cents")
+    feat_hard = _micros(feat_row, "hard_cap_cents")
 
     soft = _tighter_cap(default_soft, feat_soft)
     hard = _tighter_cap(default_hard, feat_hard)
     return _ResolvedCaps(
-        soft_cap_cents=soft,
-        hard_cap_cents=hard,
+        soft_cap_micros=soft,
+        hard_cap_micros=hard,
         soft_from_feature_override=_soft_cap_from_feature(
             default_soft, feat_soft
         ),
@@ -544,12 +550,12 @@ def _month_start(now: Optional[datetime] = None) -> datetime:
     return datetime(now.year, now.month, 1)
 
 
-async def _aggregate_cost_cents(
+async def _aggregate_cost_micros(
     db: AsyncSession, *, org_id: int, since: datetime
 ) -> int:
-    """Sum est_cost_cents for the org for the current period."""
+    """Sum cost_micros for the org for the current period."""
     total = await db.scalar(
-        select(func.coalesce(func.sum(AIUsageLedger.est_cost_cents), 0)).where(
+        select(func.coalesce(func.sum(AIUsageLedger.cost_micros), 0)).where(
             AIUsageLedger.org_id == org_id,
             AIUsageLedger.dispatched_at >= since,
         )
@@ -570,16 +576,16 @@ async def _resolve_caps_and_cost(
     resolved = await _resolve_caps(
         db, org_id=org_id, feature_key=feature_key
     )
-    cost_so_far = await _aggregate_cost_cents(
+    cost_so_far = await _aggregate_cost_micros(
         db, org_id=org_id, since=_month_start()
     )
     return resolved, cost_so_far
 
 
-async def remaining_hard_cap_cents(
+async def remaining_hard_cap_micros(
     db: AsyncSession, *, org_id: int, feature_key: str
 ) -> Optional[int]:
-    """Remaining hard-cap headroom (cents) for (org_id, feature_key).
+    """Remaining hard-cap headroom (micro-USD) for (org_id, feature_key).
 
     Composes the same internals the dispatcher uses to gate spend:
     resolve the effective hard cap (default + feature, tighter wins) and
@@ -587,7 +593,7 @@ async def remaining_hard_cap_cents(
 
     Returns ``None`` when no hard cap is configured — the sentinel for
     "unlimited headroom" that callers already treat as no gate. Otherwise
-    returns ``hard_cap_cents - cost_so_far``, which may be zero or
+    returns ``hard_cap_micros - cost_so_far``, which may be zero or
     negative when the org is at or over its cap. The dispatch refusal
     boundary is ``cost_so_far >= hard_cap`` (i.e. ``remaining <= 0``).
 
@@ -600,39 +606,39 @@ async def remaining_hard_cap_cents(
     resolved = await _resolve_caps(
         db, org_id=org_id, feature_key=feature_key
     )
-    if resolved.hard_cap_cents is None:
+    if resolved.hard_cap_micros is None:
         return None
-    cost_so_far = await _aggregate_cost_cents(
+    cost_so_far = await _aggregate_cost_micros(
         db, org_id=org_id, since=_month_start()
     )
-    return resolved.hard_cap_cents - cost_so_far
+    return resolved.hard_cap_micros - cost_so_far
 
 
 # --- Projected-overspend gate ----------------------------------------
 
 
-def _projected_cost_cents(
+def _projected_cost_micros(
     model: str,
     messages: list[dict],
     max_tokens: Optional[int],
     *,
     retry_multiplier: int = 1,
 ) -> int:
-    """Conservative worst-case cost (cents) for a not-yet-made call.
+    """Conservative worst-case cost (micro-USD) for a not-yet-made call.
 
     Prompt tokens come from the shared char heuristic over ``messages``;
     completion tokens are the caller's pinned ``max_tokens`` or the
     model's worst-case output ceiling when unpinned. ``retry_multiplier``
     scales the single-call estimate for callers that retry and aggregate
     spend across attempts (e.g. structured output). Unknown models price
-    via ``estimate_cost_cents``'s conservative ``_default`` row, so the
+    via ``estimate_cost_micros``'s conservative ``_default`` row, so the
     projection is always computable.
     """
     prompt_tokens = estimate_prompt_tokens_from_messages(messages)
     completion_tokens = (
         max_tokens if max_tokens else default_max_output_tokens_for(model)
     )
-    single = estimate_cost_cents(
+    single = estimate_cost_micros(
         model=model,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
@@ -656,7 +662,7 @@ def _enforce_cap(
     call's conservative projected cost would tip the org over its hard
     cap. Raises ``AICapExceeded`` (→ 402 ``ai_hard_cap_exceeded``).
 
-    No cap configured (``hard_cap_cents is None``) → no gate.
+    No cap configured (``hard_cap_micros is None``) → no gate.
 
     Fail-closed: if projection raises for any reason, ``projected`` is
     pinned to 0 and a warning is logged. This degrades the gate to
@@ -668,11 +674,11 @@ def _enforce_cap(
     prior inline exhausted block); ``AICapExceeded`` is audited as a
     success-precondition by the routers.
     """
-    if resolved.hard_cap_cents is None:
+    if resolved.hard_cap_micros is None:
         return
 
     try:
-        projected = _projected_cost_cents(
+        projected = _projected_cost_micros(
             model,
             messages,
             max_tokens,
@@ -691,8 +697,8 @@ def _enforce_cap(
         )
 
     if (
-        cost_so_far >= resolved.hard_cap_cents
-        or cost_so_far + projected > resolved.hard_cap_cents
+        cost_so_far >= resolved.hard_cap_micros
+        or cost_so_far + projected > resolved.hard_cap_micros
     ):
         logger.info(
             "ai.dispatch.cap.exceeded",
@@ -701,10 +707,10 @@ def _enforce_cap(
                 "feature_key": feature_key,
                 "capability": capability,
                 "cost_so_far": cost_so_far,
-                "hard_cap_cents": resolved.hard_cap_cents,
-                "projected_cost_cents": projected,
+                "hard_cap_micros": resolved.hard_cap_micros,
+                "projected_cost_micros": projected,
                 "reason": "exhausted"
-                if cost_so_far >= resolved.hard_cap_cents
+                if cost_so_far >= resolved.hard_cap_micros
                 else "projected",
             },
         )
@@ -749,9 +755,9 @@ async def _maybe_warn_soft_cap(
     unavailable the warning still fires (degrades to "warn every call"
     rather than skipping silently).
     """
-    if resolved.soft_cap_cents is None:
+    if resolved.soft_cap_micros is None:
         return False
-    if cost_before_call < resolved.soft_cap_cents:
+    if cost_before_call < resolved.soft_cap_micros:
         return False
 
     # The marker is scoped by where the EFFECTIVE soft cap came from.
@@ -786,9 +792,9 @@ async def _maybe_warn_soft_cap(
         )
 
     percent = 0
-    if resolved.soft_cap_cents > 0:
+    if resolved.soft_cap_micros > 0:
         percent = min(
-            100, int(round((cost_before_call / resolved.soft_cap_cents) * 100))
+            100, int(round((cost_before_call / resolved.soft_cap_micros) * 100))
         )
     title, body, link_url = ai_cap_soft_warning(
         feature_key=feature_key, period=period, percent=percent
@@ -833,7 +839,7 @@ async def _maybe_warn_soft_cap(
             "org_id": org_id,
             "feature_key": feature_key,
             "period": period,
-            "soft_cap_cents": resolved.soft_cap_cents,
+            "soft_cap_micros": resolved.soft_cap_micros,
             "cost_before_call": cost_before_call,
             "recipients": len(recipients),
         },
@@ -842,6 +848,19 @@ async def _maybe_warn_soft_cap(
 
 
 # --- Ledger write -----------------------------------------------------
+
+
+def _call_cost_micros(
+    model: str, prompt: int, completion: int, reported: Optional[int]
+) -> int:
+    """What one provider call cost: the provider's billed figure when it
+    reported one (a reported 0 is a real 0, e.g. a free model), else the
+    table estimate."""
+    if reported is not None:
+        return reported
+    return estimate_cost_micros(
+        model=model, prompt_tokens=prompt, completion_tokens=completion
+    )
 
 
 async def _write_ledger_row(
@@ -853,7 +872,7 @@ async def _write_ledger_row(
     model: str,
     prompt_tokens: int,
     completion_tokens: int,
-    est_cost_cents_value: int,
+    cost_micros_value: int,
     latency_ms: int,
     success: bool,
     error_class: Optional[str],
@@ -868,7 +887,7 @@ async def _write_ledger_row(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=prompt_tokens + completion_tokens,
-        est_cost_cents=est_cost_cents_value,
+        cost_micros=cost_micros_value,
         latency_ms=latency_ms,
         success=success,
         error_class=error_class,
@@ -997,7 +1016,7 @@ async def call_llm(
             model=model,
             prompt_tokens=0,
             completion_tokens=0,
-            est_cost_cents_value=0,
+            cost_micros_value=0,
             latency_ms=latency_ms,
             success=False,
             error_class=exc.code,
@@ -1024,7 +1043,7 @@ async def call_llm(
             model=model,
             prompt_tokens=0,
             completion_tokens=0,
-            est_cost_cents_value=0,
+            cost_micros_value=0,
             latency_ms=latency_ms,
             success=False,
             error_class=type(exc).__name__,
@@ -1042,10 +1061,11 @@ async def call_llm(
         raise AIDispatchFailed(type(exc).__name__) from None
 
     latency_ms = int((time.perf_counter() - start) * 1000)
-    cost = estimate_cost_cents(
-        model=model,
-        prompt_tokens=response.prompt_tokens,
-        completion_tokens=response.completion_tokens,
+    cost = _call_cost_micros(
+        model,
+        response.prompt_tokens,
+        response.completion_tokens,
+        response.cost_micros,
     )
     await _settle(
         db,
@@ -1064,7 +1084,7 @@ async def call_llm(
         model=model,
         prompt_tokens=response.prompt_tokens,
         completion_tokens=response.completion_tokens,
-        est_cost_cents_value=cost,
+        cost_micros_value=cost,
         latency_ms=latency_ms,
         success=True,
         error_class=None,
@@ -1094,7 +1114,7 @@ async def call_llm(
             "model": model,
             "prompt_tokens": response.prompt_tokens,
             "completion_tokens": response.completion_tokens,
-            "est_cost_cents": cost,
+            "cost_micros": cost,
             "latency_ms": latency_ms,
             "ledger_id": ledger.id,
         },
@@ -1163,8 +1183,8 @@ class _PlatformReq:
 
     cred: Any
     tokens: int
-    cents: int
-    ceiling_cents: int
+    micros: int
+    ceiling_micros: int
 
 
 @dataclass(frozen=True)
@@ -1236,7 +1256,7 @@ async def _prepare_platform(
         prompt = estimate_prompt_tokens_from_messages(messages)
         completion = bound or 0
         tokens = (prompt + completion) * retry_multiplier
-        cents = retry_multiplier * estimate_cost_cents(
+        micros = retry_multiplier * estimate_cost_micros(
             model=model, prompt_tokens=prompt, completion_tokens=completion
         )
     except Exception as exc:  # noqa: BLE001 - a platform dispatch never projects 0
@@ -1248,9 +1268,12 @@ async def _prepare_platform(
             },
         )
         raise AIPlatformProjectionFailed() from None
+    # The setting stays in cents (a human types it); converted ONCE, here, and
+    # that one local feeds both the pre-flight and the reservation request.
+    ceiling_micros = conf.global_monthly_cents * MICROS_PER_CENT
     try:
         await platform_reserve.check_headroom(
-            db, org_id, tokens, cents, conf.global_monthly_cents
+            db, org_id, tokens, micros, ceiling_micros
         )
     except PlanLimitReached as exc:
         raise AIPlanLimitReached(exc) from None
@@ -1260,7 +1283,7 @@ async def _prepare_platform(
         model,
         bound,
         _PlatformReq(
-            cred=cred, tokens=tokens, cents=cents, ceiling_cents=conf.global_monthly_cents
+            cred=cred, tokens=tokens, micros=micros, ceiling_micros=ceiling_micros
         ),
     )
 
@@ -1276,7 +1299,7 @@ async def _reserve(
         return prepared.adapter, None
     try:
         res = await platform_reserve.reserve(
-            db, org_id, req.cred, req.tokens, req.cents, req.ceiling_cents
+            db, org_id, req.cred, req.tokens, req.micros, req.ceiling_micros
         )
     except PlanLimitReached as exc:
         raise AIPlanLimitReached(exc) from None
@@ -1531,8 +1554,8 @@ async def _post_write_soft_cap_crossing(
     soft cap (post-write check). Mirrors step 7 of ``call_llm``.
     """
     if (
-        resolved.soft_cap_cents is not None
-        and cost_so_far < resolved.soft_cap_cents <= cost_so_far + cost_this_call
+        resolved.soft_cap_micros is not None
+        and cost_so_far < resolved.soft_cap_micros <= cost_so_far + cost_this_call
     ):
         await _maybe_warn_soft_cap(
             db,
@@ -1644,6 +1667,9 @@ async def call_llm_structured(
     # last-attempt-only ledger row silently dropped.
     total_prompt_tokens = 0
     total_completion_tokens = 0
+    # Cost is summed per attempt (reported figure or that attempt's own
+    # estimate); re-estimating from the summed tokens would drop reported costs.
+    total_cost = 0
     # Platform settle needs EVERY attempt's usage complete; one incomplete
     # attempt keeps the (3x) reservation.
     all_complete = True
@@ -1682,11 +1708,7 @@ async def call_llm_structured(
             # before the adapter raised; first-attempt failures
             # naturally land at zero because no successful response
             # ever returned.
-            cost = estimate_cost_cents(
-                model=prepared.model,
-                prompt_tokens=total_prompt_tokens,
-                completion_tokens=total_completion_tokens,
-            )
+            cost = total_cost
             await _write_ledger_row(
                 db,
                 billing_source=prepared.billing_source,
@@ -1696,7 +1718,7 @@ async def call_llm_structured(
                 model=prepared.model,
                 prompt_tokens=total_prompt_tokens,
                 completion_tokens=total_completion_tokens,
-                est_cost_cents_value=cost,
+                cost_micros_value=cost,
                 latency_ms=latency_ms,
                 success=False,
                 error_class=error_code,
@@ -1718,6 +1740,12 @@ async def call_llm_structured(
         # whether downstream JSON parse / schema validation passes.
         total_prompt_tokens += response.prompt_tokens
         total_completion_tokens += response.completion_tokens
+        total_cost += _call_cost_micros(
+            prepared.model,
+            response.prompt_tokens,
+            response.completion_tokens,
+            response.cost_micros,
+        )
         all_complete = (
             all_complete
             and response.prompt_tokens > 0
@@ -1733,11 +1761,7 @@ async def call_llm_structured(
         err = _validate_json_against_schema(parsed, response_schema)
         if err is None:
             latency_ms = int((time.perf_counter() - start) * 1000)
-            cost = estimate_cost_cents(
-                model=prepared.model,
-                prompt_tokens=total_prompt_tokens,
-                completion_tokens=total_completion_tokens,
-            )
+            cost = total_cost
             await _settle(
                 db,
                 handle,
@@ -1755,7 +1779,7 @@ async def call_llm_structured(
                 model=prepared.model,
                 prompt_tokens=total_prompt_tokens,
                 completion_tokens=total_completion_tokens,
-                est_cost_cents_value=cost,
+                cost_micros_value=cost,
                 latency_ms=latency_ms,
                 success=True,
                 error_class=None,
@@ -1801,11 +1825,7 @@ async def call_llm_structured(
     # Exhausted retries. Bill the SUM of tokens consumed across all
     # attempts so the cap accounting reflects real spend.
     latency_ms = int((time.perf_counter() - start) * 1000)
-    cost = estimate_cost_cents(
-        model=prepared.model,
-        prompt_tokens=total_prompt_tokens,
-        completion_tokens=total_completion_tokens,
-    )
+    cost = total_cost
     await _settle(
         db,
         handle,
@@ -1823,7 +1843,7 @@ async def call_llm_structured(
         model=prepared.model,
         prompt_tokens=total_prompt_tokens,
         completion_tokens=total_completion_tokens,
-        est_cost_cents_value=cost,
+        cost_micros_value=cost,
         latency_ms=latency_ms,
         success=False,
         error_class="STATUS_ERROR_STRUCTURED_OUTPUT",
@@ -1876,7 +1896,7 @@ async def call_llm_embed(
     pins a specific model.
     """
     # Embeddings bill on their INPUT, so feed ``texts`` to the gate as a
-    # synthetic prompt payload. ``_projected_cost_cents`` then estimates
+    # synthetic prompt payload. ``_projected_cost_micros`` then estimates
     # prompt tokens from the joined input and prices it at the embedding
     # input rate; ``max_tokens=None`` resolves the model output ceiling,
     # which is 0 for embedding models (they emit no completion tokens),
@@ -1918,7 +1938,7 @@ async def call_llm_embed(
             model=embed_model,
             prompt_tokens=0,
             completion_tokens=0,
-            est_cost_cents_value=0,
+            cost_micros_value=0,
             latency_ms=latency_ms,
             success=False,
             error_class="embed_not_implemented",
@@ -1935,7 +1955,7 @@ async def call_llm_embed(
             model=embed_model,
             prompt_tokens=0,
             completion_tokens=0,
-            est_cost_cents_value=0,
+            cost_micros_value=0,
             latency_ms=latency_ms,
             success=False,
             error_class=exc.code,
@@ -1946,7 +1966,7 @@ async def call_llm_embed(
     # R6: a platform row prices and ledgers the model WE sent, never the name
     # the provider echoes back. BYOK keeps the echoed model.
     billed_model = embed_model if prepared.platform is not None else response.model
-    cost = estimate_cost_cents(
+    cost = estimate_cost_micros(
         model=billed_model,
         prompt_tokens=response.prompt_tokens,
         completion_tokens=0,
@@ -1963,7 +1983,7 @@ async def call_llm_embed(
         model=billed_model,
         prompt_tokens=response.prompt_tokens,
         completion_tokens=0,
-        est_cost_cents_value=cost,
+        cost_micros_value=cost,
         latency_ms=latency_ms,
         success=True,
         error_class=None,
@@ -2057,7 +2077,7 @@ async def call_llm_function(
             model=prepared.model,
             prompt_tokens=0,
             completion_tokens=0,
-            est_cost_cents_value=0,
+            cost_micros_value=0,
             latency_ms=latency_ms,
             success=False,
             error_class="capability_not_supported",
@@ -2084,7 +2104,7 @@ async def call_llm_function(
             model=prepared.model,
             prompt_tokens=0,
             completion_tokens=0,
-            est_cost_cents_value=0,
+            cost_micros_value=0,
             latency_ms=latency_ms,
             success=False,
             error_class=exc.code,
@@ -2104,10 +2124,11 @@ async def call_llm_function(
         raise failed from None
 
     latency_ms = int((time.perf_counter() - start) * 1000)
-    cost = estimate_cost_cents(
-        model=prepared.model,
-        prompt_tokens=response.prompt_tokens,
-        completion_tokens=response.completion_tokens,
+    cost = _call_cost_micros(
+        prepared.model,
+        response.prompt_tokens,
+        response.completion_tokens,
+        response.cost_micros,
     )
     await _settle(
         db,
@@ -2125,7 +2146,7 @@ async def call_llm_function(
         model=prepared.model,
         prompt_tokens=response.prompt_tokens,
         completion_tokens=response.completion_tokens,
-        est_cost_cents_value=cost,
+        cost_micros_value=cost,
         latency_ms=latency_ms,
         success=True,
         error_class=None,
@@ -2217,7 +2238,7 @@ async def call_llm_stream(
                 model=prepared.model,
                 prompt_tokens=0,
                 completion_tokens=0,
-                est_cost_cents_value=0,
+                cost_micros_value=0,
                 latency_ms=latency_ms,
                 success=False,
                 error_class=exc.code,
@@ -2235,10 +2256,11 @@ async def call_llm_stream(
                 prompt_tokens=0,
                 completion_tokens=max(0, len(full_text) // 4),
             )
-        cost = estimate_cost_cents(
-            model=prepared.model,
-            prompt_tokens=final_usage.prompt_tokens,
-            completion_tokens=final_usage.completion_tokens,
+        cost = _call_cost_micros(
+            prepared.model,
+            final_usage.prompt_tokens,
+            final_usage.completion_tokens,
+            final_usage.cost_micros,
         )
         await _settle_shielded(
             db,
@@ -2257,7 +2279,7 @@ async def call_llm_stream(
             model=prepared.model,
             prompt_tokens=final_usage.prompt_tokens,
             completion_tokens=final_usage.completion_tokens,
-            est_cost_cents_value=cost,
+            cost_micros_value=cost,
             latency_ms=latency_ms,
             success=True,
             error_class=None,
@@ -2293,9 +2315,10 @@ async def call_llm_stream(
                 handle,
                 prompt=final_usage.prompt_tokens,
                 completion=final_usage.completion_tokens,
-                cost=estimate_cost_cents(
-                    model=prepared.model,
-                    prompt_tokens=final_usage.prompt_tokens,
-                    completion_tokens=final_usage.completion_tokens,
+                cost=_call_cost_micros(
+                    prepared.model,
+                    final_usage.prompt_tokens,
+                    final_usage.completion_tokens,
+                    final_usage.cost_micros,
                 ),
             )

@@ -1,12 +1,12 @@
 """Platform AI spend reservation (TBD-586 PR1 kernel).
 
 ``reserve`` admits one platform dispatch against the org's two platform meters
-(``platform_ai.tokens``, ``platform_ai.cents``) and the global monthly ceiling
+(``platform_ai.tokens``, ``platform_ai.micros``) and the global monthly ceiling
 (``platform_ai_spend``) in ONE transaction, or refuses with nothing reserved.
 ``settle`` swaps the reservation for the actual usage on the SAME period keys,
 once. There is no release path: a reservation that is not settled stays.
 
-Lock order is fixed (org tokens, org cents, global) so two dispatches never
+Lock order is fixed (org tokens, org micros, global) so two dispatches never
 deadlock on each other's rows.
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ from app.services.usage_service import PlanLimitReached, period_start, resets_at
 logger = logging.getLogger(__name__)
 
 TOKENS = "platform_ai.tokens"
-CENTS = "platform_ai.cents"
+MICROS = "platform_ai.micros"
 
 
 class PlatformAIUnavailable(Exception):
@@ -47,10 +47,10 @@ class SettleHandle:
 
     org_id: int
     tokens_key: tuple[str, date]  # (period kind, period_start)
-    cents_key: tuple[str, date]
+    micros_key: tuple[str, date]
     spend_start: date
     tokens: int
-    cents: int
+    micros: int
     done: bool = field(default=False)
 
 
@@ -83,7 +83,7 @@ def _spend(start: date):
 
 
 def _keys(ent, now: datetime):
-    lt, lc = ent.limits[TOKENS], ent.limits[CENTS]
+    lt, lc = ent.limits[TOKENS], ent.limits[MICROS]
     return (
         lt, lc,
         (lt.period, period_start(lt.period, now)),
@@ -124,7 +124,7 @@ def _plan_limit(lim, meter: str, now: datetime) -> PlanLimitReached:
 
 
 async def check_headroom(
-    db: AsyncSession, org_id: int, tokens: int, cents: int, ceiling_cents: int,
+    db: AsyncSession, org_id: int, tokens: int, micros: int, ceiling_micros: int,
     *, now: datetime | None = None,
 ) -> None:
     """READ-ONLY pre-flight: raise what ``reserve`` would raise for a quiet
@@ -138,10 +138,10 @@ async def check_headroom(
             UsageCounter.org_id == org_id, UsageCounter.meter == TOKENS,
             UsageCounter.period == tkey[0], UsageCounter.period_start == tkey[1])) or 0
         cv = await db.scalar(select(UsageCounter.value).where(
-            UsageCounter.org_id == org_id, UsageCounter.meter == CENTS,
+            UsageCounter.org_id == org_id, UsageCounter.meter == MICROS,
             UsageCounter.period == ckey[0], UsageCounter.period_start == ckey[1])) or 0
         sv = await db.scalar(
-            select(PlatformAISpend.cents).where(PlatformAISpend.period_start == month)) or 0
+            select(PlatformAISpend.micros).where(PlatformAISpend.period_start == month)) or 0
     except SQLAlchemyError as exc:
         await db.rollback()
         logger.warning(
@@ -154,9 +154,9 @@ async def check_headroom(
         raise PlatformAIUnavailable("headroom check failed") from exc
     if tv + tokens > lt.limit:
         raise _plan_limit(lt, TOKENS, now)
-    if cv + cents > lc.limit:
-        raise _plan_limit(lc, CENTS, now)
-    if sv + cents > ceiling_cents:
+    if cv + micros > lc.limit:
+        raise _plan_limit(lc, MICROS, now)
+    if sv + micros > ceiling_micros:
         raise PlatformAIUnavailable("global ceiling reached")
 
 
@@ -165,12 +165,12 @@ async def reserve(
     org_id: int,
     cred: Any,
     tokens: int,
-    cents: int,
-    ceiling_cents: int,
+    micros: int,
+    ceiling_micros: int,
     *,
     now: datetime | None = None,
 ) -> Reservation:
-    """Reserve ``tokens``/``cents`` or raise. COMMITS the caller's session
+    """Reserve ``tokens``/``micros`` or raise. COMMITS the caller's session
     (like ``usage_service.admit``) and ROLLS IT BACK on refusal, which expires
     the caller's ORM objects: do not touch them after a refusal. Call it before
     any write of the unit of work. The adapter is built (from
@@ -181,23 +181,23 @@ async def reserve(
     now = now or utcnow_naive()
     lt, lc, tkey, ckey, month = await _resolve(db, org_id, now)
     try:
-        for meter, key in ((TOKENS, tkey), (CENTS, ckey)):
+        for meter, key in ((TOKENS, tkey), (MICROS, ckey)):
             await db.execute(_upsert(db, UsageCounter, dict(
                 org_id=org_id, meter=meter, period=key[0], period_start=key[1], value=0,
             ), "value"))
-        await db.execute(_upsert(db, PlatformAISpend, dict(period_start=month, cents=0), "cents"))
+        await db.execute(_upsert(db, PlatformAISpend, dict(period_start=month, micros=0), "micros"))
         await db.commit()
 
         steps = (
             (TOKENS, _counter(org_id, TOKENS, tkey)
                 .where(UsageCounter.value + tokens <= lt.limit)
                 .values(value=UsageCounter.value + tokens)),
-            (CENTS, _counter(org_id, CENTS, ckey)
-                .where(UsageCounter.value + cents <= lc.limit)
-                .values(value=UsageCounter.value + cents)),
+            (MICROS, _counter(org_id, MICROS, ckey)
+                .where(UsageCounter.value + micros <= lc.limit)
+                .values(value=UsageCounter.value + micros)),
             (None, _spend(month)
-                .where(PlatformAISpend.cents + cents <= ceiling_cents)
-                .values(cents=PlatformAISpend.cents + cents)),
+                .where(PlatformAISpend.micros + micros <= ceiling_micros)
+                .values(micros=PlatformAISpend.micros + micros)),
         )
         for meter, stmt in steps:
             if (await db.execute(stmt)).rowcount != 1:
@@ -219,25 +219,25 @@ async def reserve(
 
     return Reservation(
         adapter=platform_ai.build_adapter(provider),
-        handle=SettleHandle(org_id, tkey, ckey, month, tokens, cents),
+        handle=SettleHandle(org_id, tkey, ckey, month, tokens, micros),
     )
 
 
-async def settle(db: AsyncSession, handle: SettleHandle, tokens: int, cents: int) -> None:
+async def settle(db: AsyncSession, handle: SettleHandle, tokens: int, micros: int) -> None:
     """Replace the reservation with the actual usage, once. Unconditional:
     actual above the limit still lands (the call already happened). The
-    caller decides usage completeness and passes actual tokens/cents only
+    caller decides usage completeness and passes actual tokens/micros only
     when it is complete; otherwise it does not call settle."""
     if handle.done:
         return
     handle.done = True
-    dt, dc = tokens - handle.tokens, cents - handle.cents
+    dt, dc = tokens - handle.tokens, micros - handle.micros
     try:
         await db.execute(_counter(handle.org_id, TOKENS, handle.tokens_key)
                          .values(value=UsageCounter.value + dt))
-        await db.execute(_counter(handle.org_id, CENTS, handle.cents_key)
+        await db.execute(_counter(handle.org_id, MICROS, handle.micros_key)
                          .values(value=UsageCounter.value + dc))
-        await db.execute(_spend(handle.spend_start).values(cents=PlatformAISpend.cents + dc))
+        await db.execute(_spend(handle.spend_start).values(micros=PlatformAISpend.micros + dc))
         await db.commit()
     except SQLAlchemyError:
         await db.rollback()  # reservation kept; caller logs and still returns

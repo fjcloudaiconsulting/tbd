@@ -120,7 +120,7 @@ async def _seed(session_factory) -> tuple[int, int, int]:
                 prompt_tokens=100,
                 completion_tokens=50,
                 total_tokens=150,
-                est_cost_cents=5,
+                cost_micros=5,
                 latency_ms=42,
                 success=True,
                 error_class=None,
@@ -134,7 +134,7 @@ async def _seed(session_factory) -> tuple[int, int, int]:
                 prompt_tokens=200,
                 completion_tokens=80,
                 total_tokens=280,
-                est_cost_cents=10,
+                cost_micros=10,
                 latency_ms=44,
                 success=True,
                 error_class=None,
@@ -148,7 +148,7 @@ async def _seed(session_factory) -> tuple[int, int, int]:
                 prompt_tokens=0,
                 completion_tokens=0,
                 total_tokens=0,
-                est_cost_cents=0,
+                cost_micros=0,
                 latency_ms=10,
                 success=False,
                 error_class="provider_status_500",
@@ -163,7 +163,7 @@ async def _seed(session_factory) -> tuple[int, int, int]:
                 prompt_tokens=999,
                 completion_tokens=999,
                 total_tokens=1998,
-                est_cost_cents=999,
+                cost_micros=999,
                 latency_ms=10,
                 success=True,
                 error_class=None,
@@ -197,7 +197,7 @@ async def test_superadmin_can_aggregate_usage(session_factory):
     assert body["period"] == "2026-05"
     assert body["total_prompt_tokens"] == 300
     assert body["total_completion_tokens"] == 130
-    assert body["total_cost_cents"] == 15  # 5 + 10 (+ 0 for failed)
+    assert body["total_cost_micros"] == 15  # 5 + 10 (+ 0 for failed)
     assert body["total_calls"] == 3
     by_feature = {row["feature_key"]: row for row in body["by_feature"]}
     assert by_feature["chat"]["calls"] == 2

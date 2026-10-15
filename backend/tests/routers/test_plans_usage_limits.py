@@ -25,7 +25,7 @@ DEFAULTS = {
     "assistant.turns": {"period": "month", "limit": None},
     "mcp.calls": {"period": "month", "limit": None},
     "platform_ai.tokens": {"period": "month", "limit": 0},
-    "platform_ai.cents": {"period": "month", "limit": 0},
+    "platform_ai.micros": {"period": "month", "limit": 0},
 }
 
 
@@ -103,12 +103,12 @@ def test_canonicalize_per_meter_replace_keeps_the_others():
     out = canonicalize_usage_limits({"mcp.calls": {"period": "day", "limit": 5}}, existing)
     assert out["assistant.turns"] == {"period": "day", "limit": 10}
     assert out["mcp.calls"] == {"period": "day", "limit": 5}
-    assert out["platform_ai.cents"] == {"period": "month", "limit": 0}
+    assert out["platform_ai.micros"] == {"period": "month", "limit": 0}
 
 
 @pytest.mark.parametrize("partial", [
     {"nope": {"period": "day", "limit": 1}},
-    {"platform_ai.cents": {"period": "month", "limit": None}},
+    {"platform_ai.micros": {"period": "month", "limit": None}},
     {"mcp.calls": {"period": "day"}},                      # wholesale replace, not deep merge
     {"mcp.calls": {"period": "week", "limit": 1}},
     {"mcp.calls": {"period": "day", "limit": "5"}},
@@ -176,7 +176,7 @@ async def test_update_replaces_per_meter_not_whole_dict(session_factory):
 @pytest.mark.parametrize("body,code", [
     ({"usage_limits": None}, 422),
     ({"usage_limits": {"nope": {"period": "day", "limit": 1}}}, 400),
-    ({"usage_limits": {"platform_ai.cents": {"period": "month", "limit": None}}}, 400),
+    ({"usage_limits": {"platform_ai.micros": {"period": "month", "limit": None}}}, 400),
     ({"usage_limits": {"mcp.calls": {"period": "day"}}}, 400),
 ])
 async def test_update_rejects_bad_usage_limits(session_factory, body, code):
@@ -232,7 +232,7 @@ async def test_get_plan_canonicalizes_a_legacy_empty_object(session_factory):
 # ── platform-meter guard ───────────────────────────────────────────────────
 
 DEFAULTS_PLATFORM = {k: v for k, v in DEFAULTS.items() if k.startswith("platform_ai.")}
-PLATFORM = {"platform_ai.cents": {"period": "month", "limit": 100}}
+PLATFORM = {"platform_ai.micros": {"period": "month", "limit": 100}}
 
 
 async def _plain_user(factory):
