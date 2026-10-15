@@ -7,6 +7,8 @@ import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import PrivacyPolicyPage from "@/app/privacy/page";
+import TermsPage from "@/app/terms/page";
+import { faqEntries } from "@/components/landing/faqData";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
@@ -37,7 +39,26 @@ describe("privacy policy recipients and retention", () => {
     const t = text();
     const s7 = t.slice(t.indexOf("7. International transfers"), t.indexOf("8. Children"));
     expect(s7).toMatch(/runs at Hetzner in\s+Nuremberg/);
-    expect(s7).not.toMatch(/Your data is stored in the EU \(Amazon Web Services/);
+    expect(s7).toMatch(/backups are kept at Amazon Web\s+Services/);
+    expect(s7).toMatch(/Grafana Cloud stores\s+operational metrics and traces in its EU region/);
+  });
+
+  it("states Grafana Cloud retention in section 4", () => {
+    const t = text();
+    const s4 = t.slice(t.indexOf("4. How long"), t.indexOf("5. Your rights"));
+    expect(s4).toMatch(/Metrics and traces at Grafana Cloud follow its retention/);
+  });
+
+  it("terms name Hetzner for hosting and AWS for backups only", () => {
+    const t = render(<TermsPage />).container.textContent ?? "";
+    expect(t).toMatch(/Hetzner for hosting,\s+Amazon Web Services for backups, Grafana Labs for monitoring/);
+    expect(t).not.toMatch(/Amazon Web Services for\s+hosting/);
+  });
+
+  it("the FAQ does not claim the database is encrypted at rest (local disks on Hetzner are not)", () => {
+    const security = faqEntries.find((e) => e.q === "Is my data secure?");
+    expect(security?.a).toMatch(/EU data centers in Germany/);
+    expect(security?.a).not.toMatch(/encrypted at rest/);
   });
 
   it("states request logs are kept up to 7 days, never 30", () => {

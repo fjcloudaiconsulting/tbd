@@ -29,7 +29,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";
-const LAST_UPDATED = "October 14, 2026";
+const LAST_UPDATED = "October 15, 2026";
 
 export default function TermsOfServicePage() {
   return (

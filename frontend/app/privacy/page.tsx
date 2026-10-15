@@ -33,7 +33,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = "October 5, 2026";
-const LAST_UPDATED = "October 14, 2026";
+const LAST_UPDATED = "October 15, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -90,6 +90,8 @@ export default function PrivacyPolicyPage() {
                 <strong>Operational telemetry:</strong> request logs
                 containing IP address, user agent, path, and timestamp for
                 up to {REQUEST_LOG_RETENTION_DAYS} days, used for debugging and abuse prevention.
+                Performance metrics and traces without personal data go to
+                our monitoring provider (section 3).
               </li>
               <li>
                 <strong>Cookies:</strong> an HTTP-only refresh-token cookie
@@ -184,9 +186,9 @@ export default function PrivacyPolicyPage() {
               <li>
                 <strong>Grafana Labs</strong> (Grafana Cloud, EU region,
                 monitoring): receives operational metrics and traces, made of
-                the request method, route pattern, status code, error type and
-                timing, and database query text without its values. It
-                never receives
+                the request method, route pattern, status code, error type,
+                timing, scheduled job names, and database query text without
+                its values. It never receives
                 your financial data, request contents, IP address, or request
                 logs.
               </li>
