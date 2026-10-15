@@ -1307,16 +1307,18 @@ async def test_c2_tool_results_are_scrubbed_before_the_cap(factory, w, client, p
     rows += [{"id": i, "d": "a@b.co " * 560} for i in range(1, 11)]
     assert 39_000 < len(json.dumps({"items": rows})) < chat.MAX_TOOL_RESULT_CHARS
     _fake_accounts(monkeypatch, {"items": rows, "total": 11})
-    msg, _ = await _tool_message(client, provider)
+    msg, ev = await _tool_message(client, provider)
     assert len(msg["content"]) <= chat.MAX_TOOL_RESULT_CHARS
     out = json.loads(msg["content"])
+    assert ("tool_result", {"name": "accounts_list", "ok": True, "rows": len(out["items"])}) in ev
     assert out["items"][0]["d"] == "[IBAN] call [PHONE]"
     assert "a@b.co" not in msg["content"] and "NL91ABNA0417164300" not in msg["content"]
     assert "[EMAIL]" in msg["content"]
 
 
 async def test_c3_error_detail_is_scrubbed(factory, w, client, provider, monkeypatch):
-    """GUARD C3."""
+    """FENCE C3. Wrong implementation: no scrub in ``_tool_message`` (the wrapper hides it in the
+    provider request only for success paths; this error path has no other kill)."""
     _as(factory, w["user"])
     spec = registry.get_tool("accounts_list")
 

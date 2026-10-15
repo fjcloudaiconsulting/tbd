@@ -1,5 +1,14 @@
-"""Remove IBANs, card numbers, email addresses and phone numbers from text sent to an AI (TBD-628)."""
+"""Remove IBANs, card numbers, email addresses and phone numbers from text sent to an AI (TBD-628).
+
+``scrub_text`` first normalizes the text (``_normalize``: NFKC, zero-width characters dropped,
+no-break spaces and tabs to a space, en dash to a hyphen; the returned text is the normalized
+one), then replaces, in this order, IBANs, emails, cards and phones, each pass seeing the earlier
+placeholders. IBANs and cards are only replaced when a checksum (mod-97 with the SWIFT length,
+Luhn) agrees, and every pattern is biased to miss a borderline identifier rather than eat an
+amount, date or id. Pure: stdlib only, no logging, no settings, raises nothing on any ``str``.
+"""
 import re
+import unicodedata
 from typing import Any
 
 IBAN, CARD, EMAIL, PHONE = "[IBAN]", "[CARD]", "[EMAIL]", "[PHONE]"
@@ -110,10 +119,21 @@ def _checked(rx: re.Pattern, ok, tag: str, min_len: int, text: str) -> str:
     return "".join(out)
 
 
+_ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff"))
+_SPACES = {ord(c): " " for c in "\u00a0\u202f\u2007\t"}
+
+
+def _normalize(text: str) -> str:
+    """One step before matching, so full-width digits, zero-width characters and
+    no-break spaces cannot hide an identifier. NFKC also maps full-width ``@``."""
+    text = unicodedata.normalize("NFKC", text).translate(_ZERO_WIDTH)
+    return text.translate(_SPACES).replace("\u2013", "-")
+
+
 def scrub_text(text: str) -> str:
-    """``text`` with every IBAN, card number, email address and phone number replaced
+    """``text`` normalized, with every IBAN, card number, email address and phone number replaced
     by its placeholder. Pure, no logging; order matters (each pass sees the earlier ones' placeholders)."""
-    text = _checked(_IBAN_RE, _mod97, IBAN, 15, text)
+    text = _checked(_IBAN_RE, _mod97, IBAN, 15, _normalize(text))
     text = _EMAIL_RE.sub(EMAIL, text)
     text = _checked(_CARD_RE, _card, CARD, 13, text)
     return _PHONE_RE.sub(_phone, text)

@@ -32,6 +32,13 @@ _M = {
         |+1 415 555 2671|+1-415-555-2671|(415) 555-2671|+1 (415) 555-2671""",
 }
 MATCH = [(r.strip(), tag) for tag, rows in _M.items() for r in rows.split("|")]
+# Evasions (review): zero-width characters, full-width forms, no-break spaces, en dash.
+MATCH += [
+    ("NL91\u200bABNA0417164300", IBAN), ("06\u200b12345678", PHONE), ("jan\u200b@example.nl", EMAIL),
+    ("４１１１ １１１１ １１１１ １１１１", CARD), ("NL９１ABNA0417164300", IBAN), ("jan＠example.nl", EMAIL),
+    ("4111\xa01111\xa01111\xa01111", CARD), ("NL91\xa0ABNA\xa00417\xa01643\xa000", IBAN),
+    ("+31\xa06\xa012345678", PHONE), ("06\u201312345678", PHONE),
+]
 CONTEXTS = [
     "{}", "Tel: {}", "IBAN: {}.", "call {} now", "/IBAN/{}/BIC/RABONL2U/", "x,{},y",
     json.dumps({"description": "{}"}, ensure_ascii=False),
@@ -70,6 +77,20 @@ def test_t2_must_not_match():
     assert not bad, bad
 
 
+def test_t2_accepted_misses_of_the_review_pinned_exactly():
+    # Evasions the filter deliberately does not chase; a later widening is a deliberate edit.
+    for src, out in [
+        ("jan&#64;example.nl", "jan&#64;example.nl"),
+        ("NL91.ABNA.0417.1643.00", "NL91.ABNA.0417.1643.00"),
+        ("NL91-ABNA-0417-1643-00", "NL91-ABNA-0417-1643-00"),
+        ("NL91 ABN A041 7164 300", "NL91 ABN A041 7164 300"),
+        ("card4111111111111111", "card4111111111111111"),
+        ("٤١١١ ١١١١ ١١١١ ١١١١", "٤١١١ ١١١١ ١١١١ ١١١١"),  # Arabic-Indic: NFKC keeps them
+        ("NL91 ABNA 0417164300", "NL91 ABNA [PHONE]"),
+    ]:
+        assert scrub_text(src) == out, src
+
+
 def test_t1_accepted_false_positives():
     for src, out in [("Klantnummer 0123456789", "Klantnummer [PHONE]"), ("05-10-26 1430", "[PHONE]"),
                      ("+12 345 678", "[PHONE]")]:
@@ -77,8 +98,9 @@ def test_t1_accepted_false_positives():
 
 
 def test_t3_checksums_and_lengths():
+    # NL58ABNA041716430 is mod-97 valid but 17 long (NL is 18): only the length check keeps it.
     for s in ["4111111111111112", "4111 1111 1111 1112", "NL91ABNA0417164301", "NL91ABNA041716430",
-              "XX91ABNA0417164300"]:
+              "XX91ABNA0417164300", "NL58ABNA041716430"]:
         assert scrub_text(s) == s
 
 
@@ -133,7 +155,7 @@ def _subseq(a: str, b: str) -> bool:
 
 def test_t6_idempotent_on_separated_joins():
     for a in _ROWS:
-        for b in _ROWS[::5]:
+        for b in _ROWS:
             for sep in (" ", "/", "\n", ": ", ", ", " - ", "; "):
                 s = a + sep + b
                 once = scrub_text(s)
@@ -142,7 +164,7 @@ def test_t6_idempotent_on_separated_joins():
 
 def test_t6_second_pass_only_removes_more_on_glued_joins():
     for a in _ROWS:
-        for b in _ROWS[::5]:
+        for b in _ROWS:
             for glue in ("", "-", ".", ","):
                 s = a + glue + b
                 once = scrub_text(s)
@@ -217,4 +239,4 @@ def test_t8_scrub_messages():
 
 def test_module_is_stdlib_only():
     src = open(ai_scrub.__file__).read()
-    assert set(re.findall(r"^(?:import|from) (\w+)", src, re.M)) <= {"re", "typing"}
+    assert set(re.findall(r"^(?:import|from) (\w+)", src, re.M)) <= {"re", "typing", "unicodedata"}

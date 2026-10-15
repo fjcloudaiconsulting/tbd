@@ -122,12 +122,21 @@ async def test_d2_structured_retries_are_scrubbed(db, fake):
         _clean(json.dumps(b, ensure_ascii=False))
 
 
-@pytest.mark.parametrize("entry", ["call_llm", "structured", "function", "stream", "embed"])
+@pytest.mark.parametrize("entry", ["call_llm", "structured", "function", "stream"])
 async def test_d3_caller_data_is_not_mutated(db, fake, entry):
     org = await _org(db, "platform")
     msgs = copy.deepcopy(MSGS)
     await _calls(msgs)[entry](db, org)
     assert msgs == MSGS and msgs[0]["content"] == S
+
+
+async def test_d3_embed_texts_list_is_not_mutated(db, fake):
+    org = await _org(db, "platform")
+    texts = [S]
+    await ai_dispatch.call_llm_embed(db, org_id=org, feature_key="chat", texts=texts,
+                                     model="text-embedding-3-small")
+    assert texts == [S]
+    _clean(json.dumps(fake.bodies))
 
 
 async def test_d4_logs_hold_no_original(db, fake, caplog):

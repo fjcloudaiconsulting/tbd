@@ -195,6 +195,7 @@ def _cap_result(result: Any) -> Any:
 def _tool_message(call_id: str, result: Any) -> dict[str, str]:
     """Every tool message goes through the cap, errors included: an oversized
     ``detail`` must not end the turn on the budget."""
+    # Deliberate second pass (the caller already scrubbed); it may only remove more.
     return {
         "role": "tool", "tool_call_id": call_id,
         "content": json.dumps(_cap_result(ai_scrub.scrub_value(result)), ensure_ascii=False),

@@ -85,13 +85,13 @@ from app.models.user import Role, User
 from app.services import (
     ai_consent_service,
     ai_routing_service,
+    ai_scrub,
     feature_service,
     notification_service,
     platform_ai,
     platform_ai_settings,
     platform_reserve,
 )
-from app.services import ai_scrub
 from app.services.ai_credential_crypto import decrypt
 from app.services.ai_feature_map import AI_FEATURE_MAP
 from app.services.ai_pricing import estimate_cost_cents
@@ -2013,7 +2013,7 @@ async def call_llm_function(
     # fold them into the gate's projection by appending a serialized copy
     # as a synthetic prompt message. This keeps the projected prompt cost
     # honest for function-calling without altering the real adapter call
-    # below (which still passes the original ``messages`` + ``tools``).
+    # below (which still passes the scrubbed ``messages`` + ``tools``).
     messages = ai_scrub.scrub_messages(messages)
     gate_messages = (
         messages + [{"role": "user", "content": json.dumps(tools)}]
