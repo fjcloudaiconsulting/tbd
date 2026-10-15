@@ -44,7 +44,7 @@ STREAM_TIMEOUT_S = 60.0
 DEFAULT_CAPABILITIES = ["chat", "structured_output", "function_call", "stream"]
 MODELS_URL = "https://api.anthropic.com/v1/models"
 # shortcut: one page of 1000 (Anthropic's max, default is 20), no has_more
-# follow-up; paginate via last_id if the catalog ever exceeds 1000.
+# follow-up; paginate via after_id (= last_id of the page) if the catalog ever exceeds 1000.
 MODELS_PAGE_LIMIT = 1000
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"

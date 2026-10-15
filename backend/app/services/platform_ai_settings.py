@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.system_setting import SystemSetting
-from app.services.platform_ai import PLATFORM_PROVIDERS, platform_key
+from app.services.platform_ai import PLATFORM_PROVIDERS, offerable_model, platform_key
 
 ENABLED = "platform_ai.enabled"
 GLOBAL_MONTHLY_CENTS = "platform_ai.global_monthly_cents"
@@ -63,4 +63,9 @@ def offered(conf: PlatformAISettings) -> dict[str, list[str]]:
     env key and a non-empty allowlist, all four."""
     if not (settings.ai_native_enabled and conf.enabled):
         return {}
-    return {p: m for p, m in conf.models.items() if m and platform_key(p)}
+    out = {
+        p: [x for x in m if offerable_model(p, x)]
+        for p, m in conf.models.items()
+        if platform_key(p)
+    }
+    return {p: m for p, m in out.items() if m}

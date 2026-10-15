@@ -112,7 +112,6 @@ MODEL_PRICING: dict[str, ModelPricing] = {
     "claude-sonnet-5-5": ModelPricing(200, 1000),
     "claude-sonnet-5": ModelPricing(200, 1000),
     "claude-sonnet-4-6": ModelPricing(300, 1500),
-    # Priced for history only (stored ledger rows); not offerable.
     "claude-sonnet-4-7": ModelPricing(
         prompt_per_1m_cents=300, completion_per_1m_cents=1500
     ),
