@@ -82,7 +82,8 @@ export default function LoginPageBody() {
   // Why the user was sent here (session expired vs signed out). Selects the
   // banner copy; unknown/absent → no banner.
   const reasonCode = searchParams?.get("reason") ?? "";
-  const reasonMessage = REASON_COPY[reasonCode];
+  // hasOwn: "?reason=__proto__" must not resolve to Object.prototype.
+  const reasonMessage = Object.hasOwn(REASON_COPY, reasonCode) ? REASON_COPY[reasonCode] : undefined;
 
   function clearSsoErrorFromUrl() {
     setSsoErrorVisible(false);

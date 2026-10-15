@@ -45,7 +45,7 @@ function base64UrlEncode(s: string): string {
 /**
  * Build a minimal JWT with an ``exp`` claim ``secondsFromNow`` from
  * the current wall clock. The header + signature are placeholders;
- * decodeJwtExp only reads the payload's exp.
+ * decodeJwtClaims only reads the payload's exp.
  */
 function jwtWithExp(secondsFromNow: number): string {
   const header = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
@@ -273,7 +273,7 @@ describe("apiFetch proactive refresh", () => {
   // ── Spec #6: token with no/invalid exp falls back cleanly ────────────────
 
   it("token with no exp claim: no preflight, falls back to reactive 401 path", async () => {
-    // Hand-crafted JWT with a payload that lacks `exp`. decodeJwtExp
+    // Hand-crafted JWT with a payload that lacks `exp`. decodeJwtClaims
     // returns null; isAccessTokenNearExpiry returns false; no preflight.
     const header = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
     const payload = base64UrlEncode(JSON.stringify({ sub: "1" }));  // no exp
@@ -288,6 +288,10 @@ describe("apiFetch proactive refresh", () => {
     // Exactly 1 call — straight to /accounts, no preflight.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toContain("/api/v1/accounts");
+    // TBD-623: the claim-bearing fixture must not be silently refused (null token).
+    expect((fetchMock.mock.calls[0][1]?.headers as Headers).get("Authorization")).toBe(
+      `Bearer ${noExpToken}`,
+    );
   });
 
   it("non-JWT token: no preflight, falls back to reactive 401 path", async () => {

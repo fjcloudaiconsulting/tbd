@@ -272,6 +272,10 @@ describe("AuthProvider", () => {
     expect(setAccessTokenMock).toHaveBeenNthCalledWith(1, null);
     expect(setAccessTokenMock).toHaveBeenNthCalledWith(2, null);
     expect(signInMock).toHaveBeenCalledWith("login-token");
+    // the terminal-/me clear came AFTER the sign-in, not before it
+    expect(setAccessTokenMock.mock.invocationCallOrder[1]).toBeGreaterThan(
+      signInMock.mock.invocationCallOrder[0],
+    );
   });
 
   it("surfaces MFA challenges to the caller", async () => {

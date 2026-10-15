@@ -11,8 +11,9 @@ import { describe, it, expect } from "vitest";
  *
  * ## What this cannot see (the ceiling)
  * - dynamic `import()` / `require()` destructuring, `api["sign" + "In..."]`;
- * - a re-export barrel that renames the function under another module path
- *   (a bare `export { signInWithAccessToken } from` IS counted as a reference);
+ * - a namespace destructure that renames it: `const { signInWithAccessToken: s } = api`
+ *   (the un-renamed form IS counted, as is any `export { signInWithAccessToken }`);
+ * - a barrel that re-exports it under another name and a caller importing that name;
  * - whether each of the four sites is the right moment to sign in.
  */
 const ROOT = path.resolve(__dirname, "..", "..");
@@ -58,6 +59,14 @@ function references(sf: ts.SourceFile): number {
   let count = 0;
   const visit = (n: ts.Node): void => {
     if (ts.isImportSpecifier(n)) return; // the import itself is not a use
+    if (ts.isExportSpecifier(n)) {
+      if ((n.propertyName ?? n.name).text === NAME) count++;
+      return;
+    }
+    if (ts.isBindingElement(n) && ts.isObjectBindingPattern(n.parent) && (n.propertyName ?? n.name).getText(sf) === NAME) {
+      count++;
+      return;
+    }
     if (ts.isIdentifier(n) && aliases.has(n.text)) {
       const p = n.parent;
       if (!(ts.isPropertyAccessExpression(p) && p.name === n)) count++;
@@ -85,6 +94,18 @@ describe("TBD-623 F11: the pin is re-armed only by the four sign-in sites", () =
       }
     }
     expect(found).toEqual(Object.fromEntries(SITES.map((s) => [s, 1])));
+  });
+
+  it("api.ts never calls signInWithAccessToken outside its own body (a refresh path must not re-arm)", () => {
+    const sf = parse(path.join(ROOT, API));
+    let uses = 0;
+    const visit = (n: ts.Node): void => {
+      if (ts.isFunctionDeclaration(n) && n.name?.text === NAME) return;
+      if (ts.isIdentifier(n) && n.text === NAME) uses++;
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    expect(uses).toBe(0);
   });
 
   it("api.ts assigns pinnedIdentity = null in exactly one place", () => {

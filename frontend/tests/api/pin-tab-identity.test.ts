@@ -90,7 +90,7 @@ describe("TBD-623 pinned tab identity", () => {
     signInWithAccessToken(a);
     refreshReturns = b;
     wire(() => b);
-    let tokenInsideAttemptListener: string | null | undefined;
+    let tokenInsideAttemptListener: string | null | undefined = undefined;
     const peek = () => {
       tokenInsideAttemptListener = getAccessToken();
     };
@@ -104,7 +104,7 @@ describe("TBD-623 pinned tab identity", () => {
     expect(unauth()).toHaveLength(1);
     expect(unauth()[0].detail).toEqual({ reason: "account_changed" });
     // Synchronously after the setter, B is already not the stored token.
-    expect(tokenInsideAttemptListener).not.toBe(b);
+    expect(tokenInsideAttemptListener).toBeNull(); // null (not undefined) proves the listener ran
   });
 
   it("F2: two concurrent 401s sharing one refresh that returns B, then a third call: B never on the wire, one event", async () => {
@@ -120,6 +120,7 @@ describe("TBD-623 pinned tab identity", () => {
     expect(results.every((r) => r.status === "rejected")).toBe(true);
     await expect(apiFetch("/api/v1/accounts")).rejects.toMatchObject({ status: 401 });
 
+    expect(refreshCalls).toBe(2); // ONE shared refresh for the two 401s, one for the third call
     expect(bearers).not.toContain(`Bearer ${b}`);
     expect(unauth()).toHaveLength(1);
   });
