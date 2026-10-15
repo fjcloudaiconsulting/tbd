@@ -467,6 +467,15 @@ class Settings(BaseSettings):
             )
         return v
 
+    @field_validator("broadcast_max_attempts")
+    @classmethod
+    def _validate_broadcast_max_attempts(cls, v: int) -> int:
+        # The drain's claim requires attempts < max (TBD-637); 0 would claim
+        # nothing and stall every broadcast in "sending".
+        if v < 1:
+            raise ValueError("BROADCAST_MAX_ATTEMPTS must be at least 1.")
+        return v
+
     @field_validator("jwt_secret_key")
     @classmethod
     def _validate_jwt_secret(cls, v: str) -> str:
