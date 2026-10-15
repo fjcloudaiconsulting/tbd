@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Sparkles, AlertTriangle } from "lucide-react";
 import { ApiResponseError } from "@/lib/api";
 import { card } from "@/lib/styles";
+import { AI_OFF_MESSAGE } from "@/lib/ai-off";
 import { AIForecastRefinePanel } from "@/components/dashboard/AIForecastRefinePanel";
 import AIForecastRefineReviewModal from "@/components/dashboard/AIForecastRefineReviewModal";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
@@ -16,6 +17,7 @@ import { useMoney } from "@/lib/hooks/use-org-currency";
 // Friendly copy for the typed backend fallback_reason codes, so the badge
 // never shows a raw code like "ai_response_invalid_schema" to the user.
 const FALLBACK_REASON_COPY: Record<string, string> = {
+  ai_consent_required: AI_OFF_MESSAGE,
   ai_response_invalid_schema: "The AI response could not be applied this time, showing your baseline.",
   ai_structured_output_failed: "The AI response could not be read, showing your baseline.",
   ai_routing_not_configured: "Configure an AI provider in Settings to use this.",
@@ -28,7 +30,7 @@ const FALLBACK_REASON_COPY: Record<string, string> = {
     "AI refinement works on periods of about a month. This billing period is longer.",
 };
 
-function fallbackReasonLabel(reason: string | null): string {
+export function fallbackReasonLabel(reason: string | null): string {
   if (!reason) return "Showing your baseline.";
   if (FALLBACK_REASON_COPY[reason]) return FALLBACK_REASON_COPY[reason];
   // ai_dispatch_failed:<code> and any unmapped code -> generic, never raw.

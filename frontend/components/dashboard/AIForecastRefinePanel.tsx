@@ -6,6 +6,7 @@ import { apiFetch, ApiResponseError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
 import { useBalancesHidden } from "@/lib/hooks/use-org-currency";
 import { card } from "@/lib/styles";
+import { AI_OFF_MESSAGE } from "@/lib/ai-off";
 import type { ForecastRefineEstimate } from "@/lib/types";
 import type { RefinedForecastResponse } from "@/components/dashboard/AIForecastRefineToggle";
 
@@ -17,6 +18,7 @@ const SCOPES = [
 ] as const;
 
 const REASON_COPY: Record<string, string> = {
+  ai_consent_required: AI_OFF_MESSAGE,
   ai_routing_not_configured:
     "Configure an AI provider in Settings to use this feature.",
   insufficient_history: "Not enough transaction history yet to analyze.",

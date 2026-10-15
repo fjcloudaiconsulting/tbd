@@ -696,14 +696,16 @@ export default async function DocsPage() {
             <h2 id="ai-features">AI features</h2>
             <p>
               The Better Decision has three optional AI helpers. They are off by default and
-              only run when an org admin has connected an AI provider, because each call uses
-              your provider account and its tokens (which cost money).
+              only run when an org admin has turned AI on for the organization and connected
+              an AI provider. While AI is off, none of your organization&rsquo;s data is sent
+              to any AI provider, and connected AI apps cannot read your data.
             </p>
             <h3>Setting up a provider</h3>
             <p>
               An org admin opens Settings, then AI providers, and adds a key for OpenAI,
               Anthropic, Ollama, or an OpenAI-compatible endpoint. Keys are encrypted at rest
-              and never shown again after you save them. Until a provider is connected, each AI
+              and never shown again after you save them. Then turn AI on in the AI for this
+              organization card at the top of the same page. Until a provider is connected, each AI
               action shows a &#34;Set up AI&#34; prompt instead of running.
             </p>
             <h3>Auto-categorize (Transactions)</h3>

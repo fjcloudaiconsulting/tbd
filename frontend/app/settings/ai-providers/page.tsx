@@ -8,6 +8,7 @@ import SortableHeader from "@/components/ui/SortableHeader";
 import { useTableState } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import UsageMeters from "@/components/agent/UsageMeters";
+import AiMasterSwitchCard from "@/components/ai/AiMasterSwitchCard";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
@@ -320,6 +321,8 @@ export default function AiProvidersPage() {
           Add credential
         </button>
       </div>
+
+      <AiMasterSwitchCard />
 
       {ai?.usage && <UsageMeters
           usage={ai.usage}
