@@ -1683,3 +1683,42 @@ async def test_prepared_dispatch_uses_the_rows_api_root_flag(
     )
 
     assert urls == [expected]
+
+
+# ---------- TBD-630 fence 8 ------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_reported,want", [(200, 300), (None, "est")])
+async def test_fence_structured_sums_per_attempt_cost(
+    db, org, admin_user, credential, default_routing, second_reported, want
+):
+    """FENCE 8: attempt 1 schema-invalid reporting 100, attempt 2 valid.
+    Reported 200 -> ledger 300; unreported -> 100 + the estimate of attempt 2's
+    own tokens. Kills re-estimating from summed tokens (drops reported costs)
+    and last-attempt-only billing."""
+    from app.services.ai_pricing import estimate_cost_micros
+
+    adapter = MagicMock()
+    adapter.chat_structured = AsyncMock(
+        side_effect=[
+            LLMResponse(content="not json", prompt_tokens=4, completion_tokens=2,
+                        model="gpt-4o-mini", cost_micros=100),
+            LLMResponse(content='{"category": "rent"}', prompt_tokens=400,
+                        completion_tokens=300, model="gpt-4o-mini",
+                        cost_micros=second_reported),
+        ]
+    )
+    with patch("app.services.ai_dispatch.get_adapter", return_value=adapter):
+        await call_llm_structured(
+            db, org_id=org.id, feature_key="chat",
+            messages=[{"role": "user", "content": "x"}],
+            response_schema={"type": "object", "required": ["category"],
+                             "properties": {"category": {"type": "string"}}},
+        )
+    if want == "est":
+        want = 100 + estimate_cost_micros(
+            model="gpt-4o-mini", prompt_tokens=400, completion_tokens=300
+        )
+    row = (await db.execute(select(AIUsageLedger))).scalars().one()
+    assert row.cost_micros == want

@@ -134,6 +134,7 @@ class Fake:
         self.stream_usage = True
         self.stream_done = True
         self.embed_tokens = 15
+        self.cost = None  # OpenRouter's usage.cost (USD)
 
     @property
     def bodies(self):
@@ -166,13 +167,16 @@ class Fake:
         if body.get("stream"):
             lines = ['data: {"choices":[{"delta":{"content":"he"}}]}']
             if self.stream_usage:
-                lines.append('data: ' + json.dumps({"choices": [], "usage": {"prompt_tokens": p, "completion_tokens": c}}))
+                lines.append('data: ' + json.dumps({"choices": [], "usage": {"prompt_tokens": p, "completion_tokens": c, **self._cost()}}))
             if self.stream_done:
                 lines.append("data: [DONE]")
             return httpx.Response(200, content=("\n\n".join(lines) + "\n\n").encode())
         return httpx.Response(200, json={
             "choices": [{"message": {"content": text}}], "model": body["model"],
-            "usage": {"prompt_tokens": p, "completion_tokens": c}})
+            "usage": {"prompt_tokens": p, "completion_tokens": c, **self._cost()}})
+
+    def _cost(self):
+        return {} if self.cost is None else {"cost": self.cost}
 
 
 @pytest.fixture
@@ -1203,3 +1207,50 @@ async def test_f13_chat_preflight_on_a_byok_org_with_ai_off_is_412_and_counts_no
     assert len(released) == 1 and fake.reqs == []
     async with sf() as s:
         assert await s.scalar(select(UsageCounter).where(UsageCounter.meter == "assistant.turns")) is None
+
+
+# ---- TBD-630 -------------------------------------------------------------------
+
+@pytest.mark.parametrize("entry", ["call_llm", "structured", "function", "stream"])
+async def test_fence_reported_cost_settles_meter_spend_and_ledger(db, sf, fake, spy, entry):
+    """FENCE 10 (Jira): OpenRouter reports $0.001234; the plan meter, the global
+    spend row and the ledger all end at 1234 micros. Kills settling the
+    estimate, and meter and spend diverging."""
+    await set_platform(db)
+    org = await mk_org(db)
+    await mk_platform(db, org, "openrouter")
+    fake.cost = 0.001234
+    await ENTRIES[entry](db, org)
+    assert (await counters(sf, org))["platform_ai.micros"] == 1234
+    assert await spend(sf) == 1234
+    assert [r.cost_micros for r in await ledger(sf)] == [1234]
+
+
+async def test_fence_global_ceiling_is_converted_at_both_sites(db, sf, fake, monkeypatch):
+    """FENCE 11: ceiling setting 1 cent = 10,000 micros. A projection of
+    10,001 is refused at ``check_headroom`` and, with that patched out, again at
+    ``reserve`` (the ``_PlatformReq`` ceiling); 10,000 is admitted. Kills the
+    ceiling left in cents, or converted at only one of the two sites."""
+    await set_platform(db, cents="1")
+    org = await mk_org(db, micros=10**9)
+    cred = await mk_platform(db, org, "openrouter")
+
+    async def prepare(price):
+        # prompt priced at 0; 100 completion tokens x price / 100 = price micros
+        monkeypatch.setitem(MODEL_PRICING, "vendor/model-a", ModelPricing(0, price))
+        return await ai_dispatch._prepare_platform(
+            db, org_id=org, cred=cred, capability="chat", routed_model="vendor/model-a",
+            model_override=None, messages=MSGS, max_tokens=100, retry_multiplier=1)
+
+    with pytest.raises(AIPlatformUnavailable):
+        await prepare(10_001)
+    monkeypatch.setattr(platform_reserve, "check_headroom", lambda *a, **k: asyncio.sleep(0))
+    _, _, req = await prepare(10_001)
+    assert req.micros == 10_001 and req.ceiling_micros == 10_000
+    with pytest.raises(AIPlatformUnavailable):
+        await ai_dispatch._reserve(db, org, SimpleNamespace(platform=req, adapter=None))
+    assert await spend(sf) == 0
+
+    _, _, req = await prepare(10_000)
+    await ai_dispatch._reserve(db, org, SimpleNamespace(platform=req, adapter=None))
+    assert await spend(sf) == 10_000

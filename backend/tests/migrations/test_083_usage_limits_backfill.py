@@ -20,6 +20,11 @@ _spec = importlib.util.spec_from_file_location("_m083", _PATH)
 m083 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(m083)
 
+_PATH91 = _PATH.with_name("091_micro_usd_metering.py")
+_spec91 = importlib.util.spec_from_file_location("_m091_for_083", _PATH91)
+m091 = importlib.util.module_from_spec(_spec91)
+_spec91.loader.exec_module(m091)
+
 
 @pytest.fixture
 def conn():
@@ -31,9 +36,13 @@ def conn():
 
 def test_the_literal_equals_todays_catalog_default():
     """FENCE F-Q11 (migration half). The migration's literal is the catalog's
-    canonical default today. Wrong implementation: a hand-typed dict that
-    drifted (a missing meter, an unlimited platform meter)."""
-    assert m083.CANONICAL_USAGE_LIMITS == PlanUsageLimits().model_dump(by_alias=True)
+    canonical default today, as 091 renames it (TBD-630). Wrong implementation:
+    a hand-typed dict that drifted (a missing meter, an unlimited platform
+    meter), or a catalog rename 091 does not mirror."""
+    assert m091.convert_usage_limits(
+        m083.CANONICAL_USAGE_LIMITS, "platform_ai.cents", "platform_ai.micros",
+        lambda x: x * 10_000,
+    ) == PlanUsageLimits().model_dump(by_alias=True)
 
 
 def test_backfill_writes_an_object_to_null_rows_only(conn):

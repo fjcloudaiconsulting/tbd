@@ -307,3 +307,44 @@ async def test_openai_compatible_hostile_response_does_not_leak(monkeypatch):
         )
     assert LEAKED_SECRET_MARKER not in str(exc_info.value)
     assert exc_info.value.code == "provider_status_418"
+
+
+# ---------- TBD-630: usage.cost (OpenRouter only) ---------------------
+
+OPENROUTER_ROOT = "https://openrouter.ai/api/v1"
+GEMINI_ROOT = "https://generativelanguage.googleapis.com/v1beta/openai"
+ORG_ROOT = "https://llm.example.com/v1"
+
+
+def _compat(root: str) -> OpenAICompatibleAdapter:
+    return OpenAICompatibleAdapter(
+        api_key="sk-compat", base_url=root, base_url_is_api_root=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "root,want", [(OPENROUTER_ROOT, 405), (GEMINI_ROOT, None), (ORG_ROOT, None)]
+)
+async def test_fence_chat_reports_usage_cost_on_openrouter_only(
+    monkeypatch, root, want
+):
+    """FENCE 4/5: ``usage.cost`` is OpenRouter's USD-credits field; another
+    compatible host's ``cost`` has no defined unit. Kills trusting any server."""
+    _install_transport(
+        monkeypatch,
+        lambda _r: httpx.Response(
+            200,
+            json={
+                "model": "m",
+                "choices": [{"message": {"role": "assistant", "content": "x"}}],
+                "usage": {
+                    "prompt_tokens": 2, "completion_tokens": 1, "cost": 0.000405,
+                },
+            },
+        ),
+    )
+    resp = await _compat(root).chat(
+        model="m", messages=[{"role": "user", "content": "x"}]
+    )
+    assert resp.cost_micros == want

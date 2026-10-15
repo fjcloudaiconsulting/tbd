@@ -254,3 +254,41 @@ async def test_openai_compatible_chat_structured_uses_json_object(monkeypatch):
         schema=SCHEMA,
     )
     assert json.loads(resp.content) == {"category": "rent"}
+
+
+# ---------- TBD-630: usage.cost (OpenRouter only) ---------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "root,want",
+    [
+        ("https://openrouter.ai/api/v1", 405),
+        ("https://generativelanguage.googleapis.com/v1beta/openai", None),
+        ("https://llm.example.com/v1", None),
+    ],
+)
+async def test_fence_chat_structured_reports_usage_cost_on_openrouter_only(
+    monkeypatch, root, want
+):
+    """FENCE 4/5 (chat_structured)."""
+    _install_transport(
+        monkeypatch,
+        lambda _r: httpx.Response(
+            200,
+            json={
+                "model": "m",
+                "choices": [{"message": {"content": '{"category": "rent"}'}}],
+                "usage": {
+                    "prompt_tokens": 1, "completion_tokens": 1, "cost": 0.000405,
+                },
+            },
+        ),
+    )
+    adapter = OpenAICompatibleAdapter(
+        api_key="sk-compat", base_url=root, base_url_is_api_root=True
+    )
+    resp = await adapter.chat_structured(
+        model="m", messages=[{"role": "user", "content": "x"}], schema=SCHEMA
+    )
+    assert resp.cost_micros == want

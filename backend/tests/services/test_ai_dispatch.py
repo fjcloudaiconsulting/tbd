@@ -1574,3 +1574,142 @@ async def test_remaining_hard_cap_feature_cap_tighter_wins(
     )
     # 200 (feature wins) - 50 spent = 150
     assert remaining == 150
+
+
+# ---------- TBD-630: micro-USD metering fences -------------------------
+
+
+def _row_micros(org_id: int, credential_id: int, micros: int) -> AIUsageLedger:
+    return AIUsageLedger(
+        org_id=org_id,
+        credential_id=credential_id,
+        feature_key="chat",
+        model="gpt-4o-mini",
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        cost_micros=micros,
+        latency_ms=1,
+        success=True,
+        error_class=None,
+        dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+
+
+@pytest.mark.asyncio
+async def test_fence_hard_cap_admits_the_calls_the_headroom_buys(
+    db, org, admin_user, credential, default_routing
+):
+    """FENCE 6 (Jira): $1 hard cap, a call whose projection equals its actual
+    cost c. Prior spend leaves headroom for exactly 3.5 calls, so exactly 3 are
+    admitted. Kills per-call cent rounding (0 admitted), the cap left in cents
+    against a micro sum (0), and the cap converted twice (10 admitted)."""
+    from app.services.ai_pricing import estimate_cost_micros
+    from app.services.ai_token_estimate import estimate_prompt_tokens_from_messages
+
+    msgs = [{"role": "user", "content": "categorize this"}]
+    pt = estimate_prompt_tokens_from_messages(msgs)
+    c = estimate_cost_micros(
+        model="gpt-4o-mini", prompt_tokens=pt, completion_tokens=300
+    )
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id, soft_cap_cents=None, hard_cap_cents=100, period="monthly"
+        )
+    )
+    db.add(_row_micros(org.id, credential.id, 1_000_000 - 3 * c - c // 2))
+    await db.commit()
+    adapter = _make_adapter(
+        LLMResponse(
+            content="x", prompt_tokens=pt, completion_tokens=300, model="gpt-4o-mini"
+        )
+    )
+    admitted = 0
+    with patch("app.services.ai_dispatch.get_adapter", return_value=adapter):
+        for _ in range(10):
+            try:
+                await call_llm(
+                    db,
+                    org_id=org.id,
+                    feature_key="chat",
+                    request_payload={"messages": msgs, "max_tokens": 300},
+                )
+            except AICapExceeded:
+                break
+            admitted += 1
+    assert admitted == 3
+
+
+@pytest.mark.asyncio
+async def test_fence_reported_cost_beats_the_estimate(
+    db, org, admin_user, credential, default_routing
+):
+    """FENCE 7 (Jira): a reported cost lands in the ledger and in the next
+    call's cost_so_far; None falls back to the table estimate."""
+    from app.services.ai_pricing import estimate_cost_micros
+
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id, soft_cap_cents=None, hard_cap_cents=1, period="monthly"
+        )
+    )
+    await db.commit()
+    reported = LLMResponse(
+        content="x", prompt_tokens=1500, completion_tokens=300,
+        model="gpt-4o-mini", cost_micros=777,
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=_make_adapter(reported)
+    ):
+        await call_llm(db, org_id=org.id, feature_key="chat",
+                       request_payload={"messages": [], "max_tokens": 1})
+    rows = (await db.execute(select(AIUsageLedger).order_by(AIUsageLedger.id))).scalars().all()
+    assert rows[-1].cost_micros == 777
+    assert await ai_dispatch.remaining_hard_cap_micros(
+        db, org_id=org.id, feature_key="chat"
+    ) == 10_000 - 777
+
+    unreported = LLMResponse(
+        content="x", prompt_tokens=1500, completion_tokens=300, model="gpt-4o-mini"
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=_make_adapter(unreported)
+    ):
+        await call_llm(db, org_id=org.id, feature_key="chat",
+                       request_payload={"messages": [], "max_tokens": 1})
+    rows = (await db.execute(select(AIUsageLedger).order_by(AIUsageLedger.id))).scalars().all()
+    assert rows[-1].cost_micros == estimate_cost_micros(
+        model="gpt-4o-mini", prompt_tokens=1500, completion_tokens=300
+    ) == 405
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior,fires,before", [(9_800, True, 10_205), (9_500, False, None)])
+async def test_fence_soft_cap_is_compared_in_micros(
+    db, org, admin_user, credential, default_routing, monkeypatch,
+    prior, fires, before,
+):
+    """FENCE 9: a 1-cent soft cap against a 405-micro call. 9,800 -> 10,205
+    crosses once, from the post-write check; 9,500 -> 9,905 never crosses.
+    Kills comparing the cent cap to the micro sum (fires pre-call at 9,800 >= 1)
+    and a crossing computed in cents."""
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id, soft_cap_cents=1, hard_cap_cents=None, period="monthly"
+        )
+    )
+    db.add(_row_micros(org.id, credential.id, prior))
+    await db.commit()
+    spy = AsyncMock(return_value=True)
+    monkeypatch.setattr(ai_dispatch, "_maybe_warn_soft_cap", spy)
+    resp = LLMResponse(
+        content="x", prompt_tokens=1500, completion_tokens=300, model="gpt-4o-mini"
+    )
+    with patch("app.services.ai_dispatch.get_adapter", return_value=_make_adapter(resp)):
+        await call_llm(db, org_id=org.id, feature_key="chat",
+                       request_payload={"messages": []})
+    if fires:
+        assert spy.await_count == 1
+        assert spy.await_args.kwargs["cost_before_call"] == before
+    else:
+        assert spy.await_count == 0
