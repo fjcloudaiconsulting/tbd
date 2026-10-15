@@ -2,7 +2,7 @@
 
 import { FormEvent, Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { apiFetch, setAccessToken } from "@/lib/api";
+import { apiFetch, signInWithAccessToken } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { input, label, btnPrimary, error as errorCls, success as successCls } from "@/lib/styles";
@@ -54,7 +54,7 @@ function MfaVerifyContent() {
   }, [mode]);
 
   async function completeLogin(data: TokenResponse) {
-    setAccessToken(data.access_token);
+    signInWithAccessToken(data.access_token);
     sessionStorage.removeItem("mfa_token");
     // Full page load so AuthProvider picks up the new token via refresh
     window.location.href = "/dashboard";

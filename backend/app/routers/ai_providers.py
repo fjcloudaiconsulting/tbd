@@ -164,6 +164,7 @@ async def list_credentials(
     "",
     response_model=OrgAICredentialResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def create_credential(
     payload: OrgAICredentialCreate,
@@ -222,7 +223,9 @@ async def enable_platform(
     return OrgAICredentialResponse.model_validate(row)
 
 
-# Deliberately no interactive-session requirement: an org can always turn platform AI off.
+# Deliberately no interactive-session requirement (TBD-586): turning platform
+# AI OFF is the fail-safe direction and must stay PAT-reachable for incident
+# response. Fenced by test_write_pat_can_still_disable_platform_provider.
 @router.delete(
     "/platform/{platform_provider}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -318,7 +321,9 @@ async def get_routing(
 
 
 @router.put(
-    f"{ROUTING_PREFIX}/default", response_model=DefaultRoutingResponse
+    f"{ROUTING_PREFIX}/default",
+    response_model=DefaultRoutingResponse,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def put_default_routing(
     payload: DefaultRoutingWrite,
@@ -351,6 +356,7 @@ async def put_default_routing(
 @router.put(
     f"{ROUTING_PREFIX}/features/{{feature_name}}",
     response_model=FeatureRoutingResponse,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def put_feature_routing(
     feature_name: str,
@@ -388,6 +394,7 @@ async def put_feature_routing(
     f"{ROUTING_PREFIX}/features/{{feature_name}}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def delete_feature_routing(
     feature_name: str,
@@ -445,7 +452,11 @@ async def get_caps(
     )
 
 
-@router.put(f"{CAPS_PREFIX}/default", response_model=DefaultCapsResponse)
+@router.put(
+    f"{CAPS_PREFIX}/default",
+    response_model=DefaultCapsResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def put_default_caps(
     payload: CapsWrite,
     request: Request,
@@ -473,6 +484,7 @@ async def put_default_caps(
 @router.put(
     f"{CAPS_PREFIX}/features/{{feature_key}}",
     response_model=FeatureCapsResponse,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def put_feature_caps(
     feature_key: str,
@@ -507,6 +519,7 @@ async def put_feature_caps(
     f"{CAPS_PREFIX}/features/{{feature_key}}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def delete_feature_caps(
     feature_key: str,
@@ -565,6 +578,7 @@ async def get_consent(
     CONSENT_PREFIX,
     response_model=ConsentResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def post_consent(
     payload: ConsentCreate,
@@ -609,7 +623,11 @@ async def get_credential(
     return OrgAICredentialResponse.model_validate(row)
 
 
-@router.patch("/{credential_id}", response_model=OrgAICredentialResponse)
+@router.patch(
+    "/{credential_id}",
+    response_model=OrgAICredentialResponse,
+    dependencies=[Depends(require_interactive_session)],
+)
 async def update_credential(
     credential_id: int,
     payload: OrgAICredentialUpdate,
@@ -642,7 +660,9 @@ async def update_credential(
 
 
 @router.post(
-    "/{credential_id}/rotate", response_model=OrgAICredentialResponse
+    "/{credential_id}/rotate",
+    response_model=OrgAICredentialResponse,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def rotate_credential(
     credential_id: int,
@@ -677,7 +697,9 @@ async def rotate_credential(
 
 
 @router.post(
-    "/{credential_id}/validate", response_model=OrgAICredentialResponse
+    "/{credential_id}/validate",
+    response_model=OrgAICredentialResponse,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def validate_credential(
     credential_id: int,
@@ -725,6 +747,7 @@ async def validate_credential(
     "/{credential_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
+    dependencies=[Depends(require_interactive_session)],
 )
 async def delete_credential(
     credential_id: int,

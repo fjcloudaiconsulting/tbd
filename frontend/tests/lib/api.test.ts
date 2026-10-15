@@ -4,6 +4,7 @@ import {
   extractErrorMessage,
   getAccessToken,
   setAccessToken,
+  signInWithAccessToken,
 } from "@/lib/api";
 
 
@@ -38,12 +39,12 @@ describe("apiFetch", () => {
     fetchMock.mockReset();
     dispatchEventSpy.mockClear();
     vi.stubGlobal("fetch", fetchMock);
-    setAccessToken(null);
+    signInWithAccessToken(null);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    setAccessToken(null);
+    signInWithAccessToken(null);
   });
 
   afterAll(() => {
@@ -103,7 +104,7 @@ describe("apiFetch", () => {
     // hydration surface a hard "Not authenticated" instead of recovering.
     // (Null-token requests still send bare first — the established
     // no-preflight-on-null contract is preserved; this only adds RECOVERY.)
-    setAccessToken(null);
+    signInWithAccessToken(null);
     fetchMock
       .mockResolvedValueOnce(
         jsonResponse({ detail: "Not authenticated" }, { status: 403 }),

@@ -38,6 +38,7 @@ from sqlalchemy.pool import StaticPool
 from app.config import settings
 from app.models import Base
 from app.models.api_token import ApiToken
+from app.models.org_ai_credential import AiProvider
 from app.models.feature_override import OrgFeatureOverride
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
@@ -139,9 +140,26 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     ("POST", "/api/v1/admin/broadcasts/1/dry-run"),  # dry_run_broadcast (sends real email)
     ("DELETE", "/api/v1/admin/broadcasts/1"),        # delete_broadcast (draft-only)
     # TBD-586. Platform AI spends platform money: the operator settings and an
-    # org turning a provider on. Turning it off stays PAT-reachable on purpose.
+    # org turning a provider on. Turning it OFF (DELETE .../platform/{p}) is the
+    # fail-safe direction and stays PAT-reachable on purpose; see the allowlist
+    # in test_every_ai_provider_write_route_is_interactive_only.
     ("PUT", "/api/v1/admin/platform-ai"),            # set_platform_ai
     ("POST", "/api/v1/settings/ai-providers/platform/openai"),  # enable_platform
+    # TBD-626. A write PAT must not be able to point the org's AI at another
+    # host (credential create/rotate/patch, routing) or loosen caps/consent.
+    # (Every ai-providers write route except the platform disable is listed.)
+    ("POST", "/api/v1/settings/ai-providers"),
+    ("PUT", "/api/v1/settings/ai-providers/routing/default"),
+    ("PUT", "/api/v1/settings/ai-providers/routing/features/x"),
+    ("DELETE", "/api/v1/settings/ai-providers/routing/features/x"),
+    ("PUT", "/api/v1/settings/ai-providers/caps/default"),
+    ("PUT", "/api/v1/settings/ai-providers/caps/features/x"),
+    ("DELETE", "/api/v1/settings/ai-providers/caps/features/x"),
+    ("POST", "/api/v1/settings/ai-providers/consent"),
+    ("PATCH", "/api/v1/settings/ai-providers/1"),
+    ("POST", "/api/v1/settings/ai-providers/1/rotate"),
+    ("POST", "/api/v1/settings/ai-providers/1/validate"),
+    ("DELETE", "/api/v1/settings/ai-providers/1"),
     # ── Follow-up: 3 more routes (Task-5 review, defense-in-depth) ──────────
     ("PATCH", "/api/v1/orgs/1/rename"),              # rename_org_endpoint
     ("POST", "/api/v1/orgs/invitations"),            # create_invitation (grants a role)
@@ -300,3 +318,60 @@ async def test_superadmin_session_not_forbidden(app, superadmin, method, path):
         f"{method} {path} 403'd an interactive superadmin session "
         f"(body: {r.text[:200]})"
     )
+
+
+def test_every_ai_provider_write_route_is_interactive_only():
+    """TBD-626 F1: inventory from the RUNNING app, not the AST, so a future
+    write route added without the gate fails here."""
+    from app.auth.pat import require_interactive_session
+    from app.main import app as real_app
+    from tests.app_routes import effective_routes
+
+    def deps(dep):
+        yield dep.call
+        for d in dep.dependencies:
+            yield from deps(d)
+
+    prefix = "/api/v1/settings/ai-providers"
+    # TBD-586: the ONLY write route allowed to stay PAT-reachable (incident
+    # response: switching platform AI off is fail-safe). Add nothing else.
+    allowed = {("DELETE", f"{prefix}/platform/{{platform_provider}}")}
+    writes = [
+        r
+        for r in effective_routes(real_app)
+        if getattr(r, "path", "").startswith(prefix)
+        and (r.methods or set()) - {"GET", "HEAD", "OPTIONS"}
+    ]
+    assert len(writes) >= 14, "route inventory looks empty"
+    ungated = [
+        f"{sorted(r.methods)} {r.path}"
+        for r in writes
+        if not (r.methods <= {"DELETE"} and ("DELETE", r.path) in allowed)
+        and require_interactive_session not in set(deps(r.dependant))
+    ]
+    assert not ungated, f"write routes missing require_interactive_session: {ungated}"
+
+
+async def test_write_pat_can_still_disable_platform_provider(app, factory, superadmin):
+    """TBD-586: turning platform AI off must stay reachable with a write PAT."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+
+    from app.models.org_ai_credential import OrgAICredential
+
+    async with factory() as s:
+        s.add(
+            OrgAICredential(
+                org_id=superadmin.org_id,
+                provider=AiProvider.OPENAI,
+                platform_provider="openai",
+                discovered_capabilities=["chat"],
+            )
+        )
+        await s.commit()
+    pat = await _mint_write_pat(factory, superadmin)
+    with TestClient(app) as client:
+        r = _call(client, "DELETE", "/api/v1/settings/ai-providers/platform/openai", pat)
+    assert r.status_code == 204, r.text
+    async with factory() as s:
+        assert (await s.scalars(select(OrgAICredential))).all() == []

@@ -3,11 +3,11 @@
  * the detail also carries a message, which leaves agent_busy, plan limits and
  * the AI dispatch refusals with `code === undefined`.
  */
-import { ApiResponseError, apiFetch, setAccessToken } from "@/lib/api";
+import { ApiResponseError, apiFetch, setAccessToken, signInWithAccessToken } from "@/lib/api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  setAccessToken(null);
+  signInWithAccessToken(null);
 });
 
 it("keeps a code that arrives without a message", async () => {

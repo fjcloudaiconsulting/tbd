@@ -12,6 +12,7 @@ import {
   ApiTimeoutError,
   apiFetch,
   setAccessToken,
+  signInWithAccessToken,
 } from "@/lib/api";
 import type { User, TokenResponse, MfaChallengeResponse } from "@/lib/types";
 import {
@@ -150,7 +151,7 @@ interface AuthContextValue {
    * Optional in the interface so pre-existing test mocks that omit it keep
    * type-checking; consumers treat ``undefined`` as ``null``.
    */
-  authExitReason?: "expired" | "manual" | null;
+  authExitReason?: "expired" | "manual" | "account_changed" | null;
   /**
    * Consume the exit reason (reset to null) so it can't leak into a later
    * redirect. AppShell calls this immediately after building the /login URL.
@@ -180,7 +181,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // deliberate transitions set it: the terminal-401 ``auth:unauthenticated``
   // event → "expired", and the user-initiated logout() → "manual". A fresh
   // restore-with-no-session leaves it null (deep-link case).
-  const [authExitReason, setAuthExitReason] = useState<"expired" | "manual" | null>(null);
+  const [authExitReason, setAuthExitReason] = useState<
+    "expired" | "manual" | "account_changed" | null
+  >(null);
   const clearAuthExitReason = useCallback(() => setAuthExitReason(null), []);
 
   const fetchMe = useCallback(async () => {
@@ -270,7 +273,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             method: "POST",
           }),
         );
-        setAccessToken(data.access_token);
+        // TBD-623: a login() that armed another identity while this refresh
+        // was in flight wins; drop the stale restore, no spinner forever.
+        if (setAccessToken(data.access_token) === false) {
+          setLoading(false);
+          return;
+        }
 
         // Load the user object with the same retry budget. Inlined
         // (rather than calling fetchMe()) because restore needs the
@@ -321,12 +329,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Listen for terminal 401s dispatched by apiFetch so we clear React state
   // and AppShell can redirect the user to /login instead of spinning forever.
   useEffect(() => {
-    const handler = () => {
+    const handler = (e: Event) => {
       // Involuntary session death mid-use. apiFetch dispatches this ONLY
       // from its terminal-401 path (never on manual logout, never on a
       // fresh visit), so tagging "expired" here keeps the three re-auth
       // states cleanly distinct.
-      setAuthExitReason("expired");
+      // TBD-623: a refresh that returned another account is tagged by apiFetch.
+      const reason = (e as CustomEvent<{ reason?: string } | null>).detail?.reason;
+      setAuthExitReason(reason === "account_changed" ? "account_changed" : "expired");
       setUser(null);
       setAccessToken(null);
     };
@@ -346,7 +356,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const tokenData = data as TokenResponse;
-    setAccessToken(tokenData.access_token);
+    signInWithAccessToken(tokenData.access_token);
     await fetchMe();
 
     // Re-fetch /auth/status with the new Bearer token so per-org

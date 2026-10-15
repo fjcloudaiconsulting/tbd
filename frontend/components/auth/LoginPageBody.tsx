@@ -21,6 +21,8 @@ type ResendState = "idle" | "sending" | "sent" | "failed";
 const REASON_COPY: Record<string, string> = {
   expired: "Your session expired. Please sign in to continue.",
   logout: "You've been signed out.",
+  account_changed:
+    "Another account signed in on this browser, so this page was signed out to keep the two accounts apart. Signing in here signs the other account out.",
 };
 
 /**
@@ -80,7 +82,8 @@ export default function LoginPageBody() {
   // Why the user was sent here (session expired vs signed out). Selects the
   // banner copy; unknown/absent → no banner.
   const reasonCode = searchParams?.get("reason") ?? "";
-  const reasonMessage = REASON_COPY[reasonCode];
+  // hasOwn: "?reason=__proto__" must not resolve to Object.prototype.
+  const reasonMessage = Object.hasOwn(REASON_COPY, reasonCode) ? REASON_COPY[reasonCode] : undefined;
 
   function clearSsoErrorFromUrl() {
     setSsoErrorVisible(false);

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { setAccessToken } from "@/lib/api";
+import { signInWithAccessToken } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 
 // sessionStorage flag the onboarding wizard reads to know it should
@@ -42,7 +42,7 @@ export default function GoogleCallbackPage() {
     // Clear the fragment from the URL immediately
     window.history.replaceState(null, "", window.location.pathname);
 
-    setAccessToken(token);
+    signInWithAccessToken(token);
 
     // Stash the disclosure flag BEFORE refreshMe resolves so the
     // onboarding page sees it on first paint. sessionStorage is
