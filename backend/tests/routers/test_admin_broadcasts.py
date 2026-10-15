@@ -934,6 +934,69 @@ async def test_dry_run_on_non_draft_returns_409(session_factory):
     assert res.json()["detail"]["code"] == "broadcast_not_draft"
 
 
+@pytest.mark.asyncio
+async def test_resume_on_draft_returns_409_launches_nothing_and_send_still_works(
+    session_factory, _mock_send_email, monkeypatch
+):
+    """TBD-637 F1. Resuming a draft used to find no rows, mark it COMPLETED
+    and make it unsendable (the send CAS requires ``draft``)."""
+    await _seed(session_factory)
+    launched: list[int] = []
+    monkeypatch.setattr(
+        admin_broadcasts_module, "launch_resume", lambda _sf, bid: launched.append(bid)
+    )
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        draft = _create_draft(client)
+        res = client.post(f"/api/v1/admin/broadcasts/{draft['id']}/resume")
+        assert res.status_code == 409
+        assert res.json()["detail"]["code"] == "broadcast_not_started"
+        assert launched == []
+        assert client.get(f"/api/v1/admin/broadcasts/{draft['id']}").json()["status"] == "draft"
+
+        client.post(f"/api/v1/admin/broadcasts/{draft['id']}/dry-run")
+        send = client.post(
+            f"/api/v1/admin/broadcasts/{draft['id']}/send",
+            json={
+                "confirm_subject": draft["subject"],
+                "confirm_recipient_count": draft["recipient_count"],
+            },
+        )
+        assert send.status_code == 200
+        await await_broadcast_drains()
+
+    async with session_factory() as db:
+        audits = (
+            await db.execute(
+                select(AuditEvent).where(AuditEvent.event_type == "broadcast.resume")
+            )
+        ).scalars().all()
+    assert audits == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status_",
+    [BroadcastStatus.SENDING, BroadcastStatus.FAILED, BroadcastStatus.COMPLETED],
+)
+async def test_resume_on_started_broadcast_is_still_accepted(
+    session_factory, monkeypatch, status_
+):
+    """TBD-637 F2: the draft gate must not over-tighten (COMPLETED can still
+    hold failed rows below the retry cap)."""
+    await _seed(session_factory)
+    launched: list[int] = []
+    monkeypatch.setattr(
+        admin_broadcasts_module, "launch_resume", lambda _sf, bid: launched.append(bid)
+    )
+    broadcast_id = await _seed_broadcast_with_status(session_factory, status_)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.post(f"/api/v1/admin/broadcasts/{broadcast_id}/resume")
+    assert res.status_code == 200
+    assert launched == [broadcast_id]
+
+
 # ── a failed dry-run send must not unlock the send gate (TBD-266) ────────
 #
 # ``dry_run_sent_at`` is send_broadcast's gate #2 and the only thing it can
