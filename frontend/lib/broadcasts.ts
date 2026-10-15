@@ -104,6 +104,10 @@ export const BROADCAST_ERROR_COPY: Record<string, string> = {
     "This broadcast targets more recipients than the per-send cap allows.",
   broadcast_not_draft:
     "This broadcast is no longer a draft, so it can't be sent, dry-run, or deleted.",
+  // Resume refuses a draft (TBD-637); the UI only offers Resume on sending/failed,
+  // so this is a stale-tab guard.
+  broadcast_not_started:
+    "This broadcast has not been sent yet, so there is nothing to resume.",
   invalid_template_token:
     "A '%' in the subject or body isn't allowed. Remove it and try again.",
 };

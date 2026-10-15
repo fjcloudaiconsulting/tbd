@@ -1039,6 +1039,52 @@ async def test_claim_refuses_a_row_that_gained_delivery_status_mid_flight(
 
 
 @pytest.mark.asyncio
+async def test_resume_claim_refuses_a_row_that_reached_the_attempts_cap_mid_flight(
+    session_factory, monkeypatch, log_lines
+):
+    """TBD-637 F3. Another pod's resume bumps a row to the cap between this
+    drain's SELECT and its claim; the claim must not take it (attempt max+1)."""
+    send_mock = AsyncMock(return_value=ACCEPTED)
+    monkeypatch.setattr(broadcast_service, "send_batch", send_mock)
+    cap = broadcast_service.settings.broadcast_max_attempts
+
+    broadcast_id, _users, recipient_ids = await _seed(
+        session_factory,
+        [
+            {"status": RecipientStatus.FAILED, "attempts": cap - 1},
+            {"status": RecipientStatus.FAILED, "attempts": cap - 1},
+        ],
+    )
+
+    real_check = broadcast_service._user_still_targetable
+    bumped = False
+
+    async def _bump_then_check(db, user_id):
+        nonlocal bumped
+        result = await real_check(db, user_id)
+        if not bumped:
+            bumped = True
+            async with session_factory() as other:
+                await other.execute(
+                    update(EmailBroadcastRecipient)
+                    .where(EmailBroadcastRecipient.id == recipient_ids[0])
+                    .values(attempts=cap)
+                )
+                await other.commit()
+        return result
+
+    monkeypatch.setattr(broadcast_service, "_user_still_targetable", _bump_then_check)
+
+    await broadcast_service.resume_pending(session_factory, broadcast_id)
+
+    assert send_mock.await_count == 0
+    rows = await _recipient_rows(session_factory, broadcast_id)
+    assert rows["user0@x.io"].status == RecipientStatus.FAILED
+    assert rows["user0@x.io"].attempts == cap
+    assert rows["user1@x.io"].attempts == cap - 1
+
+
+@pytest.mark.asyncio
 async def test_failed_row_with_a_delivery_status_is_left_exactly_as_it_is(
     session_factory, monkeypatch
 ):
