@@ -41,6 +41,41 @@ def test_hash_password_roundtrip_verifies_plaintext() -> None:
     assert verify_password("wrong password", hashed) is False
 
 
+# TBD-635: bcrypt 5 raises on input over 72 bytes where bcrypt 4 silently
+# truncated; the schemas allow 128 characters (more bytes when multi-byte).
+LONG_PASSWORDS = ["p" * 100, "ü" * 40]  # 100 bytes; 80 bytes of UTF-8
+
+
+def test_bcrypt_never_receives_more_than_72_bytes(monkeypatch) -> None:
+    """FENCE. Wrong implementation: passing ``password.encode()`` untruncated
+    (500 at register/login/reset on bcrypt 5)."""
+    seen: list[int] = []
+    real_hashpw, real_checkpw = bcrypt.hashpw, bcrypt.checkpw
+
+    def hashpw(pw, salt):
+        seen.append(len(pw))
+        return real_hashpw(pw[:72], salt)
+
+    def checkpw(pw, hashed):
+        seen.append(len(pw))
+        return real_checkpw(pw[:72], hashed)
+
+    monkeypatch.setattr(bcrypt, "hashpw", hashpw)
+    monkeypatch.setattr(bcrypt, "checkpw", checkpw)
+    for pw in LONG_PASSWORDS:
+        assert verify_password(pw, hash_password(pw)) is True
+    assert seen and max(seen) <= 72
+
+
+def test_long_password_hashes_stay_compatible_with_bcrypt4_truncation() -> None:
+    """GUARD. A hash bcrypt 4 stored for a long password (it hashed the first
+    72 bytes) still verifies, and a new hash verifies against those bytes."""
+    for pw in LONG_PASSWORDS:
+        stored_by_bcrypt4 = bcrypt.hashpw(pw.encode()[:72], bcrypt.gensalt()).decode()
+        assert verify_password(pw, stored_by_bcrypt4) is True
+        assert bcrypt.checkpw(pw.encode()[:72], hash_password(pw).encode()) is True
+
+
 def test_create_access_token_roundtrip_decodes_expected_claims() -> None:
     token = create_access_token(subject=7, org_id=3, role="owner")
     payload = decode_token(token)

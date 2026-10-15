@@ -42,12 +42,19 @@ def mfa_email_code_hmac(code: str) -> str:
     ).hexdigest()
 
 
+# bcrypt only reads 72 bytes. bcrypt 4 truncated silently; bcrypt 5 raises.
+# Truncating here keeps every hash bcrypt 4 stored verifying (TBD-635).
+_BCRYPT_MAX_BYTES = 72
+
+
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(
+        password.encode()[:_BCRYPT_MAX_BYTES], bcrypt.gensalt()
+    ).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+    return bcrypt.checkpw(plain.encode()[:_BCRYPT_MAX_BYTES], hashed.encode())
 
 
 def create_access_token(subject: int, org_id: int, role: str) -> str:
