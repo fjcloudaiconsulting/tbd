@@ -125,11 +125,8 @@ export default function ForecastPlansClient({
   // booting client and in every pre-existing test mock, and Forecast ships ON.
   // Only an explicit server `false` closes the page.
   //
-  // The RSC parent (`page.tsx`) takes ZERO changes for this. With the router
-  // gated, `serverFetch`'s null contract turns the 404 into `initialPlan =
-  // null` and this island mounts normally — which is the only reason the
-  // notice can live here at all, rather than in a server component that has no
-  // `useAuth` to read.
+  // The server page seeds nothing (TBD-624), so the notice lives here, where
+  // `useAuth` is available.
   const forecastDisabled = features?.forecast === false;
 
   // Categories and periods are stable per session — seed once from the
@@ -139,7 +136,7 @@ export default function ForecastPlansClient({
   const [periods, setPeriods] = useState<BillingPeriod[]>(initialPeriods);
 
   // Default to the current period (TBD-242), not index 0.
-  // Mirrors `pickCurrentPeriod` in the RSC parent, which uses the same helper.
+  // Only non-empty if a caller seeds periods; the server page no longer does.
   const initialPeriodIdx = (() => {
     const idx = selectCurrentPeriodIndex(initialPeriods);
     return idx >= 0 ? idx : 0;
@@ -180,8 +177,8 @@ export default function ForecastPlansClient({
   } | null>(null);
 
   // Plan SWR. Key is the period-scoped GET endpoint that get-or-creates a
-  // draft for the visible period. `fallbackData` seeds the server-fetched
-  // plan so first paint has no spinner. The mutate function lets every
+  // draft for the visible period. `fallbackData` is the optional `initialPlan`
+  // prop (null from the page, since TBD-624). The mutate function lets every
   // imperative write below (populate, refresh-from-sources, add/update/
   // delete item, activate/revert/discard) push a fresh plan into the cache
   // without an extra network round-trip — we already have the response
@@ -250,30 +247,11 @@ export default function ForecastPlansClient({
   // badge and the button disagreed inside one component. Both now route
   // through the shared classifier.
   //
-  // ⚠ SSR ASYMMETRY — read this before adding another clock read here.
-  //
-  // This is the ONE period-driven page that PRERENDERS WITH DATA: its parent
-  // `forecast-plans/page.tsx` is an async Server Component that passes real
-  // `initialPeriods`. Budgets and the dashboard fetch their periods after
-  // mount, so their first tree carries no period at all and cannot mismatch.
-  //
-  // Production Node runs UTC; the browser runs the reader's zone. A
-  // `todayISO()` read during render would therefore produce two different
-  // trees on a `no_open` roster — where `selectCurrentPeriodIndex` returns -1,
-  // index 0 is a closed row, and the flags below become genuinely
-  // clock-dependent — and hydration would commit the server's UTC-derived
-  // label to the DOM.
-  //
-  // So the clock is DEFERRED to a mount effect. Server pass and first client
-  // pass both see `today === null`, so the trees match BY CONSTRUCTION rather
-  // than by suppression; one tick after hydration the correct local-date
-  // labels appear. Reverting to a UTC clock is not a fix (it is wrong for the
-  // reader for a large part of every day, silently and unfixably), and
-  // neither is a server-computed date prop (the server does not know the
-  // reader's timezone).
-  //
-  // A future refactor that RSC-seeds budgets or the dashboard inherits this
-  // hazard and must defer the clock there too.
+  // The clock is deferred to a mount effect: server pass and first client
+  // pass both see `today === null`, so trees match by construction (UTC
+  // server vs reader's zone). Since TBD-624 the server renders this page with
+  // no periods, so the hazard is latent today; keep the deferral anyway, it
+  // costs one tick and protects any future seeded render.
   //
   // ⚠ UNFENCED ON PURPOSE — UNTESTABLE IN THIS SUITE, not "covered".
   // Two decisions in this block have NO test and cannot get an honest one:
@@ -320,9 +298,9 @@ export default function ForecastPlansClient({
   }, [periods, periodIdx]);
 
   // ensure-future runs once per client mount. We then refresh periods
-  // from the backend so any newly created stubs become navigable. The RSC
-  // already seeded the initial periods, so this is purely a "catch up to
-  // today" pass — quiet on failure.
+  // from the backend so any newly created stubs become navigable. Periods are
+  // not server-seeded (TBD-624), so this is also the initial periods load;
+  // ensure-future is admin-only and best-effort, the GET always runs.
   //
   // Selection-preservation: the backend lists periods newest-first, so a
   // freshly-created future stub may slot in at index 0 and silently
@@ -332,6 +310,9 @@ export default function ForecastPlansClient({
   // shouldn't happen), fall back to the newest OPEN row — clock-free, the
   // same rule the initial seed uses — else index 0.
   const futureEnsured = useRef(false);
+  // Empty seed => periods are unknown until the GET below settles. Without
+  // this the page rendered a bare header (no spinner, no error) meanwhile.
+  const [periodsSettled, setPeriodsSettled] = useState(false);
   useEffect(() => {
     if (futureEnsured.current) return;
     // TBD-197: nothing on this page consumes periods when the notice is what
@@ -340,9 +321,10 @@ export default function ForecastPlansClient({
     futureEnsured.current = true;
     (async () => {
       try {
+        // Admin-only: a 403 for everyone else must not block the periods read.
         await apiFetch("/api/v1/settings/billing-periods/ensure-future", {
           method: "POST",
-        });
+        }).catch(() => {});
         const fresh = await apiFetch<BillingPeriod[]>(
           "/api/v1/settings/billing-periods",
         );
@@ -361,20 +343,20 @@ export default function ForecastPlansClient({
         }
         setPeriods(fresh);
         if (nextIdx !== periodIdxRef.current) setPeriodIdx(nextIdx);
-      } catch {
-        // Non-fatal — the server-seeded periods are still usable.
+      } catch (err) {
+        // Non-fatal when periods were seeded; with an empty seed nothing else
+        // can render, so say why.
+        if (periodsRef.current.length === 0) setError(extractErrorMessage(err));
+      } finally {
+        setPeriodsSettled(true);
       }
     })();
   }, [forecastDisabled]);
 
-  // Client-side categories recovery (PR #288). Categories are seeded
-  // from `initialCategories` only — there is no SWR for the categories
-  // list, because they're treated as stable per session. If the RSC
-  // shell rendered with an empty categories array (transient /auth/verify
-  // or transient /api/v1/categories), the user would see an empty
-  // category picker and be unable to add plan items. Fire a one-shot
-  // recovery fetch on mount when categories are empty so the page
-  // self-heals after a transient server-side fetch failure. Single
+  // Client-side categories load. There is no SWR for the categories list
+  // (stable per session). The server page seeds nothing (TBD-624), so this
+  // one-shot fetch on an empty list is the normal load path, not just a
+  // recovery. Single
   // attempt, no retry loop — `apiFetch` has its own bounded timeout
   // (#286) and the user can always reload.
   const categoriesRecoveryAttempted = useRef(false);
@@ -818,8 +800,10 @@ export default function ForecastPlansClient({
   // out in the `plan` derivation above so action handlers can't fire
   // against the wrong plan ID. The page falls back to its loading state
   // in that window instead of letting buttons act on stale state.
+  const periodsPending =
+    !periodsSettled && periods.length === 0 && !forecastDisabled;
   const fetching =
-    planLoading || (periodStart !== "" && !plan);
+    planLoading || periodsPending || (periodStart !== "" && !plan);
 
   // The org switched Forecast off. Every route this page uses now 404s, so
   // there is nothing to render but the explanation. Nothing is deleted —

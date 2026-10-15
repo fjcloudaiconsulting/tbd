@@ -53,7 +53,6 @@ services:
     environment:
       HOSTNAME: 0.0.0.0
       TBD_API_URL: ""
-      BACKEND_INTERNAL_URL: http://backend:8000
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
       interval: 5s

@@ -169,7 +169,7 @@ inputs are build-time by nature; `next.config.apex.ts` inlines them.
 | `TBD_SITE_URL` | no | empty (no canonical headers emitted) | `.env` (`https://app.thebetterdecision.com`) | unset | inherit `.env.example` or set explicitly | no | Canonical URL used in SEO metadata (sitemap, robots, OG image URLs). | Canonical tags and OG URLs are omitted. |
 | `TBD_GOOGLE_SSO_ENABLED` | yes when SSO is wired | `false` | `.env` (`true` to show the button) | unset | tbd-prod manifest (`true`) | no | `GoogleSSOButton`, `LoginPageBody`, and `RegisterPageBody` render the "Sign in with Google" button only when this is exactly the string `"true"`. | Button is hidden; users have no SSO entry point. |
 | `TBD_APP_VERSION` | no | `dev` | unset | unset | unset | no | Stamped into feedback widget payloads as `app_version`. | Falls back to `dev`. |
-| `BACKEND_INTERNAL_URL` | yes for RSC | unset | `docker-compose.yml` (`http://backend:8000`) | unset | tbd-prod manifest (the `backend` Service URL) | no | Server-side fetch base URL for React Server Components (`forecast-plans`, `import/reconcile`, `lib/auth-server.ts`). | RSC pages cannot reach the backend; pages 500. |
+| `BACKEND_INTERNAL_URL` | no | unset | unset | unset | unset | no | No longer read by the frontend (TBD-624): server components make no backend requests. Safe to remove from any manifest that still sets it. | None. |
 | `HOSTNAME` | yes | unset | unset | unset | tbd-prod manifest (`0.0.0.0`) | no | Forces Next standalone server to bind on all interfaces inside the container. | Next binds to the container hostname only and the pod's probes and Service cannot reach it. |
 | `NODE_ENV` | implicit | `production` in built image, `development` under `next dev` | container default | container default | container default | no | Switches CSP `unsafe-eval`, dev-only error logging, hot reload. | Production behavior assumed when unset (Next default). |
 
@@ -251,8 +251,7 @@ The manifests read each one they set through `secretKeyRef`. When adding a varia
      button errors out on click).
 3. `./tbd start`
 4. `docker compose` reads `.env` via `env_file: .env` on the backend
-   service. The frontend service gets `BACKEND_INTERNAL_URL` and
-   `TBD_API_URL` inline from `docker-compose.yml`.
+   service. The frontend service gets `TBD_API_URL` inline from `docker-compose.yml`.
 
 ### CI (GitHub Actions)
 
@@ -315,14 +314,6 @@ when the frontend is same-origin with the backend (the production
 default). Fix: leave `TBD_API_URL=""` in the frontend manifest so
 fetch URLs become relative and route through Traefik
 back to the `backend` Service.
-
-### "Server-side pages 500 with `ECONNREFUSED backend:8000`"
-
-Symptom: `/forecast-plans` or `/import/[id]/reconcile` 500 on the server
-side. Cause: `BACKEND_INTERNAL_URL` is missing or wrong. Fix: in dev,
-the value lives in `docker-compose.yml` (`http://backend:8000`); in
-prod, it MUST point at the `backend` Service in the frontend manifest of
-cloud-infra `clusters/platform/tbd-prod/`.
 
 ### "Email sending fails silently"
 

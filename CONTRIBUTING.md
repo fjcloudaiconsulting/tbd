@@ -353,7 +353,7 @@ Exactly **30** `(method, path)` pairs reach a handler without `get_current_user`
 | --- | --- |
 | `POST /api/v1/auth/login` | Verifies username + password. The credential *is* the request body; there is no prior session. |
 | `POST /api/v1/auth/refresh` | The httpOnly refresh cookie. An expired access token is precisely what the caller does not have. |
-| `POST /api/v1/auth/verify` | The httpOnly refresh cookie. Next.js RSC renders hold the cookie and have no `Authorization` header by construction. Shares the whole validation chain with `/auth/refresh` via `_validate_refresh_cookie` so the two cannot drift, and never emits `Set-Cookie`. |
+| `POST /api/v1/auth/verify` | The httpOnly refresh cookie. The frontend no longer calls it (TBD-624: a server render must not act as the shared cookie's identity); the route stays as public contract. Shares the whole validation chain with `/auth/refresh` via `_validate_refresh_cookie` so the two cannot drift, and never emits `Set-Cookie`. |
 | `POST /api/v1/auth/logout` | Must succeed once the access token has expired, or a user cannot log out of a stale session. The refresh cookie's HMAC signature is verified before any session family is revoked, so an anonymous caller cannot revoke a session they do not hold; with no cookie it is a no-op cookie clear. |
 | `POST /api/v1/auth/reset-password` | The single-use reset JWT. A caller who could already authenticate would not need this route. |
 | `POST /api/v1/auth/verify-email` | The emailed verification JWT. The account is not yet usable for login. |
