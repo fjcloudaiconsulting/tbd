@@ -142,6 +142,21 @@ INTERACTIVE_ONLY_ROUTES: list[tuple[str, str]] = [
     # org turning a provider on. Turning it off stays PAT-reachable on purpose.
     ("PUT", "/api/v1/admin/platform-ai"),            # set_platform_ai
     ("POST", "/api/v1/settings/ai-providers/platform/openai"),  # enable_platform
+    # TBD-626. A write PAT must not be able to point the org's AI at another
+    # host (credential create/rotate/patch, routing) or loosen caps/consent.
+    ("POST", "/api/v1/settings/ai-providers"),
+    ("DELETE", "/api/v1/settings/ai-providers/platform/openai"),
+    ("PUT", "/api/v1/settings/ai-providers/routing/default"),
+    ("PUT", "/api/v1/settings/ai-providers/routing/features/x"),
+    ("DELETE", "/api/v1/settings/ai-providers/routing/features/x"),
+    ("PUT", "/api/v1/settings/ai-providers/caps/default"),
+    ("PUT", "/api/v1/settings/ai-providers/caps/features/x"),
+    ("DELETE", "/api/v1/settings/ai-providers/caps/features/x"),
+    ("POST", "/api/v1/settings/ai-providers/consent"),
+    ("PATCH", "/api/v1/settings/ai-providers/1"),
+    ("POST", "/api/v1/settings/ai-providers/1/rotate"),
+    ("POST", "/api/v1/settings/ai-providers/1/validate"),
+    ("DELETE", "/api/v1/settings/ai-providers/1"),
     # ── Follow-up: 3 more routes (Task-5 review, defense-in-depth) ──────────
     ("PATCH", "/api/v1/orgs/1/rename"),              # rename_org_endpoint
     ("POST", "/api/v1/orgs/invitations"),            # create_invitation (grants a role)
@@ -300,3 +315,30 @@ async def test_superadmin_session_not_forbidden(app, superadmin, method, path):
         f"{method} {path} 403'd an interactive superadmin session "
         f"(body: {r.text[:200]})"
     )
+
+
+def test_every_ai_provider_write_route_is_interactive_only():
+    """TBD-626 F1: inventory from the RUNNING app, not the AST, so a future
+    write route added without the gate fails here."""
+    from app.auth.pat import require_interactive_session
+    from app.main import app as real_app
+
+    def deps(dep):
+        yield dep.call
+        for d in dep.dependencies:
+            yield from deps(d)
+
+    prefix = "/api/v1/settings/ai-providers"
+    writes = [
+        r
+        for r in real_app.routes
+        if getattr(r, "path", "").startswith(prefix)
+        and (r.methods or set()) - {"GET", "HEAD", "OPTIONS"}
+    ]
+    assert len(writes) >= 14, "route inventory looks empty"
+    ungated = [
+        f"{sorted(r.methods)} {r.path}"
+        for r in writes
+        if require_interactive_session not in set(deps(r.dependant))
+    ]
+    assert not ungated, f"write routes missing require_interactive_session: {ungated}"
