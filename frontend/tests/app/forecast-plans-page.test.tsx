@@ -15,15 +15,8 @@ import { apiFetch } from "@/lib/api";
 import { todayISO } from "@/lib/format";
 import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
 
-// The page itself is now an async Server Component (RSC) — it calls
-// getServerSession(), parallel-fetches initial categories/periods/plan,
-// and hands them down to <ForecastPlansClient />. Vitest + jsdom can't
-// natively render async server components, and the page contains no
-// interactive UI of its own beyond the redirect/seed wiring. We mount
-// the client directly with synthetic initial props instead; the wiring
-// itself is exercised by the production build's `server-only` import
-// boundary on `lib/auth-server.ts` (a client-side leak would fail
-// `pnpm build`).
+// The server page seeds nothing (TBD-624); mount the client directly with
+// synthetic initial props.
 
 const push = vi.hoisted(() => vi.fn());
 

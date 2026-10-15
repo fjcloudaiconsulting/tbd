@@ -125,11 +125,8 @@ export default function ForecastPlansClient({
   // booting client and in every pre-existing test mock, and Forecast ships ON.
   // Only an explicit server `false` closes the page.
   //
-  // The RSC parent (`page.tsx`) takes ZERO changes for this. With the router
-  // gated, `serverFetch`'s null contract turns the 404 into `initialPlan =
-  // null` and this island mounts normally — which is the only reason the
-  // notice can live here at all, rather than in a server component that has no
-  // `useAuth` to read.
+  // The server page seeds nothing (TBD-624), so the notice lives here, where
+  // `useAuth` is available.
   const forecastDisabled = features?.forecast === false;
 
   // Categories and periods are stable per session — seed once from the
@@ -139,7 +136,7 @@ export default function ForecastPlansClient({
   const [periods, setPeriods] = useState<BillingPeriod[]>(initialPeriods);
 
   // Default to the current period (TBD-242), not index 0.
-  // Mirrors `pickCurrentPeriod` in the RSC parent, which uses the same helper.
+  // Only non-empty if a caller seeds periods; the server page no longer does.
   const initialPeriodIdx = (() => {
     const idx = selectCurrentPeriodIndex(initialPeriods);
     return idx >= 0 ? idx : 0;
@@ -320,9 +317,9 @@ export default function ForecastPlansClient({
   }, [periods, periodIdx]);
 
   // ensure-future runs once per client mount. We then refresh periods
-  // from the backend so any newly created stubs become navigable. The RSC
-  // already seeded the initial periods, so this is purely a "catch up to
-  // today" pass — quiet on failure.
+  // from the backend so any newly created stubs become navigable. Periods are
+  // not server-seeded (TBD-624), so this is also the initial periods load;
+  // ensure-future is admin-only and best-effort, the GET always runs.
   //
   // Selection-preservation: the backend lists periods newest-first, so a
   // freshly-created future stub may slot in at index 0 and silently
@@ -340,9 +337,10 @@ export default function ForecastPlansClient({
     futureEnsured.current = true;
     (async () => {
       try {
+        // Admin-only: a 403 for everyone else must not block the periods read.
         await apiFetch("/api/v1/settings/billing-periods/ensure-future", {
           method: "POST",
-        });
+        }).catch(() => {});
         const fresh = await apiFetch<BillingPeriod[]>(
           "/api/v1/settings/billing-periods",
         );
