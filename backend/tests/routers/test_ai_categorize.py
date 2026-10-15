@@ -707,3 +707,34 @@ async def test_duplicate_slug_is_deduped_lowest_id_wins(session_factory):
         "_build_messages should receive the deduped catalog, not the raw one"
     )
     assert "Groceries" in prompt_text  # sanity: the kept row IS in the prompt
+
+
+@pytest.mark.asyncio
+async def test_f6_consent_revoked_returns_ai_consent_required_not_native_unavailable(session_factory):
+    """FENCE TBD-627 F6: real dispatch, AI switched off. Kills: the router's
+    ``except NativeNotAvailable`` swallowing the consent code."""
+    from app._time import utcnow_naive
+    from app.models.org_ai_consent import OrgAIConsent
+
+    seeded = await _seed(session_factory)
+    async with session_factory() as db:
+        db.add(OrgAIConsent(
+            org_id=seeded["org_id"],
+            consent_version=app_settings.ai_native_current_consent_version,
+            revoked_at=utcnow_naive(),
+        ))
+        await db.commit()
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seeded["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    adapter = _adapter_returning('{"category_slug": "groceries", "confidence": 0.9, "reasoning": "x"}')
+    with patch("app.services.ai_dispatch.get_adapter", return_value=adapter):
+        resp = client.post("/api/v1/ai/categorize", json={"transaction_id": seeded["tx_id"]})
+    assert resp.status_code == 412, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "ai_consent_required"
+    assert detail["message"].startswith("AI is off for your organization.")
+    adapter.chat_structured.assert_not_awaited()
+    await _assert_no_audit_rows(session_factory)

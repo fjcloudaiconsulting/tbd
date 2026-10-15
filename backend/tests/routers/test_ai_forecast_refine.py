@@ -966,3 +966,66 @@ async def test_refine_returns_412_when_no_provider_configured(session_factory):
     )
     assert resp.status_code == 412
     assert resp.json()["detail"]["code"] == "ai_provider_not_configured"
+
+
+async def _seed_byok_routing_no_consent(factory, org_id: int) -> None:
+    from app.models.org_ai_credential import AiProvider, OrgAICredential
+    from app.models.org_ai_routing import OrgAIDefaultRouting
+    from app.services.ai_credential_crypto import encrypt
+
+    async with factory() as db:
+        cred = OrgAICredential(
+            org_id=org_id, provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-test-12345"),
+            key_fingerprint="0123456789abcdef", last_four="2345", label="p",
+            discovered_capabilities=["chat", "structured_output"],
+        )
+        db.add(cred)
+        await db.flush()
+        db.add(OrgAIDefaultRouting(org_id=org_id, credential_id=cred.id, model="gpt-4o-mini"))
+        await db.commit()
+
+
+@pytest.fixture
+def _enc_key(monkeypatch):
+    monkeypatch.setattr(
+        app_settings, "ai_credential_encryption_key",
+        base64.urlsafe_b64encode(os.urandom(32)).decode("ascii"),
+    )
+    monkeypatch.setattr(app_settings, "ai_credential_encryption_key_prev", "")
+
+
+@pytest.mark.asyncio
+async def test_f6_refine_with_ai_off_serves_baseline_with_consent_reason(session_factory, _enc_key):
+    """FENCE TBD-627 F6: real dispatch, AI off. Kills: the ``NativeNotAvailable``
+    branch swallowing the consent code into ``ai_native_not_available``."""
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+    await _seed_byok_routing_no_consent(session_factory, seed["org_id"])
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    with patch("app.services.ai_dispatch.get_adapter") as ga:
+        resp = client.post("/api/v1/ai/forecast/refine", json={"period_start": seed["period_start"]})
+    assert resp.status_code == 200, resp.text
+    prov = resp.json()["provenance"]
+    assert prov["ai_applied"] is False
+    assert prov["fallback_reason"] == "ai_consent_required"
+    ga.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_f6_estimate_with_ai_off_cannot_proceed(session_factory, _enc_key):
+    """FENCE TBD-627 F6: the estimate must not offer Confirm while AI is off."""
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+    await _seed_byok_routing_no_consent(session_factory, seed["org_id"])
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    resp = client.post("/api/v1/ai/forecast/refine/estimate", json={"timeframe_months": 6, "scope": "top_20"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["can_proceed"] is False
+    assert body["reason"] == "ai_consent_required"

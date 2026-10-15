@@ -277,3 +277,28 @@ async def test_consent_get_returns_current_pinned_version(
     client = TestClient(_make_app(session_factory, resolver))
     body = client.get("/api/v1/settings/ai-providers/consent").json()
     assert body["current_consent_version"] == "ai-tos-2026-05-22"
+
+
+@pytest.mark.parametrize("flag", ["allow_training", "allow_rag", "allow_telemetry"])
+async def test_f5_allow_flags_true_are_rejected_and_store_nothing(session_factory, flag):
+    """FENCE TBD-627 F5: nothing consumes ``allow_*``, so a stored ``true`` is
+    a lie about what the product does. Kills: ``bool`` kept in ConsentCreate."""
+    from sqlalchemy import select
+    from app.models.org_ai_consent import OrgAIConsent
+
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    version = app_settings.ai_native_current_consent_version
+    bad = client.post(
+        "/api/v1/settings/ai-providers/consent",
+        json={"consent_version": version, flag: True},
+    )
+    assert bad.status_code == 422
+    async with session_factory() as db:
+        assert (await db.scalars(select(OrgAIConsent))).all() == []
+    for body in ({"consent_version": version}, {"consent_version": version, flag: False}):
+        assert client.post("/api/v1/settings/ai-providers/consent", json=body).status_code == 201

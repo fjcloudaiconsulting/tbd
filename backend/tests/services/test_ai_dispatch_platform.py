@@ -1161,3 +1161,32 @@ async def test_r2_3_mid_chat_consent_refusal_reports_its_own_code(db, sf, fake, 
     await agent_chat.preflight(db, SimpleNamespace(org_id=org), MSGS, TOOLS)
     body = "".join([ev async for ev in agent_chat.stream_turn(lambda: db, 1, org, "n", MSGS, TOOLS, 40_000, False)])
     assert '"code":"ai_consent_required"' in body and "ai_native_not_available" not in body
+
+
+async def test_f13_chat_preflight_on_a_byok_org_with_ai_off_is_412_and_counts_nothing(db, sf, fake, chat_env, monkeypatch):
+    """GUARD TBD-627 F13: the agent-chat preflight reuses ``_prepare_dispatch``,
+    so a BYOK org with no current consent is refused 412 ``ai_consent_required``
+    with the turn lock released and ``assistant.turns`` not admitted."""
+    org = await mk_org(db, extra={"assistant.turns": {"period": "day", "limit": 5}})
+    cred = OrgAICredential(
+        org_id=org, provider=AiProvider.OPENAI, encrypted_api_key=encrypt("sk-x"),
+        key_fingerprint="0123456789abcdef", last_four="2345", label="p",
+        discovered_capabilities=["chat", "function_call"])
+    db.add(cred)
+    await db.flush()
+    db.add(OrgAIDefaultRouting(org_id=org, credential_id=cred.id, model="gpt-4o-mini"))
+    await db.commit()
+    released = []
+    real = agent_chat.release_lock
+
+    async def spy(*a, **k):
+        released.append(a)
+        return await real(*a, **k)
+
+    monkeypatch.setattr(agent_chat, "release_lock", spy)
+    with pytest.raises(HTTPException) as ei:
+        await agent_chat.preflight(db, SimpleNamespace(org_id=org), MSGS, TOOLS)
+    assert (ei.value.status_code, ei.value.detail["code"]) == (412, "ai_consent_required")
+    assert len(released) == 1 and fake.reqs == []
+    async with sf() as s:
+        assert await s.scalar(select(UsageCounter).where(UsageCounter.meter == "assistant.turns")) is None

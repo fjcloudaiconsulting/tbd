@@ -44,6 +44,7 @@ from app.security import create_access_token, hash_password, token_cutoff
 from app.services import api_token_service as svc
 from app.services import notification_service
 from app.services.api_token_service import hash_api_token
+from tests.factories.ai import ai_on_rows
 
 UTC = timezone.utc
 PASSWORD = "correct-horse-battery"
@@ -107,6 +108,7 @@ async def _org(factory, name: str, *, agent: bool = True) -> int:
         await s.flush()
         if agent:
             s.add(OrgFeatureOverride(org_id=org.id, feature_key="ai.agent", value=True))
+            s.add(ai_on_rows(org.id)[0])  # TBD-627: the org's AI switch is on
         await s.commit()
         return org.id
 
@@ -668,3 +670,65 @@ async def test_m4_list_and_revoke_all_are_own_agent_tokens_only(factory, client)
 
 def test_scope_rank_matches_registry():
     assert set(svc.AGENT_SCOPE_RANK) == set(AGENT_SCOPES)
+
+
+# ── TBD-627: the org AI switch ──────────────────────────────────────────────
+
+
+async def _ai_off(factory, org_id: int) -> None:
+    from app.config import settings
+    from app.models.org_ai_consent import OrgAIConsent
+
+    async with factory() as s:
+        s.add(OrgAIConsent(org_id=org_id, consent_version=settings.ai_native_current_consent_version,
+                           revoked_at=_naive_now()))
+        await s.commit()
+
+
+async def test_f8_mint_refused_while_ai_is_off_and_member_mints_when_on(factory, client):
+    """FENCE TBD-627 F8. AI off: mint is 403 ``ai_off`` BEFORE the mint bucket
+    and the step-up; no token row, no success audit. A MEMBER mints once AI is
+    on. Wrong implementations: ungated mint; an admin-only mint."""
+    from unittest.mock import patch
+    from app.agent import actions
+
+    org = await _org(factory, "A")
+    uid = await _user(factory, org, "m")
+    h = await _jwt(factory, uid)
+    await _ai_off(factory, org)
+    reached = []
+
+    async def spy(*a, **k):
+        reached.append(a)
+
+    stepup = AsyncMock(return_value=True)
+    with patch.object(actions, "_hit", spy), patch("app.routers.agent_tokens.consume_stepup", stepup):
+        r = await client.post(BASE, json=_mint_body(), headers=h)
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == {
+        "code": "ai_off",
+        "message": "AI is off for your organization. An admin can turn it on in Settings, AI providers.",
+    }
+    assert reached == [] and not stepup.await_count
+    async with factory() as s:
+        assert (await s.execute(select(ApiToken))).scalars().all() == []
+    assert await _audits(factory, "agent_token.created") == []
+    async with factory() as s:
+        from app.config import settings
+        from app.models.org_ai_consent import OrgAIConsent
+        s.add(OrgAIConsent(org_id=org, consent_version=settings.ai_native_current_consent_version))
+        await s.commit()
+    assert (await client.post(BASE, json=_mint_body(), headers=h)).status_code == 201
+
+
+async def test_f14_list_and_revoke_work_while_ai_is_off(factory, client):
+    """GUARD TBD-627 F14. Wrong implementation: the AI switch on the whole
+    router (a user could not see or revoke a token while AI is off)."""
+    org = await _org(factory, "A")
+    uid = await _user(factory, org, "m")
+    tok = await _tok(factory, uid)
+    h = await _jwt(factory, uid)
+    await _ai_off(factory, org)
+    assert len((await client.get(BASE, headers=h)).json()["items"]) == 1
+    tid = (await _row(factory, tok)).id
+    assert (await client.delete(f"{BASE}/{tid}", headers=h)).status_code == 200
