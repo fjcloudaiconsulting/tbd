@@ -57,7 +57,7 @@ describe("privacy policy recipients and retention", () => {
 
   it("the FAQ does not claim the database is encrypted at rest (local disks on Hetzner are not)", () => {
     const security = faqEntries.find((e) => e.q === "Is my data secure?");
-    expect(security?.a).toMatch(/EU data centers in Germany/);
+    expect(security?.a).toMatch(/stays in the EU: the service and its database run in Germany/);
     expect(security?.a).not.toMatch(/encrypted at rest/);
   });
 
