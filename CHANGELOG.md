@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.297.0](https://github.com/fjcloudaiconsulting/tbd/compare/v0.296.1...v0.297.0) (2026-10-15)
+
+
+### Features
+
+* **ai:** hard input limits on assistant chat per message, turn and tool result (TBD-613) ([#923](https://github.com/fjcloudaiconsulting/tbd/issues/923)) ([44e9c87](https://github.com/fjcloudaiconsulting/tbd/commit/44e9c87483cabff80c3eb7c2da1af90d344d1190))
+
+
+### Bug Fixes
+
+* **ai:** price the current Claude, OpenAI and Gemini models instead of the fallback rate (TBD-618) ([#907](https://github.com/fjcloudaiconsulting/tbd/issues/907)) ([360e070](https://github.com/fjcloudaiconsulting/tbd/commit/360e0703fa8a120e45e33b928af51dadbaa8bc72))
+* **legal:** name Hetzner as host, AWS for backups and Grafana Labs for monitoring (INFRA-105) ([#927](https://github.com/fjcloudaiconsulting/tbd/issues/927)) ([76655fa](https://github.com/fjcloudaiconsulting/tbd/commit/76655fa15f0eb383e9af789c73d4c9d7e8afb9c4))
+
 ## [0.296.1](https://github.com/fjcloudaiconsulting/tbd/compare/v0.296.0...v0.296.1) (2026-10-13)
 
 
