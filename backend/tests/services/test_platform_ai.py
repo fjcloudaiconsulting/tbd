@@ -219,3 +219,16 @@ async def test_f_s2_reader_ignores_an_org_scoped_row(db):
     await db.commit()
     s = await platform_ai_settings.load(db)
     assert (s.enabled, s.global_monthly_cents) == (False, 0)
+
+
+@pytest.mark.parametrize("stored,expected", [
+    (["claude-sonnet-4-7"], {}),
+    (["claude-sonnet-4-7", "claude-haiku-4-5"], {"anthropic": ["claude-haiku-4-5"]}),
+])
+def test_tbd629_offered_drops_unofferable_stored_models(monkeypatch, stored, expected):
+    monkeypatch.setattr(app_settings, "ai_native_enabled", True)
+    monkeypatch.setattr(app_settings, "platform_ai_anthropic_api_key", "sk-x")
+    conf = platform_ai_settings.PlatformAISettings(
+        enabled=True, global_monthly_cents=1, models={"anthropic": stored}
+    )
+    assert platform_ai_settings.offered(conf) == expected

@@ -74,8 +74,8 @@ class ModelPricing:
 #   claude-sonnet-5-5, -5   : $2 / $10        [A]  -> 200 / 1000
 #   claude-sonnet-4-6       : $3 / $15        [A]  -> 300 / 1500
 #   claude-sonnet-4-7       : $3 / $15, NOT on [A]'s model list; the
-#                             2026-05-22 row stays while the platform
-#                             allowlist names it
+#                             row kept for history only (stored ledger
+#                             rows); no longer offerable
 #   claude-haiku-5-5        : $0.50 / $2.50 (>100K-token prompt; $0.10 /
 #                             $0.50 below)    [A]  -> 50 / 250
 #   claude-haiku-4-5        : $1 / $5         [A]  -> 100 / 500
