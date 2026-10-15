@@ -120,6 +120,7 @@ async def test_a1_org_admin_and_pat_are_refused(sf, users):
 
 @pytest.mark.parametrize("provider,model", [
     ("openai", "_default"), ("openai", "no-such-model"), ("openai", "gpt-4o"), ("anthropic", "gpt-4o"),
+    ("anthropic", "claude-sonnet-4-7"),  # TBD-629: priced for history, not on Anthropic's list
 ])
 async def test_a2_unofferable_model_is_400(sf, users, monkeypatch, provider, model):
     if model == "gpt-4o" and provider == "openai":
@@ -246,3 +247,7 @@ def test_b2b_every_platform_model_is_priced_and_bounded():
         for m in models:
             assert m != "_default" and m in MODEL_PRICING and m in _DEFAULT_MAX_OUTPUT_TOKENS_BY_MODEL, m
             assert platform_ai.offerable_model(provider, m)
+
+
+def test_tbd629_sonnet_4_7_is_not_offerable():
+    assert platform_ai.offerable_model("anthropic", "claude-sonnet-4-7") is False
