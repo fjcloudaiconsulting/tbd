@@ -7,10 +7,13 @@ import { describe, it, expect } from "vitest";
  * TBD-624 F1. No server render may act as the refresh cookie's identity: the
  * cookie is shared by every tab, so a server read keyed on it returns whichever
  * account signed in last. PARSES imports (a grep is satisfied by a comment).
- * Kills: re-adding `cookies()` from next/headers or `@/lib/auth-server`.
- * Ceiling: dynamic `import()` with a non-literal specifier, `require`.
+ * Any form of next/headers (named, aliased, default, namespace, .js, dynamic,
+ * require) is banned except lib/nonce.ts, which reads only the CSP nonce header.
+ * Kills: re-adding a cookie read via next/headers, or `@/lib/auth-server`.
+ * Ceiling: a non-literal specifier; `headers()` read in nonce.ts itself.
  */
 const ROOT = path.resolve(__dirname, "..", "..");
+const NONCE = "lib/nonce.ts";
 const SKIP = new Set(["node_modules", ".next", "out", "out-apex", "public", "coverage"]);
 
 function walk(dir: string): string[] {
@@ -25,31 +28,29 @@ function walk(dir: string): string[] {
   return out;
 }
 
-function offences(file: string): string[] {
+const norm = (spec: string) => spec.replace(/\.(m?js)$/, "");
+
+function offences(file: string, rel: string): string[] {
   const text = readFileSync(file, "utf8");
   // Cheap prefilter only (it can over-select, never decide): parsing ~600 files is slow under load.
   if (!text.includes("next/headers") && !text.includes("auth-server")) return [];
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const hits: string[] = [];
-  const check = (spec: string, names: string[]) => {
-    if (/(^|\/)auth-server$/.test(spec)) hits.push(`imports ${spec}`);
-    if (spec === "next/headers" && names.includes("cookies")) hits.push("imports cookies from next/headers");
+  const check = (raw: string) => {
+    const spec = norm(raw);
+    if (/(^|\/)auth-server$/.test(spec)) hits.push(`imports ${raw}`);
+    if (spec === "next/headers" && rel !== NONCE) hits.push(`imports ${raw}`);
   };
   const visit = (n: ts.Node): void => {
     if ((ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier && ts.isStringLiteral(n.moduleSpecifier)) {
-      const names: string[] = [];
-      if (ts.isImportDeclaration(n)) {
-        const nb = n.importClause?.namedBindings;
-        if (nb && ts.isNamedImports(nb)) nb.elements.forEach((el) => names.push((el.propertyName ?? el.name).text));
-        if (nb && ts.isNamespaceImport(nb)) names.push("cookies");
-      } else if (n.exportClause && ts.isNamedExports(n.exportClause)) {
-        n.exportClause.elements.forEach((el) => names.push((el.propertyName ?? el.name).text));
-      } else names.push("cookies");
-      check(n.moduleSpecifier.text, names);
+      check(n.moduleSpecifier.text);
     }
-    if (ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword) {
+    if (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference) && ts.isStringLiteral(n.moduleReference.expression)) {
+      check(n.moduleReference.expression.text);
+    }
+    if (ts.isCallExpression(n) && (n.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(n.expression) && n.expression.text === "require"))) {
       const a = n.arguments[0];
-      if (a && ts.isStringLiteral(a)) check(a.text, ["cookies"]);
+      if (a && (ts.isStringLiteral(a) || ts.isNoSubstitutionTemplateLiteral(a))) check(a.text);
     }
     ts.forEachChild(n, visit);
   };
@@ -58,12 +59,16 @@ function offences(file: string): string[] {
 }
 
 describe("TBD-624 F1: no cookie-identity server read", () => {
-  it("nothing under app/, lib/, components/ imports cookies() or lib/auth-server", () => {
+  it("only lib/nonce.ts imports next/headers; nothing imports lib/auth-server", () => {
+    const rootFiles = readdirSync(ROOT)
+      .filter((e) => /\.(tsx?|jsx?|mjs|cjs)$/.test(e))
+      .map((e) => path.join(ROOT, e));
+    const files = [...["app", "lib", "components"].flatMap((d) => walk(path.join(ROOT, d))), ...rootFiles];
+    expect(rootFiles.map((f) => path.basename(f))).toContain("proxy.ts");
     const bad: string[] = [];
-    for (const dir of ["app", "lib", "components"]) {
-      for (const f of walk(path.join(ROOT, dir))) {
-        for (const h of offences(f)) bad.push(`${path.relative(ROOT, f)}: ${h}`);
-      }
+    for (const f of files) {
+      const rel = path.relative(ROOT, f).split(path.sep).join("/");
+      for (const h of offences(f, rel)) bad.push(`${rel}: ${h}`);
     }
     expect(bad).toEqual([]);
   });

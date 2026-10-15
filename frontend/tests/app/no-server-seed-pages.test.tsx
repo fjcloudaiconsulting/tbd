@@ -14,16 +14,6 @@ vi.mock("@/lib/logger", () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-const serverFetchSpy = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/server-fetch", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/server-fetch")>("@/lib/server-fetch");
-  serverFetchSpy.mockImplementation(actual.serverFetch);
-  return {
-    ...actual,
-    serverFetch: serverFetchSpy,
-  };
-});
-
 const redirectMock = vi.hoisted(() =>
   vi.fn((_t: string) => {
     throw new Error("NEXT_REDIRECT");
@@ -47,7 +37,6 @@ beforeEach(() => {
 });
 
 function noServerRequests() {
-  expect(serverFetchSpy).not.toHaveBeenCalled();
   expect(fetchSpy).not.toHaveBeenCalled();
 }
 
