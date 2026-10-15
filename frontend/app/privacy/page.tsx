@@ -33,7 +33,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = "October 5, 2026";
-const LAST_UPDATED = "October 7, 2026";
+const LAST_UPDATED = "October 15, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -90,6 +90,8 @@ export default function PrivacyPolicyPage() {
                 <strong>Operational telemetry:</strong> request logs
                 containing IP address, user agent, path, and timestamp for
                 up to {REQUEST_LOG_RETENTION_DAYS} days, used for debugging and abuse prevention.
+                Performance metrics and traces without personal data go to
+                our monitoring provider (section 3).
               </li>
               <li>
                 <strong>Cookies:</strong> an HTTP-only refresh-token cookie
@@ -144,9 +146,13 @@ export default function PrivacyPolicyPage() {
             </p>
             <ul>
               <li>
-                <strong>Amazon Web Services</strong> (hosting): runs the
-                service and stores your data at rest, including the database
-                and nightly encrypted backups, in the Frankfurt region
+                <strong>Hetzner</strong> (hosting): runs the service and
+                stores your data at rest, including the database, on servers
+                in Nuremberg (Germany, EU).
+              </li>
+              <li>
+                <strong>Amazon Web Services</strong> (backups): stores our
+                nightly encrypted database backups in the Frankfurt region
                 (eu-central-1, Germany, EU).
               </li>
               <li>
@@ -177,6 +183,15 @@ export default function PrivacyPolicyPage() {
                 to that provider, under your organization&rsquo;s own
                 agreement with it.
               </li>
+              <li>
+                <strong>Grafana Labs</strong> (Grafana Cloud, EU region,
+                monitoring): receives operational metrics and traces, made of
+                the request method, route pattern, status code, error type,
+                timing, scheduled job names, and database query text without
+                its values. It never receives
+                your financial data, request contents, IP address, or request
+                logs.
+              </li>
             </ul>
           </section>
 
@@ -200,6 +215,10 @@ export default function PrivacyPolicyPage() {
               <li>
                 Email delivery records at Mailgun follow their retention
                 policy (typically 3 days for logs).
+              </li>
+              <li>
+                Metrics and traces at Grafana Cloud follow its retention
+                policy.
               </li>
             </ul>
           </section>
@@ -274,8 +293,10 @@ export default function PrivacyPolicyPage() {
           <section>
             <h2>7. International transfers</h2>
             <p>
-              Your data is stored in the EU (Amazon Web Services, Frankfurt
-              region, Germany), including our backups.
+              Your data is stored in the EU: the service runs at Hetzner in
+              Nuremberg, Germany, and our backups are kept at Amazon Web
+              Services in the Frankfurt region, Germany. Grafana Cloud stores
+              operational metrics and traces in its EU region.
               Cloudflare may process requests at edge nodes globally as part
               of delivering the service. Mailgun operates in the EU region.
             </p>

@@ -29,7 +29,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";
-const LAST_UPDATED = "October 5, 2026";
+const LAST_UPDATED = "October 15, 2026";
 
 export default function TermsOfServicePage() {
   return (
@@ -172,8 +172,8 @@ export default function TermsOfServicePage() {
             <h2>7. Third parties and integrations</h2>
             <p>
               The Better Decision integrates with third-party services (Google for sign-in,
-              Mailgun for email, Cloudflare for edge, Amazon Web Services for
-              hosting). Your use of those integrations is additionally
+              Mailgun for email, Cloudflare for edge, Hetzner for hosting,
+              Amazon Web Services for backups, Grafana Labs for monitoring). Your use of those integrations is additionally
               governed by the third party&rsquo;s terms. We are not
               responsible for third-party outages or data handling beyond
               what&rsquo;s described in our Privacy Policy.
